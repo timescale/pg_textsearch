@@ -146,7 +146,7 @@ tp_build_init_metapage(Relation index, Oid text_config_oid, double k1, double b)
 }
 
 static void
-tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, uint64 *total_docs, double *avg_doc_length)
+tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, uint64 *total_docs, float4 *avg_doc_length)
 {
 	TpCorpusStatistics *stats;
 	Buffer		metabuf;
@@ -338,7 +338,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	TableScanDesc scan;
 	TupleTableSlot *slot;
 	uint64		total_docs = 0;
-	double		avg_doc_length = 0.0;
+	float4		avg_doc_length = 0.0;
 	TpIndexState *index_state;
 
 	elog(DEBUG2,
