@@ -500,13 +500,13 @@ tpvector_score(PG_FUNCTION_ARGS)
 		if (posting_list && posting_list->doc_count > 0)
 		{
 			/* Calculate IDF using actual document frequency */
-			idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
-					   (double)(posting_list->doc_count + 0.5));
+			idf = (float4)logl((long double)(total_docs - posting_list->doc_count + 0.5) /
+					   (long double)(posting_list->doc_count + 0.5));
 		}
 		else
 		{
 			/* Term not found in index - use default IDF */
-			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
+			idf = (float4)logl((long double)(total_docs + 0.5) / 0.5L);
 		}
 
 		/* Calculate BM25 term score */

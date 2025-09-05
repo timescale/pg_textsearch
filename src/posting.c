@@ -595,9 +595,9 @@ bm25_score_document(TpIndexState * index_state,
 		if (tf == 0.0f)
 			continue;			/* Term not in this document */
 
-		/* Calculate IDF: log((N - df + 0.5) / (df + 0.5)) */
-		idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
-				   (double)(posting_list->doc_count + 0.5));
+		/* Calculate IDF: logl((N - df + 0.5) / (df + 0.5)) */
+		idf = (float4)logl((long double)(total_docs - posting_list->doc_count + 0.5) /
+				    (long double)(posting_list->doc_count + 0.5));
 
 		/* Calculate BM25 term score */
 		{
@@ -672,8 +672,8 @@ tp_score_documents(TpIndexState * index_state,
 			continue;
 
 		/* Calculate IDF once for this term */
-		idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
-				   (double)(posting_list->doc_count + 0.5));
+		idf = (float4)logl((long double)(total_docs - posting_list->doc_count + 0.5) /
+				    (long double)(posting_list->doc_count + 0.5));
 
 		/* Process each document in this term's posting list */
 		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
