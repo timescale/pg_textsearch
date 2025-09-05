@@ -1766,7 +1766,7 @@ tp_get_query_limit(Relation index_rel)
 }
 
 /*
- * Clean up all query limit entries (called at backend exit)
+ * Clean up all query limit entries (called at transaction end)
  */
 void
 tp_cleanup_query_limits(void)
@@ -1774,7 +1774,12 @@ tp_cleanup_query_limits(void)
 	HASH_SEQ_STATUS status;
 	TpQueryLimitEntry *entry;
 
+	/* Conservative check - only proceed if everything is properly initialized */
 	if (!tp_query_limits_hash)
+		return;
+
+	/* Additional safety check - make sure we're not in a problematic context */
+	if (!IsTransactionState())
 		return;
 
 	hash_seq_init(&status, tp_query_limits_hash);
