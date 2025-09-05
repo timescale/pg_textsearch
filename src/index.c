@@ -346,12 +346,19 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 RelationGetRelationName(heap),
 		 RelationGetRelationName(index));
 	/* Tapir index build started */
-	elog(DEBUG1,
+	elog(NOTICE,
 		 "Tapir index build started for relation %s",
 		 RelationGetRelationName(index));
 
 	/* Extract options from index */
 	tp_build_extract_options(index, &text_config_name, &text_config_oid, &k1, &b);
+
+	/* Log configuration being used */
+	if (text_config_name)
+	{
+		elog(NOTICE, "Using text search configuration: %s", text_config_name);
+	}
+	elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
 
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
@@ -485,7 +492,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	if (OidIsValid(text_config_oid))
 	{
-		elog(INFO,
+		elog(NOTICE,
 			 "Tapir index build completed: %lu documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
@@ -496,7 +503,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 	else
 	{
-		elog(INFO,
+		elog(NOTICE,
 			 "Tapir index build completed: %lu documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
