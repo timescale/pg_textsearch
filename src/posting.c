@@ -508,7 +508,8 @@ tp_finalize_index_build(TpIndexState * index_state)
 		 "Tapir index build finalized: using deferred finalization, "
 		 "total docs: %d, avg doc length: %.2f",
 		 index_state->stats.total_docs,
-		 (float4)(index_state->stats.total_len / (double)index_state->stats.total_docs));
+		 index_state->stats.total_docs > 0 ? 
+		 (float4)(index_state->stats.total_len / (double)index_state->stats.total_docs) : 0.0f);
 }
 
 /*
@@ -525,7 +526,8 @@ bm25_score_document(TpIndexState * index_state,
 					float4 b)
 {
 	float4		score = 0.0f;
-	float4		avg_doc_len = (float4)(index_state->stats.total_len / (double)index_state->stats.total_docs);
+	float4		avg_doc_len = index_state->stats.total_docs > 0 ? 
+		(float4)(index_state->stats.total_len / (double)index_state->stats.total_docs) : 0.0f;
 	int32		total_docs = index_state->stats.total_docs;
 	int			i;
 
@@ -639,7 +641,8 @@ tp_score_documents(TpIndexState * index_state,
 	HASHCTL		hash_ctl;
 	HTAB	   *doc_scores_hash;
 	DocumentScoreEntry *doc_entry;
-	float4		avg_doc_len = (float4)(index_state->stats.total_len / (double)index_state->stats.total_docs);
+	float4		avg_doc_len = index_state->stats.total_docs > 0 ? 
+		(float4)(index_state->stats.total_len / (double)index_state->stats.total_docs) : 0.0f;
 	int32		total_docs = index_state->stats.total_docs;
 	bool		found;
 	int			result_count = 0;

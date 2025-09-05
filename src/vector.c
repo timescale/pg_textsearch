@@ -409,7 +409,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 	/* Extract BM25 parameters */
 	k1 = metap->k1;
 	b = metap->b;
-	avg_doc_len = (float4)(metap->total_len / (double)metap->total_docs);
+	avg_doc_len = metap->total_docs > 0 ? 
+		(float4)(metap->total_len / (double)metap->total_docs) : 0.0f;
 	total_docs = metap->total_docs;
 
 	/* Get the index state from shared memory */
