@@ -1,0 +1,210 @@
+-- Test long string handling including URLs, paths, and long terms
+-- Load tapir extension
+CREATE EXTENSION IF NOT EXISTS tapir;
+NOTICE:  extension "tapir" already exists, skipping
+-- Setup test table for long strings
+DROP TABLE IF EXISTS long_string_docs CASCADE;
+NOTICE:  table "long_string_docs" does not exist, skipping
+CREATE TABLE long_string_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    category VARCHAR(50)
+);
+-- Insert test data with various long string patterns
+INSERT INTO long_string_docs (content, category) VALUES 
+    -- URLs and web content
+    ('Visit our website at https://www.example-company.com/products/database-solutions/postgresql-extensions/full-text-search?utm_source=docs&utm_medium=referral&utm_campaign=tapir-extension for more information about BM25 indexing', 'web'),
+    ('API endpoint: https://api.search-service.example.org/v2/documents/search/bm25?query=full+text+search&limit=100&offset=0&include_scores=true&config=english', 'api'),
+    ('Documentation available at https://docs.postgresql-extensions.community/tapir/getting-started/installation-guide.html#shared-memory-configuration', 'docs'),
+    
+    -- Long file paths and system content  
+    ('Error in file /usr/local/lib/postgresql/extensions/tapir/src/posting-list-management/shared-memory/string-interning-hashtable.c line 1547', 'system'),
+    ('Log file: /var/log/postgresql/tapir-extension/performance-monitoring/bm25-scoring-statistics/daily-reports/2024-08-27-full-text-search-analytics.log', 'logs'),
+    
+    -- Long technical terms and identifiers
+    ('PostgreSQL extension configuration parameter shared_preload_libraries_tapir_bm25_full_text_search_with_relevance_scoring_enabled', 'config'),
+    ('Function name: tp_calculate_bm25_relevance_score_with_term_frequency_inverse_document_frequency_and_document_length_normalization', 'technical'),
+    
+    -- Mixed long content with URLs embedded
+    ('Our advanced information retrieval system uses BM25 scoring algorithm implementation available at https://github.com/enterprise-search/tapir-postgresql-extension/blob/main/src/algorithms/bm25-relevance-scoring.c for processing full-text search queries', 'mixed'),
+    
+    -- Very long single terms (scientific/chemical names)
+    ('The antidisestablishmentarianism movement was characterized by pneumonoultramicroscopicsilicovolcanoconiosispneumonoultramicroscopicsilicovolcanoconiosis research', 'scientific'),
+    
+    -- Long JSON-like structured content
+    ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
+-- Create tapir index on long strings
+CREATE INDEX long_strings_idx ON long_string_docs USING tapir(content) 
+    WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  Tapir index build started for relation long_strings_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
+-- Test 1: Search for URL components
+SELECT id, LEFT(content, 80) || '...' as content_preview, 
+       ROUND((content <@> to_tpvector('https website', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('https website', 'long_strings_idx') < 0
+ORDER BY score DESC
+LIMIT 5;
+ id |                                   content_preview                                   |  score  
+----+-------------------------------------------------------------------------------------+---------
+  1 | Visit our website at https://www.example-company.com/products/database-solutions... | -3.3841
+(1 row)
+
+-- Test 2: Search for technical terms
+SELECT id, category, 
+       ROUND((content <@> to_tpvector('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('postgresql extension', 'long_strings_idx') < 0
+ORDER BY score DESC;
+ id | category |  score  
+----+----------+---------
+  6 | config   | -5.2052
+(1 row)
+
+-- Test 3: Search for long path components  
+SELECT id, LEFT(content, 60) || '...' as content_preview,
+       ROUND((content <@> to_tpvector('file log error', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('file log error', 'long_strings_idx') < 0
+ORDER BY score DESC;
+ id |                         content_preview                         |  score  
+----+-----------------------------------------------------------------+---------
+  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -7.7679
+  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -8.6163
+(2 rows)
+
+-- Test 4: Test vectorization of very long URLs
+SELECT to_tpvector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
+                                                                                                                                                                           to_tpvector                                                                                                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ long_strings_idx:{/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1,www.very-long-domain-name-for-testing-url-tokenization.example.com:1,www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1}
+(1 row)
+
+-- Test 5: Test extremely long single term handling
+SELECT to_tpvector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
+                                                          to_tpvector                                                          
+-------------------------------------------------------------------------------------------------------------------------------
+ long_strings_idx:{supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarian:1}
+(1 row)
+
+-- Test 6: Test mixed long and short terms
+SELECT id, ROUND((content <@> to_tpvector('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('algorithm bm25', 'long_strings_idx') < 0
+ORDER BY score DESC;
+ id |  score  
+----+---------
+  6 | -2.6026
+  7 | -2.6026
+  1 | -3.3841
+ 10 | -3.8192
+  8 | -4.5983
+(5 rows)
+
+-- Test 7: Performance test with multiple long term queries
+SELECT 
+    id,
+    category,
+    ROUND((content <@> to_tpvector('postgresql tapir extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('postgresql tapir extension search', 'long_strings_idx') < 0
+ORDER BY multi_term_score DESC;
+ id | category | multi_term_score 
+----+----------+------------------
+  8 | mixed    |          -2.2992
+ 10 | json     |          -3.8192
+  6 | config   |         -10.4103
+(3 rows)
+
+-- Test 8: Test URL tokenization specifics
+SELECT 
+    'URL components' as test_type,
+    to_tpvector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
+   test_type    |                                     url_vector                                      
+----------------+-------------------------------------------------------------------------------------
+ URL components | long_strings_idx:{/path?param=value:1,example.com:1,example.com/path?param=value:1}
+(1 row)
+
+-- Test 9: Test that very long terms don't cause memory issues
+INSERT INTO long_string_docs (content, category) VALUES 
+    ('This document contains a ridiculously long compound word: ' ||
+     'antidisestablishmentarianismpneumonoultramicroscopicsilicovolcanoconiosis' ||
+     'supercalifragilisticexpialidociousfloccinaucinihilipilificationhippopotomonstrosesquippedaliophobia' ||
+     ' and should still be indexed correctly', 'stress_test');
+-- Verify the stress test document was indexed
+SELECT id, LEFT(content, 50) || '...' as preview,
+       ROUND((content <@> to_tpvector('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE content <@> to_tpvector('document ridiculously long', 'long_strings_idx') < 0
+ORDER BY score DESC;
+ id |                        preview                        |  score  
+----+-------------------------------------------------------+---------
+  7 | Function name: tp_calculate_bm25_relevance_score_w... | -3.7486
+  3 | Documentation available at https://docs.postgresql... | -3.8839
+ 11 | This document contains a ridiculously long compoun... | -9.3501
+(3 rows)
+
+-- Test 10: Memory usage statistics after indexing long strings
+SELECT 
+    COUNT(*) as total_documents,
+    AVG(LENGTH(content)) as avg_content_length,
+    MAX(LENGTH(content)) as max_content_length,
+    COUNT(CASE WHEN LENGTH(content) > 200 THEN 1 END) as long_documents,
+    COUNT(CASE WHEN LENGTH(content) > 500 THEN 1 END) as very_long_documents
+FROM long_string_docs;
+ total_documents |  avg_content_length  | max_content_length | long_documents | very_long_documents 
+-----------------+----------------------+--------------------+----------------+---------------------
+              11 | 179.7272727272727273 |                268 |              4 |                   0
+(1 row)
+
+-- Test 11: Test stack/heap threshold boundary (1KB limit for alloca)
+INSERT INTO long_string_docs (content, category) VALUES 
+    -- Just under 1KB threshold (should use stack allocation)
+    ('Short term: ' || REPEAT('stackallocation', 40), 'stack_test'),
+    -- Just over 1KB threshold (should use heap allocation)  
+    ('Long term: ' || REPEAT('heapallocationfallback', 50), 'heap_test'),
+    -- Very long content with mixed term lengths
+    ('Mixed content with ' || REPEAT('shortterm ', 20) || ' and ' || 
+     REPEAT('verylongtermnameforheapallocationtestingpurposes', 30) || 
+     ' to test both stack and heap allocation paths in the same document', 'mixed_allocation');
+-- Verify threshold test documents can be searched
+SELECT 
+    id, 
+    category,
+    LENGTH(content) as content_length,
+    CASE 
+        WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
+        ELSE 'Heap allocation likely'
+    END as allocation_type,
+    ROUND((content <@> to_tpvector('term allocation', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
+    AND content <@> to_tpvector('term allocation', 'long_strings_idx') < 0
+ORDER BY content_length;
+ id |     category     | content_length |     allocation_type     |  score  
+----+------------------+----------------+-------------------------+---------
+ 12 | stack_test       |            612 | Stack allocation likely | -4.3081
+ 13 | heap_test        |           1111 | Heap allocation likely  | -4.3081
+ 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.7803
+(3 rows)
+
+-- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
+INSERT INTO long_string_docs (content, category) VALUES 
+    ('Extreme test: ' || REPEAT('This is a very long repeated phrase for testing PostgreSQL text limits and our hybrid stack heap allocation strategy. ', 200), 'extreme');
+-- Verify extreme length document indexing
+SELECT 
+    'Extreme length test' as test_name,
+    LENGTH(content) as total_length,
+    ROUND((content <@> to_tpvector('extreme testing', 'long_strings_idx'))::numeric, 4) as score
+FROM long_string_docs 
+WHERE category = 'extreme'
+    AND content <@> to_tpvector('extreme testing', 'long_strings_idx') < 0;
+      test_name      | total_length |  score  
+---------------------+--------------+---------
+ Extreme length test |        23614 | -3.3548
+(1 row)
+
+-- Cleanup
+DROP TABLE long_string_docs CASCADE;

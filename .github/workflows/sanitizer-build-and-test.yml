@@ -1,0 +1,366 @@
+# Run regression tests under memory sanitizer
+name: Sanitizer test
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+env:
+  name: "Sanitizer"
+  PG_SRC_DIR: "pgbuild"
+  PG_INSTALL_DIR: "postgresql"
+  extra_packages: "clang-15 llvm-15 llvm-15-dev llvm-15-tools"
+  llvm_config: "llvm-config-15"
+  CLANG: "clang-15"
+  CC: "clang-15"
+  CXX: "clang-15"
+  # clang CFLAGS with sanitizers
+  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  LDFLAGS: "-fsanitize=address,undefined"
+  
+  ASAN_OPTIONS: "suppressions=${{ github.workspace }}/scripts/suppressions/suppr_asan.txt detect_odr_violation=0 log_path=${{ github.workspace }}/sanitizer_logs/sanitizer log_exe_name=true print_suppressions=false exitcode=27 detect_leaks=0 abort_on_error=1"
+
+  LSAN_OPTIONS: "suppressions=${{ github.workspace }}/scripts/suppressions/suppr_leak.txt print_suppressions=0 log_path=${{ github.workspace }}/sanitizer_logs/sanitizer log_exe_name=true print_suppressions=false exitcode=27"
+
+  UBSAN_OPTIONS: "suppressions=${{ github.workspace }}/scripts/suppressions/suppr_ub.txt print_stacktrace=1 halt_on_error=1 log_path=${{ github.workspace }}/sanitizer_logs/sanitizer log_exe_name=true print_suppressions=false exitcode=27"
+
+  EXTENSIONS: "postgres_fdw test_decoding"
+
+jobs:
+  sanitizer:
+    name: PG17 Sanitizer ubuntu-22.04
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Install Linux Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install flex bison lcov systemd-coredump gdb libipc-run-perl \
+          libtest-most-perl jq build-essential bc libssl-dev zlib1g-dev libreadline-dev \
+          libxml2-dev libxslt1-dev libkrb5-dev libgss-dev ${{ env.extra_packages }}
+
+    - name: Checkout Tapir
+      uses: actions/checkout@v4
+
+    # Create a directory for sanitizer logs
+    - name: Create sanitizer log directory
+      run: |
+        mkdir -p ${{ github.workspace }}/sanitizer_logs
+
+    - name: Create suppression files
+      run: |
+        mkdir -p scripts/suppressions
+        
+        # AddressSanitizer suppressions (copied from TimescaleDB)
+        cat > scripts/suppressions/suppr_asan.txt << 'EOF'
+        #suppress getaddrinfo due to internal error on macos
+        interceptor_via_fun:getaddrinfo
+        EOF
+        
+        # LeakSanitizer suppressions (copied from TimescaleDB)  
+        cat > scripts/suppressions/suppr_leak.txt << 'EOF'
+        leak:save_ps_display_args
+        leak:psql/startup.c
+        #don't care about the frontend leaks
+        leak:fe_memutils.c
+        leak:fe-connect.c
+        leak:fe-exec.c
+        leak:initdb.c
+        #annoingly have to supress strdup because it leaks in PostmasterMain -D option
+        leak:strdup
+        leak:ProcessConfigFileInternal
+        leak:internal_load_library
+
+        leak:pg_timezone_abbrev_initialize
+        leak:check_timezone_abbreviations
+        leak:check_session_authorization
+        leak:InitializeGUCOptions
+        leak:CheckMyDatabase
+
+
+        #pg_dump
+        leak:getSchemaData
+        leak:dumpDumpableObject
+
+        #should live as long as the process
+        leak:ShmemInitHash
+
+        #test only functions
+        leak:deserialize_test_parameters
+        leak:ts_params_get
+        leak:test_job_dispatcher
+
+        #openssl
+        leak:CRYPTO_zalloc
+        EOF
+        
+        # UndefinedBehaviorSanitizer suppressions (copied from TimescaleDB)
+        cat > scripts/suppressions/suppr_ub.txt << 'EOF'
+        alignment:pg_comp_crc32c_sse42
+        alignment:array_cmp
+        alignment:array_iter_setup
+        alignment:array_out
+        alignment:array_unnest
+        alignment:array_eq
+        alignment:AllocSetCheck
+        nonnull-attribute:TransactionIdSetPageStatus
+        nonnull-attribute:SerializeTransactionState
+        nonnull-attribute:initscan
+        nonnull-attribute:SetTransactionSnapshot
+        nonnull-attribute:shm_mq_receive
+        #care, gcc cannot parse the path, only the filename
+        nonnull-attribute:*/src/fe_utils/print.c
+        nonnull-attribute:print_aligned_text
+        #PG13.3-copyfuncs.c:2374:2: runtime error: null pointer passed as argument 2, which is declared to never be null
+        nonnull-attribute:_copyAppendRelInfo
+        #PG13.3-copyfuncs.c:1190:2: runtime error: null pointer passed as argument 2, which is declared to never be null
+        nonnull-attribute:_copyLimit
+        nonnull-attribute:*/src/backend/nodes/copyfuncs.c
+        #division by 0, looks like a real postgres ug
+        float-divide-by-zero:_bt_vacuum_needs_cleanup
+
+        # It complains about casting -nan to int in histogram_test.sql. It is in the
+        # postgres code and doesn't lead to bugs, because it is caught by a check later.
+        float-cast-overflow:width_bucket_float8
+        EOF
+
+    # We need to rebuild Postgres daily so it doesn't suddenly break ages after the original problem.
+    - name: Get date for build caching
+      id: get-date
+      run: |
+        echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
+
+    # Cache the build directory instead of the install directory here
+    # because extension installation will write files to install directory
+    # leading to a tainted cache
+    - name: Cache PostgreSQL 17
+      id: cache-postgresql
+      uses: actions/cache@v4
+      with:
+        path: ~/${{ env.PG_SRC_DIR }}
+        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+
+    - name: Build PostgreSQL 17 with sanitizers if not in cache
+      if: steps.cache-postgresql.outputs.cache-hit != 'true'
+      run: |
+        # Download and extract PostgreSQL source
+        wget -q -O postgresql.tar.bz2 \
+          https://ftp.postgresql.org/pub/source/v17.6/postgresql-17.6.tar.bz2
+        mkdir -p ~/$PG_SRC_DIR
+        tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
+        
+        # Add instrumentation to the Postgres memory contexts. For more details, see
+        # https://github.com/timescale/eng-database/wiki/Using-Address-Sanitizer#adding-more-instrumentation
+        patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+        cd ~/$PG_SRC_DIR
+        ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
+          --with-openssl --without-readline --without-zlib --without-libxml
+        make -j$(nproc)
+        for ext in ${EXTENSIONS}; do
+          make -j$(nproc) -C contrib/${ext}
+        done
+
+    - name: Upload config.log
+      if: always() && steps.cache-postgresql.outputs.cache-hit != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: config.log for PostgreSQL 17
+        path: ~/${{ env.PG_SRC_DIR }}/config.log
+
+    - name: Install PostgreSQL 17
+      run: |
+        cd ~/$PG_SRC_DIR
+        make install
+        for ext in ${EXTENSIONS}; do
+          make -C contrib/${ext} install
+        done
+        ~/$PG_INSTALL_DIR/bin/pg_config --version
+
+    - name: Build Tapir extension
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        make clean
+        # Build with sanitizer flags - use same as env but explicit
+        CFLAGS="-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions -Wall -Wextra" make
+        make install
+
+    - name: Run regression tests under sanitizers
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        set -o pipefail
+        
+        echo "=== Environment Information ==="
+        echo "PATH: $PATH"
+        echo "CFLAGS: $CFLAGS"
+        echo "ASAN_OPTIONS: $ASAN_OPTIONS"
+        echo "UBSAN_OPTIONS: $UBSAN_OPTIONS"
+        echo "PostgreSQL version: $(pg_config --version)"
+        echo "Extension library: $(find $HOME/$PG_INSTALL_DIR/lib -name 'tapir*' || echo 'NOT FOUND')"
+        echo "Shared memory limits:"
+        cat /proc/sys/kernel/shmmax /proc/sys/kernel/shmall || true
+        echo
+        
+        # Set up temporary PostgreSQL instance with sanitizers
+        rm -rf tmp_check_shared
+        mkdir -p tmp_check_shared
+        
+        echo "=== Initializing PostgreSQL ==="
+        initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
+        
+        echo "=== Configuring PostgreSQL ==="
+        echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_preload_libraries = 'tapir'" >> tmp_check_shared/data/postgresql.conf
+        echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
+        echo "log_min_messages = debug1" >> tmp_check_shared/data/postgresql.conf
+        echo "log_line_prefix = '%t [%p] %q%u@%d '" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_buffers = 128MB" >> tmp_check_shared/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
+        echo "max_prepared_transactions = 0" >> tmp_check_shared/data/postgresql.conf
+        echo "log_checkpoints = on" >> tmp_check_shared/data/postgresql.conf
+        echo "log_connections = on" >> tmp_check_shared/data/postgresql.conf
+        echo "log_disconnections = on" >> tmp_check_shared/data/postgresql.conf
+        echo "log_duration = on" >> tmp_check_shared/data/postgresql.conf
+        echo "log_lock_waits = on" >> tmp_check_shared/data/postgresql.conf
+        
+        echo "=== PostgreSQL Configuration ==="
+        cat tmp_check_shared/data/postgresql.conf | grep -v "^#" | grep -v "^$"
+        echo
+        
+        echo "=== Starting PostgreSQL ==="
+        # Try to start with verbose logging
+        if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w -o "-d 2"; then
+          echo "=== PostgreSQL FAILED TO START ==="
+          echo "=== PostgreSQL Log File ==="
+          if [ -f tmp_check_shared/data/logfile ]; then
+            cat tmp_check_shared/data/logfile
+          else
+            echo "No log file found at tmp_check_shared/data/logfile"
+          fi
+          
+          echo "=== PostgreSQL Data Directory Contents ==="
+          ls -la tmp_check_shared/data/
+          
+          echo "=== PostgreSQL Log Directory ==="
+          if [ -d tmp_check_shared/data/log ]; then
+            ls -la tmp_check_shared/data/log/
+            cat tmp_check_shared/data/log/* || true
+          fi
+          
+          echo "=== System Sanitizer Logs ==="
+          find ${{ github.workspace }}/sanitizer_logs -name "sanitizer*" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || echo "No sanitizer logs found"
+          
+          echo "=== Memory Information ==="
+          free -m || true
+          cat /proc/meminfo | grep -i shmem || true
+          
+          echo "=== Process Information ==="
+          ps aux | grep postgres || true
+          
+          exit 1
+        fi
+        
+        echo "=== PostgreSQL Started Successfully ==="
+        pg_ctl status -D tmp_check_shared/data
+        
+        echo "=== Creating Test Database ==="
+        createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
+        
+        echo "=== Running Sanitizer Tests ==="
+        # Run regression tests with sanitizers
+        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433 2>&1 | tee sanitizer-installcheck.log; then
+          echo "=== Sanitizer Tests Failed ==="
+          echo "=== Regression Diffs ==="
+          if [ -f test/regression.diffs ]; then
+            cat test/regression.diffs
+          fi
+          
+          echo "=== PostgreSQL Log During Tests ==="
+          if [ -f tmp_check_shared/data/logfile ]; then
+            echo "Latest 100 lines from PostgreSQL log:"
+            tail -100 tmp_check_shared/data/logfile
+          fi
+          
+          echo "=== Sanitizer Logs ==="
+          find ${{ github.workspace }}/sanitizer_logs -name "sanitizer*" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || echo "No sanitizer logs during tests"
+          
+          pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+          exit 1
+        fi
+        
+        echo "=== All Tests Passed - Cleaning Up ==="
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile
+        
+        echo "=== Final Sanitizer Log Check ==="
+        find ${{ github.workspace }}/sanitizer_logs -name "sanitizer*" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || echo "No sanitizer issues detected"
+
+    - name: Show regression diffs  
+      if: always()
+      id: collectlogs
+      run: |
+        find . -name regression.diffs -exec cat {} + > regression.log || true
+        if [[ "${{ runner.os }}" == "Linux" ]] ; then
+          # wait in case there are in-progress coredumps
+          sleep 10
+          if coredumpctl -q list >/dev/null 2>&1; then echo "coredumps=true" >>$GITHUB_OUTPUT; fi
+          # print OOM killer information
+          sudo journalctl --system -q --facility=kern --grep "Killed process" || true
+        fi
+        if [[ -s regression.log ]]; then echo "regression_diff=true" >>$GITHUB_OUTPUT; fi
+        grep -e 'FAILED' -e 'failed (ignored)' -e 'not ok' sanitizer-installcheck.log || true
+        if [[ -s regression.log ]]; then cat regression.log; fi
+
+    - name: Show sanitizer logs
+      if: always()
+      run: |
+        echo "=== Sanitizer Logs ==="
+        tail -vn +1 ${{ github.workspace }}/sanitizer_logs/sanitizer* || echo "No sanitizer logs found"
+
+    - name: Stack trace
+      if: always() && steps.collectlogs.outputs.coredumps == 'true'
+      run: |
+        sudo coredumpctl gdb <<<"
+          set verbose on
+          set trace-commands on
+          show debug-file-directory
+          printf \"query = '%s'\\n\\n\", debug_query_string
+          frame function ExceptionalCondition
+          printf \"condition = '%s'\\n\", conditionName
+          up 1
+          l
+          info args
+          info locals
+          bt full
+        " 2>&1 | tee stacktrace.log
+
+    - name: Save regression diffs
+      if: always() && steps.collectlogs.outputs.regression_diff == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: Regression diff ${{ runner.os }} ${{ env.name }} 17
+        path: |
+          regression.log
+          sanitizer-installcheck.log
+
+    - name: Save PostgreSQL log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: PostgreSQL log ${{ runner.os }} ${{ env.name }} 17
+        path: postmaster.*
+
+    - name: Upload sanitizer logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer logs ${{ runner.os }} ${{ env.name }} 17
+        path: ${{ github.workspace }}/sanitizer_logs/*
+
+    - name: Coredumps
+      if: always() && steps.collectlogs.outputs.coredumps == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: Coredumps ${{ runner.os }} ${{ env.name }} 17  
+        path: coredumps

@@ -1,0 +1,368 @@
+-- Test concurrent operations on Tapir indexes
+-- This test verifies that concurrent access to shared memory structures is safe
+-- and that operations like inserts, searches, and index building work correctly
+CREATE EXTENSION IF NOT EXISTS tapir;
+NOTICE:  extension "tapir" already exists, skipping
+-- Clean up from any previous tests
+DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
+NOTICE:  table "concurrent_test_docs" does not exist, skipping
+DROP TABLE IF EXISTS concurrent_test_docs2 CASCADE;
+NOTICE:  table "concurrent_test_docs2" does not exist, skipping
+-- Create test tables for concurrent operations
+CREATE TABLE concurrent_test_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    category VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE TABLE concurrent_test_docs2 (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    priority INTEGER DEFAULT 1
+);
+-- Test 1: Sequential inserts to verify basic functionality
+\echo 'Test 1: Sequential baseline test'
+Test 1: Sequential baseline test
+INSERT INTO concurrent_test_docs (content, category) VALUES
+('database query optimization techniques', 'tech'),
+('concurrent programming patterns', 'tech'),
+('shared memory management systems', 'tech'),
+('lock-free data structures', 'tech'),
+('database indexing strategies', 'tech');
+-- Create index after initial data
+CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  Tapir index build started for relation concurrent_idx1
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
+-- Verify basic search works
+SELECT id, content, ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC;
+ id |                content                 |  score  
+----+----------------------------------------+---------
+  3 | shared memory management systems       |  0.0000
+  4 | lock-free data structures              |  0.0000
+  1 | database query optimization techniques | -2.3474
+  2 | concurrent programming patterns        | -2.6239
+  5 | database indexing strategies           | -2.6239
+(5 rows)
+
+-- Test 2: Simulate concurrent inserts with same terms
+\echo 'Test 2: Concurrent inserts with overlapping terms'
+Test 2: Concurrent inserts with overlapping terms
+-- Insert documents that will compete for same posting lists
+INSERT INTO concurrent_test_docs (content, category) VALUES
+('database systems require concurrent access control', 'tech'),
+('concurrent database operations need careful synchronization', 'tech'),
+('database concurrent processing improves performance', 'tech');
+-- Search to verify posting lists updated correctly
+SELECT id, content, ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC
+LIMIT 5;
+ id |                content                 |  score  
+----+----------------------------------------+---------
+  4 | lock-free data structures              |  0.0000
+  3 | shared memory management systems       |  0.0000
+  1 | database query optimization techniques | -2.3474
+  5 | database indexing strategies           | -2.6239
+  2 | concurrent programming patterns        | -2.6239
+(5 rows)
+
+-- Test 3: Multiple index creation (simulates concurrent index builds)
+\echo 'Test 3: Multiple index creation'
+Test 3: Multiple index creation
+-- Create second table and index to test multiple indexes
+INSERT INTO concurrent_test_docs2 (content, priority) VALUES
+('high priority database tasks', 3),
+('concurrent processing systems', 2),
+('shared memory data structures', 1),
+('database performance optimization', 3),
+('concurrent system design patterns', 2);
+CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING tapir(content)
+  WITH (text_config='english', k1=1.5, b=0.8);
+NOTICE:  Tapir index build started for relation concurrent_idx2
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.50, b=0.80
+NOTICE:  Tapir index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.50, b=0.80)
+-- Verify both indexes work independently
+SELECT 'Table 1' as source, id, content
+FROM concurrent_test_docs
+UNION ALL
+SELECT 'Table 2' as source, id, content
+FROM concurrent_test_docs2
+ORDER BY source, id;
+ source  | id |                           content                           
+---------+----+-------------------------------------------------------------
+ Table 1 |  1 | database query optimization techniques
+ Table 1 |  2 | concurrent programming patterns
+ Table 1 |  3 | shared memory management systems
+ Table 1 |  4 | lock-free data structures
+ Table 1 |  5 | database indexing strategies
+ Table 1 |  6 | database systems require concurrent access control
+ Table 1 |  7 | concurrent database operations need careful synchronization
+ Table 1 |  8 | database concurrent processing improves performance
+ Table 2 |  1 | high priority database tasks
+ Table 2 |  2 | concurrent processing systems
+ Table 2 |  3 | shared memory data structures
+ Table 2 |  4 | database performance optimization
+ Table 2 |  5 | concurrent system design patterns
+(13 rows)
+
+-- Test 4: Stress test with many inserts
+\echo 'Test 4: Bulk insert stress test'
+Test 4: Bulk insert stress test
+-- Generate series of documents with overlapping terms
+INSERT INTO concurrent_test_docs (content, category)
+SELECT 
+    'test document number ' || i || ' contains database and concurrent terms',
+    'stress'
+FROM generate_series(1, 50) i;
+-- Verify search still works with larger dataset
+SELECT COUNT(*) as total_matches
+FROM concurrent_test_docs;
+ total_matches 
+---------------
+            58
+(1 row)
+
+-- Test top results still make sense
+SELECT id, substring(content, 1, 50) || '...' as content_preview, 
+       ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC
+LIMIT 8;
+ id |                    content_preview                    |  score  
+----+-------------------------------------------------------+---------
+  4 | lock-free data structures...                          |  0.0000
+  3 | shared memory management systems...                   |  0.0000
+  1 | database query optimization techniques...             | -2.3474
+  2 | concurrent programming patterns...                    | -2.6239
+  5 | database indexing strategies...                       | -2.6239
+ 10 | test document number 2 contains database and concu... | -3.3025
+  9 | test document number 1 contains database and concu... | -3.3025
+ 11 | test document number 3 contains database and concu... | -3.3025
+(8 rows)
+
+-- Test 5: Mixed operations (insert while searching)
+\echo 'Test 5: Mixed insert and search operations'
+Test 5: Mixed insert and search operations
+-- This simulates a session inserting while another searches
+BEGIN;
+    INSERT INTO concurrent_test_docs (content, category) VALUES
+    ('new concurrent database research paper', 'research');
+    
+    -- Search within same transaction
+    SELECT id, content, ROUND((content <@> to_tpvector('research database', 'concurrent_idx1'))::numeric, 4) as score
+    FROM concurrent_test_docs 
+    ORDER BY score DESC
+    LIMIT 3;
+ id |             content              | score  
+----+----------------------------------+--------
+  2 | concurrent programming patterns  | 0.0000
+  3 | shared memory management systems | 0.0000
+  4 | lock-free data structures        | 0.0000
+(3 rows)
+
+COMMIT;
+-- Verify the insert is visible after commit
+SELECT id, content, ROUND((content <@> to_tpvector('research database', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC
+LIMIT 3;
+ id |             content              | score  
+----+----------------------------------+--------
+  2 | concurrent programming patterns  | 0.0000
+  3 | shared memory management systems | 0.0000
+  4 | lock-free data structures        | 0.0000
+(3 rows)
+
+-- Test 6: Index integrity under updates
+\echo 'Test 6: Update operations'
+Test 6: Update operations
+-- Update some documents to test posting list maintenance
+UPDATE concurrent_test_docs 
+SET content = 'updated database system with enhanced concurrent features'
+WHERE id IN (1, 2);
+-- Verify search finds updated documents
+SELECT id, content, ROUND((content <@> to_tpvector('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC;
+ id |                            content                             |  score  
+----+----------------------------------------------------------------+---------
+  3 | shared memory management systems                               |  0.0000
+  4 | lock-free data structures                                      |  0.0000
+ 47 | test document number 39 contains database and concurrent terms | -1.6513
+ 52 | test document number 44 contains database and concurrent terms | -1.6513
+ 53 | test document number 45 contains database and concurrent terms | -1.6513
+ 54 | test document number 46 contains database and concurrent terms | -1.6513
+ 55 | test document number 47 contains database and concurrent terms | -1.6513
+ 56 | test document number 48 contains database and concurrent terms | -1.6513
+ 57 | test document number 49 contains database and concurrent terms | -1.6513
+ 58 | test document number 50 contains database and concurrent terms | -1.6513
+  9 | test document number 1 contains database and concurrent terms  | -1.6513
+ 10 | test document number 2 contains database and concurrent terms  | -1.6513
+ 11 | test document number 3 contains database and concurrent terms  | -1.6513
+ 12 | test document number 4 contains database and concurrent terms  | -1.6513
+ 13 | test document number 5 contains database and concurrent terms  | -1.6513
+ 14 | test document number 6 contains database and concurrent terms  | -1.6513
+ 15 | test document number 7 contains database and concurrent terms  | -1.6513
+ 16 | test document number 8 contains database and concurrent terms  | -1.6513
+ 17 | test document number 9 contains database and concurrent terms  | -1.6513
+ 18 | test document number 10 contains database and concurrent terms | -1.6513
+ 19 | test document number 11 contains database and concurrent terms | -1.6513
+ 20 | test document number 12 contains database and concurrent terms | -1.6513
+ 21 | test document number 13 contains database and concurrent terms | -1.6513
+ 22 | test document number 14 contains database and concurrent terms | -1.6513
+ 23 | test document number 15 contains database and concurrent terms | -1.6513
+ 24 | test document number 16 contains database and concurrent terms | -1.6513
+ 25 | test document number 17 contains database and concurrent terms | -1.6513
+ 26 | test document number 18 contains database and concurrent terms | -1.6513
+ 27 | test document number 19 contains database and concurrent terms | -1.6513
+ 28 | test document number 20 contains database and concurrent terms | -1.6513
+ 29 | test document number 21 contains database and concurrent terms | -1.6513
+ 30 | test document number 22 contains database and concurrent terms | -1.6513
+ 31 | test document number 23 contains database and concurrent terms | -1.6513
+ 32 | test document number 24 contains database and concurrent terms | -1.6513
+ 33 | test document number 25 contains database and concurrent terms | -1.6513
+ 34 | test document number 26 contains database and concurrent terms | -1.6513
+ 35 | test document number 27 contains database and concurrent terms | -1.6513
+ 36 | test document number 28 contains database and concurrent terms | -1.6513
+ 37 | test document number 29 contains database and concurrent terms | -1.6513
+ 38 | test document number 30 contains database and concurrent terms | -1.6513
+ 39 | test document number 31 contains database and concurrent terms | -1.6513
+ 40 | test document number 32 contains database and concurrent terms | -1.6513
+ 41 | test document number 33 contains database and concurrent terms | -1.6513
+ 42 | test document number 34 contains database and concurrent terms | -1.6513
+ 43 | test document number 35 contains database and concurrent terms | -1.6513
+ 44 | test document number 36 contains database and concurrent terms | -1.6513
+ 45 | test document number 37 contains database and concurrent terms | -1.6513
+ 46 | test document number 38 contains database and concurrent terms | -1.6513
+ 48 | test document number 40 contains database and concurrent terms | -1.6513
+ 49 | test document number 41 contains database and concurrent terms | -1.6513
+ 50 | test document number 42 contains database and concurrent terms | -1.6513
+ 51 | test document number 43 contains database and concurrent terms | -1.6513
+  7 | concurrent database operations need careful synchronization    | -1.9387
+  6 | database systems require concurrent access control             | -1.9387
+  8 | database concurrent processing improves performance            | -2.1236
+ 59 | new concurrent database research paper                         | -2.1236
+  5 | database indexing strategies                                   | -2.6239
+  2 | updated database system with enhanced concurrent features      | -3.8774
+  1 | updated database system with enhanced concurrent features      | -3.8774
+(59 rows)
+
+-- Test 7: Delete operations
+\echo 'Test 7: Delete operations'
+Test 7: Delete operations
+-- Count before delete
+SELECT COUNT(*) as count_before_delete
+FROM concurrent_test_docs;
+ count_before_delete 
+---------------------
+                  59
+(1 row)
+
+-- Delete some stress test documents
+DELETE FROM concurrent_test_docs 
+WHERE content LIKE 'test document number%' AND id % 5 = 0;
+-- Count after delete to verify cleanup
+SELECT COUNT(*) as count_after_delete
+FROM concurrent_test_docs;
+ count_after_delete 
+--------------------
+                 49
+(1 row)
+
+-- Test 8: Verify string interning consistency
+\echo 'Test 8: String interning consistency'
+Test 8: String interning consistency
+-- Insert documents with exact same terms to test string interning
+INSERT INTO concurrent_test_docs (content, category) VALUES
+('exact same terms for testing consistency', 'test'),
+('exact same terms for testing consistency', 'test'),
+('testing consistency with exact same terms', 'test');
+-- Search should find all variants
+SELECT id, content, ROUND((content <@> to_tpvector('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs 
+ORDER BY score DESC, id;
+ id |                            content                             |  score  
+----+----------------------------------------------------------------+---------
+  1 | updated database system with enhanced concurrent features      |  0.0000
+  2 | updated database system with enhanced concurrent features      |  0.0000
+  3 | shared memory management systems                               |  0.0000
+  4 | lock-free data structures                                      |  0.0000
+  5 | database indexing strategies                                   |  0.0000
+  6 | database systems require concurrent access control             |  0.0000
+  7 | concurrent database operations need careful synchronization    |  0.0000
+  8 | database concurrent processing improves performance            |  0.0000
+ 59 | new concurrent database research paper                         |  0.0000
+  9 | test document number 1 contains database and concurrent terms  | -1.6513
+ 11 | test document number 3 contains database and concurrent terms  | -1.6513
+ 12 | test document number 4 contains database and concurrent terms  | -1.6513
+ 13 | test document number 5 contains database and concurrent terms  | -1.6513
+ 14 | test document number 6 contains database and concurrent terms  | -1.6513
+ 16 | test document number 8 contains database and concurrent terms  | -1.6513
+ 17 | test document number 9 contains database and concurrent terms  | -1.6513
+ 18 | test document number 10 contains database and concurrent terms | -1.6513
+ 19 | test document number 11 contains database and concurrent terms | -1.6513
+ 21 | test document number 13 contains database and concurrent terms | -1.6513
+ 22 | test document number 14 contains database and concurrent terms | -1.6513
+ 23 | test document number 15 contains database and concurrent terms | -1.6513
+ 24 | test document number 16 contains database and concurrent terms | -1.6513
+ 26 | test document number 18 contains database and concurrent terms | -1.6513
+ 27 | test document number 19 contains database and concurrent terms | -1.6513
+ 28 | test document number 20 contains database and concurrent terms | -1.6513
+ 29 | test document number 21 contains database and concurrent terms | -1.6513
+ 31 | test document number 23 contains database and concurrent terms | -1.6513
+ 32 | test document number 24 contains database and concurrent terms | -1.6513
+ 33 | test document number 25 contains database and concurrent terms | -1.6513
+ 34 | test document number 26 contains database and concurrent terms | -1.6513
+ 36 | test document number 28 contains database and concurrent terms | -1.6513
+ 37 | test document number 29 contains database and concurrent terms | -1.6513
+ 38 | test document number 30 contains database and concurrent terms | -1.6513
+ 39 | test document number 31 contains database and concurrent terms | -1.6513
+ 41 | test document number 33 contains database and concurrent terms | -1.6513
+ 42 | test document number 34 contains database and concurrent terms | -1.6513
+ 43 | test document number 35 contains database and concurrent terms | -1.6513
+ 44 | test document number 36 contains database and concurrent terms | -1.6513
+ 46 | test document number 38 contains database and concurrent terms | -1.6513
+ 47 | test document number 39 contains database and concurrent terms | -1.6513
+ 48 | test document number 40 contains database and concurrent terms | -1.6513
+ 49 | test document number 41 contains database and concurrent terms | -1.6513
+ 51 | test document number 43 contains database and concurrent terms | -1.6513
+ 52 | test document number 44 contains database and concurrent terms | -1.6513
+ 53 | test document number 45 contains database and concurrent terms | -1.6513
+ 54 | test document number 46 contains database and concurrent terms | -1.6513
+ 56 | test document number 48 contains database and concurrent terms | -1.6513
+ 57 | test document number 49 contains database and concurrent terms | -1.6513
+ 58 | test document number 50 contains database and concurrent terms | -1.6513
+ 60 | exact same terms for testing consistency                       | -4.6947
+ 61 | exact same terms for testing consistency                       | -4.6947
+ 62 | testing consistency with exact same terms                      | -4.6947
+(52 rows)
+
+-- Final verification
+\echo 'Final verification: Index statistics'
+Final verification: Index statistics
+SELECT 
+    'concurrent_test_docs' as table_name,
+    COUNT(*) as total_docs,
+    COUNT(DISTINCT content) as unique_docs
+FROM concurrent_test_docs
+UNION ALL
+SELECT 
+    'concurrent_test_docs2' as table_name,
+    COUNT(*) as total_docs,
+    COUNT(DISTINCT content) as unique_docs
+FROM concurrent_test_docs2;
+      table_name       | total_docs | unique_docs 
+-----------------------+------------+-------------
+ concurrent_test_docs  |         52 |          50
+ concurrent_test_docs2 |          5 |           5
+(2 rows)
+
+-- Clean up
+DROP TABLE concurrent_test_docs CASCADE;
+DROP TABLE concurrent_test_docs2 CASCADE;
