@@ -57,6 +57,7 @@ static bool tp_search_posting_lists(IndexScanDesc scan,
  * This implements a custom PostgreSQL access method for ranked BM25 search.
  */
 
+
 /* Index options */
 typedef struct TpOptions
 {
@@ -68,6 +69,120 @@ typedef struct TpOptions
 
 /* Relation options - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
+
+/* Helper functions for tp_build */
+static void
+tp_build_extract_options(Relation index, char **text_config_name, Oid *text_config_oid, double *k1, double *b)
+{
+	TpOptions *options;
+
+	*text_config_name = NULL;
+	*text_config_oid = InvalidOid;
+
+	/* Extract options from index */
+	options = (TpOptions *) index->rd_options;
+	if (options)
+	{
+		if (options->text_config_offset > 0)
+		{
+			*text_config_name = pstrdup((char *) options + options->text_config_offset);
+			/* Convert text config name to OID */
+			{
+				List	   *names = list_make1(makeString(*text_config_name));
+
+				*text_config_oid = get_ts_config_oid(names, false);
+				list_free(names);
+			}
+			elog(DEBUG1, "Using text search configuration: %s", *text_config_name);
+		}
+		else
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("text_config parameter is required for tapir indexes"),
+					 errhint("Specify text_config when creating the index: CREATE INDEX ... USING tapir(column) WITH (text_config='english')")));
+		}
+
+		*k1 = options->k1;
+		*b = options->b;
+		elog(DEBUG1, "Using index options: k1=%.2f, b=%.2f", *k1, *b);
+	}
+	else
+	{
+		/* No options provided - require text_config */
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("text_config parameter is required for tapir indexes"),
+				 errhint("Specify text_config when creating the index: CREATE INDEX ... USING tapir(column) WITH (text_config='english')")));
+	}
+}
+
+static void
+tp_build_init_metapage(Relation index, Oid text_config_oid, double k1, double b)
+{
+	Buffer		metabuf;
+	Page		metapage;
+	TpIndexMetaPage metap;
+
+	/* Initialize metapage */
+	metabuf = ReadBuffer(index, P_NEW);
+	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+
+	tp_init_metapage(metapage, text_config_oid);
+	metap = (TpIndexMetaPage) PageGetContents(metapage);
+	metap->k1 = k1;
+	metap->b = b;
+	metap->total_docs = 0;
+	metap->total_terms = 0;
+	metap->avg_doc_length = 0.0;
+
+	MarkBufferDirty(metabuf);
+
+	/* Flush metapage to disk immediately to ensure crash recovery works */
+	FlushOneBuffer(metabuf);
+
+	UnlockReleaseBuffer(metabuf);
+}
+
+static void
+tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, uint64 *total_docs, double *avg_doc_length)
+{
+	TpCorpusStatistics *stats;
+	Buffer		metabuf;
+	Page		metapage;
+	TpIndexMetaPage metap;
+
+	/*
+	 * Finalize posting lists (convert to sorted arrays for query performance)
+	 */
+	if (index_state != NULL)
+	{
+		tp_finalize_index_build(index_state);
+
+		/* Get actual statistics from the posting list system */
+		stats = tp_get_corpus_statistics(index_state);
+		*total_docs = stats->total_docs;
+		*avg_doc_length = stats->avg_doc_length;
+	}
+
+	/* Update metapage with computed statistics */
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	metap = (TpIndexMetaPage) PageGetContents(metapage);
+
+	metap->total_docs = *total_docs;
+	metap->avg_doc_length = *avg_doc_length;
+
+	MarkBufferDirty(metabuf);
+
+	/* Flush metapage to disk immediately to ensure crash recovery works */
+	FlushOneBuffer(metabuf);
+
+	UnlockReleaseBuffer(metabuf);
+}
 
 /*
  * Access method handler - returns IndexAmRoutine with function pointers
@@ -129,9 +244,7 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->amproperty = NULL;	/* No property function */
 	amroutine->ambuildphasename = tp_buildphasename;	/* No build phase names */
 	amroutine->amvalidate = tp_validate;
-#if PG_VERSION_NUM >= 140000
 	amroutine->amadjustmembers = NULL;	/* No member adjustment */
-#endif
 	amroutine->ambeginscan = tp_beginscan;
 	amroutine->amrescan = tp_rescan;
 	amroutine->amgettuple = tp_gettuple;
@@ -219,10 +332,6 @@ IndexBuildResult *
 tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
 	IndexBuildResult *result;
-	TpOptions *options;
-	Buffer		metabuf;
-	Page		metapage;
-	TpIndexMetaPage metap;
 	char	   *text_config_name = NULL;
 	Oid			text_config_oid = InvalidOid;
 	double		k1,
@@ -232,77 +341,21 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64		total_docs = 0;
 	double		avg_doc_length = 0.0;
 	TpIndexState *index_state;
-	TpCorpusStatistics *stats;
 
 	elog(DEBUG2,
 		 "tp_build: heap=%s, index=%s",
 		 RelationGetRelationName(heap),
 		 RelationGetRelationName(index));
 	/* Tapir index build started */
-	elog(NOTICE,
+	elog(DEBUG1,
 		 "Tapir index build started for relation %s",
 		 RelationGetRelationName(index));
 
 	/* Extract options from index */
-	options = (TpOptions *) index->rd_options;
-	if (options)
-	{
-		if (options->text_config_offset > 0)
-		{
-			text_config_name =
-				pstrdup((char *) options + options->text_config_offset);
-			/* Convert text config name to OID */
-			{
-				List	   *names = list_make1(makeString(text_config_name));
-
-				text_config_oid = get_ts_config_oid(names, false);
-				list_free(names);
-			}
-			elog(NOTICE,
-				 "Using text search configuration: %s",
-				 text_config_name);
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("text_config parameter is required for tapir indexes"),
-					 errhint("Specify text_config when creating the index: CREATE INDEX ... USING tapir(column) WITH (text_config='english')")));
-		}
-
-		k1 = options->k1;
-		b = options->b;
-		elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
-	}
-	else
-	{
-		/* No options provided - require text_config */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("text_config parameter is required for tapir indexes"),
-				 errhint("Specify text_config when creating the index: CREATE INDEX ... USING tapir(column) WITH (text_config='english')")));
-	}
+	tp_build_extract_options(index, &text_config_name, &text_config_oid, &k1, &b);
 
 	/* Initialize metapage */
-	metabuf = ReadBuffer(index, P_NEW);
-	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-
-	tp_init_metapage(metapage, text_config_oid);
-	metap = (TpIndexMetaPage) PageGetContents(metapage);
-	metap->k1 = k1;
-	metap->b = b;
-	metap->total_docs = 0;
-	metap->total_terms = 0;
-	metap->avg_doc_length = 0.0;
-
-	MarkBufferDirty(metabuf);
-
-	/* Flush metapage to disk immediately to ensure crash recovery works */
-	FlushOneBuffer(metabuf);
-
-	UnlockReleaseBuffer(metabuf);
+	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/* Initialize posting list system for this index */
 	index_state = tp_get_index_state(RelationGetRelid(index),
@@ -423,34 +476,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
 
-	/*
-	 * Finalize posting lists (convert to sorted arrays for query performance)
-	 */
-	if (index_state != NULL)
-	{
-		tp_finalize_index_build(index_state);
-
-		/* Get actual statistics from the posting list system */
-		stats = tp_get_corpus_statistics(index_state);
-		total_docs = stats->total_docs;
-		avg_doc_length = stats->avg_doc_length;
-	}
-
-	/* Update metapage with computed statistics */
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap = (TpIndexMetaPage) PageGetContents(metapage);
-
-	metap->total_docs = total_docs;
-	metap->avg_doc_length = avg_doc_length;
-
-	MarkBufferDirty(metabuf);
-
-	/* Flush metapage to disk immediately to ensure crash recovery works */
-	FlushOneBuffer(metabuf);
-
-	UnlockReleaseBuffer(metabuf);
+	/* Finalize posting lists and update statistics */
+	tp_build_finalize_and_update_stats(index, index_state, &total_docs, &avg_doc_length);
 
 	/* Create index build result */
 	result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
@@ -459,7 +486,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	if (OidIsValid(text_config_oid))
 	{
-		elog(NOTICE,
+		elog(INFO,
 			 "Tapir index build completed: %lu documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
@@ -470,7 +497,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 	else
 	{
-		elog(NOTICE,
+		elog(INFO,
 			 "Tapir index build completed: %lu documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
@@ -1632,37 +1659,39 @@ tp_vacuumcleanup(IndexVacuumInfo *info,
 void
 tp_store_query_limit(Oid index_oid, int limit)
 {
-	TpQueryLimitKey key;
 	TpQueryLimitEntry *entry;
 	bool		found;
 
-	if (!tp_query_limits_hash || !tp_shared_state)
-		return;					/* Not initialized yet */
+	/* Initialize per-backend hash table if needed */
+	if (!tp_query_limits_hash)
+	{
+		HASHCTL		hash_ctl;
 
-	/* Set up the key */
-	key.index_oid = index_oid;
-	key.backend_id = MyProcPid;
+		MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+		hash_ctl.keysize = sizeof(Oid);
+		hash_ctl.entrysize = sizeof(TpQueryLimitEntry);
+		hash_ctl.hcxt = TopMemoryContext;
+		tp_query_limits_hash = hash_create("tp_query_limits",
+										   TP_QUERY_LIMITS_HASH_SIZE,
+										   &hash_ctl,
+										   HASH_ELEM | HASH_CONTEXT);
+	}
 
 	/* Find or create entry */
-	LWLockAcquire(tp_shared_state->query_limits_lock, LW_EXCLUSIVE);
-
 	entry = (TpQueryLimitEntry *) hash_search(tp_query_limits_hash,
-												&key,
-												HASH_ENTER,
-												&found);
+											  &index_oid,
+											  HASH_ENTER,
+											  &found);
 
 	if (entry)
 	{
 		entry->index_oid = index_oid;
-		entry->backend_id = MyProcPid;
 		entry->limit = limit;
 		entry->timestamp = GetCurrentTimestamp();
 	}
 
-	LWLockRelease(tp_shared_state->query_limits_lock);
-
-	elog(DEBUG1, "Tapir: Stored query limit %d for index %u, backend %d",
-		 limit, index_oid, MyProcPid);
+	elog(DEBUG1, "Tapir: Stored query limit %d for index %u (per-backend)",
+		 limit, index_oid);
 }
 
 /*
@@ -1671,44 +1700,41 @@ tp_store_query_limit(Oid index_oid, int limit)
 int
 tp_get_query_limit(Relation index_rel)
 {
-	TpQueryLimitKey key;
 	TpQueryLimitEntry *entry;
 	bool		found;
 	int			result = -1;
 	TimestampTz now;
 	TimestampTz cutoff;
+	Oid			index_oid;
 
-	if (!tp_query_limits_hash || !tp_shared_state || !RelationIsValid(index_rel))
-		return -1;				/* Not initialized or invalid relation */
+	if (!RelationIsValid(index_rel))
+		return -1;
 
-	/* Set up the key */
-	key.index_oid = RelationGetRelid(index_rel);
-	key.backend_id = MyProcPid;
+	/* Initialize per-backend hash table if needed */
+	if (!tp_query_limits_hash)
+		return -1;				/* No limits stored yet */
 
+	index_oid = RelationGetRelid(index_rel);
 	now = GetCurrentTimestamp();
 	cutoff = TimestampTzPlusSeconds(now, -TP_QUERY_LIMIT_TIMEOUT_SECONDS);
 
 	/* Find entry */
-	LWLockAcquire(tp_shared_state->query_limits_lock, LW_SHARED);
-
 	entry = (TpQueryLimitEntry *) hash_search(tp_query_limits_hash,
-												&key,
-												HASH_FIND,
-												&found);
+											  &index_oid,
+											  HASH_FIND,
+											  &found);
 
 	if (found && entry && entry->timestamp > cutoff)
 	{
 		result = entry->limit;
-		elog(DEBUG1, "Tapir: Retrieved query limit %d for index %u, backend %d",
-			 result, key.index_oid, key.backend_id);
+		elog(DEBUG1, "Tapir: Retrieved query limit %d for index %u (per-backend)",
+			 result, index_oid);
 	}
 	else if (found && entry)
 	{
-		elog(DEBUG2, "Tapir: Query limit entry expired for index %u, backend %d",
-			 key.index_oid, key.backend_id);
+		elog(DEBUG2, "Tapir: Query limit entry expired for index %u (per-backend)",
+			 index_oid);
 	}
-
-	LWLockRelease(tp_shared_state->query_limits_lock);
 
 	/* Periodically clean up old entries (every ~100 calls) */
 	if (random() % 100 == 0)
@@ -1730,36 +1756,29 @@ tp_cleanup_query_limits(void)
 	TimestampTz now;
 	TimestampTz cutoff;
 
-	if (!tp_query_limits_hash || !tp_shared_state)
+	if (!tp_query_limits_hash)
 		return;
 
 	now = GetCurrentTimestamp();
 	cutoff = TimestampTzPlusSeconds(now, -TP_QUERY_LIMIT_TIMEOUT_SECONDS);
-
-	LWLockAcquire(tp_shared_state->query_limits_lock, LW_EXCLUSIVE);
 
 	hash_seq_init(&status, tp_query_limits_hash);
 	while ((entry = (TpQueryLimitEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (entry->timestamp <= cutoff)
 		{
-			TpQueryLimitKey key;
-
-			key.index_oid = entry->index_oid;
-			key.backend_id = entry->backend_id;
+			Oid index_oid = entry->index_oid;
 
 			hash_search(tp_query_limits_hash,
-						&key,
+						&index_oid,
 						HASH_REMOVE,
 						NULL);
 
-			elog(DEBUG2, "Tapir: Cleaned up expired query limit entry for index %u, backend %d",
-				 key.index_oid, key.backend_id);
+			elog(DEBUG2, "Tapir: Cleaned up expired query limit entry for index %u (per-backend)",
+				 index_oid);
 		}
 	}
 	hash_seq_term(&status);
-
-	LWLockRelease(tp_shared_state->query_limits_lock);
 }
 
 /*

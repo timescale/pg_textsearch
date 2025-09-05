@@ -91,25 +91,17 @@ typedef struct TpSharedState
 
 	/* Future: Add other memtable components here */
 	LWLock	   *posting_lists_lock; /* Future: protects posting lists */
-	LWLock	   *query_limits_lock;	/* Protects query limits hash table */
 	TpCorpusStatistics stats;		/* Corpus statistics */
 }			TpSharedState;
 
 /* Global variables */
 extern TpSharedState * tp_shared_state;
-extern HTAB *tp_query_limits_hash;
+extern HTAB *tp_query_limits_hash; /* Per-backend hash table */
 
-/* Query limit tracking for LIMIT optimization */
-typedef struct TpQueryLimitKey
-{
-	Oid			index_oid;		/* Index OID as key */
-	int			backend_id;		/* Backend ID for isolation */
-}			TpQueryLimitKey;
-
+/* Query limit tracking for LIMIT optimization (per-backend) */
 typedef struct TpQueryLimitEntry
 {
 	Oid			index_oid;		/* Index OID as key */
-	int			backend_id;		/* Backend ID for isolation */
 	int			limit;			/* LIMIT value from query */
 	TimestampTz timestamp;		/* When this was set */
 }			TpQueryLimitEntry;

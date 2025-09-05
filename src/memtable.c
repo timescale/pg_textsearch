@@ -96,7 +96,7 @@ tp_shmem_request(void)
 
 	memtable_size = tp_calculate_shared_memory_size();
 	RequestAddinShmemSpace(memtable_size);
-	RequestNamedLWLockTranche("tp_memtable", 3);	/* 3 locks needed */
+	RequestNamedLWLockTranche("tp_memtable", 2);	/* 2 locks needed */
 
 	elog(DEBUG1, "Tapir requested %zu bytes of shared memory", memtable_size);
 }
@@ -108,7 +108,6 @@ void
 tp_shmem_startup(void)
 {
 	bool		found;
-	HASHCTL		info;
 	LWLockPadded *tranche;
 
 	if (prev_shmem_startup_hook)
@@ -130,7 +129,6 @@ tp_shmem_startup(void)
 		tranche = GetNamedLWLockTranche("tp_memtable");
 		tp_shared_state->string_interning_lock = &tranche[0].lock;
 		tp_shared_state->posting_lists_lock = &tranche[1].lock;
-		tp_shared_state->query_limits_lock = &tranche[2].lock;
 		tp_shared_state->string_hash_size = 0;
 		tp_shared_state->total_terms = 0;
 
@@ -175,21 +173,12 @@ tp_shmem_startup(void)
 		}
 	}
 
-	/* Initialize query limits hash table */
-	memset(&info, 0, sizeof(info));
-	info.keysize = sizeof(TpQueryLimitKey);
-	info.entrysize = sizeof(TpQueryLimitEntry);
-	info.hcxt = TopMemoryContext;
-
-	tp_query_limits_hash = ShmemInitHash("tp_query_limits",
-										   TP_QUERY_LIMITS_HASH_SIZE,
-										   512,
-										   &info,
-										   HASH_ELEM | HASH_BLOBS | HASH_SHARED_MEM);
+	/* Query limits are now per-backend, not shared */
+	tp_query_limits_hash = NULL;
 
 	if (!found)
 	{
-		elog(DEBUG1, "Tapir string interning and query limits hash tables created");
+		elog(DEBUG1, "Tapir string interning hash table created");
 	}
 	else
 	{
