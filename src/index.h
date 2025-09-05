@@ -24,7 +24,7 @@ typedef struct TpIndexMetaPageData
 	Oid			text_config_oid;	/* Text search configuration OID */
 	uint64		total_docs;		/* Total number of documents */
 	uint64		total_terms;	/* Total term occurrences across all docs */
-	float4		avg_doc_length; /* Average document length */
+	uint64		total_len;		/* Total length of all documents */
 	float4		k1;				/* BM25 k1 parameter */
 	float4		b;				/* BM25 b parameter */
 	BlockNumber root_blkno;		/* Root page of the index tree */

@@ -61,7 +61,7 @@ typedef struct TpCorpusStatistics
 	/* Corpus-level statistics */
 	int32		total_docs;		/* Total number of documents */
 	int64		total_terms;	/* Total term occurrences across corpus */
-	float4		avg_doc_length; /* Average document length */
+	int64		total_len;		/* Total length of all documents */
 	float4		max_doc_length; /* Maximum document length */
 	float4		min_doc_length; /* Minimum document length */
 

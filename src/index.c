@@ -135,7 +135,7 @@ tp_build_init_metapage(Relation index, Oid text_config_oid, double k1, double b)
 	metap->b = b;
 	metap->total_docs = 0;
 	metap->total_terms = 0;
-	metap->avg_doc_length = 0.0;
+	metap->total_len = 0;
 
 	MarkBufferDirty(metabuf);
 
@@ -146,7 +146,7 @@ tp_build_init_metapage(Relation index, Oid text_config_oid, double k1, double b)
 }
 
 static void
-tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, uint64 *total_docs, float4 *avg_doc_length)
+tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, uint64 *total_docs, uint64 *total_len)
 {
 	TpCorpusStatistics *stats;
 	Buffer		metabuf;
@@ -163,7 +163,7 @@ tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, ui
 		/* Get actual statistics from the posting list system */
 		stats = tp_get_corpus_statistics(index_state);
 		*total_docs = stats->total_docs;
-		*avg_doc_length = stats->avg_doc_length;
+		*total_len = stats->total_len;
 	}
 
 	/* Update metapage with computed statistics */
@@ -173,7 +173,7 @@ tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, ui
 	metap = (TpIndexMetaPage) PageGetContents(metapage);
 
 	metap->total_docs = *total_docs;
-	metap->avg_doc_length = *avg_doc_length;
+	metap->total_len = *total_len;
 
 	MarkBufferDirty(metabuf);
 
@@ -338,7 +338,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	TableScanDesc scan;
 	TupleTableSlot *slot;
 	uint64		total_docs = 0;
-	float4		avg_doc_length = 0.0;
+	uint64		total_len = 0;
 	TpIndexState *index_state;
 
 	elog(DEBUG2,
@@ -483,7 +483,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	table_endscan(scan);
 
 	/* Finalize posting lists and update statistics */
-	tp_build_finalize_and_update_stats(index, index_state, &total_docs, &avg_doc_length);
+	tp_build_finalize_and_update_stats(index, index_state, &total_docs, &total_len);
 
 	/* Create index build result */
 	result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
@@ -496,7 +496,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 "Tapir index build completed: %lu documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
-			 avg_doc_length,
+			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
 			 text_config_name ? text_config_name : "unknown",
 			 k1,
 			 b);
@@ -507,7 +507,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 "Tapir index build completed: %lu documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
-			 avg_doc_length,
+			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
 			 text_config_name,
 			 k1,
 			 b);
@@ -579,7 +579,7 @@ tp_buildempty(Relation index)
 	metap->b = TP_DEFAULT_B;
 	metap->total_docs = 0;
 	metap->total_terms = 0;
-	metap->avg_doc_length = 0.0;
+	metap->total_len = 0;
 
 	MarkBufferDirty(metabuf);
 
@@ -1827,7 +1827,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->text_config_oid = text_config_oid;
 	metap->total_docs = 0;
 	metap->total_terms = 0;
-	metap->avg_doc_length = 0.0;
+	metap->total_len = 0;
 	metap->root_blkno = InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
 
