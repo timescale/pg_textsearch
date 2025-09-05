@@ -16,6 +16,7 @@
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/elog.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include <math.h>
@@ -73,7 +74,7 @@ tp_posting_init_shared_state(void)
 						  &info,
 						  HASH_ELEM | HASH_BLOBS | HASH_SHARED_MEM);
 
-		elog(LOG, "Tapir posting list shared state initialized");
+		elog(DEBUG2, "Tapir posting list shared state initialized");
 	}
 }
 
@@ -180,24 +181,24 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 	index_state->total_posting_entries = 0;
 	index_state->max_posting_entries = tp_calculate_max_posting_entries();
 	index_state->is_finalized = false;
-	
+
 	/* Create per-index string table */
 	{
 		uint32 max_string_entries = tp_calculate_max_hash_entries();
 		Size string_pool_size = max_string_entries * (TP_AVG_TERM_LENGTH + 1);
 		uint32 initial_buckets = TP_HASH_DEFAULT_BUCKETS;
-		
+
 		index_state->string_table = tp_hash_table_create(initial_buckets, string_pool_size, max_string_entries);
 		if (!index_state->string_table)
 			elog(ERROR, "Failed to create string table for index %s", index_name);
-		
+
 		/* Allocate dedicated lock for this string table */
 		index_state->string_table->lock = (LWLock *) ShmemAlloc(sizeof(LWLock));
 		if (!index_state->string_table->lock)
 			elog(ERROR, "Failed to allocate lock for string table for index %s", index_name);
 		LWLockInitialize(index_state->string_table->lock, LWLockNewTrancheId());
-			
-		elog(DEBUG1, "Created string table for index %s: %u max entries, %zu string pool", 
+
+		elog(DEBUG1, "Created string table for index %s: %u max entries, %zu string pool",
 			 index_name, max_string_entries, string_pool_size);
 	}
 
@@ -224,13 +225,13 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 
 	if (!index_state->string_table)
 	{
-		elog(LOG, "tp_get_or_create_posting_list: index string_table is NULL");
+		elog(ERROR, "tp_get_or_create_posting_list: index string_table is NULL");
 		return NULL;
 	}
 
 	if (!term)
 	{
-		elog(LOG, "tp_get_or_create_posting_list: term is NULL");
+		elog(ERROR, "tp_get_or_create_posting_list: term is NULL");
 		return NULL;
 	}
 
@@ -238,7 +239,7 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 
 	/* Use transaction-level locking for string table access */
 	tp_acquire_string_table_lock(index_state->string_table, false);
-	
+
 	/* Look up the term in the string hash table (for string interning only) */
 	hash_entry = tp_hash_lookup(index_state->string_table, term, term_len);
 
@@ -267,8 +268,8 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 		tp_acquire_string_table_lock(index_state->string_table, true);
 	}
 
-	elog(LOG, "tp_get_or_create_posting_list: creating new posting list for term='%s'", term);
-	
+	elog(DEBUG2, "tp_get_or_create_posting_list: creating new posting list for term='%s'", term);
+
 	old_context = MemoryContextSwitchTo(TopMemoryContext);
 
 	posting_list = (TpPostingList *) palloc0(sizeof(TpPostingList));
@@ -279,9 +280,10 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 	posting_list->entries = (TpPostingEntry *) palloc(
 		sizeof(TpPostingEntry) * posting_list->capacity);
 
-	/* Note: posting_list is index-specific, not linked to global hash entry */
-	
-	elog(LOG, "tp_get_or_create_posting_list: created posting list %p for term='%s'", 
+	/* Store the posting list in the hash entry for later retrieval */
+	hash_entry->posting_list = posting_list;
+
+	elog(DEBUG2, "tp_get_or_create_posting_list: created posting list %p for term='%s'",
 		 posting_list, term);
 
 	MemoryContextSwitchTo(old_context);
@@ -290,8 +292,8 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 		(sizeof(TpPostingEntry) * posting_list->capacity);
 
 	tp_release_string_table_lock(index_state->string_table);
-	
-	elog(LOG, "tp_get_or_create_posting_list: returning posting_list=%p for term='%s'", 
+
+	elog(DEBUG2, "tp_get_or_create_posting_list: returning posting_list=%p for term='%s'",
 		 posting_list, term);
 	return posting_list;
 }
@@ -406,39 +408,42 @@ tp_get_posting_list(TpIndexState * index_state,
 
 	if (!index_state->string_table)
 	{
-		elog(LOG, "tp_get_posting_list: index string_table is NULL");
+		elog(DEBUG2, "tp_get_posting_list: index string_table is NULL");
 		return NULL;
 	}
 
 	if (!term)
 	{
-		elog(LOG, "tp_get_posting_list: term is NULL");
+		elog(ERROR, "tp_get_posting_list: term is NULL");
 		return NULL;
 	}
 
 	term_len = strlen(term);
 
-	elog(LOG, "tp_get_posting_list: searching for term='%s'", term);
+	elog(DEBUG2, "tp_get_posting_list: searching for term='%s'", term);
 
 	/* Use transaction-level locking for string table access */
 	tp_acquire_string_table_lock(index_state->string_table, false);
-	
+
 	/* Look up the term in the string hash table */
 	hash_entry = tp_hash_lookup(index_state->string_table, term, term_len);
 
-	/* Note: With per-index posting lists, we can't look up via global hash table */
-	/* For now, return NULL - posting lists are created and managed per-index */
-	if (hash_entry)
+	if (hash_entry && hash_entry->posting_list)
 	{
-		elog(LOG, "tp_get_posting_list: term='%s' exists in hash table but posting lists are per-index", term);
+		posting_list = (TpPostingList *) hash_entry->posting_list;
+		elog(DEBUG2, "tp_get_posting_list: found posting list %p for term='%s'",
+			 posting_list, term);
+	}
+	else if (hash_entry)
+	{
+		elog(DEBUG2, "tp_get_posting_list: hash entry exists for term='%s' but no posting list", term);
+		posting_list = NULL;
 	}
 	else
 	{
-		elog(LOG, "tp_get_posting_list: term='%s' not found in hash table", term);
+		elog(DEBUG2, "tp_get_posting_list: term='%s' not found in hash table", term);
+		posting_list = NULL;
 	}
-	
-	/* TODO: Implement proper per-index posting list lookup */
-	posting_list = NULL;
 
 	/* Auto-finalize posting list when accessed during search */
 	if (posting_list && !posting_list->is_finalized)
@@ -476,14 +481,14 @@ tp_finalize_index_build(TpIndexState * index_state)
 	/* Check if there are any entries to process */
 	if (index_state->string_table->entry_count == 0)
 	{
-		elog(LOG,
+		elog(DEBUG2,
 			 "No terms to finalize for index %s",
 			 index_state->index_name);
 		return;
 	}
 
 	/* Log finalization start */
-	elog(LOG,
+	elog(DEBUG2,
 		 "Finalizing Tp posting lists for index %s with %u string entries",
 		 index_state->index_name,
 		 index_state->string_table->entry_count);
@@ -497,7 +502,7 @@ tp_finalize_index_build(TpIndexState * index_state)
 	 * in tp_get_posting_list during search operations. This approach is
 	 * safer and avoids potential deadlocks from hash table iteration.
 	 */
-	elog(LOG,
+	elog(DEBUG2,
 		 "Using deferred finalization - posting lists will be finalized when accessed during search");
 
 	/* Set a flag in index_state to indicate finalization is complete */
@@ -505,7 +510,7 @@ tp_finalize_index_build(TpIndexState * index_state)
 
 	LWLockRelease(index_state->build_lock);
 
-	elog(LOG,
+	elog(DEBUG2,
 		 "Tapir index build finalized: using deferred finalization, "
 		 "total docs: %d, avg doc length: %.2f",
 		 index_state->stats.total_docs,
