@@ -448,7 +448,6 @@ tpvector_score(PG_FUNCTION_ARGS)
 	{
 		float4 tf = 0.0;
 		float4 idf;
-		float4 numerator, denominator;
 		TpPostingList *posting_list;
 		char *query_lexeme;
 
@@ -500,22 +499,22 @@ tpvector_score(PG_FUNCTION_ARGS)
 		if (posting_list && posting_list->doc_count > 0)
 		{
 			/* Calculate IDF using actual document frequency */
-			idf = logf((total_docs - posting_list->doc_count + 0.5f) /
-					   (posting_list->doc_count + 0.5f));
+			idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
+					   (double)(posting_list->doc_count + 0.5));
 		}
 		else
 		{
 			/* Term not found in index - use default IDF */
-			idf = logf((total_docs + 0.5f) / 0.5f);
+			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
 		}
 
 		/* Calculate BM25 term score */
 		{
 			float4 term_score;
-			numerator = tf * (k1 + 1.0f);
-			denominator = tf + k1 * (1.0f - b + b * (doc_length / avg_doc_len));
+			double numerator_d = (double)tf * ((double)k1 + 1.0);
+			double denominator_d = (double)tf + (double)k1 * (1.0 - (double)b + (double)b * ((double)doc_length / (double)avg_doc_len));
 
-			term_score = idf * (numerator / denominator) * query_entry->frequency;
+			term_score = (float4)((double)idf * (numerator_d / denominator_d) * (double)query_entry->frequency);
 			score += term_score;
 
 			elog(DEBUG1, "Term: tf=%f, idf=%f, doc_length=%f, term_score=%f, cumulative=%f",

@@ -527,8 +527,6 @@ bm25_score_document(TpIndexState * index_state,
 	float4		score = 0.0f;
 	float4		avg_doc_len = (float4)(index_state->stats.total_len / (double)index_state->stats.total_docs);
 	int32		total_docs = index_state->stats.total_docs;
-	float4		numerator,
-				denominator;
 	int			i;
 
 	/* Iterate through query terms */
@@ -596,14 +594,16 @@ bm25_score_document(TpIndexState * index_state,
 			continue;			/* Term not in this document */
 
 		/* Calculate IDF: log((N - df + 0.5) / (df + 0.5)) */
-		idf = logf((total_docs - posting_list->doc_count + 0.5f) /
-				   (posting_list->doc_count + 0.5f));
+		idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
+				   (double)(posting_list->doc_count + 0.5));
 
 		/* Calculate BM25 term score */
-		numerator = tf * (k1 + 1.0f);
-		denominator = tf + k1 * (1.0f - b + b * (doc_len / avg_doc_len));
+		{
+			double numerator_d = (double)tf * ((double)k1 + 1.0);
+			double denominator_d = (double)tf + (double)k1 * (1.0 - (double)b + (double)b * ((double)doc_len / (double)avg_doc_len));
 
-		score += idf * (numerator / denominator) * query_frequencies[i];
+			score += (float4)((double)idf * (numerator_d / denominator_d) * (double)query_frequencies[i]);
+		}
 	}
 
 	/*
@@ -669,8 +669,8 @@ tp_score_documents(TpIndexState * index_state,
 			continue;
 
 		/* Calculate IDF once for this term */
-		idf = logf((total_docs - posting_list->doc_count + 0.5f) /
-				   (posting_list->doc_count + 0.5f));
+		idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
+				   (double)(posting_list->doc_count + 0.5));
 
 		/* Process each document in this term's posting list */
 		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
@@ -678,18 +678,17 @@ tp_score_documents(TpIndexState * index_state,
 			TpPostingEntry *entry = &posting_list->entries[doc_idx];
 			float4		tf = entry->frequency;
 			float4		doc_len = entry->doc_length;
-			float4		numerator,
-						denominator,
-						term_score;
+			float4		term_score;
+			double		numerator_d, denominator_d;
 
 			/* Validate TID */
 			if (!ItemPointerIsValid(&entry->ctid))
 				continue;
 
 			/* Calculate BM25 term score contribution */
-			numerator = tf * (k1 + 1.0f);
-			denominator = tf + k1 * (1.0f - b + b * (doc_len / avg_doc_len));
-			term_score = idf * (numerator / denominator) * query_frequencies[term_idx];
+			numerator_d = (double)tf * ((double)k1 + 1.0);
+			denominator_d = (double)tf + (double)k1 * (1.0 - (double)b + (double)b * ((double)doc_len / (double)avg_doc_len));
+			term_score = (float4)((double)idf * (numerator_d / denominator_d) * (double)query_frequencies[term_idx]);
 
 			/* Find or create document entry in hash table */
 			doc_entry = (DocumentScoreEntry *) hash_search(doc_scores_hash,
