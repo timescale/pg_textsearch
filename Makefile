@@ -17,7 +17,7 @@ MODULE_big = tapir
 PG_CPPFLAGS = -I$(srcdir)/src -g -O0
 
 # Test configuration
-REGRESS = basic index vector queries aerodocs mixed strings memory_limits
+REGRESS = basic index vector queries aerodocs mixed strings memory_limits limits
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

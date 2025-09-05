@@ -1469,14 +1469,50 @@ tp_costestimate(PlannerInfo *root,
 		 list_length(path->indexclauses),
 		 list_length(path->indexorderbys));
 
-	/* Check for LIMIT clause and store it for optimization */
+	/* Check for LIMIT clause and verify it can be safely pushed down */
 	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
 	{
 		int			limit = (int) root->limit_tuples;
+		bool		can_pushdown = true;
 
-		tp_store_query_limit(path->indexinfo->indexoid, limit);
-		elog(DEBUG1, "Tapir: Detected LIMIT %d for index %u",
-			 limit, path->indexinfo->indexoid);
+		/*
+		 * LIMIT pushdown is only safe when:
+		 * 1. The index scan produces results in the same order as the query's ORDER BY
+		 * 2. There are no intervening operations that could reorder results
+		 * 3. We have exactly one ORDER BY clause (our BM25 score)
+		 */
+		if (list_length(path->indexorderbys) != 1)
+		{
+			can_pushdown = false;
+			elog(DEBUG2, "Tapir: LIMIT pushdown unsafe - multiple ORDER BY clauses");
+		}
+
+		/*
+		 * Additional safety check: verify this is a simple index-only scan
+		 * without complex WHERE clauses that might interfere with ordering
+		 */
+		if (can_pushdown && path->indexclauses && list_length(path->indexclauses) > 0)
+		{
+			/*
+			 * For now, be conservative: don't push down LIMIT if there are
+			 * additional WHERE clauses beyond the BM25 score ordering.
+			 * This could be relaxed later with more sophisticated analysis.
+			 */
+			can_pushdown = false;
+			elog(DEBUG2, "Tapir: LIMIT pushdown unsafe - additional WHERE clauses present");
+		}
+
+		if (can_pushdown)
+		{
+			tp_store_query_limit(path->indexinfo->indexoid, limit);
+			elog(DEBUG1, "Tapir: Safe LIMIT pushdown detected - LIMIT %d for index %u",
+				 limit, path->indexinfo->indexoid);
+		}
+		else
+		{
+			elog(DEBUG1, "Tapir: LIMIT %d detected but pushdown is unsafe for index %u",
+				 limit, path->indexinfo->indexoid);
+		}
 	}
 	else
 	{
