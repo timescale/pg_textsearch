@@ -3,8 +3,6 @@
 
 #include "postgres.h"
 #include "fmgr.h"
-#include "utils/builtins.h"
-#include "memtable.h"
 
 /*
  * Term frequency entry for tpvector format

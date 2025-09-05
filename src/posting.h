@@ -11,10 +11,8 @@
 #include "postgres.h"
 #include "storage/itemptr.h"
 #include "storage/lwlock.h"
-#include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/hsearch.h"
-#include "utils/timestamp.h"
 #include "memtable.h"			/* For TpCorpusStatistics definition */
 #include "stringtable.h"		/* For TpStringHashTable definition */
 

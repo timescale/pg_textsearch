@@ -4,21 +4,8 @@
 #include "postgres.h"
 #include "constants.h"
 #include "access/amapi.h"
-#include "access/genam.h"
-#include "access/generic_xlog.h"
-#include "access/itup.h"
-#include "access/sdir.h"
-#include "access/xlog.h"
-#include "catalog/index.h"
-#include "commands/vacuum.h"
-#include "nodes/execnodes.h"
-#include "nodes/tidbitmap.h"
-#include "optimizer/cost.h"
-#include "optimizer/optimizer.h"
-#include "optimizer/pathnode.h"
-#include "storage/bufmgr.h"
-#include "storage/indexfsm.h"
-#include "utils/rel.h"
+#include "storage/block.h"
+#include "storage/bufpage.h"
 #include "vector.h"
 
 /*
@@ -87,11 +74,19 @@ typedef struct TpScanOpaqueData
 
 typedef TpScanOpaqueData * TpScanOpaque;
 
+/* Forward declarations */
+struct IndexInfo;
+struct PlannerInfo;
+struct IndexPath;
+struct IndexVacuumInfo;
+struct IndexBulkDeleteResult;
+struct IndexBuildResult;
+
 /* Access method handler */
 Datum		tp_handler(PG_FUNCTION_ARGS);
 
-IndexBulkDeleteResult *tp_bulkdelete(IndexVacuumInfo *info,
-									  IndexBulkDeleteResult *stats,
+struct IndexBulkDeleteResult *tp_bulkdelete(struct IndexVacuumInfo *info,
+									  struct IndexBulkDeleteResult *stats,
 									  IndexBulkDeleteCallback callback,
 									  void *callback_state);
 char	   *tp_buildphasename(int64 phase);
@@ -102,7 +97,7 @@ TpIndexMetaPage tp_get_metapage(Relation index);
 
 
 /* Internal access method functions */
-IndexBuildResult *tp_build(Relation heap, Relation index, IndexInfo *indexInfo);
+struct IndexBuildResult *tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
 void		tp_buildempty(Relation index);
 bool		tp_insert(Relation index,
 					   Datum *values,
@@ -111,7 +106,7 @@ bool		tp_insert(Relation index,
 					   Relation heapRel,
 					   IndexUniqueCheck checkUnique,
 					   bool indexUnchanged,
-					   IndexInfo *indexInfo);
+					   struct IndexInfo *indexInfo);
 IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
 void		tp_rescan(IndexScanDesc scan,
 					   ScanKey keys,
@@ -120,8 +115,8 @@ void		tp_rescan(IndexScanDesc scan,
 					   int norderbys);
 void		tp_endscan(IndexScanDesc scan);
 bool		tp_gettuple(IndexScanDesc scan, ScanDirection dir);
-void		tp_costestimate(PlannerInfo *root,
-							 IndexPath *path,
+void		tp_costestimate(struct PlannerInfo *root,
+							 struct IndexPath *path,
 							 double loop_count,
 							 Cost *indexStartupCost,
 							 Cost *indexTotalCost,
@@ -130,8 +125,8 @@ void		tp_costestimate(PlannerInfo *root,
 							 double *indexPages);
 bytea	   *tp_options(Datum reloptions, bool validate);
 bool		tp_validate(Oid opclassoid);
-IndexBulkDeleteResult *tp_vacuumcleanup(IndexVacuumInfo *info,
-										 IndexBulkDeleteResult *stats);
+struct IndexBulkDeleteResult *tp_vacuumcleanup(struct IndexVacuumInfo *info,
+										 struct IndexBulkDeleteResult *stats);
 
 /* Document ID page management for crash recovery */
 void		tp_add_docid_to_pages(Relation index, ItemPointer ctid);
