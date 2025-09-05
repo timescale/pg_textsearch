@@ -242,6 +242,9 @@ tp_transaction_lock_release(void)
 	/* Release the exclusive lock */
 	LWLockRelease(tp_shared_state->string_interning_lock);
 	
+	/* Clean up per-backend query limits at transaction end */
+	tp_cleanup_query_limits();
+	
 	tp_transaction_lock_held = false;
 	
 	elog(DEBUG1, "Tapir transaction-level lock released");

@@ -103,7 +103,6 @@ typedef struct TpQueryLimitEntry
 {
 	Oid			index_oid;		/* Index OID as key */
 	int			limit;			/* LIMIT value from query */
-	TimestampTz timestamp;		/* When this was set */
 }			TpQueryLimitEntry;
 
 /* GUC variables */

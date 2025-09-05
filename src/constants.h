@@ -36,7 +36,6 @@
 #define TP_POSTING_LIST_GROWTH_FACTOR 2
 
 /* Query processing timeouts and limits */
-#define TP_QUERY_LIMIT_TIMEOUT_SECONDS 5	/* Clean up old entries */
 #define TP_MAX_INDEX_NAME_LENGTH 1024
 #define TP_MAX_BLOCK_NUMBER 1000000
 

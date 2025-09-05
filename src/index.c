@@ -42,7 +42,6 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/snapmgr.h"
-#include "utils/timestamp.h"
 #include <float.h>
 
 /* Forward declarations */
@@ -1713,6 +1712,7 @@ tp_store_query_limit(Oid index_oid, int limit)
 										   HASH_ELEM | HASH_CONTEXT);
 	}
 
+
 	/* Find or create entry */
 	entry = (TpQueryLimitEntry *) hash_search(tp_query_limits_hash,
 											  &index_oid,
@@ -1723,7 +1723,6 @@ tp_store_query_limit(Oid index_oid, int limit)
 	{
 		entry->index_oid = index_oid;
 		entry->limit = limit;
-		entry->timestamp = GetCurrentTimestamp();
 	}
 
 	elog(DEBUG1, "Tapir: Stored query limit %d for index %u (per-backend)",
@@ -1739,8 +1738,6 @@ tp_get_query_limit(Relation index_rel)
 	TpQueryLimitEntry *entry;
 	bool		found;
 	int			result = -1;
-	TimestampTz now;
-	TimestampTz cutoff;
 	Oid			index_oid;
 
 	if (!RelationIsValid(index_rel))
@@ -1751,8 +1748,6 @@ tp_get_query_limit(Relation index_rel)
 		return -1;				/* No limits stored yet */
 
 	index_oid = RelationGetRelid(index_rel);
-	now = GetCurrentTimestamp();
-	cutoff = TimestampTzPlusSeconds(now, -TP_QUERY_LIMIT_TIMEOUT_SECONDS);
 
 	/* Find entry */
 	entry = (TpQueryLimitEntry *) hash_search(tp_query_limits_hash,
@@ -1760,62 +1755,44 @@ tp_get_query_limit(Relation index_rel)
 											  HASH_FIND,
 											  &found);
 
-	if (found && entry && entry->timestamp > cutoff)
+	if (found && entry)
 	{
 		result = entry->limit;
 		elog(DEBUG1, "Tapir: Retrieved query limit %d for index %u (per-backend)",
 			 result, index_oid);
-	}
-	else if (found && entry)
-	{
-		elog(DEBUG2, "Tapir: Query limit entry expired for index %u (per-backend)",
-			 index_oid);
-	}
-
-	/* Periodically clean up old entries (every ~100 calls) */
-	if (random() % 100 == 0)
-	{
-		tp_cleanup_query_limits();
 	}
 
 	return result;
 }
 
 /*
- * Clean up old query limit entries
+ * Clean up all query limit entries (called at backend exit)
  */
 void
 tp_cleanup_query_limits(void)
 {
 	HASH_SEQ_STATUS status;
 	TpQueryLimitEntry *entry;
-	TimestampTz now;
-	TimestampTz cutoff;
 
 	if (!tp_query_limits_hash)
 		return;
 
-	now = GetCurrentTimestamp();
-	cutoff = TimestampTzPlusSeconds(now, -TP_QUERY_LIMIT_TIMEOUT_SECONDS);
-
 	hash_seq_init(&status, tp_query_limits_hash);
 	while ((entry = (TpQueryLimitEntry *) hash_seq_search(&status)) != NULL)
 	{
-		if (entry->timestamp <= cutoff)
-		{
-			Oid index_oid = entry->index_oid;
+		Oid index_oid = entry->index_oid;
 
-			hash_search(tp_query_limits_hash,
-						&index_oid,
-						HASH_REMOVE,
-						NULL);
+		hash_search(tp_query_limits_hash,
+					&index_oid,
+					HASH_REMOVE,
+					NULL);
 
-			elog(DEBUG2, "Tapir: Cleaned up expired query limit entry for index %u (per-backend)",
-				 index_oid);
-		}
+		elog(DEBUG2, "Tapir: Cleaned up query limit entry for index %u (per-backend)",
+			 index_oid);
 	}
 	hash_seq_term(&status);
 }
+
 
 /*
  * Helper function: Initialize Tapir index metapage
