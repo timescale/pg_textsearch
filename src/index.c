@@ -776,7 +776,7 @@ tp_rescan(IndexScanDesc scan,
 		if (query_limit > 0)
 		{
 			so->limit = query_limit;
-			elog(DEBUG1, "tp_rescan: Using LIMIT %d for scan optimization", query_limit);
+			elog(DEBUG2, "tp_rescan: Using LIMIT %d for scan optimization", query_limit);
 		}
 		else
 		{
@@ -1455,14 +1455,14 @@ tp_costestimate(PlannerInfo *root,
 {
 	GenericCosts costs;
 	TpIndexMetaPage metap;
-	double		num_tuples = TP_DEFAULT_TUPLE_ESTIMATE;	/* Default estimate */
+	double		num_tuples = TP_DEFAULT_TUPLE_ESTIMATE;
 
 	elog(DEBUG2,
 		 "tp_costestimate: indexoid=%u, loop_count=%f",
 		 path->indexinfo->indexoid,
 		 loop_count);
 
-	/* Never use index without ORDER BY clause - like pgvector HNSW */
+	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
 		*indexStartupCost = get_float8_infinity();

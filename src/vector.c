@@ -522,8 +522,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 			term_score = (float4)((double)idf * (numerator_d / denominator_d) * (double)query_entry->frequency);
 			score += term_score;
 
-			elog(WARNING, "BM25 for term '%s': tf=%f, idf=%f, doc_len=%f, avg_doc_len=%f, k1=%f, b=%f, numerator=%f, denominator=%f, term_score=%f, cumulative=%f",
-				 query_lexeme, tf, idf, doc_length, avg_doc_len, k1, b, numerator_d, denominator_d, term_score, score);
+			elog(WARNING, "BM25 for term '%s': query_freq=%d, tf=%f, idf=%f, doc_len=%f, avg_doc_len=%f, k1=%f, b=%f, numerator=%f, denominator=%f, term_score=%f, cumulative=%f",
+				 query_lexeme, query_entry->frequency, tf, idf, doc_length, avg_doc_len, k1, b, numerator_d, denominator_d, term_score, score);
 		}
 
 		/* Free query_lexeme if we allocated it on heap */
@@ -930,6 +930,8 @@ to_tpvector(PG_FUNCTION_ARGS)
 			{
 				frequencies[i] = 1;
 			}
+			elog(WARNING, "to_tpvector: lexeme='%s', frequency=%d (haspos=%d)",
+				 lexemes[i], frequencies[i], we[i].haspos);
 		}
 	}
 	else
