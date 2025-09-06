@@ -244,10 +244,10 @@ ORDER BY score DESC;
  49 | test document number 41 contains database and concurrent terms | -0.7565
  50 | test document number 42 contains database and concurrent terms | -0.7565
  51 | test document number 43 contains database and concurrent terms | -0.7565
-  7 | concurrent database operations need careful synchronization    | -0.8883
-  6 | database systems require concurrent access control             | -0.8883
-  8 | database concurrent processing improves performance            | -0.9730
- 59 | new concurrent database research paper                         | -0.9730
+  7 | concurrent database operations need careful synchronization    | -0.8882
+  6 | database systems require concurrent access control             | -0.8882
+  8 | database concurrent processing improves performance            | -0.9729
+ 59 | new concurrent database research paper                         | -0.9729
   5 | database indexing strategies                                   | -1.2021
   2 | updated database system with enhanced concurrent features      | -1.7765
   1 | updated database system with enhanced concurrent features      | -1.7765
@@ -338,9 +338,9 @@ ORDER BY score DESC, id;
  56 | test document number 48 contains database and concurrent terms | -0.7565
  57 | test document number 49 contains database and concurrent terms | -0.7565
  58 | test document number 50 contains database and concurrent terms | -0.7565
- 60 | exact same terms for testing consistency                       | -4.6947
- 61 | exact same terms for testing consistency                       | -4.6947
- 62 | testing consistency with exact same terms                      | -4.6947
+ 60 | exact same terms for testing consistency                       | -2.1509
+ 61 | exact same terms for testing consistency                       | -2.1509
+ 62 | testing consistency with exact same terms                      | -2.1509
 (52 rows)
 
 -- Final verification

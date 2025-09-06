@@ -49,7 +49,7 @@ ORDER BY score DESC
 LIMIT 5;
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
-  1 | Visit our website at https://www.example-company.com/products/database-solutions... | -3.3841
+  1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
 (1 row)
 
 -- Test 2: Search for technical terms
@@ -60,7 +60,7 @@ WHERE content <@> to_tpvector('postgresql extension', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id | category |  score  
 ----+----------+---------
-  6 | config   | -5.2052
+  6 | config   | -3.1558
 (1 row)
 
 -- Test 3: Search for long path components  
@@ -71,8 +71,8 @@ WHERE content <@> to_tpvector('file log error', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
-  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -7.7679
-  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -8.6163
+  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -4.7095
+  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -5.2239
 (2 rows)
 
 -- Test 4: Test vectorization of very long URLs
@@ -96,11 +96,11 @@ WHERE content <@> to_tpvector('algorithm bm25', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id |  score  
 ----+---------
-  6 | -2.6026
-  7 | -2.6026
-  1 | -3.3841
- 10 | -3.8192
-  8 | -4.5983
+  6 | -1.5779
+  7 | -1.5779
+  1 | -2.0517
+ 10 | -2.3155
+  8 | -2.7879
 (5 rows)
 
 -- Test 7: Performance test with multiple long term queries
@@ -113,9 +113,9 @@ WHERE content <@> to_tpvector('postgresql tapir extension search', 'long_strings
 ORDER BY multi_term_score DESC;
  id | category | multi_term_score 
 ----+----------+------------------
-  8 | mixed    |          -2.2992
- 10 | json     |          -3.8192
-  6 | config   |         -10.4103
+  8 | mixed    |          -1.3939
+ 10 | json     |          -2.3155
+  6 | config   |          -6.3115
 (3 rows)
 
 -- Test 8: Test URL tokenization specifics
@@ -141,9 +141,9 @@ WHERE content <@> to_tpvector('document ridiculously long', 'long_strings_idx') 
 ORDER BY score DESC;
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
-  7 | Function name: tp_calculate_bm25_relevance_score_w... | -3.7486
-  3 | Documentation available at https://docs.postgresql... | -3.8839
- 11 | This document contains a ridiculously long compoun... | -9.3501
+  7 | Function name: tp_calculate_bm25_relevance_score_w... | -2.2731
+  3 | Documentation available at https://docs.postgresql... | -2.3538
+ 11 | This document contains a ridiculously long compoun... | -5.6705
 (3 rows)
 
 -- Test 10: Memory usage statistics after indexing long strings
