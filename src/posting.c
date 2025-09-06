@@ -214,14 +214,9 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 		index_state->stats.k1 = meta->k1;
 		index_state->stats.b = meta->b;
 		
-		elog(DEBUG1, "Loaded stats from metapage for index %s: total_docs=%d, total_len=%ld, k1=%f, b=%f",
-			 index_name, index_state->stats.total_docs, index_state->stats.total_len,
-			 index_state->stats.k1, index_state->stats.b);
-		
-		UnlockReleaseBuffer(metabuf);
-		
 		/* For v0.0a memtable-only implementation, posting lists are volatile.
-		 * Mark if we need to rebuild from persisted document IDs. */
+		 * Mark if we need to rebuild from persisted document IDs. 
+		 * Must access meta fields before releasing buffer! */
 		index_state->first_docid_page = meta->first_docid_page;
 		if (meta->first_docid_page != InvalidBlockNumber && 
 			index_state->stats.total_docs > 0) {
@@ -231,6 +226,12 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 		} else {
 			index_state->needs_rebuild = false;
 		}
+		
+		elog(DEBUG1, "Loaded stats from metapage for index %s: total_docs=%d, total_len=%ld, k1=%f, b=%f",
+			 index_name, index_state->stats.total_docs, index_state->stats.total_len,
+			 index_state->stats.k1, index_state->stats.b);
+		
+		UnlockReleaseBuffer(metabuf);
 		
 		index_close(index_rel, AccessShareLock);
 	}
