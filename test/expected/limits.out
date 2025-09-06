@@ -57,11 +57,11 @@ ORDER BY 3
 LIMIT 5;
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
- Database Theory       | theoretical foundations of database systems and relational algebra | -3.8570
- Database Architecture | database system architecture with storage and indexing strategies  | -3.8570
- Database Performance  | database optimization strategies for improving query performance   | -3.8570
- Query Optimization    | query optimization techniques for efficient database operations    | -3.8570
- Database Security     | database security measures and access control mechanisms           | -3.8570
+ Database Theory       | theoretical foundations of database systems and relational algebra | -2.6640
+ Database Architecture | database system architecture with storage and indexing strategies  | -2.6640
+ Database Performance  | database optimization strategies for improving query performance   | -2.6640
+ Query Optimization    | query optimization techniques for efficient database operations    | -2.6640
+ Database Security     | database security measures and access control mechanisms           | -2.6640
 (5 rows)
 
 -- Test 2: Different LIMIT values
@@ -72,7 +72,7 @@ ORDER BY 2
 LIMIT 1;
        title       |  score  
 -------------------+---------
- Search Technology | -3.8570
+ Search Technology | -2.6640
 (1 row)
 
 -- Test LIMIT 3 
@@ -82,9 +82,9 @@ ORDER BY 2
 LIMIT 3;
         title         |  score  
 ----------------------+---------
- Query Optimization   | -3.8570
- Database Performance | -3.8570
- Algorithm Design     | -3.8570
+ Query Optimization   | -2.6640
+ Database Performance | -2.6640
+ Algorithm Design     | -2.6640
 (3 rows)
 
 -- Test LIMIT 10
@@ -94,11 +94,11 @@ ORDER BY 2
 LIMIT 10;
          title         |  score  
 -----------------------+---------
- Algorithm Design      | -3.8570
- Search Engines        | -3.6237
- Text Processing       | -3.6237
- Machine Learning      | -3.6237
- Search Algorithms     | -3.4171
+ Algorithm Design      | -2.6640
+ Search Engines        | -2.5029
+ Text Processing       | -2.5029
+ Machine Learning      | -2.5029
+ Search Algorithms     | -2.3601
  Distributed Systems   |  0.0000
  Database Architecture |  0.0000
  Query Optimization    |  0.0000
@@ -130,13 +130,13 @@ ORDER BY 2
 LIMIT 7;
          title         |  score  
 -----------------------+---------
- Database Architecture | -7.7140
- Database Theory       | -7.7140
- System Performance    | -3.8570
- Information Systems   | -3.8570
- Database Performance  | -3.8570
- Query Optimization    | -3.8570
- Database Security     | -3.8570
+ Database Architecture | -5.3280
+ Database Theory       | -5.3280
+ System Performance    | -2.6640
+ Information Systems   | -2.6640
+ Database Performance  | -2.6640
+ Query Optimization    | -2.6640
+ Database Security     | -2.6640
 (7 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
@@ -157,7 +157,7 @@ ORDER BY 2
 LIMIT 5 OFFSET 2;
          title         |  score  
 -----------------------+---------
- Algorithm Design      | -3.8570
+ Algorithm Design      | -2.6640
  Information Retrieval |  0.0000
  Text Processing       |  0.0000
  Data Mining           |  0.0000
@@ -171,7 +171,7 @@ ORDER BY 2
 LIMIT 1;
       title      |  score  
 -----------------+---------
- Text Processing | -3.6237
+ Text Processing | -2.5029
 (1 row)
 
 -- Test 7: Large LIMIT (should not trigger special optimization)
@@ -196,8 +196,8 @@ SELECT * FROM (
 ) sub WHERE score < 0;
      title      |  score  
 ----------------+---------
- Data Mining    | -3.6237
- Text Analytics | -3.6237
+ Data Mining    | -2.5029
+ Text Analytics | -2.5029
 (2 rows)
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup

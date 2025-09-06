@@ -141,9 +141,9 @@ WHERE content <@> to_tpvector('document ridiculously long', 'long_strings_idx') 
 ORDER BY score DESC;
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
-  7 | Function name: tp_calculate_bm25_relevance_score_w... | -2.2731
-  3 | Documentation available at https://docs.postgresql... | -2.3538
- 11 | This document contains a ridiculously long compoun... | -5.6705
+  7 | Function name: tp_calculate_bm25_relevance_score_w... | -2.2727
+  3 | Documentation available at https://docs.postgresql... | -2.3547
+ 11 | This document contains a ridiculously long compoun... | -5.6687
 (3 rows)
 
 -- Test 10: Memory usage statistics after indexing long strings
@@ -185,9 +185,9 @@ WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
 ORDER BY content_length;
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
- 12 | stack_test       |            612 | Stack allocation likely | -4.3081
- 13 | heap_test        |           1111 | Heap allocation likely  | -4.3081
- 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.7803
+ 12 | stack_test       |            612 | Stack allocation likely | -2.6119
+ 13 | heap_test        |           1111 | Heap allocation likely  | -2.6119
+ 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.0794
 (3 rows)
 
 -- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
@@ -203,7 +203,7 @@ WHERE category = 'extreme'
     AND content <@> to_tpvector('extreme testing', 'long_strings_idx') < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
- Extreme length test |        23614 | -3.3548
+ Extreme length test |        23614 | -2.0339
 (1 row)
 
 -- Cleanup
