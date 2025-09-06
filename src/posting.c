@@ -595,9 +595,9 @@ bm25_score_document(TpIndexState * index_state,
 		if (tf == 0.0f)
 			continue;			/* Term not in this document */
 
-		/* Calculate IDF: logl((N - df + 0.5) / (df + 0.5)) */
-		idf = (float4)logl((long double)(total_docs - posting_list->doc_count + 0.5) /
-				    (long double)(posting_list->doc_count + 0.5));
+		/* Calculate IDF: log((N - df + 0.5) / (df + 0.5)) */
+		idf = (float4)log((double)(total_docs - posting_list->doc_count + 0.5) /
+				   (double)(posting_list->doc_count + 0.5));
 
 		/* Calculate BM25 term score */
 		{
@@ -667,13 +667,18 @@ tp_score_documents(TpIndexState * index_state,
 		const char *term = query_terms[term_idx];
 		TpPostingList *posting_list = tp_get_posting_list(index_state, term);
 		float4		idf;
+		double idf_numerator, idf_denominator, idf_ratio;
 
 		if (!posting_list || posting_list->doc_count == 0)
 			continue;
 
 		/* Calculate IDF once for this term */
-		idf = (float4)logl((long double)(total_docs - posting_list->doc_count + 0.5) /
-				    (long double)(posting_list->doc_count + 0.5));
+		idf_numerator = (double)(total_docs - posting_list->doc_count + 0.5);
+		idf_denominator = (double)(posting_list->doc_count + 0.5);
+		idf_ratio = idf_numerator / idf_denominator;
+		idf = (float4)log(idf_ratio);
+		elog(WARNING, "posting.c IDF calc for term '%s': total_docs=%d, doc_count=%d, ratio=%f, log=%f, idf=%f",
+			 term, total_docs, posting_list->doc_count, idf_ratio, log(idf_ratio), idf);
 
 		/* Process each document in this term's posting list */
 		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
