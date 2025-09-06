@@ -75,10 +75,10 @@ LIMIT 5;
  doc_id |           title_preview           |  score  
 --------+-----------------------------------+---------
       5 | Computational Fluid Dynamics      |  0.0000
-      2 | Turbulent Boundary Layer Analysis | -2.3233
-      4 | Wing Design Optimization          | -2.4173
-      3 | Supersonic Aircraft Design        | -4.8346
-      1 | Aerodynamic Flow Over Wings       | -6.4519
+      2 | Turbulent Boundary Layer Analysis | -1.0645
+      4 | Wing Design Optimization          | -1.1075
+      3 | Supersonic Aircraft Design        | -2.2150
+      1 | Aerodynamic Flow Over Wings       | -2.9560
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -95,9 +95,9 @@ LIMIT 5;
 --------+-----------------------------------+---------
       3 | Supersonic Aircraft Design        |  0.0000
       4 | Wing Design Optimization          |  0.0000
-      1 | Aerodynamic Flow Over Wings       | -4.6467
-      5 | Computational Fluid Dynamics      | -5.0383
-      2 | Turbulent Boundary Layer Analysis | -9.6778
+      1 | Aerodynamic Flow Over Wings       | -2.1289
+      5 | Computational Fluid Dynamics      | -2.3083
+      2 | Turbulent Boundary Layer Analysis | -4.4340
 (5 rows)
 
 -- Test 3: Validation against expected rankings for Query 1
@@ -132,10 +132,10 @@ ORDER BY br.tapir_rank;
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |           title_preview           
 ---------------------------+--------+------------+---------------+--------------+----------------+-----------------------------------
  aerodynamic flow analysis |      5 |          1 |               |       0.0000 |                | Computational Fluid Dynamics
- aerodynamic flow analysis |      4 |          2 |             3 |      -2.4173 |         1.0000 | Wing Design Optimization
- aerodynamic flow analysis |      3 |          3 |             2 |      -4.8346 |         1.2000 | Supersonic Aircraft Design
- aerodynamic flow analysis |      2 |          4 |               |      -5.5493 |                | Turbulent Boundary Layer Analysis
- aerodynamic flow analysis |      1 |          5 |             1 |      -6.4519 |         1.5000 | Aerodynamic Flow Over Wings
+ aerodynamic flow analysis |      4 |          2 |             3 |      -1.1075 |         1.0000 | Wing Design Optimization
+ aerodynamic flow analysis |      3 |          3 |             2 |      -2.2150 |         1.2000 | Supersonic Aircraft Design
+ aerodynamic flow analysis |      2 |          4 |               |      -2.5424 |                | Turbulent Boundary Layer Analysis
+ aerodynamic flow analysis |      1 |          5 |             1 |      -2.9560 |         1.5000 | Aerodynamic Flow Over Wings
 (5 rows)
 
 -- Test 4: Performance test with multiple queries

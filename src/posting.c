@@ -677,8 +677,6 @@ tp_score_documents(TpIndexState * index_state,
 		idf_denominator = (double)(posting_list->doc_count + 0.5);
 		idf_ratio = idf_numerator / idf_denominator;
 		idf = (float4)log(idf_ratio);
-		elog(WARNING, "posting.c IDF calc for term '%s': total_docs=%d, doc_count=%d, ratio=%f, log=%f, idf=%f",
-			 term, total_docs, posting_list->doc_count, idf_ratio, log(idf_ratio), idf);
 
 		/* Process each document in this term's posting list */
 		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
