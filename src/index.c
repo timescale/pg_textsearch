@@ -1476,7 +1476,8 @@ tp_costestimate(PlannerInfo *root,
 		 list_length(path->indexorderbys));
 
 	/* Check for LIMIT clause and verify it can be safely pushed down */
-	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
+	/* TEMPORARILY DISABLED - causes crash in sanitizer environment */
+	if (false && root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
 	{
 		int			limit = (int) root->limit_tuples;
 		bool		can_pushdown = true;
