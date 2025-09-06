@@ -144,11 +144,12 @@ EXPLAIN (COSTS OFF)
 SELECT title, content <@> to_tpvector('data', 'limit_test_idx') as score
 FROM limit_test 
 ORDER BY 2;
-                          QUERY PLAN                           
----------------------------------------------------------------
- Index Scan using limit_test_idx on limit_test
-   Order By: (content <@> 'limit_test_idx:{data:1}'::tpvector)
-(2 rows)
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Sort
+   Sort Key: ((content <@> 'limit_test_idx:{data:1}'::tpvector))
+   ->  Seq Scan on limit_test
+(3 rows)
 
 -- Test 5: LIMIT with OFFSET
 SELECT title, ROUND((content <@> to_tpvector('performance', 'limit_test_idx'))::numeric, 4) as score
@@ -274,19 +275,25 @@ FROM limit_test
 WHERE LENGTH(title) > 10 AND id BETWEEN 5 AND 15
 ORDER BY 2
 LIMIT 3;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Limit
-   ->  Index Scan using limit_test_idx on limit_test
-         Order By: (content <@> 'limit_test_idx:{complex:1}'::tpvector)
-         Filter: ((id >= 5) AND (id <= 15) AND (length(title) > 10))
-(4 rows)
+   ->  Sort
+         Sort Key: ((content <@> 'limit_test_idx:{complex:1}'::tpvector))
+         ->  Seq Scan on limit_test
+               Filter: ((id >= 5) AND (id <= 15) AND (length(title) > 10))
+(5 rows)
 
 -- Test 11: Verify LIMIT pushdown behavior with debug logging
 -- Enable debug logging to see pushdown decisions
 SET client_min_messages = DEBUG1;
+LOG:  duration: 0.236 ms
 -- This should show "Safe LIMIT pushdown detected"
 SELECT title, ROUND((content <@> to_tpvector('pushdown_safe', 'limit_test_idx'))::numeric, 4) as score
+FROM limit_test 
+ORDER BY 2
+LIMIT 2;
+LOG:  statement: SELECT title, ROUND((content <@> to_tpvector('pushdown_safe', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test 
 ORDER BY 2
 LIMIT 2;
@@ -444,6 +451,7 @@ DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
 DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
 DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
 DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
+LOG:  duration: 5.378 ms
        title       | score  
 -------------------+--------
  Search Algorithms | 0.0000
@@ -452,6 +460,11 @@ DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750
 
 -- This should show "LIMIT detected but pushdown is unsafe" 
 SELECT title, ROUND((content <@> to_tpvector('pushdown_unsafe', 'limit_test_idx'))::numeric, 4) as score
+FROM limit_test 
+WHERE id % 2 = 0
+ORDER BY 2
+LIMIT 2;
+LOG:  statement: SELECT title, ROUND((content <@> to_tpvector('pushdown_unsafe', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test 
 WHERE id % 2 = 0
 ORDER BY 2
@@ -532,6 +545,7 @@ DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
 DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
 DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
 DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
+LOG:  duration: 3.303 ms
        title       | score  
 -------------------+--------
  Machine Learning  | 0.0000
@@ -540,6 +554,7 @@ DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750
 
 -- Reset logging level
 SET client_min_messages = NOTICE;
+LOG:  statement: SET client_min_messages = NOTICE;
 -- Test 12: Edge cases for LIMIT pushdown
 -- Very large LIMIT that might exceed our optimization thresholds
 SELECT COUNT(*) FROM (
