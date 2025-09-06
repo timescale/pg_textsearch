@@ -1,6 +1,9 @@
 -- Test file for LIMIT detection and optimization in Tapir
 -- This tests Sven's concern about LIMIT clause handling
 
+-- Disable duration logging to avoid timing differences in sanitizer tests
+SET log_duration = off;
+
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
