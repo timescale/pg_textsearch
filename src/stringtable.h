@@ -81,6 +81,7 @@ extern TpTransactionLockState tp_xact_lock_state;
 
 /* Hash table creation and initialization */
 extern Size tp_hash_table_shmem_size(uint32 max_entries, Size string_pool_size);
+extern TpStringHashTable *tp_hash_table_create_shmem(uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
 extern TpStringHashTable *tp_hash_table_create(uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
 extern void tp_hash_table_init(TpStringHashTable *ht, uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
 

@@ -164,12 +164,18 @@ tp_shmem_startup(void)
 			
 			/* Initialize new hash table */
 			tp_hash_table_init(tp_string_hash_table, initial_buckets, string_pool_size, max_entries);
-			elog(DEBUG1, "Initialized new string hash table: %u buckets, %zu string pool, %u max entries",
-				 initial_buckets, string_pool_size, max_entries);
+			
+			/* Allocate and initialize lock for the shared string table */
+			tp_string_hash_table->lock = tp_shared_state->string_interning_lock;
+			
+			elog(DEBUG1, "Initialized new string hash table: %u buckets, %zu string pool, %u max entries, lock=%p",
+				 initial_buckets, string_pool_size, max_entries, tp_string_hash_table->lock);
 		}
 		else
 		{
-			elog(DEBUG1, "Attached to existing string hash table");
+			/* When attaching to existing hash table, set the lock pointer */
+			tp_string_hash_table->lock = tp_shared_state->string_interning_lock;
+			elog(DEBUG1, "Attached to existing string hash table, lock=%p", tp_string_hash_table->lock);
 		}
 	}
 

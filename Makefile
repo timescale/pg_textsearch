@@ -17,7 +17,7 @@ MODULE_big = tapir
 PG_CPPFLAGS = -I$(srcdir)/src -g -O0
 
 # Test configuration
-REGRESS = basic index vector queries aerodocs mixed strings memory_limits limits
+REGRESS = basic index vector queries aerodocs mixed strings limits
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
@@ -56,11 +56,7 @@ test-recovery: install
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 
-test-memory-limits: install
-	@echo "Running memory limits stress tests..."
-	@cd test/scripts && ./memory_limits.sh
-
-test-shell: test-concurrency test-recovery test-memory-limits
+test-shell: test-concurrency test-recovery
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell

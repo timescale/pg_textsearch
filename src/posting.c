@@ -10,8 +10,16 @@
 #include "posting.h"
 #include "memtable.h"
 #include "stringtable.h"
+#include "index.h"
+#include "vector.h"
 #include "postgres.h"
 #include "miscadmin.h"
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/table.h"
+#include "catalog/pg_type.h"
+#include "fmgr.h"
+#include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
@@ -19,6 +27,8 @@
 #include "utils/elog.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include <math.h>
 
 /* Global shared state */
@@ -170,9 +180,60 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 	index_state->stats_lock = tp_shared_state->posting_lists_lock;
 	SpinLockInit(&index_state->doc_id_mutex);
 
-	/* Initialize corpus statistics (k1/b are in index metapage) */
+	/* Initialize corpus statistics from metapage */
 	memset(&index_state->stats, 0, sizeof(TpCorpusStatistics));
 	index_state->stats.last_checkpoint = GetCurrentTimestamp();
+	
+	/* Load stats from index metapage */
+	{
+		Relation index_rel;
+		Buffer metabuf;
+		Page metapage;
+		TpIndexMetaPage meta;
+		
+		/* Open the index relation to read its metapage */
+		index_rel = index_open(index_oid, AccessShareLock);
+		
+		/* Read the metapage */
+		metabuf = ReadBuffer(index_rel, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		meta = (TpIndexMetaPage) PageGetContents(metapage);
+		
+		/* Copy stats from metapage */
+		index_state->stats.total_docs = meta->total_docs;
+		index_state->stats.total_len = meta->total_len;
+		
+		/* Calculate derived stats */
+		if (meta->total_docs > 0) {
+			index_state->stats.max_doc_length = meta->total_len / (float4)meta->total_docs * 2.0; /* Estimate */
+			index_state->stats.min_doc_length = meta->total_len / (float4)meta->total_docs * 0.5; /* Estimate */
+		}
+		
+		/* Store k1 and b for BM25 scoring */
+		index_state->stats.k1 = meta->k1;
+		index_state->stats.b = meta->b;
+		
+		elog(DEBUG1, "Loaded stats from metapage for index %s: total_docs=%d, total_len=%ld, k1=%f, b=%f",
+			 index_name, index_state->stats.total_docs, index_state->stats.total_len,
+			 index_state->stats.k1, index_state->stats.b);
+		
+		UnlockReleaseBuffer(metabuf);
+		
+		/* For v0.0a memtable-only implementation, posting lists are volatile.
+		 * Mark if we need to rebuild from persisted document IDs. */
+		index_state->first_docid_page = meta->first_docid_page;
+		if (meta->first_docid_page != InvalidBlockNumber && 
+			index_state->stats.total_docs > 0) {
+			index_state->needs_rebuild = true;
+			elog(DEBUG1, "Index %s needs posting list rebuild from %d persisted documents",
+				 index_name, index_state->stats.total_docs);
+		} else {
+			index_state->needs_rebuild = false;
+		}
+		
+		index_close(index_rel, AccessShareLock);
+	}
 
 	/* Initialize counters */
 	index_state->next_doc_id = 1;
@@ -182,33 +243,181 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 	index_state->max_posting_entries = tp_calculate_max_posting_entries();
 	index_state->is_finalized = false;
 
-	/* Create per-index string table */
-	{
-		uint32 max_string_entries = tp_calculate_max_hash_entries();
-		Size string_pool_size = max_string_entries * (TP_AVG_TERM_LENGTH + 1);
-		uint32 initial_buckets = TP_HASH_DEFAULT_BUCKETS;
+	/* For v0.0a memtable-only implementation, use the shared string table
+	 * since TpIndexState is stored in shared memory */
+	elog(DEBUG1, "About to assign shared string table %p to index %s", 
+		 tp_string_hash_table, index_name);
+	index_state->string_table = tp_string_hash_table;
+	if (!index_state->string_table)
+		elog(ERROR, "Shared string table not initialized for index %s", index_name);
 
-		index_state->string_table = tp_hash_table_create(initial_buckets, string_pool_size, max_string_entries);
-		if (!index_state->string_table)
-			elog(ERROR, "Failed to create string table for index %s", index_name);
-
-		/* Allocate dedicated lock for this string table */
-		index_state->string_table->lock = (LWLock *) ShmemAlloc(sizeof(LWLock));
-		if (!index_state->string_table->lock)
-			elog(ERROR, "Failed to allocate lock for string table for index %s", index_name);
-		LWLockInitialize(index_state->string_table->lock, LWLockNewTrancheId());
-
-		elog(DEBUG1, "Created string table for index %s: %u max entries, %zu string pool",
-			 index_name, max_string_entries, string_pool_size);
-	}
+	elog(DEBUG1, "Using shared string table %p for index %s", 
+		 index_state->string_table, index_name);
 
 	posting_shared_state->num_indexes++;
 
 	LWLockRelease(posting_shared_state->index_registry_lock);
 
 	elog(
-		 LOG, "Created Tp index state for %s (OID %u)", index_name, index_oid);
+		 LOG, "Created Tp index state for %s (OID %u) with string_table=%p", 
+		 index_name, index_oid, index_state->string_table);
 	return index_state;
+}
+
+/*
+ * Rebuild posting lists from persisted document IDs
+ * This is called when an index state needs its posting lists rebuilt
+ * after PostgreSQL restart (for v0.0a memtable-only implementation)
+ */
+static void
+tp_rebuild_posting_lists_for_index(TpIndexState *index_state)
+{
+	Relation	index_rel;
+	Buffer		docid_buf;
+	Page		docid_page;
+	TpDocidPageHeader *docid_header;
+	ItemPointer docids;
+	BlockNumber current_page;
+	
+	if (!index_state || !index_state->needs_rebuild)
+		return;
+		
+	if (index_state->first_docid_page == InvalidBlockNumber)
+		return;
+	
+	elog(DEBUG1, "Rebuilding posting lists for index %s from docid pages",
+		 index_state->index_name);
+	
+	/* Open the index relation */
+	index_rel = index_open(index_state->index_oid, AccessShareLock);
+	
+	/* Iterate through all docid pages */
+	current_page = index_state->first_docid_page;
+	while (current_page != InvalidBlockNumber)
+	{
+		docid_buf = ReadBuffer(index_rel, current_page);
+		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+		docid_page = BufferGetPage(docid_buf);
+		docid_header = (TpDocidPageHeader *) PageGetContents(docid_page);
+		
+		/* Validate page magic */
+		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
+		{
+			elog(WARNING, "Invalid docid page magic on block %u, skipping",
+				 current_page);
+			UnlockReleaseBuffer(docid_buf);
+			break;
+		}
+		
+		/* Process each docid on this page */
+		docids = (ItemPointer) ((char *) docid_header + sizeof(TpDocidPageHeader));
+		
+		for (int i = 0; i < docid_header->num_docids; i++)
+		{
+			ItemPointer ctid = &docids[i];
+			Relation	heap_rel;
+			HeapTuple	tuple;
+			Buffer		heap_buf;
+			bool		valid;
+			
+			elog(DEBUG3, "Rebuilding posting for docid (%u,%u)",
+				 ItemPointerGetBlockNumber(ctid),
+				 ItemPointerGetOffsetNumber(ctid));
+			
+			/* Find the heap relation for this index */
+			heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+			
+			/* Initialize tuple for heap_fetch */
+			tuple = &((HeapTupleData) {0});
+			tuple->t_self = *ctid;
+			
+			/* Fetch the tuple from the heap */
+			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
+			
+			if (valid && HeapTupleIsValid(tuple))
+			{
+				/* Extract the indexed column */
+				Datum		column_value;
+				bool		is_null;
+				TupleDesc	tuple_desc = RelationGetDescr(heap_rel);
+				
+				/* Get the indexed column value */
+				column_value = heap_getattr(tuple, 1, tuple_desc, &is_null);
+				
+				if (!is_null)
+				{
+					text *document_text;
+					Datum vector_datum;
+					TpVector *bm25vec;
+					int term_count;
+					char **terms;
+					float4 *frequencies;
+					int doc_length = 0;
+					char *ptr;
+					
+					document_text = DatumGetTextPP(column_value);
+					
+					/* Vectorize the document */
+					vector_datum = DirectFunctionCall2(
+													   to_tpvector,
+													   PointerGetDatum(document_text),
+													   CStringGetTextDatum(index_state->index_name));
+					bm25vec = (TpVector *) DatumGetPointer(vector_datum);
+					
+					/* Extract terms and frequencies from vector */
+					term_count = TPVECTOR_ENTRY_COUNT(bm25vec);
+					if (term_count > 0)
+					{
+						terms = palloc(term_count * sizeof(char*));
+						frequencies = palloc(term_count * sizeof(float4));
+						
+						ptr = (char *) TPVECTOR_ENTRIES_PTR(bm25vec);
+						for (int j = 0; j < term_count; j++)
+						{
+							TpVectorEntry *entry = (TpVectorEntry *) ptr;
+							char *term_str = palloc(entry->lexeme_len + 1);
+							memcpy(term_str, entry->lexeme, entry->lexeme_len);
+							term_str[entry->lexeme_len] = '\0';
+							
+							terms[j] = term_str;
+							frequencies[j] = entry->frequency;
+							doc_length += entry->frequency;
+							
+							ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
+						}
+						
+						/* Add document terms to posting lists */
+						tp_add_document_terms(index_state, ctid, terms,
+											  frequencies, term_count, doc_length);
+						
+						/* Clean up */
+						for (int j = 0; j < term_count; j++)
+							pfree(terms[j]);
+						pfree(terms);
+						pfree(frequencies);
+					}
+					
+					pfree(bm25vec);
+				}
+				
+				ReleaseBuffer(heap_buf);
+			}
+			
+			relation_close(heap_rel, AccessShareLock);
+		}
+		
+		/* Move to next page */
+		current_page = docid_header->next_page;
+		UnlockReleaseBuffer(docid_buf);
+	}
+	
+	index_close(index_rel, AccessShareLock);
+	
+	/* Mark as rebuilt */
+	index_state->needs_rebuild = false;
+	
+	elog(DEBUG1, "Completed rebuilding posting lists for index %s",
+		 index_state->index_name);
 }
 
 /*
@@ -222,6 +431,9 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 	TpPostingList *posting_list = NULL;
 	MemoryContext old_context;
 	size_t term_len;
+	
+	elog(DEBUG1, "tp_get_or_create_posting_list called for term '%s'", term);
+	elog(DEBUG1, "index_state=%p, string_table=%p", index_state, index_state->string_table);
 
 	if (!index_state->string_table)
 	{
@@ -236,9 +448,12 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 	}
 
 	term_len = strlen(term);
+	elog(DEBUG1, "term_len=%zu", term_len);
 
 	/* Use transaction-level locking for string table access */
+	elog(DEBUG1, "About to acquire string table lock (shared mode)");
 	tp_acquire_string_table_lock(index_state->string_table, false);
+	elog(DEBUG1, "Acquired string table lock");
 
 	/* Look up the term in the string hash table (for string interning only) */
 	hash_entry = tp_hash_lookup(index_state->string_table, term, term_len);
@@ -313,10 +528,15 @@ tp_add_document_terms(TpIndexState * index_state,
 	int32		doc_id;
 	int			i;
 
+	elog(DEBUG1, "tp_add_document_terms called with index_state=%p, term_count=%d", 
+		 index_state, term_count);
+
 	Assert(index_state != NULL);
 	Assert(ctid != NULL);
 	Assert(terms != NULL);
 	Assert(frequencies != NULL);
+	
+	elog(DEBUG1, "Assertions passed, checking string table=%p", index_state->string_table);
 
 	/* Check if adding this document would exceed posting list capacity */
 	if (index_state->total_posting_entries + term_count > index_state->max_posting_entries)
@@ -329,13 +549,17 @@ tp_add_document_terms(TpIndexState * index_state,
 	SpinLockRelease(&index_state->doc_id_mutex);
 
 	/* Add terms to posting lists */
+	elog(DEBUG1, "Starting to add %d terms to posting lists", term_count);
 	for (i = 0; i < term_count; i++)
 	{
 		TpPostingList *posting_list;
 		TpPostingEntry *new_entry;
 
+		elog(DEBUG1, "Processing term %d: '%s'", i, terms[i]);
+		
 		/* Get or create posting list for this term */
 		posting_list = tp_get_or_create_posting_list(index_state, terms[i]);
+		elog(DEBUG1, "Got posting list=%p for term '%s'", posting_list, terms[i]);
 		if (posting_list == NULL)
 		{
 			elog(ERROR, "Failed to create posting list for term '%s'", terms[i]);
@@ -399,6 +623,13 @@ tp_get_posting_list(TpIndexState * index_state,
 	size_t term_len;
 
 	Assert(index_state != NULL);
+	
+	/* Check if we need to rebuild posting lists from persisted docids */
+	if (index_state->needs_rebuild)
+	{
+		elog(DEBUG1, "Triggering posting list rebuild for index %s", index_state->index_name);
+		tp_rebuild_posting_lists_for_index(index_state);
+	}
 
 	if (!index_state->string_table)
 	{
@@ -641,36 +872,87 @@ tp_score_documents(TpIndexState * index_state,
 	HASHCTL		hash_ctl;
 	HTAB	   *doc_scores_hash;
 	DocumentScoreEntry *doc_entry;
-	float4		avg_doc_len = index_state->stats.total_docs > 0 ? 
-		(float4)(index_state->stats.total_len / (double)index_state->stats.total_docs) : 0.0f;
-	int32		total_docs = index_state->stats.total_docs;
+	float4		avg_doc_len;
+	int32		total_docs;
 	bool		found;
 	int			result_count = 0;
 	HASH_SEQ_STATUS seq_status;
 	DocumentScoreEntry **sorted_docs;
 	int			i, j;
+	int			hash_size;
+	
+	elog(DEBUG2, "tp_score_documents: max_results=%d, query_term_count=%d", 
+		 max_results, query_term_count);
+	
+	/* Validate inputs */
+	if (!index_state) {
+		elog(ERROR, "tp_score_documents: NULL index_state");
+	}
+	if (!query_terms) {
+		elog(ERROR, "tp_score_documents: NULL query_terms");
+	}
+	if (!query_frequencies) {
+		elog(ERROR, "tp_score_documents: NULL query_frequencies");
+	}
+	if (!result_ctids) {
+		elog(ERROR, "tp_score_documents: NULL result_ctids");
+	}
+	if (!result_scores) {
+		elog(ERROR, "tp_score_documents: NULL result_scores");
+	}
+	
+	elog(DEBUG2, "tp_score_documents: accessing index_state->stats");
+	total_docs = index_state->stats.total_docs;
+	avg_doc_len = total_docs > 0 ? 
+		(float4)(index_state->stats.total_len / (double)total_docs) : 0.0f;
+	elog(DEBUG2, "tp_score_documents: total_docs=%d, avg_doc_len=%f", total_docs, avg_doc_len);
 
 	/* Create hash table for accumulating document scores */
+	elog(DEBUG2, "tp_score_documents: preparing hash table");
+	
+	/* Ensure reasonable hash table size */
+	hash_size = max_results * 2;
+	if (total_docs > 0 && hash_size > total_docs * 2)
+		hash_size = total_docs * 2;
+	if (hash_size < 128)
+		hash_size = 128;  /* Minimum reasonable size */
+	elog(DEBUG2, "tp_score_documents: hash_size=%d", hash_size);
+	
+	/* Initialize hash control structure */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(ItemPointerData);
 	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
-	hash_ctl.hcxt = CurrentMemoryContext;
-
-	doc_scores_hash = hash_create("DocumentScores",
-								  max_results * 2,	/* Start with 2x capacity */
+	
+	elog(DEBUG3, "tp_score_documents: keysize=%zu, entrysize=%zu", 
+		 hash_ctl.keysize, hash_ctl.entrysize);
+	
+	/* Create hash table */
+	doc_scores_hash = hash_create("DocScores",
+								  hash_size,
 								  &hash_ctl,
-								  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+								  HASH_ELEM | HASH_BLOBS);
+	
+	elog(DEBUG2, "tp_score_documents: hash table created");
+	
+	if (!doc_scores_hash)
+		elog(ERROR, "Failed to create document scores hash table");
 
 	/* Single pass through all posting lists */
+	elog(DEBUG2, "tp_score_documents: processing %d query terms", query_term_count);
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
 		const char *term = query_terms[term_idx];
-		TpPostingList *posting_list = tp_get_posting_list(index_state, term);
+		TpPostingList *posting_list;
 		float4		idf;
 		double idf_numerator, idf_denominator, idf_ratio;
+		
+		elog(DEBUG3, "tp_score_documents: term %d: '%s'", term_idx, term);
+		posting_list = tp_get_posting_list(index_state, term);
 
-		if (!posting_list || posting_list->doc_count == 0)
+		if (!posting_list || posting_list->doc_count == 0) {
+			elog(DEBUG3, "No posting list for term '%s'", term);
 			continue;
+		}
 
 		/* Calculate IDF once for this term */
 		idf_numerator = (double)(total_docs - posting_list->doc_count + 0.5);
@@ -720,8 +1002,20 @@ tp_score_documents(TpIndexState * index_state,
 	/* Extract and sort documents by score */
 	/* First, count how many unique documents we have */
 	result_count = hash_get_num_entries(doc_scores_hash);
+	
+	elog(DEBUG2, "tp_score_documents: hash has %d entries, max_results=%d", 
+		 result_count, max_results);
+	
 	if (result_count > max_results)
 		result_count = max_results;
+	
+	/* Handle case where no documents match */
+	if (result_count == 0)
+	{
+		*result_scores = NULL;
+		hash_destroy(doc_scores_hash);
+		return 0;
+	}
 
 	/* Allocate array for sorting */
 	sorted_docs = palloc(result_count * sizeof(DocumentScoreEntry *));
@@ -729,10 +1023,24 @@ tp_score_documents(TpIndexState * index_state,
 	/* Extract documents from hash table */
 	i = 0;
 	hash_seq_init(&seq_status, doc_scores_hash);
-	while ((doc_entry = (DocumentScoreEntry *) hash_seq_search(&seq_status)) != NULL && i < result_count)
+	PG_TRY();
 	{
-		sorted_docs[i++] = doc_entry;
+		while ((doc_entry = (DocumentScoreEntry *) hash_seq_search(&seq_status)) != NULL && i < result_count)
+		{
+			sorted_docs[i++] = doc_entry;
+		}
 	}
+	PG_CATCH();
+	{
+		/* Ensure hash scan is properly terminated on exception */
+		hash_seq_term(&seq_status);
+		hash_destroy(doc_scores_hash);
+		pfree(sorted_docs);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	
+	/* Normal termination of hash scan */
 	hash_seq_term(&seq_status);
 
 	result_count = i;			/* Actual count extracted */

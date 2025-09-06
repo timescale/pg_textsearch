@@ -366,10 +366,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Initialize posting list system for this index */
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									 RelationGetRelationName(index));
+	
+	elog(DEBUG1, "Got index_state=%p for index %s", index_state, RelationGetRelationName(index));
 
 	/* Scan heap and build posting lists */
+	elog(DEBUG1, "Starting table scan for heap %s", RelationGetRelationName(heap));
 	scan = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
+	elog(DEBUG1, "Created table scan");
 	slot = table_slot_create(heap, NULL);
+	elog(DEBUG1, "Created table slot");
 
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
@@ -384,17 +389,25 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		int			term_count;
 		int			doc_length = 0;
 		int			i;
+		
+		elog(DEBUG1, "Processing next slot");
 
 		/* Get the text column value (first indexed column) */
 		text_datum =
 			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
+		
+		elog(DEBUG1, "Got text datum, isnull=%d", isnull);
 
 		if (isnull)
 			continue;			/* Skip NULL documents */
 
+		elog(DEBUG1, "About to get document text");
 		document_text = DatumGetTextPP(text_datum);
+		elog(DEBUG1, "Got document_text=%p", document_text);
 		document_str = text_to_cstring(document_text);
+		elog(DEBUG1, "Got document_str='%s'", document_str);
 		ctid = &slot->tts_tid;
+		elog(DEBUG1, "Got ctid");
 
 		/* Validate the TID before processing */
 		if (!ItemPointerIsValid(ctid))
@@ -402,68 +415,98 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			elog(WARNING, "Invalid TID in slot during index build, skipping document");
 			continue;
 		}
+		
+		elog(DEBUG1, "TID is valid");
 
 		/*
 		 * Vectorize the document using index metadata
 		 */
+		elog(DEBUG1, "About to vectorize document with text_config_oid=%u", text_config_oid);
 		tsvector_datum =
 			DirectFunctionCall2Coll(to_tsvector_byid,
 									InvalidOid, /* collation */
 									ObjectIdGetDatum(text_config_oid),
 									PointerGetDatum(document_text));
+		elog(DEBUG1, "Got tsvector_datum");
 		tsvector = DatumGetTSVector(tsvector_datum);
+		elog(DEBUG1, "Got tsvector=%p", tsvector);
 
 		/* Extract lexemes and frequencies directly from TSVector */
 		term_count = tsvector->size;
+		elog(DEBUG1, "TSVector has %d terms", term_count);
 		if (term_count > 0)
 		{
 			WordEntry  *we = ARRPTR(tsvector);
+			char	  **terms;
+			
+			elog(DEBUG1, "Got WordEntry array");
 
-			char	  **terms = palloc(term_count * sizeof(char*));
+			terms = palloc(term_count * sizeof(char*));
+			elog(DEBUG1, "Allocated terms array");
 			frequencies = palloc(term_count * sizeof(float4));
+			elog(DEBUG1, "Allocated frequencies array");
 
 			for (i = 0; i < term_count; i++)
 			{
-				char	   *lexeme_start = STRPTR(tsvector) + we[i].pos;
-				int			lexeme_len = we[i].len;
+				char	   *lexeme_start;
+				int			lexeme_len;
 				char	   *lexeme;
+				
+				elog(DEBUG1, "Processing term %d of %d", i, term_count);
+				
+				lexeme_start = STRPTR(tsvector) + we[i].pos;
+				lexeme_len = we[i].len;
+				
+				elog(DEBUG1, "Term %d: pos=%d, len=%d", i, we[i].pos, lexeme_len);
 
 				/* Always allocate on heap for terms array since we need to keep them */
 				lexeme = palloc(lexeme_len + 1);
 				memcpy(lexeme, lexeme_start, lexeme_len);
 				lexeme[lexeme_len] = '\0';
+				
+				elog(DEBUG1, "Term %d: lexeme='%s'", i, lexeme);
 
 				/* Store the lexeme string directly in terms array */
 				terms[i] = lexeme;
+				elog(DEBUG1, "Stored term %d in array", i);
 
 				/*
 				 * Get frequency from TSVector - count positions or default to
 				 * 1
 				 */
+				elog(DEBUG1, "Checking if term %d has positions: %d", i, we[i].haspos);
 				if (we[i].haspos)
 				{
 					frequencies[i] = (float4) POSDATALEN(tsvector, &we[i]);
+					elog(DEBUG1, "Term %d has %f positions", i, frequencies[i]);
 				}
 				else
 				{
 					frequencies[i] = 1.0;
+					elog(DEBUG1, "Term %d defaulting to frequency 1.0", i);
 				}
 				doc_length +=
 					frequencies[i]; /* Sum frequencies for doc length */
+				elog(DEBUG1, "Doc length after term %d: %d", i, doc_length);
 			}
+			
+			elog(DEBUG1, "Finished processing all %d terms", term_count);
 
 			/*
 			 * Add document terms to posting lists (if shared memory
 			 * available)
 			 */
+			elog(DEBUG1, "index_state=%p, about to add document terms", index_state);
 			if (index_state != NULL)
 			{
+				elog(DEBUG1, "Calling tp_add_document_terms with %d terms", term_count);
 					tp_add_document_terms(index_state,
 										ctid,
 										terms,
 										frequencies,
 										term_count,
 										doc_length);
+				elog(DEBUG1, "Finished tp_add_document_terms");
 			}
 
 			/* Free the terms array and individual lexemes */
@@ -1161,6 +1204,8 @@ tp_search_posting_lists(IndexScanDesc scan,
 	TpScanOpaque so = (TpScanOpaque) scan->opaque;
 	int			max_results;
 	int			result_count = 0;
+	float4		k1_value;
+	float4		b_value;
 
 	/* Extract terms and frequencies from query vector */
 	char	  **query_terms;
@@ -1217,27 +1262,75 @@ tp_search_posting_lists(IndexScanDesc scan,
 	/* Allocate result arrays in scan context */
 	oldcontext = MemoryContextSwitchTo(so->scan_context);
 	so->result_ctids = palloc(max_results * sizeof(ItemPointerData));
+	/* Initialize to invalid TIDs for safety */
+	memset(so->result_ctids, 0, max_results * sizeof(ItemPointerData));
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Use single-pass BM25 scoring algorithm for efficiency */
 	elog(DEBUG2, "Tapir search: using single-pass BM25 scoring for %d terms", entry_count);
 
+	elog(DEBUG2, "Calling tp_score_documents with max_results=%d", max_results);
+	
+	/* Check pointers before using them */
+	if (!metap) {
+		elog(ERROR, "metap is NULL before tp_score_documents");
+	}
+	
+	/* Extract values from metap before the call to avoid any access issues */
+	k1_value = metap->k1;
+	b_value = metap->b;
+	
+	elog(DEBUG3, "BM25 parameters: k1=%f, b=%f", k1_value, b_value);
+	
+	if (!index_state) {
+		elog(ERROR, "index_state is NULL before tp_score_documents");
+	}
+	if (!query_terms) {
+		elog(ERROR, "query_terms is NULL before tp_score_documents");
+	}
+	if (!query_frequencies) {
+		elog(ERROR, "query_frequencies is NULL before tp_score_documents");
+	}
+	if (!so->result_ctids) {
+		elog(ERROR, "result_ctids is NULL before tp_score_documents");
+	}
+	
+	elog(DEBUG3, "All pointers validated");
+	
+	/* Check if any query terms are NULL */
+	for (int i = 0; i < entry_count; i++) {
+		if (!query_terms[i]) {
+			elog(ERROR, "NULL query term at position %d", i);
+		}
+	}
+	
 	result_count = tp_score_documents(index_state,
 									  query_terms,
 									  query_frequencies,
 									  entry_count,
-									  metap->k1,
-									  metap->b,
+									  k1_value,
+									  b_value,
 									  max_results,
 									  so->result_ctids,
 									  &so->result_scores);
+
+	elog(DEBUG2, "tp_score_documents returned %d results", result_count);
 
 	so->result_count = result_count;
 	so->current_pos = 0;
 
 	elog(DEBUG2,
-		 "Tapir search completed: found %d matching documents",
-		 result_count);
+		 "Tapir search completed: found %d matching documents (max_results was %d)",
+		 result_count, max_results);
+	
+	/* Validate results */
+	for (int i = 0; i < result_count; i++)
+	{
+		if (!ItemPointerIsValid(&so->result_ctids[i]))
+		{
+			elog(ERROR, "Invalid TID at position %d after scoring", i);
+		}
+	}
 
 	/* Free the query terms array and individual term strings */
 	for (int i = 0; i < entry_count; i++)
@@ -1476,8 +1569,7 @@ tp_costestimate(PlannerInfo *root,
 		 list_length(path->indexorderbys));
 
 	/* Check for LIMIT clause and verify it can be safely pushed down */
-	/* TEMPORARILY DISABLED - causes crash in sanitizer environment */
-	if (false && root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
+	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
 	{
 		int			limit = (int) root->limit_tuples;
 		bool		can_pushdown = true;

@@ -56,8 +56,12 @@ typedef struct TpIndexState
 	uint32		total_posting_entries;	/* Total posting entries across all terms */
 	uint32		max_posting_entries;	/* Maximum posting entries allowed */
 	
-	/* Per-index string table */
-	TpStringHashTable *string_table;	/* String interning table for this index */
+	/* String table reference - for v0.0a we use the shared table */
+	TpStringHashTable *string_table;	/* Points to shared string table */
+	
+	/* Recovery state for memtable-only implementation */
+	bool		needs_rebuild;	/* Posting lists need to be rebuilt from disk */
+	BlockNumber	first_docid_page;	/* First page of docid chain for recovery */
 }			TpIndexState;
 
 /*

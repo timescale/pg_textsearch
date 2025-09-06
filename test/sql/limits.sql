@@ -105,7 +105,7 @@ FROM limit_test
 ORDER BY 2
 LIMIT 1;
 
--- Test 7: Large LIMIT (should not trigger special optimization)
+-- Test 7: Large LIMIT (should still use index optimization)
 SELECT COUNT(*)
 FROM (
     SELECT title, content <@> to_tpvector('system', 'limit_test_idx') as score
@@ -152,10 +152,8 @@ FROM limit_test
 ORDER BY 2
 LIMIT 3;
 
--- Unsafe case: Multiple ORDER BY clauses
--- This should NOT allow LIMIT pushdown (if we had multiple orderbys)
--- Note: This will actually fail in tapir since we require exactly one ORDER BY,
--- but demonstrates the safety principle
+-- Case: Multiple ORDER BY clauses
+-- Tapir requires exactly one ORDER BY, so not using the index here is correct behavior
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> to_tpvector('multiple', 'limit_test_idx') as score
 FROM limit_test 
@@ -192,7 +190,7 @@ LIMIT 2;
 SET client_min_messages = NOTICE;
 
 -- Test 12: Edge cases for LIMIT pushdown
--- Very large LIMIT that might exceed our optimization thresholds
+-- Very large LIMIT (should still use index optimization efficiently)
 SELECT COUNT(*) FROM (
     SELECT title, content <@> to_tpvector('large_limit', 'limit_test_idx') as score
     FROM limit_test 

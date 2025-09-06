@@ -63,10 +63,11 @@ tp_hash_table_shmem_size(uint32 max_entries, Size string_pool_size)
 }
 
 /*
- * Create and initialize hash table in shared memory
+ * Create and initialize hash table in shared memory (for global string table)
+ * Used ONLY during shared memory initialization
  */
 TpStringHashTable *
-tp_hash_table_create(uint32 initial_buckets, Size string_pool_size, uint32 max_entries)
+tp_hash_table_create_shmem(uint32 initial_buckets, Size string_pool_size, uint32 max_entries)
 {
 	Size		total_size;
 	char	   *base_ptr;
@@ -75,8 +76,42 @@ tp_hash_table_create(uint32 initial_buckets, Size string_pool_size, uint32 max_e
 	/* Calculate total memory needed */
 	total_size = tp_hash_table_shmem_size(max_entries, string_pool_size);
 
-	/* Allocate from shared memory */
+	/* Allocate from shared memory - ONLY valid during shmem initialization */
 	base_ptr = (char *) ShmemAlloc(total_size);
+	if (!base_ptr)
+		elog(ERROR, "Could not allocate %zu bytes for hash table", total_size);
+
+	/* Initialize the hash table */
+	ht = (TpStringHashTable *) base_ptr;
+
+	/* Zero out the entire allocated memory for sanitizer safety */
+	memset(base_ptr, 0, total_size);
+
+	tp_hash_table_init(ht, initial_buckets, string_pool_size, max_entries);
+
+	return ht;
+}
+
+/*
+ * Create and initialize hash table in regular memory
+ * Used for per-index string tables created after shared memory initialization
+ */
+TpStringHashTable *
+tp_hash_table_create(uint32 initial_buckets, Size string_pool_size, uint32 max_entries)
+{
+	Size		total_size;
+	char	   *base_ptr;
+	TpStringHashTable *ht;
+	MemoryContext oldcontext;
+
+	/* Calculate total memory needed */
+	total_size = tp_hash_table_shmem_size(max_entries, string_pool_size);
+
+	/* Allocate from TopMemoryContext for persistence across transactions */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	base_ptr = (char *) palloc(total_size);
+	MemoryContextSwitchTo(oldcontext);
+	
 	if (!base_ptr)
 		elog(ERROR, "Could not allocate %zu bytes for hash table", total_size);
 
@@ -361,6 +396,9 @@ tp_acquire_string_table_lock(TpStringHashTable *string_table, bool for_write)
 
 	/* First lock acquisition in this transaction */
 	mode = for_write ? LW_EXCLUSIVE : LW_SHARED;
+	
+	elog(DEBUG1, "tp_acquire_string_table_lock: string_table=%p, lock=%p, mode=%d", 
+		 string_table, string_table->lock, mode);
 
 	LWLockAcquire(string_table->lock, mode);
 	tp_xact_lock_state.has_lock = true;
