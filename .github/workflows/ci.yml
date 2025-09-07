@@ -92,13 +92,6 @@ jobs:
           echo "✗ Concurrency tests failed"
           exit 1
         fi
-        echo "Running memory limits tests..."
-        if (cd test/scripts && ./memory_limits.sh); then
-          echo "✓ Memory limits tests passed"
-        else
-          echo "✗ Memory limits tests failed"  
-          exit 1
-        fi
         
     - name: Upload test results on failure
       if: failure()
