@@ -143,7 +143,6 @@ LIMIT 7;
 
 -- Test 4: No LIMIT (should use default behavior)
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
-
 -- Test 5: LIMIT with OFFSET
 SELECT title, ROUND((content <@> to_tpvector('performance', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test 
@@ -244,11 +243,9 @@ LIMIT 3;
 -- Case: Multiple ORDER BY clauses  
 -- Tapir requires exactly one ORDER BY, so not using the index here is correct behavior
 -- Query plan varies by PG version (Sort vs Incremental Sort) - not testing EXPLAIN
-
 -- Unsafe case: Complex WHERE clause with additional conditions
 -- This should NOT allow LIMIT pushdown due to WHERE clause
 -- Query plan varies by PG version - not testing EXPLAIN
-
 -- Test 11: Verify LIMIT pushdown behavior with debug logging
 -- Enable debug logging to see pushdown decisions
 SET client_min_messages = DEBUG1;
