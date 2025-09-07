@@ -22,7 +22,11 @@
 #include "storage/lwlock.h"
 #include "access/xact.h"
 #include "utils/memutils.h"
+#if PG_VERSION_NUM >= 170000
 #include "common/hashfn_unstable.h"
+#else
+#include "common/hashfn.h"
+#endif
 
 /* Global variables */
 TpStringHashTable *tp_string_hash_table = NULL;
@@ -189,7 +193,11 @@ tp_hash_lookup(TpStringHashTable *ht, const char *str, size_t len)
 	if (!ht || !str)
 		return NULL;
 
+#if PG_VERSION_NUM >= 170000
 	hash = fasthash32(str, len, 0);
+#else
+	hash = hash_bytes((const unsigned char *) str, len);
+#endif
 	bucket = hash & (ht->bucket_count - 1);
 	entry_offset = ht->buckets[bucket];
 
@@ -257,7 +265,11 @@ tp_hash_insert(TpStringHashTable *ht, const char *str, size_t len)
 	/* Check load factor and resize if needed */
 	tp_hash_maybe_resize(ht);
 
+#if PG_VERSION_NUM >= 170000
 	hash = fasthash32(str, len, 0);
+#else
+	hash = hash_bytes((const unsigned char *) str, len);
+#endif
 	bucket = hash & (ht->bucket_count - 1);
 
 	/* Check bounds - ensure we don't overflow entry pool */
@@ -313,7 +325,11 @@ tp_hash_delete(TpStringHashTable *ht, const char *str, size_t len)
 	if (!ht || !str)
 		return false;
 
+#if PG_VERSION_NUM >= 170000
 	hash = fasthash32(str, len, 0);
+#else
+	hash = hash_bytes((const unsigned char *) str, len);
+#endif
 	bucket = hash & (ht->bucket_count - 1);
 	entry_offset = ht->buckets[bucket];
 
