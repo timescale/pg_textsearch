@@ -69,7 +69,7 @@ jobs:
         fi
         
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        if ! /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress --use-existing --host=$PWD/tmp_check_shared --port=55433 --inputdir=test --outputdir=test basic index vector queries aerodocs mixed strings memory_limits --dbname=contrib_regression; then
+        if ! /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress --use-existing --host=$PWD/tmp_check_shared --port=55433 --inputdir=test --outputdir=test basic index vector queries aerodocs mixed strings limits --dbname=contrib_regression; then
           echo "Tests failed. Showing regression diffs:"
           if [ -f test/regression.diffs ]; then
             cat test/regression.diffs
@@ -117,7 +117,11 @@ jobs:
     strategy:
       matrix:
         config:
+          - { cc: gcc, pg_version: 15 }
+          - { cc: gcc, pg_version: 16 }
           - { cc: gcc, pg_version: 17 }
+          - { cc: clang, pg_version: 15 }
+          - { cc: clang, pg_version: 16 }
           - { cc: clang, pg_version: 17 }
     
     steps:

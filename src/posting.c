@@ -1026,24 +1026,13 @@ tp_score_documents(TpIndexState * index_state,
 	/* Extract documents from hash table */
 	i = 0;
 	hash_seq_init(&seq_status, doc_scores_hash);
-	PG_TRY();
-	{
-		while ((doc_entry = (DocumentScoreEntry *) hash_seq_search(&seq_status)) != NULL && i < result_count)
-		{
-			sorted_docs[i++] = doc_entry;
-		}
-	}
-	PG_CATCH();
-	{
-		/* Ensure hash scan is properly terminated on exception */
-		hash_seq_term(&seq_status);
-		hash_destroy(doc_scores_hash);
-		pfree(sorted_docs);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
 	
-	/* Normal termination of hash scan */
+	while ((doc_entry = (DocumentScoreEntry *) hash_seq_search(&seq_status)) != NULL && i < result_count)
+	{
+		sorted_docs[i++] = doc_entry;
+	}
+	
+	/* Terminate hash scan */
 	hash_seq_term(&seq_status);
 
 	result_count = i;			/* Actual count extracted */

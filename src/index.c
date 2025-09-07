@@ -1049,19 +1049,15 @@ tp_endscan(IndexScanDesc scan)
 		scan->opaque = NULL;
 	}
 
-	/* Free ORDER BY arrays if we allocated them */
+	/* 
+	 * Don't free ORDER BY arrays here - they're allocated in our beginscan
+	 * but PostgreSQL's core code expects them to persist and will free them.
+	 * Just NULL out the pointers for safety.
+	 */
 	if (scan->numberOfOrderBys > 0)
 	{
-		if (scan->xs_orderbyvals)
-		{
-			pfree(scan->xs_orderbyvals);
-			scan->xs_orderbyvals = NULL;
-		}
-		if (scan->xs_orderbynulls)
-		{
-			pfree(scan->xs_orderbynulls);
-			scan->xs_orderbynulls = NULL;
-		}
+		scan->xs_orderbyvals = NULL;
+		scan->xs_orderbynulls = NULL;
 	}
 
 	elog(DEBUG2, "Tapir scan cleanup complete");

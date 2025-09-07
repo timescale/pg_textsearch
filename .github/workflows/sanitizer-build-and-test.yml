@@ -31,8 +31,11 @@ env:
 
 jobs:
   sanitizer:
-    name: PG17 Sanitizer ubuntu-22.04
+    name: PG${{ matrix.pg_version }} Sanitizer ubuntu-22.04
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        pg_version: [15, 16, 17]
     steps:
     - name: Install Linux Dependencies
       run: |
@@ -135,19 +138,19 @@ jobs:
     # Cache the build directory instead of the install directory here
     # because extension installation will write files to install directory
     # leading to a tainted cache
-    - name: Cache PostgreSQL 17
+    - name: Cache PostgreSQL ${{ matrix.pg_version }}
       id: cache-postgresql
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+        key: "${{ env.name }}-postgresql-${{ matrix.pg_version }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
 
-    - name: Build PostgreSQL 17 with sanitizers if not in cache
+    - name: Build PostgreSQL ${{ matrix.pg_version }} with sanitizers if not in cache
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
       run: |
         # Download and extract PostgreSQL source
         wget -q -O postgresql.tar.bz2 \
-          https://ftp.postgresql.org/pub/source/v17.6/postgresql-17.6.tar.bz2
+          https://ftp.postgresql.org/pub/source/v${{ matrix.pg_version }}.0/postgresql-${{ matrix.pg_version }}.0.tar.bz2
         mkdir -p ~/$PG_SRC_DIR
         tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
         
@@ -166,10 +169,10 @@ jobs:
       if: always() && steps.cache-postgresql.outputs.cache-hit != 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: config.log for PostgreSQL 17
+        name: config.log for PostgreSQL ${{ matrix.pg_version }}
         path: ~/${{ env.PG_SRC_DIR }}/config.log
 
-    - name: Install PostgreSQL 17
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
       run: |
         cd ~/$PG_SRC_DIR
         make install
