@@ -41,7 +41,7 @@ jobs:
         make clean
         # Build with strict compiler warnings like pgvector
         CFLAGS="-Wall -Wextra -Werror" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
     
     - name: Run regression tests
       run: |
