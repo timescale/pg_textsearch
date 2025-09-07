@@ -558,10 +558,9 @@ SELECT COUNT(*) FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-WARNING:  Exception during BM25 search for query 'larg limit': no hash_seq_search scan for hash table "DocScores"
  count 
 -------
-     0
+    20
 (1 row)
 
 -- LIMIT 0 edge case
