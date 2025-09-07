@@ -317,6 +317,7 @@ tp_rebuild_posting_lists_for_index(TpIndexState *index_state)
 		{
 			ItemPointer ctid = &docids[i];
 			Relation	heap_rel;
+			HeapTupleData tuple_data;
 			HeapTuple	tuple;
 			Buffer		heap_buf;
 			bool		valid;
@@ -329,7 +330,8 @@ tp_rebuild_posting_lists_for_index(TpIndexState *index_state)
 			heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
 			
 			/* Initialize tuple for heap_fetch */
-			tuple = &((HeapTupleData) {0});
+			memset(&tuple_data, 0, sizeof(HeapTupleData));
+			tuple = &tuple_data;
 			tuple->t_self = *ctid;
 			
 			/* Fetch the tuple from the heap */
