@@ -42,6 +42,8 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/snapmgr.h"
+#include "utils/lsyscache.h"
+#include "parser/parse_relation.h"
 #include <float.h>
 
 /* Forward declarations */
@@ -364,6 +366,29 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/* Initialize posting list system for this index */
+	/* First clear any existing state if this is a rebuild */
+	{
+		TpIndexState *existing_state = tp_get_index_state(RelationGetRelid(index),
+														   RelationGetRelationName(index));
+		if (existing_state)
+		{
+			/* Clear existing corpus statistics for rebuild */
+			LWLockAcquire(&existing_state->corpus_stats_lock, LW_EXCLUSIVE);
+			existing_state->stats.total_docs = 0;
+			existing_state->stats.total_len = 0;
+			existing_state->total_terms = 0;
+			LWLockRelease(&existing_state->corpus_stats_lock);
+			
+			/* Clear posting lists */
+			LWLockAcquire(&existing_state->posting_lists_lock, LW_EXCLUSIVE);
+			existing_state->string_hash_dp = InvalidDsaPointer;
+			LWLockRelease(&existing_state->posting_lists_lock);
+			
+			elog(DEBUG1, "Cleared existing index state for rebuild of %s",
+				 RelationGetRelationName(index));
+		}
+	}
+	
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									 RelationGetRelationName(index));
 	
@@ -385,7 +410,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		ItemPointer ctid;
 		Datum		tsvector_datum;
 		TSVector	tsvector;
-		float4	   *frequencies;
+		int32	   *frequencies;
 		int			term_count;
 		int			doc_length = 0;
 		int			i;
@@ -443,7 +468,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 			terms = palloc(term_count * sizeof(char*));
 			elog(DEBUG1, "Allocated terms array");
-			frequencies = palloc(term_count * sizeof(float4));
+			frequencies = palloc(term_count * sizeof(int32));
 			elog(DEBUG1, "Allocated frequencies array");
 
 			for (i = 0; i < term_count; i++)
@@ -477,13 +502,13 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				elog(DEBUG1, "Checking if term %d has positions: %d", i, we[i].haspos);
 				if (we[i].haspos)
 				{
-					frequencies[i] = (float4) POSDATALEN(tsvector, &we[i]);
-					elog(DEBUG1, "Term %d has %f positions", i, frequencies[i]);
+					frequencies[i] = (int32) POSDATALEN(tsvector, &we[i]);
+					elog(DEBUG1, "Term %d has %d positions", i, frequencies[i]);
 				}
 				else
 				{
-					frequencies[i] = 1.0;
-					elog(DEBUG1, "Term %d defaulting to frequency 1.0", i);
+					frequencies[i] = 1;
+					elog(DEBUG1, "Term %d defaulting to frequency 1", i);
 				}
 				doc_length +=
 					frequencies[i]; /* Sum frequencies for doc length */
@@ -649,7 +674,7 @@ tp_insert(Relation index,
 	Datum		vector_datum;
 	TpVector *bm25vec;
 	TpVectorEntry *vector_entry;
-	float4	   *frequencies;
+	int32	   *frequencies;
 	int			term_count;
 	int			doc_length = 0;
 	int			i;
@@ -685,7 +710,7 @@ tp_insert(Relation index,
 	if (term_count > 0)
 	{
 		char	  **terms = palloc(term_count * sizeof(char*));
-		frequencies = palloc(term_count * sizeof(float4));
+		frequencies = palloc(term_count * sizeof(int32));
 
 		vector_entry = TPVECTOR_ENTRIES_PTR(bm25vec);
 		for (i = 0; i < term_count; i++)
@@ -1205,7 +1230,7 @@ tp_search_posting_lists(IndexScanDesc scan,
 
 	/* Extract terms and frequencies from query vector */
 	char	  **query_terms;
-	float4	   *query_frequencies;
+	int32	   *query_frequencies;
 	TpVectorEntry *entries_ptr;
 	int			entry_count;
 	char	   *ptr;
@@ -1225,7 +1250,7 @@ tp_search_posting_lists(IndexScanDesc scan,
 
 	entry_count = query_vector->entry_count;
 	query_terms = palloc(entry_count * sizeof(char*));
-	query_frequencies = palloc(entry_count * sizeof(float4));
+	query_frequencies = palloc(entry_count * sizeof(int32));
 	entries_ptr = TPVECTOR_ENTRIES_PTR(query_vector);
 
 	elog(DEBUG2, "Tapir search: parsing %d query terms", entry_count);
@@ -1247,7 +1272,7 @@ tp_search_posting_lists(IndexScanDesc scan,
 		query_frequencies[i] = entry->frequency;
 
 		elog(DEBUG3,
-			 "Query term %d: '%s', freq=%f",
+			 "Query term %d: '%s', freq=%d",
 			 i,
 			 term_str,
 			 query_frequencies[i]);
@@ -2206,7 +2231,7 @@ tp_recover_from_docid_pages(Relation index)
 					TpVectorEntry *vector_entry;
 					int term_count;
 					char **terms;
-					float4 *frequencies;
+					int32 *frequencies;
 					int doc_length = 0;
 					char *ptr;
 
@@ -2224,7 +2249,7 @@ tp_recover_from_docid_pages(Relation index)
 					if (term_count > 0)
 					{
 						terms = palloc(term_count * sizeof(char*));
-						frequencies = palloc(term_count * sizeof(float4));
+						frequencies = palloc(term_count * sizeof(int32));
 
 						ptr = (char *) TPVECTOR_ENTRIES_PTR(bm25vec);
 
@@ -2287,4 +2312,64 @@ tp_recover_from_docid_pages(Relation index)
 
 	elog(DEBUG1, "Tapir: Crash recovery completed, found %d documents to rebuild",
 		 total_recovered);
+}
+
+/*
+ * tp_debug_dump_index - Debug function to show internal index structure
+ */
+PG_FUNCTION_INFO_V1(tp_debug_dump_index);
+
+Datum
+tp_debug_dump_index(PG_FUNCTION_ARGS)
+{
+	text	   *index_name_text = PG_GETARG_TEXT_PP(0);
+	char	   *index_name;
+	StringInfoData result;
+	Relation	index_rel;
+	Oid			index_oid;
+	TpIndexState *index_state;
+	
+	/* Convert text to C string */
+	index_name = text_to_cstring(index_name_text);
+	
+	initStringInfo(&result);
+	
+	appendStringInfo(&result, "Tapir Index Debug: %s\n", index_name);
+
+	/* Get the index relation */
+	index_oid = get_relname_relid(index_name, get_namespace_oid("public", false));
+	if (!OidIsValid(index_oid))
+	{
+		appendStringInfo(&result, "ERROR: Index '%s' not found\n", index_name);
+		PG_RETURN_TEXT_P(cstring_to_text(result.data));
+	}
+
+	/* Get index state to inspect corpus statistics */
+	index_state = tp_get_index_state(index_oid, index_name);
+	if (index_state == NULL)
+	{
+		appendStringInfo(&result, "ERROR: Could not get index state for '%s'\n", index_name);
+		PG_RETURN_TEXT_P(cstring_to_text(result.data));
+	}
+
+	/* Show corpus statistics */
+	appendStringInfo(&result, "Corpus Statistics:\n");
+	appendStringInfo(&result, "  total_docs: %d\n", index_state->stats.total_docs);
+	appendStringInfo(&result, "  total_len: %ld\n", index_state->stats.total_len);
+	
+	if (index_state->stats.total_docs > 0)
+	{
+		float avg_doc_len = (float)index_state->stats.total_len / (float)index_state->stats.total_docs;
+		appendStringInfo(&result, "  avg_doc_len: %.4f\n", avg_doc_len);
+	}
+	else
+	{
+		appendStringInfo(&result, "  avg_doc_len: 0 (no documents)\n");
+	}
+	
+	appendStringInfo(&result, "BM25 Parameters:\n");
+	appendStringInfo(&result, "  k1: %.2f\n", index_state->stats.k1);
+	appendStringInfo(&result, "  b: %.2f\n", index_state->stats.b);
+	
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }

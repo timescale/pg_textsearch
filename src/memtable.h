@@ -18,6 +18,8 @@
 #include "storage/spin.h"
 #include "utils/hsearch.h"
 #include "utils/timestamp.h"
+#include "utils/dsa.h"
+#include "storage/dsm_registry.h"
 
 /*
  * Forward declarations to avoid circular dependencies
@@ -32,7 +34,7 @@ struct TpPostingEntry
 {
 	ItemPointerData ctid;		/* Document heap tuple ID */
 	int32		doc_id;			/* Internal document ID */
-	float4		frequency;		/* Term frequency in document */
+	int32		frequency;		/* Term frequency in document */
 	int32		doc_length;		/* Document length */
 };
 
@@ -49,7 +51,7 @@ struct TpPostingList
 	int32		doc_freq;		/* Document frequency (for IDF calculation) */
 
 	/* Dynamic array - unsorted during building, sorted after finalization */
-	TpPostingEntry *entries;	/* Allocated separately */
+	dsa_pointer	entries_dp;		/* DSA pointer to TpPostingEntry array */
 };
 
 
@@ -81,22 +83,34 @@ typedef struct TpCorpusStatistics
 }			TpCorpusStatistics;
 
 /*
- * Main shared memory state structure
+ * Per-index state structure stored in DSA
+ * Each index gets its own DSA area and this structure is the root
  */
-typedef struct TpSharedState
+typedef struct TpIndexState
 {
-	LWLock	   *string_interning_lock;	/* Protects string_hash operations */
-	Size		string_hash_size;	/* Current hash table size */
-	int32		total_terms;	/* Total unique terms interned */
+	/* Per-index locks allocated within this DSA */
+	LWLock		string_interning_lock;	/* Protects string hash operations */
+	LWLock		posting_lists_lock;		/* Protects posting list operations */
+	LWLock		corpus_stats_lock;		/* Protects corpus statistics */
 
-	/* Future: Add other memtable components here */
-	LWLock	   *posting_lists_lock; /* Future: protects posting lists */
-	TpCorpusStatistics stats;		/* Corpus statistics */
-}			TpSharedState;
+	/* String hash table stored in this DSA */
+	dsa_pointer	string_hash_dp;			/* DSA pointer to TpStringHashTable */
+	int32		total_terms;			/* Total unique terms interned */
 
-/* Global variables */
-extern TpSharedState * tp_shared_state;
-extern HTAB *tp_query_limits_hash; /* Per-backend hash table */
+	/* Corpus statistics for BM25 */
+	TpCorpusStatistics stats;			/* Corpus statistics */
+
+	/* DSA management */
+	Oid			index_oid;				/* Index OID for this state */
+	int			string_tranche_id;		/* Tranche ID for string interning lock */
+	int			posting_tranche_id;		/* Tranche ID for posting lists lock */  
+	int			corpus_tranche_id;		/* Tranche ID for corpus stats lock */
+	dsa_handle	area_handle;			/* DSA handle for cross-process attachment */
+	bool		dsa_initialized;		/* True when DSA area is ready for use */
+}			TpIndexState;
+
+/* Per-backend hash table for query limits (unchanged) */
+extern HTAB *tp_query_limits_hash;
 
 /* Query limit tracking for LIMIT optimization (per-backend) */
 typedef struct TpQueryLimitEntry
@@ -106,15 +120,33 @@ typedef struct TpQueryLimitEntry
 }			TpQueryLimitEntry;
 
 /* GUC variables */
-extern int	tp_shared_memory_size;
+extern int	tp_index_memory_limit;	/* Currently not enforced */
 extern int	tp_default_limit;
+
+/* Default hash table size */
+#define TP_DEFAULT_HASH_BUCKETS		1024
+
+/* Cache entry for index states */
+typedef struct IndexStateCacheEntry
+{
+	Oid			index_oid;			/* Hash key: index OID */
+	TpIndexState *state;			/* Cached index state pointer */
+	dsa_area   *area;				/* Cached DSA area pointer */
+} IndexStateCacheEntry;
 
 /* Function declarations */
 
-/* Extension lifecycle */
-extern void tp_init_memtable_hooks(void);
-extern void tp_shmem_request(void);
-extern void tp_shmem_startup(void);
+/* DSA-based per-index management */
+extern char *tp_get_dsm_segment_name(Oid index_oid);
+extern TpIndexState *tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out);
+extern void tp_destroy_index_dsa(Oid index_oid);
+extern dsa_area *tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid);
+extern IndexStateCacheEntry *get_cached_index_state(Oid index_oid);
+
+/* DSA memory allocation wrappers */
+extern dsa_pointer tp_dsa_allocate(dsa_area *area, Size size);
+extern void tp_dsa_free(dsa_area *area, dsa_pointer dp);
+extern void *tp_dsa_get_address(dsa_area *area, dsa_pointer dp);
 
 /* Transaction-level lock management */
 extern void tp_transaction_lock_acquire(void);
@@ -126,8 +158,5 @@ extern void tp_intern_string(const char *term);
 extern void tp_intern_string_len(const char *term, int term_len);
 
 /* Statistics and maintenance */
-
-/* Memory management */
-extern Size tp_calculate_shared_memory_size(void);
 
 #endif							/* TP_MEMTABLE_H */

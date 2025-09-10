@@ -14,30 +14,33 @@
 
 #include "postgres.h"
 #include "storage/lwlock.h"
+#include "utils/dsa.h"
 
 /*
- * Forward declaration for TpStringHashEntry
+ * Forward declarations
  */
 typedef struct TpStringHashEntry TpStringHashEntry;
+typedef struct TpPostingList TpPostingList;
+typedef struct TpPostingEntry TpPostingEntry;
 
 /*
- * Individual hash entry in shared memory
- * Uses offsets instead of pointers for shared memory compatibility
+ * Individual hash entry in DSA
+ * Uses dsa_pointer for all references within the DSA
  */
 struct TpStringHashEntry
 {
-	uint32		next_offset;	/* Offset to next entry in chain (0 = end) */
-	uint32		string_offset;	/* Offset to string in pool */
+	dsa_pointer	next_dp;		/* DSA pointer to next entry in chain (InvalidDsaPointer = end) */
+	dsa_pointer	string_dp;		/* DSA pointer to string */
 	uint32		string_length;	/* Length of string */
 	uint32		hash_value;		/* Cached hash value */
 
 	/* Application data - string interning */
-	void	   *posting_list;	/* Pointer to TpPostingList (not in shared memory) */
+	dsa_pointer	posting_list_dp; /* DSA pointer to TpPostingList (InvalidDsaPointer = none) */
 	int32		doc_freq;		/* Document frequency */
 };
 
 /*
- * Custom hash table structure in shared memory
+ * Custom hash table structure in DSA
  * Stores variable-length strings (typically words/terms from text search)
  */
 typedef struct TpStringHashTable
@@ -47,21 +50,14 @@ typedef struct TpStringHashTable
 	uint32		entry_count;	/* Total entries in table */
 	uint32		collision_count; /* Statistics for monitoring */
 
-	/* Memory management */
-	uint32		max_entries;	/* Maximum entries allowed (memory limit) */
-	char	   *string_pool;	/* Base of string storage pool */
-	Size		pool_size;		/* Total pool size */
-	Size		pool_used;		/* Bytes used so far */
+	/* Memory management - no limits enforced for now */
+	uint32		max_entries;	/* Reserved for future use */
 	
-	/* Entry pool management */
-	TpStringHashEntry *entry_pool; /* Base of entry storage pool */
-	uint32		entry_pool_size; /* Maximum entries in pool */
-
-	/* Hash buckets - array of offsets to first entry (0 = empty) */
-	uint32	   *buckets;		/* Offset to TpStringHashEntry chain */
+	/* Hash buckets - array of dsa_pointer to first entry (InvalidDsaPointer = empty) */
+	dsa_pointer	buckets_dp;		/* DSA pointer to array of dsa_pointer (bucket array) */
 	
-	/* Per-table locking */
-	LWLock	   *lock;			/* Per-table lock for this string table */
+	/* Note: With DSA, we don't need separate pools - everything is allocated via dsa_allocate */
+	/* The DSA area handle is stored in the containing TpIndexState structure */
 }			TpStringHashTable;
 
 /*
@@ -75,39 +71,35 @@ typedef struct TpTransactionLockState
 	bool		callback_registered; /* True if xact callback registered */
 }			TpTransactionLockState;
 
-/* Global variables */
-extern TpStringHashTable *tp_string_hash_table;
-extern TpTransactionLockState tp_xact_lock_state;
+/* No global hash table anymore - each index has its own in DSA */
 
-/* Hash table creation and initialization */
-extern Size tp_hash_table_shmem_size(uint32 max_entries, Size string_pool_size);
-extern TpStringHashTable *tp_hash_table_create_shmem(uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
-extern TpStringHashTable *tp_hash_table_create(uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
-extern void tp_hash_table_init(TpStringHashTable *ht, uint32 initial_buckets, Size string_pool_size, uint32 max_entries);
+/* Hash table creation and initialization with DSA */
+extern TpStringHashTable *tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets);
+extern void tp_hash_table_init_dsa(TpStringHashTable *ht, dsa_area *area, uint32 initial_buckets);
 
-/* Core hash table operations */
-extern TpStringHashEntry *tp_hash_lookup(TpStringHashTable *ht, const char *str, size_t len);
-extern TpStringHashEntry *tp_hash_insert(TpStringHashTable *ht, const char *str, size_t len);
-extern bool tp_hash_delete(TpStringHashTable *ht, const char *str, size_t len);
-extern bool tp_hash_resize(TpStringHashTable *ht, uint32 new_bucket_count);
-
-/* Transaction-level locking */
-extern void tp_acquire_string_table_lock(TpStringHashTable *string_table, bool for_write);
-extern void tp_release_string_table_lock(TpStringHashTable *string_table);
+/* Core hash table operations with DSA */
+extern TpStringHashEntry *tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
+extern TpStringHashEntry *tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
+extern bool tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
+extern bool tp_hash_resize_dsa(dsa_area *area, TpStringHashTable *ht, uint32 new_bucket_count);
 
 /* Statistics and debugging */
-extern void tp_hash_stats(TpStringHashTable *ht, uint32 *buckets_used, 
-						  double *avg_chain_length, uint32 *max_chain_length);
+extern void tp_hash_stats_dsa(dsa_area *area, TpStringHashTable *ht, uint32 *buckets_used, 
+							  double *avg_chain_length, uint32 *max_chain_length);
 
-/* Memory budget calculation functions */
-extern uint32 tp_calculate_max_hash_entries(void);
-extern uint32 tp_calculate_max_posting_entries(void);
+/* Posting list management in DSA */
+extern TpPostingList *tp_alloc_posting_list_dsa(dsa_area *area);
+extern TpPostingEntry *tp_alloc_posting_entries_dsa(dsa_area *area, uint32 capacity);
+extern TpPostingEntry *tp_realloc_posting_entries_dsa(dsa_area *area, TpPostingList *posting_list, uint32 new_capacity);
 
-
+/* Helper functions for dsa_pointer conversion */
+extern TpPostingList *tp_get_posting_list_from_dp(dsa_area *area, dsa_pointer dp);
+extern TpPostingEntry *tp_get_posting_entries_from_dp(dsa_area *area, dsa_pointer dp);
+extern char *tp_get_string_from_dp(dsa_area *area, dsa_pointer dp);
 
 /* Default sizing constants */
 #define TP_HASH_DEFAULT_BUCKETS		1024	/* Initial bucket count */
 #define TP_HASH_MAX_LOAD_FACTOR		0.75	/* Rehash when load > this */
-#define TP_HASH_DEFAULT_STRING_POOL_SIZE (32 * 1024 * 1024) /* 32MB */
+/* Note: No need for fixed pool sizes with DSA - memory is allocated dynamically */
 
 #endif							/* TP_STRINGTABLE_H */

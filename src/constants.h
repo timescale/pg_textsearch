@@ -15,16 +15,14 @@
 
 /* Memory and capacity limits */
 #define TP_QUERY_LIMITS_HASH_SIZE 128
-#define TP_DEFAULT_SHARED_MEMORY_SIZE 4	/* Default 4MB per index */
-#define TP_MAX_SHARED_MEMORY_SIZE 1024		/* Max 1GB per index */
-#define TP_DEFAULT_QUERY_LIMIT 1000		/* Default limit when none detected */
-#define TP_MAX_QUERY_LIMIT 100000			/* Max 100k */
+#define TP_DEFAULT_INDEX_MEMORY_LIMIT 64		/* Default 64MB per index (not enforced) */
+#define TP_MAX_INDEX_MEMORY_LIMIT 512			/* Max 512MB per index (not enforced) */
+#define TP_DEFAULT_QUERY_LIMIT 1000			/* Default limit when none detected */
+#define TP_MAX_QUERY_LIMIT 100000				/* Max 100k */
 #define TP_DEFAULT_SEGMENT_THRESHOLD 10000
 
-/* Memory budget distribution (per index) */
+/* Memory budget distribution (per index) - legacy constants for compatibility */
 #define TP_AVG_TERM_LENGTH 5				/* Average term length in characters */
-#define TP_STRING_TABLE_MEMORY_FRACTION 0.25	/* 25% of memory for string table */
-#define TP_POSTING_LISTS_MEMORY_FRACTION 0.75	/* 75% of memory for posting lists */
 
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE 1024
@@ -49,5 +47,14 @@
 /* Memory validation constants */
 #define TP_MIN_MEMORY_ADDRESS 0x1000
 #define TP_MAX_MEMORY_ADDRESS 0x7fffffffffff
+
+/* 
+ * Fixed LWLock tranche IDs for Tapir extension.
+ * These must be consistent across all backends to allow DSA attachment.
+ * We use high numbers to avoid conflicts with core PostgreSQL tranches.
+ */
+#define TAPIR_TRANCHE_STRING	1001	/* String interning operations */
+#define TAPIR_TRANCHE_POSTING	1002	/* Posting list operations */
+#define TAPIR_TRANCHE_CORPUS	1003	/* Corpus statistics operations */
 
 #endif /* CONSTANTS_H */

@@ -1,10 +1,10 @@
 -- Test long string handling including URLs, paths, and long terms
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
+psql:/Users/tjg/tapir/test/sql/strings.sql:3: NOTICE:  extension "tapir" already exists, skipping
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;
-NOTICE:  table "long_string_docs" does not exist, skipping
+psql:/Users/tjg/tapir/test/sql/strings.sql:6: NOTICE:  table "long_string_docs" does not exist, skipping
 CREATE TABLE long_string_docs (
     id SERIAL PRIMARY KEY,
     content TEXT,
@@ -36,10 +36,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 -- Create tapir index on long strings
 CREATE INDEX long_strings_idx ON long_string_docs USING tapir(content) 
     WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation long_strings_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
+psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Tapir index build started for relation long_strings_idx
+psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Using text search configuration: english
+psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Using index options: k1=1.20, b=0.75
+psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Search for URL components
 SELECT id, LEFT(content, 80) || '...' as content_preview, 
        ROUND((content <@> to_tpvector('https website', 'long_strings_idx'))::numeric, 4) as score
@@ -71,8 +71,8 @@ WHERE content <@> to_tpvector('file log error', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
-  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -4.7095
-  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -5.2239
+  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -3.9159
+  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.3436
 (2 rows)
 
 -- Test 4: Test vectorization of very long URLs
@@ -96,12 +96,9 @@ WHERE content <@> to_tpvector('algorithm bm25', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id |  score  
 ----+---------
-  6 | -1.5779
-  7 | -1.5779
-  1 | -2.0517
- 10 | -2.3155
-  8 | -2.7879
-(5 rows)
+ 10 | -0.7676
+  8 | -0.9242
+(2 rows)
 
 -- Test 7: Performance test with multiple long term queries
 SELECT 
@@ -113,9 +110,9 @@ WHERE content <@> to_tpvector('postgresql tapir extension search', 'long_strings
 ORDER BY multi_term_score DESC;
  id | category | multi_term_score 
 ----+----------+------------------
-  8 | mixed    |          -1.3939
- 10 | json     |          -2.3155
-  6 | config   |          -6.3115
+  8 | mixed    |          -0.5756
+ 10 | json     |          -1.2456
+  6 | config   |          -4.8534
 (3 rows)
 
 -- Test 8: Test URL tokenization specifics
@@ -141,9 +138,9 @@ WHERE content <@> to_tpvector('document ridiculously long', 'long_strings_idx') 
 ORDER BY score DESC;
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
-  7 | Function name: tp_calculate_bm25_relevance_score_w... | -2.2727
-  3 | Documentation available at https://docs.postgresql... | -2.3547
- 11 | This document contains a ridiculously long compoun... | -5.6687
+  7 | Function name: tp_calculate_bm25_relevance_score_w... | -1.0905
+  3 | Documentation available at https://docs.postgresql... | -1.1305
+ 11 | This document contains a ridiculously long compoun... | -4.8824
 (3 rows)
 
 -- Test 10: Memory usage statistics after indexing long strings
@@ -185,9 +182,9 @@ WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
 ORDER BY content_length;
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
- 12 | stack_test       |            612 | Stack allocation likely | -2.6119
- 13 | heap_test        |           1111 | Heap allocation likely  | -2.6119
- 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.0794
+ 12 | stack_test       |            612 | Stack allocation likely | -1.2024
+ 13 | heap_test        |           1111 | Heap allocation likely  | -1.2024
+ 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.2995
 (3 rows)
 
 -- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
@@ -203,7 +200,7 @@ WHERE category = 'extreme'
     AND content <@> to_tpvector('extreme testing', 'long_strings_idx') < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
- Extreme length test |        23614 | -2.0339
+ Extreme length test |        23614 | -3.8411
 (1 row)
 
 -- Cleanup

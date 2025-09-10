@@ -11,15 +11,22 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_database.h"
+#include "commands/dbcommands.h"
 #include "common/hashfn.h"
 #include "miscadmin.h"
-#include "storage/ipc.h"
+#include "storage/dsm_registry.h"
 #include "storage/lwlock.h"
-#include "storage/proc.h"
-#include "storage/shmem.h"
+#include "utils/builtins.h"
+#include "utils/dsa.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "constants.h"
 #include "stringtable.h"
@@ -27,250 +34,515 @@
 #include "memtable.h"
 #include "posting.h"
 
-/* Global variables */
-TpSharedState *tp_shared_state = NULL;
+/* Backend-local index state cache to prevent multiple DSM segment attachments */
+static HTAB *index_state_cache = NULL;
+
+/* IndexStateCacheEntry type definition moved to memtable.h */
+
+/* Per-backend hash table for query limits */
 HTAB	   *tp_query_limits_hash = NULL;
 
 /* GUC variables */
-int			tp_shared_memory_size = TP_DEFAULT_SHARED_MEMORY_SIZE;
+int			tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
 int			tp_default_limit = TP_DEFAULT_QUERY_LIMIT;
 
 /* Transaction-level lock tracking (per-backend) */
 bool tp_transaction_lock_held = false;
 
-/* Previous hooks */
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
-/* Forward declarations - none needed */
-
 /*
- * Calculate shared memory size needed for Tp memtable
+ * Generate human-readable DSM segment name for an index
+ * Format: "tapir.dbname.schema.indexname"
  */
-Size
-tp_calculate_shared_memory_size(void)
+char *
+tp_get_dsm_segment_name(Oid index_oid)
 {
-	Size		string_hash_size;
-	Size		shared_state_size;
-	Size		string_pool_size;
-	Size		total_size;
-	uint32		initial_buckets;
-	uint32		max_entries;
-
-	/* Use same constants as actual allocation in tp_shmem_startup() */
-	initial_buckets = TP_HASH_DEFAULT_BUCKETS;
-	max_entries = (uint32)(initial_buckets * TP_HASH_MAX_LOAD_FACTOR);
-	string_pool_size = TP_HASH_DEFAULT_STRING_POOL_SIZE;
-
-	/* Calculate string hash table size using same logic as actual allocation */
-	string_hash_size = tp_hash_table_shmem_size(max_entries, string_pool_size);
-
-	/* Shared state structure */
-	shared_state_size = sizeof(TpSharedState);
-
-	total_size = add_size(string_hash_size, shared_state_size);
-
-	elog(
-		 DEBUG2,
-		 "Tapir shared memory size: string_hash=%zu (buckets=%u, max_entries=%u, pool=%zu), shared_state=%zu, total=%zu",
-		 string_hash_size,
-		 initial_buckets,
-		 max_entries,
-		 string_pool_size,
-		 shared_state_size,
-		 total_size);
-
-	return total_size;
+	/* Build segment name: tapir.dbid.oid for uniqueness
+	 * Including database OID ensures no cross-database conflicts
+	 * Using index OID ensures each index gets its own segment even if names are reused */
+	return psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 }
 
 /*
- * shmem_request hook: request shared memory space
+ * Initialize the backend-local index state cache
  */
-void
-tp_shmem_request(void)
+static void
+init_index_state_cache(void)
 {
-	Size		memtable_size;
+	HASHCTL		ctl;
 
-	if (prev_shmem_request_hook)
-		prev_shmem_request_hook();
+	if (index_state_cache != NULL)
+		return;
 
-	memtable_size = tp_calculate_shared_memory_size();
-	RequestAddinShmemSpace(memtable_size);
-	RequestNamedLWLockTranche("tp_memtable", 2);	/* 2 locks needed */
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(Oid);
+	ctl.entrysize = sizeof(IndexStateCacheEntry);
+	ctl.hcxt = TopMemoryContext;
 
-	elog(DEBUG1, "Tapir requested %zu bytes of shared memory", memtable_size);
+	index_state_cache = hash_create("Tapir Index State Cache",
+								 16,		/* initial size */
+								 &ctl,
+								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
 /*
- * shmem_startup hook: allocate or attach to shared memory
+ * Get cached index state and DSA area, preventing multiple DSM attachments
  */
-void
-tp_shmem_startup(void)
+IndexStateCacheEntry *
+get_cached_index_state(Oid index_oid)
 {
+	IndexStateCacheEntry *entry;
+
+	/* Initialize cache if needed */
+	init_index_state_cache();
+
+	/* Check if we already have this index cached */
+	entry = (IndexStateCacheEntry *) hash_search(index_state_cache,
+												  &index_oid,
+												  HASH_FIND,
+												  NULL);
+	
+	if (entry != NULL)
+	{
+		elog(DEBUG2, "Found cached index state for index %u", index_oid);
+		return entry;
+	}
+
+	elog(DEBUG2, "No cached index state for index %u", index_oid);
+	return NULL;
+}
+
+/*
+ * Cache an index state and DSA area to prevent multiple DSM attachments  
+ */
+static void
+cache_index_state(Oid index_oid, TpIndexState *state, dsa_area *area)
+{
+	IndexStateCacheEntry *entry;
 	bool		found;
-	LWLockPadded *tranche;
 
-	if (prev_shmem_startup_hook)
-		prev_shmem_startup_hook();
+	/* Initialize cache if needed */
+	init_index_state_cache();
 
-	/* Reset global variables in case this is a restart */
-	tp_shared_state = NULL;
-	tp_query_limits_hash = NULL;
+	/* Cache the state and area */
+	entry = (IndexStateCacheEntry *) hash_search(index_state_cache,
+												  &index_oid,
+												  HASH_ENTER,
+												  &found);
+	entry->state = state;
+	entry->area = area;
+	
+	elog(DEBUG2, "Cached index state for index %u (found=%d), area=%p", index_oid, found, area);
+}
 
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+/*
+ * Initialize DSA callback for new index
+ * Called once when the DSA segment is first created
+ */
+static void
+tp_init_index_dsa_callback(void *ptr)
+{
+	TpIndexState *state = (TpIndexState *) ptr;
+	
+	/* Use fixed tranche IDs that are consistent across all backends */
+	state->string_tranche_id = TAPIR_TRANCHE_STRING;
+	state->posting_tranche_id = TAPIR_TRANCHE_POSTING;
+	state->corpus_tranche_id = TAPIR_TRANCHE_CORPUS;
+	
+	/* Initialize locks with the fixed tranche IDs */
+	LWLockInitialize(&state->string_interning_lock, state->string_tranche_id);
+	LWLockInitialize(&state->posting_lists_lock, state->posting_tranche_id);
+	LWLockInitialize(&state->corpus_stats_lock, state->corpus_tranche_id);
+	
+	/* Initialize DSA area handle - will be set by caller after callback */
+	state->area_handle = DSA_HANDLE_INVALID;
+	state->dsa_initialized = false;
+	
+	/* Initialize state */
+	state->string_hash_dp = InvalidDsaPointer;
+	state->total_terms = 0;
+	
+	/* Initialize corpus statistics */
+	memset(&state->stats, 0, sizeof(TpCorpusStatistics));
+	state->stats.k1 = 1.2f;
+	state->stats.b = 0.75f;
+	state->stats.last_checkpoint = GetCurrentTimestamp();
+	state->stats.segment_threshold = TP_DEFAULT_SEGMENT_THRESHOLD;
+	
+	elog(DEBUG1, "Initialized DSA for index with lock tranches: string=%d, posting=%d, corpus=%d",
+		 state->string_tranche_id, state->posting_tranche_id, state->corpus_tranche_id);
+}
 
-	/* Initialize shared state */
-	tp_shared_state =
-		ShmemInitStruct("tp_shared_state", sizeof(TpSharedState), &found);
-
+/*
+ * Get or create DSA area for an index
+ * Returns the TpIndexState and optionally the DSA area
+ * This is the unified function that replaces tp_create_index_dsa and tp_attach_index_dsa
+ */
+TpIndexState *
+tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
+{
+	char	   *segment_name;
+	bool		found;
+	TpIndexState *state;
+	dsa_area   *area = NULL;
+	IndexStateCacheEntry *cache_entry;
+	
+	/* Check if we already have this index cached to prevent multiple attachments */
+	cache_entry = get_cached_index_state(index_oid);
+	if (cache_entry != NULL)
+	{
+		elog(DEBUG2, "Using cached index state for index %u, area=%p", index_oid, cache_entry->area);
+		if (area_out)
+		{
+			*area_out = cache_entry->area;
+		}
+		return cache_entry->state;
+	}
+	
+	elog(DEBUG2, "No cache found, creating/attaching DSA for index %u", index_oid);
+	
+	segment_name = tp_get_dsm_segment_name(index_oid);
+	
+	elog(DEBUG1, "Getting DSM segment: name='%s' for index_oid=%u", segment_name, index_oid);
+	
+	state = GetNamedDSMSegment(segment_name,
+							   sizeof(TpIndexState),
+							   tp_init_index_dsa_callback,
+							   &found);
+	
+	elog(DEBUG1, "Got DSM segment: state=%p, found=%d, existing_oid=%u, requested_oid=%u",
+		 state, found, state->index_oid, index_oid);
+	
+	/* Store the index OID in the state */
+	state->index_oid = index_oid;
+	
+	/* Register lock tranches in this backend */
+	LWLockRegisterTranche(state->string_tranche_id, "tapir_string");
+	LWLockRegisterTranche(state->posting_tranche_id, "tapir_posting");
+	LWLockRegisterTranche(state->corpus_tranche_id, "tapir_corpus");
+	
 	if (!found)
 	{
-		/* First time initialization */
-		tranche = GetNamedLWLockTranche("tp_memtable");
-		tp_shared_state->string_interning_lock = &tranche[0].lock;
-		tp_shared_state->posting_lists_lock = &tranche[1].lock;
-		tp_shared_state->string_hash_size = 0;
-		tp_shared_state->total_terms = 0;
-
-		/* Initialize statistics */
-		memset(&tp_shared_state->stats, 0, sizeof(TpCorpusStatistics));
-		tp_shared_state->stats.k1 = 1.2f;
-		tp_shared_state->stats.b = 0.75f;
-		tp_shared_state->stats.last_checkpoint = GetCurrentTimestamp();
-		tp_shared_state->stats.segment_threshold = TP_DEFAULT_SEGMENT_THRESHOLD;
-
-		elog(DEBUG1, "Tapir shared state initialized");
-	}
-
-	/* Initialize custom string interning hash table */
-	{
-		uint32		max_entries = tp_calculate_max_hash_entries();
-		Size		string_pool_size = max_entries * (TP_AVG_TERM_LENGTH + 1);  /* Calculate string pool from max entries */
-		uint32		initial_buckets = TP_HASH_DEFAULT_BUCKETS;  /* Use consistent bucket count */
-		Size		hash_table_size = tp_hash_table_shmem_size(max_entries, string_pool_size);
-		bool		hash_found = false;
-		
-		tp_string_hash_table = (TpStringHashTable *) ShmemInitStruct("tp_string_hash",
-																	 hash_table_size,
-																	 &hash_found);
-		
-		if (!tp_string_hash_table)
-			elog(PANIC, "Failed to allocate shared memory for string hash table");
-		
-		if (!hash_found)
-		{
-			/* Zero out the allocated hash table memory for sanitizer safety */
-			memset(tp_string_hash_table, 0, hash_table_size);
-			
-			/* Initialize new hash table */
-			tp_hash_table_init(tp_string_hash_table, initial_buckets, string_pool_size, max_entries);
-			
-			/* Allocate and initialize lock for the shared string table */
-			tp_string_hash_table->lock = tp_shared_state->string_interning_lock;
-			
-			elog(DEBUG1, "Initialized new string hash table: %u buckets, %zu string pool, %u max entries, lock=%p",
-				 initial_buckets, string_pool_size, max_entries, tp_string_hash_table->lock);
-		}
-		else
-		{
-			/* When attaching to existing hash table, set the lock pointer */
-			tp_string_hash_table->lock = tp_shared_state->string_interning_lock;
-			elog(DEBUG1, "Attached to existing string hash table, lock=%p", tp_string_hash_table->lock);
-		}
-	}
-
-	/* Query limits are now per-backend, not shared */
-	tp_query_limits_hash = NULL;
-
-	if (!found)
-	{
-		elog(DEBUG1, "Tapir string interning hash table created");
+		elog(DEBUG1, "Created new DSA for index %u", index_oid);
 	}
 	else
 	{
-		elog(DEBUG1, "Tapir attached to existing shared memory");
+		elog(DEBUG2, "Attached to existing DSA for index %u", index_oid);
+		/* Don't reset stats here - it causes problems with concurrent access.
+		 * Stats will be reset in tp_build when needed. */
 	}
+	
+	/* Create or attach to DSA area */
+	elog(DEBUG2, "DSA area logic: found=%d, area_handle=%u", found, state->area_handle);
+	if (!found || state->area_handle == DSA_HANDLE_INVALID)
+	{
+		/* New segment or existing segment without DSA area - create the DSA area */
+		elog(DEBUG1, "Creating DSA area for index %u", index_oid);
+		
+		/* 
+		 * Create DSA area with proper pinning for persistence.
+		 * The area will automatically pin its underlying DSM segments.
+		 * Use the fixed posting tranche ID for consistency across backends.
+		 */
+		area = dsa_create(TAPIR_TRANCHE_POSTING);
+		if (area)
+		{
+			state->area_handle = dsa_get_handle(area);
+			state->dsa_initialized = true;
+			elog(DEBUG1, "Backend created DSA area: index_oid=%u, area_handle=%u, area=%p", 
+				 index_oid, state->area_handle, area);
+			
+			/* 
+			 * Pin the DSA area to make it persistent across backend processes.
+			 * This ensures the area survives even if all backends detach.
+			 */
+			PG_TRY();
+			{
+				dsa_pin(area);
+				elog(DEBUG2, "Successfully pinned DSA area for index %u", index_oid);
+			}
+			PG_CATCH();
+			{
+				/* DSA area might already be pinned - that's okay */
+				FlushErrorState();
+				elog(DEBUG2, "DSA area for index %u already pinned", index_oid);
+			}
+			PG_END_TRY();
+			
+			/* 
+			 * Pin mapping to prevent cleanup in this backend.
+			 * This is critical for ensuring the DSA area remains accessible.
+			 */
+			dsa_pin_mapping(area);
+			
+			if (!found)
+				elog(DEBUG1, "Created and pinned DSA area with handle %u for new index %u", 
+					 state->area_handle, index_oid);
+			else
+				elog(DEBUG1, "Created and pinned DSA area with handle %u for existing segment index %u", 
+					 state->area_handle, index_oid);
+		}
+		else
+		{
+			elog(ERROR, "Failed to create DSA area for index %u", index_oid);
+		}
+	}
+	else
+	{
+		/* Existing segment with valid DSA handle - attach to existing DSA area if needed */
+		if (area_out)
+		{
+			elog(DEBUG1, "Backend attempting to attach to DSA area: index_oid=%u, area_handle=%u, dsa_initialized=%s", 
+				 index_oid, state->area_handle, state->dsa_initialized ? "true" : "false");
+			area = dsa_attach(state->area_handle);
+			if (area == NULL)
+			{
+				elog(WARNING, "Failed to attach to DSA area for index %u, handle %u - recreating", 
+					 index_oid, state->area_handle);
+				/* DSA area no longer valid, create a new one */
+				area = dsa_create(TAPIR_TRANCHE_POSTING);
+				if (area)
+				{
+					state->area_handle = dsa_get_handle(area);
+					state->dsa_initialized = true;
+					
+					/* Pin the recreated DSA area for persistence */
+					PG_TRY();
+					{
+						dsa_pin(area);
+						elog(DEBUG2, "Successfully pinned recreated DSA area for index %u", index_oid);
+					}
+					PG_CATCH();
+					{
+						/* DSA area might already be pinned - that's okay */
+						FlushErrorState();
+						elog(DEBUG2, "Recreated DSA area for index %u already pinned", index_oid);
+					}
+					PG_END_TRY();
+					
+					dsa_pin_mapping(area);
+					
+					elog(DEBUG1, "Recreated and pinned DSA area with handle %u for index %u", 
+						 state->area_handle, index_oid);
+				}
+				else
+				{
+					elog(ERROR, "Failed to recreate DSA area for index %u", index_oid);
+				}
+			}
+			else
+			{
+				/* Pin mapping to prevent automatic cleanup in this backend */
+				dsa_pin_mapping(area);
+				elog(DEBUG2, "Attached to existing DSA area for index %u, handle %u (pinned mapping)", 
+					 index_oid, state->area_handle);
+			}
+		}
+		else
+		{
+			elog(DEBUG2, "Using existing DSA state for index %u without attaching area", index_oid);
+		}
+	}
+	
+	if (area_out)
+	{
+		*area_out = area;
+	}
+	
+	/* Cache the state and area - area pointer is stable within this backend session due to dsa_pin_mapping */
+	elog(DEBUG1, "Caching index state: index_oid=%u, state=%p, area=%p, segment_name='%s'",
+		 index_oid, state, area, segment_name);
+	cache_index_state(index_oid, state, area);
+	
+	pfree(segment_name);
+	return state;
+}
 
-	/* Initialize posting list shared state while we still hold the lock */
-	tp_posting_init_shared_state();
+/*
+ * Destroy DSA area for an index (called when index is dropped)
+ */
+void
+tp_destroy_index_dsa(Oid index_oid)
+{
+	char	   *segment_name;
+	IndexStateCacheEntry *cache_entry;
+	dsm_handle	handle;
+	bool		found;
+	
+	segment_name = tp_get_dsm_segment_name(index_oid);
+	
+	/* First, remove from cache if present */
+	if (index_state_cache != NULL)
+	{
+		cache_entry = (IndexStateCacheEntry *) hash_search(index_state_cache,
+															&index_oid,
+															HASH_REMOVE,
+															&found);
+		if (found)
+		{
+			elog(DEBUG2, "Removed index %u from cache", index_oid);
+			
+			/* If we have a cached DSA area, detach from it */
+			if (cache_entry && cache_entry->area != NULL)
+			{
+				dsa_detach(cache_entry->area);
+				elog(DEBUG2, "Detached from DSA area for index %u", index_oid);
+			}
+		}
+	}
+	
+	/* Try to get the DSM segment */
+	{
+		bool found;
+		TpIndexState *state = GetNamedDSMSegment(segment_name, 0, NULL, &found);
+		handle = (state != NULL && found) ? DSM_HANDLE_INVALID : DSM_HANDLE_INVALID;
+		/* Note: We can't get the actual handle directly, but we know it exists if state is returned */
+		if (state != NULL)
+		{
+			handle = 1; /* Non-zero to indicate it exists */
+		}
+	}
+	if (handle != DSM_HANDLE_INVALID)
+	{
+		/* 
+		 * We can't directly destroy the segment from here because other backends
+		 * might still be using it. However, we can ensure this backend detaches.
+		 * The segment will be cleaned up when all backends detach and the
+		 * database restarts.
+		 */
+		elog(DEBUG1, "DSM segment %s exists for dropped index %u (handle=%u)", 
+			 segment_name, index_oid, handle);
+	}
+	else
+	{
+		elog(DEBUG1, "No DSM segment found for dropped index %u", index_oid);
+	}
+	
+	pfree(segment_name);
+}
 
-	LWLockRelease(AddinShmemInitLock);
+/*
+ * Get DSA area for an index (attach using DSA handle from index state)
+ */
+dsa_area *
+tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid)
+{
+	IndexStateCacheEntry *cache_entry;
+	dsa_area *area;
+	
+	/* Use the index OID from the state if provided, otherwise use the parameter */
+	Oid oid = index_state->index_oid != InvalidOid ? index_state->index_oid : index_oid;
+	
+	/* First try cache - area pointer is stable within backend session due to dsa_pin_mapping */
+	cache_entry = get_cached_index_state(oid);
+	if (cache_entry != NULL && cache_entry->area != NULL)
+	{
+		elog(DEBUG2, "Retrieved cached DSA area for index %u, area=%p", oid, cache_entry->area);
+		return cache_entry->area;
+	}
+	
+	/* Not cached or area is NULL - attach using DSA handle from index state */
+	if (index_state->area_handle == DSA_HANDLE_INVALID)
+	{
+		elog(WARNING, "DSA handle invalid for index %u", oid);
+		return NULL;
+	}
+	
+	elog(DEBUG1, "Attaching to DSA area for index %u using handle %u", oid, index_state->area_handle);
+	area = dsa_attach(index_state->area_handle);
+	if (area == NULL)
+	{
+		elog(ERROR, "Failed to attach to DSA area for index %u, handle %u", oid, index_state->area_handle);
+		return NULL;
+	}
+	elog(DEBUG1, "Successfully attached to DSA area %p for index %u", area, oid);
+	
+	/* Pin mapping to prevent automatic cleanup in this backend */
+	dsa_pin_mapping(area);
+	elog(DEBUG2, "Successfully attached to DSA area for index %u (pinned mapping)", oid);
+	
+	/* Cache the area for future use in this backend */
+	if (cache_entry != NULL)
+	{
+		cache_entry->area = area;
+		elog(DEBUG2, "Updated cache with DSA area for index %u", oid);
+	}
+	else
+	{
+		/* Cache both state and area */
+		cache_index_state(oid, index_state, area);
+		elog(DEBUG2, "Cached index state and DSA area for index %u", oid);
+	}
+	
+	return area;
+}
+
+/*
+ * DSA memory allocation wrappers
+ */
+dsa_pointer
+tp_dsa_allocate(dsa_area *area, Size size)
+{
+	return dsa_allocate(area, size);
+}
+
+void
+tp_dsa_free(dsa_area *area, dsa_pointer dp)
+{
+	dsa_free(area, dp);
+}
+
+void *
+tp_dsa_get_address(dsa_area *area, dsa_pointer dp)
+{
+	return dsa_get_address(area, dp);
+}
+
+/*
+ * Clean up shared memory for a dropped index
+ */
+void
+tp_cleanup_index_shared_memory(Oid index_oid)
+{
+	/* This will be called from the object access hook in mod.c */
+	tp_destroy_index_dsa(index_oid);
 }
 
 
-/* String interning functions removed - now handled per-index in posting.c */
-
 /*
  * Transaction-level lock management
- * Acquire exclusive lock on all shared memory structures for the duration 
- * of the current transaction to eliminate per-operation locking overhead
+ * NOTE: With DSA-based per-index approach, transaction locks would need 
+ * to be managed per-index. For now, these are placeholders.
  */
 void
 tp_transaction_lock_acquire(void)
 {
-	if (tp_transaction_lock_held)
-	{
-		elog(DEBUG2, "Tapir transaction lock already held by this backend");
-		return;  /* Already holding the lock */
-	}
-
-	if (!tp_shared_state)
-		elog(ERROR, "Tapir shared state not initialized");
-
-	/* Acquire exclusive lock on all shared memory operations */
-	LWLockAcquire(tp_shared_state->string_interning_lock, LW_EXCLUSIVE);
-	
+	/* TODO: Implement per-index transaction locks if needed */
 	tp_transaction_lock_held = true;
-	
-	elog(DEBUG1, "Tapir transaction-level lock acquired");
+	elog(DEBUG2, "Tapir transaction lock acquired (placeholder)");
 }
 
-/*
- * Release transaction-level lock
- * Should be called at transaction end (commit or abort)
- */
 void
 tp_transaction_lock_release(void)
 {
-	if (!tp_transaction_lock_held)
-	{
-		elog(DEBUG2, "Tapir transaction lock not held by this backend");
-		return;  /* Not holding the lock */
-	}
-
-	if (!tp_shared_state)
-	{
-		elog(WARNING, "Tapir shared state not available during lock release");
-		tp_transaction_lock_held = false;
-		return;
-	}
-
-	/* Release the exclusive lock */
-	LWLockRelease(tp_shared_state->string_interning_lock);
-	
-	/* Clean up per-backend query limits at transaction end */
-	tp_cleanup_query_limits();
-	
+	/* TODO: Implement per-index transaction locks if needed */
 	tp_transaction_lock_held = false;
-	
-	elog(DEBUG1, "Tapir transaction-level lock released");
+	elog(DEBUG2, "Tapir transaction lock released (placeholder)");
 }
 
-
-
 /*
- * Initialize memtable hooks
+ * String interning functions - stubs for now
+ * These will be implemented per-index when the string table is converted to DSA
  */
 void
-tp_init_memtable_hooks(void)
+tp_intern_string(const char *term)
 {
-	/* Save previous hooks */
-	prev_shmem_request_hook = shmem_request_hook;
-	prev_shmem_startup_hook = shmem_startup_hook;
+	/* TODO: Implement per-index string interning */
+	elog(DEBUG3, "String interning placeholder for term: %.20s", term);
+}
 
-	/* Install our hooks */
-	shmem_request_hook = tp_shmem_request;
-	shmem_startup_hook = tp_shmem_startup;
-
-	elog(DEBUG1, "Tapir memtable hooks installed");
+void
+tp_intern_string_len(const char *term, int term_len)
+{
+	/* TODO: Implement per-index string interning */
+	elog(DEBUG3, "String interning placeholder for term: %.*s", term_len, term);
 }

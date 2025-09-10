@@ -4,7 +4,7 @@
 -- Tests both dataset loading and tapir scoring functionality with the <@> operator
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
+psql:/Users/tjg/tapir/test/sql/aerodocs.sql:7: NOTICE:  extension "tapir" already exists, skipping
 \set ON_ERROR_STOP on
 \echo 'Testing tapir with sample aerodynamics documents...'
 Testing tapir with sample aerodynamics documents...
@@ -54,10 +54,10 @@ INSERT INTO cranfield_expected_rankings (query_id, doc_id, rank, tapir_score) VA
 -- Create tapir index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING tapir(full_text) 
     WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation cranfield_tapir_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=10.20, text_config='english' (k1=1.20, b=0.75)
+psql:/Users/tjg/tapir/test/sql/aerodocs.sql:63: NOTICE:  Tapir index build started for relation cranfield_tapir_idx
+psql:/Users/tjg/tapir/test/sql/aerodocs.sql:63: NOTICE:  Using text search configuration: english
+psql:/Users/tjg/tapir/test/sql/aerodocs.sql:63: NOTICE:  Using index options: k1=1.20, b=0.75
+psql:/Users/tjg/tapir/test/sql/aerodocs.sql:63: NOTICE:  Tapir index build completed: 15 documents, avg_length=10.20, text_config='english' (k1=1.20, b=0.75)
 \echo 'tapir index created. Running validation tests...'
 tapir index created. Running validation tests...
 -- Disable sequential scans to ensure index usage
@@ -72,13 +72,13 @@ SELECT
 FROM aerodocs_documents
 ORDER BY 3 DESC
 LIMIT 5;
- doc_id |           title_preview           |  score  
---------+-----------------------------------+---------
-      5 | Computational Fluid Dynamics      |  0.0000
-      2 | Turbulent Boundary Layer Analysis | -1.0645
-      4 | Wing Design Optimization          | -1.1075
-      3 | Supersonic Aircraft Design        | -2.2150
-      1 | Aerodynamic Flow Over Wings       | -2.9560
+ doc_id |           title_preview           | score  
+--------+-----------------------------------+--------
+      1 | Aerodynamic Flow Over Wings       | 1.0211
+      3 | Supersonic Aircraft Design        | 0.7651
+      4 | Wing Design Optimization          | 0.3826
+      2 | Turbulent Boundary Layer Analysis | 0.3677
+      5 | Computational Fluid Dynamics      | 0.0000
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -93,11 +93,11 @@ ORDER BY 3 DESC
 LIMIT 5;
  doc_id |           title_preview           |  score  
 --------+-----------------------------------+---------
+      5 | Computational Fluid Dynamics      |  0.7974
+      1 | Aerodynamic Flow Over Wings       |  0.7354
       3 | Supersonic Aircraft Design        |  0.0000
       4 | Wing Design Optimization          |  0.0000
-      1 | Aerodynamic Flow Over Wings       | -2.1289
-      5 | Computational Fluid Dynamics      | -2.3083
-      2 | Turbulent Boundary Layer Analysis | -4.4340
+      2 | Turbulent Boundary Layer Analysis | -0.6915
 (5 rows)
 
 -- Test 3: Validation against expected rankings for Query 1
@@ -131,11 +131,11 @@ WHERE q.query_id = 1 AND br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |           title_preview           
 ---------------------------+--------+------------+---------------+--------------+----------------+-----------------------------------
- aerodynamic flow analysis |      5 |          1 |               |       0.0000 |                | Computational Fluid Dynamics
- aerodynamic flow analysis |      4 |          2 |             3 |      -1.1075 |         1.0000 | Wing Design Optimization
- aerodynamic flow analysis |      3 |          3 |             2 |      -2.2150 |         1.2000 | Supersonic Aircraft Design
- aerodynamic flow analysis |      2 |          4 |               |      -2.5424 |                | Turbulent Boundary Layer Analysis
- aerodynamic flow analysis |      1 |          5 |             1 |      -2.9560 |         1.5000 | Aerodynamic Flow Over Wings
+ aerodynamic flow analysis |      1 |          1 |             1 |       1.0211 |         1.5000 | Aerodynamic Flow Over Wings
+ aerodynamic flow analysis |      3 |          2 |             2 |       0.7651 |         1.2000 | Supersonic Aircraft Design
+ aerodynamic flow analysis |      4 |          3 |             3 |       0.3826 |         1.0000 | Wing Design Optimization
+ aerodynamic flow analysis |      5 |          4 |               |       0.0000 |                | Computational Fluid Dynamics
+ aerodynamic flow analysis |      2 |          5 |               |      -1.3449 |                | Turbulent Boundary Layer Analysis
 (5 rows)
 
 -- Test 4: Performance test with multiple queries
@@ -153,9 +153,9 @@ GROUP BY q.query_id, q.query_text
 ORDER BY q.query_id;
  query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
-        1 | aerodynamic flow analysis... |          5 |             4
-        2 | boundary layer turbulent...  |          5 |             3
-        3 | wing design optimization...  |          5 |             3
+        1 | aerodynamic flow analysis... |          5 |             1
+        2 | boundary layer turbulent...  |          5 |             1
+        3 | wing design optimization...  |          5 |             2
 (3 rows)
 
 -- Test 5: Index usage verification
@@ -169,10 +169,10 @@ ORDER BY 2 DESC
 LIMIT 10;
                                                            QUERY PLAN                                                           
 --------------------------------------------------------------------------------------------------------------------------------
- Limit  (cost=10000000001.15..10000000001.16 rows=5 width=36)
-   ->  Sort  (cost=10000000001.15..10000000001.16 rows=5 width=36)
+ Limit  (cost=10000000001.56..10000000001.58 rows=10 width=36)
+   ->  Sort  (cost=10000000001.56..10000000001.59 rows=15 width=36)
          Sort Key: (round(((full_text <@> 'cranfield_tapir_idx:{aircraft:1,design:1,superson:1}'::tpvector))::numeric, 4)) DESC
-         ->  Seq Scan on aerodocs_documents  (cost=10000000000.00..10000000001.09 rows=5 width=36)
+         ->  Seq Scan on aerodocs_documents  (cost=10000000000.00..10000000001.26 rows=15 width=36)
 (4 rows)
 
 -- Reset settings

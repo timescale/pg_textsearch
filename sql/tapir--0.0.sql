@@ -95,3 +95,11 @@ CREATE OPERATOR <@> (
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
     OPERATOR    1   <@> (text, tpvector) FOR ORDER BY float_ops;
+
+-- Debug function to dump index contents
+CREATE FUNCTION tp_debug_dump_index(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
+    LANGUAGE C STRICT STABLE;
+
+-- DSA-based system doesn't need memory pool monitoring
+-- Memory usage is managed dynamically by PostgreSQL's DSA subsystem

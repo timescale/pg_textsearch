@@ -2,16 +2,25 @@
 #include "access/reloptions.h"
 #include "miscadmin.h"
 #include "utils/guc.h"
+#include "catalog/objectaccess.h"
+#include "catalog/pg_class_d.h"
 #include "constants.h"
 #include "index.h"
 #include "constants.h"
 #include "mod.h"
 #include "memtable.h"
+#include "posting.h"
 
 PG_MODULE_MAGIC;
 
-/* Relation options for Tp indexes */
+/* Relation options for Tapir indexes */
 relopt_kind tp_relopt_kind;
+
+/* Previous object access hook */
+static object_access_hook_type prev_object_access_hook = NULL;
+
+/* Object access hook function for cleaning up shared memory */
+static void tp_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -20,38 +29,17 @@ void
 _PG_init(void)
 {
 	/*
-	 * In order to create our shared memory area, we have to be loaded via
-	 * shared_preload_libraries.
-	 */
-	if (!process_shared_preload_libraries_in_progress)
-	{
-		ereport(FATAL,
-			(errmsg("extension \"%s\" must be preloaded", TP_EXTENSION_NAME),
-			 errhint("Please preload the tapir library via shared_preload_libraries.\n\n"
-					 "This can be done by editing the postgres config file \n"
-					 "and adding 'tapir' to the list in the shared_preload_libraries "
-					 "config.\n"
-					 "	# Modify postgresql.conf:\n	shared_preload_libraries = "
-					 "'tapir'\n\n"
-					 "Another way to do this, if not preloading other libraries, is with the "
-					 "command:\n"
-					 "	echo \"shared_preload_libraries = 'tapir'\" >> "
-					 "/path/to/config/file \n\n"
-					 "(Will require a database restart.)\n\n")));
-	}
-
-	/*
 	 * Define GUC parameters
 	 */
 	DefineCustomIntVariable(
-							"tapir.shared_memory_size",
-							"Size of Tapir shared memory in MB",
-							"Controls the amount of shared memory allocated for Tapir memtables",
-							&tp_shared_memory_size,
-							TP_DEFAULT_SHARED_MEMORY_SIZE, /* default 64MB */
+							"tapir.index_memory_limit",
+							"Per-index memory limit in MB (currently not enforced)",
+							"Reserved for future use: controls the maximum memory each Tapir index can use",
+							&tp_index_memory_limit,
+							TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
 							1,	/* min 1MB */
-							TP_MAX_SHARED_MEMORY_SIZE,	/* max 1GB */
-							PGC_POSTMASTER,
+							TP_MAX_INDEX_MEMORY_LIMIT,	/* max 512MB */
+							PGC_SIGHUP,  /* Can be changed without restart */
 							0,
 							NULL,
 							NULL,
@@ -87,11 +75,30 @@ _PG_init(void)
 					   tp_relopt_kind, "b", "BM25 b parameter", TP_DEFAULT_B, 0.0, 1.0, NoLock);
 
 	/*
-	 * Install memtable hooks for shared memory management
+	 * Install object access hook for cleanup when indexes are dropped
 	 */
-	tp_init_memtable_hooks();
+	prev_object_access_hook = object_access_hook;
+	object_access_hook = tp_object_access_hook;
 
 	elog(DEBUG1,
-		 "Tapir extension loaded with shared_memory_size=%dMB",
-		 tp_shared_memory_size);
+		 "Tapir extension loaded with index_limit=%dMB (currently not enforced)",
+		 tp_index_memory_limit);
+}
+
+/*
+ * Object access hook function for cleaning up shared memory when indexes are dropped
+ */
+static void
+tp_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg)
+{
+	/* Call previous hook first if it exists */
+	if (prev_object_access_hook)
+		prev_object_access_hook(access, classId, objectId, subId, arg);
+
+	/* Handle index drop events */
+	if (access == OAT_DROP && classId == RelationRelationId)
+	{
+		/* Check if this is a Tapir index by looking up in our registry */
+		tp_cleanup_index_shared_memory(objectId);
+	}
 }

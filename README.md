@@ -156,9 +156,31 @@ CREATE INDEX docs_tapir_idx ON documents USING tapir(content) WITH (text_config=
 SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
 FROM pg_stat_user_indexes WHERE indexname LIKE '%tapir%';
 
--- Check memtable sizes
-SELECT relname, pg_size_pretty(pg_relation_size(oid)) as size
-FROM pg_class WHERE relname LIKE '__tapir_memtable_%';
+-- Memory pool statistics
+SELECT * FROM tp_pool_stats();
+
+-- Per-index memory usage
+SELECT indexname, tp_index_memory_usage(indexrelid) as memory_usage_mb
+FROM pg_stat_user_indexes 
+WHERE indexname LIKE '%tapir%';
+
+-- Debug index internal structure
+SELECT tp_debug_dump_index('index_name');
+```
+
+### Configuration
+
+Add to your `postgresql.conf`:
+
+```bash
+# Shared memory pool for all Tapir indexes (requires restart)
+tapir.shared_memory_pool_size = 64   # MB, default 64MB
+
+# Per-index memory limit (can be changed without restart)  
+tapir.index_memory_limit = 8         # MB, default 8MB
+
+# Query limit when no LIMIT clause detected
+tapir.default_limit = 1000           # default 1000
 ```
 
 ## Examples

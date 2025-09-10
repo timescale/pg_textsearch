@@ -16,6 +16,9 @@ MODULE_big = tapir
 # Include directories and debug flags
 PG_CPPFLAGS = -I$(srcdir)/src -g -O0
 
+# Uncomment the following line to enable debug index dumps
+# PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
+
 # Test configuration
 REGRESS = basic index vector queries aerodocs mixed strings limits
 REGRESS_OPTS = --inputdir=test --outputdir=test

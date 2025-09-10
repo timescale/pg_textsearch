@@ -49,9 +49,9 @@ ORDER BY 3
 LIMIT 5;
             title            |                                               content                                               |  score  
 -----------------------------+-----------------------------------------------------------------------------------------------------+---------
- Data Mining Techniques      | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -2.0521
- Database Optimization       | database indexing and query optimization strategies for improving performance in large datasets     | -2.0521
- Introduction to Databases   | postgresql database management system with advanced indexing capabilities for fast query processing | -1.9638
+ Data Mining Techniques      | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.0060
+ Database Optimization       | database indexing and query optimization strategies for improving performance in large datasets     | -1.0060
+ Introduction to Databases   | postgresql database management system with advanced indexing capabilities for fast query processing | -0.9627
  Text Search Algorithms      | full text search with tapir ranking and relevance scoring for information retrieval systems         |  0.0000
  Natural Language Processing | natural language processing techniques including parsing stemming and semantic analysis             |  0.0000
 (5 rows)
@@ -75,8 +75,8 @@ ORDER BY 3
 LIMIT 3;
              title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
- Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -4.1043
- Document Classification       | text mining and document classification using machine learning and statistical methods              | -4.1043
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -2.8917
+ Document Classification       | text mining and document classification using machine learning and statistical methods              | -2.8917
  Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         |  0.0000
 (3 rows)
 
@@ -102,11 +102,11 @@ ORDER BY 3
 LIMIT 10;
              title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
- Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -4.1043
- Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -2.0521
- Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -2.0521
- Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         | -1.9638
- Information Retrieval         | information retrieval and search engines using vector space models and term frequency analysis      | -1.8828
+ Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -1.6468
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -1.0060
+ Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.0060
+ Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         | -0.6132
+ Information Retrieval         | information retrieval and search engines using vector space models and term frequency analysis      | -0.5879
  Introduction to Databases     | postgresql database management system with advanced indexing capabilities for fast query processing |  0.0000
  Big Data Analytics            | big data analytics platforms and tools for processing massive datasets efficiently                  |  0.0000
  Natural Language Processing   | natural language processing techniques including parsing stemming and semantic analysis             |  0.0000
@@ -121,13 +121,13 @@ WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
 ORDER BY 3
 LIMIT 5;
-          title          |                                            content                                             |  score  
--------------------------+------------------------------------------------------------------------------------------------+---------
- Search Engine Design    | search relevance and ranking algorithms with focus on user experience and result quality       | -6.1564
- Information Retrieval   | information retrieval and search engines using vector space models and term frequency analysis | -5.6485
- Web Search Evolution    | evolution of web search from simple keyword matching to semantic understanding                 | -2.1488
- Distributed Computing   | distributed systems and scalability challenges in modern cloud computing environments          | -2.1488
- Document Classification | text mining and document classification using machine learning and statistical methods         | -2.0521
+           title           |                                               content                                               |  score  
+---------------------------+-----------------------------------------------------------------------------------------------------+---------
+ Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            | -3.5324
+ Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      | -3.2410
+ Document Classification   | text mining and document classification using machine learning and statistical methods              | -1.4458
+ Distributed Computing     | distributed systems and scalability challenges in modern cloud computing environments               | -1.0534
+ Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | -0.9627
 (5 rows)
 
 -- Test 5: Top results with scoring
@@ -149,9 +149,9 @@ ORDER BY 3
 LIMIT 10;
             title            |                                               content                                               |  score  
 -----------------------------+-----------------------------------------------------------------------------------------------------+---------
- Database Optimization       | database indexing and query optimization strategies for improving performance in large datasets     | -4.1043
- Data Mining Techniques      | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -2.0521
- Introduction to Databases   | postgresql database management system with advanced indexing capabilities for fast query processing | -1.9638
+ Database Optimization       | database indexing and query optimization strategies for improving performance in large datasets     | -3.0582
+ Data Mining Techniques      | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.0060
+ Introduction to Databases   | postgresql database management system with advanced indexing capabilities for fast query processing | -0.9627
  Information Retrieval       | information retrieval and search engines using vector space models and term frequency analysis      |  0.0000
  Natural Language Processing | natural language processing techniques including parsing stemming and semantic analysis             |  0.0000
  Document Classification     | text mining and document classification using machine learning and statistical methods              |  0.0000
@@ -190,9 +190,9 @@ CROSS JOIN articles a
 ORDER BY s.term, a.content <@> to_tpvector(s.term, 'articles_tapir_idx');
        term        |             title             |  score  
 -------------------+-------------------------------+---------
- database          | Data Mining Techniques        | -2.0521
- database          | Database Optimization         | -2.0521
- database          | Introduction to Databases     | -1.9638
+ database          | Data Mining Techniques        | -1.0060
+ database          | Database Optimization         | -1.0060
+ database          | Introduction to Databases     | -0.9627
  database          | Information Retrieval         |  0.0000
  database          | Natural Language Processing   |  0.0000
  database          | Document Classification       |  0.0000
@@ -202,8 +202,8 @@ ORDER BY s.term, a.content <@> to_tpvector(s.term, 'articles_tapir_idx');
  database          | Big Data Analytics            |  0.0000
  database          | Machine Learning Fundamentals |  0.0000
  database          | Text Search Algorithms        |  0.0000
- machine learning  | Machine Learning Fundamentals | -4.1043
- machine learning  | Document Classification       | -4.1043
+ machine learning  | Machine Learning Fundamentals | -2.8917
+ machine learning  | Document Classification       | -2.8917
  machine learning  | Information Retrieval         |  0.0000
  machine learning  | Natural Language Processing   |  0.0000
  machine learning  | Database Optimization         |  0.0000
@@ -214,21 +214,21 @@ ORDER BY s.term, a.content <@> to_tpvector(s.term, 'articles_tapir_idx');
  machine learning  | Introduction to Databases     |  0.0000
  machine learning  | Text Search Algorithms        |  0.0000
  machine learning  | Big Data Analytics            |  0.0000
- search algorithms | Search Engine Design          | -4.1043
- search algorithms | Web Search Evolution          | -2.1488
- search algorithms | Machine Learning Fundamentals | -2.0521
- search algorithms | Data Mining Techniques        | -2.0521
- search algorithms | Text Search Algorithms        | -1.9638
- search algorithms | Information Retrieval         | -1.8828
+ search algorithms | Search Engine Design          | -1.6468
+ search algorithms | Machine Learning Fundamentals | -1.0060
+ search algorithms | Data Mining Techniques        | -1.0060
+ search algorithms | Web Search Evolution          | -0.6709
+ search algorithms | Text Search Algorithms        | -0.6132
+ search algorithms | Information Retrieval         | -0.5879
  search algorithms | Document Classification       |  0.0000
  search algorithms | Introduction to Databases     |  0.0000
  search algorithms | Natural Language Processing   |  0.0000
  search algorithms | Database Optimization         |  0.0000
  search algorithms | Distributed Computing         |  0.0000
  search algorithms | Big Data Analytics            |  0.0000
- text mining       | Document Classification       | -4.1043
- text mining       | Data Mining Techniques        | -2.0521
- text mining       | Text Search Algorithms        | -1.9638
+ text mining       | Document Classification       | -2.8917
+ text mining       | Data Mining Techniques        | -1.4458
+ text mining       | Text Search Algorithms        | -1.3836
  text mining       | Natural Language Processing   |  0.0000
  text mining       | Database Optimization         |  0.0000
  text mining       | Search Engine Design          |  0.0000
