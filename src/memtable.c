@@ -408,25 +408,13 @@ tp_destroy_index_dsa(Oid index_oid)
 	}
 	
 	/* 
-	 * Log whether the DSM segment exists.
-	 * We can't safely destroy it here because:
+	 * Log that we're cleaning up the index.
+	 * We don't need to check if the DSM segment exists or destroy it here because:
 	 * 1. Other backends might still be using it
 	 * 2. PostgreSQL will clean it up when all backends detach
 	 * 3. The segment will be reused if an index with the same OID is created
 	 */
-	{
-		bool found;
-		TpIndexState *state = GetNamedDSMSegment(segment_name, 0, NULL, &found);
-		if (state != NULL && found)
-		{
-			elog(DEBUG1, "DSM segment %s exists for dropped index %u", 
-				 segment_name, index_oid);
-		}
-		else
-		{
-			elog(DEBUG1, "No DSM segment found for dropped index %u", index_oid);
-		}
-	}
+	elog(DEBUG1, "Cleaned up DSA references for dropped index %u", index_oid);
 	
 	pfree(segment_name);
 }
@@ -522,7 +510,34 @@ void
 tp_cleanup_index_shared_memory(Oid index_oid)
 {
 	/* This will be called from the object access hook in mod.c */
-	tp_destroy_index_dsa(index_oid);
+	elog(DEBUG1, "tp_cleanup_index_shared_memory called with OID %u", index_oid);
+	
+	/* Validate OID - skip invalid OIDs */
+	if (!OidIsValid(index_oid))
+	{
+		elog(DEBUG2, "Skipping cleanup for invalid OID");
+		return;
+	}
+	
+	/* Only clean up if we have a cached entry for this index */
+	if (index_state_cache != NULL)
+	{
+		bool found;
+		(void) hash_search(index_state_cache, &index_oid, HASH_FIND, &found);
+		if (found)
+		{
+			elog(DEBUG1, "Cleaning up Tapir index %u", index_oid);
+			tp_destroy_index_dsa(index_oid);
+		}
+		else
+		{
+			elog(DEBUG2, "Skipping cleanup for non-Tapir relation %u", index_oid);
+		}
+	}
+	else
+	{
+		elog(DEBUG2, "Index state cache not initialized, skipping cleanup for OID %u", index_oid);
+	}
 }
 
 
