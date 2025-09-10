@@ -365,7 +365,6 @@ tp_destroy_index_dsa(Oid index_oid)
 {
 	char	   *segment_name;
 	IndexStateCacheEntry *cache_entry;
-	dsm_handle	handle;
 	bool		found;
 	
 	segment_name = tp_get_dsm_segment_name(index_oid);
@@ -377,44 +376,42 @@ tp_destroy_index_dsa(Oid index_oid)
 															&index_oid,
 															HASH_REMOVE,
 															&found);
-		if (found)
+		if (found && cache_entry)
 		{
 			elog(DEBUG2, "Removed index %u from cache", index_oid);
 			
-			/* If we have a cached DSA area, detach from it */
-			if (cache_entry && cache_entry->area != NULL)
-			{
-				dsa_detach(cache_entry->area);
-				elog(DEBUG2, "Detached from DSA area for index %u", index_oid);
-			}
+			/* 
+			 * Note: We don't detach from the DSA area here because:
+			 * 1. The area might already be detached/freed by PostgreSQL
+			 * 2. Other backends might still be using it
+			 * 3. It will be cleaned up when the DSM segment is destroyed
+			 * 
+			 * Just clear our local reference.
+			 */
+			cache_entry->area = NULL;
+			cache_entry->state = NULL;
 		}
 	}
 	
-	/* Try to get the DSM segment */
+	/* 
+	 * Log whether the DSM segment exists.
+	 * We can't safely destroy it here because:
+	 * 1. Other backends might still be using it
+	 * 2. PostgreSQL will clean it up when all backends detach
+	 * 3. The segment will be reused if an index with the same OID is created
+	 */
 	{
 		bool found;
 		TpIndexState *state = GetNamedDSMSegment(segment_name, 0, NULL, &found);
-		handle = (state != NULL && found) ? DSM_HANDLE_INVALID : DSM_HANDLE_INVALID;
-		/* Note: We can't get the actual handle directly, but we know it exists if state is returned */
-		if (state != NULL)
+		if (state != NULL && found)
 		{
-			handle = 1; /* Non-zero to indicate it exists */
+			elog(DEBUG1, "DSM segment %s exists for dropped index %u", 
+				 segment_name, index_oid);
 		}
-	}
-	if (handle != DSM_HANDLE_INVALID)
-	{
-		/* 
-		 * We can't directly destroy the segment from here because other backends
-		 * might still be using it. However, we can ensure this backend detaches.
-		 * The segment will be cleaned up when all backends detach and the
-		 * database restarts.
-		 */
-		elog(DEBUG1, "DSM segment %s exists for dropped index %u (handle=%u)", 
-			 segment_name, index_oid, handle);
-	}
-	else
-	{
-		elog(DEBUG1, "No DSM segment found for dropped index %u", index_oid);
+		else
+		{
+			elog(DEBUG1, "No DSM segment found for dropped index %u", index_oid);
+		}
 	}
 	
 	pfree(segment_name);
