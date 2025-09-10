@@ -235,6 +235,8 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 	elog(DEBUG2, "DSA area logic: found=%d, area_handle=%u", found, state->area_handle);
 	if (!found || state->area_handle == DSA_HANDLE_INVALID)
 	{
+		MemoryContext oldcontext;
+		
 		/* New segment or existing segment without DSA area - create the DSA area */
 		elog(DEBUG1, "Creating DSA area for index %u", index_oid);
 		
@@ -242,8 +244,11 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 		 * Create DSA area with proper pinning for persistence.
 		 * The area will automatically pin its underlying DSM segments.
 		 * Use the fixed posting tranche ID for consistency across backends.
+		 * Switch to TopMemoryContext to ensure DSA control structures persist.
 		 */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		area = dsa_create(TAPIR_TRANCHE_POSTING);
+		MemoryContextSwitchTo(oldcontext);
 		if (area)
 		{
 			state->area_handle = dsa_get_handle(area);
@@ -291,15 +296,24 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 		/* Existing segment with valid DSA handle - attach to existing DSA area if needed */
 		if (area_out)
 		{
+			MemoryContext oldcontext;
+			
 			elog(DEBUG1, "Backend attempting to attach to DSA area: index_oid=%u, area_handle=%u, dsa_initialized=%s", 
 				 index_oid, state->area_handle, state->dsa_initialized ? "true" : "false");
+			
+			/* Switch to TopMemoryContext to ensure DSA control structures persist */
+			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 			area = dsa_attach(state->area_handle);
+			MemoryContextSwitchTo(oldcontext);
+			
 			if (area == NULL)
 			{
 				elog(WARNING, "Failed to attach to DSA area for index %u, handle %u - recreating", 
 					 index_oid, state->area_handle);
 				/* DSA area no longer valid, create a new one */
+				oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 				area = dsa_create(TAPIR_TRANCHE_POSTING);
+				MemoryContextSwitchTo(oldcontext);
 				if (area)
 				{
 					state->area_handle = dsa_get_handle(area);
@@ -445,7 +459,14 @@ tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid)
 	}
 	
 	elog(DEBUG1, "Attaching to DSA area for index %u using handle %u", oid, index_state->area_handle);
-	area = dsa_attach(index_state->area_handle);
+	
+	/* Switch to TopMemoryContext to ensure DSA control structures persist */
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		area = dsa_attach(index_state->area_handle);
+		MemoryContextSwitchTo(oldcontext);
+	}
+	
 	if (area == NULL)
 	{
 		elog(ERROR, "Failed to attach to DSA area for index %u, handle %u", oid, index_state->area_handle);
