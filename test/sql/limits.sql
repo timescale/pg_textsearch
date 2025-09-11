@@ -164,6 +164,7 @@ LIMIT 3;
 -- Test 11: Verify LIMIT pushdown behavior with debug logging
 -- Enable debug logging to see pushdown decisions
 SET client_min_messages = DEBUG1;
+SET log_min_messages = PANIC;  -- Suppress LOG statements in CI
 
 -- This should show "Safe LIMIT pushdown detected"
 SELECT title, ROUND((content <@> to_tpvector('pushdown_safe', 'limit_test_idx'))::numeric, 4) as score
@@ -180,6 +181,7 @@ LIMIT 2;
 
 -- Reset logging level
 SET client_min_messages = NOTICE;
+SET log_min_messages = WARNING;  -- Reset log level
 
 -- Test 12: Edge cases for LIMIT pushdown
 -- Very large LIMIT (should still use index optimization efficiently)
