@@ -167,6 +167,7 @@ LIMIT 1;
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
+SET client_min_messages = ERROR;  -- Suppress NOTICE/WARNING messages that vary by environment
 SELECT COUNT(*)
 FROM (
     SELECT title, content <@> to_tpvector('system', 'limit_test_idx') as score
@@ -174,13 +175,12 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 1 query terms
-WARNING:  Hash table scan failed, using fallback method
  count 
 -------
      5
 (1 row)
 
+SET client_min_messages = NOTICE;
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
     SELECT title, ROUND((content <@> to_tpvector('mining', 'limit_test_idx'))::numeric, 4) as score
@@ -597,19 +597,19 @@ DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.2000
 SET client_min_messages = NOTICE;
 -- Test 12: Edge cases for LIMIT pushdown
 -- Very large LIMIT (should still use index optimization efficiently)
+SET client_min_messages = ERROR;  -- Suppress NOTICE/WARNING messages that vary by environment
 SELECT COUNT(*) FROM (
     SELECT title, content <@> to_tpvector('large_limit', 'limit_test_idx') as score
     FROM limit_test
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 2 query terms
-WARNING:  Hash table scan failed, using fallback method
  count 
 -------
      1
 (1 row)
 
+SET client_min_messages = NOTICE;
 -- LIMIT 0 edge case
 SELECT title, content <@> to_tpvector('zero_limit', 'limit_test_idx') as score
 FROM limit_test

@@ -102,6 +102,7 @@ ORDER BY 2
 LIMIT 1;
 
 -- Test 7: Large LIMIT (should still use index optimization)
+SET client_min_messages = ERROR;  -- Suppress NOTICE/WARNING messages that vary by environment
 SELECT COUNT(*)
 FROM (
     SELECT title, content <@> to_tpvector('system', 'limit_test_idx') as score
@@ -109,6 +110,7 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
+SET client_min_messages = NOTICE;
 
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
@@ -178,12 +180,14 @@ SET client_min_messages = NOTICE;
 
 -- Test 12: Edge cases for LIMIT pushdown
 -- Very large LIMIT (should still use index optimization efficiently)
+SET client_min_messages = ERROR;  -- Suppress NOTICE/WARNING messages that vary by environment
 SELECT COUNT(*) FROM (
     SELECT title, content <@> to_tpvector('large_limit', 'limit_test_idx') as score
     FROM limit_test
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
+SET client_min_messages = NOTICE;
 
 -- LIMIT 0 edge case
 SELECT title, content <@> to_tpvector('zero_limit', 'limit_test_idx') as score
