@@ -1,6 +1,6 @@
 # Tapir Extension Test Suite
 
-This directory contains comprehensive tests for the Tapir PostgreSQL extension.
+This directory contains tests for the Tapir PostgreSQL extension.
 
 ## Directory Structure
 
@@ -27,7 +27,7 @@ test/
 - **mixed.sql** - Mixed operations testing (formerly concurrent.sql)
 - **recovery.sql** - Index recovery after simulated crashes
 - **strings.sql** - String handling and edge case testing
-- **memory_limits.sql** - Memory budget enforcement and per-index limits testing
+- **limits.sql** - Memory budget enforcement and per-index limits testing
 
 ### 2. Shell-based Tests
 
@@ -43,7 +43,7 @@ The Tapir extension includes comprehensive concurrency testing to verify thread-
 
 #### Concurrency Tests (`concurrency.sh`)
 - Concurrent index creation safety
-- Multi-session inserts with string interning consistency 
+- Multi-session inserts with string interning consistency
 - Mixed operations (insert/update/search/delete)
 - Hash table integrity under concurrent load
 - High-load concurrent operations (8+ sessions)
@@ -62,7 +62,7 @@ The Tapir extension enforces strict per-index memory budgets to prevent runaway 
 
 #### Memory Limits Tests (`memory_limits.sh`)
 - **String Table Capacity**: Tests hash table entry limits (25% of budget)
-- **Posting List Capacity**: Tests posting entry limits (75% of budget)  
+- **Posting List Capacity**: Tests posting entry limits (75% of budget)
 - **Mixed Scenarios**: Tests balanced usage of both limits
 - **Per-Index Budgets**: Verifies independent budgets for multiple indexes
 - **Error Handling**: Validates clear error messages when limits exceeded
@@ -89,7 +89,7 @@ make installcheck
 ```bash
 make installcheck REGRESS=basic
 make installcheck REGRESS=mixed
-make installcheck REGRESS=memory_limits
+make installcheck REGRESS=limits
 ```
 
 ### Shell Scripts
@@ -97,7 +97,6 @@ make installcheck REGRESS=memory_limits
 # Individual shell script targets
 make test-concurrency      # Multi-session concurrency safety
 make test-recovery         # Crash recovery testing
-make test-memory-limits    # Memory budget enforcement stress testing
 make test-shell            # All shell scripts (concurrency + recovery + memory limits)
 make test-all              # Complete test suite (SQL + shell scripts)
 
@@ -119,10 +118,10 @@ cd test/scripts
 
 ### Test Data Patterns
 
-- Use meaningful test data that reflects real-world usage
+- Aim for test data that reflects real-world usage
 - Include edge cases (empty results, single terms, very long documents)
 - Test error conditions and boundary cases
-- Verify BM25 scores are reasonable (typically 0-10 range)
+- Check BM25 scores against reference Python implementation
 
 ### Concurrency Testing
 
@@ -199,7 +198,7 @@ Look for WARNING messages about resource leaks in test output.
 ## Integration with CI/CD
 
 Tests are designed to:
-- Run deterministically in any environment  
+- Run deterministically in any environment
 - Clean up all resources automatically
 - Provide clear pass/fail indicators
 - Generate detailed failure diagnostics
@@ -209,14 +208,6 @@ Tests are designed to:
 make test-all              # Complete test suite (recommended for CI)
 # OR separate stages:
 make installcheck          # SQL regression tests (fast)
-make test-concurrent-basic # Basic concurrency tests (medium)  
+make test-concurrent-basic # Basic concurrency tests (medium)
 make test-recovery        # Crash recovery tests (slower)
 ```
-
-### Test Performance
-- **SQL regression tests**: ~3-5 seconds (8 tests)
-- **Basic concurrency tests**: ~30 seconds (real multi-session)
-- **Stress tests**: ~2-3 minutes (high load validation)
-- **Recovery tests**: ~30 seconds (crash simulation)
-
-The test suite validates both functional correctness and system reliability under various operational conditions.
