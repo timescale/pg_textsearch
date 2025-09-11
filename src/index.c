@@ -221,14 +221,10 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = false;	/* Cannot cluster on this index */
 	amroutine->ampredlocks = false; /* No predicate locking */
 	amroutine->amcanparallel = false;	/* No parallel scan support yet */
-#if PG_VERSION_NUM >= 170000
 	amroutine->amcanbuildparallel = true;
-#endif
 	amroutine->amcaninclude = false;	/* No INCLUDE columns */
 	amroutine->amusemaintenanceworkmem = false; /* Use work_mem for builds */
-#if PG_VERSION_NUM >= 160000
 	amroutine->amsummarizing = false;
-#endif
 	amroutine->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
 	amroutine->amkeytype = InvalidOid;
 
@@ -236,9 +232,7 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = tp_build;
 	amroutine->ambuildempty = tp_buildempty;
 	amroutine->aminsert = tp_insert;
-#if PG_VERSION_NUM >= 170000
 	amroutine->aminsertcleanup = NULL;
-#endif
 	amroutine->ambulkdelete = tp_bulkdelete;
 	amroutine->amvacuumcleanup = tp_vacuumcleanup;
 	amroutine->amcanreturn = NULL;

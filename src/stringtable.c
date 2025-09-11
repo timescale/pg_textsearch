@@ -23,11 +23,7 @@
 #include "storage/lwlock.h"
 #include "access/xact.h"
 #include "utils/memutils.h"
-#if PG_VERSION_NUM >= 170000
 #include "common/hashfn_unstable.h"
-#else
-#include "common/hashfn.h"
-#endif
 
 /* Static function declarations */
 /*

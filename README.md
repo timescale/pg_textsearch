@@ -17,7 +17,7 @@ in place and working.
 
 ### Linux and Mac
 
-Compile and install the extension (supports Postgres 13+)
+Compile and install the extension (requires PostgreSQL 17+)
 
 ```sh
 cd /tmp
