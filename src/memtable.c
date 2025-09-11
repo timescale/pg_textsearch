@@ -46,8 +46,7 @@ HTAB	   *tp_query_limits_hash = NULL;
 int			tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
 int			tp_default_limit = TP_DEFAULT_QUERY_LIMIT;
 
-/* Transaction-level lock tracking (per-backend) */
-bool tp_transaction_lock_held = false;
+/* Transaction-level lock tracking removed - handled by DSA LWLocks */
 
 /*
  * Generate human-readable DSM segment name for an index
@@ -412,40 +411,12 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 
 /*
- * Transaction-level lock management
- * NOTE: With DSA-based per-index approach, transaction locks would need 
- * to be managed per-index. For now, these are placeholders.
+ * Transaction-level lock management removed
+ * The DSA-based per-index approach handles synchronization through per-index LWLocks
  */
-void
-tp_transaction_lock_acquire(void)
-{
-	/* TODO: Implement per-index transaction locks if needed */
-	tp_transaction_lock_held = true;
-	elog(DEBUG2, "Tapir transaction lock acquired (placeholder)");
-}
-
-void
-tp_transaction_lock_release(void)
-{
-	/* TODO: Implement per-index transaction locks if needed */
-	tp_transaction_lock_held = false;
-	elog(DEBUG2, "Tapir transaction lock released (placeholder)");
-}
 
 /*
- * String interning functions - stubs for now
- * These will be implemented per-index when the string table is converted to DSA
+ * String interning functions removed
+ * String interning is now handled directly by the DSA-based string hash table
+ * in posting.c via tp_hash_insert_dsa()
  */
-void
-tp_intern_string(const char *term)
-{
-	/* TODO: Implement per-index string interning */
-	elog(DEBUG3, "String interning placeholder for term: %.20s", term);
-}
-
-void
-tp_intern_string_len(const char *term, int term_len)
-{
-	/* TODO: Implement per-index string interning */
-	elog(DEBUG3, "String interning placeholder for term: %.*s", term_len, term);
-}

@@ -462,7 +462,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 	elog(DEBUG1, "*** QUERY: Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f ***",
 		 total_docs, avg_doc_len, k1, b);
 
-	/* Transaction-level locking removed - tp_intern_string() now handles its own locks */
+	/* Synchronization handled by DSA-based per-index LWLocks */
 
 	for (query_idx = 0; query_idx < query_count && query_entry; query_idx++)
 	{

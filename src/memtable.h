@@ -166,14 +166,8 @@ extern dsa_pointer tp_dsa_allocate(dsa_area *area, Size size);
 extern void tp_dsa_free(dsa_area *area, dsa_pointer dp);
 extern void *tp_dsa_get_address(dsa_area *area, dsa_pointer dp);
 
-/* Transaction-level lock management */
-extern void tp_transaction_lock_acquire(void);
-extern void tp_transaction_lock_release(void);
-extern bool tp_transaction_lock_held;
-
-/* String interning API */
-extern void tp_intern_string(const char *term);
-extern void tp_intern_string_len(const char *term, int term_len);
+/* Transaction-level lock management and string interning removed
+ * Now handled by DSA-based per-index structures with LWLocks */
 
 /* Statistics and maintenance */
 
