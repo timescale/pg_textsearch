@@ -459,8 +459,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 	query_count = TPVECTOR_ENTRY_COUNT(query_vec);
 	query_entry = get_tpvector_first_entry(query_vec);
 
-	elog(DEBUG1, "*** QUERY: index_state=%p, Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f ***",
-		 index_state, total_docs, avg_doc_len, k1, b);
+	elog(DEBUG1, "*** QUERY: Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f ***",
+		 total_docs, avg_doc_len, k1, b);
 
 	/* Transaction-level locking removed - tp_intern_string() now handles its own locks */
 

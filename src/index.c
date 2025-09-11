@@ -135,9 +135,6 @@ tp_build_init_metapage(Relation index, Oid text_config_oid, double k1, double b)
 	metap = (TpIndexMetaPage) PageGetContents(metapage);
 	metap->k1 = k1;
 	metap->b = b;
-	metap->total_docs = 0;
-	metap->total_terms = 0;
-	metap->total_len = 0;
 
 	MarkBufferDirty(metabuf);
 
@@ -363,10 +360,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Initialize posting list system for this index */
 	/* TEMPORARILY DISABLED: Clear existing state logic to fix segfaults during index build */
-	
+
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									 RelationGetRelationName(index));
-	
+
 	elog(DEBUG2, "Index build: Got index_state=%p for index %s", index_state, RelationGetRelationName(index));
 
 	/* Scan heap and build posting lists */
@@ -389,13 +386,13 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		int			term_count;
 		int			doc_length = 0;
 		int			i;
-		
+
 		elog(DEBUG1, "Processing next slot");
 
 		/* Get the text column value (first indexed column) */
 		text_datum =
 			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
-		
+
 		elog(DEBUG1, "Got text datum, isnull=%d", isnull);
 
 		if (isnull)
@@ -415,7 +412,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			elog(WARNING, "Invalid TID in slot during index build, skipping document");
 			continue;
 		}
-		
+
 		elog(DEBUG1, "TID is valid");
 
 		/*
@@ -438,7 +435,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		{
 			WordEntry  *we = ARRPTR(tsvector);
 			char	  **terms;
-			
+
 			elog(DEBUG1, "Got WordEntry array");
 
 			terms = palloc(term_count * sizeof(char*));
@@ -451,19 +448,19 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				char	   *lexeme_start;
 				int			lexeme_len;
 				char	   *lexeme;
-				
+
 				elog(DEBUG1, "Processing term %d of %d", i, term_count);
-				
+
 				lexeme_start = STRPTR(tsvector) + we[i].pos;
 				lexeme_len = we[i].len;
-				
+
 				elog(DEBUG1, "Term %d: pos=%d, len=%d", i, we[i].pos, lexeme_len);
 
 				/* Always allocate on heap for terms array since we need to keep them */
 				lexeme = palloc(lexeme_len + 1);
 				memcpy(lexeme, lexeme_start, lexeme_len);
 				lexeme[lexeme_len] = '\0';
-				
+
 				elog(DEBUG1, "Term %d: lexeme='%s'", i, lexeme);
 
 				/* Store the lexeme string directly in terms array */
@@ -489,7 +486,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					frequencies[i]; /* Sum frequencies for doc length */
 				elog(DEBUG1, "Doc length after term %d: %d", i, doc_length);
 			}
-			
+
 			elog(DEBUG1, "Finished processing all %d terms", term_count);
 
 			/*
@@ -1049,7 +1046,7 @@ tp_endscan(IndexScanDesc scan)
 		scan->opaque = NULL;
 	}
 
-	/* 
+	/*
 	 * Don't free ORDER BY arrays here - they're allocated in our beginscan
 	 * but PostgreSQL's core code expects them to persist and will free them.
 	 * Just NULL out the pointers for safety.
@@ -1266,18 +1263,18 @@ tp_search_posting_lists(IndexScanDesc scan,
 	elog(DEBUG2, "Tapir search: using single-pass BM25 scoring for %d terms", entry_count);
 
 	elog(DEBUG2, "Calling tp_score_documents with max_results=%d", max_results);
-	
+
 	/* Check pointers before using them */
 	if (!metap) {
 		elog(ERROR, "metap is NULL before tp_score_documents");
 	}
-	
+
 	/* Extract values from metap before the call to avoid any access issues */
 	k1_value = metap->k1;
 	b_value = metap->b;
-	
+
 	elog(DEBUG3, "BM25 parameters: k1=%f, b=%f", k1_value, b_value);
-	
+
 	if (!index_state) {
 		elog(ERROR, "index_state is NULL before tp_score_documents");
 	}
@@ -1290,16 +1287,16 @@ tp_search_posting_lists(IndexScanDesc scan,
 	if (!so->result_ctids) {
 		elog(ERROR, "result_ctids is NULL before tp_score_documents");
 	}
-	
+
 	elog(DEBUG3, "All pointers validated");
-	
+
 	/* Check if any query terms are NULL */
 	for (int i = 0; i < entry_count; i++) {
 		if (!query_terms[i]) {
 			elog(ERROR, "NULL query term at position %d", i);
 		}
 	}
-	
+
 	result_count = tp_score_documents(index_state,
 									  query_terms,
 									  query_frequencies,
@@ -1318,7 +1315,7 @@ tp_search_posting_lists(IndexScanDesc scan,
 	elog(DEBUG2,
 		 "Tapir search completed: found %d matching documents (max_results was %d)",
 		 result_count, max_results);
-	
+
 	/* Validate results */
 	for (int i = 0; i < result_count; i++)
 	{
@@ -2300,15 +2297,14 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	text	   *index_name_text = PG_GETARG_TEXT_PP(0);
 	char	   *index_name;
 	StringInfoData result;
-	Relation	index_rel;
 	Oid			index_oid;
 	TpIndexState *index_state;
-	
+
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
-	
+
 	initStringInfo(&result);
-	
+
 	appendStringInfo(&result, "Tapir Index Debug: %s\n", index_name);
 
 	/* Get the index relation */
@@ -2331,7 +2327,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	appendStringInfo(&result, "Corpus Statistics:\n");
 	appendStringInfo(&result, "  total_docs: %d\n", index_state->stats.total_docs);
 	appendStringInfo(&result, "  total_len: %ld\n", index_state->stats.total_len);
-	
+
 	if (index_state->stats.total_docs > 0)
 	{
 		float avg_doc_len = (float)index_state->stats.total_len / (float)index_state->stats.total_docs;
@@ -2341,14 +2337,14 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	{
 		appendStringInfo(&result, "  avg_doc_len: 0 (no documents)\n");
 	}
-	
+
 	appendStringInfo(&result, "BM25 Parameters:\n");
 	appendStringInfo(&result, "  k1: %.2f\n", index_state->stats.k1);
 	appendStringInfo(&result, "  b: %.2f\n", index_state->stats.b);
-	
+
 	/* Show term dictionary and posting lists */
 	appendStringInfo(&result, "Term Dictionary:\n");
-	
+
 	if (DsaPointerIsValid(index_state->string_hash_dp))
 	{
 		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
@@ -2357,32 +2353,32 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 			TpStringHashTable *string_table = dsa_get_address(area, index_state->string_hash_dp);
 			dsa_pointer *buckets = dsa_get_address(area, string_table->buckets_dp);
 			uint32 bucket_idx, term_count = 0;
-			
+
 			/* Iterate through all buckets */
 			for (bucket_idx = 0; bucket_idx < string_table->bucket_count; bucket_idx++)
 			{
 				dsa_pointer entry_dp = buckets[bucket_idx];
-				
+
 				/* Walk the chain for this bucket */
 				while (DsaPointerIsValid(entry_dp))
 				{
 					TpStringHashEntry *entry = dsa_get_address(area, entry_dp);
-					
+
 					/* Show term info if it has a posting list */
 					if (DsaPointerIsValid(entry->posting_list_dp))
 					{
 						TpPostingList *posting_list = dsa_get_address(area, entry->posting_list_dp);
 						char *term_str = dsa_get_address(area, entry->string_dp);
-						
-						appendStringInfo(&result, "  '%.*s': doc_freq=%d\n", 
+
+						appendStringInfo(&result, "  '%.*s': doc_freq=%d\n",
 										(int)entry->string_length, term_str, posting_list->doc_count);
 						term_count++;
 					}
-					
+
 					entry_dp = entry->next_dp;
 				}
 			}
-			
+
 			appendStringInfo(&result, "Total terms: %u\n", term_count);
 		}
 		else
@@ -2394,6 +2390,6 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	{
 		appendStringInfo(&result, "  No terms (string hash table not initialized)\n");
 	}
-	
+
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
