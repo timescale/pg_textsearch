@@ -268,7 +268,7 @@ DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'full' (len=4)
 DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
@@ -280,7 +280,7 @@ DEBUG:  Vector creation: stored lexeme 'text' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'frequenc' (len=8)
 DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
 DEBUG:  Vector creation: stored lexeme 'model' (len=5)
@@ -293,7 +293,7 @@ DEBUG:  Vector creation: stored lexeme 'vector' (len=6)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
@@ -304,7 +304,7 @@ DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'discoveri' (len=9)
@@ -315,7 +315,7 @@ DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
 DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
@@ -326,7 +326,7 @@ DEBUG:  Vector creation: stored lexeme 'text' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'improv' (len=6)
 DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
@@ -336,7 +336,7 @@ DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'design' (len=6)
 DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
@@ -347,7 +347,7 @@ DEBUG:  Vector creation: stored lexeme 'user' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
 DEBUG:  Vector creation: stored lexeme 'big' (len=3)
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
@@ -358,7 +358,7 @@ DEBUG:  Vector creation: stored lexeme 'process' (len=7)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
 DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
 DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
@@ -367,7 +367,7 @@ DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'architectur' (len=11)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'index' (len=5)
@@ -377,7 +377,7 @@ DEBUG:  Vector creation: stored lexeme 'system' (len=6)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
 DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
@@ -387,7 +387,7 @@ DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'classif' (len=7)
 DEBUG:  Vector creation: stored lexeme 'document' (len=8)
 DEBUG:  Vector creation: stored lexeme 'method' (len=6)
@@ -398,7 +398,7 @@ DEBUG:  Vector creation: stored lexeme 'use' (len=3)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
 DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
 DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
@@ -408,7 +408,7 @@ DEBUG:  Vector creation: stored lexeme 'system' (len=6)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algebra' (len=7)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'foundat' (len=7)
@@ -418,7 +418,7 @@ DEBUG:  Vector creation: stored lexeme 'theoret' (len=7)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
 DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
 DEBUG:  Vector creation: stored lexeme 'search' (len=6)
@@ -428,7 +428,7 @@ DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
@@ -439,7 +439,7 @@ DEBUG:  Vector creation: stored lexeme 'structur' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
 DEBUG:  Vector creation: stored lexeme 'design' (len=6)
@@ -449,7 +449,7 @@ DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
 DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
 DEBUG:  Vector creation: stored lexeme 'resourc' (len=7)
@@ -459,7 +459,7 @@ DEBUG:  Vector creation: stored lexeme 'tune' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'access' (len=6)
 DEBUG:  Vector creation: stored lexeme 'control' (len=7)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
@@ -469,7 +469,7 @@ DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
        title       | score  
 -------------------+--------
  Search Algorithms | 0.0000
@@ -495,7 +495,7 @@ DEBUG:  Vector creation: stored lexeme 'text' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
@@ -506,7 +506,7 @@ DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
 DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
@@ -517,7 +517,7 @@ DEBUG:  Vector creation: stored lexeme 'text' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'design' (len=6)
 DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
@@ -528,7 +528,7 @@ DEBUG:  Vector creation: stored lexeme 'user' (len=4)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
 DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
 DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
@@ -537,7 +537,7 @@ DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
 DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
 DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
@@ -547,7 +547,7 @@ DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'data' (len=4)
 DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
 DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
@@ -557,7 +557,7 @@ DEBUG:  Vector creation: stored lexeme 'system' (len=6)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
 DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
 DEBUG:  Vector creation: stored lexeme 'search' (len=6)
@@ -567,7 +567,7 @@ DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
 DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
 DEBUG:  Vector creation: stored lexeme 'design' (len=6)
@@ -577,7 +577,7 @@ DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
 DEBUG:  Vector creation: stored lexeme 'access' (len=6)
 DEBUG:  Vector creation: stored lexeme 'control' (len=7)
 DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
@@ -587,7 +587,7 @@ DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
 DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
 DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
 DEBUG:  Attached to Tapir index state for limit_test_idx
-DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  *** QUERY: Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
        title       | score  
 -------------------+--------
  Machine Learning  | 0.0000
