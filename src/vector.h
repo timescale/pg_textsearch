@@ -1,5 +1,4 @@
-#ifndef VECTOR_H
-#define VECTOR_H
+#pragma once
 
 #include "postgres.h"
 #include "fmgr.h"
@@ -60,4 +59,3 @@ char	   *get_tpvector_index_name(TpVector * bm25vec);
 TpVectorEntry *get_tpvector_first_entry(TpVector * vec);
 TpVectorEntry *get_tpvector_next_entry(TpVectorEntry * current);
 
-#endif							/* VECTOR_H */

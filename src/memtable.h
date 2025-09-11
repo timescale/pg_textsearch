@@ -8,8 +8,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef TP_MEMTABLE_H
-#define TP_MEMTABLE_H
+#pragma once
 
 #include "postgres.h"
 #include "constants.h"
@@ -171,4 +170,3 @@ extern void *tp_dsa_get_address(dsa_area *area, dsa_pointer dp);
 
 /* Statistics and maintenance */
 
-#endif							/* TP_MEMTABLE_H */

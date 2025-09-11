@@ -1,5 +1,4 @@
-#ifndef CONSTANTS_H
-#define CONSTANTS_H
+#pragma once
 
 /* Extension name and version */
 #define TP_EXTENSION_NAME "tapir"
@@ -58,4 +57,3 @@
 #define TAPIR_TRANCHE_CORPUS	1003	/* Corpus statistics operations */
 #define TAPIR_TRANCHE_DOC_LENGTHS	1004	/* Document length hash table operations */
 
-#endif /* CONSTANTS_H */

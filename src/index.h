@@ -1,5 +1,4 @@
-#ifndef INDEX_H
-#define INDEX_H
+#pragma once
 
 #include "postgres.h"
 #include "constants.h"
@@ -137,4 +136,3 @@ void		tp_store_query_limit(Oid index_oid, int limit);
 int			tp_get_query_limit(Relation index_rel);
 void		tp_cleanup_query_limits(void);
 
-#endif							/* INDEX_H */

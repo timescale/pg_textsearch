@@ -5,8 +5,7 @@
  * are used to buffer updates until the index is flushed to disk.
  */
 
-#ifndef POSTING_H
-#define POSTING_H
+#pragma once
 
 #include "postgres.h"
 #include "storage/itemptr.h"
@@ -106,4 +105,3 @@ extern TpCorpusStatistics * tp_get_corpus_statistics(TpIndexState * index_state)
 /* Shared memory cleanup */
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
 
-#endif							/* POSTING_H */

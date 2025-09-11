@@ -9,8 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef TP_STRINGTABLE_H
-#define TP_STRINGTABLE_H
+#pragma once
 
 #include "postgres.h"
 #include "storage/lwlock.h"
@@ -103,4 +102,3 @@ extern char *tp_get_string_from_dp(dsa_area *area, dsa_pointer dp);
 #define TP_HASH_MAX_LOAD_FACTOR		0.75	/* Rehash when load > this */
 /* Note: No need for fixed pool sizes with DSA - memory is allocated dynamically */
 
-#endif							/* TP_STRINGTABLE_H */

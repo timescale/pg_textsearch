@@ -1,7 +1,4 @@
-#ifndef MOD_H
-#define MOD_H
+#pragma once
 
 #include "postgres.h"
 #include "fmgr.h"
-
-#endif
