@@ -1,10 +1,10 @@
 -- Test long string handling including URLs, paths, and long terms
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-psql:/Users/tjg/tapir/test/sql/strings.sql:3: NOTICE:  extension "tapir" already exists, skipping
+NOTICE:  extension "tapir" already exists, skipping
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;
-psql:/Users/tjg/tapir/test/sql/strings.sql:6: NOTICE:  table "long_string_docs" does not exist, skipping
+NOTICE:  table "long_string_docs" does not exist, skipping
 CREATE TABLE long_string_docs (
     id SERIAL PRIMARY KEY,
     content TEXT,
@@ -36,10 +36,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 -- Create tapir index on long strings
 CREATE INDEX long_strings_idx ON long_string_docs USING tapir(content) 
     WITH (text_config='english', k1=1.2, b=0.75);
-psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Tapir index build started for relation long_strings_idx
-psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Using text search configuration: english
-psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Using index options: k1=1.20, b=0.75
-psql:/Users/tjg/tapir/test/sql/strings.sql:39: NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  Tapir index build started for relation long_strings_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Search for URL components
 SELECT id, LEFT(content, 80) || '...' as content_preview, 
        ROUND((content <@> to_tpvector('https website', 'long_strings_idx'))::numeric, 4) as score
@@ -96,9 +96,12 @@ WHERE content <@> to_tpvector('algorithm bm25', 'long_strings_idx') < 0
 ORDER BY score DESC;
  id |  score  
 ----+---------
- 10 | -0.7676
-  8 | -0.9242
-(2 rows)
+  6 | -0.3597
+  7 | -0.3597
+  1 | -0.4677
+ 10 | -1.0315
+  8 | -1.2419
+(5 rows)
 
 -- Test 7: Performance test with multiple long term queries
 SELECT 

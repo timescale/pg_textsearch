@@ -71,11 +71,15 @@ extern TpPostingList * tp_get_or_create_posting_list(TpIndexState * index_state,
 extern void tp_add_document_to_posting_list(TpIndexState *index_state,
 											TpPostingList *posting_list,
 											ItemPointer ctid,
-											int32 frequency,
-											int32 doc_length);
+											int32 frequency);
+
+/* Document length hash table operations */
+extern int32 tp_get_document_length(TpIndexState *index_state, ItemPointer ctid);
 
 /* Index building operations */
 extern void tp_finalize_index_build(TpIndexState * index_state);
+extern void tp_calculate_average_idf(TpIndexState *index_state);
+extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs, float4 average_idf);
 
 /* Query operations */
 extern float4 bm25_score_document(TpIndexState * index_state,

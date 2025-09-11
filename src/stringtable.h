@@ -82,6 +82,7 @@ extern TpStringHashEntry *tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *
 extern TpStringHashEntry *tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
 extern bool tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
 extern bool tp_hash_resize_dsa(dsa_area *area, TpStringHashTable *ht, uint32 new_bucket_count);
+extern void tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht);
 
 /* Statistics and debugging */
 extern void tp_hash_stats_dsa(dsa_area *area, TpStringHashTable *ht, uint32 *buckets_used, 

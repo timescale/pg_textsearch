@@ -4,7 +4,7 @@
 SET log_duration = off;
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-psql:/Users/tjg/tapir/test/sql/limits.sql:8: NOTICE:  extension "tapir" already exists, skipping
+NOTICE:  extension "tapir" already exists, skipping
 -- Create test table with sufficient data for meaningful LIMIT testing
 CREATE TABLE limit_test (
     id SERIAL PRIMARY KEY,
@@ -35,10 +35,10 @@ INSERT INTO limit_test (title, content) VALUES
     ('Database Security', 'database security measures and access control mechanisms');
 -- Create tapir index
 CREATE INDEX limit_test_idx ON limit_test USING tapir(content) WITH (text_config='english');
-psql:/Users/tjg/tapir/test/sql/limits.sql:41: NOTICE:  Tapir index build started for relation limit_test_idx
-psql:/Users/tjg/tapir/test/sql/limits.sql:41: NOTICE:  Using text search configuration: english
-psql:/Users/tjg/tapir/test/sql/limits.sql:41: NOTICE:  Using index options: k1=1.20, b=0.75
-psql:/Users/tjg/tapir/test/sql/limits.sql:41: NOTICE:  Tapir index build completed: 20 documents, avg_length=6.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  Tapir index build started for relation limit_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 20 documents, avg_length=6.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
 EXPLAIN (COSTS OFF)
@@ -175,7 +175,8 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-psql:/Users/tjg/tapir/test/sql/limits.sql:112: WARNING:  Hash table scan failed, using fallback method
+NOTICE:  TRACE: tp_score_documents called with 1 query terms
+WARNING:  Hash table scan failed, using fallback method
  count 
 -------
      5
@@ -255,160 +256,220 @@ SELECT title, ROUND((content <@> to_tpvector('pushdown_safe', 'limit_test_idx'))
 FROM limit_test 
 ORDER BY 2
 LIMIT 2;
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'pushdown' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'safe' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'advanc' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'index' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'postgresql' (len=10)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'full' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'relev' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'score' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'text' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'frequenc' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'model' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'retriev' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'space' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'term' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'use' (len=3)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'vector' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'learn' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'machin' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'pattern' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'discoveri' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'knowledg' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'larg' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'mine' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'natur' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'process' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'stem' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'text' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'improv' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'design' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'experi' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'user' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'big' (len=3)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'dataset' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'massiv' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'platform' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'process' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'environ' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'architectur' (len=11)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'index' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'storag' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'classif' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'document' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'method' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'mine' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'statist' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'text' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'use' (len=3)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'organ' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algebra' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'foundat' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'relat' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'theoret' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'semant' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'technolog' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'retriev' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'storag' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'structur' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'design' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'resourc' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'tune' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'access' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'control' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:168: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
+DEBUG:  Vector creation: stored lexeme 'pushdown' (len=8)
+DEBUG:  Vector creation: stored lexeme 'safe' (len=4)
+DEBUG:  Vector creation: stored lexeme 'advanc' (len=6)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'index' (len=5)
+DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'postgresql' (len=10)
+DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'full' (len=4)
+DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
+DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
+DEBUG:  Vector creation: stored lexeme 'relev' (len=5)
+DEBUG:  Vector creation: stored lexeme 'score' (len=5)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'text' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'frequenc' (len=8)
+DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
+DEBUG:  Vector creation: stored lexeme 'model' (len=5)
+DEBUG:  Vector creation: stored lexeme 'retriev' (len=7)
+DEBUG:  Vector creation: stored lexeme 'space' (len=5)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Vector creation: stored lexeme 'term' (len=4)
+DEBUG:  Vector creation: stored lexeme 'use' (len=3)
+DEBUG:  Vector creation: stored lexeme 'vector' (len=6)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'learn' (len=5)
+DEBUG:  Vector creation: stored lexeme 'machin' (len=6)
+DEBUG:  Vector creation: stored lexeme 'pattern' (len=7)
+DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'discoveri' (len=9)
+DEBUG:  Vector creation: stored lexeme 'knowledg' (len=8)
+DEBUG:  Vector creation: stored lexeme 'larg' (len=4)
+DEBUG:  Vector creation: stored lexeme 'mine' (len=4)
+DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
+DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
+DEBUG:  Vector creation: stored lexeme 'natur' (len=5)
+DEBUG:  Vector creation: stored lexeme 'process' (len=7)
+DEBUG:  Vector creation: stored lexeme 'stem' (len=4)
+DEBUG:  Vector creation: stored lexeme 'text' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'improv' (len=6)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
+DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
+DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'design' (len=6)
+DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
+DEBUG:  Vector creation: stored lexeme 'experi' (len=6)
+DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'user' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
+DEBUG:  Vector creation: stored lexeme 'big' (len=3)
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'dataset' (len=7)
+DEBUG:  Vector creation: stored lexeme 'massiv' (len=6)
+DEBUG:  Vector creation: stored lexeme 'platform' (len=8)
+DEBUG:  Vector creation: stored lexeme 'process' (len=7)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
+DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
+DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
+DEBUG:  Vector creation: stored lexeme 'environ' (len=7)
+DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'architectur' (len=11)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'index' (len=5)
+DEBUG:  Vector creation: stored lexeme 'storag' (len=6)
+DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
+DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
+DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'classif' (len=7)
+DEBUG:  Vector creation: stored lexeme 'document' (len=8)
+DEBUG:  Vector creation: stored lexeme 'method' (len=6)
+DEBUG:  Vector creation: stored lexeme 'mine' (len=4)
+DEBUG:  Vector creation: stored lexeme 'statist' (len=7)
+DEBUG:  Vector creation: stored lexeme 'text' (len=4)
+DEBUG:  Vector creation: stored lexeme 'use' (len=3)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
+DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
+DEBUG:  Vector creation: stored lexeme 'organ' (len=5)
+DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algebra' (len=7)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'foundat' (len=7)
+DEBUG:  Vector creation: stored lexeme 'relat' (len=5)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Vector creation: stored lexeme 'theoret' (len=7)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
+DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'semant' (len=6)
+DEBUG:  Vector creation: stored lexeme 'technolog' (len=9)
+DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
+DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
+DEBUG:  Vector creation: stored lexeme 'retriev' (len=7)
+DEBUG:  Vector creation: stored lexeme 'storag' (len=6)
+DEBUG:  Vector creation: stored lexeme 'structur' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
+DEBUG:  Vector creation: stored lexeme 'design' (len=6)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
+DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
+DEBUG:  Vector creation: stored lexeme 'resourc' (len=7)
+DEBUG:  Vector creation: stored lexeme 'strategi' (len=8)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Vector creation: stored lexeme 'tune' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'access' (len=6)
+DEBUG:  Vector creation: stored lexeme 'control' (len=7)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
+DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
+DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
        title       | score  
 -------------------+--------
  Search Algorithms | 0.0000
@@ -421,82 +482,112 @@ FROM limit_test
 WHERE id % 2 = 0
 ORDER BY 2
 LIMIT 2;
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'pushdown' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'unsaf' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'full' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'relev' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'score' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'text' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'learn' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'machin' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'pattern' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'natur' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'process' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'stem' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'text' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'design' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'experi' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'user' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'environ' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'data' (len=4)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'organ' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'system' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'search' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'semant' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'technolog' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'design' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'access' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'control' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
-psql:/Users/tjg/tapir/test/sql/limits.sql:175: DEBUG:  Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000
+DEBUG:  Vector creation: stored lexeme 'pushdown' (len=8)
+DEBUG:  Vector creation: stored lexeme 'unsaf' (len=5)
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'full' (len=4)
+DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
+DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
+DEBUG:  Vector creation: stored lexeme 'relev' (len=5)
+DEBUG:  Vector creation: stored lexeme 'score' (len=5)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'text' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'learn' (len=5)
+DEBUG:  Vector creation: stored lexeme 'machin' (len=6)
+DEBUG:  Vector creation: stored lexeme 'pattern' (len=7)
+DEBUG:  Vector creation: stored lexeme 'recognit' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'analysi' (len=7)
+DEBUG:  Vector creation: stored lexeme 'languag' (len=7)
+DEBUG:  Vector creation: stored lexeme 'natur' (len=5)
+DEBUG:  Vector creation: stored lexeme 'process' (len=7)
+DEBUG:  Vector creation: stored lexeme 'stem' (len=4)
+DEBUG:  Vector creation: stored lexeme 'text' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'design' (len=6)
+DEBUG:  Vector creation: stored lexeme 'engin' (len=5)
+DEBUG:  Vector creation: stored lexeme 'experi' (len=6)
+DEBUG:  Vector creation: stored lexeme 'rank' (len=4)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'user' (len=4)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'cloud' (len=5)
+DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
+DEBUG:  Vector creation: stored lexeme 'distribut' (len=9)
+DEBUG:  Vector creation: stored lexeme 'environ' (len=7)
+DEBUG:  Vector creation: stored lexeme 'scalabl' (len=7)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'effici' (len=6)
+DEBUG:  Vector creation: stored lexeme 'oper' (len=4)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'queri' (len=5)
+DEBUG:  Vector creation: stored lexeme 'techniqu' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'data' (len=4)
+DEBUG:  Vector creation: stored lexeme 'inform' (len=6)
+DEBUG:  Vector creation: stored lexeme 'manag' (len=5)
+DEBUG:  Vector creation: stored lexeme 'organ' (len=5)
+DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
+DEBUG:  Vector creation: stored lexeme 'system' (len=6)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'capabl' (len=6)
+DEBUG:  Vector creation: stored lexeme 'innov' (len=5)
+DEBUG:  Vector creation: stored lexeme 'search' (len=6)
+DEBUG:  Vector creation: stored lexeme 'semant' (len=6)
+DEBUG:  Vector creation: stored lexeme 'technolog' (len=9)
+DEBUG:  Vector creation: stored lexeme 'understand' (len=10)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'algorithm' (len=9)
+DEBUG:  Vector creation: stored lexeme 'comput' (len=6)
+DEBUG:  Vector creation: stored lexeme 'design' (len=6)
+DEBUG:  Vector creation: stored lexeme 'optim' (len=5)
+DEBUG:  Vector creation: stored lexeme 'perform' (len=7)
+DEBUG:  Vector creation: stored lexeme 'principl' (len=8)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
+DEBUG:  Vector creation: stored lexeme 'access' (len=6)
+DEBUG:  Vector creation: stored lexeme 'control' (len=7)
+DEBUG:  Vector creation: stored lexeme 'databas' (len=7)
+DEBUG:  Vector creation: stored lexeme 'measur' (len=6)
+DEBUG:  Vector creation: stored lexeme 'mechan' (len=6)
+DEBUG:  Vector creation: stored lexeme 'secur' (len=5)
+DEBUG:  Loaded configuration from metapage for index limit_test_idx: k1=1.200000, b=0.750000 (corpus stats preserved in DSA)
+DEBUG:  After DSA attachment: string_hash_dp=VALID, total_docs=20
+DEBUG:  Attached to Tapir index state for limit_test_idx
+DEBUG:  *** QUERY: index_state=0x105414000, Tapir scoring: total_docs=20, avg_doc_len=6.600000, k1=1.200000, b=0.750000 ***
        title       | score  
 -------------------+--------
  Machine Learning  | 0.0000
@@ -513,7 +604,8 @@ SELECT COUNT(*) FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-psql:/Users/tjg/tapir/test/sql/limits.sql:187: WARNING:  Hash table scan failed, using fallback method
+NOTICE:  TRACE: tp_score_documents called with 2 query terms
+WARNING:  Hash table scan failed, using fallback method
  count 
 -------
      1

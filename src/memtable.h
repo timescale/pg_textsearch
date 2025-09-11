@@ -20,12 +20,23 @@
 #include "utils/timestamp.h"
 #include "utils/dsa.h"
 #include "storage/dsm_registry.h"
+#include "lib/dshash.h"
 
 /*
  * Forward declarations to avoid circular dependencies
  */
 typedef struct TpPostingEntry TpPostingEntry;
 typedef struct TpPostingList TpPostingList;
+
+/*
+ * Document length entry for the dshash hash table
+ * Maps document CTID to its length for BM25 calculations
+ */
+typedef struct TpDocLengthEntry
+{
+	ItemPointerData ctid;		/* Key: Document heap tuple ID */
+	int32		doc_length;		/* Value: Document length (sum of term frequencies) */
+}			TpDocLengthEntry;
 
 /*
  * Individual document occurrence within a posting list
@@ -35,7 +46,7 @@ struct TpPostingEntry
 	ItemPointerData ctid;		/* Document heap tuple ID */
 	int32		doc_id;			/* Internal document ID */
 	int32		frequency;		/* Term frequency in document */
-	int32		doc_length;		/* Document length */
+	/* Note: doc_length moved to separate hash table (TpDocLengthEntry) */
 };
 
 /*
@@ -70,6 +81,7 @@ typedef struct TpCorpusStatistics
 	/* BM25 algorithm parameters */
 	float4		k1;				/* Term frequency saturation parameter */
 	float4		b;				/* Document length normalization factor */
+	float4		average_idf;	/* Average IDF across corpus for epsilon calculation */
 
 	/* Performance monitoring */
 	uint64		queries_executed;	/* Total queries processed */
@@ -92,10 +104,15 @@ typedef struct TpIndexState
 	LWLock		string_interning_lock;	/* Protects string hash operations */
 	LWLock		posting_lists_lock;		/* Protects posting list operations */
 	LWLock		corpus_stats_lock;		/* Protects corpus statistics */
+	LWLock		doc_lengths_lock;		/* Protects document length hash operations */
 
 	/* String hash table stored in this DSA */
 	dsa_pointer	string_hash_dp;			/* DSA pointer to TpStringHashTable */
 	int32		total_terms;			/* Total unique terms interned */
+
+	/* Document length hash table stored in this DSA */
+	dshash_table_handle doc_lengths_handle;	/* Handle for document length hash table */
+	dshash_table *doc_lengths_hash;			/* Per-backend attachment to doc length table */
 
 	/* Corpus statistics for BM25 */
 	TpCorpusStatistics stats;			/* Corpus statistics */
@@ -105,6 +122,7 @@ typedef struct TpIndexState
 	int			string_tranche_id;		/* Tranche ID for string interning lock */
 	int			posting_tranche_id;		/* Tranche ID for posting lists lock */  
 	int			corpus_tranche_id;		/* Tranche ID for corpus stats lock */
+	int			doc_lengths_tranche_id;	/* Tranche ID for document length lock */
 	dsa_handle	area_handle;			/* DSA handle for cross-process attachment */
 	bool		dsa_initialized;		/* True when DSA area is ready for use */
 }			TpIndexState;

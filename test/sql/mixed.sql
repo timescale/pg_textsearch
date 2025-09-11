@@ -162,6 +162,55 @@ SELECT id, content, ROUND((content <@> to_tpvector('exact same terms', 'concurre
 FROM concurrent_test_docs 
 ORDER BY score DESC, id;
 
+-- Test 9: Multiple indexes on same table
+\echo 'Test 9: Multiple indexes on same table'
+
+-- Create a test table for multiple indexes
+CREATE TABLE multi_idx_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);
+
+-- Insert initial data
+INSERT INTO multi_idx_test (content) VALUES
+('hello world from the test'),
+('the quick brown fox jumps'),
+('hello from another document');
+
+-- Create two indexes with different text configurations
+CREATE INDEX multi_idx_english ON multi_idx_test USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+
+CREATE INDEX multi_idx_simple ON multi_idx_test USING tapir(content)
+  WITH (text_config='simple', k1=1.5, b=0.8);
+
+-- Insert more data after index creation
+INSERT INTO multi_idx_test (content) VALUES
+('world of databases and indexes'),
+('hello database world');
+
+-- Query using the English index
+SELECT id, content, ROUND((content <@> to_tpvector('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+FROM multi_idx_test
+ORDER BY english_score DESC;
+
+-- Query using the Simple index
+SELECT id, content, ROUND((content <@> to_tpvector('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+FROM multi_idx_test
+ORDER BY simple_score DESC;
+
+-- Verify both indexes exist and function independently
+SELECT 
+    i.indexrelid::regclass as index_name,
+    pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indrelid
+WHERE c.relname = 'multi_idx_test'
+ORDER BY index_name;
+
+-- Clean up test table
+DROP TABLE multi_idx_test CASCADE;
+
 -- Final verification
 \echo 'Final verification: Index statistics'
 

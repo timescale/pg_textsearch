@@ -143,15 +143,18 @@ tp_init_index_dsa_callback(void *ptr)
 {
 	TpIndexState *state = (TpIndexState *) ptr;
 	
+	
 	/* Use fixed tranche IDs that are consistent across all backends */
 	state->string_tranche_id = TAPIR_TRANCHE_STRING;
 	state->posting_tranche_id = TAPIR_TRANCHE_POSTING;
 	state->corpus_tranche_id = TAPIR_TRANCHE_CORPUS;
+	state->doc_lengths_tranche_id = TAPIR_TRANCHE_DOC_LENGTHS;
 	
 	/* Initialize locks with the fixed tranche IDs */
 	LWLockInitialize(&state->string_interning_lock, state->string_tranche_id);
 	LWLockInitialize(&state->posting_lists_lock, state->posting_tranche_id);
 	LWLockInitialize(&state->corpus_stats_lock, state->corpus_tranche_id);
+	LWLockInitialize(&state->doc_lengths_lock, state->doc_lengths_tranche_id);
 	
 	/* Initialize DSA area handle - will be set by caller after callback */
 	state->area_handle = DSA_HANDLE_INVALID;
@@ -160,6 +163,7 @@ tp_init_index_dsa_callback(void *ptr)
 	/* Initialize state */
 	state->string_hash_dp = InvalidDsaPointer;
 	state->total_terms = 0;
+	state->doc_lengths_hash = NULL;  /* Will be attached when needed */
 	
 	/* Initialize corpus statistics */
 	memset(&state->stats, 0, sizeof(TpCorpusStatistics));
@@ -168,14 +172,19 @@ tp_init_index_dsa_callback(void *ptr)
 	state->stats.last_checkpoint = GetCurrentTimestamp();
 	state->stats.segment_threshold = TP_DEFAULT_SEGMENT_THRESHOLD;
 	
-	elog(DEBUG1, "Initialized DSA for index with lock tranches: string=%d, posting=%d, corpus=%d",
-		 state->string_tranche_id, state->posting_tranche_id, state->corpus_tranche_id);
+	elog(DEBUG1, "Initialized DSA for index with lock tranches: string=%d, posting=%d, corpus=%d, doc_lengths=%d",
+		 state->string_tranche_id, state->posting_tranche_id, state->corpus_tranche_id, state->doc_lengths_tranche_id);
 }
 
 /*
  * Get or create DSA area for an index
- * Returns the TpIndexState and optionally the DSA area
- * This is the unified function that replaces tp_create_index_dsa and tp_attach_index_dsa
+ * 
+ * Simple approach:
+ * 1. Name: "tapir.{database_id}.{index_oid}" 
+ * 2. GetNamedDSMSegment() gets or creates the segment
+ * 3. If new segment (!found): create DSA area
+ * 4. If existing segment (found): attach to DSA area
+ * 5. Always cache to avoid multiple attachments per backend
  */
 TpIndexState *
 tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
@@ -185,189 +194,92 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 	TpIndexState *state;
 	dsa_area   *area = NULL;
 	IndexStateCacheEntry *cache_entry;
+	MemoryContext oldcontext;
 	
-	/* Check if we already have this index cached to prevent multiple attachments */
+	/* Step 1: Check backend-local cache */
 	cache_entry = get_cached_index_state(index_oid);
 	if (cache_entry != NULL)
 	{
-		elog(DEBUG2, "Using cached index state for index %u, area=%p", index_oid, cache_entry->area);
+		elog(DEBUG2, "Using cached index state for index %u", index_oid);
 		if (area_out)
-		{
 			*area_out = cache_entry->area;
-		}
 		return cache_entry->state;
 	}
 	
-	elog(DEBUG2, "No cache found, creating/attaching DSA for index %u", index_oid);
-	
+	/* Step 2: Get or create the named DSM segment */
 	segment_name = tp_get_dsm_segment_name(index_oid);
-	
-	elog(DEBUG1, "Getting DSM segment: name='%s' for index_oid=%u", segment_name, index_oid);
 	
 	state = GetNamedDSMSegment(segment_name,
 							   sizeof(TpIndexState),
 							   tp_init_index_dsa_callback,
 							   &found);
 	
-	elog(DEBUG1, "Got DSM segment: state=%p, found=%d, existing_oid=%u, requested_oid=%u",
-		 state, found, state->index_oid, index_oid);
 	
-	/* Store the index OID in the state */
+	/* Store the index OID */
 	state->index_oid = index_oid;
 	
 	/* Register lock tranches in this backend */
 	LWLockRegisterTranche(state->string_tranche_id, "tapir_string");
 	LWLockRegisterTranche(state->posting_tranche_id, "tapir_posting");
 	LWLockRegisterTranche(state->corpus_tranche_id, "tapir_corpus");
+	LWLockRegisterTranche(state->doc_lengths_tranche_id, "tapir_doc_lengths");
+	
+	/* Step 3: Handle DSA area based on whether segment is new or existing */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	
 	if (!found)
 	{
-		elog(DEBUG1, "Created new DSA for index %u", index_oid);
+		/* New segment - create DSA area */
+		area = dsa_create(TAPIR_TRANCHE_POSTING);
+		if (!area)
+			elog(ERROR, "Failed to create DSA area for index %u", index_oid);
+			
+		state->area_handle = dsa_get_handle(area);
+		state->dsa_initialized = true;
+		
+		/* Pin for persistence */
+		dsa_pin(area);
+		dsa_pin_mapping(area);
+		
 	}
 	else
 	{
-		elog(DEBUG2, "Attached to existing DSA for index %u", index_oid);
-		/* Don't reset stats here - it causes problems with concurrent access.
-		 * Stats will be reset in tp_build when needed. */
-	}
-	
-	/* Create or attach to DSA area */
-	elog(DEBUG2, "DSA area logic: found=%d, area_handle=%u", found, state->area_handle);
-	if (!found || state->area_handle == DSA_HANDLE_INVALID)
-	{
-		MemoryContext oldcontext;
-		
-		/* New segment or existing segment without DSA area - create the DSA area */
-		elog(DEBUG1, "Creating DSA area for index %u", index_oid);
-		
-		/* 
-		 * Create DSA area with proper pinning for persistence.
-		 * The area will automatically pin its underlying DSM segments.
-		 * Use the fixed posting tranche ID for consistency across backends.
-		 * Switch to TopMemoryContext to ensure DSA control structures persist.
-		 */
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		area = dsa_create(TAPIR_TRANCHE_POSTING);
-		MemoryContextSwitchTo(oldcontext);
-		if (area)
+		/* Existing segment - attach to DSA area */
+			 
+		if (state->area_handle == DSA_HANDLE_INVALID)
 		{
+			/* Shouldn't happen but handle gracefully */
+			elog(WARNING, "Existing segment has invalid DSA handle, creating new area");
+			area = dsa_create(TAPIR_TRANCHE_POSTING);
+			if (!area)
+				elog(ERROR, "Failed to create DSA area for index %u", index_oid);
+				
 			state->area_handle = dsa_get_handle(area);
 			state->dsa_initialized = true;
-			elog(DEBUG1, "Backend created DSA area: index_oid=%u, area_handle=%u, area=%p", 
-				 index_oid, state->area_handle, area);
-			
-			/* 
-			 * Pin the DSA area to make it persistent across backend processes.
-			 * This ensures the area survives even if all backends detach.
-			 */
-			PG_TRY();
-			{
-				dsa_pin(area);
-				elog(DEBUG2, "Successfully pinned DSA area for index %u", index_oid);
-			}
-			PG_CATCH();
-			{
-				/* DSA area might already be pinned - that's okay */
-				FlushErrorState();
-				elog(DEBUG2, "DSA area for index %u already pinned", index_oid);
-			}
-			PG_END_TRY();
-			
-			/* 
-			 * Pin mapping to prevent cleanup in this backend.
-			 * This is critical for ensuring the DSA area remains accessible.
-			 */
+			dsa_pin(area);
 			dsa_pin_mapping(area);
-			
-			if (!found)
-				elog(DEBUG1, "Created and pinned DSA area with handle %u for new index %u", 
-					 state->area_handle, index_oid);
-			else
-				elog(DEBUG1, "Created and pinned DSA area with handle %u for existing segment index %u", 
-					 state->area_handle, index_oid);
 		}
 		else
 		{
-			elog(ERROR, "Failed to create DSA area for index %u", index_oid);
-		}
-	}
-	else
-	{
-		/* Existing segment with valid DSA handle - attach to existing DSA area if needed */
-		if (area_out)
-		{
-			MemoryContext oldcontext;
-			
-			elog(DEBUG1, "Backend attempting to attach to DSA area: index_oid=%u, area_handle=%u, dsa_initialized=%s", 
-				 index_oid, state->area_handle, state->dsa_initialized ? "true" : "false");
-			
-			/* Switch to TopMemoryContext to ensure DSA control structures persist */
-			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 			area = dsa_attach(state->area_handle);
-			MemoryContextSwitchTo(oldcontext);
+			if (!area)
+				elog(ERROR, "Failed to attach to DSA area %u for index %u",
+					 state->area_handle, index_oid);
 			
-			if (area == NULL)
-			{
-				elog(WARNING, "Failed to attach to DSA area for index %u, handle %u - recreating", 
-					 index_oid, state->area_handle);
-				/* DSA area no longer valid, create a new one */
-				oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-				area = dsa_create(TAPIR_TRANCHE_POSTING);
-				MemoryContextSwitchTo(oldcontext);
-				if (area)
-				{
-					state->area_handle = dsa_get_handle(area);
-					state->dsa_initialized = true;
-					
-					/* Pin the recreated DSA area for persistence */
-					PG_TRY();
-					{
-						dsa_pin(area);
-						elog(DEBUG2, "Successfully pinned recreated DSA area for index %u", index_oid);
-					}
-					PG_CATCH();
-					{
-						/* DSA area might already be pinned - that's okay */
-						FlushErrorState();
-						elog(DEBUG2, "Recreated DSA area for index %u already pinned", index_oid);
-					}
-					PG_END_TRY();
-					
-					dsa_pin_mapping(area);
-					
-					elog(DEBUG1, "Recreated and pinned DSA area with handle %u for index %u", 
-						 state->area_handle, index_oid);
-				}
-				else
-				{
-					elog(ERROR, "Failed to recreate DSA area for index %u", index_oid);
-				}
-			}
-			else
-			{
-				/* Pin mapping to prevent automatic cleanup in this backend */
-				dsa_pin_mapping(area);
-				elog(DEBUG2, "Attached to existing DSA area for index %u, handle %u (pinned mapping)", 
-					 index_oid, state->area_handle);
-			}
-		}
-		else
-		{
-			elog(DEBUG2, "Using existing DSA state for index %u without attaching area", index_oid);
+			/* Pin mapping in this backend */
+			dsa_pin_mapping(area);
 		}
 	}
 	
-	if (area_out)
-	{
-		*area_out = area;
-	}
+	MemoryContextSwitchTo(oldcontext);
 	
-	/* Cache the state and area - area pointer is stable within this backend session due to dsa_pin_mapping */
-	elog(DEBUG1, "Caching index state: index_oid=%u, state=%p, area=%p, segment_name='%s'",
-		 index_oid, state, area, segment_name);
+	/* Step 4: Cache the state and area */
 	cache_index_state(index_oid, state, area);
 	
-	pfree(segment_name);
+	/* Step 5: Return results */
+	if (area_out)
+		*area_out = area;
+		
 	return state;
 }
 
@@ -420,64 +332,22 @@ tp_destroy_index_dsa(Oid index_oid)
 }
 
 /*
- * Get DSA area for an index (attach using DSA handle from index state)
+ * Get DSA area for an index
+ * Simple helper that calls tp_get_or_create_index_dsa to get the area
  */
 dsa_area *
 tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid)
 {
-	IndexStateCacheEntry *cache_entry;
-	dsa_area *area;
+	dsa_area *area = NULL;
 	
-	/* Use the index OID from the state if provided, otherwise use the parameter */
+	/* Use the index OID from the state if provided */
 	Oid oid = index_state->index_oid != InvalidOid ? index_state->index_oid : index_oid;
 	
-	/* First try cache - area pointer is stable within backend session due to dsa_pin_mapping */
-	cache_entry = get_cached_index_state(oid);
-	if (cache_entry != NULL && cache_entry->area != NULL)
-	{
-		elog(DEBUG2, "Retrieved cached DSA area for index %u, area=%p", oid, cache_entry->area);
-		return cache_entry->area;
-	}
+	/* Get the state and area (will use cache if available) */
+	tp_get_or_create_index_dsa(oid, &area);
 	
-	/* Not cached or area is NULL - attach using DSA handle from index state */
-	if (index_state->area_handle == DSA_HANDLE_INVALID)
-	{
-		elog(WARNING, "DSA handle invalid for index %u", oid);
-		return NULL;
-	}
-	
-	elog(DEBUG1, "Attaching to DSA area for index %u using handle %u", oid, index_state->area_handle);
-	
-	/* Switch to TopMemoryContext to ensure DSA control structures persist */
-	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		area = dsa_attach(index_state->area_handle);
-		MemoryContextSwitchTo(oldcontext);
-	}
-	
-	if (area == NULL)
-	{
-		elog(ERROR, "Failed to attach to DSA area for index %u, handle %u", oid, index_state->area_handle);
-		return NULL;
-	}
-	elog(DEBUG1, "Successfully attached to DSA area %p for index %u", area, oid);
-	
-	/* Pin mapping to prevent automatic cleanup in this backend */
-	dsa_pin_mapping(area);
-	elog(DEBUG2, "Successfully attached to DSA area for index %u (pinned mapping)", oid);
-	
-	/* Cache the area for future use in this backend */
-	if (cache_entry != NULL)
-	{
-		cache_entry->area = area;
-		elog(DEBUG2, "Updated cache with DSA area for index %u", oid);
-	}
-	else
-	{
-		/* Cache both state and area */
-		cache_index_state(oid, index_state, area);
-		elog(DEBUG2, "Cached index state and DSA area for index %u", oid);
-	}
+	if (!area)
+		elog(ERROR, "Failed to get DSA area for index %u", oid);
 	
 	return area;
 }

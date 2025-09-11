@@ -133,6 +133,33 @@ tp_hash_table_init_dsa(TpStringHashTable *ht, dsa_area *area, uint32 initial_buc
 }
 
 /*
+ * Clear an existing hash table, removing all entries
+ * Note: This doesn't free DSA memory, just makes entries unreachable
+ */
+void
+tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
+{
+	dsa_pointer *buckets;
+	uint32 i;
+	
+	Assert(ht != NULL);
+	Assert(area != NULL);
+	
+	/* Get the bucket array */
+	buckets = dsa_get_address(area, ht->buckets_dp);
+	
+	/* Reset statistics */
+	ht->entry_count = 0;
+	ht->collision_count = 0;
+	
+	/* Clear all buckets */
+	for (i = 0; i < ht->bucket_count; i++)
+		buckets[i] = InvalidDsaPointer;
+		
+	elog(DEBUG2, "Cleared DSA string table: %u buckets", ht->bucket_count);
+}
+
+/*
  * Look up a string in the DSA hash table
  * Returns NULL if not found
  */

@@ -56,5 +56,6 @@
 #define TAPIR_TRANCHE_STRING	1001	/* String interning operations */
 #define TAPIR_TRANCHE_POSTING	1002	/* Posting list operations */
 #define TAPIR_TRANCHE_CORPUS	1003	/* Corpus statistics operations */
+#define TAPIR_TRANCHE_DOC_LENGTHS	1004	/* Document length hash table operations */
 
 #endif /* CONSTANTS_H */

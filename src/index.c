@@ -160,7 +160,9 @@ tp_build_finalize_and_update_stats(Relation index, TpIndexState *index_state, ui
 	 */
 	if (index_state != NULL)
 	{
+		elog(DEBUG2, "About to call tp_finalize_index_build");
 		tp_finalize_index_build(index_state);
+		elog(DEBUG2, "Returned from tp_finalize_index_build");
 
 		/* Get actual statistics from the posting list system */
 		stats = tp_get_corpus_statistics(index_state);
@@ -366,33 +368,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/* Initialize posting list system for this index */
-	/* First clear any existing state if this is a rebuild */
-	{
-		TpIndexState *existing_state = tp_get_index_state(RelationGetRelid(index),
-														   RelationGetRelationName(index));
-		if (existing_state)
-		{
-			/* Clear existing corpus statistics for rebuild */
-			LWLockAcquire(&existing_state->corpus_stats_lock, LW_EXCLUSIVE);
-			existing_state->stats.total_docs = 0;
-			existing_state->stats.total_len = 0;
-			existing_state->total_terms = 0;
-			LWLockRelease(&existing_state->corpus_stats_lock);
-			
-			/* Clear posting lists */
-			LWLockAcquire(&existing_state->posting_lists_lock, LW_EXCLUSIVE);
-			existing_state->string_hash_dp = InvalidDsaPointer;
-			LWLockRelease(&existing_state->posting_lists_lock);
-			
-			elog(DEBUG1, "Cleared existing index state for rebuild of %s",
-				 RelationGetRelationName(index));
-		}
-	}
+	/* TEMPORARILY DISABLED: Clear existing state logic to fix segfaults during index build */
 	
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									 RelationGetRelationName(index));
 	
-	elog(DEBUG1, "Got index_state=%p for index %s", index_state, RelationGetRelationName(index));
+	elog(DEBUG2, "Index build: Got index_state=%p for index %s", index_state, RelationGetRelationName(index));
 
 	/* Scan heap and build posting lists */
 	elog(DEBUG1, "Starting table scan for heap %s", RelationGetRelationName(heap));
@@ -551,7 +532,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	table_endscan(scan);
 
 	/* Finalize posting lists and update statistics */
+	elog(DEBUG2, "About to call tp_build_finalize_and_update_stats");
 	tp_build_finalize_and_update_stats(index, index_state, &total_docs, &total_len);
+	elog(DEBUG2, "Returned from tp_build_finalize_and_update_stats");
 
 	/* Create index build result */
 	result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
@@ -692,8 +675,6 @@ tp_insert(Relation index,
 	/* Get index state */
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									   RelationGetRelationName(index));
-
-	elog(DEBUG2, "tp_insert: index_state=%p for index %s", index_state, RelationGetRelationName(index));
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);
@@ -2370,6 +2351,55 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	appendStringInfo(&result, "BM25 Parameters:\n");
 	appendStringInfo(&result, "  k1: %.2f\n", index_state->stats.k1);
 	appendStringInfo(&result, "  b: %.2f\n", index_state->stats.b);
+	
+	/* Show term dictionary and posting lists */
+	appendStringInfo(&result, "Term Dictionary:\n");
+	
+	if (DsaPointerIsValid(index_state->string_hash_dp))
+	{
+		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+		if (area)
+		{
+			TpStringHashTable *string_table = dsa_get_address(area, index_state->string_hash_dp);
+			dsa_pointer *buckets = dsa_get_address(area, string_table->buckets_dp);
+			uint32 bucket_idx, term_count = 0;
+			
+			/* Iterate through all buckets */
+			for (bucket_idx = 0; bucket_idx < string_table->bucket_count; bucket_idx++)
+			{
+				dsa_pointer entry_dp = buckets[bucket_idx];
+				
+				/* Walk the chain for this bucket */
+				while (DsaPointerIsValid(entry_dp))
+				{
+					TpStringHashEntry *entry = dsa_get_address(area, entry_dp);
+					
+					/* Show term info if it has a posting list */
+					if (DsaPointerIsValid(entry->posting_list_dp))
+					{
+						TpPostingList *posting_list = dsa_get_address(area, entry->posting_list_dp);
+						char *term_str = dsa_get_address(area, entry->string_dp);
+						
+						appendStringInfo(&result, "  '%.*s': doc_freq=%d\n", 
+										(int)entry->string_length, term_str, posting_list->doc_count);
+						term_count++;
+					}
+					
+					entry_dp = entry->next_dp;
+				}
+			}
+			
+			appendStringInfo(&result, "Total terms: %u\n", term_count);
+		}
+		else
+		{
+			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
+		}
+	}
+	else
+	{
+		appendStringInfo(&result, "  No terms (string hash table not initialized)\n");
+	}
 	
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }

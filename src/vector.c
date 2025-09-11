@@ -62,7 +62,7 @@ PG_FUNCTION_INFO_V1(tpvector_score);
 PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
-PG_FUNCTION_INFO_V1(text_tpvector_score);
+PG_FUNCTION_INFO_V1(tpvector_text_score);
 
 /*
  * bm25vector input function
@@ -243,7 +243,7 @@ tpvector_out(PG_FUNCTION_ARGS)
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
-		
+
 		if (entry->lexeme_len < 1024)
 		{
 			lexeme = alloca(entry->lexeme_len + 1);
@@ -253,12 +253,12 @@ tpvector_out(PG_FUNCTION_ARGS)
 			lexeme = palloc(entry->lexeme_len + 1);
 			use_heap = true;
 		}
-		
+
 		memcpy(lexeme, entry->lexeme, entry->lexeme_len);
 		lexeme[entry->lexeme_len] = '\0';
 
 		appendStringInfo(&result, "%s:%d", lexeme, entry->frequency);
-		
+
 		/* Free only if we used heap allocation */
 		if (use_heap)
 			pfree(lexeme);
@@ -409,7 +409,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 	/* Extract BM25 parameters from metapage */
 	k1 = metap->k1;
 	b = metap->b;
-	
+
 	/* CRITICAL FIX: Do NOT use corpus statistics from metapage!
 	 * The metapage values are stale and cause data consistency issues.
 	 * We'll get the live corpus statistics from DSA after getting index_state.
@@ -430,8 +430,20 @@ tpvector_score(PG_FUNCTION_ARGS)
 
 	/* Get live corpus statistics from DSA (not stale metapage values) */
 	total_docs = index_state->stats.total_docs;
-	avg_doc_len = total_docs > 0 ? 
+	avg_doc_len = total_docs > 0 ?
 		(float4)(index_state->stats.total_len / (double)total_docs) : 0.0f;
+
+	/* Calculate average IDF if not already done (lazy calculation) */
+	if (index_state->stats.average_idf <= 0.0001f && total_docs > 0)
+	{
+		elog(NOTICE, "Triggering lazy average IDF calculation (current: %.6f)", index_state->stats.average_idf);
+		tp_calculate_average_idf(index_state);
+		elog(NOTICE, "Lazy calculated average IDF: %.6f", index_state->stats.average_idf);
+	}
+	else
+	{
+		elog(DEBUG2, "Using existing average_idf: %.6f", index_state->stats.average_idf);
+	}
 
 	/* Count terms in document vector to estimate document length */
 	doc_count = TPVECTOR_ENTRY_COUNT(doc_vec);
@@ -447,8 +459,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 	query_count = TPVECTOR_ENTRY_COUNT(query_vec);
 	query_entry = get_tpvector_first_entry(query_vec);
 
-	elog(DEBUG1, "Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f",
-		 total_docs, avg_doc_len, k1, b);
+	elog(DEBUG1, "*** QUERY: index_state=%p, Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f ***",
+		 index_state, total_docs, avg_doc_len, k1, b);
 
 	/* Transaction-level locking removed - tp_intern_string() now handles its own locks */
 
@@ -470,7 +482,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 			query_lexeme = palloc(query_entry->lexeme_len + 1);
 			use_heap = true;
 		}
-		
+
 		memcpy(query_lexeme, query_entry->lexeme, query_entry->lexeme_len);
 		query_lexeme[query_entry->lexeme_len] = '\0';
 
@@ -504,24 +516,20 @@ tpvector_score(PG_FUNCTION_ARGS)
 
 		/* Get actual posting list for this term to get document frequency */
 		posting_list = tp_get_posting_list(index_state, query_lexeme);
+		elog(DEBUG2, "Processing term '%.*s', posting_list=%p", query_entry->lexeme_len, query_entry->lexeme, posting_list);
 		if (posting_list && posting_list->doc_count > 0)
 		{
-			/* Calculate IDF using actual document frequency */
-			double idf_numerator = (double)(total_docs - posting_list->doc_count + 0.5);
-			double idf_denominator = (double)(posting_list->doc_count + 0.5);
-			double idf_ratio = idf_numerator / idf_denominator;
-			idf = (float4)log(idf_ratio);
-			
-			elog(DEBUG1, "BM25 IDF for term '%.*s': doc_count=%d, total_docs=%d, "
-				 "idf_numerator=%f, idf_denominator=%f, idf_ratio=%f, idf=%f",
-				 query_entry->lexeme_len, query_entry->lexeme, posting_list->doc_count, total_docs,
-				 idf_numerator, idf_denominator, idf_ratio, idf);
+			/* Calculate IDF using centralized function with epsilon flooring */
+			idf = tp_calculate_idf(posting_list->doc_count, total_docs, index_state->stats.average_idf);
+
+			elog(DEBUG1, "BM25 IDF for term '%.*s': doc_count=%d, total_docs=%d, idf=%f",
+				 query_entry->lexeme_len, query_entry->lexeme, posting_list->doc_count, total_docs, idf);
 		}
 		else
 		{
 			/* Term not found in index - use default IDF */
 			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
-			
+
 			elog(DEBUG1, "BM25 default IDF for term '%.*s' (not in index): total_docs=%d, default_idf=%f",
 				 query_entry->lexeme_len, query_entry->lexeme, total_docs, idf);
 		}
@@ -531,7 +539,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 			float4 term_score;
 			double numerator_d = (double)tf * ((double)k1 + 1.0);
 			double denominator_d;
-			
+
 			/* Avoid division by zero - if avg_doc_len is 0, use doc_length directly */
 			if (avg_doc_len > 0.0f)
 			{
@@ -544,21 +552,21 @@ tpvector_score(PG_FUNCTION_ARGS)
 			}
 
 			term_score = (float4)((double)idf * (numerator_d / denominator_d) * (double)query_entry->frequency);
-			
+
 			/* Debug NaN detection */
 			if (isnan(term_score))
 			{
 				elog(LOG, "NaN detected in vector.c term_score calculation: term='%.*s', idf=%f, numerator_d=%f, denominator_d=%f, query_freq=%d, tf=%f, doc_len=%f, avg_doc_len=%f, k1=%f, b=%f",
 					 query_entry->lexeme_len, query_entry->lexeme, idf, numerator_d, denominator_d, query_entry->frequency, tf, doc_length, avg_doc_len, k1, b);
 			}
-			
+
 			elog(DEBUG1, "BM25 term '%.*s': tf=%f, idf=%f, query_freq=%d, doc_len=%f, avg_doc_len=%f, "
 				 "numerator=%f, denominator=%f, term_score=%f, running_score=%f",
-				 query_entry->lexeme_len, query_entry->lexeme, tf, idf, query_entry->frequency, 
+				 query_entry->lexeme_len, query_entry->lexeme, tf, idf, query_entry->frequency,
 				 doc_length, avg_doc_len, numerator_d, denominator_d, term_score, score);
-			
+
 			score += term_score;
-			
+
 			elog(DEBUG1, "BM25 after adding term: new_score=%f", score);
 		}
 
@@ -872,14 +880,14 @@ to_tpvector(PG_FUNCTION_ARGS)
 	foreach(lc, search_path)
 	{
 		Oid			namespace_oid = lfirst_oid(lc);
-		
+
 		index_oid = GetSysCacheOid2(RELNAMENSP, Anum_pg_class_oid,
 									PointerGetDatum(index_name),
 									ObjectIdGetDatum(namespace_oid));
 		if (OidIsValid(index_oid))
 			break;
 	}
-	
+
 	list_free(search_path);
 
 	if (!OidIsValid(index_oid))
@@ -1004,10 +1012,11 @@ to_tpvector(PG_FUNCTION_ARGS)
  * Score text against a bm25vector query
  */
 Datum
-text_tpvector_score(PG_FUNCTION_ARGS)
+tpvector_text_score(PG_FUNCTION_ARGS)
 {
 	text	   *document_text = PG_GETARG_TEXT_PP(0);
 	TpVector *query_vec = (TpVector *) PG_GETARG_POINTER(1);
+
 	char	   *index_name;
 	text	   *index_name_text;
 	Datum		doc_vec_datum;

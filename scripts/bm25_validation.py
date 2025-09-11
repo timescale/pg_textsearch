@@ -185,9 +185,9 @@ class BM25Validator:
             cur.execute(query_sql, (query, index_name))
             results = cur.fetchall()
             
-            # Tapir returns negative scores for PostgreSQL ASC ordering
-            # Convert back to positive for comparison
-            return {row['doc_id']: -row['score'] for row in results}
+            # Tapir returns actual BM25 scores (can be positive or negative)
+            # Use scores directly for comparison  
+            return {row['doc_id']: row['score'] for row in results}
     
     def compare_scores(self, python_scores: Dict[int, float], tapir_scores: Dict[int, float],
                        tolerance: float = 0.001) -> pd.DataFrame:

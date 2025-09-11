@@ -72,9 +72,9 @@ CREATE OPERATOR = (
 );
 
 -- BM25 scoring function for text <@> tpvector operations
-CREATE FUNCTION text_tpvector_score(left_text text, right_vector tpvector)
+CREATE FUNCTION tpvector_text_score(left_text text, right_vector tpvector)
 RETURNS float8
-AS 'MODULE_PATHNAME', 'text_tpvector_score'
+AS 'MODULE_PATHNAME', 'tpvector_text_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 -- <@> operator for tpvector <@> tpvector operations
@@ -88,7 +88,7 @@ CREATE OPERATOR <@> (
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = tpvector,
-    PROCEDURE = text_tpvector_score
+    PROCEDURE = tpvector_text_score
 );
 
 -- Tapir operator class for text columns
