@@ -371,7 +371,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("bm25vector operands must use the same index"),
+				 errmsg("tpvector operands must use the same index"),
 				 errhint("Document vector uses index \"%s\", query vector uses "
 						 "index \"%s\"",
 						 doc_index_name,

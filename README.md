@@ -170,14 +170,11 @@ SELECT tp_debug_dump_index('index_name');
 
 ### Configuration
 
-Add to your `postgresql.conf`:
+Optional settings in `postgresql.conf`:
 
 ```bash
-# Shared memory pool for all Tapir indexes (requires restart)
-tapir.shared_memory_pool_size = 64   # MB, default 64MB
-
 # Per-index memory limit (can be changed without restart)  
-tapir.index_memory_limit = 8         # MB, default 8MB
+tapir.shared_memory_size = 64MB      # Memory limit per index, default 64MB
 
 # Query limit when no LIMIT clause detected
 tapir.default_limit = 1000           # default 1000

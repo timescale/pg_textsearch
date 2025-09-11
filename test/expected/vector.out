@@ -79,7 +79,7 @@ SELECT to_tpvector('hello', 'docs_vector_idx') = to_tpvector('world', 'docs_vect
 -- Should fail: vectors from different indexes  
 \set ON_ERROR_STOP off
 SELECT 'index1:{hello:2,world:1}'::tpvector <@> 'index2:{hello:2,world:1}'::tpvector;
-ERROR:  bm25vector operands must use the same index
+ERROR:  tpvector operands must use the same index
 HINT:  Document vector uses index "index1", query vector uses index "index2"
 \set ON_ERROR_STOP on
 -- Test nonexistent index error

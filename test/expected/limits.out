@@ -174,8 +174,6 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 1 query terms
-WARNING:  Hash table scan failed, using fallback method
  has_results 
 -------------
  t
@@ -256,7 +254,6 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 2 query terms
  pushdown_safe_count 
 ---------------------
                    0
@@ -271,10 +268,9 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 2 query terms
  pushdown_unsafe_count 
 -----------------------
-                     0
+                     2
 (1 row)
 
 -- Test 12: Edge cases for LIMIT pushdown
@@ -286,8 +282,6 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-NOTICE:  TRACE: tp_score_documents called with 2 query terms
-WARNING:  Hash table scan failed, using fallback method
  large_limit_has_results 
 -------------------------
  t

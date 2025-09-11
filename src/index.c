@@ -321,7 +321,7 @@ char *
 tp_buildphasename(int64 phase)
 {
 	elog(DEBUG2, "tp_buildphasename: phase=%ld", (long) phase);
-	
+
 	switch (phase)
 	{
 		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
@@ -377,9 +377,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
-	/* Initialize posting list system for this index */
-	/* TEMPORARILY DISABLED: Clear existing state logic to fix segfaults during index build */
-
+	/* Initialize index state */
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									 RelationGetRelationName(index));
 
@@ -387,10 +385,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Scan heap and build posting lists */
 	elog(DEBUG1, "Starting table scan for heap %s", RelationGetRelationName(heap));
-	
+
 	/* Report memtable building phase */
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_BUILD_MEMTABLE);
-	
+
 	scan = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
 	elog(DEBUG1, "Created table scan");
 	slot = table_slot_create(heap, NULL);
@@ -601,7 +599,7 @@ tp_buildempty(Relation index)
 		 "Building empty Tapir index for %s",
 		 RelationGetRelationName(index));
 
-	/* Extract options from index (same logic as bm25build) */
+	/* Extract options from index */
 	options = (TpOptions *) index->rd_options;
 	if (options)
 	{
@@ -692,6 +690,7 @@ tp_insert(Relation index,
 	/* Get index state */
 	index_state = tp_get_index_state(RelationGetRelid(index),
 									   RelationGetRelationName(index));
+	Assert(index_state != NULL);
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);
@@ -926,10 +925,6 @@ tp_rescan(IndexScanDesc scan,
 			/* Check for <@> operator strategy */
 			if (so && key->sk_strategy == 1)	/* Strategy 1: <@> operator */
 			{
-				/*
-				 * Note: Actual filtering is performed in
-				 * bm25_execute_scoring_query
-				 */
 				elog(DEBUG1, "tp_rescan: <@> operator strategy detected");
 			}
 		}
@@ -969,7 +964,7 @@ tp_rescan(IndexScanDesc scan,
 				/* Store the original query vector in scan state */
 				so->query_vector = query_vector;
 
-				/* Extract the original query text from the bm25vector structure */
+				/* Extract the original query text from the vector structure */
 				/* For now, we'll reconstruct the query from the vector terms */
 				if (query_vector && query_vector->entry_count > 0)
 				{
@@ -1197,11 +1192,13 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
 		ErrorData  *errdata = CopyErrorData();
 		elog(WARNING,
 			 "Exception during BM25 search for query '%s': %s",
 			 so->query_text, errdata->message);
 		FreeErrorData(errdata);
+		MemoryContextSwitchTo(oldcontext);
 		success = false;
 	}
 	PG_END_TRY();
@@ -1828,7 +1825,7 @@ tp_store_query_limit(Oid index_oid, int limit)
 		tp_query_limits_hash = hash_create("tp_query_limits",
 										   TP_QUERY_LIMITS_HASH_SIZE,
 										   &hash_ctl,
-										   HASH_ELEM | HASH_CONTEXT);
+										   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 
