@@ -4,6 +4,4 @@
 #include "postgres.h"
 #include "fmgr.h"
 
-/* BM25 default parameters now defined in constants.h */
-
 #endif

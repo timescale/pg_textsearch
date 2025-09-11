@@ -21,6 +21,7 @@
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_opclass.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "nodes/execnodes.h"
 #include "nodes/tidbitmap.h"
@@ -32,6 +33,7 @@
 #include "utils/syscache.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "utils/backend_progress.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
@@ -311,12 +313,26 @@ tp_bulkdelete(IndexVacuumInfo *info,
 	return stats;
 }
 
+/* Tapir-specific build phases */
+#define TAPIR_PHASE_BUILD_MEMTABLE      2
+#define TAPIR_PHASE_WRITE_METADATA      3
+
 char *
 tp_buildphasename(int64 phase)
 {
 	elog(DEBUG2, "tp_buildphasename: phase=%ld", (long) phase);
-	/* TODO: Implement build phase names */
-	return "not implemented";
+	
+	switch (phase)
+	{
+		case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
+			return "initializing";
+		case TAPIR_PHASE_BUILD_MEMTABLE:
+			return "building memtable";
+		case TAPIR_PHASE_WRITE_METADATA:
+			return "writing metadata";
+		default:
+			return NULL; /* Unknown phase */
+	}
 }
 
 /*
@@ -345,6 +361,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 "Tapir index build started for relation %s",
 		 RelationGetRelationName(index));
 
+	/* Report initialization phase */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE);
+
 	/* Extract options from index */
 	tp_build_extract_options(index, &text_config_name, &text_config_oid, &k1, &b);
 
@@ -368,6 +387,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Scan heap and build posting lists */
 	elog(DEBUG1, "Starting table scan for heap %s", RelationGetRelationName(heap));
+	
+	/* Report memtable building phase */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_BUILD_MEMTABLE);
+	
 	scan = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
 	elog(DEBUG1, "Created table scan");
 	slot = table_slot_create(heap, NULL);
@@ -521,6 +544,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
+
+	/* Report metadata writing phase */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_WRITE_METADATA);
 
 	/* Finalize posting lists and update statistics */
 	elog(DEBUG2, "About to call tp_build_finalize_and_update_stats");
