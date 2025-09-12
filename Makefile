@@ -9,7 +9,8 @@ OBJS = \
 	src/posting.o \
 	src/index.o \
 	src/vector.o \
-	src/stringtable.o
+	src/stringtable.o \
+	src/limit.o
 
 # Shared library target
 MODULE_big = tapir

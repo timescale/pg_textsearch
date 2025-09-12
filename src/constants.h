@@ -1,8 +1,5 @@
 #pragma once
 
-/* Extension name and version */
-#define TP_EXTENSION_NAME "tapir"
-
 /* Magic numbers and metadata */
 #define TP_MAGIC		  0x25424D25 /* "%BM%" in hex */
 #define TP_VERSION		  1

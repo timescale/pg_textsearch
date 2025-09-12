@@ -58,8 +58,6 @@ struct IndexBulkDeleteResult *tp_bulkdelete(
 		void						 *callback_state);
 char *tp_buildphasename(int64 phase);
 
-/* Helper functions */
-
 /* Internal access method functions */
 struct IndexBuildResult		 *
 tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
@@ -73,6 +71,7 @@ bool tp_insert(
 		IndexUniqueCheck  checkUnique,
 		bool			  indexUnchanged,
 		struct IndexInfo *indexInfo);
+
 IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
 void		  tp_rescan(
 				 IndexScanDesc scan,
@@ -80,6 +79,7 @@ void		  tp_rescan(
 				 int		   nkeys,
 				 ScanKey	   orderbys,
 				 int		   norderbys);
+
 void tp_endscan(IndexScanDesc scan);
 bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
 void tp_costestimate(
@@ -91,12 +91,10 @@ void tp_costestimate(
 		Selectivity		   *indexSelectivity,
 		double			   *indexCorrelation,
 		double			   *indexPages);
+
 bytea						 *tp_options(Datum reloptions, bool validate);
 bool						  tp_validate(Oid opclassoid);
 struct IndexBulkDeleteResult *tp_vacuumcleanup(
 		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
 
-/* Query limit tracking functions */
-void tp_store_query_limit(Oid index_oid, int limit);
-int	 tp_get_query_limit(Relation index_rel);
-void tp_cleanup_query_limits(void);
+/* Query limit tracking - now in limits.h */

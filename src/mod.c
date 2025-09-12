@@ -8,14 +8,17 @@
 
 #include "constants.h"
 #include "index.h"
+#include "limit.h"
 #include "memtable.h"
-#include "mod.h"
 #include "posting.h"
 
 PG_MODULE_MAGIC;
 
 /* Relation options for Tapir indexes */
 relopt_kind tp_relopt_kind;
+
+/* External variable from limits module */
+extern int tp_default_limit;
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;

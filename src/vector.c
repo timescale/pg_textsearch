@@ -1,3 +1,5 @@
+#include <postgres.h>
+
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <catalog/index.h>
@@ -200,31 +202,31 @@ tpvector_in(PG_FUNCTION_ARGS)
 Datum
 tpvector_out(PG_FUNCTION_ARGS)
 {
-	TpVector	  *bm25vec;
+	TpVector	  *tpvec;
 	char		  *index_name = NULL;
 	StringInfoData result;
 	TpVectorEntry *entry;
 	int			   i;
 
-	bm25vec = (TpVector *)PG_GETARG_POINTER(0);
+	tpvec = (TpVector *)PG_GETARG_POINTER(0);
 
 	/* Basic validation */
-	if (!bm25vec)
+	if (!tpvec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 				 errmsg("null tpvector passed to tpvector_out")));
 
 	/* Detoast the input if necessary */
-	bm25vec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	tpvec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 
 	/* Additional validation after detoasting */
-	if (!bm25vec || VARSIZE(bm25vec) < sizeof(TpVector))
+	if (!tpvec || VARSIZE(tpvec) < sizeof(TpVector))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid tpvector structure")));
 
 	/* Get index name component */
-	index_name = get_tpvector_index_name(bm25vec);
+	index_name = get_tpvector_index_name(tpvec);
 	if (!index_name)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -235,8 +237,8 @@ tpvector_out(PG_FUNCTION_ARGS)
 	appendStringInfo(&result, "%s:{", index_name);
 
 	/* Add each entry - use stored strings directly */
-	entry = TPVECTOR_ENTRIES_PTR(bm25vec);
-	for (i = 0; i < TPVECTOR_ENTRY_COUNT(bm25vec); i++)
+	entry = TPVECTOR_ENTRIES_PTR(tpvec);
+	for (i = 0; i < tpvec->entry_count; i++)
 	{
 		char *lexeme;
 		bool  use_heap = false;
@@ -304,19 +306,19 @@ tpvector_recv(PG_FUNCTION_ARGS)
 Datum
 tpvector_send(PG_FUNCTION_ARGS)
 {
-	TpVector	  *bm25vec = (TpVector *)PG_GETARG_POINTER(0);
+	TpVector	  *tpvec = (TpVector *)PG_GETARG_POINTER(0);
 	StringInfoData buf;
 	int			   total_size;
 
 	pq_begintypsend(&buf);
 
 	/* Send total size */
-	total_size = VARSIZE(bm25vec);
+	total_size = VARSIZE(tpvec);
 	pq_sendint32(&buf, total_size);
 
 	/* Send the entire structure after varlena header */
 	pq_sendbytes(
-			&buf, (char *)bm25vec + sizeof(int32), total_size - sizeof(int32));
+			&buf, (char *)tpvec + sizeof(int32), total_size - sizeof(int32));
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
@@ -455,7 +457,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 	}
 
 	/* Count terms in document vector to estimate document length */
-	doc_count = TPVECTOR_ENTRY_COUNT(doc_vec);
+	doc_count = doc_vec->entry_count;
 	doc_entry = get_tpvector_first_entry(doc_vec);
 	for (doc_idx = 0; doc_idx < doc_count && doc_entry; doc_idx++)
 	{
@@ -465,7 +467,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 	}
 
 	/* Process query terms and calculate BM25 score */
-	query_count = TPVECTOR_ENTRY_COUNT(query_vec);
+	query_count = query_vec->entry_count;
 	query_entry = get_tpvector_first_entry(query_vec);
 
 	elog(DEBUG1,
@@ -710,7 +712,7 @@ tpvector_eq(PG_FUNCTION_ARGS)
 	}
 
 	/* Compare entry counts */
-	if (TPVECTOR_ENTRY_COUNT(vec1) != TPVECTOR_ENTRY_COUNT(vec2))
+	if (vec1->entry_count != vec2->entry_count)
 	{
 		pfree(index_name1);
 		pfree(index_name2);
@@ -727,14 +729,14 @@ tpvector_eq(PG_FUNCTION_ARGS)
 	{
 		TpVectorEntry *entry1 = get_tpvector_first_entry(vec1);
 
-		for (i = 0; i < TPVECTOR_ENTRY_COUNT(vec1) && result && entry1; i++)
+		for (i = 0; i < vec1->entry_count && result && entry1; i++)
 		{
 			bool		   found_match = false;
 			TpVectorEntry *entry2	   = get_tpvector_first_entry(vec2);
 			int			   j;
 
 			/* Look for this term in vec2 */
-			for (j = 0; j < TPVECTOR_ENTRY_COUNT(vec2) && entry2; j++)
+			for (j = 0; j < vec2->entry_count && entry2; j++)
 			{
 				if (entry1->lexeme_len == entry2->lexeme_len &&
 					entry1->frequency == entry2->frequency &&
@@ -764,7 +766,7 @@ tpvector_eq(PG_FUNCTION_ARGS)
  * Utility function to extract index name from tpvector
  */
 char *
-get_tpvector_index_name(TpVector *bm25vec)
+get_tpvector_index_name(TpVector *tpvec)
 {
 	int	  name_len;
 	char *index_name;
@@ -772,19 +774,19 @@ get_tpvector_index_name(TpVector *bm25vec)
 	int	  vector_total_size;
 
 	/* Validate input */
-	if (!bm25vec)
+	if (!tpvec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 				 errmsg("null tpvector passed to get_tpvector_index_name")));
 
 	/* Validate vector structure size */
-	vector_total_size = VARSIZE(bm25vec);
+	vector_total_size = VARSIZE(tpvec);
 	if (vector_total_size < sizeof(TpVector))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid tpvector size: %d", vector_total_size)));
 
-	name_len = TPVECTOR_INDEX_NAME_LEN(bm25vec);
+	name_len = tpvec->index_name_len;
 
 	/* Validate name length */
 	if (name_len < 0 || name_len > TP_MAX_INDEX_NAME_LENGTH)
@@ -793,9 +795,9 @@ get_tpvector_index_name(TpVector *bm25vec)
 				 errmsg("invalid index name length: %d", name_len)));
 
 	/* Validate that name pointer is within vector bounds */
-	name_ptr = TPVECTOR_INDEX_NAME_PTR(bm25vec);
-	if (name_ptr < (char *)bm25vec ||
-		name_ptr + name_len > (char *)bm25vec + vector_total_size)
+	name_ptr = TPVECTOR_INDEX_NAME_PTR(tpvec);
+	if (name_ptr < (char *)tpvec ||
+		name_ptr + name_len > (char *)tpvec + vector_total_size)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("index name data extends beyond vector bounds")));
@@ -912,7 +914,7 @@ create_tpvector_from_strings(
 TpVectorEntry *
 get_tpvector_first_entry(TpVector *vec)
 {
-	if (!vec || TPVECTOR_ENTRY_COUNT(vec) == 0)
+	if (!vec || vec->entry_count == 0)
 		return NULL;
 	return TPVECTOR_ENTRIES_PTR(vec);
 }

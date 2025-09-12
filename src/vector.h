@@ -12,27 +12,23 @@ typedef struct TpVectorEntry
 {
 	int32 frequency;					 /* Term frequency in document */
 	int32 lexeme_len;					 /* Length of lexeme string */
-	char  lexeme[FLEXIBLE_ARRAY_MEMBER]; /* Variable-length lexeme
-										  * string */
+	char  lexeme[FLEXIBLE_ARRAY_MEMBER]; /* Variable-length lexeme string */
 } TpVectorEntry;
 
 /* tpvector data type structure */
-typedef struct
+typedef struct TpVector
 {
-	int32 vl_len_;		  /* varlena header (must be first) */
-	int32 index_name_len; /* length of index name */
-	int32 entry_count;	  /* number of term_id/frequency pairs */
-						  /* index name data follows immediately after */
-						  /* array of TpVectorEntry follows after index name */
+	int32 vl_len_;					   /* varlena header (must be first) */
+	int32 index_name_len;			   /* length of index name */
+	int32 entry_count;				   /* number of term_id/frequency pairs */
+	char  data[FLEXIBLE_ARRAY_MEMBER]; /* payload: index name + entries */
 } TpVector;
 
-/* Macros for accessing tpvector components */
-#define TPVECTOR_INDEX_NAME_LEN(x) (((TpVector *)(x))->index_name_len)
-#define TPVECTOR_ENTRY_COUNT(x)	   (((TpVector *)(x))->entry_count)
-#define TPVECTOR_INDEX_NAME_PTR(x) ((char *)(x) + MAXALIGN(sizeof(TpVector)))
-#define TPVECTOR_ENTRIES_PTR(x)                     \
-	((TpVectorEntry *)(TPVECTOR_INDEX_NAME_PTR(x) + \
-					   MAXALIGN(TPVECTOR_INDEX_NAME_LEN(x) + 1)))
+/* Macros for accessing tpvector variable-length data */
+#define TPVECTOR_INDEX_NAME_PTR(x) (((TpVector *)(x))->data)
+#define TPVECTOR_ENTRIES_PTR(x)                  \
+	((TpVectorEntry *)(((TpVector *)(x))->data + \
+					   MAXALIGN(((TpVector *)(x))->index_name_len + 1)))
 
 /* Function declarations */
 Datum tpvector_in(PG_FUNCTION_ARGS);
@@ -57,6 +53,6 @@ TpVector *create_tpvector_from_strings(
 		const char **lexemes,
 		const int32 *frequencies);
 
-char		  *get_tpvector_index_name(TpVector *bm25vec);
+char		  *get_tpvector_index_name(TpVector *tpvec);
 TpVectorEntry *get_tpvector_first_entry(TpVector *vec);
 TpVectorEntry *get_tpvector_next_entry(TpVectorEntry *current);

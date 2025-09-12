@@ -43,6 +43,7 @@
 
 #include "constants.h"
 #include "index.h"
+#include "limit.h"
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
@@ -356,6 +357,237 @@ tp_buildphasename(int64 phase)
 }
 
 /*
+ * Extract terms and frequencies from a TSVector
+ *
+ * Returns the document length (sum of all term frequencies)
+ */
+static int
+tp_extract_terms_from_tsvector(
+		TSVector tsvector,
+		char  ***terms_out,
+		int32  **frequencies_out,
+		int		*term_count_out)
+{
+	int		   term_count = tsvector->size;
+	char	 **terms;
+	int32	  *frequencies;
+	int		   doc_length = 0;
+	int		   i;
+	WordEntry *we;
+
+	*term_count_out = term_count;
+
+	if (term_count == 0)
+	{
+		*terms_out		 = NULL;
+		*frequencies_out = NULL;
+		return 0;
+	}
+
+	we = ARRPTR(tsvector);
+
+	elog(DEBUG1, "TSVector has %d terms", term_count);
+
+	terms		= palloc(term_count * sizeof(char *));
+	frequencies = palloc(term_count * sizeof(int32));
+
+	for (i = 0; i < term_count; i++)
+	{
+		char *lexeme_start = STRPTR(tsvector) + we[i].pos;
+		int	  lexeme_len   = we[i].len;
+		char *lexeme;
+
+		elog(DEBUG1,
+			 "Processing term %d of %d: pos=%d, len=%d",
+			 i,
+			 term_count,
+			 we[i].pos,
+			 lexeme_len);
+
+		/* Always allocate on heap for terms array since we need to keep them
+		 */
+		lexeme = palloc(lexeme_len + 1);
+		memcpy(lexeme, lexeme_start, lexeme_len);
+		lexeme[lexeme_len] = '\0';
+
+		elog(DEBUG1, "Term %d: lexeme='%s'", i, lexeme);
+
+		terms[i] = lexeme;
+
+		/*
+		 * Get frequency from TSVector - count positions or default to 1
+		 */
+		if (we[i].haspos)
+		{
+			frequencies[i] = (int32)POSDATALEN(tsvector, &we[i]);
+			elog(DEBUG1, "Term %d has %d positions", i, frequencies[i]);
+		}
+		else
+		{
+			frequencies[i] = 1;
+			elog(DEBUG1, "Term %d defaulting to frequency 1", i);
+		}
+
+		doc_length += frequencies[i];
+		elog(DEBUG1, "Doc length after term %d: %d", i, doc_length);
+	}
+
+	*terms_out		 = terms;
+	*frequencies_out = frequencies;
+
+	elog(DEBUG1, "Finished processing all %d terms", term_count);
+	return doc_length;
+}
+
+/*
+ * Free memory allocated for terms array
+ */
+static void
+tp_free_terms_array(char **terms, int term_count)
+{
+	int i;
+
+	if (terms == NULL)
+		return;
+
+	for (i = 0; i < term_count; i++)
+	{
+		pfree(terms[i]);
+	}
+	pfree(terms);
+}
+
+/*
+ * Setup table scanning for index build
+ */
+static void
+tp_setup_table_scan(
+		Relation heap, TableScanDesc *scan_out, TupleTableSlot **slot_out)
+{
+	elog(DEBUG1,
+		 "Starting table scan for heap %s",
+		 RelationGetRelationName(heap));
+
+	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
+	elog(DEBUG1, "Created table scan");
+
+	*slot_out = table_slot_create(heap, NULL);
+	elog(DEBUG1, "Created table slot");
+}
+
+/*
+ * Process a single document during index build
+ *
+ * Returns true if document was processed successfully, false to skip
+ */
+static bool
+tp_process_document(
+		TupleTableSlot *slot,
+		IndexInfo	   *indexInfo,
+		Oid				text_config_oid,
+		TpIndexState   *index_state,
+		uint64		   *total_docs)
+{
+	bool		isnull;
+	Datum		text_datum;
+	text	   *document_text;
+	char	   *document_str;
+	ItemPointer ctid;
+	Datum		tsvector_datum;
+	TSVector	tsvector;
+	char	  **terms;
+	int32	   *frequencies;
+	int			term_count;
+	int			doc_length;
+
+	elog(DEBUG1, "Processing document");
+
+	/* Get the text column value (first indexed column) */
+	text_datum =
+			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
+
+	elog(DEBUG1, "Got text datum, isnull=%d", isnull);
+
+	if (isnull)
+		return false; /* Skip NULL documents */
+
+	document_text = DatumGetTextPP(text_datum);
+	elog(DEBUG1, "Got document_text=%p", document_text);
+
+	document_str = text_to_cstring(document_text);
+	elog(DEBUG1, "Got document_str='%s'", document_str);
+
+	ctid = &slot->tts_tid;
+
+	/* Validate the TID before processing */
+	if (!ItemPointerIsValid(ctid))
+	{
+		elog(WARNING,
+			 "Invalid TID in slot during index build, skipping document");
+		pfree(document_str);
+		return false;
+	}
+
+	elog(DEBUG1, "TID is valid");
+
+	/*
+	 * Vectorize the document using index metadata
+	 */
+	elog(DEBUG1,
+		 "About to vectorize document with text_config_oid=%u",
+		 text_config_oid);
+
+	tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid, /* collation */
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(document_text));
+
+	tsvector = DatumGetTSVector(tsvector_datum);
+	elog(DEBUG1, "Got tsvector=%p", tsvector);
+
+	/* Extract lexemes and frequencies from TSVector */
+	doc_length = tp_extract_terms_from_tsvector(
+			tsvector, &terms, &frequencies, &term_count);
+
+	if (term_count > 0)
+	{
+		/*
+		 * Add document terms to posting lists (if shared memory available)
+		 */
+		elog(DEBUG1,
+			 "index_state=%p, about to add document terms",
+			 index_state);
+
+		if (index_state != NULL)
+		{
+			elog(DEBUG1,
+				 "Calling tp_add_document_terms with %d terms",
+				 term_count);
+
+			tp_add_document_terms(
+					index_state,
+					ctid,
+					terms,
+					frequencies,
+					term_count,
+					doc_length);
+
+			elog(DEBUG1, "Finished tp_add_document_terms");
+		}
+
+		/* Free the terms array and individual lexemes */
+		tp_free_terms_array(terms, term_count);
+		pfree(frequencies);
+	}
+
+	(*total_docs)++;
+	pfree(document_str);
+
+	return true;
+}
+
+/*
  * Build a new Tapir index
  */
 IndexBuildResult *
@@ -408,185 +640,18 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 index_state,
 		 RelationGetRelationName(index));
 
-	/* Scan heap and build posting lists */
-	elog(DEBUG1,
-		 "Starting table scan for heap %s",
-		 RelationGetRelationName(heap));
-
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_BUILD_MEMTABLE);
 
-	scan = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
-	elog(DEBUG1, "Created table scan");
-	slot = table_slot_create(heap, NULL);
-	elog(DEBUG1, "Created table slot");
+	/* Setup table scanning */
+	tp_setup_table_scan(heap, &scan, &slot);
 
+	/* Process each document in the heap */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		bool		isnull;
-		Datum		text_datum;
-		text	   *document_text;
-		char	   *document_str;
-		ItemPointer ctid;
-		Datum		tsvector_datum;
-		TSVector	tsvector;
-		int32	   *frequencies;
-		int			term_count;
-		int			doc_length = 0;
-		int			i;
-
-		elog(DEBUG1, "Processing next slot");
-
-		/* Get the text column value (first indexed column) */
-		text_datum =
-				slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
-
-		elog(DEBUG1, "Got text datum, isnull=%d", isnull);
-
-		if (isnull)
-			continue; /* Skip NULL documents */
-
-		elog(DEBUG1, "About to get document text");
-		document_text = DatumGetTextPP(text_datum);
-		elog(DEBUG1, "Got document_text=%p", document_text);
-		document_str = text_to_cstring(document_text);
-		elog(DEBUG1, "Got document_str='%s'", document_str);
-		ctid = &slot->tts_tid;
-		elog(DEBUG1, "Got ctid");
-
-		/* Validate the TID before processing */
-		if (!ItemPointerIsValid(ctid))
-		{
-			elog(WARNING,
-				 "Invalid TID in slot during index build, skipping document");
-			continue;
-		}
-
-		elog(DEBUG1, "TID is valid");
-
-		/*
-		 * Vectorize the document using index metadata
-		 */
-		elog(DEBUG1,
-			 "About to vectorize document with text_config_oid=%u",
-			 text_config_oid);
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid, /* collation */
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(document_text));
-		elog(DEBUG1, "Got tsvector_datum");
-		tsvector = DatumGetTSVector(tsvector_datum);
-		elog(DEBUG1, "Got tsvector=%p", tsvector);
-
-		/* Extract lexemes and frequencies directly from TSVector */
-		term_count = tsvector->size;
-		elog(DEBUG1, "TSVector has %d terms", term_count);
-		if (term_count > 0)
-		{
-			WordEntry *we = ARRPTR(tsvector);
-			char	 **terms;
-
-			elog(DEBUG1, "Got WordEntry array");
-
-			terms = palloc(term_count * sizeof(char *));
-			elog(DEBUG1, "Allocated terms array");
-			frequencies = palloc(term_count * sizeof(int32));
-			elog(DEBUG1, "Allocated frequencies array");
-
-			for (i = 0; i < term_count; i++)
-			{
-				char *lexeme_start;
-				int	  lexeme_len;
-				char *lexeme;
-
-				elog(DEBUG1, "Processing term %d of %d", i, term_count);
-
-				lexeme_start = STRPTR(tsvector) + we[i].pos;
-				lexeme_len	 = we[i].len;
-
-				elog(DEBUG1,
-					 "Term %d: pos=%d, len=%d",
-					 i,
-					 we[i].pos,
-					 lexeme_len);
-
-				/*
-				 * Always allocate on heap for terms array since we need to
-				 * keep them
-				 */
-				lexeme = palloc(lexeme_len + 1);
-				memcpy(lexeme, lexeme_start, lexeme_len);
-				lexeme[lexeme_len] = '\0';
-
-				elog(DEBUG1, "Term %d: lexeme='%s'", i, lexeme);
-
-				/* Store the lexeme string directly in terms array */
-				terms[i] = lexeme;
-				elog(DEBUG1, "Stored term %d in array", i);
-
-				/*
-				 * Get frequency from TSVector - count positions or default to
-				 * 1
-				 */
-				elog(DEBUG1,
-					 "Checking if term %d has positions: %d",
-					 i,
-					 we[i].haspos);
-				if (we[i].haspos)
-				{
-					frequencies[i] = (int32)POSDATALEN(tsvector, &we[i]);
-					elog(DEBUG1,
-						 "Term %d has %d positions",
-						 i,
-						 frequencies[i]);
-				}
-				else
-				{
-					frequencies[i] = 1;
-					elog(DEBUG1, "Term %d defaulting to frequency 1", i);
-				}
-				doc_length += frequencies[i]; /* Sum frequencies for doc
-											   * length */
-				elog(DEBUG1, "Doc length after term %d: %d", i, doc_length);
-			}
-
-			elog(DEBUG1, "Finished processing all %d terms", term_count);
-
-			/*
-			 * Add document terms to posting lists (if shared memory
-			 * available)
-			 */
-			elog(DEBUG1,
-				 "index_state=%p, about to add document terms",
-				 index_state);
-			if (index_state != NULL)
-			{
-				elog(DEBUG1,
-					 "Calling tp_add_document_terms with %d terms",
-					 term_count);
-				tp_add_document_terms(
-						index_state,
-						ctid,
-						terms,
-						frequencies,
-						term_count,
-						doc_length);
-				elog(DEBUG1, "Finished tp_add_document_terms");
-			}
-
-			/* Free the terms array and individual lexemes */
-			for (i = 0; i < term_count; i++)
-			{
-				pfree(terms[i]);
-			}
-			pfree(terms);
-			pfree(frequencies);
-		}
-
-		total_docs++;
-		pfree(document_str);
+		tp_process_document(
+				slot, indexInfo, text_config_oid, index_state, &total_docs);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -727,7 +792,7 @@ tp_insert(
 {
 	text		  *document_text;
 	Datum		   vector_datum;
-	TpVector	  *bm25vec;
+	TpVector	  *tpvec;
 	TpVectorEntry *vector_entry;
 	int32		  *frequencies;
 	int			   term_count;
@@ -757,17 +822,17 @@ tp_insert(
 			to_tpvector,
 			PointerGetDatum(document_text),
 			CStringGetTextDatum(RelationGetRelationName(index)));
-	bm25vec = (TpVector *)DatumGetPointer(vector_datum);
+	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
 	/* Extract term IDs and frequencies from tpvector */
-	term_count = TPVECTOR_ENTRY_COUNT(bm25vec);
+	term_count = tpvec->entry_count;
 	if (term_count > 0)
 	{
 		char **terms = palloc(term_count * sizeof(char *));
 
 		frequencies = palloc(term_count * sizeof(int32));
 
-		vector_entry = TPVECTOR_ENTRIES_PTR(bm25vec);
+		vector_entry = TPVECTOR_ENTRIES_PTR(tpvec);
 		for (i = 0; i < term_count; i++)
 		{
 			char *lexeme;
@@ -1726,41 +1791,9 @@ tp_costestimate(
 	/* Check for LIMIT clause and verify it can be safely pushed down */
 	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
 	{
-		int	 limit		  = (int)root->limit_tuples;
-		bool can_pushdown = true;
+		int limit = (int)root->limit_tuples;
 
-		/*
-		 * LIMIT pushdown is only safe when: 1. The index scan produces
-		 * results in the same order as the query's ORDER BY 2. There are no
-		 * intervening operations that could reorder results 3. We have
-		 * exactly one ORDER BY clause (our BM25 score)
-		 */
-		if (list_length(path->indexorderbys) != 1)
-		{
-			can_pushdown = false;
-			elog(DEBUG2,
-				 "Tapir: LIMIT pushdown unsafe - multiple ORDER BY clauses");
-		}
-
-		/*
-		 * Additional safety check: verify this is a simple index-only scan
-		 * without complex WHERE clauses that might interfere with ordering
-		 */
-		if (can_pushdown && path->indexclauses &&
-			list_length(path->indexclauses) > 0)
-		{
-			/*
-			 * For now, be conservative: don't push down LIMIT if there are
-			 * additional WHERE clauses beyond the BM25 score ordering. This
-			 * could be relaxed later with more sophisticated analysis.
-			 */
-			can_pushdown = false;
-			elog(DEBUG2,
-				 "Tapir: LIMIT pushdown unsafe - additional "
-				 "WHERE clauses present");
-		}
-
-		if (can_pushdown)
+		if (tp_can_pushdown_limit(root, path, limit))
 		{
 			tp_store_query_limit(path->indexinfo->indexoid, limit);
 			elog(DEBUG1,
@@ -1962,118 +1995,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 
 	return stats;
-}
-
-/*
- * Store a query limit for a specific index and backend
- */
-void
-tp_store_query_limit(Oid index_oid, int limit)
-{
-	TpQueryLimitEntry *entry;
-	bool			   found;
-
-	/* Initialize per-backend hash table if needed */
-	if (!tp_query_limits_hash)
-	{
-		HASHCTL hash_ctl;
-
-		MemSet (&hash_ctl, 0, sizeof(hash_ctl))
-			;
-		hash_ctl.keysize	 = sizeof(Oid);
-		hash_ctl.entrysize	 = sizeof(TpQueryLimitEntry);
-		hash_ctl.hcxt		 = TopMemoryContext;
-		tp_query_limits_hash = hash_create(
-				"tp_query_limits",
-				TP_QUERY_LIMITS_HASH_SIZE,
-				&hash_ctl,
-				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
-
-	/* Find or create entry */
-	entry = (TpQueryLimitEntry *)
-			hash_search(tp_query_limits_hash, &index_oid, HASH_ENTER, &found);
-
-	if (entry)
-	{
-		entry->index_oid = index_oid;
-		entry->limit	 = limit;
-	}
-
-	elog(DEBUG1,
-		 "Tapir: Stored query limit %d for index %u (per-backend)",
-		 limit,
-		 index_oid);
-}
-
-/*
- * Get the query limit for a specific index and current backend
- */
-int
-tp_get_query_limit(Relation index_rel)
-{
-	TpQueryLimitEntry *entry;
-	bool			   found;
-	int				   result = -1;
-	Oid				   index_oid;
-
-	if (!RelationIsValid(index_rel))
-		return -1;
-
-	/* Initialize per-backend hash table if needed */
-	if (!tp_query_limits_hash)
-		return -1; /* No limits stored yet */
-
-	index_oid = RelationGetRelid(index_rel);
-
-	/* Find entry */
-	entry = (TpQueryLimitEntry *)
-			hash_search(tp_query_limits_hash, &index_oid, HASH_FIND, &found);
-
-	if (found && entry)
-	{
-		result = entry->limit;
-		elog(DEBUG1,
-			 "Tapir: Retrieved query limit %d for index %u (per-backend)",
-			 result,
-			 index_oid);
-	}
-
-	return result;
-}
-
-/*
- * Clean up all query limit entries (called at transaction end)
- */
-void
-tp_cleanup_query_limits(void)
-{
-	HASH_SEQ_STATUS	   status;
-	TpQueryLimitEntry *entry;
-
-	/* Conservative check - only proceed if everything is properly initialized
-	 */
-	if (!tp_query_limits_hash)
-		return;
-
-	/* Additional safety check - make sure we're not in a problematic context
-	 */
-	if (!IsTransactionState())
-		return;
-
-	hash_seq_init(&status, tp_query_limits_hash);
-	while ((entry = (TpQueryLimitEntry *)hash_seq_search(&status)) != NULL)
-	{
-		Oid index_oid = entry->index_oid;
-
-		hash_search(tp_query_limits_hash, &index_oid, HASH_REMOVE, NULL);
-
-		elog(DEBUG2,
-			 "Tapir: Cleaned up query limit entry for index %u "
-			 "(per-backend)",
-			 index_oid);
-	}
-	hash_seq_term(&status);
 }
 
 /*

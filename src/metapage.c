@@ -26,6 +26,7 @@
 #include <utils/snapmgr.h>
 
 #include "constants.h"
+#include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
 #include "vector.h"
@@ -349,7 +350,7 @@ tp_recover_from_docid_pages(Relation index)
 				{
 					text		  *document_text;
 					Datum		   vector_datum;
-					TpVector	  *bm25vec;
+					TpVector	  *tpvec;
 					TpVectorEntry *vector_entry;
 					int			   term_count;
 					char		 **terms;
@@ -365,16 +366,16 @@ tp_recover_from_docid_pages(Relation index)
 							PointerGetDatum(document_text),
 							CStringGetTextDatum(
 									RelationGetRelationName(index)));
-					bm25vec = (TpVector *)DatumGetPointer(vector_datum);
+					tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
 					/* Extract term IDs and frequencies from tpvector */
-					term_count = TPVECTOR_ENTRY_COUNT(bm25vec);
+					term_count = tpvec->entry_count;
 					if (term_count > 0)
 					{
 						terms		= palloc(term_count * sizeof(char *));
 						frequencies = palloc(term_count * sizeof(int32));
 
-						ptr = (char *)TPVECTOR_ENTRIES_PTR(bm25vec);
+						ptr = (char *)TPVECTOR_ENTRIES_PTR(tpvec);
 
 						for (int j = 0; j < term_count; j++)
 						{
@@ -419,7 +420,7 @@ tp_recover_from_docid_pages(Relation index)
 					}
 
 					/* Free the vector */
-					pfree(bm25vec);
+					pfree(tpvec);
 				}
 
 				/* Free the tuple */

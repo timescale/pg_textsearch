@@ -40,12 +40,8 @@ static HTAB *index_state_cache = NULL;
 
 /* IndexStateCacheEntry type definition moved to memtable.h */
 
-/* Per-backend hash table for query limits */
-HTAB *tp_query_limits_hash = NULL;
-
 /* GUC variables */
 int tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
-int tp_default_limit	  = TP_DEFAULT_QUERY_LIMIT;
 
 /* Transaction-level lock tracking removed - handled by DSA LWLocks */
 
@@ -293,6 +289,89 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 		*area_out = area;
 
 	return state;
+}
+
+/*
+ * Get or create index state for a specific Tapir index
+ * This creates per-index shared memory structures
+ */
+TpIndexState *
+tp_get_index_state(Oid index_oid, const char *index_name)
+{
+	TpIndexState *index_state;
+	dsa_area	 *area = NULL;
+
+	/* Use DSA-based index management with built-in caching */
+	index_state = tp_get_or_create_index_dsa(index_oid, &area);
+
+	if (!index_state)
+	{
+		elog(ERROR, "Could not attach to DSA for index %u", index_oid);
+		return NULL;
+	}
+
+	if (!area)
+	{
+		elog(WARNING,
+			 "DSA area not returned for index %u - may cause query failures",
+			 index_oid);
+	}
+
+	/* Load configuration parameters from index metapage */
+	{
+		Relation		index_rel;
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage meta;
+
+		/* Open the index relation to read its metapage */
+		index_rel = index_open(index_oid, AccessShareLock);
+
+		/* Read the metapage */
+		metabuf = ReadBuffer(index_rel, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		meta	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		/* Copy configuration parameters from metapage to DSA structure */
+		LWLockAcquire(&index_state->corpus_stats_lock, LW_EXCLUSIVE);
+
+		/*
+		 * CRITICAL FIX: Do NOT load corpus statistics from metapage! This was
+		 * causing data consistency issues where live DSA statistics were
+		 * being overwritten with stale metapage values.
+		 *
+		 * Corpus statistics (total_docs, total_len) should ONLY be managed in
+		 * DSA shared memory and persist there. The metapage values are stale.
+		 */
+
+		/* Store k1 and b for BM25 scoring */
+		index_state->stats.k1 = meta->k1;
+		index_state->stats.b  = meta->b;
+		LWLockRelease(&index_state->corpus_stats_lock);
+
+		elog(DEBUG1,
+			 "Loaded configuration from metapage for index %s: k1=%f, b=%f "
+			 "(corpus stats preserved "
+			 "in DSA)",
+			 index_name,
+			 index_state->stats.k1,
+			 index_state->stats.b);
+
+		UnlockReleaseBuffer(metabuf);
+
+		index_close(index_rel, AccessShareLock);
+	}
+
+	elog(DEBUG1,
+		 "After DSA attachment: string_hash_handle=%s, total_docs=%d",
+		 (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
+				 ? "VALID"
+				 : "INVALID",
+		 index_state->stats.total_docs);
+
+	elog(DEBUG1, "Attached to Tapir index state for %s", index_name);
+	return index_state;
 }
 
 /*

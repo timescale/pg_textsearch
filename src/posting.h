@@ -14,41 +14,11 @@
 #include <storage/spin.h>
 #include <utils/hsearch.h>
 
-#include "memtable.h"	 /* For TpCorpusStatistics definition */
-#include "stringtable.h" /* For TpStringHashTable definition */
+#include "memtable.h"
+#include "stringtable.h"
 
-/*
- * Hash table entry for term_id -> posting list mapping
- */
-typedef struct TpPostingHashEntry
-{
-	int32		  term_id;		/* Hash key */
-	TpPostingList posting_list; /* Hash table value (embedded) */
-} PostingHashEntry;
-
-/*
- * Global shared state for all Tapir indexes
- */
-typedef struct PostingSharedState
-{
-	/* Inherited from memtable.h */
-	LWLock *string_interning_lock;
-
-	/* New posting list components */
-	LWLock *index_registry_lock; /* Protects index_registry */
-	int32	num_indexes;		 /* Number of active indexes */
-	Size	total_memory_used;	 /* Global memory usage */
-
-	/* Index registry - maps index OID to TpIndexState */
-	HTAB *index_registry;
-} PostingSharedState;
-
-/* Configuration parameters */
-extern int tp_posting_list_growth_factor; /* Array growth multiplier */
-
-/* Core posting list operations */
-/* tp_posting_init_shared_state removed - not needed with DSA system */
-extern TpIndexState *tp_get_index_state(Oid index_oid, const char *index_name);
+/* Array growth multiplier */
+extern int tp_posting_list_growth_factor;
 
 /* Document and term management */
 extern void tp_add_document_terms(
