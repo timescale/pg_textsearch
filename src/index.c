@@ -281,11 +281,10 @@ tp_bulkdelete(IndexVacuumInfo *info,
 	metap = tp_get_metapage(info->index);
 	if (metap)
 	{
-		stats->num_pages = 1;  /* For v0.0a, minimal pages (just metapage) */
+		stats->num_pages = 1;  /* Minimal pages (just metapage) */
 		stats->num_index_tuples = (double) metap->total_docs;
 
-		/* For v0.0a memtable-only implementation, we don't actually delete
-		 * individual tuples but track that deletion was requested */
+		/* Track that deletion was requested */
 		stats->tuples_removed = 0;
 		stats->pages_deleted = 0;
 
@@ -1768,11 +1767,10 @@ tp_vacuumcleanup(IndexVacuumInfo *info,
 	if (metap)
 	{
 		/* Update statistics with current values */
-		stats->num_pages = 1;  /* For v0.0a, minimal pages (just metapage) */
+		stats->num_pages = 1;  /* Minimal pages (just metapage) */
 		stats->num_index_tuples = (double) metap->total_docs;
 
-		/* For v0.0a memtable-only implementation, we don't compact pages
-		 * but we can report current usage statistics */
+		/* Report current usage statistics */
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0)
 		{
 			/* No deletions recorded, report full statistics */

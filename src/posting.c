@@ -6,13 +6,14 @@
  * when full.
  */
 
+#include "postgres.h"
+
 #include "constants.h"
 #include "posting.h"
 #include "memtable.h"
 #include "stringtable.h"
 #include "index.h"
 #include "vector.h"
-#include "postgres.h"
 #include "miscadmin.h"
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -24,6 +25,7 @@
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/dsa.h"
 #include "utils/elog.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -53,21 +55,6 @@ static TpPostingEntry *tp_get_posting_entries(dsa_area *area, TpPostingList *pos
 	return dsa_get_address(area, posting_list->entries_dp);
 }
 
-/*
- * Initialize posting list system (now a no-op with DSA)
- * Each index manages its own posting lists within its DSA
- */
-void
-tp_posting_init_shared_state(void)
-{
-	/* With DSA, no global shared state needed - each index has its own DSA */
-	elog(DEBUG2, "Tapir posting list system initialized (DSA-based)");
-}
-
-/*
- * DSA-based system doesn't need global shared state attachment
- * Each index manages its own DSA segment
- */
 
 /*
  * Get or create index state for a specific Tapir index
@@ -78,13 +65,8 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 {
 	TpIndexState *index_state;
 	dsa_area *area = NULL;
-	IndexStateCacheEntry *cache_entry;
 
-
-	/* Skip cache check - it causes issues with DSA attachment.
-	 * Always go through tp_get_or_create_index_dsa which has its own cache. */
-
-	/* Use DSA-based index management - CRITICAL: Pass area_out to ensure DSA area is cached */
+	/* Use DSA-based index management with built-in caching */
 	index_state = tp_get_or_create_index_dsa(index_oid, &area);
 
 	if (!index_state) {
@@ -149,16 +131,10 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 	return index_state;
 }
 
-/*
- * Rebuild posting lists from persisted document IDs
- * This is called when an index state needs its posting lists rebuilt
- * after PostgreSQL restart (for v0.0a memtable-only implementation)
- * NOTE: Placeholder function - DSA-based system will handle persistence differently
- */
 /* tp_rebuild_posting_lists_for_index removed - not needed with DSA-based system */
 
 /*
- * Get or create a posting list for the given term string  
+ * Get or create a posting list for the given term string
  * Returns pointer to posting list, creating it if necessary
  * Uses DSA-based string table functions for storage
  */
@@ -276,16 +252,7 @@ tp_add_document_terms(TpIndexState * index_state,
 	elog(DEBUG1, "Added document with %d terms to DSA posting lists", term_count);
 }
 
-/* Simple in-memory posting list storage as intermediate step toward full DSA */
-/* posting_lists_table removed - not used with DSA-based system */
-
-typedef struct TermPostingEntry
-{
-	char term[64];          /* Term string as hash key */
-	TpPostingList posting_list;  /* Posting list data */
-} TermPostingEntry;
-
-/* init_posting_lists_table removed - not used with DSA-based system */
+/* Legacy posting list code removed - using DSA-based system */
 
 /*
  * Get posting list for a specific term
@@ -666,7 +633,7 @@ tp_calculate_average_idf(TpIndexState *index_state)
 
 /*
  * Finalize index building by calculating corpus statistics
- * This converts from the building phase to query-ready phase  
+ * This converts from the building phase to query-ready phase
  * Uses DSA-based system for shared memory storage
  */
 void
@@ -909,7 +876,6 @@ tp_score_documents(TpIndexState * index_state,
 	elog(DEBUG2, "tp_score_documents: extracted %d unique documents using posting list iteration", result_count);
 
 	/* Sort documents by score (descending - higher scores first) */
-	/* Simple insertion sort for now - could optimize with qsort later */
 	for (i = 1; i < result_count; i++)
 	{
 		DocumentScoreEntry *key = sorted_docs[i];
@@ -924,7 +890,7 @@ tp_score_documents(TpIndexState * index_state,
 	}
 
 	/* Copy sorted results to output arrays */
-	if (result_count > 0) 
+	if (result_count > 0)
 	{
 		*result_scores = palloc(result_count * sizeof(float4));
 		for (i = 0; i < result_count; i++)
@@ -933,7 +899,7 @@ tp_score_documents(TpIndexState * index_state,
 			(*result_scores)[i] = sorted_docs[i]->score;
 		}
 	}
-	else 
+	else
 	{
 		*result_scores = NULL;
 	}

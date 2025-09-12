@@ -52,7 +52,7 @@ typedef struct PostingSharedState
 extern int	tp_posting_list_growth_factor;	/* Array growth multiplier */
 
 /* Core posting list operations */
-extern void tp_posting_init_shared_state(void);
+/* tp_posting_init_shared_state removed - not needed with DSA system */
 extern TpIndexState * tp_get_index_state(Oid index_oid,
 											 const char *index_name);
 
