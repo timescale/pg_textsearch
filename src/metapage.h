@@ -71,3 +71,4 @@ extern TpIndexMetaPage tp_get_metapage(Relation index);
  * Document ID operations for crash recovery
  */
 extern void tp_add_docid_to_pages(Relation index, ItemPointer ctid);
+extern void tp_recover_from_docid_pages(Relation index);

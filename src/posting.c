@@ -245,7 +245,7 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
 		/* Create new dshash table */
-		string_table = tp_hash_table_create_dsa(area, TP_DEFAULT_HASH_BUCKETS);
+		string_table = tp_hash_table_create_dsa(area);
 		if (!string_table)
 		{
 			LWLockRelease(&index_state->string_interning_lock);
@@ -762,24 +762,24 @@ tp_score_documents(
 	if (result_count > 0)
 	{
 		HASH_SEQ_STATUS		seq_status;
-		DocumentScoreEntry *doc_entry;
+		DocumentScoreEntry *current_entry;
 
 		hash_seq_init(&seq_status, doc_scores_hash);
 
-		while ((doc_entry = (DocumentScoreEntry *)hash_seq_search(
+		while ((current_entry = (DocumentScoreEntry *)hash_seq_search(
 						&seq_status)) != NULL &&
 			   i < result_count)
 		{
-			sorted_docs[i++] = doc_entry;
+			sorted_docs[i++] = current_entry;
 		}
 
 		/*
-		 * If we hit the result_count limit while doc_entry was still
+		 * If we hit the result_count limit while current_entry was still
 		 * non-NULL, we need to terminate the scan manually. If
 		 * hash_seq_search returned NULL, the scan completed naturally and
 		 * cleanup was done automatically.
 		 */
-		if (doc_entry != NULL && i >= result_count)
+		if (current_entry != NULL && i >= result_count)
 			hash_seq_term(&seq_status);
 	}
 

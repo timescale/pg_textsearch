@@ -79,8 +79,7 @@ typedef struct TpTransactionLockState
 /* Each index has its own string table backed by dshash */
 
 /* Hash table creation and initialization */
-extern TpStringHashTable *
-tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets);
+extern TpStringHashTable *tp_hash_table_create_dsa(dsa_area *area);
 extern TpStringHashTable *
 tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle);
 extern void tp_hash_table_detach_dsa(TpStringHashTable *ht);

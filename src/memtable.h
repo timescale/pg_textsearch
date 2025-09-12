@@ -155,4 +155,4 @@ extern void tp_destroy_index_dsa(Oid index_oid);
 extern dsa_area *
 tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid);
 extern IndexStateCacheEntry *get_cached_index_state(Oid index_oid);
-extern TpIndexState *tp_get_index_state(Oid index_oid, const char *index_name);
+extern TpIndexState			*tp_get_index_state(Oid index_oid);

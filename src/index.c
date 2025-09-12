@@ -278,8 +278,8 @@ IndexBulkDeleteResult *
 tp_bulkdelete(
 		IndexVacuumInfo		   *info,
 		IndexBulkDeleteResult  *stats,
-		IndexBulkDeleteCallback callback,
-		void				   *callback_state)
+		IndexBulkDeleteCallback callback __attribute__((unused)),
+		void				   *callback_state __attribute__((unused)))
 {
 	TpIndexMetaPage metap;
 
@@ -414,6 +414,7 @@ tp_free_terms_array(char **terms, int term_count)
 
 	for (i = 0; i < term_count; i++)
 		pfree(terms[i]);
+
 	pfree(terms);
 }
 
@@ -559,8 +560,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/* Initialize index state */
-	index_state = tp_get_index_state(
-			RelationGetRelid(index), RelationGetRelationName(index));
+	index_state = tp_get_index_state(RelationGetRelid(index));
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
@@ -726,8 +726,7 @@ tp_insert(
 		return true;
 
 	/* Get index state */
-	index_state = tp_get_index_state(
-			RelationGetRelid(index), RelationGetRelationName(index));
+	index_state = tp_get_index_state(RelationGetRelid(index));
 	Assert(index_state != NULL);
 
 	/* Extract text from first column */
@@ -841,8 +840,8 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 void
 tp_rescan(
 		IndexScanDesc scan,
-		ScanKey		  keys,
-		int			  nkeys,
+		ScanKey		  keys __attribute__((unused)),
+		int			  nkeys __attribute__((unused)),
 		ScanKey		  orderbys,
 		int			  norderbys)
 {
@@ -907,25 +906,6 @@ tp_rescan(
 		so->result_count = 0;
 		so->eof_reached	 = false;
 		so->query_vector = NULL;
-	}
-
-	/* Process scan keys to set up the search */
-	if (nkeys > 0 && keys)
-	{
-		/* Get index metadata to check if we have documents */
-		metap = tp_get_metapage(scan->indexRelation);
-
-		for (int i = 0; i < nkeys; i++)
-		{
-			ScanKey key = &keys[i];
-
-			/* Check for <@> operator strategy */
-			if (so && key->sk_strategy == 1) /* Strategy 1: <@> operator */
-			{
-			}
-		}
-
-		pfree(metap);
 	}
 
 	/* Process ORDER BY scan keys for <@> operator */
@@ -1011,9 +991,7 @@ tp_rescan(
 
 				/* Mark all docs as candidates for ORDER BY operation */
 				if (metap && metap->total_docs > 0)
-				{
 					so->result_count = metap->total_docs;
-				}
 
 				pfree(query_cstr);
 			}
@@ -1035,9 +1013,8 @@ tp_endscan(IndexScanDesc scan)
 	if (so)
 	{
 		if (so->scan_context)
-		{
 			MemoryContextDelete(so->scan_context);
-		}
+
 		pfree(so);
 		scan->opaque = NULL;
 	}
@@ -1070,8 +1047,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 		return false;
 
 	Assert(so->scan_context != NULL);
-
-	/* Clean up any previous results */
 
 	/* Clean up previous results */
 	if (so->result_ctids || so->result_scores)
@@ -1121,8 +1096,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	{
 		/* Get the index state with posting lists */
 		index_state = tp_get_index_state(
-				RelationGetRelid(scan->indexRelation),
-				RelationGetRelationName(scan->indexRelation));
+				RelationGetRelid(scan->indexRelation));
 
 		if (!index_state)
 		{
@@ -1191,13 +1165,9 @@ tp_search_posting_lists(
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so && so->limit > 0)
-	{
 		max_results = so->limit;
-	}
 	else
-	{
-		max_results = tp_default_limit; /* Use GUC parameter as fallback */
-	}
+		max_results = tp_default_limit;
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
@@ -1233,13 +1203,9 @@ tp_search_posting_lists(
 	memset(so->result_ctids, 0, max_results * sizeof(ItemPointerData));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* Use single-pass BM25 scoring algorithm for efficiency */
-
 	/* Check pointers before using them */
 	if (!metap)
-	{
 		elog(ERROR, "metap is NULL before tp_score_documents");
-	}
 
 	/* Extract values from metap before the call to avoid any access issues */
 	k1_value = metap->k1;
@@ -1266,9 +1232,8 @@ tp_search_posting_lists(
 
 	/* Free the query terms array and individual term strings */
 	for (int i = 0; i < entry_count; i++)
-	{
 		pfree(query_terms[i]);
-	}
+
 	pfree(query_terms);
 	pfree(query_frequencies);
 
@@ -1605,7 +1570,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	}
 
 	/* Get index state to inspect corpus statistics */
-	index_state = tp_get_index_state(index_oid, index_name);
+	index_state = tp_get_index_state(index_oid);
 	if (index_state == NULL)
 	{
 		appendStringInfo(

@@ -272,7 +272,7 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
  * This creates per-index shared memory structures
  */
 TpIndexState *
-tp_get_index_state(Oid index_oid, const char *index_name)
+tp_get_index_state(Oid index_oid)
 {
 	TpIndexState *index_state;
 	dsa_area	 *area = NULL;

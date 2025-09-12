@@ -140,27 +140,27 @@ tpvector_in(PG_FUNCTION_ARGS)
 		ptr = entries_str;
 		for (i = 0; i < entry_count; i++)
 		{
-			char *comma_pos = strchr(ptr, ',');
-			char *colon_pos = strchr(ptr, ':');
+			char *comma_pos		  = strchr(ptr, ',');
+			char *entry_colon_pos = strchr(ptr, ':');
 			char *lexeme;
 			int	  lexeme_len;
 			char *freq_str;
 
-			if (!colon_pos || (comma_pos && colon_pos > comma_pos))
+			if (!entry_colon_pos || (comma_pos && entry_colon_pos > comma_pos))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 						 errmsg("invalid entry format in tpvector: \"%s\"",
 								ptr)));
 
 			/* Extract lexeme */
-			lexeme_len = colon_pos - ptr;
+			lexeme_len = entry_colon_pos - ptr;
 			lexeme	   = palloc(lexeme_len + 1);
 			memcpy(lexeme, ptr, lexeme_len);
 			lexeme[lexeme_len] = '\0';
 			lexemes[i]		   = lexeme;
 
 			/* Extract frequency */
-			freq_str = colon_pos + 1;
+			freq_str = entry_colon_pos + 1;
 			if (comma_pos)
 			{
 				char saved = *comma_pos;
@@ -342,9 +342,11 @@ validate_tpvector_inputs(TpVector *doc_vec, TpVector *query_vec)
 
 	if (VARSIZE(doc_vec) < sizeof(TpVector) ||
 		VARSIZE(query_vec) < sizeof(TpVector))
+	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid tpvector structure size")));
+	}
 
 	/* Both vectors should use the same index */
 	doc_index_name	 = get_tpvector_index_name(doc_vec);
@@ -352,8 +354,6 @@ validate_tpvector_inputs(TpVector *doc_vec, TpVector *query_vec)
 
 	if (strcmp(doc_index_name, query_index_name) != 0)
 	{
-		pfree(doc_index_name);
-		pfree(query_index_name);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("tpvector operands must use the same index"),
@@ -411,7 +411,7 @@ setup_bm25_context(
 	}
 
 	/* Get the index state from shared memory */
-	index_state = tp_get_index_state(index_oid, index_name);
+	index_state = tp_get_index_state(index_oid);
 	if (!index_state)
 	{
 		pfree(metap);

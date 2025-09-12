@@ -113,7 +113,11 @@ tp_string_compare_function(
  * Simple structure copy
  */
 static void
-tp_string_copy_function(void *dest, const void *src, size_t keysize, void *arg)
+tp_string_copy_function(
+		void	   *dest,
+		const void *src,
+		size_t		keysize,
+		void	   *arg __attribute__((unused)))
 {
 	Assert(keysize == sizeof(TpStringKey));
 	*((TpStringKey *)dest) = *((TpStringKey *)src);
@@ -123,7 +127,7 @@ tp_string_copy_function(void *dest, const void *src, size_t keysize, void *arg)
  * Create and initialize a new string hash table using dshash
  */
 TpStringHashTable *
-tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets)
+tp_hash_table_create_dsa(dsa_area *area)
 {
 	TpStringHashTable *ht;
 	dshash_parameters  params;

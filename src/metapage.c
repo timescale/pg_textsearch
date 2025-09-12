@@ -135,7 +135,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	ItemPointer		   docids;
 	BlockNumber		   current_page, new_page;
 	int				   page_capacity;
-	int				   final_docid_count;
 
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -236,7 +235,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	docid_header->num_docids++;
 
 	/* Save the docid count before releasing the buffer */
-	final_docid_count = docid_header->num_docids;
 
 	MarkBufferDirty(docid_buf);
 	UnlockReleaseBuffer(docid_buf);
@@ -302,8 +300,7 @@ tp_recover_from_docid_pages(Relation index)
 			TpIndexState *index_state;
 
 			/* Get index state */
-			index_state = tp_get_index_state(
-					RelationGetRelid(index), RelationGetRelationName(index));
+			index_state = tp_get_index_state(RelationGetRelid(index));
 
 			/* Find the heap relation for this index */
 			heap_rel =
