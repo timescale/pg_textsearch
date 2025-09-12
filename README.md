@@ -161,7 +161,7 @@ SELECT * FROM tp_pool_stats();
 
 -- Per-index memory usage
 SELECT indexname, tp_index_memory_usage(indexrelid) as memory_usage_mb
-FROM pg_stat_user_indexes 
+FROM pg_stat_user_indexes
 WHERE indexname LIKE '%tapir%';
 
 -- Debug index internal structure
@@ -173,7 +173,7 @@ SELECT tp_debug_dump_index('index_name');
 Optional settings in `postgresql.conf`:
 
 ```bash
-# Per-index memory limit (can be changed without restart)  
+# Per-index memory limit (can be changed without restart)
 tapir.shared_memory_size = 64MB      # Memory limit per index, default 64MB
 
 # Query limit when no LIMIT clause detected
@@ -300,12 +300,13 @@ make installcheck      # run regression tests
 make test-concurrency  # run concurrency stress tests
 test/scripts/recovery.sh    # run crash recovery tests
 
-# Code quality and linting
-make lint              # run all linting checks
-make lint-format       # check C code formatting with clang-format
-make lint-whitespace   # check for trailing whitespace
-make lint-spell        # spell check source files and docs
-make format            # auto-format C code with clang-format
+# Code formatting
+make format            # format all source files with clang-format
+make lint-format       # check formatting without changing files
+
+# Install pre-commit hooks (optional)
+brew install pre-commit && pre-commit install  # macOS
+# pip install pre-commit && pre-commit install  # Linux
 ```
 
 ### GitHub Actions

@@ -69,9 +69,7 @@ test-all: test test-shell
 # Override installcheck to use our custom test setup
 installcheck: test
 
-# Linting and code quality targets
-lint: lint-format lint-whitespace lint-spell
-
+# Code formatting targets
 lint-format:
 	@echo "Checking C code formatting with clang-format..."
 	@if command -v clang-format >/dev/null 2>&1; then \
@@ -81,23 +79,6 @@ lint-format:
 		exit 1; \
 	fi
 	@echo "Code formatting check passed"
-
-lint-whitespace:
-	@echo "Checking for trailing whitespace..."
-	@if find src/ -name "*.c" -o -name "*.h" | xargs grep -l "[ \t]$$" 2>/dev/null; then \
-		echo "Error: Trailing whitespace found in source files"; \
-		exit 1; \
-	fi
-	@echo "No trailing whitespace found"
-
-lint-spell:
-	@echo "Running spell check..."
-	@if command -v codespell >/dev/null 2>&1; then \
-		codespell --skip="*.out,*.diff" --ignore-words-list="nd,te" src/ README.md CLAUDE.md || true; \
-	else \
-		echo "codespell not found - install with: pip install codespell"; \
-		echo "Skipping spell check"; \
-	fi
 
 format:
 	@echo "Formatting C code with clang-format..."
@@ -132,4 +113,4 @@ format-single:
 
 format-check: lint-format
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint lint-format lint-whitespace lint-spell format format-check format-diff format-single
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single

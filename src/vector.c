@@ -10,6 +10,7 @@
 #include <commands/vacuum.h>
 #include <executor/spi.h>
 #include <lib/stringinfo.h>
+#include <libpq/pqformat.h>
 #include <math.h>
 #include <nodes/execnodes.h>
 #include <stdlib.h>
@@ -24,7 +25,6 @@
 
 #include "constants.h"
 #include "index.h"
-#include "libpq/pqformat.h"
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"

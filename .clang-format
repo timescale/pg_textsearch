@@ -1,7 +1,8 @@
 ---
 # PostgreSQL-style C formatting for Tapir extension
 # Optimized for 79-character line limit with proper alignment
-Language: C
+BasedOnStyle: LLVM
+Language: Cpp
 
 # Basic formatting
 ColumnLimit: 79
