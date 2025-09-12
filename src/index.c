@@ -103,9 +103,6 @@ tp_build_extract_options(
 				*text_config_oid = get_ts_config_oid(names, false);
 				list_free(names);
 			}
-			elog(DEBUG1,
-				 "Using text search configuration: %s",
-				 *text_config_name);
 		}
 		else
 		{
@@ -120,7 +117,6 @@ tp_build_extract_options(
 
 		*k1 = options->k1;
 		*b	= options->b;
-		elog(DEBUG1, "Using index options: k1=%.2f, b=%.2f", *k1, *b);
 	}
 	else
 	{
@@ -178,9 +174,7 @@ tp_build_finalize_and_update_stats(
 	 */
 	if (index_state != NULL)
 	{
-		elog(DEBUG2, "About to call tp_finalize_index_build");
 		tp_finalize_index_build(index_state);
-		elog(DEBUG2, "Returned from tp_finalize_index_build");
 
 		/* Get actual statistics from the posting list system */
 		stats		= tp_get_corpus_statistics(index_state);
@@ -217,7 +211,6 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	(void)fcinfo; /* unused */
 
-	elog(DEBUG2, "tp_handler: initializing access method");
 	amroutine = makeNode(IndexAmRoutine);
 
 	amroutine->amstrategies	 = 0; /* No search strategies - ORDER BY only */
@@ -290,10 +283,6 @@ tp_bulkdelete(
 {
 	TpIndexMetaPage metap;
 
-	elog(DEBUG2,
-		 "tp_bulkdelete: index=%s",
-		 RelationGetRelationName(info->index));
-
 	/* Initialize stats structure if not provided */
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
@@ -311,12 +300,6 @@ tp_bulkdelete(
 		stats->pages_deleted  = 0;
 
 		pfree(metap);
-
-		elog(DEBUG1,
-			 "Tapir bulkdelete: index %s has %u pages, %.0f documents",
-			 RelationGetRelationName(info->index),
-			 stats->num_pages,
-			 stats->num_index_tuples);
 	}
 	else
 	{
@@ -341,8 +324,6 @@ tp_bulkdelete(
 char *
 tp_buildphasename(int64 phase)
 {
-	elog(DEBUG2, "tp_buildphasename: phase=%ld", (long)phase);
-
 	switch (phase)
 	{
 	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
@@ -386,8 +367,6 @@ tp_extract_terms_from_tsvector(
 
 	we = ARRPTR(tsvector);
 
-	elog(DEBUG1, "TSVector has %d terms", term_count);
-
 	terms		= palloc(term_count * sizeof(char *));
 	frequencies = palloc(term_count * sizeof(int32));
 
@@ -397,20 +376,11 @@ tp_extract_terms_from_tsvector(
 		int	  lexeme_len   = we[i].len;
 		char *lexeme;
 
-		elog(DEBUG1,
-			 "Processing term %d of %d: pos=%d, len=%d",
-			 i,
-			 term_count,
-			 we[i].pos,
-			 lexeme_len);
-
 		/* Always allocate on heap for terms array since we need to keep them
 		 */
 		lexeme = palloc(lexeme_len + 1);
 		memcpy(lexeme, lexeme_start, lexeme_len);
 		lexeme[lexeme_len] = '\0';
-
-		elog(DEBUG1, "Term %d: lexeme='%s'", i, lexeme);
 
 		terms[i] = lexeme;
 
@@ -420,22 +390,18 @@ tp_extract_terms_from_tsvector(
 		if (we[i].haspos)
 		{
 			frequencies[i] = (int32)POSDATALEN(tsvector, &we[i]);
-			elog(DEBUG1, "Term %d has %d positions", i, frequencies[i]);
 		}
 		else
 		{
 			frequencies[i] = 1;
-			elog(DEBUG1, "Term %d defaulting to frequency 1", i);
 		}
 
 		doc_length += frequencies[i];
-		elog(DEBUG1, "Doc length after term %d: %d", i, doc_length);
 	}
 
 	*terms_out		 = terms;
 	*frequencies_out = frequencies;
 
-	elog(DEBUG1, "Finished processing all %d terms", term_count);
 	return doc_length;
 }
 
@@ -464,15 +430,9 @@ static void
 tp_setup_table_scan(
 		Relation heap, TableScanDesc *scan_out, TupleTableSlot **slot_out)
 {
-	elog(DEBUG1,
-		 "Starting table scan for heap %s",
-		 RelationGetRelationName(heap));
-
 	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
-	elog(DEBUG1, "Created table scan");
 
 	*slot_out = table_slot_create(heap, NULL);
-	elog(DEBUG1, "Created table slot");
 }
 
 /*
@@ -500,22 +460,16 @@ tp_process_document(
 	int			term_count;
 	int			doc_length;
 
-	elog(DEBUG1, "Processing document");
-
 	/* Get the text column value (first indexed column) */
 	text_datum =
 			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
-
-	elog(DEBUG1, "Got text datum, isnull=%d", isnull);
 
 	if (isnull)
 		return false; /* Skip NULL documents */
 
 	document_text = DatumGetTextPP(text_datum);
-	elog(DEBUG1, "Got document_text=%p", document_text);
 
 	document_str = text_to_cstring(document_text);
-	elog(DEBUG1, "Got document_str='%s'", document_str);
 
 	ctid = &slot->tts_tid;
 
@@ -528,14 +482,9 @@ tp_process_document(
 		return false;
 	}
 
-	elog(DEBUG1, "TID is valid");
-
 	/*
 	 * Vectorize the document using index metadata
 	 */
-	elog(DEBUG1,
-		 "About to vectorize document with text_config_oid=%u",
-		 text_config_oid);
 
 	tsvector_datum = DirectFunctionCall2Coll(
 			to_tsvector_byid,
@@ -544,7 +493,6 @@ tp_process_document(
 			PointerGetDatum(document_text));
 
 	tsvector = DatumGetTSVector(tsvector_datum);
-	elog(DEBUG1, "Got tsvector=%p", tsvector);
 
 	/* Extract lexemes and frequencies from TSVector */
 	doc_length = tp_extract_terms_from_tsvector(
@@ -555,16 +503,9 @@ tp_process_document(
 		/*
 		 * Add document terms to posting lists (if shared memory available)
 		 */
-		elog(DEBUG1,
-			 "index_state=%p, about to add document terms",
-			 index_state);
 
 		if (index_state != NULL)
 		{
-			elog(DEBUG1,
-				 "Calling tp_add_document_terms with %d terms",
-				 term_count);
-
 			tp_add_document_terms(
 					index_state,
 					ctid,
@@ -572,8 +513,6 @@ tp_process_document(
 					frequencies,
 					term_count,
 					doc_length);
-
-			elog(DEBUG1, "Finished tp_add_document_terms");
 		}
 
 		/* Free the terms array and individual lexemes */
@@ -603,10 +542,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			  total_len	 = 0;
 	TpIndexState	 *index_state;
 
-	elog(DEBUG2,
-		 "tp_build: heap=%s, index=%s",
-		 RelationGetRelationName(heap),
-		 RelationGetRelationName(index));
 	/* Tapir index build started */
 	elog(NOTICE,
 		 "Tapir index build started for relation %s",
@@ -635,11 +570,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	index_state = tp_get_index_state(
 			RelationGetRelid(index), RelationGetRelationName(index));
 
-	elog(DEBUG2,
-		 "Index build: Got index_state=%p for index %s",
-		 index_state,
-		 RelationGetRelationName(index));
-
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_BUILD_MEMTABLE);
@@ -662,10 +592,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_WRITE_METADATA);
 
 	/* Finalize posting lists and update statistics */
-	elog(DEBUG2, "About to call tp_build_finalize_and_update_stats");
 	tp_build_finalize_and_update_stats(
 			index, index_state, &total_docs, &total_len);
-	elog(DEBUG2, "Returned from tp_build_finalize_and_update_stats");
 
 	/* Create index build result */
 	result				= (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
@@ -710,10 +638,6 @@ tp_buildempty(Relation index)
 	TpIndexMetaPage metap;
 	char		   *text_config_name = NULL;
 	Oid				text_config_oid	 = InvalidOid;
-
-	elog(DEBUG2,
-		 "Building empty Tapir index for %s",
-		 RelationGetRelationName(index));
 
 	/* Extract options from index */
 	options = (TpOptions *)index->rd_options;
@@ -863,9 +787,6 @@ tp_insert(
 			}
 			else
 			{
-				elog(DEBUG2,
-					 "tp_insert: calling tp_add_document_terms with %d terms",
-					 term_count);
 				tp_add_document_terms(
 						index_state,
 						ht_ctid,
@@ -877,9 +798,6 @@ tp_insert(
 		}
 		else
 		{
-			elog(DEBUG2,
-				 "tp_insert: index_state is NULL, skipping "
-				 "tp_add_document_terms");
 		}
 
 		/* Free the terms array and individual lexemes */
@@ -894,12 +812,6 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
-	elog(DEBUG2,
-		 "tp_insert: index=%s, ctid=(%u,%u)",
-		 RelationGetRelationName(index),
-		 ItemPointerGetBlockNumber(ht_ctid),
-		 ItemPointerGetOffsetNumber(ht_ctid));
-
 	return true;
 }
 
@@ -911,12 +823,6 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 	TpScanOpaque  so;
-
-	elog(DEBUG1,
-		 "Tapir begin scan: index=%s, nkeys=%d, norderbys=%d",
-		 RelationGetRelationName(index),
-		 nkeys,
-		 norderbys);
 
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
@@ -939,9 +845,6 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 		scan->xs_orderbynulls = (bool *)palloc(sizeof(bool) * norderbys);
 		/* Initialize all orderbynulls to true, as GiST and SP-GiST do */
 		memset(scan->xs_orderbynulls, true, sizeof(bool) * norderbys);
-		elog(DEBUG2,
-			 "tp_beginscan: allocated ORDER BY arrays for %d clauses",
-			 norderbys);
 	}
 
 	return scan;
@@ -961,8 +864,6 @@ tp_rescan(
 	TpScanOpaque	so	  = (TpScanOpaque)scan->opaque;
 	TpIndexMetaPage metap = NULL;
 
-	elog(DEBUG1, "tp_rescan: nkeys=%d, norderbys=%d", nkeys, norderbys);
-
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
@@ -973,28 +874,19 @@ tp_rescan(
 		if (query_limit > 0)
 		{
 			so->limit = query_limit;
-			elog(DEBUG2,
-				 "tp_rescan: Using LIMIT %d for scan optimization",
-				 query_limit);
 		}
 		else
 		{
 			so->limit = -1; /* No limit */
-			elog(DEBUG2, "tp_rescan: No LIMIT detected for scan optimization");
 		}
 	}
 
 	/* Reset scan state */
 	if (so)
 	{
-		elog(DEBUG2, "tp_rescan called on scan %p, so=%p", scan, so);
-
 		/* Clean up any previous results before rescan */
 		if (so->result_ctids)
 		{
-			elog(DEBUG2,
-				 "Cleaning up previous result_ctids=%p during rescan",
-				 so->result_ctids);
 			if (so->scan_context)
 			{
 				MemoryContext oldcontext = MemoryContextSwitchTo(
@@ -1013,9 +905,6 @@ tp_rescan(
 		}
 		if (so->result_scores)
 		{
-			elog(DEBUG2,
-				 "Cleaning up previous result_scores=%p during rescan",
-				 so->result_scores);
 			if (so->scan_context)
 			{
 				MemoryContext oldcontext = MemoryContextSwitchTo(
@@ -1033,7 +922,6 @@ tp_rescan(
 			}
 		}
 
-		elog(DEBUG2, "Resetting scan state");
 		so->current_pos	 = 0;
 		so->result_count = 0;
 		so->eof_reached	 = false;
@@ -1050,16 +938,9 @@ tp_rescan(
 		{
 			ScanKey key = &keys[i];
 
-			elog(DEBUG1,
-				 "tp_rescan key %d: strategy=%d, flags=%d",
-				 i,
-				 key->sk_strategy,
-				 key->sk_flags);
-
 			/* Check for <@> operator strategy */
 			if (so && key->sk_strategy == 1) /* Strategy 1: <@> operator */
 			{
-				elog(DEBUG1, "tp_rescan: <@> operator strategy detected");
 			}
 		}
 
@@ -1067,7 +948,6 @@ tp_rescan(
 	}
 	else
 	{
-		elog(DEBUG1, "tp_rescan: no search keys provided");
 	}
 
 	/* Process ORDER BY scan keys for <@> operator */
@@ -1080,12 +960,6 @@ tp_rescan(
 		for (int i = 0; i < norderbys; i++)
 		{
 			ScanKey orderby = &orderbys[i];
-
-			elog(DEBUG1,
-				 "Tapir ORDER BY key %d: strategy=%d, flags=%d",
-				 i,
-				 orderby->sk_strategy,
-				 orderby->sk_flags);
 
 			/* Check for <@> operator strategy */
 			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
@@ -1113,19 +987,9 @@ tp_rescan(
 					char *ptr	= (char *)entries_ptr;
 					bool  first = true;
 
-					elog(DEBUG3,
-						 "Reconstructing query from %d vector entries",
-						 query_vector->entry_count);
-
 					for (int j = 0; j < query_vector->entry_count; j++)
 					{
 						TpVectorEntry *entry = (TpVectorEntry *)ptr;
-
-						elog(DEBUG3,
-							 "Entry %d: lexeme='%s', lexeme_len=%d",
-							 j,
-							 entry->lexeme,
-							 entry->lexeme_len);
 
 						if (!first)
 							appendStringInfoChar(query_buf, ' ');
@@ -1144,10 +1008,6 @@ tp_rescan(
 				{
 					query_cstr = pstrdup("");
 				}
-
-				elog(DEBUG3,
-					 "Tapir ORDER BY query reconstructed: %s",
-					 query_cstr);
 
 				/* Store query for processing during gettuple */
 				if (so->query_text)
@@ -1171,18 +1031,10 @@ tp_rescan(
 					MemoryContextSwitchTo(oldcontext);
 				}
 
-				elog(DEBUG2,
-					 "Tapir rescan: stored query_text='%s' in so=%p",
-					 so->query_text ? so->query_text : "NULL",
-					 so);
-
 				/* Mark all docs as candidates for ORDER BY operation */
 				if (metap && metap->total_docs > 0)
 				{
 					so->result_count = metap->total_docs;
-					elog(DEBUG1,
-						 "Tapir ORDER BY: processing %lu documents",
-						 metap->total_docs);
 				}
 
 				pfree(query_cstr);
@@ -1202,16 +1054,10 @@ tp_endscan(IndexScanDesc scan)
 {
 	TpScanOpaque so = (TpScanOpaque)scan->opaque;
 
-	elog(DEBUG2, "Tapir end scan called for scan %p", scan);
-
 	if (so)
 	{
 		if (so->scan_context)
 		{
-			elog(DEBUG2,
-				 "Deleting scan context %p for scan %p",
-				 so->scan_context,
-				 scan);
 			MemoryContextDelete(so->scan_context);
 		}
 		pfree(so);
@@ -1228,8 +1074,6 @@ tp_endscan(IndexScanDesc scan)
 		scan->xs_orderbyvals  = NULL;
 		scan->xs_orderbynulls = NULL;
 	}
-
-	elog(DEBUG2, "Tapir scan cleanup complete");
 }
 
 /*
@@ -1244,21 +1088,12 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	TpIndexState   *index_state = NULL;
 	TpVector	   *query_vector;
 
-	elog(DEBUG2,
-		 "tp_execute_scoring_query: so=%p, query_text=%s",
-		 so,
-		 so ? so->query_text : "NULL");
-
 	if (!so || !so->query_text)
 		return false;
 
 	Assert(so->scan_context != NULL);
 
 	/* Clean up any previous results */
-	elog(DEBUG1,
-		 "Cleaning up previous results. result_ctids=%p, result_count=%d",
-		 so->result_ctids,
-		 so->result_count);
 
 	/* Clean up previous results */
 	if (so->result_ctids || so->result_scores)
@@ -1328,11 +1163,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 			return false;
 		}
 
-		elog(DEBUG2,
-			 "Tapir search: query='%s', vector has %d terms",
-			 so->query_text,
-			 query_vector->entry_count);
-
 		/* Find documents matching the query using posting lists */
 		success = tp_search_posting_lists(
 				scan, index_state, query_vector, metap);
@@ -1385,25 +1215,16 @@ tp_search_posting_lists(
 	if (so && so->limit > 0)
 	{
 		max_results = so->limit;
-		elog(DEBUG1,
-			 "Tapir: Using LIMIT optimization with max_results=%d",
-			 max_results);
 	}
 	else
 	{
 		max_results = tp_default_limit; /* Use GUC parameter as fallback */
-		elog(DEBUG2,
-			 "Tapir: No limit optimization, using GUC default "
-			 "max_results=%d",
-			 max_results);
 	}
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
 	query_frequencies = palloc(entry_count * sizeof(int32));
 	entries_ptr		  = TPVECTOR_ENTRIES_PTR(query_vector);
-
-	elog(DEBUG2, "Tapir search: parsing %d query terms", entry_count);
 
 	/* Parse the query vector entries */
 	ptr = (char *)entries_ptr;
@@ -1424,12 +1245,6 @@ tp_search_posting_lists(
 		query_terms[i]		 = term_str;
 		query_frequencies[i] = entry->frequency;
 
-		elog(DEBUG3,
-			 "Query term %d: '%s', freq=%d",
-			 i,
-			 term_str,
-			 query_frequencies[i]);
-
 		ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
 	}
 
@@ -1441,13 +1256,6 @@ tp_search_posting_lists(
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Use single-pass BM25 scoring algorithm for efficiency */
-	elog(DEBUG2,
-		 "Tapir search: using single-pass BM25 scoring for %d terms",
-		 entry_count);
-
-	elog(DEBUG2,
-		 "Calling tp_score_documents with max_results=%d",
-		 max_results);
 
 	/* Check pointers before using them */
 	if (!metap)
@@ -1458,8 +1266,6 @@ tp_search_posting_lists(
 	/* Extract values from metap before the call to avoid any access issues */
 	k1_value = metap->k1;
 	b_value	 = metap->b;
-
-	elog(DEBUG3, "BM25 parameters: k1=%f, b=%f", k1_value, b_value);
 
 	Assert(index_state != NULL);
 	Assert(query_terms != NULL);
@@ -1477,16 +1283,8 @@ tp_search_posting_lists(
 			so->result_ctids,
 			&so->result_scores);
 
-	elog(DEBUG2, "tp_score_documents returned %d results", result_count);
-
 	so->result_count = result_count;
 	so->current_pos	 = 0;
-
-	elog(DEBUG2,
-		 "Tapir search completed: found %d matching documents (max_results "
-		 "was %d)",
-		 result_count,
-		 max_results);
 
 	/* Free the query terms array and individual term strings */
 	for (int i = 0; i < entry_count; i++)
@@ -1509,25 +1307,12 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	float4		 bm25_score;
 	BlockNumber	 blknum;
 
-	elog(DEBUG3,
-		 "Tapir gettuple: dir=%d, scan->xs_orderbyvals=%p, "
-		 "scan->xs_orderbynulls=%p",
-		 dir,
-		 scan->xs_orderbyvals,
-		 scan->xs_orderbynulls);
-
 	Assert(scan != NULL);
 	Assert(so != NULL);
-
-	elog(DEBUG3,
-		 "Scan state: result_count=%d, current_pos=%d",
-		 so->result_count,
-		 so->current_pos);
 
 	/* Check if we have a query to process */
 	if (!so->query_text)
 	{
-		elog(DEBUG3, "Tapir gettuple: no query text, so=%p", so);
 		return false;
 	}
 
@@ -1539,34 +1324,17 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			so->eof_reached = true;
 			return false;
 		}
-		elog(DEBUG2,
-			 "Tapir scoring query completed: %d results found",
-			 so->result_count);
 	}
 
 	/* Check if we've reached the end */
 	if (so->current_pos >= so->result_count || so->eof_reached)
 	{
-		elog(DEBUG1, "Tapir gettuple: end of results reached");
 		return false;
 	}
-
-	elog(DEBUG2,
-		 "Tapir gettuple: about to access result_ctids[%d], result_ctids=%p, "
-		 "scan=%p, so=%p",
-		 so->current_pos,
-		 so->result_ctids,
-		 scan,
-		 so);
 
 	Assert(so->scan_context != NULL);
 	Assert(so->result_ctids != NULL);
 	Assert(so->current_pos < so->result_count);
-
-	elog(DEBUG2,
-		 "Setting heap TID: block=%u, offset=%u",
-		 BlockIdGetBlockNumber(&(so->result_ctids[so->current_pos].ip_blkid)),
-		 so->result_ctids[so->current_pos].ip_posid);
 
 	Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
 
@@ -1638,10 +1406,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				bm25_score				 = -so->result_scores[so->current_pos];
 				scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 				scan->xs_orderbynulls[0] = false;
-
-				elog(DEBUG2,
-					 "Tapir gettuple: set ORDER BY value = %f",
-					 bm25_score);
 			}
 			else
 			{
@@ -1679,11 +1443,6 @@ tp_costestimate(
 	TpIndexMetaPage metap;
 	double			num_tuples = TP_DEFAULT_TUPLE_ESTIMATE;
 
-	elog(DEBUG2,
-		 "tp_costestimate: indexoid=%u, loop_count=%f",
-		 path->indexinfo->indexoid,
-		 loop_count);
-
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
@@ -1691,11 +1450,6 @@ tp_costestimate(
 		*indexTotalCost	  = get_float8_infinity();
 		return;
 	}
-
-	elog(DEBUG1,
-		 "Tapir cost estimation called for %d clauses, %d orderbys",
-		 list_length(path->indexclauses),
-		 list_length(path->indexorderbys));
 
 	/* Check for LIMIT clause and verify it can be safely pushed down */
 	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
@@ -1705,25 +1459,13 @@ tp_costestimate(
 		if (tp_can_pushdown_limit(root, path, limit))
 		{
 			tp_store_query_limit(path->indexinfo->indexoid, limit);
-			elog(DEBUG1,
-				 "Tapir: Safe LIMIT pushdown detected - LIMIT %d for index %u",
-				 limit,
-				 path->indexinfo->indexoid);
 		}
 		else
 		{
-			elog(DEBUG1,
-				 "Tapir: LIMIT %d detected but pushdown is unsafe for index "
-				 "%u",
-				 limit,
-				 path->indexinfo->indexoid);
 		}
 	}
 	else
 	{
-		elog(DEBUG2,
-			 "Tapir: No LIMIT detected (limit_tuples=%f)",
-			 root ? root->limit_tuples : -1.0);
 	}
 
 	/* Try to get actual statistics from the index */
@@ -1762,13 +1504,6 @@ tp_costestimate(
 													   * searches */
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
-
-	elog(DEBUG1,
-		 "Tapir cost estimate: startup=%.2f, total=%.2f, sel=%.2f, pages=%.2f",
-		 *indexStartupCost,
-		 *indexTotalCost,
-		 *indexSelectivity,
-		 *indexPages);
 }
 
 /*
@@ -1783,8 +1518,6 @@ tp_options(Datum reloptions, bool validate)
 			  offsetof(TpOptions, text_config_offset)},
 			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1)},
 			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b)}};
-
-	elog(DEBUG2, "tp_options: validate=%d", validate);
 
 	return (bytea *)build_reloptions(
 			reloptions,
@@ -1805,8 +1538,6 @@ tp_validate(Oid opclassoid)
 	Form_pg_opclass opclassform;
 	Oid				opcintype;
 	bool			result = true;
-
-	elog(DEBUG2, "tp_validate: opclassoid=%u", opclassoid);
 
 	/* Look up the opclass */
 	tup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclassoid));
@@ -1841,11 +1572,8 @@ tp_validate(Oid opclassoid)
 	ReleaseSysCache(tup);
 
 	if (result)
-		elog(DEBUG1,
-			 "Tapir index validation passed for type OID %u",
-			 opcintype);
 
-	return result;
+		return result;
 }
 
 /*
@@ -1855,10 +1583,6 @@ IndexBulkDeleteResult *
 tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	TpIndexMetaPage metap;
-
-	elog(DEBUG1,
-		 "Tapir vacuum called for relation %s",
-		 RelationGetRelationName(info->index));
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
@@ -1882,12 +1606,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		}
 
 		pfree(metap);
-
-		elog(DEBUG1,
-			 "Tapir vacuum cleanup: index %s has %u pages, %.0f documents",
-			 RelationGetRelationName(info->index),
-			 stats->num_pages,
-			 stats->num_index_tuples);
 	}
 	else
 	{

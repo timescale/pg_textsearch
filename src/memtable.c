@@ -100,11 +100,9 @@ get_cached_index_state(Oid index_oid)
 
 	if (entry != NULL)
 	{
-		elog(DEBUG2, "Found cached index state for index %u", index_oid);
 		return entry;
 	}
 
-	elog(DEBUG2, "No cached index state for index %u", index_oid);
 	return NULL;
 }
 
@@ -125,12 +123,6 @@ cache_index_state(Oid index_oid, TpIndexState *state, dsa_area *area)
 			hash_search(index_state_cache, &index_oid, HASH_ENTER, &found);
 	entry->state = state;
 	entry->area	 = area;
-
-	elog(DEBUG2,
-		 "Cached index state for index %u (found=%d), area=%p",
-		 index_oid,
-		 found,
-		 area);
 }
 
 /*
@@ -169,15 +161,6 @@ tp_init_index_dsa_callback(void *ptr)
 	state->stats.b				   = 0.75f;
 	state->stats.last_checkpoint   = GetCurrentTimestamp();
 	state->stats.segment_threshold = TP_DEFAULT_SEGMENT_THRESHOLD;
-
-	elog(DEBUG1,
-		 "Initialized DSA for index with lock tranches: string=%d, "
-		 "posting=%d, corpus=%d, "
-		 "doc_lengths=%d",
-		 state->string_tranche_id,
-		 state->posting_tranche_id,
-		 state->corpus_tranche_id,
-		 state->doc_lengths_tranche_id);
 }
 
 /*
@@ -204,7 +187,6 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 	cache_entry = get_cached_index_state(index_oid);
 	if (cache_entry != NULL)
 	{
-		elog(DEBUG2, "Using cached index state for index %u", index_oid);
 		if (area_out)
 			*area_out = cache_entry->area;
 		return cache_entry->state;
@@ -350,27 +332,11 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 		index_state->stats.b  = meta->b;
 		LWLockRelease(&index_state->corpus_stats_lock);
 
-		elog(DEBUG1,
-			 "Loaded configuration from metapage for index %s: k1=%f, b=%f "
-			 "(corpus stats preserved "
-			 "in DSA)",
-			 index_name,
-			 index_state->stats.k1,
-			 index_state->stats.b);
-
 		UnlockReleaseBuffer(metabuf);
 
 		index_close(index_rel, AccessShareLock);
 	}
 
-	elog(DEBUG1,
-		 "After DSA attachment: string_hash_handle=%s, total_docs=%d",
-		 (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
-				 ? "VALID"
-				 : "INVALID",
-		 index_state->stats.total_docs);
-
-	elog(DEBUG1, "Attached to Tapir index state for %s", index_name);
 	return index_state;
 }
 
@@ -393,8 +359,6 @@ tp_destroy_index_dsa(Oid index_oid)
 				index_state_cache, &index_oid, HASH_REMOVE, &found);
 		if (found && cache_entry)
 		{
-			elog(DEBUG2, "Removed index %u from cache", index_oid);
-
 			/*
 			 * Note: We don't detach from the DSA area here because: 1. The
 			 * area might already be detached/freed by PostgreSQL 2. Other
@@ -415,7 +379,6 @@ tp_destroy_index_dsa(Oid index_oid)
 	 * detach 3. The segment will be reused if an index with the same OID is
 	 * created
 	 */
-	elog(DEBUG1, "Cleaned up DSA references for dropped index %u", index_oid);
 
 	pfree(segment_name);
 }
@@ -470,14 +433,10 @@ void
 tp_cleanup_index_shared_memory(Oid index_oid)
 {
 	/* This will be called from the object access hook in mod.c */
-	elog(DEBUG1,
-		 "tp_cleanup_index_shared_memory called with OID %u",
-		 index_oid);
 
 	/* Validate OID - skip invalid OIDs */
 	if (!OidIsValid(index_oid))
 	{
-		elog(DEBUG2, "Skipping cleanup for invalid OID");
 		return;
 	}
 
@@ -489,20 +448,13 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		(void)hash_search(index_state_cache, &index_oid, HASH_FIND, &found);
 		if (found)
 		{
-			elog(DEBUG1, "Cleaning up Tapir index %u", index_oid);
 			tp_destroy_index_dsa(index_oid);
 		}
 		else
 		{
-			elog(DEBUG2,
-				 "Skipping cleanup for non-Tapir relation %u",
-				 index_oid);
 		}
 	}
 	else
 	{
-		elog(DEBUG2,
-			 "Index state cache not initialized, skipping cleanup for OID %u",
-			 index_oid);
 	}
 }

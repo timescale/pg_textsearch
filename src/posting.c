@@ -50,7 +50,6 @@ tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
 		return NULL;
 	if (!area)
 	{
-		elog(DEBUG3, "DSA area not provided to tp_get_posting_entries");
 		return NULL;
 	}
 	return dsa_get_address(area, posting_list->entries_dp);
@@ -71,11 +70,6 @@ tp_add_document_terms(
 		int32		  doc_length)
 {
 	int i;
-
-	elog(DEBUG1,
-		 "tp_add_document_terms called with index_state=%p, term_count=%d",
-		 index_state,
-		 term_count);
 
 	Assert(index_state != NULL);
 	Assert(ctid != NULL);
@@ -127,51 +121,24 @@ tp_add_document_terms(
 		{
 			/* New document - store the length */
 			existing_entry->doc_length = doc_length;
-			elog(DEBUG2,
-				 "Stored document length %d for ctid (%u,%u)",
-				 doc_length,
-				 ItemPointerGetBlockNumber(ctid),
-				 ItemPointerGetOffsetNumber(ctid));
 		}
 		else
 		{
-			elog(DEBUG2,
-				 "Document ctid (%u,%u) already has length %d in hash table",
-				 ItemPointerGetBlockNumber(ctid),
-				 ItemPointerGetOffsetNumber(ctid),
-				 existing_entry->doc_length);
 		}
 
 		LWLockRelease(&index_state->doc_lengths_lock);
 	}
 	else
 	{
-		elog(DEBUG1,
-			 "Document length hash table not initialized for storing ctid "
-			 "(%u,%u)",
-			 ItemPointerGetBlockNumber(ctid),
-			 ItemPointerGetOffsetNumber(ctid));
 	}
 
 	/* Update corpus statistics */
 	LWLockAcquire(&index_state->corpus_stats_lock, LW_EXCLUSIVE);
 	index_state->stats.total_docs++;
 	index_state->stats.total_terms += term_count;
-	elog(DEBUG2,
-		 "Updating corpus stats: index_state=%p, total_docs=%d, "
-		 "total_terms=%ld (added %d terms)",
-		 index_state,
-		 index_state->stats.total_docs,
-		 index_state->stats.total_terms,
-		 term_count);
 
 	/* Update document length statistics */
 	index_state->stats.total_len += doc_length;
-	elog(DEBUG1,
-		 "Updated document length: total_len=%ld (added %d), new avg_len=%.3f",
-		 index_state->stats.total_len,
-		 doc_length,
-		 (float)index_state->stats.total_len / index_state->stats.total_docs);
 
 	if (index_state->stats.total_docs == 1)
 	{
@@ -187,13 +154,7 @@ tp_add_document_terms(
 	}
 
 	LWLockRelease(&index_state->corpus_stats_lock);
-
-	elog(DEBUG1,
-		 "Added document with %d terms to DSA posting lists",
-		 term_count);
 }
-
-/* Legacy posting list code removed - using DSA-based system */
 
 /*
  * Get posting list for a specific term
@@ -217,8 +178,6 @@ tp_get_posting_list(TpIndexState *index_state, const char *term)
 		return NULL;
 	}
 
-	elog(DEBUG2, "tp_get_posting_list: searching for term='%s'", term);
-
 	/* Get DSA area for this index using cached approach */
 	area = tp_get_dsa_area_for_index(index_state, InvalidOid);
 	if (!area)
@@ -230,7 +189,6 @@ tp_get_posting_list(TpIndexState *index_state, const char *term)
 	/* Get the string hash table from the index state */
 	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
-		elog(DEBUG2, "String hash table not initialized for index");
 		return NULL;
 	}
 
@@ -250,10 +208,6 @@ tp_get_posting_list(TpIndexState *index_state, const char *term)
 	if (string_entry && DsaPointerIsValid(string_entry->key.flag_field))
 	{
 		posting_list = dsa_get_address(area, string_entry->key.flag_field);
-		elog(DEBUG2,
-			 "Found posting list for term '%s': doc_count=%d",
-			 term,
-			 posting_list->doc_count);
 		tp_hash_table_detach_dsa(string_table);
 		LWLockRelease(&index_state->string_interning_lock);
 		return posting_list;
@@ -262,7 +216,6 @@ tp_get_posting_list(TpIndexState *index_state, const char *term)
 	{
 		tp_hash_table_detach_dsa(string_table);
 		LWLockRelease(&index_state->string_interning_lock);
-		elog(DEBUG2, "No posting list found for term '%s'", term);
 		return NULL;
 	}
 }
@@ -284,13 +237,6 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 	Assert(index_state != NULL);
 	Assert(term != NULL);
 
-	elog(DEBUG1,
-		 "tp_get_or_create_posting_list: term='%s', index_oid=%u, "
-		 "area_handle=%u",
-		 term,
-		 index_state->index_oid,
-		 index_state->area_handle);
-
 	term_len = strlen(term);
 
 	/* Get DSA area for this index using cached approach */
@@ -302,11 +248,6 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 			 index_state->index_oid);
 		return NULL;
 	}
-
-	elog(DEBUG1,
-		 "tp_get_or_create_posting_list: Got DSA area %p for index %u",
-		 area,
-		 index_state->index_oid);
 
 	/* Initialize string hash table if needed */
 	LWLockAcquire(&index_state->string_interning_lock, LW_EXCLUSIVE);
@@ -325,9 +266,6 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 		/* Store the handle for other processes */
 		index_state->string_hash_handle = tp_hash_table_get_handle(
 				string_table);
-		elog(DEBUG1,
-			 "Created string hash table for index with handle %lu",
-			 (unsigned long)index_state->string_hash_handle);
 	}
 	else
 	{
@@ -355,17 +293,12 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 			elog(ERROR, "Failed to insert term '%s' into string table", term);
 			return NULL;
 		}
-		elog(DEBUG2, "Inserted new term '%s' into string table", term);
 	}
 
 	/* Check if posting list already exists for this term */
 	if (DsaPointerIsValid(string_entry->key.flag_field))
 	{
 		posting_list = dsa_get_address(area, string_entry->key.flag_field);
-		elog(DEBUG2,
-			 "Found existing posting list for term '%s': doc_count=%d",
-			 term,
-			 posting_list->doc_count);
 	}
 	else
 	{
@@ -384,8 +317,6 @@ tp_get_or_create_posting_list(TpIndexState *index_state, const char *term)
 		/* Associate posting list with string entry */
 		string_entry->key.flag_field   = posting_list_dp;
 		string_entry->posting_list_len = 0;
-
-		elog(DEBUG2, "Created new posting list for term '%s'", term);
 	}
 
 	/* Detach from string table */
@@ -430,11 +361,6 @@ tp_add_document_to_posting_list(
 		int32 new_capacity = posting_list->capacity == 0
 								   ? 8
 								   : posting_list->capacity * 2;
-
-		elog(DEBUG2,
-			 "Expanding posting list capacity from %d to %d",
-			 posting_list->capacity,
-			 new_capacity);
 
 		/* Allocate new array with expanded capacity */
 		new_entries_dp =
@@ -496,14 +422,6 @@ tp_add_document_to_posting_list(
 	/* Update posting list counters */
 	posting_list->doc_count++;
 	posting_list->doc_freq = posting_list->doc_count;
-
-	elog(DEBUG2,
-		 "Added document ctid=(%u,%u) freq=%d to posting list: new "
-		 "doc_count=%d",
-		 ItemPointerGetBlockNumber(ctid),
-		 ItemPointerGetOffsetNumber(ctid),
-		 frequency,
-		 posting_list->doc_count);
 }
 
 /*
@@ -521,19 +439,6 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs, float4 average_idf)
 	double idf_ratio	   = idf_numerator / idf_denominator;
 	double raw_idf		   = log(idf_ratio);
 
-	elog(DEBUG3,
-		 "TAPIR IDF: doc_freq=%d, total_docs=%d, average_idf=%.6f",
-		 doc_freq,
-		 total_docs,
-		 average_idf);
-	elog(DEBUG3,
-		 "TAPIR IDF: numerator=%.6f, denominator=%.6f, ratio=%.6f, "
-		 "raw_idf=%.6f",
-		 idf_numerator,
-		 idf_denominator,
-		 idf_ratio,
-		 raw_idf);
-
 	if (raw_idf <= 0.0)
 	{
 		/*
@@ -542,16 +447,10 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs, float4 average_idf)
 		 */
 		float4 epsilon = 0.25f * average_idf;
 
-		elog(DEBUG3,
-			 "TAPIR IDF: EPSILON APPLIED (raw_idf <= 0.0), epsilon=%.6f",
-			 epsilon);
 		return epsilon;
 	}
 	else
 	{
-		elog(DEBUG3,
-			 "TAPIR IDF: NO EPSILON (raw_idf > 0.0), returning raw_idf=%.6f",
-			 raw_idf);
 		return (float4)raw_idf;
 	}
 }
@@ -647,11 +546,6 @@ tp_calculate_average_idf(TpIndexState *index_state)
 	{
 		index_state->stats.average_idf = 0.0f;
 	}
-
-	elog(DEBUG2,
-		 "Calculated average IDF: %.6f from %d terms",
-		 index_state->stats.average_idf,
-		 term_count);
 }
 
 /*
@@ -666,20 +560,6 @@ tp_finalize_index_build(TpIndexState *index_state)
 
 	/* Calculate average IDF for epsilon flooring */
 	tp_calculate_average_idf(index_state);
-
-	elog(DEBUG1, "Tapir index build finalization completed");
-	elog(DEBUG2,
-		 "Finalize: index_state=%p, DSM_state=%p, Total docs: %d, avg doc "
-		 "length: %.2f, average "
-		 "IDF: %.6f",
-		 index_state,
-		 index_state,
-		 index_state->stats.total_docs,
-		 index_state->stats.total_docs > 0
-				 ? (float4)(index_state->stats.total_len /
-							(double)index_state->stats.total_docs)
-				 : 0.0f,
-		 index_state->stats.average_idf);
 }
 
 /* bm25_score_document removed - replaced by more efficient tp_score_documents
@@ -712,9 +592,6 @@ tp_score_documents(
 {
 	HASHCTL hash_ctl;
 
-	elog(DEBUG2,
-		 "tp_score_documents called with %d query terms",
-		 query_term_count);
 	HTAB				*doc_scores_hash;
 	DocumentScoreEntry	*doc_entry;
 	float4				 avg_doc_len;
@@ -724,11 +601,6 @@ tp_score_documents(
 	DocumentScoreEntry **sorted_docs;
 	int					 i, j;
 	int					 hash_size;
-
-	elog(DEBUG2,
-		 "tp_score_documents: max_results=%d, query_term_count=%d",
-		 max_results,
-		 query_term_count);
 
 	/* Validate inputs */
 	if (!index_state)
@@ -742,18 +614,12 @@ tp_score_documents(
 	if (!result_scores)
 		elog(ERROR, "tp_score_documents: NULL result_scores");
 
-	elog(DEBUG2, "tp_score_documents: accessing index_state->stats");
 	total_docs	= index_state->stats.total_docs;
 	avg_doc_len = total_docs > 0 ? (float4)(index_state->stats.total_len /
 											(double)total_docs)
 								 : 0.0f;
-	elog(DEBUG2,
-		 "tp_score_documents: total_docs=%d, avg_doc_len=%f",
-		 total_docs,
-		 avg_doc_len);
 
 	/* Create hash table for accumulating document scores */
-	elog(DEBUG2, "tp_score_documents: preparing hash table");
 
 	/* Ensure reasonable hash table size with upper bounds */
 	hash_size = max_results * 2;
@@ -764,33 +630,20 @@ tp_score_documents(
 	if (hash_size > 10000)
 		hash_size = 10000; /* Maximum reasonable size to prevent memory
 							* issues */
-	elog(DEBUG2,
-		 "tp_score_documents: hash_size=%d (limited for stability)",
-		 hash_size);
 
 	/* Initialize hash control structure */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize   = sizeof(ItemPointerData);
 	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
 
-	elog(DEBUG3,
-		 "tp_score_documents: keysize=%zu, entrysize=%zu",
-		 hash_ctl.keysize,
-		 hash_ctl.entrysize);
-
 	/* Create hash table */
 	doc_scores_hash = hash_create(
 			"DocScores", hash_size, &hash_ctl, HASH_ELEM | HASH_BLOBS);
-
-	elog(DEBUG2, "tp_score_documents: hash table created");
 
 	if (!doc_scores_hash)
 		elog(ERROR, "Failed to create document scores hash table");
 
 	/* Single pass through all posting lists */
-	elog(DEBUG2,
-		 "tp_score_documents: processing %d query terms",
-		 query_term_count);
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
 		const char	   *term = query_terms[term_idx];
@@ -798,12 +651,10 @@ tp_score_documents(
 		TpPostingEntry *entries;
 		float4			idf;
 
-		elog(DEBUG3, "tp_score_documents: term %d: '%s'", term_idx, term);
 		posting_list = tp_get_posting_list(index_state, term);
 
 		if (!posting_list || posting_list->doc_count == 0)
 		{
-			elog(DEBUG3, "No posting list for term '%s'", term);
 			continue;
 		}
 
@@ -911,11 +762,6 @@ tp_score_documents(
 	/* First, count how many unique documents we have */
 	result_count = hash_get_num_entries(doc_scores_hash);
 
-	elog(DEBUG2,
-		 "tp_score_documents: hash has %d entries, max_results=%d",
-		 result_count,
-		 max_results);
-
 	if (result_count > max_results)
 		result_count = max_results;
 
@@ -931,8 +777,6 @@ tp_score_documents(
 		HASH_SEQ_STATUS		seq_status;
 		DocumentScoreEntry *doc_entry;
 
-		elog(DEBUG1,
-			 "tp_score_documents: calling hash_seq_init on DocScores table");
 		hash_seq_init(&seq_status, doc_scores_hash);
 
 		while ((doc_entry = (DocumentScoreEntry *)hash_seq_search(
@@ -953,11 +797,6 @@ tp_score_documents(
 	}
 
 	result_count = i; /* Actual count extracted */
-
-	elog(DEBUG2,
-		 "tp_score_documents: extracted %d unique documents using posting "
-		 "list iteration",
-		 result_count);
 
 	/* Sort documents by score (descending - higher scores first) */
 	for (i = 1; i < result_count; i++)
@@ -1019,7 +858,6 @@ tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 
 	if (!index_state->doc_lengths_hash)
 	{
-		elog(DEBUG1, "Document length hash table not initialized");
 		return 0;
 	}
 
@@ -1029,18 +867,9 @@ tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 	if (entry)
 	{
 		doc_length = entry->doc_length;
-		elog(DEBUG3,
-			 "Found document length %d for ctid (%u,%u)",
-			 doc_length,
-			 ItemPointerGetBlockNumber(ctid),
-			 ItemPointerGetOffsetNumber(ctid));
 	}
 	else
 	{
-		elog(DEBUG2,
-			 "Document length not found for ctid (%u,%u)",
-			 ItemPointerGetBlockNumber(ctid),
-			 ItemPointerGetOffsetNumber(ctid));
 	}
 	LWLockRelease(&index_state->doc_lengths_lock);
 

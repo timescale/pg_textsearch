@@ -46,24 +46,12 @@ tp_store_query_limit(Oid index_oid, int limit)
 	/* Safety check - warn if we're overwriting a different index's limit */
 	if (tp_current_limit.is_valid && tp_current_limit.index_oid != index_oid)
 	{
-		elog(DEBUG2,
-			 "Tapir: Overwriting limit for index %u (was %d) with limit for "
-			 "index %u (%d)",
-			 tp_current_limit.index_oid,
-			 tp_current_limit.limit,
-			 index_oid,
-			 limit);
 	}
 
 	/* Store the limit in our simple structure */
 	tp_current_limit.index_oid = index_oid;
 	tp_current_limit.limit	   = limit;
 	tp_current_limit.is_valid  = true;
-
-	elog(DEBUG1,
-		 "Tapir: Stored query limit %d for index %u",
-		 limit,
-		 index_oid);
 }
 
 /*
@@ -92,20 +80,12 @@ tp_get_query_limit(Relation index_rel)
 	if (tp_current_limit.index_oid == index_oid)
 	{
 		result = tp_current_limit.limit;
-		elog(DEBUG1,
-			 "Tapir: Retrieved query limit %d for index %u",
-			 result,
-			 index_oid);
 
 		/* Clear the limit after retrieval to prevent stale data */
 		tp_current_limit.is_valid = false;
 	}
 	else
 	{
-		elog(DEBUG2,
-			 "Tapir: No matching limit for index %u (stored for index %u)",
-			 index_oid,
-			 tp_current_limit.index_oid);
 	}
 
 	return result;
@@ -127,10 +107,6 @@ tp_cleanup_query_limits(void)
 	/* Clear the current limit structure */
 	if (tp_current_limit.is_valid)
 	{
-		elog(DEBUG2,
-			 "Tapir: Cleaned up query limit entry for index %u",
-			 tp_current_limit.index_oid);
-
 		tp_current_limit.index_oid = InvalidOid;
 		tp_current_limit.limit	   = -1;
 		tp_current_limit.is_valid  = false;
@@ -159,8 +135,6 @@ tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit)
 	 */
 	if (!path->indexorderbys || list_length(path->indexorderbys) != 1)
 	{
-		elog(DEBUG2,
-			 "Tapir: LIMIT pushdown unsafe - multiple ORDER BY clauses");
 		return false;
 	}
 
@@ -171,9 +145,6 @@ tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit)
 	 */
 	if (path->indexclauses && list_length(path->indexclauses) > 0)
 	{
-		elog(DEBUG2,
-			 "Tapir: LIMIT pushdown unsafe - additional WHERE clauses "
-			 "present");
 		return false;
 	}
 

@@ -105,11 +105,6 @@ _PG_init(void)
 	 */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access_hook;
-
-	elog(DEBUG1,
-		 "Tapir extension loaded with index_limit=%dMB (currently not "
-		 "enforced)",
-		 tp_index_memory_limit);
 }
 
 /*

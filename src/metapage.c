@@ -243,12 +243,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	MarkBufferDirty(docid_buf);
 	UnlockReleaseBuffer(docid_buf);
 	UnlockReleaseBuffer(metabuf);
-
-	elog(DEBUG2,
-		 "Added docid (%u,%u) to page, now has %d docids",
-		 ItemPointerGetBlockNumber(ctid),
-		 ItemPointerGetOffsetNumber(ctid),
-		 final_docid_count);
 }
 
 /*
@@ -266,10 +260,6 @@ tp_recover_from_docid_pages(Relation index)
 	BlockNumber		   current_page;
 	int				   total_recovered = 0;
 
-	elog(DEBUG1,
-		 "Tapir: Starting crash recovery from docid pages for index %s",
-		 RelationGetRelationName(index));
-
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
@@ -281,7 +271,6 @@ tp_recover_from_docid_pages(Relation index)
 
 	if (current_page == InvalidBlockNumber)
 	{
-		elog(DEBUG1, "Tapir: No docid pages found, nothing to recover");
 		return;
 	}
 
@@ -315,11 +304,6 @@ tp_recover_from_docid_pages(Relation index)
 			Buffer		  heap_buf;
 			bool		  valid;
 			TpIndexState *index_state;
-
-			elog(DEBUG2,
-				 "Tapir recovery: processing docid (%u,%u)",
-				 ItemPointerGetBlockNumber(ctid),
-				 ItemPointerGetOffsetNumber(ctid));
 
 			/* Get index state */
 			index_state = tp_get_index_state(
@@ -429,11 +413,6 @@ tp_recover_from_docid_pages(Relation index)
 			}
 			else
 			{
-				elog(DEBUG1,
-					 "Tapir recovery: could not fetch tuple for docid "
-					 "(%u,%u), possibly deleted",
-					 ItemPointerGetBlockNumber(ctid),
-					 ItemPointerGetOffsetNumber(ctid));
 			}
 
 			/* Close the heap relation */
@@ -444,8 +423,4 @@ tp_recover_from_docid_pages(Relation index)
 		current_page = docid_header->next_page;
 		UnlockReleaseBuffer(docid_buf);
 	}
-
-	elog(DEBUG1,
-		 "Tapir: Crash recovery completed, found %d documents to rebuild",
-		 total_recovered);
 }

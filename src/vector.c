@@ -451,9 +451,6 @@ tpvector_score(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		elog(DEBUG2,
-			 "Using existing average_idf: %.6f",
-			 index_state->stats.average_idf);
 	}
 
 	/* Count terms in document vector to estimate document length */
@@ -469,14 +466,6 @@ tpvector_score(PG_FUNCTION_ARGS)
 	/* Process query terms and calculate BM25 score */
 	query_count = query_vec->entry_count;
 	query_entry = get_tpvector_first_entry(query_vec);
-
-	elog(DEBUG1,
-		 "*** QUERY: Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, "
-		 "b=%f ***",
-		 total_docs,
-		 avg_doc_len,
-		 k1,
-		 b);
 
 	/* Synchronization handled by DSA-based per-index LWLocks */
 
@@ -535,11 +524,6 @@ tpvector_score(PG_FUNCTION_ARGS)
 
 		/* Get actual posting list for this term to get document frequency */
 		posting_list = tp_get_posting_list(index_state, query_lexeme);
-		elog(DEBUG2,
-			 "Processing term '%.*s', posting_list=%p",
-			 query_entry->lexeme_len,
-			 query_entry->lexeme,
-			 posting_list);
 		if (posting_list && posting_list->doc_count > 0)
 		{
 			/* Calculate IDF using centralized function with epsilon flooring
@@ -548,28 +532,11 @@ tpvector_score(PG_FUNCTION_ARGS)
 					posting_list->doc_count,
 					total_docs,
 					index_state->stats.average_idf);
-
-			elog(DEBUG1,
-				 "BM25 IDF for term '%.*s': doc_count=%d, total_docs=%d, "
-				 "idf=%f",
-				 query_entry->lexeme_len,
-				 query_entry->lexeme,
-				 posting_list->doc_count,
-				 total_docs,
-				 idf);
 		}
 		else
 		{
 			/* Term not found in index - use default IDF */
 			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
-
-			elog(DEBUG1,
-				 "BM25 default IDF for term '%.*s' (not in index): "
-				 "total_docs=%d, default_idf=%f",
-				 query_entry->lexeme_len,
-				 query_entry->lexeme,
-				 total_docs,
-				 idf);
 		}
 
 		/* Calculate BM25 term score */
@@ -624,26 +591,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 					 b);
 			}
 
-			elog(DEBUG1,
-				 "BM25 term '%.*s': tf=%f, idf=%f, query_freq=%d, doc_len=%f, "
-				 "avg_doc_len=%f, "
-				 "numerator=%f, denominator=%f, term_score=%f, "
-				 "running_score=%f",
-				 query_entry->lexeme_len,
-				 query_entry->lexeme,
-				 tf,
-				 idf,
-				 query_entry->frequency,
-				 doc_length,
-				 avg_doc_len,
-				 numerator_d,
-				 denominator_d,
-				 term_score,
-				 score);
-
 			score += term_score;
-
-			elog(DEBUG1, "BM25 after adding term: new_score=%f", score);
 		}
 
 		/* Free query_lexeme if we allocated it on heap */
@@ -891,12 +839,6 @@ create_tpvector_from_strings(
 			entry->lexeme_len = lexeme_len;
 			memcpy(entry->lexeme, pairs[i].lexeme, lexeme_len);
 			/* No null terminator needed - we store the length */
-
-			elog(DEBUG1,
-				 "Vector creation: stored lexeme '%.*s' (len=%d)",
-				 lexeme_len,
-				 entry->lexeme,
-				 lexeme_len);
 
 			/* Move to next entry position */
 			entry_ptr += MAXALIGN(sizeof(TpVectorEntry) + lexeme_len);

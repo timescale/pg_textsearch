@@ -148,10 +148,6 @@ tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets)
 	ht->entry_count = 0;
 	ht->max_entries = 0;
 
-	elog(DEBUG2,
-		 "Created dshash string table with handle %lu",
-		 (unsigned long)ht->handle);
-
 	return ht;
 }
 
@@ -185,10 +181,6 @@ tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
 	ht->entry_count = 0; /* We don't track this accurately */
 	ht->max_entries = 0;
 
-	elog(DEBUG2,
-		 "Attached to dshash string table with handle %lu",
-		 (unsigned long)handle);
-
 	return ht;
 }
 
@@ -203,8 +195,6 @@ tp_hash_table_detach_dsa(TpStringHashTable *ht)
 
 	dshash_detach(ht->dshash);
 	pfree(ht);
-
-	elog(DEBUG2, "Detached from dshash string table");
 }
 
 /*
@@ -218,8 +208,6 @@ tp_hash_table_destroy_dsa(TpStringHashTable *ht)
 
 	dshash_destroy(ht->dshash);
 	pfree(ht);
-
-	elog(DEBUG2, "Destroyed dshash string table");
 }
 
 /*
@@ -331,21 +319,9 @@ tp_hash_insert_dsa(
 		entry->hash_value		= hash_value;
 
 		ht->entry_count++;
-
-		elog(DEBUG3,
-			 "Inserted new string entry: '%.*s' (len=%zu, hash=%u)",
-			 (int)len,
-			 str,
-			 len,
-			 hash_value);
 	}
 	else
 	{
-		elog(DEBUG3,
-			 "Found existing string entry: '%.*s' (len=%zu)",
-			 (int)len,
-			 str,
-			 len);
 	}
 
 	/* Release the lock acquired by dshash_find_or_insert */
@@ -389,7 +365,6 @@ tp_hash_delete_dsa(
 				ht->dshash, entry); /* This releases the lock too */
 
 		ht->entry_count--;
-		elog(DEBUG3, "Deleted string entry: '%.*s'", (int)len, str);
 		return true;
 	}
 
@@ -424,6 +399,4 @@ tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
 	dshash_seq_term(&status);
 
 	ht->entry_count = 0;
-
-	elog(DEBUG2, "Cleared dshash string table");
 }
