@@ -5,6 +5,7 @@ DATA = sql/tapir--0.0.sql
 OBJS = \
 	src/mod.o \
 	src/memtable.o \
+	src/metapage.o \
 	src/posting.o \
 	src/index.o \
 	src/vector.o \
