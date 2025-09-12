@@ -17,16 +17,15 @@
 #include <nodes/pathnodes.h>
 #include <optimizer/pathnode.h>
 #include <utils/guc.h>
-#include <utils/hsearch.h>
 #include <utils/memutils.h>
 
 #include "limit.h"
 
 /*
- * Per-backend hash table for query limits - stores LIMIT values
+ * Per-backend structure for current query limit - stores LIMIT value
  * extracted during query planning for use during query execution
  */
-HTAB *tp_query_limits_hash = NULL;
+static TpCurrentLimit tp_current_limit = {InvalidOid, -1, false};
 
 /*
  * Default limit when no LIMIT clause is detected - prevents
@@ -44,38 +43,25 @@ int tp_default_limit = TP_DEFAULT_QUERY_LIMIT;
 void
 tp_store_query_limit(Oid index_oid, int limit)
 {
-	TpQueryLimitEntry *entry;
-	bool			   found;
-
-	/* Initialize per-backend hash table if needed */
-	if (!tp_query_limits_hash)
+	/* Safety check - warn if we're overwriting a different index's limit */
+	if (tp_current_limit.is_valid && tp_current_limit.index_oid != index_oid)
 	{
-		HASHCTL hash_ctl;
-
-		MemSet (&hash_ctl, 0, sizeof(hash_ctl))
-			;
-		hash_ctl.keysize	 = sizeof(Oid);
-		hash_ctl.entrysize	 = sizeof(TpQueryLimitEntry);
-		hash_ctl.hcxt		 = TopMemoryContext;
-		tp_query_limits_hash = hash_create(
-				"tp_query_limits",
-				TP_QUERY_LIMITS_HASH_SIZE,
-				&hash_ctl,
-				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		elog(DEBUG2,
+			 "Tapir: Overwriting limit for index %u (was %d) with limit for "
+			 "index %u (%d)",
+			 tp_current_limit.index_oid,
+			 tp_current_limit.limit,
+			 index_oid,
+			 limit);
 	}
 
-	/* Find or create entry */
-	entry = (TpQueryLimitEntry *)
-			hash_search(tp_query_limits_hash, &index_oid, HASH_ENTER, &found);
-
-	if (entry)
-	{
-		entry->index_oid = index_oid;
-		entry->limit	 = limit;
-	}
+	/* Store the limit in our simple structure */
+	tp_current_limit.index_oid = index_oid;
+	tp_current_limit.limit	   = limit;
+	tp_current_limit.is_valid  = true;
 
 	elog(DEBUG1,
-		 "Tapir: Stored query limit %d for index %u (per-backend)",
+		 "Tapir: Stored query limit %d for index %u",
 		 limit,
 		 index_oid);
 }
@@ -90,38 +76,43 @@ tp_store_query_limit(Oid index_oid, int limit)
 int
 tp_get_query_limit(Relation index_rel)
 {
-	TpQueryLimitEntry *entry;
-	bool			   found;
-	int				   result = -1;
-	Oid				   index_oid;
+	Oid index_oid;
+	int result = -1;
 
 	if (!RelationIsValid(index_rel))
 		return -1;
 
-	/* No hash table means no limits stored yet */
-	if (!tp_query_limits_hash)
+	/* Check if we have valid limit data */
+	if (!tp_current_limit.is_valid)
 		return -1;
 
 	index_oid = RelationGetRelid(index_rel);
 
-	/* Find entry */
-	entry = (TpQueryLimitEntry *)
-			hash_search(tp_query_limits_hash, &index_oid, HASH_FIND, &found);
-
-	if (found && entry)
+	/* Check if the stored limit applies to this index */
+	if (tp_current_limit.index_oid == index_oid)
 	{
-		result = entry->limit;
+		result = tp_current_limit.limit;
 		elog(DEBUG1,
-			 "Tapir: Retrieved query limit %d for index %u (per-backend)",
+			 "Tapir: Retrieved query limit %d for index %u",
 			 result,
 			 index_oid);
+
+		/* Clear the limit after retrieval to prevent stale data */
+		tp_current_limit.is_valid = false;
+	}
+	else
+	{
+		elog(DEBUG2,
+			 "Tapir: No matching limit for index %u (stored for index %u)",
+			 index_oid,
+			 tp_current_limit.index_oid);
 	}
 
 	return result;
 }
 
 /*
- * Clean up all query limit entries (called at transaction end)
+ * Clean up query limit data (called at transaction end)
  *
  * This prevents stale limit entries from affecting subsequent queries
  * in the same backend process.
@@ -129,29 +120,21 @@ tp_get_query_limit(Relation index_rel)
 void
 tp_cleanup_query_limits(void)
 {
-	HASH_SEQ_STATUS	   status;
-	TpQueryLimitEntry *entry;
-
-	/* Conservative check - only proceed if properly initialized */
-	if (!tp_query_limits_hash)
-		return;
-
 	/* Additional safety check - ensure we're in a valid transaction state */
 	if (!IsTransactionState())
 		return;
 
-	hash_seq_init(&status, tp_query_limits_hash);
-	while ((entry = (TpQueryLimitEntry *)hash_seq_search(&status)) != NULL)
+	/* Clear the current limit structure */
+	if (tp_current_limit.is_valid)
 	{
-		Oid index_oid = entry->index_oid;
-
-		hash_search(tp_query_limits_hash, &index_oid, HASH_REMOVE, NULL);
-
 		elog(DEBUG2,
-			 "Tapir: Cleaned up query limit entry for index %u (per-backend)",
-			 index_oid);
+			 "Tapir: Cleaned up query limit entry for index %u",
+			 tp_current_limit.index_oid);
+
+		tp_current_limit.index_oid = InvalidOid;
+		tp_current_limit.limit	   = -1;
+		tp_current_limit.is_valid  = false;
 	}
-	hash_seq_term(&status);
 }
 
 /*

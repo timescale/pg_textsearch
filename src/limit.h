@@ -3,7 +3,6 @@
 #include <postgres.h>
 
 #include <nodes/pathnodes.h>
-#include <utils/hsearch.h>
 #include <utils/rel.h>
 
 #include "constants.h"
@@ -17,20 +16,20 @@
  */
 
 /*
- * Query limit entry for the per-backend hash table
+ * Simple per-backend structure to track the current query's limit
+ * Replaces the hash table approach for better simplicity and performance
  */
-typedef struct TpQueryLimitEntry
+typedef struct TpCurrentLimit
 {
-	Oid index_oid; /* Hash key - index OID */
-	int limit;	   /* LIMIT value from query */
-} TpQueryLimitEntry;
+	Oid	 index_oid; /* Index OID for which this limit applies */
+	int	 limit;		/* LIMIT value from query */
+	bool is_valid;	/* Whether this data is current and valid */
+} TpCurrentLimit;
 
 /*
  * External variables
  */
-extern HTAB
-		  *tp_query_limits_hash; /* Per-backend hash table for query limits */
-extern int tp_default_limit;	 /* Default limit when none detected */
+extern int tp_default_limit; /* Default limit when none detected */
 
 /*
  * Query limit tracking functions
