@@ -74,13 +74,10 @@ lint: lint-format lint-whitespace lint-spell
 
 lint-format:
 	@echo "Checking C code formatting with clang-format..."
-	@if command -v clang-format-14 >/dev/null 2>&1; then \
-		find src/ -name "*.c" -o -name "*.h" | xargs clang-format-14 --dry-run --Werror; \
-	elif command -v clang-format >/dev/null 2>&1; then \
-		echo "Warning: Using clang-format instead of clang-format-14"; \
-		find src/ -name "*.c" -o -name "*.h" | xargs clang-format --dry-run --Werror; \
+	@if command -v clang-format >/dev/null 2>&1; then \
+		find src/ -name "*.c" -o -name "*.h" | xargs clang-format --dry-run --Werror --style=file; \
 	else \
-		echo "clang-format not found - install with: brew install clang-format (macOS) or apt install clang-format-14 (Linux)"; \
+		echo "clang-format not found - install with: brew install clang-format (macOS) or apt install clang-format (Linux)"; \
 		exit 1; \
 	fi
 	@echo "Code formatting check passed"
@@ -104,17 +101,35 @@ lint-spell:
 
 format:
 	@echo "Formatting C code with clang-format..."
-	@if command -v clang-format-14 >/dev/null 2>&1; then \
-		find src/ -name "*.c" -o -name "*.h" | xargs clang-format-14 -i; \
-	elif command -v clang-format >/dev/null 2>&1; then \
-		echo "Warning: Using clang-format instead of clang-format-14"; \
-		find src/ -name "*.c" -o -name "*.h" | xargs clang-format -i; \
+	@if command -v clang-format >/dev/null 2>&1; then \
+		find src/ -name "*.c" -o -name "*.h" | xargs clang-format -i --style=file; \
 	else \
-		echo "clang-format not found - install with: brew install clang-format (macOS) or apt install clang-format-14 (Linux)"; \
+		echo "clang-format not found - install with: brew install clang-format (macOS) or apt install clang-format (Linux)"; \
 		exit 1; \
 	fi
 	@echo "Code formatting completed"
 
+format-diff:
+	@echo "Showing formatting differences..."
+	@if command -v clang-format >/dev/null 2>&1; then \
+		for file in `find src/ -name "*.c" -o -name "*.h"`; do \
+			echo "=== $$file ==="; \
+			clang-format --style=file "$$file" | diff -u "$$file" - || true; \
+		done; \
+	else \
+		echo "clang-format not found"; \
+		exit 1; \
+	fi
+
+format-single:
+	@if [ -z "$(FILE)" ]; then \
+		echo "Usage: make format-single FILE=path/to/file.c"; \
+		exit 1; \
+	fi
+	@echo "Formatting $(FILE)..."
+	@clang-format -i --style=file $(FILE)
+	@echo "$(FILE) formatted"
+
 format-check: lint-format
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint lint-format lint-whitespace lint-spell format format-check
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint lint-format lint-whitespace lint-spell format format-check format-diff format-single

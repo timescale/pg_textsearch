@@ -1,31 +1,33 @@
 #include "vector.h"
-#include "access/genam.h"
-#include "access/htup_details.h"
-#include "catalog/index.h"
-#include "catalog/namespace.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
-#include "catalog/pg_type.h"
-#include "commands/vacuum.h"
+
+#include <access/genam.h>
+#include <access/htup_details.h>
+#include <catalog/index.h>
+#include <catalog/namespace.h>
+#include <catalog/pg_am.h>
+#include <catalog/pg_class.h>
+#include <catalog/pg_type.h>
+#include <commands/vacuum.h>
+#include <executor/spi.h>
+#include <lib/stringinfo.h>
+#include <math.h>
+#include <nodes/execnodes.h>
+#include <stdlib.h>
+#include <storage/block.h>
+#include <tsearch/ts_public.h>
+#include <tsearch/ts_type.h>
+#include <tsearch/ts_utils.h>
+#include <utils/builtins.h>
+#include <utils/lsyscache.h>
+#include <utils/rel.h>
+#include <utils/syscache.h>
+
 #include "constants.h"
-#include "executor/spi.h"
 #include "index.h"
-#include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
 #include "memtable.h"
 #include "metapage.h"
-#include "nodes/execnodes.h"
 #include "posting.h"
-#include "storage/block.h"
-#include "tsearch/ts_public.h"
-#include "tsearch/ts_type.h"
-#include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/rel.h"
-#include "utils/syscache.h"
-#include <math.h>
-#include <stdlib.h>
 
 /* Constants now defined in constants.h */
 
@@ -35,15 +37,15 @@
 typedef struct
 {
 	const char *lexeme;
-	int32 frequency;
+	int32		frequency;
 } LexemeFreqPair;
 
 /* Helper function for qsort comparison of lexemes */
 static int
 strcmp_wrapper(const void *a, const void *b)
 {
-	const LexemeFreqPair *pair_a = (const LexemeFreqPair *) a;
-	const LexemeFreqPair *pair_b = (const LexemeFreqPair *) b;
+	const LexemeFreqPair *pair_a = (const LexemeFreqPair *)a;
+	const LexemeFreqPair *pair_b = (const LexemeFreqPair *)b;
 
 	return strcmp(pair_a->lexeme, pair_b->lexeme);
 }
@@ -64,25 +66,25 @@ PG_FUNCTION_INFO_V1(to_tpvector);
 PG_FUNCTION_INFO_V1(tpvector_text_score);
 
 /*
- * bm25vector input function
+ * tpvector input function
  * Format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
  * Example: "my_index:{database:2,system:1,query:4}"
  */
 Datum
 tpvector_in(PG_FUNCTION_ARGS)
 {
-	char *str = PG_GETARG_CSTRING(0);
-	char *colon_pos;
-	char *index_name;
-	char *entries_str;
+	char	 *str = PG_GETARG_CSTRING(0);
+	char	 *colon_pos;
+	char	 *index_name;
+	char	 *entries_str;
 	TpVector *result;
-	int index_name_len;
-	int entry_count = 0;
-	char **lexemes = NULL;
-	int32 *frequencies = NULL;
-	char *ptr;
-	char *end_ptr;
-	int i = 0;
+	int		  index_name_len;
+	int		  entry_count = 0;
+	char	**lexemes	  = NULL;
+	int32	 *frequencies = NULL;
+	char	 *ptr;
+	char	 *end_ptr;
+	int		  i = 0;
 
 	/* Find the colon separator */
 	colon_pos = strchr(str, ':');
@@ -90,11 +92,12 @@ tpvector_in(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid input syntax for type tpvector: \"%s\"", str),
-				 errhint("Expected format: \"index_name:{lexeme:freq,...}\"")));
+				 errhint("Expected format: "
+						 "\"index_name:{lexeme:freq,...}\"")));
 
 	/* Extract index name */
 	index_name_len = colon_pos - str;
-	index_name = palloc(index_name_len + 1);
+	index_name	   = palloc(index_name_len + 1);
 	memcpy(index_name, str, index_name_len);
 	index_name[index_name_len] = '\0';
 
@@ -106,12 +109,13 @@ tpvector_in(PG_FUNCTION_ARGS)
 		entries_str[strlen(entries_str) - 1] != '}')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid bm25vector format: \"%s\"", str),
-				 errhint("Entries must be enclosed in braces: {lexeme:freq,...}")));
+				 errmsg("invalid tpvector format: \"%s\"", str),
+				 errhint("Entries must be enclosed in braces: "
+						 "{lexeme:freq,...}")));
 
 	/* Skip braces */
 	entries_str++;
-	end_ptr = entries_str + strlen(entries_str) - 1;
+	end_ptr	 = entries_str + strlen(entries_str) - 1;
 	*end_ptr = '\0';
 
 	/* Count entries first */
@@ -128,7 +132,7 @@ tpvector_in(PG_FUNCTION_ARGS)
 	/* Allocate arrays for lexemes and frequencies */
 	if (entry_count > 0)
 	{
-		lexemes = palloc(entry_count * sizeof(char *));
+		lexemes		= palloc(entry_count * sizeof(char *));
 		frequencies = palloc(entry_count * sizeof(int32));
 
 		/* Parse each entry */
@@ -138,20 +142,21 @@ tpvector_in(PG_FUNCTION_ARGS)
 			char *comma_pos = strchr(ptr, ',');
 			char *colon_pos = strchr(ptr, ':');
 			char *lexeme;
-			int lexeme_len;
+			int	  lexeme_len;
 			char *freq_str;
 
 			if (!colon_pos || (comma_pos && colon_pos > comma_pos))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-						 errmsg("invalid entry format in bm25vector: \"%s\"", ptr)));
+						 errmsg("invalid entry format in tpvector: \"%s\"",
+								ptr)));
 
 			/* Extract lexeme */
 			lexeme_len = colon_pos - ptr;
-			lexeme = palloc(lexeme_len + 1);
+			lexeme	   = palloc(lexeme_len + 1);
 			memcpy(lexeme, ptr, lexeme_len);
 			lexeme[lexeme_len] = '\0';
-			lexemes[i] = lexeme;
+			lexemes[i]		   = lexeme;
 
 			/* Extract frequency */
 			freq_str = colon_pos + 1;
@@ -159,10 +164,10 @@ tpvector_in(PG_FUNCTION_ARGS)
 			{
 				char saved = *comma_pos;
 
-				*comma_pos = '\0';
+				*comma_pos	   = '\0';
 				frequencies[i] = atoi(freq_str);
-				*comma_pos = saved;
-				ptr = comma_pos + 1;
+				*comma_pos	   = saved;
+				ptr			   = comma_pos + 1;
 			}
 			else
 			{
@@ -171,9 +176,9 @@ tpvector_in(PG_FUNCTION_ARGS)
 		}
 	}
 
-	/* Create bm25vector */
-	result =
-		create_tpvector_from_strings(index_name, entry_count, (const char **) lexemes, frequencies);
+	/* Create tpvector */
+	result = create_tpvector_from_strings(
+			index_name, entry_count, (const char **)lexemes, frequencies);
 
 	/* Cleanup */
 	pfree(index_name);
@@ -190,39 +195,41 @@ tpvector_in(PG_FUNCTION_ARGS)
 }
 
 /*
- * bm25vector output function
+ * tpvector output function
  * Outputs in format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
  */
 Datum
 tpvector_out(PG_FUNCTION_ARGS)
 {
-	TpVector *bm25vec;
-	char *index_name = NULL;
+	TpVector	  *bm25vec;
+	char		  *index_name = NULL;
 	StringInfoData result;
 	TpVectorEntry *entry;
-	int i;
+	int			   i;
 
-	bm25vec = (TpVector *) PG_GETARG_POINTER(0);
+	bm25vec = (TpVector *)PG_GETARG_POINTER(0);
 
 	/* Basic validation */
 	if (!bm25vec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-				 errmsg("null bm25vector passed to tpvector_out")));
+				 errmsg("null tpvector passed to tpvector_out")));
 
 	/* Detoast the input if necessary */
-	bm25vec = (TpVector *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	bm25vec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 
 	/* Additional validation after detoasting */
 	if (!bm25vec || VARSIZE(bm25vec) < sizeof(TpVector))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid bm25vector structure")));
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid tpvector structure")));
 
 	/* Get index name component */
 	index_name = get_tpvector_index_name(bm25vec);
 	if (!index_name)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("failed to extract index name from bm25vector")));
+				 errmsg("failed to extract index name from tpvector")));
 
 	/* Build output string */
 	initStringInfo(&result);
@@ -233,7 +240,7 @@ tpvector_out(PG_FUNCTION_ARGS)
 	for (i = 0; i < TPVECTOR_ENTRY_COUNT(bm25vec); i++)
 	{
 		char *lexeme;
-		bool use_heap = false;
+		bool  use_heap = false;
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
@@ -244,7 +251,7 @@ tpvector_out(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			lexeme = palloc(entry->lexeme_len + 1);
+			lexeme	 = palloc(entry->lexeme_len + 1);
 			use_heap = true;
 		}
 
@@ -269,37 +276,38 @@ tpvector_out(PG_FUNCTION_ARGS)
 }
 
 /*
- * bm25vector binary receive function
+ * tpvector binary receive function
  */
 Datum
 tpvector_recv(PG_FUNCTION_ARGS)
 {
-	StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
-	int total_size;
-	TpVector *result;
+	StringInfo buf = (StringInfo)PG_GETARG_POINTER(0);
+	int		   total_size;
+	TpVector  *result;
 
 	/* Read total size */
 	total_size = pq_getmsgint(buf, 4);
 
 	/* Allocate and read the entire structure */
-	result = (TpVector *) palloc(total_size);
+	result = (TpVector *)palloc(total_size);
 	SET_VARSIZE(result, total_size);
 
 	/* Read the rest of the structure after varlena header */
-	pq_copymsgbytes(buf, (char *) result + sizeof(int32), total_size - sizeof(int32));
+	pq_copymsgbytes(
+			buf, (char *)result + sizeof(int32), total_size - sizeof(int32));
 
 	PG_RETURN_POINTER(result);
 }
 
 /*
- * bm25vector binary send function
+ * tpvector binary send function
  */
 Datum
 tpvector_send(PG_FUNCTION_ARGS)
 {
-	TpVector *bm25vec = (TpVector *) PG_GETARG_POINTER(0);
+	TpVector	  *bm25vec = (TpVector *)PG_GETARG_POINTER(0);
 	StringInfoData buf;
-	int total_size;
+	int			   total_size;
 
 	pq_begintypsend(&buf);
 
@@ -308,7 +316,8 @@ tpvector_send(PG_FUNCTION_ARGS)
 	pq_sendint32(&buf, total_size);
 
 	/* Send the entire structure after varlena header */
-	pq_sendbytes(&buf, (char *) bm25vec + sizeof(int32), total_size - sizeof(int32));
+	pq_sendbytes(
+			&buf, (char *)bm25vec + sizeof(int32), total_size - sizeof(int32));
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
@@ -320,41 +329,43 @@ tpvector_send(PG_FUNCTION_ARGS)
 Datum
 tpvector_score(PG_FUNCTION_ARGS)
 {
-	TpVector *doc_vec;
-	TpVector *query_vec;
-	char *index_name = NULL;
-	Oid index_oid;
-	Relation index_rel;
+	TpVector	   *doc_vec;
+	TpVector	   *query_vec;
+	char		   *index_name = NULL;
+	Oid				index_oid;
+	Relation		index_rel;
 	TpIndexMetaPage metap;
-	TpIndexState *index_state;
-	float4 score = 0.0;
-	float4 k1, b;
-	float4 avg_doc_len;
-	int32 total_docs;
-	int query_count;
-	int doc_count;
-	TpVectorEntry *query_entry;
-	TpVectorEntry *doc_entry;
-	int query_idx = 0;
-	int doc_idx;
-	float4 doc_length = 0.0;
-	char *doc_index_name;
-	char *query_index_name;
+	TpIndexState   *index_state;
+	float4			score = 0.0;
+	float4			k1, b;
+	float4			avg_doc_len;
+	int32			total_docs;
+	int				query_count;
+	int				doc_count;
+	TpVectorEntry  *query_entry;
+	TpVectorEntry  *doc_entry;
+	int				query_idx = 0;
+	int				doc_idx;
+	float4			doc_length = 0.0;
+	char		   *doc_index_name;
+	char		   *query_index_name;
 
 	/* Get arguments */
-	doc_vec = (TpVector *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
-	query_vec = (TpVector *) PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
+	doc_vec	  = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	query_vec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
 
 	/* Validate inputs */
 	if (!doc_vec || !query_vec)
 		PG_RETURN_FLOAT8(0.0);
 
-	if (VARSIZE(doc_vec) < sizeof(TpVector) || VARSIZE(query_vec) < sizeof(TpVector))
+	if (VARSIZE(doc_vec) < sizeof(TpVector) ||
+		VARSIZE(query_vec) < sizeof(TpVector))
 		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid bm25vector structure size")));
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid tpvector structure size")));
 
 	/* Both vectors should use the same index */
-	doc_index_name = get_tpvector_index_name(doc_vec);
+	doc_index_name	 = get_tpvector_index_name(doc_vec);
 	query_index_name = get_tpvector_index_name(query_vec);
 
 	if (strcmp(doc_index_name, query_index_name) != 0)
@@ -362,7 +373,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("tpvector operands must use the same index"),
-				 errhint("Document vector uses index \"%s\", query vector uses "
+				 errhint("Document vector uses index \"%s\", query vector "
+						 "uses "
 						 "index \"%s\"",
 						 doc_index_name,
 						 query_index_name)));
@@ -392,16 +404,18 @@ tpvector_score(PG_FUNCTION_ARGS)
 		pfree(doc_index_name);
 		pfree(query_index_name);
 		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED), errmsg("could not read BM25 index metadata")));
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not read BM25 index metadata")));
 	}
 
 	/* Extract BM25 parameters from metapage */
 	k1 = metap->k1;
-	b = metap->b;
+	b  = metap->b;
 
-	/* CRITICAL FIX: Do NOT use corpus statistics from metapage!
-	 * The metapage values are stale and cause data consistency issues.
-	 * We'll get the live corpus statistics from DSA after getting index_state.
+	/*
+	 * CRITICAL FIX: Do NOT use corpus statistics from metapage! The metapage
+	 * values are stale and cause data consistency issues. We'll get the live
+	 * corpus statistics from DSA after getting index_state.
 	 */
 
 	/* Get the index state from shared memory */
@@ -413,13 +427,15 @@ tpvector_score(PG_FUNCTION_ARGS)
 		pfree(doc_index_name);
 		pfree(query_index_name);
 		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED), errmsg("could not access BM25 index state")));
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not access BM25 index state")));
 	}
 
 	/* Get live corpus statistics from DSA (not stale metapage values) */
-	total_docs = index_state->stats.total_docs;
-	avg_doc_len =
-		total_docs > 0 ? (float4) (index_state->stats.total_len / (double) total_docs) : 0.0f;
+	total_docs	= index_state->stats.total_docs;
+	avg_doc_len = total_docs > 0 ? (float4)(index_state->stats.total_len /
+											(double)total_docs)
+								 : 0.0f;
 
 	/* Calculate average IDF if not already done (lazy calculation) */
 	if (index_state->stats.average_idf <= 0.0001f && total_docs > 0)
@@ -428,11 +444,15 @@ tpvector_score(PG_FUNCTION_ARGS)
 			 "Triggering lazy average IDF calculation (current: %.6f)",
 			 index_state->stats.average_idf);
 		tp_calculate_average_idf(index_state);
-		elog(NOTICE, "Lazy calculated average IDF: %.6f", index_state->stats.average_idf);
+		elog(NOTICE,
+			 "Lazy calculated average IDF: %.6f",
+			 index_state->stats.average_idf);
 	}
 	else
 	{
-		elog(DEBUG2, "Using existing average_idf: %.6f", index_state->stats.average_idf);
+		elog(DEBUG2,
+			 "Using existing average_idf: %.6f",
+			 index_state->stats.average_idf);
 	}
 
 	/* Count terms in document vector to estimate document length */
@@ -450,7 +470,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 	query_entry = get_tpvector_first_entry(query_vec);
 
 	elog(DEBUG1,
-		 "*** QUERY: Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, b=%f ***",
+		 "*** QUERY: Tapir scoring: total_docs=%d, avg_doc_len=%f, k1=%f, "
+		 "b=%f ***",
 		 total_docs,
 		 avg_doc_len,
 		 k1,
@@ -460,13 +481,14 @@ tpvector_score(PG_FUNCTION_ARGS)
 
 	for (query_idx = 0; query_idx < query_count && query_entry; query_idx++)
 	{
-		float4 tf = 0.0;
-		float4 idf;
+		float4		   tf = 0.0;
+		float4		   idf;
 		TpPostingList *posting_list;
-		char *query_lexeme;
+		char		  *query_lexeme;
 
 		/* Use stack for reasonable lengths, heap for very long terms */
 		bool use_heap = false;
+
 		if (query_entry->lexeme_len < 1024)
 		{
 			query_lexeme = alloca(query_entry->lexeme_len + 1);
@@ -474,7 +496,7 @@ tpvector_score(PG_FUNCTION_ARGS)
 		else
 		{
 			query_lexeme = palloc(query_entry->lexeme_len + 1);
-			use_heap = true;
+			use_heap	 = true;
 		}
 
 		memcpy(query_lexeme, query_entry->lexeme, query_entry->lexeme_len);
@@ -487,7 +509,9 @@ tpvector_score(PG_FUNCTION_ARGS)
 		for (doc_idx = 0; doc_idx < doc_count && doc_entry; doc_idx++)
 		{
 			if (query_entry->lexeme_len == doc_entry->lexeme_len &&
-				memcmp(query_entry->lexeme, doc_entry->lexeme, query_entry->lexeme_len) == 0)
+				memcmp(query_entry->lexeme,
+					   doc_entry->lexeme,
+					   query_entry->lexeme_len) == 0)
 			{
 				tf = doc_entry->frequency;
 				break;
@@ -517,13 +541,16 @@ tpvector_score(PG_FUNCTION_ARGS)
 			 posting_list);
 		if (posting_list && posting_list->doc_count > 0)
 		{
-			/* Calculate IDF using centralized function with epsilon flooring */
-			idf = tp_calculate_idf(posting_list->doc_count,
-								   total_docs,
-								   index_state->stats.average_idf);
+			/* Calculate IDF using centralized function with epsilon flooring
+			 */
+			idf = tp_calculate_idf(
+					posting_list->doc_count,
+					total_docs,
+					index_state->stats.average_idf);
 
 			elog(DEBUG1,
-				 "BM25 IDF for term '%.*s': doc_count=%d, total_docs=%d, idf=%f",
+				 "BM25 IDF for term '%.*s': doc_count=%d, total_docs=%d, "
+				 "idf=%f",
 				 query_entry->lexeme_len,
 				 query_entry->lexeme,
 				 posting_list->doc_count,
@@ -533,10 +560,11 @@ tpvector_score(PG_FUNCTION_ARGS)
 		else
 		{
 			/* Term not found in index - use default IDF */
-			idf = (float4) log((double) (total_docs + 0.5) / 0.5);
+			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
 
 			elog(DEBUG1,
-				 "BM25 default IDF for term '%.*s' (not in index): total_docs=%d, default_idf=%f",
+				 "BM25 default IDF for term '%.*s' (not in index): "
+				 "total_docs=%d, default_idf=%f",
 				 query_entry->lexeme_len,
 				 query_entry->lexeme,
 				 total_docs,
@@ -546,32 +574,41 @@ tpvector_score(PG_FUNCTION_ARGS)
 		/* Calculate BM25 term score */
 		{
 			float4 term_score;
-			double numerator_d = (double) tf * ((double) k1 + 1.0);
+			double numerator_d = (double)tf * ((double)k1 + 1.0);
 			double denominator_d;
 
-			/* Avoid division by zero - if avg_doc_len is 0, use doc_length directly */
+			/*
+			 * Avoid division by zero - if avg_doc_len is 0, use doc_length
+			 * directly
+			 */
 			if (avg_doc_len > 0.0f)
 			{
-				denominator_d =
-					(double) tf +
-					(double) k1 * (1.0 - (double) b +
-								   (double) b * ((double) doc_length / (double) avg_doc_len));
+				denominator_d = (double)tf +
+								(double)k1 *
+										(1.0 - (double)b +
+										 (double)b * ((double)doc_length /
+													  (double)avg_doc_len));
 			}
 			else
 			{
-				/* When avg_doc_len is 0 (no corpus stats), fall back to standard TF formula */
-				denominator_d = (double) tf + (double) k1;
+				/*
+				 * When avg_doc_len is 0 (no corpus stats), fall back to
+				 * standard TF formula
+				 */
+				denominator_d = (double)tf + (double)k1;
 			}
 
-			term_score = (float4) ((double) idf * (numerator_d / denominator_d) *
-								   (double) query_entry->frequency);
+			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
+								  (double)query_entry->frequency);
 
 			/* Debug NaN detection */
 			if (isnan(term_score))
 			{
 				elog(LOG,
-					 "NaN detected in vector.c term_score calculation: term='%.*s', idf=%f, "
-					 "numerator_d=%f, denominator_d=%f, query_freq=%d, tf=%f, doc_len=%f, "
+					 "NaN detected in vector.c term_score calculation: "
+					 "term='%.*s', idf=%f, "
+					 "numerator_d=%f, denominator_d=%f, query_freq=%d, tf=%f, "
+					 "doc_len=%f, "
 					 "avg_doc_len=%f, k1=%f, b=%f",
 					 query_entry->lexeme_len,
 					 query_entry->lexeme,
@@ -587,8 +624,10 @@ tpvector_score(PG_FUNCTION_ARGS)
 			}
 
 			elog(DEBUG1,
-				 "BM25 term '%.*s': tf=%f, idf=%f, query_freq=%d, doc_len=%f, avg_doc_len=%f, "
-				 "numerator=%f, denominator=%f, term_score=%f, running_score=%f",
+				 "BM25 term '%.*s': tf=%f, idf=%f, query_freq=%d, doc_len=%f, "
+				 "avg_doc_len=%f, "
+				 "numerator=%f, denominator=%f, term_score=%f, "
+				 "running_score=%f",
 				 query_entry->lexeme_len,
 				 query_entry->lexeme,
 				 tf,
@@ -614,7 +653,10 @@ tpvector_score(PG_FUNCTION_ARGS)
 			query_entry = get_tpvector_next_entry(query_entry);
 	}
 
-	/* Transaction-level locking removed - individual operations manage their own locks */
+	/*
+	 * Transaction-level locking removed - individual operations manage their
+	 * own locks
+	 */
 
 	/* Clean up */
 	pfree(metap);
@@ -626,7 +668,8 @@ tpvector_score(PG_FUNCTION_ARGS)
 	if (isnan(score))
 	{
 		elog(LOG,
-			 "NaN detected in final BM25 score! score=%f, total_docs=%d, total_len=%ld, "
+			 "NaN detected in final BM25 score! score=%f, total_docs=%d, "
+			 "total_len=%ld, "
 			 "avg_doc_len=%f, k1=%f, b=%f",
 			 score,
 			 total_docs,
@@ -636,22 +679,25 @@ tpvector_score(PG_FUNCTION_ARGS)
 			 b);
 	}
 
-	/* Return negative score for PostgreSQL ASC ordering (better matches = more negative) */
+	/*
+	 * Return negative score for PostgreSQL ASC ordering (better matches =
+	 * more negative)
+	 */
 	PG_RETURN_FLOAT8(-score);
 }
 
 /*
- * Equality function: bm25vector = bm25vector → boolean
+ * Equality function: tpvector = tpvector → boolean
  */
 Datum
 tpvector_eq(PG_FUNCTION_ARGS)
 {
-	TpVector *vec1 = (TpVector *) PG_GETARG_POINTER(0);
-	TpVector *vec2 = (TpVector *) PG_GETARG_POINTER(1);
-	char *index_name1;
-	char *index_name2;
-	bool result = true;
-	int i;
+	TpVector *vec1 = (TpVector *)PG_GETARG_POINTER(0);
+	TpVector *vec2 = (TpVector *)PG_GETARG_POINTER(1);
+	char	 *index_name1;
+	char	 *index_name2;
+	bool	  result = true;
+	int		  i;
 
 	/* Compare index names first */
 	index_name1 = get_tpvector_index_name(vec1);
@@ -684,16 +730,18 @@ tpvector_eq(PG_FUNCTION_ARGS)
 
 		for (i = 0; i < TPVECTOR_ENTRY_COUNT(vec1) && result && entry1; i++)
 		{
-			bool found_match = false;
-			TpVectorEntry *entry2 = get_tpvector_first_entry(vec2);
-			int j;
+			bool		   found_match = false;
+			TpVectorEntry *entry2	   = get_tpvector_first_entry(vec2);
+			int			   j;
 
 			/* Look for this term in vec2 */
 			for (j = 0; j < TPVECTOR_ENTRY_COUNT(vec2) && entry2; j++)
 			{
 				if (entry1->lexeme_len == entry2->lexeme_len &&
 					entry1->frequency == entry2->frequency &&
-					memcmp(entry1->lexeme, entry2->lexeme, entry1->lexeme_len) == 0)
+					memcmp(entry1->lexeme,
+						   entry2->lexeme,
+						   entry1->lexeme_len) == 0)
 				{
 					found_match = true;
 					break;
@@ -714,28 +762,28 @@ tpvector_eq(PG_FUNCTION_ARGS)
 }
 
 /*
- * Utility function to extract index name from bm25vector
+ * Utility function to extract index name from tpvector
  */
 char *
 get_tpvector_index_name(TpVector *bm25vec)
 {
-	int name_len;
+	int	  name_len;
 	char *index_name;
 	char *name_ptr;
-	int vector_total_size;
+	int	  vector_total_size;
 
 	/* Validate input */
 	if (!bm25vec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-				 errmsg("null bm25vector passed to get_tpvector_index_name")));
+				 errmsg("null tpvector passed to get_tpvector_index_name")));
 
 	/* Validate vector structure size */
 	vector_total_size = VARSIZE(bm25vec);
 	if (vector_total_size < sizeof(TpVector))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid bm25vector size: %d", vector_total_size)));
+				 errmsg("invalid tpvector size: %d", vector_total_size)));
 
 	name_len = TPVECTOR_INDEX_NAME_LEN(bm25vec);
 
@@ -747,7 +795,8 @@ get_tpvector_index_name(TpVector *bm25vec)
 
 	/* Validate that name pointer is within vector bounds */
 	name_ptr = TPVECTOR_INDEX_NAME_PTR(bm25vec);
-	if (name_ptr < (char *) bm25vec || name_ptr + name_len > (char *) bm25vec + vector_total_size)
+	if (name_ptr < (char *)bm25vec ||
+		name_ptr + name_len > (char *)bm25vec + vector_total_size)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("index name data extends beyond vector bounds")));
@@ -760,15 +809,18 @@ get_tpvector_index_name(TpVector *bm25vec)
 }
 
 /*
- * Utility function to create a bm25vector from string lexemes
+ * Utility function to create a tpvector from string lexemes
  */
 TpVector *
-create_tpvector_from_strings(const char *index_name, int entry_count, const char **lexemes,
-							 const int32 *frequencies)
+create_tpvector_from_strings(
+		const char	*index_name,
+		int			 entry_count,
+		const char **lexemes,
+		const int32 *frequencies)
 {
-	int index_name_len;
-	int total_size;
-	int i;
+	int		  index_name_len;
+	int		  total_size;
+	int		  i;
 	TpVector *result;
 
 	/* Validate inputs */
@@ -798,26 +850,26 @@ create_tpvector_from_strings(const char *index_name, int entry_count, const char
 	}
 
 	/* Allocate and initialize */
-	result = (TpVector *) palloc0(total_size);
+	result = (TpVector *)palloc0(total_size);
 	SET_VARSIZE(result, total_size);
 	result->index_name_len = index_name_len;
-	result->entry_count = entry_count;
+	result->entry_count	   = entry_count;
 
 	/* Copy index name */
 	memcpy(TPVECTOR_INDEX_NAME_PTR(result), index_name, index_name_len);
-	*((char *) TPVECTOR_INDEX_NAME_PTR(result) + index_name_len) = '\0';
+	*((char *)TPVECTOR_INDEX_NAME_PTR(result) + index_name_len) = '\0';
 
 	/* Sort entries by lexeme for consistent ordering */
 	if (lexemes && frequencies && entry_count > 0)
 	{
 		/* Create temporary array for sorting */
 		LexemeFreqPair *pairs = palloc(entry_count * sizeof(LexemeFreqPair));
-		char *entry_ptr;
+		char		   *entry_ptr;
 
 		/* Copy to temporary array */
 		for (i = 0; i < entry_count; i++)
 		{
-			pairs[i].lexeme = lexemes[i];
+			pairs[i].lexeme	   = lexemes[i];
 			pairs[i].frequency = frequencies[i];
 		}
 
@@ -828,13 +880,13 @@ create_tpvector_from_strings(const char *index_name, int entry_count, const char
 		}
 
 		/* Store sorted entries */
-		entry_ptr = (char *) TPVECTOR_ENTRIES_PTR(result);
+		entry_ptr = (char *)TPVECTOR_ENTRIES_PTR(result);
 		for (i = 0; i < entry_count; i++)
 		{
-			TpVectorEntry *entry = (TpVectorEntry *) entry_ptr;
-			int lexeme_len = strlen(pairs[i].lexeme);
+			TpVectorEntry *entry	  = (TpVectorEntry *)entry_ptr;
+			int			   lexeme_len = strlen(pairs[i].lexeme);
 
-			entry->frequency = pairs[i].frequency;
+			entry->frequency  = pairs[i].frequency;
 			entry->lexeme_len = lexeme_len;
 			memcpy(entry->lexeme, pairs[i].lexeme, lexeme_len);
 			/* No null terminator needed - we store the length */
@@ -867,7 +919,7 @@ get_tpvector_first_entry(TpVector *vec)
 }
 
 /*
- * Helper function to iterate through bm25vector entries (variable length)
+ * Helper function to iterate through tpvector entries (variable length)
  */
 TpVectorEntry *
 get_tpvector_next_entry(TpVectorEntry *current)
@@ -876,12 +928,13 @@ get_tpvector_next_entry(TpVectorEntry *current)
 		return NULL;
 
 	/* Move to next entry - entries are variable length */
-	return (TpVectorEntry *) ((char *) current +
-							  MAXALIGN(sizeof(TpVectorEntry) + current->lexeme_len));
+	return (TpVectorEntry *)((char *)current + MAXALIGN(
+													   sizeof(TpVectorEntry) +
+													   current->lexeme_len));
 }
 
 /*
- * to_tpvector(text, index_name) - Create a bm25vector from text using index's
+ * to_tpvector(text, index_name) - Create a tpvector from text using index's
  * config
  *
  * This replaces both bm25_read_vectorize and bm25_write_vectorize
@@ -889,24 +942,24 @@ get_tpvector_next_entry(TpVectorEntry *current)
 Datum
 to_tpvector(PG_FUNCTION_ARGS)
 {
-	text *input_text = PG_GETARG_TEXT_PP(0);
-	text *index_name_text = PG_GETARG_TEXT_PP(1);
-	char *index_name;
-	Oid index_oid;
-	Oid text_config_oid;
-	Relation index_rel = NULL;
-	TpIndexMetaPage metap = NULL;
-	text *config_text;
-	Datum tsvector_datum;
-	TSVector tsvector;
-	WordEntry *we;
-	int i;
-	char **lexemes;
-	int32 *frequencies;
-	int entry_count;
-	TpVector *result;
-	List *search_path;
-	ListCell *lc;
+	text		   *input_text		= PG_GETARG_TEXT_PP(0);
+	text		   *index_name_text = PG_GETARG_TEXT_PP(1);
+	char		   *index_name;
+	Oid				index_oid;
+	Oid				text_config_oid;
+	Relation		index_rel = NULL;
+	TpIndexMetaPage metap	  = NULL;
+	text		   *config_text;
+	Datum			tsvector_datum;
+	TSVector		tsvector;
+	WordEntry	   *we;
+	int				i;
+	char		  **lexemes;
+	int32		   *frequencies;
+	int				entry_count;
+	TpVector	   *result;
+	List		   *search_path;
+	ListCell	   *lc;
 
 	/* Extract index name */
 	index_name = text_to_cstring(index_name_text);
@@ -919,10 +972,11 @@ to_tpvector(PG_FUNCTION_ARGS)
 	{
 		Oid namespace_oid = lfirst_oid(lc);
 
-		index_oid = GetSysCacheOid2(RELNAMENSP,
-									Anum_pg_class_oid,
-									PointerGetDatum(index_name),
-									ObjectIdGetDatum(namespace_oid));
+		index_oid = GetSysCacheOid2(
+				RELNAMENSP,
+				Anum_pg_class_oid,
+				PointerGetDatum(index_name),
+				ObjectIdGetDatum(namespace_oid));
 		if (OidIsValid(index_oid))
 			break;
 	}
@@ -954,8 +1008,8 @@ to_tpvector(PG_FUNCTION_ARGS)
 	if (OidIsValid(text_config_oid))
 	{
 		/* Use the stored text config OID - convert to regconfig text */
-		char *config_cstr =
-			DatumGetCString(DirectFunctionCall1(regconfigout, ObjectIdGetDatum(text_config_oid)));
+		char *config_cstr = DatumGetCString(DirectFunctionCall1(
+				regconfigout, ObjectIdGetDatum(text_config_oid)));
 
 		config_text = cstring_to_text(config_cstr);
 		pfree(config_cstr);
@@ -963,7 +1017,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 	else
 	{
 		/* No configuration found, use default */
-		config_text = cstring_to_text("english");
+		config_text		= cstring_to_text("english");
 		text_config_oid = InvalidOid;
 	}
 
@@ -980,16 +1034,18 @@ to_tpvector(PG_FUNCTION_ARGS)
 	if (OidIsValid(text_config_oid))
 	{
 		/* Use the OID directly */
-		tsvector_datum = DirectFunctionCall2(to_tsvector_byid,
-											 ObjectIdGetDatum(text_config_oid),
-											 PointerGetDatum(input_text));
+		tsvector_datum = DirectFunctionCall2(
+				to_tsvector_byid,
+				ObjectIdGetDatum(text_config_oid),
+				PointerGetDatum(input_text));
 	}
 	else
 	{
 		/* Fallback to using text config name */
-		tsvector_datum = DirectFunctionCall2(to_tsvector,
-											 PointerGetDatum(config_text),
-											 PointerGetDatum(input_text));
+		tsvector_datum = DirectFunctionCall2(
+				to_tsvector,
+				PointerGetDatum(config_text),
+				PointerGetDatum(input_text));
 	}
 	tsvector = DatumGetTSVector(tsvector_datum);
 
@@ -997,7 +1053,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 	entry_count = tsvector->size;
 	if (entry_count > 0)
 	{
-		lexemes = palloc(entry_count * sizeof(char *));
+		lexemes		= palloc(entry_count * sizeof(char *));
 		frequencies = palloc(entry_count * sizeof(int32));
 
 		/* Extract lexemes and frequencies from tsvector */
@@ -1005,7 +1061,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 		for (i = 0; i < entry_count; i++)
 		{
 			char *lexeme_start = STRPTR(tsvector) + we[i].pos;
-			int lexeme_len = we[i].len;
+			int	  lexeme_len   = we[i].len;
 
 			lexemes[i] = palloc(lexeme_len + 1);
 			memcpy(lexemes[i], lexeme_start, lexeme_len);
@@ -1024,13 +1080,13 @@ to_tpvector(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		lexemes = NULL;
+		lexemes		= NULL;
 		frequencies = NULL;
 	}
 
-	/* Create the bm25vector */
-	result =
-		create_tpvector_from_strings(index_name, entry_count, (const char **) lexemes, frequencies);
+	/* Create the tpvector */
+	result = create_tpvector_from_strings(
+			index_name, entry_count, (const char **)lexemes, frequencies);
 
 	/* Cleanup */
 	if (lexemes)
@@ -1048,31 +1104,33 @@ to_tpvector(PG_FUNCTION_ARGS)
 }
 
 /*
- * Score text against a bm25vector query
+ * Score text against a tpvector query
  */
 Datum
 tpvector_text_score(PG_FUNCTION_ARGS)
 {
-	text *document_text = PG_GETARG_TEXT_PP(0);
-	TpVector *query_vec = (TpVector *) PG_GETARG_POINTER(1);
+	text	 *document_text = PG_GETARG_TEXT_PP(0);
+	TpVector *query_vec		= (TpVector *)PG_GETARG_POINTER(1);
 
-	char *index_name;
-	text *index_name_text;
-	Datum doc_vec_datum;
-	Datum score_datum;
+	char  *index_name;
+	text  *index_name_text;
+	Datum  doc_vec_datum;
+	Datum  score_datum;
 	float8 score_result;
 
-	/* Extract index name from bm25vector */
-	index_name = get_tpvector_index_name(query_vec);
+	/* Extract index name from tpvector */
+	index_name		= get_tpvector_index_name(query_vec);
 	index_name_text = cstring_to_text(index_name);
 
 	/* Create document vector using to_tpvector */
-	doc_vec_datum = DirectFunctionCall2(to_tpvector,
-										PointerGetDatum(document_text),
-										PointerGetDatum(index_name_text));
+	doc_vec_datum = DirectFunctionCall2(
+			to_tpvector,
+			PointerGetDatum(document_text),
+			PointerGetDatum(index_name_text));
 
 	/* Calculate score using tpvector_score */
-	score_datum = DirectFunctionCall2(tpvector_score, doc_vec_datum, PointerGetDatum(query_vec));
+	score_datum = DirectFunctionCall2(
+			tpvector_score, doc_vec_datum, PointerGetDatum(query_vec));
 
 	score_result = DatumGetFloat8(score_datum);
 

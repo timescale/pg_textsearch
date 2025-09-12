@@ -1,11 +1,13 @@
 #pragma once
 
-#include "access/amapi.h"
+#include <postgres.h>
+
+#include <access/amapi.h>
+#include <storage/block.h>
+#include <storage/bufpage.h>
+
 #include "constants.h"
 #include "metapage.h"
-#include "postgres.h"
-#include "storage/block.h"
-#include "storage/bufpage.h"
 #include "vector.h"
 
 /*
@@ -22,15 +24,15 @@ typedef struct TpScanOpaqueData
 	MemoryContext scan_context; /* Memory context for scan */
 
 	/* Query processing state */
-	char *query_text;		/* Search query text */
+	char	 *query_text;	/* Search query text */
 	TpVector *query_vector; /* Original query vector from ORDER BY */
 
 	/* Scan results state */
-	ItemPointer result_ctids; /* Array of matching CTIDs */
-	float4 *result_scores;	  /* Array of BM25 scores */
-	int result_count;		  /* Number of results */
-	int current_pos;		  /* Current position in results */
-	bool eof_reached;		  /* End of scan flag */
+	ItemPointer result_ctids;  /* Array of matching CTIDs */
+	float4	   *result_scores; /* Array of BM25 scores */
+	int			result_count;  /* Number of results */
+	int			current_pos;   /* Current position in results */
+	bool		eof_reached;   /* End of scan flag */
 
 	/* LIMIT optimization */
 	int limit; /* Query LIMIT value, -1 if none */
@@ -49,31 +51,52 @@ struct IndexBuildResult;
 /* Access method handler */
 Datum tp_handler(PG_FUNCTION_ARGS);
 
-struct IndexBulkDeleteResult *tp_bulkdelete(struct IndexVacuumInfo *info,
-											struct IndexBulkDeleteResult *stats,
-											IndexBulkDeleteCallback callback, void *callback_state);
+struct IndexBulkDeleteResult *tp_bulkdelete(
+		struct IndexVacuumInfo		 *info,
+		struct IndexBulkDeleteResult *stats,
+		IndexBulkDeleteCallback		  callback,
+		void						 *callback_state);
 char *tp_buildphasename(int64 phase);
 
 /* Helper functions */
 
 /* Internal access method functions */
-struct IndexBuildResult *tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
+struct IndexBuildResult		 *
+tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
 void tp_buildempty(Relation index);
-bool tp_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid, Relation heapRel,
-			   IndexUniqueCheck checkUnique, bool indexUnchanged, struct IndexInfo *indexInfo);
+bool tp_insert(
+		Relation		  index,
+		Datum			 *values,
+		bool			 *isnull,
+		ItemPointer		  ht_ctid,
+		Relation		  heapRel,
+		IndexUniqueCheck  checkUnique,
+		bool			  indexUnchanged,
+		struct IndexInfo *indexInfo);
 IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
-void tp_rescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
+void		  tp_rescan(
+				 IndexScanDesc scan,
+				 ScanKey	   keys,
+				 int		   nkeys,
+				 ScanKey	   orderbys,
+				 int		   norderbys);
 void tp_endscan(IndexScanDesc scan);
 bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
-void tp_costestimate(struct PlannerInfo *root, struct IndexPath *path, double loop_count,
-					 Cost *indexStartupCost, Cost *indexTotalCost, Selectivity *indexSelectivity,
-					 double *indexCorrelation, double *indexPages);
-bytea *tp_options(Datum reloptions, bool validate);
-bool tp_validate(Oid opclassoid);
-struct IndexBulkDeleteResult *tp_vacuumcleanup(struct IndexVacuumInfo *info,
-											   struct IndexBulkDeleteResult *stats);
+void tp_costestimate(
+		struct PlannerInfo *root,
+		struct IndexPath   *path,
+		double				loop_count,
+		Cost			   *indexStartupCost,
+		Cost			   *indexTotalCost,
+		Selectivity		   *indexSelectivity,
+		double			   *indexCorrelation,
+		double			   *indexPages);
+bytea						 *tp_options(Datum reloptions, bool validate);
+bool						  tp_validate(Oid opclassoid);
+struct IndexBulkDeleteResult *tp_vacuumcleanup(
+		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
 
 /* Query limit tracking functions */
 void tp_store_query_limit(Oid index_oid, int limit);
-int tp_get_query_limit(Relation index_rel);
+int	 tp_get_query_limit(Relation index_rel);
 void tp_cleanup_query_limits(void);

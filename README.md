@@ -326,6 +326,16 @@ The project includes comprehensive CI/CD:
 
 Use `TEST_SIZE_MULTIPLIER=X.X` to scale concurrency test size (e.g., `TEST_SIZE_MULTIPLIER=5.0` for intensive testing).
 
+### Code Style
+
+- 79-character line limit, tab indentation
+- Opening braces on new lines (Allman style)
+- Consecutive alignment for variables and macros
+- 2 spaces before trailing comments
+- Multiline function prototypes followed by blank line
+- PostgreSQL naming conventions (snake_case)
+- Format with: `make format`
+
 ## Contributing
 
 1. Fork the repository

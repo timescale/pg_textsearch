@@ -1,0 +1,46 @@
+name: Code Formatting Check
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  format-check:
+    name: Check C Code Formatting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+        
+    - name: Check formatting
+      run: |
+        # Find all C source and header files
+        find src -name "*.c" -o -name "*.h" | while read file; do
+          echo "Checking $file"
+          if ! clang-format --dry-run --Werror "$file" > /dev/null 2>&1; then
+            echo "❌ $file is not properly formatted"
+            echo "Expected format:"
+            clang-format "$file"
+            exit 1
+          else
+            echo "✅ $file is properly formatted"
+          fi
+        done
+        
+    - name: Suggest formatting command
+      if: failure()
+      run: |
+        echo ""
+        echo "To fix formatting issues, run:"
+        echo "  make format"
+        echo ""
+        echo "Or format individual files:"
+        echo "  clang-format -i src/filename.c"
