@@ -963,14 +963,10 @@ tp_rescan(
 
 	elog(DEBUG1, "tp_rescan: nkeys=%d, norderbys=%d", nkeys, norderbys);
 
-	if (!scan || !scan->opaque)
-	{
-		elog(ERROR, "tp_rescan called with NULL scan or opaque data");
-		return;
-	}
+	Assert(scan != NULL);
+	Assert(scan->opaque != NULL);
 
 	/* Retrieve query limit for optimization */
-	if (so)
 	{
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
@@ -1256,11 +1252,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	if (!so || !so->query_text)
 		return false;
 
-	if (!so->scan_context)
-	{
-		elog(ERROR, "Tapir scan context is NULL");
-		return false;
-	}
+	Assert(so->scan_context != NULL);
 
 	/* Clean up any previous results */
 	elog(DEBUG1,
@@ -1469,33 +1461,10 @@ tp_search_posting_lists(
 
 	elog(DEBUG3, "BM25 parameters: k1=%f, b=%f", k1_value, b_value);
 
-	if (!index_state)
-	{
-		elog(ERROR, "index_state is NULL before tp_score_documents");
-	}
-	if (!query_terms)
-	{
-		elog(ERROR, "query_terms is NULL before tp_score_documents");
-	}
-	if (!query_frequencies)
-	{
-		elog(ERROR, "query_frequencies is NULL before tp_score_documents");
-	}
-	if (!so->result_ctids)
-	{
-		elog(ERROR, "result_ctids is NULL before tp_score_documents");
-	}
-
-	elog(DEBUG3, "All pointers validated");
-
-	/* Check if any query terms are NULL */
-	for (int i = 0; i < entry_count; i++)
-	{
-		if (!query_terms[i])
-		{
-			elog(ERROR, "NULL query term at position %d", i);
-		}
-	}
+	Assert(index_state != NULL);
+	Assert(query_terms != NULL);
+	Assert(query_frequencies != NULL);
+	Assert(so->result_ctids != NULL);
 
 	result_count = tp_score_documents(
 			index_state,
@@ -1518,15 +1487,6 @@ tp_search_posting_lists(
 		 "was %d)",
 		 result_count,
 		 max_results);
-
-	/* Validate results */
-	for (int i = 0; i < result_count; i++)
-	{
-		if (!ItemPointerIsValid(&so->result_ctids[i]))
-		{
-			elog(ERROR, "Invalid TID at position %d after scoring", i);
-		}
-	}
 
 	/* Free the query terms array and individual term strings */
 	for (int i = 0; i < entry_count; i++)
@@ -1556,18 +1516,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 scan->xs_orderbyvals,
 		 scan->xs_orderbynulls);
 
-	if (!scan)
-	{
-		elog(ERROR, "Tapir gettuple called with NULL scan");
-		return false;
-	}
-
-	if (!so)
-	{
-		elog(ERROR,
-			 "Tapir gettuple: no scan opaque data (scan->opaque is NULL)");
-		return false;
-	}
+	Assert(scan != NULL);
+	Assert(so != NULL);
 
 	elog(DEBUG3,
 		 "Scan state: result_count=%d, current_pos=%d",
@@ -1587,14 +1537,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		if (!tp_execute_scoring_query(scan))
 		{
 			so->eof_reached = true;
-			return false;
-		}
-		/* Verify so is still valid after query execution */
-		if (!so)
-		{
-			elog(ERROR,
-				 "Tapir gettuple: scan opaque became NULL after "
-				 "query execution");
 			return false;
 		}
 		elog(DEBUG2,
@@ -1617,43 +1559,16 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 scan,
 		 so);
 
-	/* Verify scan context is still valid */
-	if (!so->scan_context)
-	{
-		elog(ERROR, "Tapir gettuple: scan_context is NULL!");
-		return false;
-	}
-
-	/* Set the current item pointer for this result */
-	if (!so->result_ctids)
-	{
-		elog(ERROR,
-			 "Tapir gettuple: result_ctids is NULL at position %d",
-			 so->current_pos);
-		return false;
-	}
-
-	/* Extra validation before access */
-	if (so->current_pos >= so->result_count)
-	{
-		elog(ERROR,
-			 "Tapir gettuple: current_pos %d >= result_count %d",
-			 so->current_pos,
-			 so->result_count);
-		return false;
-	}
+	Assert(so->scan_context != NULL);
+	Assert(so->result_ctids != NULL);
+	Assert(so->current_pos < so->result_count);
 
 	elog(DEBUG2,
 		 "Setting heap TID: block=%u, offset=%u",
 		 BlockIdGetBlockNumber(&(so->result_ctids[so->current_pos].ip_blkid)),
 		 so->result_ctids[so->current_pos].ip_posid);
 
-	/* Validate TID before setting */
-	if (!ItemPointerIsValid(&so->result_ctids[so->current_pos]))
-	{
-		elog(ERROR, "Invalid TID at position %d", so->current_pos);
-		return false;
-	}
+	Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
 
 	/* Additional validation - check for obviously invalid block numbers */
 	blknum = BlockIdGetBlockNumber(
@@ -1679,13 +1594,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	/* Set ORDER BY distance value if this is an ORDER BY scan */
 	if (scan->numberOfOrderBys > 0)
 	{
-		if (scan->numberOfOrderBys != 1)
-		{
-			elog(ERROR,
-				 "Tapir gettuple: numberOfOrderBys must be 1, got %d",
-				 scan->numberOfOrderBys);
-			return false;
-		}
+		Assert(scan->numberOfOrderBys == 1);
 
 		/* Set the ORDER BY value (BM25 score) */
 		if (!scan->xs_orderbyvals || !scan->xs_orderbynulls)
