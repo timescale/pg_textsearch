@@ -24,20 +24,27 @@ typedef struct TpPostingList TpPostingList;
 typedef struct TpPostingEntry TpPostingEntry;
 
 /*
- * dshash entry structure
- * Key is the string pointer itself (fixed size)
- * Hash and comparison functions dereference the pointer to compare actual string content
+ * dshash key structure that supports both char* and dsa_pointer strings
+ * Uses variant wrapper approach with flag_field to distinguish pointer types
+ */
+typedef struct TpStringKey
+{
+	dsa_pointer	string_or_ptr;	/* Either dsa_pointer or cast char* */
+	dsa_pointer	flag_field;		/* posting_list_dp for table entries, 0 for lookup keys */
+} TpStringKey;
+
+/*
+ * dshash entry structure for string interning and posting list mapping
+ * Key distinguishes between local char* (for lookups) and DSA strings (for storage)
  */
 struct TpStringHashEntry
 {
 	/* Key part - must be first in struct for dshash */
-	dsa_pointer	string_dp;		/* DSA pointer to string (this is our fixed-size key) */
-	
+	TpStringKey	key;			/* Variant wrapper for string pointer */
+
 	/* Value part - application data */
-	uint32		string_length;	/* Length of string */
+	int32		posting_list_len; /* Number of documents containing this term */
 	uint32		hash_value;		/* Cached hash value for performance */
-	dsa_pointer	posting_list_dp; /* DSA pointer to TpPostingList (InvalidDsaPointer = none) */
-	int32		doc_freq;		/* Document frequency */
 };
 
 /*
@@ -48,9 +55,9 @@ typedef struct TpStringHashTable
 {
 	dshash_table *dshash;		/* The underlying dshash table */
 	dshash_table_handle handle;	/* Handle for sharing across processes */
-	
+
 	/* Statistics - maintained for compatibility */
-	uint32		entry_count;	/* Total entries in table (approx) */
+	uint32		entry_count;	/* Total entries in table */
 	uint32		max_entries;	/* Reserved for future use */
 }			TpStringHashTable;
 
@@ -97,4 +104,3 @@ extern char *tp_get_string_from_dp(dsa_area *area, dsa_pointer dp);
 
 /* LWLock tranche for string table locking */
 #define TP_STRING_HASH_TRANCHE_ID	LWTRANCHE_FIRST_USER_DEFINED
-

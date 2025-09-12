@@ -2384,15 +2384,13 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 				{
 					/* Show term info if it has a posting list */
-					if (DsaPointerIsValid(entry->posting_list_dp))
+					if (DsaPointerIsValid(entry->key.flag_field))
 					{
-						TpPostingList *posting_list = dsa_get_address(area, entry->posting_list_dp);
-						char *stored_str = dsa_get_address(area, entry->string_dp);
-						uint32 stored_len = *((uint32 *) stored_str);
-						stored_str += sizeof(uint32);
+						TpPostingList *posting_list = dsa_get_address(area, entry->key.flag_field);
+						char *stored_str = dsa_get_address(area, entry->key.string_or_ptr);
 
-						appendStringInfo(&result, "  '%.*s': doc_freq=%d\n",
-										(int)stored_len, stored_str, posting_list->doc_count);
+						appendStringInfo(&result, "  '%s': doc_freq=%d\n",
+										stored_str, posting_list->doc_count);
 						term_count++;
 					}
 				}

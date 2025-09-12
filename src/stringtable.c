@@ -28,81 +28,92 @@
 #include "lib/dshash.h"
 
 /*
- * Hash function for string pointers stored in DSA
- * Dereferences the pointer and hashes the string content
+ * Hash function for variant string keys (char* or dsa_pointer)
+ * Uses flag_field to distinguish: 0 = char*, non-0 = dsa_pointer
  */
 static dshash_hash
 tp_string_hash_function(const void *key, size_t keysize, void *arg)
 {
-	const dsa_pointer *string_dp = (const dsa_pointer *) key;
+	const TpStringKey *string_key = (const TpStringKey *) key;
 	dsa_area *area = (dsa_area *) arg;
 	const char *str;
-	uint32 len;
 
-	Assert(keysize == sizeof(dsa_pointer));
-	Assert(DsaPointerIsValid(*string_dp));
+	Assert(keysize == sizeof(TpStringKey));
 
-	/* Get the string from DSA */
-	str = (const char *) dsa_get_address(area, *string_dp);
-	
-	/* String is stored with length prefix */
-	len = *((uint32 *) str);
-	str += sizeof(uint32);
+	if (string_key->flag_field == 0)
+	{
+		/* Lookup key: string_or_ptr is a cast char* */
+		str = (const char *) (uintptr_t) string_key->string_or_ptr;
+	}
+	else
+	{
+		/* Table entry: string_or_ptr is a dsa_pointer */
+		Assert(DsaPointerIsValid(string_key->string_or_ptr));
+		str = (const char *) dsa_get_address(area, string_key->string_or_ptr);
+	}
 
-	/* Hash the string content */
-	return (dshash_hash) hash_bytes((const unsigned char *) str, len);
+	/* Hash the null-terminated string content */
+	return (dshash_hash) hash_bytes((const unsigned char *) str, strlen(str));
 }
 
 /*
- * Compare function for string pointers stored in DSA
- * Dereferences both pointers and compares string content
+ * Compare function for variant string keys (char* or dsa_pointer)  
+ * Handles all combinations: char* vs char*, char* vs dsa_pointer, etc.
  */
 static int
 tp_string_compare_function(const void *a, const void *b, size_t keysize, void *arg)
 {
-	const dsa_pointer *string_dp_a = (const dsa_pointer *) a;
-	const dsa_pointer *string_dp_b = (const dsa_pointer *) b;
+	const TpStringKey *key_a = (const TpStringKey *) a;
+	const TpStringKey *key_b = (const TpStringKey *) b;
 	dsa_area *area = (dsa_area *) arg;
 	const char *str_a, *str_b;
-	uint32 len_a, len_b;
 
-	Assert(keysize == sizeof(dsa_pointer));
+	Assert(keysize == sizeof(TpStringKey));
 
-	/* Handle identical pointers (same string) */
-	if (*string_dp_a == *string_dp_b)
+	/* Handle identical keys (same structure content) */
+	if (key_a->string_or_ptr == key_b->string_or_ptr && 
+		key_a->flag_field == key_b->flag_field)
 		return 0;
 
-	/* Both pointers must be valid */
-	Assert(DsaPointerIsValid(*string_dp_a));
-	Assert(DsaPointerIsValid(*string_dp_b));
+	/* Get string A */
+	if (key_a->flag_field == 0)
+	{
+		/* Lookup key: string_or_ptr is a cast char* */
+		str_a = (const char *) (uintptr_t) key_a->string_or_ptr;
+	}
+	else
+	{
+		/* Table entry: string_or_ptr is a dsa_pointer */
+		Assert(DsaPointerIsValid(key_a->string_or_ptr));
+		str_a = (const char *) dsa_get_address(area, key_a->string_or_ptr);
+	}
 
-	/* Get the strings from DSA */
-	str_a = (const char *) dsa_get_address(area, *string_dp_a);
-	str_b = (const char *) dsa_get_address(area, *string_dp_b);
-	
-	/* Extract length prefixes */
-	len_a = *((uint32 *) str_a);
-	len_b = *((uint32 *) str_b);
-	str_a += sizeof(uint32);
-	str_b += sizeof(uint32);
+	/* Get string B */
+	if (key_b->flag_field == 0)
+	{
+		/* Lookup key: string_or_ptr is a cast char* */
+		str_b = (const char *) (uintptr_t) key_b->string_or_ptr;
+	}
+	else
+	{
+		/* Table entry: string_or_ptr is a dsa_pointer */
+		Assert(DsaPointerIsValid(key_b->string_or_ptr));
+		str_b = (const char *) dsa_get_address(area, key_b->string_or_ptr);
+	}
 
-	/* Compare lengths first */
-	if (len_a != len_b)
-		return (len_a < len_b) ? -1 : 1;
-
-	/* Compare string content */
-	return memcmp(str_a, str_b, len_a);
+	/* Compare null-terminated strings */
+	return strcmp(str_a, str_b);
 }
 
 /*
- * Copy function for string pointers
- * Simple pointer copy since we're using DSA pointers as keys
+ * Copy function for variant string keys
+ * Simple structure copy
  */
 static void
 tp_string_copy_function(void *dest, const void *src, size_t keysize, void *arg)
 {
-	Assert(keysize == sizeof(dsa_pointer));
-	*((dsa_pointer *) dest) = *((dsa_pointer *) src);
+	Assert(keysize == sizeof(TpStringKey));
+	*((TpStringKey *) dest) = *((TpStringKey *) src);
 }
 
 /*
@@ -117,7 +128,7 @@ tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets)
 	Assert(area != NULL);
 
 	/* Set up dshash parameters */
-	params.key_size = sizeof(dsa_pointer);
+	params.key_size = sizeof(TpStringKey);
 	params.entry_size = sizeof(TpStringHashEntry);
 	params.hash_function = tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
@@ -153,7 +164,7 @@ tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
 	Assert(handle != DSHASH_HANDLE_INVALID);
 
 	/* Set up dshash parameters */
-	params.key_size = sizeof(dsa_pointer);
+	params.key_size = sizeof(TpStringKey);
 	params.entry_size = sizeof(TpStringHashEntry);
 	params.hash_function = tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
@@ -217,7 +228,7 @@ tp_hash_table_get_handle(TpStringHashTable *ht)
 }
 
 /*
- * Allocate a string in DSA memory with length prefix
+ * Allocate a null-terminated string in DSA memory
  * Returns the dsa_pointer to the allocated string
  */
 static dsa_pointer
@@ -225,18 +236,14 @@ tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
 {
 	dsa_pointer string_dp;
 	char *string_data;
-	uint32 *length_ptr;
 
-	/* Allocate space for length prefix + string */
-	string_dp = dsa_allocate(area, sizeof(uint32) + len);
+	/* Allocate space for string + null terminator */
+	string_dp = dsa_allocate(area, len + 1);
 	string_data = (char *) dsa_get_address(area, string_dp);
 
-	/* Store length prefix */
-	length_ptr = (uint32 *) string_data;
-	*length_ptr = len;
-
-	/* Copy string data */
-	memcpy(string_data + sizeof(uint32), str, len);
+	/* Copy string data and null terminate */
+	memcpy(string_data, str, len);
+	string_data[len] = '\0';
 
 	return string_dp;
 }
@@ -245,14 +252,13 @@ tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
  * Look up a string in the hash table
  * Returns NULL if not found
  * 
- * Creates a temporary string allocation to use as the lookup key.
- * dshash will use our custom hash/compare functions that dereference 
- * the pointer and compare actual string content.
+ * Uses zero-allocation approach: builds TpStringKey on stack with
+ * char* cast as string_or_ptr and flag_field=0.
  */
 TpStringHashEntry *
 tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	dsa_pointer temp_string_dp;
+	TpStringKey lookup_key;
 	TpStringHashEntry *entry;
 
 	Assert(area != NULL);
@@ -262,14 +268,12 @@ tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 	if (len == 0)
 		return NULL;
 
-	/* Create temporary string allocation to use as lookup key */
-	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+	/* Build lookup key on stack - no allocations! */
+	lookup_key.string_or_ptr = (dsa_pointer) (uintptr_t) str;
+	lookup_key.flag_field = 0;  /* Indicates this is a char*, not dsa_pointer */
 
-	/* Look up using the temporary string pointer as key */
-	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &temp_string_dp, false);
-
-	/* Free the temporary string */
-	dsa_free(area, temp_string_dp);
+	/* Look up using the stack-allocated key */
+	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &lookup_key, false);
 
 	if (entry)
 	{
@@ -284,13 +288,13 @@ tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
  * Insert a string into the hash table
  * Returns the entry (existing or new)
  * 
- * Creates a temporary string allocation for lookup. If not found,
- * creates a permanent allocation and stores it in the entry.
+ * Uses zero-allocation approach for lookup. Only allocates DSA string
+ * if creating a new entry.
  */
 TpStringHashEntry *
 tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	dsa_pointer temp_string_dp;
+	TpStringKey lookup_key;
 	TpStringHashEntry *entry;
 	bool found;
 
@@ -299,22 +303,23 @@ tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 	Assert(str != NULL);
 	Assert(len > 0);
 
-	/* Create temporary string allocation to use as lookup key */
-	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+	/* Build lookup key on stack - no allocations! */
+	lookup_key.string_or_ptr = (dsa_pointer) (uintptr_t) str;
+	lookup_key.flag_field = 0;  /* Indicates this is a char*, not dsa_pointer */
 
-	/* Try to find or insert using temporary string as key */
-	entry = (TpStringHashEntry *) dshash_find_or_insert(ht->dshash, &temp_string_dp, &found);
+	/* Try to find or insert using the stack-allocated key */
+	entry = (TpStringHashEntry *) dshash_find_or_insert(ht->dshash, &lookup_key, &found);
 
 	if (!found)
 	{
-		/* New entry - use the temporary allocation as the permanent one */
+		/* New entry - allocate DSA string and initialize */
+		dsa_pointer string_dp = tp_alloc_string_dsa(area, str, len);
 		uint32 hash_value = hash_bytes((const unsigned char *) str, len);
 		
-		entry->string_dp = temp_string_dp;
-		entry->string_length = len;
+		entry->key.string_or_ptr = string_dp;
+		entry->key.flag_field = InvalidDsaPointer;  /* Will be updated with posting_list_dp */
+		entry->posting_list_len = 0;
 		entry->hash_value = hash_value;
-		entry->posting_list_dp = InvalidDsaPointer;
-		entry->doc_freq = 0;
 
 		ht->entry_count++;
 
@@ -323,9 +328,6 @@ tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 	}
 	else
 	{
-		/* Found existing entry - free the temporary allocation */
-		dsa_free(area, temp_string_dp);
-		
 		elog(DEBUG3, "Found existing string entry: '%.*s' (len=%zu)", 
 			 (int)len, str, len);
 	}
@@ -343,7 +345,7 @@ tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 bool
 tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	dsa_pointer temp_string_dp;
+	TpStringKey lookup_key;
 	TpStringHashEntry *entry;
 
 	Assert(area != NULL);
@@ -353,19 +355,17 @@ tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 	if (len == 0)
 		return false;
 
-	/* Create temporary string allocation to use as lookup key */
-	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+	/* Build lookup key on stack - no allocations! */
+	lookup_key.string_or_ptr = (dsa_pointer) (uintptr_t) str;
+	lookup_key.flag_field = 0;  /* Indicates this is a char*, not dsa_pointer */
 
-	/* Find the entry using temporary string as key */
-	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &temp_string_dp, true); /* exclusive lock */
-	
-	/* Free the temporary string */
-	dsa_free(area, temp_string_dp);
+	/* Find the entry using stack-allocated key */
+	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &lookup_key, true); /* exclusive lock */
 
 	if (entry)
 	{
-		/* Found the entry - delete it */
-		dsa_free(area, entry->string_dp);  /* Free the string data first */
+		/* Found the entry - free DSA string and delete */
+		dsa_free(area, entry->key.string_or_ptr);  /* Free the DSA string data */
 		dshash_delete_entry(ht->dshash, entry);  /* This releases the lock too */
 		
 		ht->entry_count--;
@@ -378,7 +378,7 @@ tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_
 
 /*
  * Clear the hash table, removing all entries
- * Note: This doesn't free individual string allocations
+ * Frees all DSA string allocations
  */
 void
 tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
@@ -394,8 +394,8 @@ tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
 
 	while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 	{
-		/* Free the string data */
-		dsa_free(area, entry->string_dp);
+		/* Free the DSA string data */
+		dsa_free(area, entry->key.string_or_ptr);
 		
 		/* Delete current entry */
 		dshash_delete_current(&status);

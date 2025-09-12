@@ -118,10 +118,6 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 		index_close(index_rel, AccessShareLock);
 	}
 
-	/* DSA-based system doesn't track per-index memory counters in the old way */
-	/* These fields no longer exist in TpIndexState */
-
-	/* Debug: Check string_hash_handle state after DSA attachment */
 	elog(DEBUG1, "After DSA attachment: string_hash_handle=%s, total_docs=%d",
 		 (index_state->string_hash_handle != DSHASH_HANDLE_INVALID) ? "VALID" : "INVALID",
 		 index_state->stats.total_docs);
@@ -130,14 +126,6 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 		 index_name);
 	return index_state;
 }
-
-/* tp_rebuild_posting_lists_for_index removed - not needed with DSA-based system */
-
-/*
- * Get or create a posting list for the given term string
- * Returns pointer to posting list, creating it if necessary
- * Uses DSA-based string table functions for storage
- */
 
 /*
  * Add terms from a document to the posting lists
@@ -306,9 +294,9 @@ tp_get_posting_list(TpIndexState * index_state,
 	LWLockAcquire(&index_state->string_interning_lock, LW_SHARED);
 	string_entry = tp_hash_lookup_dsa(area, string_table, term, term_len);
 
-	if (string_entry && DsaPointerIsValid(string_entry->posting_list_dp))
+	if (string_entry && DsaPointerIsValid(string_entry->key.flag_field))
 	{
-		posting_list = dsa_get_address(area, string_entry->posting_list_dp);
+		posting_list = dsa_get_address(area, string_entry->key.flag_field);
 		elog(DEBUG2, "Found posting list for term '%s': doc_count=%d",
 			 term, posting_list->doc_count);
 		tp_hash_table_detach_dsa(string_table);
@@ -372,7 +360,7 @@ tp_get_or_create_posting_list(TpIndexState * index_state, const char *term)
 
 		/* Store the handle for other processes */
 		index_state->string_hash_handle = tp_hash_table_get_handle(string_table);
-		elog(DEBUG1, "Created string hash table for index with handle %lu", 
+		elog(DEBUG1, "Created string hash table for index with handle %lu",
 			 (unsigned long) index_state->string_hash_handle);
 	}
 	else
@@ -404,9 +392,9 @@ tp_get_or_create_posting_list(TpIndexState * index_state, const char *term)
 	}
 
 	/* Check if posting list already exists for this term */
-	if (DsaPointerIsValid(string_entry->posting_list_dp))
+	if (DsaPointerIsValid(string_entry->key.flag_field))
 	{
-		posting_list = dsa_get_address(area, string_entry->posting_list_dp);
+		posting_list = dsa_get_address(area, string_entry->key.flag_field);
 		elog(DEBUG2, "Found existing posting list for term '%s': doc_count=%d",
 			 term, posting_list->doc_count);
 	}
@@ -425,8 +413,8 @@ tp_get_or_create_posting_list(TpIndexState * index_state, const char *term)
 		posting_list->entries_dp = InvalidDsaPointer;
 
 		/* Associate posting list with string entry */
-		string_entry->posting_list_dp = posting_list_dp;
-		string_entry->doc_freq = 0;
+		string_entry->key.flag_field = posting_list_dp;
+		string_entry->posting_list_len = 0;
 
 		elog(DEBUG2, "Created new posting list for term '%s'", term);
 	}
@@ -610,15 +598,15 @@ tp_calculate_average_idf(TpIndexState *index_state)
 	{
 		dshash_seq_status status;
 		TpStringHashEntry *entry;
-		
+
 		dshash_seq_init(&status, string_table->dshash, false); /* shared lock */
 
 		while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 		{
 			/* Calculate IDF for this term if it has a posting list */
-			if (DsaPointerIsValid(entry->posting_list_dp))
+			if (DsaPointerIsValid(entry->key.flag_field))
 			{
-				TpPostingList *posting_list = dsa_get_address(area, entry->posting_list_dp);
+				TpPostingList *posting_list = dsa_get_address(area, entry->key.flag_field);
 				int32 doc_freq = posting_list->doc_count;
 
 				if (doc_freq > 0)
