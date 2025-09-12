@@ -195,9 +195,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 				break;
 			}
 			else
-			{
 				UnlockReleaseBuffer(docid_buf);
-			}
 		}
 	}
 
@@ -270,9 +268,7 @@ tp_recover_from_docid_pages(Relation index)
 	UnlockReleaseBuffer(metabuf);
 
 	if (current_page == InvalidBlockNumber)
-	{
 		return;
-	}
 
 	/* Iterate through all docid pages */
 	while (current_page != InvalidBlockNumber)
@@ -410,9 +406,6 @@ tp_recover_from_docid_pages(Relation index)
 				/* Free the tuple */
 				heap_freetuple(tuple);
 				ReleaseBuffer(heap_buf);
-			}
-			else
-			{
 			}
 
 			/* Close the heap relation */

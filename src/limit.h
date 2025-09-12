@@ -26,10 +26,8 @@ typedef struct TpCurrentLimit
 	bool is_valid;	/* Whether this data is current and valid */
 } TpCurrentLimit;
 
-/*
- * External variables
- */
-extern int tp_default_limit; /* Default limit when none detected */
+/* Default limit when none detected */
+extern int tp_default_limit;
 
 /*
  * Query limit tracking functions

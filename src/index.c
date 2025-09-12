@@ -318,8 +318,8 @@ tp_bulkdelete(
 }
 
 /* Tapir-specific build phases */
-#define TAPIR_PHASE_BUILD_MEMTABLE 2
-#define TAPIR_PHASE_WRITE_METADATA 3
+#define TP_PHASE_BUILD_MEMTABLE 2
+#define TP_PHASE_WRITE_METADATA 3
 
 char *
 tp_buildphasename(int64 phase)
@@ -328,12 +328,12 @@ tp_buildphasename(int64 phase)
 	{
 	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
 		return "initializing";
-	case TAPIR_PHASE_BUILD_MEMTABLE:
+	case TP_PHASE_BUILD_MEMTABLE:
 		return "building memtable";
-	case TAPIR_PHASE_WRITE_METADATA:
+	case TP_PHASE_WRITE_METADATA:
 		return "writing metadata";
 	default:
-		return NULL; /* Unknown phase */
+		return NULL;
 	}
 }
 
@@ -388,13 +388,9 @@ tp_extract_terms_from_tsvector(
 		 * Get frequency from TSVector - count positions or default to 1
 		 */
 		if (we[i].haspos)
-		{
 			frequencies[i] = (int32)POSDATALEN(tsvector, &we[i]);
-		}
 		else
-		{
 			frequencies[i] = 1;
-		}
 
 		doc_length += frequencies[i];
 	}
@@ -417,9 +413,7 @@ tp_free_terms_array(char **terms, int term_count)
 		return;
 
 	for (i = 0; i < term_count; i++)
-	{
 		pfree(terms[i]);
-	}
 	pfree(terms);
 }
 
@@ -558,9 +552,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Log configuration being used */
 	if (text_config_name)
-	{
 		elog(NOTICE, "Using text search configuration: %s", text_config_name);
-	}
 	elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
 
 	/* Initialize metapage */
@@ -572,7 +564,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_BUILD_MEMTABLE);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
 
 	/* Setup table scanning */
 	tp_setup_table_scan(heap, &scan, &slot);
@@ -589,7 +581,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Report metadata writing phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TAPIR_PHASE_WRITE_METADATA);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITE_METADATA);
 
 	/* Finalize posting lists and update statistics */
 	tp_build_finalize_and_update_stats(
@@ -782,9 +774,7 @@ tp_insert(
 		{
 			/* Validate TID before adding to posting list */
 			if (!ItemPointerIsValid(ht_ctid))
-			{
 				elog(WARNING, "Invalid TID in tp_insert, skipping");
-			}
 			else
 			{
 				tp_add_document_terms(
@@ -796,15 +786,10 @@ tp_insert(
 						doc_length);
 			}
 		}
-		else
-		{
-		}
 
 		/* Free the terms array and individual lexemes */
 		for (i = 0; i < term_count; i++)
-		{
 			pfree(terms[i]);
-		}
 		pfree(terms);
 		pfree(frequencies);
 	}
@@ -872,13 +857,9 @@ tp_rescan(
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
 		if (query_limit > 0)
-		{
 			so->limit = query_limit;
-		}
 		else
-		{
 			so->limit = -1; /* No limit */
-		}
 	}
 
 	/* Reset scan state */
@@ -945,9 +926,6 @@ tp_rescan(
 		}
 
 		pfree(metap);
-	}
-	else
-	{
 	}
 
 	/* Process ORDER BY scan keys for <@> operator */
@@ -1378,44 +1356,24 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				 "without ORDER BY values",
 				 scan->numberOfOrderBys);
 		}
+		else if (so->result_scores)
+		{
+			/*
+			 * Convert BM25 score to Datum - PostgreSQL expects negative
+			 * values for ASC ordering
+			 */
+			bm25_score				 = -so->result_scores[so->current_pos];
+			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
+			scan->xs_orderbynulls[0] = false;
+		}
 		else
 		{
-			/* Additional validation for pointer sanity */
-			uintptr_t orderbyvals_addr	= (uintptr_t)scan->xs_orderbyvals;
-			uintptr_t orderbynulls_addr = (uintptr_t)scan->xs_orderbynulls;
-
-			/* Check if pointers are in reasonable memory range (heuristic) */
-			if (orderbyvals_addr < TP_MIN_MEMORY_ADDRESS ||
-				orderbyvals_addr > TP_MAX_MEMORY_ADDRESS ||
-				orderbynulls_addr < TP_MIN_MEMORY_ADDRESS ||
-				orderbynulls_addr > TP_MAX_MEMORY_ADDRESS)
-			{
-				elog(WARNING,
-					 "Tapir gettuple: ORDER BY arrays have invalid pointers "
-					 "(vals=%p, nulls=%p), "
-					 "skipping ORDER BY",
-					 scan->xs_orderbyvals,
-					 scan->xs_orderbynulls);
-			}
-			else if (so->result_scores)
-			{
-				/*
-				 * Convert BM25 score to Datum - PostgreSQL expects negative
-				 * values for ASC ordering
-				 */
-				bm25_score				 = -so->result_scores[so->current_pos];
-				scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
-				scan->xs_orderbynulls[0] = false;
-			}
-			else
-			{
-				/* No scores available - use 0.0 as default */
-				elog(WARNING,
-					 "Tapir gettuple: result_scores is NULL, using 0.0 "
-					 "for ORDER BY");
-				scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
-				scan->xs_orderbynulls[0] = false;
-			}
+			/* No scores available - use 0.0 as default */
+			elog(WARNING,
+				 "Tapir gettuple: result_scores is NULL, using 0.0 "
+				 "for ORDER BY");
+			scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
+			scan->xs_orderbynulls[0] = false;
 		}
 	}
 
@@ -1460,12 +1418,6 @@ tp_costestimate(
 		{
 			tp_store_query_limit(path->indexinfo->indexoid, limit);
 		}
-		else
-		{
-		}
-	}
-	else
-	{
 	}
 
 	/* Try to get actual statistics from the index */
@@ -1571,9 +1523,7 @@ tp_validate(Oid opclassoid)
 
 	ReleaseSysCache(tup);
 
-	if (result)
-
-		return result;
+	return result;
 }
 
 /*

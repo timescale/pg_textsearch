@@ -125,8 +125,6 @@ tp_object_access_hook(
 
 	/* Handle index drop events */
 	if (access == OAT_DROP && classId == RelationRelationId)
-	{
 		/* Check if this is a Tapir index by looking up in our registry */
 		tp_cleanup_index_shared_memory(objectId);
-	}
 }

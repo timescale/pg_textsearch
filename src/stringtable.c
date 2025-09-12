@@ -320,9 +320,6 @@ tp_hash_insert_dsa(
 
 		ht->entry_count++;
 	}
-	else
-	{
-	}
 
 	/* Release the lock acquired by dshash_find_or_insert */
 	dshash_release_lock(ht->dshash, entry);

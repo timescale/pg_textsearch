@@ -84,9 +84,6 @@ tp_get_query_limit(Relation index_rel)
 		/* Clear the limit after retrieval to prevent stale data */
 		tp_current_limit.is_valid = false;
 	}
-	else
-	{
-	}
 
 	return result;
 }

@@ -131,8 +131,6 @@ typedef struct TpIndexState
 	bool	   dsa_initialized; /* True when DSA area is ready for use */
 } TpIndexState;
 
-/* Query limit tracking moved to limit.h */
-
 /* GUC variables */
 extern int tp_index_memory_limit; /* Currently not enforced */
 
@@ -158,8 +156,3 @@ extern dsa_area *
 tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid);
 extern IndexStateCacheEntry *get_cached_index_state(Oid index_oid);
 extern TpIndexState *tp_get_index_state(Oid index_oid, const char *index_name);
-
-/* DSA memory allocation wrappers */
-extern dsa_pointer tp_dsa_allocate(dsa_area *area, Size size);
-extern void		   tp_dsa_free(dsa_area *area, dsa_pointer dp);
-extern void		  *tp_dsa_get_address(dsa_area *area, dsa_pointer dp);

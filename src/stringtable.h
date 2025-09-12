@@ -112,10 +112,5 @@ extern TpPostingEntry			   *
 tp_get_posting_entries_from_dp(dsa_area *area, dsa_pointer dp);
 extern char *tp_get_string_from_dp(dsa_area *area, dsa_pointer dp);
 
-/* Default sizing constants */
-#define TP_HASH_DEFAULT_BUCKETS                \
-	1024 /* Initial bucket count (ignored with \
-		  * dshash) */
-
 /* LWLock tranche for string table locking */
 #define TP_STRING_HASH_TRANCHE_ID LWTRANCHE_FIRST_USER_DEFINED

@@ -49,9 +49,7 @@ tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
 	if (!posting_list || !DsaPointerIsValid(posting_list->entries_dp))
 		return NULL;
 	if (!area)
-	{
 		return NULL;
-	}
 	return dsa_get_address(area, posting_list->entries_dp);
 }
 
@@ -122,14 +120,8 @@ tp_add_document_terms(
 			/* New document - store the length */
 			existing_entry->doc_length = doc_length;
 		}
-		else
-		{
-		}
 
 		LWLockRelease(&index_state->doc_lengths_lock);
-	}
-	else
-	{
 	}
 
 	/* Update corpus statistics */
@@ -188,9 +180,7 @@ tp_get_posting_list(TpIndexState *index_state, const char *term)
 
 	/* Get the string hash table from the index state */
 	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
-	{
 		return NULL;
-	}
 
 	string_table =
 			tp_hash_table_attach_dsa(area, index_state->string_hash_handle);
@@ -562,9 +552,6 @@ tp_finalize_index_build(TpIndexState *index_state)
 	tp_calculate_average_idf(index_state);
 }
 
-/* bm25_score_document removed - replaced by more efficient tp_score_documents
- */
-
 /*
  * Single-pass BM25 scoring for multiple documents
  * This is much more efficient than calling bm25_score_document for each
@@ -867,9 +854,6 @@ tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 	if (entry)
 	{
 		doc_length = entry->doc_length;
-	}
-	else
-	{
 	}
 	LWLockRelease(&index_state->doc_lengths_lock);
 

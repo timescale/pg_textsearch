@@ -38,12 +38,8 @@
  */
 static HTAB *index_state_cache = NULL;
 
-/* IndexStateCacheEntry type definition moved to memtable.h */
-
 /* GUC variables */
 int tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
-
-/* Transaction-level lock tracking removed - handled by DSA LWLocks */
 
 /*
  * Generate human-readable DSM segment name for an index
@@ -99,9 +95,7 @@ get_cached_index_state(Oid index_oid)
 			hash_search(index_state_cache, &index_oid, HASH_FIND, NULL);
 
 	if (entry != NULL)
-	{
 		return entry;
-	}
 
 	return NULL;
 }
@@ -135,10 +129,10 @@ tp_init_index_dsa_callback(void *ptr)
 	TpIndexState *state = (TpIndexState *)ptr;
 
 	/* Use fixed tranche IDs that are consistent across all backends */
-	state->string_tranche_id	  = TAPIR_TRANCHE_STRING;
-	state->posting_tranche_id	  = TAPIR_TRANCHE_POSTING;
-	state->corpus_tranche_id	  = TAPIR_TRANCHE_CORPUS;
-	state->doc_lengths_tranche_id = TAPIR_TRANCHE_DOC_LENGTHS;
+	state->string_tranche_id	  = TP_TRANCHE_STRING;
+	state->posting_tranche_id	  = TP_TRANCHE_POSTING;
+	state->corpus_tranche_id	  = TP_TRANCHE_CORPUS;
+	state->doc_lengths_tranche_id = TP_TRANCHE_DOC_LENGTHS;
 
 	/* Initialize locks with the fixed tranche IDs */
 	LWLockInitialize(&state->string_interning_lock, state->string_tranche_id);
@@ -216,7 +210,7 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 	if (!found)
 	{
 		/* New segment - create DSA area */
-		area = dsa_create(TAPIR_TRANCHE_POSTING);
+		area = dsa_create(TP_TRANCHE_POSTING);
 		if (!area)
 			elog(ERROR, "Failed to create DSA area for index %u", index_oid);
 
@@ -236,7 +230,7 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 			/* Shouldn't happen but handle gracefully */
 			elog(WARNING,
 				 "Existing segment has invalid DSA handle, creating new area");
-			area = dsa_create(TAPIR_TRANCHE_POSTING);
+			area = dsa_create(TP_TRANCHE_POSTING);
 			if (!area)
 				elog(ERROR,
 					 "Failed to create DSA area for index %u",
@@ -406,27 +400,6 @@ tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid)
 }
 
 /*
- * DSA memory allocation wrappers
- */
-dsa_pointer
-tp_dsa_allocate(dsa_area *area, Size size)
-{
-	return dsa_allocate(area, size);
-}
-
-void
-tp_dsa_free(dsa_area *area, dsa_pointer dp)
-{
-	dsa_free(area, dp);
-}
-
-void *
-tp_dsa_get_address(dsa_area *area, dsa_pointer dp)
-{
-	return dsa_get_address(area, dp);
-}
-
-/*
  * Clean up shared memory for a dropped index
  */
 void
@@ -436,9 +409,7 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 	/* Validate OID - skip invalid OIDs */
 	if (!OidIsValid(index_oid))
-	{
 		return;
-	}
 
 	/* Only clean up if we have a cached entry for this index */
 	if (index_state_cache != NULL)
@@ -447,14 +418,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 		(void)hash_search(index_state_cache, &index_oid, HASH_FIND, &found);
 		if (found)
-		{
 			tp_destroy_index_dsa(index_oid);
-		}
-		else
-		{
-		}
-	}
-	else
-	{
 	}
 }
