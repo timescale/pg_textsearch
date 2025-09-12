@@ -859,7 +859,7 @@ tp_insert(
 			/* Validate TID before adding to posting list */
 			if (!ItemPointerIsValid(ht_ctid))
 			{
-				elog(WARNING, "Invalid TID in bm25insert, skipping");
+				elog(WARNING, "Invalid TID in tp_insert, skipping");
 			}
 			else
 			{
@@ -1658,7 +1658,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	/* Move to next position */
 	so->current_pos++;
 
-	return true; /* Successfully returned a tuple */
+	return true;
 }
 
 /*
