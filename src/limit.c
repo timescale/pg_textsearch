@@ -15,9 +15,7 @@
 
 #include <access/xact.h>
 #include <nodes/pathnodes.h>
-#include <optimizer/pathnode.h>
 #include <utils/guc.h>
-#include <utils/memutils.h>
 
 #include "limit.h"
 

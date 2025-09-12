@@ -16,17 +16,11 @@
 
 #include <postgres.h>
 
-#include <access/xact.h>
 #include <lib/dshash.h>
-#include <storage/lwlock.h>
-#include <storage/shmem.h>
 #include <utils/memutils.h>
 
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
-#include "constants.h"
-#include "memtable.h"
-#include "posting.h"
 #include "stringtable.h"
 
 /*

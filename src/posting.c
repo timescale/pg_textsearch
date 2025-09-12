@@ -8,32 +8,16 @@
 
 #include <postgres.h>
 
-#include <access/genam.h>
 #include <access/heapam.h>
-#include <access/table.h>
-#include <catalog/pg_type.h>
-#include <fmgr.h>
 #include <math.h>
 #include <miscadmin.h>
-#include <storage/bufmgr.h>
-#include <storage/ipc.h>
 #include <storage/lwlock.h>
-#include <storage/shmem.h>
-#include <utils/builtins.h>
 #include <utils/dsa.h>
-#include <utils/elog.h>
-#include <utils/hsearch.h>
-#include <utils/memutils.h>
-#include <utils/rel.h>
-#include <utils/snapmgr.h>
 
 #include "constants.h"
-#include "index.h"
 #include "memtable.h"
-#include "metapage.h"
 #include "posting.h"
 #include "stringtable.h"
-#include "vector.h"
 
 /* Configuration parameters */
 int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;

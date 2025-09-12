@@ -11,21 +11,13 @@
 
 #include <postgres.h>
 
-#include <access/heapam.h>
 #include <catalog/namespace.h>
-#include <catalog/pg_database.h>
-#include <commands/dbcommands.h>
 #include <miscadmin.h>
-#include <storage/dsm_registry.h>
+#include <storage/bufmgr.h>
 #include <storage/lwlock.h>
-#include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/guc.h>
-#include <utils/hsearch.h>
-#include <utils/lsyscache.h>
 #include <utils/memutils.h>
-#include <utils/rel.h>
-#include <utils/syscache.h>
 
 #include "common/hashfn.h"
 #include "constants.h"

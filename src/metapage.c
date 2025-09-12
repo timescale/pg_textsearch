@@ -21,9 +21,7 @@
 #include <storage/bufpage.h>
 #include <storage/itemptr.h>
 #include <utils/builtins.h>
-#include <utils/memutils.h>
 #include <utils/rel.h>
-#include <utils/snapmgr.h>
 
 #include "constants.h"
 #include "memtable.h"

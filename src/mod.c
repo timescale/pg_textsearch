@@ -7,8 +7,6 @@
 #include <utils/guc.h>
 
 #include "constants.h"
-#include "index.h"
-#include "limit.h"
 #include "memtable.h"
 #include "posting.h"
 

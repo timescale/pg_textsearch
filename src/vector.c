@@ -1,27 +1,17 @@
 #include <postgres.h>
 
 #include <access/genam.h>
-#include <access/htup_details.h>
-#include <catalog/index.h>
 #include <catalog/namespace.h>
-#include <catalog/pg_am.h>
-#include <catalog/pg_class.h>
-#include <catalog/pg_type.h>
-#include <commands/vacuum.h>
-#include <executor/spi.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
 #include <math.h>
-#include <nodes/execnodes.h>
 #include <stdlib.h>
-#include <storage/block.h>
-#include <tsearch/ts_public.h>
 #include <tsearch/ts_type.h>
-#include <tsearch/ts_utils.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
 #include <utils/rel.h>
 #include <utils/syscache.h>
+#include <varatt.h>
 
 #include "constants.h"
 #include "index.h"
@@ -29,10 +19,6 @@
 #include "metapage.h"
 #include "posting.h"
 #include "vector.h"
-
-/* Constants now defined in constants.h */
-
-/* External function declarations - these are already in index.h */
 
 /* Helper structure for sorting lexemes */
 typedef struct
