@@ -1,5 +1,3 @@
-#include "vector.h"
-
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <catalog/index.h>
@@ -28,6 +26,7 @@
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
+#include "vector.h"
 
 /* Constants now defined in constants.h */
 

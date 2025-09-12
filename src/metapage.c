@@ -15,8 +15,6 @@
 
 #include <postgres.h>
 
-#include "metapage.h"
-
 #include <access/heapam.h>
 #include <catalog/index.h>
 #include <storage/bufmgr.h>
@@ -28,6 +26,7 @@
 #include <utils/snapmgr.h>
 
 #include "constants.h"
+#include "metapage.h"
 #include "posting.h"
 #include "vector.h"
 

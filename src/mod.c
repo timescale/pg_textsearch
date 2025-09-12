@@ -1,7 +1,5 @@
 #include <postgres.h>
 
-#include "mod.h"
-
 #include <access/reloptions.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
@@ -11,6 +9,7 @@
 #include "constants.h"
 #include "index.h"
 #include "memtable.h"
+#include "mod.h"
 #include "posting.h"
 
 PG_MODULE_MAGIC;

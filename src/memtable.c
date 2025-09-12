@@ -11,8 +11,6 @@
 
 #include <postgres.h>
 
-#include "memtable.h"
-
 #include <access/heapam.h>
 #include <catalog/namespace.h>
 #include <catalog/pg_database.h>
@@ -32,6 +30,7 @@
 #include "common/hashfn.h"
 #include "constants.h"
 #include "index.h"
+#include "memtable.h"
 #include "posting.h"
 #include "stringtable.h"
 

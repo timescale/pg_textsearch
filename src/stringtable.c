@@ -16,8 +16,6 @@
 
 #include <postgres.h>
 
-#include "stringtable.h"
-
 #include <access/xact.h>
 #include <lib/dshash.h>
 #include <storage/lwlock.h>
@@ -29,6 +27,7 @@
 #include "constants.h"
 #include "memtable.h"
 #include "posting.h"
+#include "stringtable.h"
 
 /*
  * Hash function for variant string keys (char* or dsa_pointer)

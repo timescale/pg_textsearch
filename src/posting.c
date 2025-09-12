@@ -8,8 +8,6 @@
 
 #include <postgres.h>
 
-#include "posting.h"
-
 #include <access/genam.h>
 #include <access/heapam.h>
 #include <access/table.h>
@@ -33,6 +31,7 @@
 #include "index.h"
 #include "memtable.h"
 #include "metapage.h"
+#include "posting.h"
 #include "stringtable.h"
 #include "vector.h"
 

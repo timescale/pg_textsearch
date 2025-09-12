@@ -1,7 +1,5 @@
 #include <postgres.h>
 
-#include "index.h"
-
 #include <access/amapi.h>
 #include <access/genam.h>
 #include <access/generic_xlog.h>
@@ -44,6 +42,7 @@
 #include <utils/syscache.h>
 
 #include "constants.h"
+#include "index.h"
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
