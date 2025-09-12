@@ -2366,41 +2366,46 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	/* Show term dictionary and posting lists */
 	appendStringInfo(&result, "Term Dictionary:\n");
 
-	if (DsaPointerIsValid(index_state->string_hash_dp))
+	if (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
 		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
 		if (area)
 		{
-			TpStringHashTable *string_table = dsa_get_address(area, index_state->string_hash_dp);
-			dsa_pointer *buckets = dsa_get_address(area, string_table->buckets_dp);
-			uint32 bucket_idx, term_count = 0;
-
-			/* Iterate through all buckets */
-			for (bucket_idx = 0; bucket_idx < string_table->bucket_count; bucket_idx++)
+			TpStringHashTable *string_table = tp_hash_table_attach_dsa(area, index_state->string_hash_handle);
+			if (string_table)
 			{
-				dsa_pointer entry_dp = buckets[bucket_idx];
+				uint32 term_count = 0;
+				dshash_seq_status status;
+				TpStringHashEntry *entry;
 
-				/* Walk the chain for this bucket */
-				while (DsaPointerIsValid(entry_dp))
+				/* Iterate through all entries using dshash sequential scan */
+				dshash_seq_init(&status, string_table->dshash, false); /* shared lock */
+
+				while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 				{
-					TpStringHashEntry *entry = dsa_get_address(area, entry_dp);
-
 					/* Show term info if it has a posting list */
 					if (DsaPointerIsValid(entry->posting_list_dp))
 					{
 						TpPostingList *posting_list = dsa_get_address(area, entry->posting_list_dp);
-						char *term_str = dsa_get_address(area, entry->string_dp);
+						char *stored_str = dsa_get_address(area, entry->string_dp);
+						uint32 stored_len = *((uint32 *) stored_str);
+						stored_str += sizeof(uint32);
 
 						appendStringInfo(&result, "  '%.*s': doc_freq=%d\n",
-										(int)entry->string_length, term_str, posting_list->doc_count);
+										(int)stored_len, stored_str, posting_list->doc_count);
 						term_count++;
 					}
-
-					entry_dp = entry->next_dp;
 				}
-			}
 
-			appendStringInfo(&result, "Total terms: %u\n", term_count);
+				dshash_seq_term(&status);
+				tp_hash_table_detach_dsa(string_table);
+
+				appendStringInfo(&result, "Total terms: %u\n", term_count);
+			}
+			else
+			{
+				appendStringInfo(&result, "  ERROR: Cannot attach to string hash table\n");
+			}
 		}
 		else
 		{

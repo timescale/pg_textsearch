@@ -121,9 +121,9 @@ tp_get_index_state(Oid index_oid, const char *index_name)
 	/* DSA-based system doesn't track per-index memory counters in the old way */
 	/* These fields no longer exist in TpIndexState */
 
-	/* Debug: Check string_hash_dp state after DSA attachment */
-	elog(DEBUG1, "After DSA attachment: string_hash_dp=%s, total_docs=%d",
-		 DsaPointerIsValid(index_state->string_hash_dp) ? "VALID" : "INVALID",
+	/* Debug: Check string_hash_handle state after DSA attachment */
+	elog(DEBUG1, "After DSA attachment: string_hash_handle=%s, total_docs=%d",
+		 (index_state->string_hash_handle != DSHASH_HANDLE_INVALID) ? "VALID" : "INVALID",
 		 index_state->stats.total_docs);
 
 	elog(DEBUG1, "Attached to Tapir index state for %s",
@@ -288,13 +288,18 @@ tp_get_posting_list(TpIndexState * index_state,
 	}
 
 	/* Get the string hash table from the index state */
-	if (!DsaPointerIsValid(index_state->string_hash_dp))
+	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
 		elog(DEBUG2, "String hash table not initialized for index");
 		return NULL;
 	}
 
-	string_table = dsa_get_address(area, index_state->string_hash_dp);
+	string_table = tp_hash_table_attach_dsa(area, index_state->string_hash_handle);
+	if (!string_table)
+	{
+		elog(WARNING, "Failed to attach to string hash table");
+		return NULL;
+	}
 	term_len = strlen(term);
 
 	/* Look up the term in the string table */
@@ -306,11 +311,13 @@ tp_get_posting_list(TpIndexState * index_state,
 		posting_list = dsa_get_address(area, string_entry->posting_list_dp);
 		elog(DEBUG2, "Found posting list for term '%s': doc_count=%d",
 			 term, posting_list->doc_count);
+		tp_hash_table_detach_dsa(string_table);
 		LWLockRelease(&index_state->string_interning_lock);
 		return posting_list;
 	}
 	else
 	{
+		tp_hash_table_detach_dsa(string_table);
 		LWLockRelease(&index_state->string_interning_lock);
 		elog(DEBUG2, "No posting list found for term '%s'", term);
 		return NULL;
@@ -352,25 +359,32 @@ tp_get_or_create_posting_list(TpIndexState * index_state, const char *term)
 	/* Initialize string hash table if needed */
 	LWLockAcquire(&index_state->string_interning_lock, LW_EXCLUSIVE);
 
-	if (!DsaPointerIsValid(index_state->string_hash_dp))
+	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Allocate space for string hash table */
-		index_state->string_hash_dp = dsa_allocate(area, sizeof(TpStringHashTable));
-		if (!DsaPointerIsValid(index_state->string_hash_dp))
+		/* Create new dshash table */
+		string_table = tp_hash_table_create_dsa(area, TP_DEFAULT_HASH_BUCKETS);
+		if (!string_table)
 		{
 			LWLockRelease(&index_state->string_interning_lock);
-			elog(ERROR, "Failed to allocate space for string hash table");
+			elog(ERROR, "Failed to create string hash table");
 			return NULL;
 		}
 
-		/* Initialize the allocated hash table */
-		string_table = dsa_get_address(area, index_state->string_hash_dp);
-		tp_hash_table_init_dsa(string_table, area, TP_DEFAULT_HASH_BUCKETS);
-		elog(DEBUG1, "Created string hash table for index");
+		/* Store the handle for other processes */
+		index_state->string_hash_handle = tp_hash_table_get_handle(string_table);
+		elog(DEBUG1, "Created string hash table for index with handle %lu", 
+			 (unsigned long) index_state->string_hash_handle);
 	}
 	else
 	{
-		string_table = dsa_get_address(area, index_state->string_hash_dp);
+		/* Attach to existing table */
+		string_table = tp_hash_table_attach_dsa(area, index_state->string_hash_handle);
+		if (!string_table)
+		{
+			LWLockRelease(&index_state->string_interning_lock);
+			elog(ERROR, "Failed to attach to string hash table");
+			return NULL;
+		}
 	}
 
 	/* Look up or insert the term in the string table */
@@ -416,6 +430,9 @@ tp_get_or_create_posting_list(TpIndexState * index_state, const char *term)
 
 		elog(DEBUG2, "Created new posting list for term '%s'", term);
 	}
+
+	/* Detach from string table */
+	tp_hash_table_detach_dsa(string_table);
 
 	LWLockRelease(&index_state->string_interning_lock);
 	return posting_list;
@@ -555,8 +572,7 @@ tp_calculate_average_idf(TpIndexState *index_state)
 {
 	TpStringHashTable *string_table;
 	dsa_area *area;
-	dsa_pointer *buckets;
-	uint32 bucket_idx, term_count = 0;
+	uint32 term_count = 0;
 	double idf_sum = 0.0;
 	int32 total_docs = index_state->stats.total_docs;
 
@@ -576,25 +592,29 @@ tp_calculate_average_idf(TpIndexState *index_state)
 	}
 
 	/* Get the string hash table */
-	if (!DsaPointerIsValid(index_state->string_hash_dp))
+	if (index_state->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
 		index_state->stats.average_idf = 0.0f;
 		return;
 	}
 
-	string_table = dsa_get_address(area, index_state->string_hash_dp);
-	buckets = dsa_get_address(area, string_table->buckets_dp);
-
-	/* Iterate through all buckets */
-	for (bucket_idx = 0; bucket_idx < string_table->bucket_count; bucket_idx++)
+	string_table = tp_hash_table_attach_dsa(area, index_state->string_hash_handle);
+	if (!string_table)
 	{
-		dsa_pointer entry_dp = buckets[bucket_idx];
+		elog(WARNING, "Failed to attach to string hash table for IDF calculation");
+		index_state->stats.average_idf = 0.0f;
+		return;
+	}
 
-		/* Walk the chain for this bucket */
-		while (DsaPointerIsValid(entry_dp))
+	/* Iterate through all entries using dshash sequential scan */
+	{
+		dshash_seq_status status;
+		TpStringHashEntry *entry;
+		
+		dshash_seq_init(&status, string_table->dshash, false); /* shared lock */
+
+		while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 		{
-			TpStringHashEntry *entry = dsa_get_address(area, entry_dp);
-
 			/* Calculate IDF for this term if it has a posting list */
 			if (DsaPointerIsValid(entry->posting_list_dp))
 			{
@@ -612,10 +632,11 @@ tp_calculate_average_idf(TpIndexState *index_state)
 					term_count++;
 				}
 			}
-
-			entry_dp = entry->next_dp;
 		}
+
+		dshash_seq_term(&status);
 	}
+	tp_hash_table_detach_dsa(string_table);
 
 	/* Calculate average IDF */
 	if (term_count > 0)

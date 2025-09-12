@@ -18,8 +18,8 @@
 #include "utils/hsearch.h"
 #include "utils/timestamp.h"
 #include "utils/dsa.h"
-#include "storage/dsm_registry.h"
 #include "lib/dshash.h"
+#include "storage/dsm_registry.h"
 
 /*
  * Forward declarations to avoid circular dependencies
@@ -106,7 +106,7 @@ typedef struct TpIndexState
 	LWLock		doc_lengths_lock;		/* Protects document length hash operations */
 
 	/* String hash table stored in this DSA */
-	dsa_pointer	string_hash_dp;			/* DSA pointer to TpStringHashTable */
+	dshash_table_handle string_hash_handle;	/* Handle to dshash string table */
 	int32		total_terms;			/* Total unique terms interned */
 
 	/* Document length hash table stored in this DSA */

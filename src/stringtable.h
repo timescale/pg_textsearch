@@ -1,8 +1,8 @@
 /*-------------------------------------------------------------------------
  *
  * stringtable.h
- *	  Custom hash table implementation for variable-length string interning
- *	  Handles small strings (words/terms) with table-level locking
+ *	  String interning hash table using PostgreSQL's dshash
+ *	  Handles small strings (words/terms) with built-in concurrency
  *
  * IDENTIFICATION
  *	  src/stringtable.h
@@ -14,6 +14,7 @@
 #include "postgres.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
+#include "lib/dshash.h"
 
 /*
  * Forward declarations
@@ -23,40 +24,34 @@ typedef struct TpPostingList TpPostingList;
 typedef struct TpPostingEntry TpPostingEntry;
 
 /*
- * Individual hash entry in DSA
- * Uses dsa_pointer for all references within the DSA
+ * dshash entry structure
+ * Key is the string pointer itself (fixed size)
+ * Hash and comparison functions dereference the pointer to compare actual string content
  */
 struct TpStringHashEntry
 {
-	dsa_pointer	next_dp;		/* DSA pointer to next entry in chain (InvalidDsaPointer = end) */
-	dsa_pointer	string_dp;		/* DSA pointer to string */
+	/* Key part - must be first in struct for dshash */
+	dsa_pointer	string_dp;		/* DSA pointer to string (this is our fixed-size key) */
+	
+	/* Value part - application data */
 	uint32		string_length;	/* Length of string */
-	uint32		hash_value;		/* Cached hash value */
-
-	/* Application data - string interning */
+	uint32		hash_value;		/* Cached hash value for performance */
 	dsa_pointer	posting_list_dp; /* DSA pointer to TpPostingList (InvalidDsaPointer = none) */
 	int32		doc_freq;		/* Document frequency */
 };
 
 /*
- * Custom hash table structure in DSA
- * Stores variable-length strings (typically words/terms from text search)
+ * String table wrapper around dshash
+ * Maintains the same interface as before but uses dshash internally
  */
 typedef struct TpStringHashTable
 {
-	/* Table metadata */
-	uint32		bucket_count;	/* Number of hash buckets (power of 2) */
-	uint32		entry_count;	/* Total entries in table */
-	uint32		collision_count; /* Statistics for monitoring */
-
-	/* Memory management - no limits enforced for now */
+	dshash_table *dshash;		/* The underlying dshash table */
+	dshash_table_handle handle;	/* Handle for sharing across processes */
+	
+	/* Statistics - maintained for compatibility */
+	uint32		entry_count;	/* Total entries in table (approx) */
 	uint32		max_entries;	/* Reserved for future use */
-	
-	/* Hash buckets - array of dsa_pointer to first entry (InvalidDsaPointer = empty) */
-	dsa_pointer	buckets_dp;		/* DSA pointer to array of dsa_pointer (bucket array) */
-	
-	/* Note: With DSA, we don't need separate pools - everything is allocated via dsa_allocate */
-	/* The DSA area handle is stored in the containing TpIndexState structure */
 }			TpStringHashTable;
 
 /*
@@ -70,22 +65,22 @@ typedef struct TpTransactionLockState
 	bool		callback_registered; /* True if xact callback registered */
 }			TpTransactionLockState;
 
-/* No global hash table anymore - each index has its own in DSA */
+/* Each index has its own string table backed by dshash */
 
-/* Hash table creation and initialization with DSA */
+/* Hash table creation and initialization */
 extern TpStringHashTable *tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets);
-extern void tp_hash_table_init_dsa(TpStringHashTable *ht, dsa_area *area, uint32 initial_buckets);
+extern TpStringHashTable *tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle);
+extern void tp_hash_table_detach_dsa(TpStringHashTable *ht);
+extern void tp_hash_table_destroy_dsa(TpStringHashTable *ht);
 
-/* Core hash table operations with DSA */
+/* Core hash table operations */
 extern TpStringHashEntry *tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
 extern TpStringHashEntry *tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
 extern bool tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len);
-extern bool tp_hash_resize_dsa(dsa_area *area, TpStringHashTable *ht, uint32 new_bucket_count);
 extern void tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht);
 
-/* Statistics and debugging */
-extern void tp_hash_stats_dsa(dsa_area *area, TpStringHashTable *ht, uint32 *buckets_used, 
-							  double *avg_chain_length, uint32 *max_chain_length);
+/* Handle management for cross-process sharing */
+extern dshash_table_handle tp_hash_table_get_handle(TpStringHashTable *ht);
 
 /* Posting list management in DSA */
 extern TpPostingList *tp_alloc_posting_list_dsa(dsa_area *area);
@@ -98,7 +93,8 @@ extern TpPostingEntry *tp_get_posting_entries_from_dp(dsa_area *area, dsa_pointe
 extern char *tp_get_string_from_dp(dsa_area *area, dsa_pointer dp);
 
 /* Default sizing constants */
-#define TP_HASH_DEFAULT_BUCKETS		1024	/* Initial bucket count */
-#define TP_HASH_MAX_LOAD_FACTOR		0.75	/* Rehash when load > this */
-/* Note: No need for fixed pool sizes with DSA - memory is allocated dynamically */
+#define TP_HASH_DEFAULT_BUCKETS		1024	/* Initial bucket count (ignored with dshash) */
+
+/* LWLock tranche for string table locking */
+#define TP_STRING_HASH_TRANCHE_ID	LWTRANCHE_FIRST_USER_DEFINED
 

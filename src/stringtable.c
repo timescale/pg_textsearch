@@ -1,11 +1,12 @@
 /*-------------------------------------------------------------------------
  *
  * stringtable.c
- *	  Custom hash table implementation for variable-length string interning
+ *	  String interning hash table using PostgreSQL's dshash
+ *	  Provides efficient string storage with concurrent access
  *
- * This implements a simple hash table for string interning with
- * table-level locking. Memory layout is designed for shared memory usage.
- * Typically handles small strings (words/terms from text search processing).
+ * This implementation uses dshash for the hash table structure while
+ * maintaining the original API. Strings are stored in DSA memory and
+ * referenced by dsa_pointer keys in the hash table.
  *
  * IDENTIFICATION
  *	  src/stringtable.c
@@ -24,396 +25,385 @@
 #include "access/xact.h"
 #include "utils/memutils.h"
 #include "common/hashfn_unstable.h"
+#include "lib/dshash.h"
 
-/* Static function declarations */
 /*
- * ========================================================================
- * DSA-BASED STRING TABLE FUNCTIONS
- * ========================================================================
+ * Hash function for string pointers stored in DSA
+ * Dereferences the pointer and hashes the string content
  */
+static dshash_hash
+tp_string_hash_function(const void *key, size_t keysize, void *arg)
+{
+	const dsa_pointer *string_dp = (const dsa_pointer *) key;
+	dsa_area *area = (dsa_area *) arg;
+	const char *str;
+	uint32 len;
+
+	Assert(keysize == sizeof(dsa_pointer));
+	Assert(DsaPointerIsValid(*string_dp));
+
+	/* Get the string from DSA */
+	str = (const char *) dsa_get_address(area, *string_dp);
+	
+	/* String is stored with length prefix */
+	len = *((uint32 *) str);
+	str += sizeof(uint32);
+
+	/* Hash the string content */
+	return (dshash_hash) hash_bytes((const unsigned char *) str, len);
+}
 
 /*
- * Create and initialize a new hash table in DSA memory
+ * Compare function for string pointers stored in DSA
+ * Dereferences both pointers and compares string content
+ */
+static int
+tp_string_compare_function(const void *a, const void *b, size_t keysize, void *arg)
+{
+	const dsa_pointer *string_dp_a = (const dsa_pointer *) a;
+	const dsa_pointer *string_dp_b = (const dsa_pointer *) b;
+	dsa_area *area = (dsa_area *) arg;
+	const char *str_a, *str_b;
+	uint32 len_a, len_b;
+
+	Assert(keysize == sizeof(dsa_pointer));
+
+	/* Handle identical pointers (same string) */
+	if (*string_dp_a == *string_dp_b)
+		return 0;
+
+	/* Both pointers must be valid */
+	Assert(DsaPointerIsValid(*string_dp_a));
+	Assert(DsaPointerIsValid(*string_dp_b));
+
+	/* Get the strings from DSA */
+	str_a = (const char *) dsa_get_address(area, *string_dp_a);
+	str_b = (const char *) dsa_get_address(area, *string_dp_b);
+	
+	/* Extract length prefixes */
+	len_a = *((uint32 *) str_a);
+	len_b = *((uint32 *) str_b);
+	str_a += sizeof(uint32);
+	str_b += sizeof(uint32);
+
+	/* Compare lengths first */
+	if (len_a != len_b)
+		return (len_a < len_b) ? -1 : 1;
+
+	/* Compare string content */
+	return memcmp(str_a, str_b, len_a);
+}
+
+/*
+ * Copy function for string pointers
+ * Simple pointer copy since we're using DSA pointers as keys
+ */
+static void
+tp_string_copy_function(void *dest, const void *src, size_t keysize, void *arg)
+{
+	Assert(keysize == sizeof(dsa_pointer));
+	*((dsa_pointer *) dest) = *((dsa_pointer *) src);
+}
+
+/*
+ * Create and initialize a new string hash table using dshash
  */
 TpStringHashTable *
 tp_hash_table_create_dsa(dsa_area *area, uint32 initial_buckets)
 {
 	TpStringHashTable *ht;
-	dsa_pointer *buckets;
-	dsa_pointer ht_dp, buckets_dp;
-	uint32 i;
-	
+	dshash_parameters params;
+
 	Assert(area != NULL);
-	Assert(initial_buckets > 0);
-	
-	/* Ensure bucket count is power of 2 */
-	if ((initial_buckets & (initial_buckets - 1)) != 0)
-	{
-		/* Round up to next power of 2 */
-		initial_buckets--;
-		initial_buckets |= initial_buckets >> 1;
-		initial_buckets |= initial_buckets >> 2;
-		initial_buckets |= initial_buckets >> 4;
-		initial_buckets |= initial_buckets >> 8;
-		initial_buckets |= initial_buckets >> 16;
-		initial_buckets++;
-	}
-	
-	/* Allocate main hash table structure */
-	ht_dp = dsa_allocate(area, sizeof(TpStringHashTable));
-	ht = dsa_get_address(area, ht_dp);
-	
-	/* Allocate bucket array */
-	buckets_dp = dsa_allocate(area, initial_buckets * sizeof(dsa_pointer));
-	buckets = dsa_get_address(area, buckets_dp);
-	
-	/* Initialize hash table */
-	ht->bucket_count = initial_buckets;
+
+	/* Set up dshash parameters */
+	params.key_size = sizeof(dsa_pointer);
+	params.entry_size = sizeof(TpStringHashEntry);
+	params.hash_function = tp_string_hash_function;
+	params.compare_function = tp_string_compare_function;
+	params.copy_function = tp_string_copy_function;
+	params.tranche_id = TP_STRING_HASH_TRANCHE_ID;
+
+	/* Allocate wrapper structure */
+	ht = (TpStringHashTable *) MemoryContextAlloc(TopMemoryContext, 
+													sizeof(TpStringHashTable));
+
+	/* Create the dshash table */
+	ht->dshash = dshash_create(area, &params, area);
+	ht->handle = dshash_get_hash_table_handle(ht->dshash);
 	ht->entry_count = 0;
-	ht->collision_count = 0;
-	ht->max_entries = 0; /* Not enforced for now */
-	ht->buckets_dp = buckets_dp;
-	
-	/* Initialize all buckets to empty */
-	for (i = 0; i < initial_buckets; i++)
-		buckets[i] = InvalidDsaPointer;
-		
-	elog(DEBUG2, "Created DSA string table: %u buckets", initial_buckets);
+	ht->max_entries = 0;
+
+	elog(DEBUG2, "Created dshash string table with handle %lu", 
+		 (unsigned long) ht->handle);
+
 	return ht;
 }
 
 /*
- * Initialize an existing hash table structure in DSA
- * Used when attaching to existing DSA segment
+ * Attach to an existing string hash table using its handle
  */
-void
-tp_hash_table_init_dsa(TpStringHashTable *ht, dsa_area *area, uint32 initial_buckets)
+TpStringHashTable *
+tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
 {
-	dsa_pointer *buckets;
-	dsa_pointer buckets_dp;
-	uint32 i;
-	
-	Assert(ht != NULL);
+	TpStringHashTable *ht;
+	dshash_parameters params;
+
 	Assert(area != NULL);
-	Assert(initial_buckets > 0);
-	
-	/* Ensure bucket count is power of 2 */
-	if ((initial_buckets & (initial_buckets - 1)) != 0)
-	{
-		/* Round up to next power of 2 */
-		initial_buckets--;
-		initial_buckets |= initial_buckets >> 1;
-		initial_buckets |= initial_buckets >> 2;
-		initial_buckets |= initial_buckets >> 4;
-		initial_buckets |= initial_buckets >> 8;
-		initial_buckets |= initial_buckets >> 16;
-		initial_buckets++;
-	}
-	
-	/* Allocate bucket array */
-	buckets_dp = dsa_allocate(area, initial_buckets * sizeof(dsa_pointer));
-	buckets = dsa_get_address(area, buckets_dp);
-	
-	/* Initialize hash table */
-	ht->bucket_count = initial_buckets;
-	ht->entry_count = 0;
-	ht->collision_count = 0;
-	ht->max_entries = 0; /* Not enforced for now */
-	ht->buckets_dp = buckets_dp;
-	
-	/* Initialize all buckets to empty */
-	for (i = 0; i < initial_buckets; i++)
-		buckets[i] = InvalidDsaPointer;
-		
-	elog(DEBUG2, "Initialized DSA string table: %u buckets", initial_buckets);
+	Assert(handle != DSHASH_HANDLE_INVALID);
+
+	/* Set up dshash parameters */
+	params.key_size = sizeof(dsa_pointer);
+	params.entry_size = sizeof(TpStringHashEntry);
+	params.hash_function = tp_string_hash_function;
+	params.compare_function = tp_string_compare_function;
+	params.copy_function = tp_string_copy_function;
+	params.tranche_id = TP_STRING_HASH_TRANCHE_ID;
+
+	/* Allocate wrapper structure */
+	ht = (TpStringHashTable *) MemoryContextAlloc(TopMemoryContext, 
+													sizeof(TpStringHashTable));
+
+	/* Attach to the dshash table */
+	ht->dshash = dshash_attach(area, &params, handle, area);
+	ht->handle = handle;
+	ht->entry_count = 0; /* We don't track this accurately */
+	ht->max_entries = 0;
+
+	elog(DEBUG2, "Attached to dshash string table with handle %lu", 
+		 (unsigned long) handle);
+
+	return ht;
 }
 
 /*
- * Clear an existing hash table, removing all entries
- * Note: This doesn't free DSA memory, just makes entries unreachable
+ * Detach from a string hash table
  */
 void
-tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
+tp_hash_table_detach_dsa(TpStringHashTable *ht)
 {
-	dsa_pointer *buckets;
-	uint32 i;
-	
 	Assert(ht != NULL);
-	Assert(area != NULL);
-	
-	/* Get the bucket array */
-	buckets = dsa_get_address(area, ht->buckets_dp);
-	
-	/* Reset statistics */
-	ht->entry_count = 0;
-	ht->collision_count = 0;
-	
-	/* Clear all buckets */
-	for (i = 0; i < ht->bucket_count; i++)
-		buckets[i] = InvalidDsaPointer;
-		
-	elog(DEBUG2, "Cleared DSA string table: %u buckets", ht->bucket_count);
+	Assert(ht->dshash != NULL);
+
+	dshash_detach(ht->dshash);
+	pfree(ht);
+
+	elog(DEBUG2, "Detached from dshash string table");
 }
 
 /*
- * Look up a string in the DSA hash table
+ * Destroy a string hash table
+ */
+void
+tp_hash_table_destroy_dsa(TpStringHashTable *ht)
+{
+	Assert(ht != NULL);
+	Assert(ht->dshash != NULL);
+
+	dshash_destroy(ht->dshash);
+	pfree(ht);
+
+	elog(DEBUG2, "Destroyed dshash string table");
+}
+
+/*
+ * Get the handle for sharing the table across processes
+ */
+dshash_table_handle
+tp_hash_table_get_handle(TpStringHashTable *ht)
+{
+	Assert(ht != NULL);
+	return ht->handle;
+}
+
+/*
+ * Allocate a string in DSA memory with length prefix
+ * Returns the dsa_pointer to the allocated string
+ */
+static dsa_pointer
+tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
+{
+	dsa_pointer string_dp;
+	char *string_data;
+	uint32 *length_ptr;
+
+	/* Allocate space for length prefix + string */
+	string_dp = dsa_allocate(area, sizeof(uint32) + len);
+	string_data = (char *) dsa_get_address(area, string_dp);
+
+	/* Store length prefix */
+	length_ptr = (uint32 *) string_data;
+	*length_ptr = len;
+
+	/* Copy string data */
+	memcpy(string_data + sizeof(uint32), str, len);
+
+	return string_dp;
+}
+
+/*
+ * Look up a string in the hash table
  * Returns NULL if not found
+ * 
+ * Creates a temporary string allocation to use as the lookup key.
+ * dshash will use our custom hash/compare functions that dereference 
+ * the pointer and compare actual string content.
  */
 TpStringHashEntry *
 tp_hash_lookup_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	uint32 hash;
-	uint32 bucket;
-	dsa_pointer entry_dp;
+	dsa_pointer temp_string_dp;
 	TpStringHashEntry *entry;
-	dsa_pointer *buckets;
-	
+
 	Assert(area != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
-	
-	if (len == 0 || ht->entry_count == 0)
+
+	if (len == 0)
 		return NULL;
-		
-	/* Calculate hash and bucket */
-	hash = hash_bytes((const unsigned char *) str, len);
-	bucket = hash & (ht->bucket_count - 1);
-	
-	/* Get bucket array */
-	if (!DsaPointerIsValid(ht->buckets_dp))
-		return NULL;
-	buckets = dsa_get_address(area, ht->buckets_dp);
-	
-	/* Walk the bucket chain */
-	entry_dp = buckets[bucket];
-	while (DsaPointerIsValid(entry_dp))
+
+	/* Create temporary string allocation to use as lookup key */
+	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+
+	/* Look up using the temporary string pointer as key */
+	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &temp_string_dp, false);
+
+	/* Free the temporary string */
+	dsa_free(area, temp_string_dp);
+
+	if (entry)
 	{
-		entry = dsa_get_address(area, entry_dp);
-		
-		/* Check for match */
-		if (entry->hash_value == hash &&
-			entry->string_length == len &&
-			memcmp(dsa_get_address(area, entry->string_dp), str, len) == 0)
-		{
-			return entry;
-		}
-		
-		entry_dp = entry->next_dp;
+		/* Release the lock acquired by dshash_find */
+		dshash_release_lock(ht->dshash, entry);
 	}
-	
-	return NULL;
+
+	return entry;
 }
 
 /*
- * Insert a string into the DSA hash table
+ * Insert a string into the hash table
  * Returns the entry (existing or new)
+ * 
+ * Creates a temporary string allocation for lookup. If not found,
+ * creates a permanent allocation and stores it in the entry.
  */
 TpStringHashEntry *
 tp_hash_insert_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	uint32 hash;
-	uint32 bucket;
-	dsa_pointer entry_dp, string_dp;
+	dsa_pointer temp_string_dp;
 	TpStringHashEntry *entry;
-	TpStringHashEntry *new_entry;
-	dsa_pointer *buckets;
-	char *string_data;
-	
+	bool found;
+
 	Assert(area != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
 	Assert(len > 0);
-	
-	/* First check if it already exists */
-	entry = tp_hash_lookup_dsa(area, ht, str, len);
-	if (entry != NULL)
-		return entry;
-	
-	/* Calculate hash and bucket */
-	hash = hash_bytes((const unsigned char *) str, len);
-	bucket = hash & (ht->bucket_count - 1);
-	
-	/* Allocate new entry and string storage */
-	entry_dp = dsa_allocate(area, sizeof(TpStringHashEntry));
-	string_dp = dsa_allocate(area, len);
-	
-	new_entry = dsa_get_address(area, entry_dp);
-	string_data = dsa_get_address(area, string_dp);
-	
-	/* Copy string data */
-	memcpy(string_data, str, len);
-	
-	/* Initialize entry */
-	new_entry->next_dp = InvalidDsaPointer;
-	new_entry->string_dp = string_dp;
-	new_entry->string_length = len;
-	new_entry->hash_value = hash;
-	new_entry->posting_list_dp = InvalidDsaPointer;
-	new_entry->doc_freq = 0;
-	
-	/* Get bucket array and insert at head of chain */
-	buckets = dsa_get_address(area, ht->buckets_dp);
-	if (DsaPointerIsValid(buckets[bucket]))
-		ht->collision_count++;
-	
-	new_entry->next_dp = buckets[bucket];
-	buckets[bucket] = entry_dp;
-	
-	/* Update table statistics */
-	ht->entry_count++;
-	
-	elog(DEBUG3, "Inserted DSA string entry: '%.*s' (len=%zu, hash=%u, bucket=%u)", 
-		 (int)len, str, len, hash, bucket);
-	
-	return new_entry;
+
+	/* Create temporary string allocation to use as lookup key */
+	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+
+	/* Try to find or insert using temporary string as key */
+	entry = (TpStringHashEntry *) dshash_find_or_insert(ht->dshash, &temp_string_dp, &found);
+
+	if (!found)
+	{
+		/* New entry - use the temporary allocation as the permanent one */
+		uint32 hash_value = hash_bytes((const unsigned char *) str, len);
+		
+		entry->string_dp = temp_string_dp;
+		entry->string_length = len;
+		entry->hash_value = hash_value;
+		entry->posting_list_dp = InvalidDsaPointer;
+		entry->doc_freq = 0;
+
+		ht->entry_count++;
+
+		elog(DEBUG3, "Inserted new string entry: '%.*s' (len=%zu, hash=%u)", 
+			 (int)len, str, len, hash_value);
+	}
+	else
+	{
+		/* Found existing entry - free the temporary allocation */
+		dsa_free(area, temp_string_dp);
+		
+		elog(DEBUG3, "Found existing string entry: '%.*s' (len=%zu)", 
+			 (int)len, str, len);
+	}
+
+	/* Release the lock acquired by dshash_find_or_insert */
+	dshash_release_lock(ht->dshash, entry);
+
+	return entry;
 }
 
 /*
- * Delete a string from the DSA hash table
+ * Delete a string from the hash table
  * Returns true if found and deleted, false if not found
  */
 bool
 tp_hash_delete_dsa(dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
 {
-	uint32 hash;
-	uint32 bucket;
-	dsa_pointer entry_dp, prev_dp;
-	TpStringHashEntry *entry, *prev_entry;
-	dsa_pointer *buckets;
-	
+	dsa_pointer temp_string_dp;
+	TpStringHashEntry *entry;
+
 	Assert(area != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
-	
-	if (len == 0 || ht->entry_count == 0)
+
+	if (len == 0)
 		return false;
-		
-	/* Calculate hash and bucket */
-	hash = hash_bytes((const unsigned char *) str, len);
-	bucket = hash & (ht->bucket_count - 1);
+
+	/* Create temporary string allocation to use as lookup key */
+	temp_string_dp = tp_alloc_string_dsa(area, str, len);
+
+	/* Find the entry using temporary string as key */
+	entry = (TpStringHashEntry *) dshash_find(ht->dshash, &temp_string_dp, true); /* exclusive lock */
 	
-	/* Get bucket array */
-	if (!DsaPointerIsValid(ht->buckets_dp))
-		return false;
-	buckets = dsa_get_address(area, ht->buckets_dp);
-	
-	/* Find the entry in the chain */
-	entry_dp = buckets[bucket];
-	prev_dp = InvalidDsaPointer;
-	
-	while (DsaPointerIsValid(entry_dp))
+	/* Free the temporary string */
+	dsa_free(area, temp_string_dp);
+
+	if (entry)
 	{
-		entry = dsa_get_address(area, entry_dp);
+		/* Found the entry - delete it */
+		dsa_free(area, entry->string_dp);  /* Free the string data first */
+		dshash_delete_entry(ht->dshash, entry);  /* This releases the lock too */
 		
-		/* Check for match */
-		if (entry->hash_value == hash &&
-			entry->string_length == len &&
-			memcmp(dsa_get_address(area, entry->string_dp), str, len) == 0)
-		{
-			/* Found it - remove from chain */
-			if (DsaPointerIsValid(prev_dp))
-			{
-				prev_entry = dsa_get_address(area, prev_dp);
-				prev_entry->next_dp = entry->next_dp;
-			}
-			else
-			{
-				/* First in chain */
-				buckets[bucket] = entry->next_dp;
-			}
-			
-			/* Free the string data and entry */
-			dsa_free(area, entry->string_dp);
-			dsa_free(area, entry_dp);
-			
-			/* Update statistics */
-			ht->entry_count--;
-			
-			elog(DEBUG3, "Deleted DSA string entry: '%.*s'", (int)len, str);
-			return true;
-		}
-		
-		prev_dp = entry_dp;
-		entry_dp = entry->next_dp;
+		ht->entry_count--;
+		elog(DEBUG3, "Deleted string entry: '%.*s'", (int)len, str);
+		return true;
 	}
-	
+
 	return false;
 }
 
 /*
- * Resize the DSA hash table to a new bucket count
- * Returns true if successful, false if failed
+ * Clear the hash table, removing all entries
+ * Note: This doesn't free individual string allocations
  */
-bool
-tp_hash_resize_dsa(dsa_area *area, TpStringHashTable *ht, uint32 new_bucket_count)
+void
+tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
 {
-	dsa_pointer old_buckets_dp, new_buckets_dp;
-	dsa_pointer *old_buckets, *new_buckets;
-	uint32 old_bucket_count;
-	uint32 i;
-	
+	dshash_seq_status status;
+	TpStringHashEntry *entry;
+
 	Assert(area != NULL);
 	Assert(ht != NULL);
-	Assert(new_bucket_count > 0);
-	
-	/* Ensure new bucket count is power of 2 */
-	if ((new_bucket_count & (new_bucket_count - 1)) != 0)
+
+	/* Iterate through all entries and delete them */
+	dshash_seq_init(&status, ht->dshash, true); /* exclusive for deletion */
+
+	while ((entry = (TpStringHashEntry *) dshash_seq_next(&status)) != NULL)
 	{
-		/* Round up to next power of 2 */
-		new_bucket_count--;
-		new_bucket_count |= new_bucket_count >> 1;
-		new_bucket_count |= new_bucket_count >> 2;
-		new_bucket_count |= new_bucket_count >> 4;
-		new_bucket_count |= new_bucket_count >> 8;
-		new_bucket_count |= new_bucket_count >> 16;
-		new_bucket_count++;
-	}
-	
-	if (new_bucket_count == ht->bucket_count)
-		return true; /* Nothing to do */
-	
-	/* Allocate new bucket array */
-	new_buckets_dp = dsa_allocate(area, new_bucket_count * sizeof(dsa_pointer));
-	new_buckets = dsa_get_address(area, new_buckets_dp);
-	
-	/* Initialize new buckets */
-	for (i = 0; i < new_bucket_count; i++)
-		new_buckets[i] = InvalidDsaPointer;
-	
-	/* Save old bucket info */
-	old_buckets_dp = ht->buckets_dp;
-	old_buckets = dsa_get_address(area, old_buckets_dp);
-	old_bucket_count = ht->bucket_count;
-	
-	/* Update table to use new buckets */
-	ht->buckets_dp = new_buckets_dp;
-	ht->bucket_count = new_bucket_count;
-	ht->collision_count = 0; /* Will be recalculated */
-	
-	/* Rehash all entries */
-	for (i = 0; i < old_bucket_count; i++)
-	{
-		dsa_pointer entry_dp = old_buckets[i];
+		/* Free the string data */
+		dsa_free(area, entry->string_dp);
 		
-		while (DsaPointerIsValid(entry_dp))
-		{
-			TpStringHashEntry *entry = dsa_get_address(area, entry_dp);
-			dsa_pointer next_dp = entry->next_dp;
-			uint32 new_bucket = entry->hash_value & (new_bucket_count - 1);
-			
-			/* Insert into new bucket */
-			if (DsaPointerIsValid(new_buckets[new_bucket]))
-				ht->collision_count++;
-			entry->next_dp = new_buckets[new_bucket];
-			new_buckets[new_bucket] = entry_dp;
-			
-			entry_dp = next_dp;
-		}
+		/* Delete current entry */
+		dshash_delete_current(&status);
 	}
-	
-	/* Free old bucket array */
-	dsa_free(area, old_buckets_dp);
-	
-	elog(DEBUG2, "Resized DSA string table: %u -> %u buckets", old_bucket_count, new_bucket_count);
-	return true;
+
+	dshash_seq_term(&status);
+
+	ht->entry_count = 0;
+
+	elog(DEBUG2, "Cleared dshash string table");
 }
