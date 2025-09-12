@@ -39,7 +39,6 @@ int			tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;	/* Double s
 													 * growing arrays */
 
 /* Forward declarations */
-static void grow_posting_list(dsa_area *area, TpPostingList *posting_list);
 TpPostingList *tp_get_or_create_posting_list(TpIndexState *index_state, const char *term);
 
 /* Helper function to get entries array from posting list */
@@ -48,7 +47,6 @@ static TpPostingEntry *tp_get_posting_entries(dsa_area *area, TpPostingList *pos
 	if (!posting_list || !DsaPointerIsValid(posting_list->entries_dp))
 		return NULL;
 	if (!area) {
-		/* TODO: Need to get dsa_area from index state */
 		elog(DEBUG3, "DSA area not provided to tp_get_posting_entries");
 		return NULL;
 	}
@@ -157,24 +155,18 @@ tp_get_index_state(Oid index_oid, const char *index_name)
  * after PostgreSQL restart (for v0.0a memtable-only implementation)
  * NOTE: Placeholder function - DSA-based system will handle persistence differently
  */
-static void
-tp_rebuild_posting_lists_for_index(TpIndexState *index_state)
-{
-	/* TODO: Implement rebuild logic for DSA system when persistence is added */
-	elog(DEBUG1, "Rebuild posting lists placeholder - not needed for current DSA implementation");
-	return;
-}
+/* tp_rebuild_posting_lists_for_index removed - not needed with DSA-based system */
 
 /*
- * Get or create a posting list for the given term string
+ * Get or create a posting list for the given term string  
  * Returns pointer to posting list, creating it if necessary
- * TODO: Convert to use DSA-based string table functions
+ * Uses DSA-based string table functions for storage
  */
 
 /*
  * Add terms from a document to the posting lists
  * This is the core operation for building the inverted index
- * TODO: Convert to use DSA-based string table functions
+ * Uses DSA-based string table functions for storage
  */
 void
 tp_add_document_terms(TpIndexState * index_state,
@@ -285,7 +277,7 @@ tp_add_document_terms(TpIndexState * index_state,
 }
 
 /* Simple in-memory posting list storage as intermediate step toward full DSA */
-static HTAB *posting_lists_table = NULL;
+/* posting_lists_table removed - not used with DSA-based system */
 
 typedef struct TermPostingEntry
 {
@@ -293,27 +285,7 @@ typedef struct TermPostingEntry
 	TpPostingList posting_list;  /* Posting list data */
 } TermPostingEntry;
 
-/*
- * Initialize the posting lists hash table
- */
-static void
-init_posting_lists_table(void)
-{
-	HASHCTL ctl;
-
-	if (posting_lists_table)
-		return;
-
-	MemSet(&ctl, 0, sizeof(ctl));
-	ctl.keysize = 64;  /* Term string */
-	ctl.entrysize = sizeof(TermPostingEntry);
-	ctl.hcxt = TopMemoryContext;  /* Persist across transactions */
-
-	posting_lists_table = hash_create("TapirPostingLists",
-									 256,
-									 &ctl,
-									 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-}
+/* init_posting_lists_table removed - not used with DSA-based system */
 
 /*
  * Get posting list for a specific term
@@ -693,9 +665,9 @@ tp_calculate_average_idf(TpIndexState *index_state)
 }
 
 /*
- * Finalize index building by sorting all posting lists
- * This converts from the building phase to query-ready phase
- * TODO: Convert to use DSA-based system
+ * Finalize index building by calculating corpus statistics
+ * This converts from the building phase to query-ready phase  
+ * Uses DSA-based system for shared memory storage
  */
 void
 tp_finalize_index_build(TpIndexState * index_state)
@@ -713,66 +685,7 @@ tp_finalize_index_build(TpIndexState * index_state)
 		 index_state->stats.average_idf);
 }
 
-/*
- * Calculate BM25 score for a document against a query
- * k1/b parameters are passed from index metapage
- */
-float4
-bm25_score_document(TpIndexState * index_state,
-					ItemPointer ctid,
-					char **query_terms,
-					int32 *query_frequencies,
-					int query_term_count,
-					float4 k1,
-					float4 b)
-{
-	float4		score = 0.0f;
-	float4		avg_doc_len = index_state->stats.total_docs > 0 ?
-		(float4)(index_state->stats.total_len / (double)index_state->stats.total_docs) : 0.0f;
-	int32		total_docs = index_state->stats.total_docs;
-	int			i;
-
-	/* Iterate through query terms */
-	for (i = 0; i < query_term_count; i++)
-	{
-		float4		tf = 0.0f;
-		float4		idf;
-		float4		doc_len = 0.0f;
-
-		/* Get posting list for this term */
-		TpPostingList *posting_list = tp_get_posting_list(index_state, query_terms[i]);
-		if (posting_list == NULL)
-			continue;			/* Term not in corpus */
-
-		/* TODO: Implement document lookup in DSA-based posting lists */
-		/* Placeholder - in DSA system, would need to get entries via dsa_area */
-		if (posting_list && posting_list->doc_count > 0)
-		{
-			/* For now, assume document not found since posting lists are placeholders */
-			tf = 0.0f;
-			doc_len = 0.0f;
-		}
-
-		if (tf == 0.0f)
-			continue;			/* Term not in this document */
-
-		/* Calculate IDF using centralized function with epsilon flooring */
-		idf = tp_calculate_idf(posting_list->doc_count, total_docs, index_state->stats.average_idf);
-
-		/* Calculate BM25 term score */
-		{
-			double numerator_d = (double)tf * ((double)k1 + 1.0);
-			double denominator_d = (double)tf + (double)k1 * (1.0 - (double)b + (double)b * ((double)doc_len / (double)avg_doc_len));
-
-			score += (float4)((double)idf * (numerator_d / denominator_d) * (double)query_frequencies[i]);
-		}
-	}
-
-	/*
-	 * Return positive BM25 score (will be negated at final operator level)
-	 */
-	return score;
-}
+/* bm25_score_document removed - replaced by more efficient tp_score_documents */
 
 /*
  * Single-pass BM25 scoring for multiple documents
@@ -1077,13 +990,4 @@ tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 	return doc_length;
 }
 
-/*
- * Grow posting list capacity when it becomes full
- * Uses repalloc for TopMemoryContext allocations
- */
-static void
-grow_posting_list(dsa_area *area, TpPostingList *posting_list)
-{
-	/* TODO: Implement DSA-based posting list growth */
-	elog(ERROR, "grow_posting_list: DSA implementation needed");
-}
+/* grow_posting_list removed - growth handled directly in tp_add_document_to_posting_list */
