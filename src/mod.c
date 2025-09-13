@@ -35,10 +35,6 @@ static void tp_object_access_hook(
 void
 _PG_init(void)
 {
-	/* Debug trace to detect if _PG_init is called during sanitizer failures */
-	fprintf(stderr, "TAPIR DEBUG: _PG_init() called\n");
-	fflush(stderr);
-
 	/*
 	 * Define GUC parameters
 	 */

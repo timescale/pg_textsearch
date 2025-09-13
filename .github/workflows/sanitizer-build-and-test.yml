@@ -14,13 +14,13 @@ env:
   extra_packages: "clang-15 llvm-15"
   CC: "clang-15"
   CXX: "clang-15"
-  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
-  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
+  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
   LDFLAGS: "-fsanitize=address,undefined"
 
   # Sanitizer options - create logs directory for better debugging
-  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=0 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1 symbolize=1"
-  UBSAN_OPTIONS: "halt_on_error=0 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
+  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=1 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
+  UBSAN_OPTIONS: "halt_on_error=1 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
 
 jobs:
   sanitizer:
@@ -32,11 +32,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
-
-        # Enable core dumps
-        ulimit -c unlimited
-        echo "core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
-        sudo sysctl -w kernel.core_pattern="core.%e.%p"
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -130,9 +125,6 @@ jobs:
       run: |
         export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
 
-        # Enable core dumps for this session
-        ulimit -c unlimited
-
         # Set up test database
         rm -rf tmp_sanitizer_test
         mkdir -p tmp_sanitizer_test
@@ -141,15 +133,14 @@ jobs:
         # Configure PostgreSQL
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
-        echo "max_stack_depth = 15MB" >> tmp_sanitizer_test/data/postgresql.conf
-        echo "log_min_messages = debug1" >> tmp_sanitizer_test/data/postgresql.conf
-        echo "log_statement = all" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
 
+        # Create test database and run tests
+        createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression
+
         echo "Running SQL regression tests under sanitizer..."
-        # Skip manual createdb - let regression framework handle it like TimescaleDB does
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
         # Run shell-based tests under sanitizer (more likely to find memory issues)
@@ -203,5 +194,4 @@ jobs:
         path: |
           tmp_sanitizer_test/
           test/scripts/tmp_*
-          core.*
         retention-days: 7
