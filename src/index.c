@@ -919,23 +919,34 @@ tp_rescan(
 				else
 				{
 					/*
-					 * Assume tpquery type - text <@> tpquery operation
-					 * We can't easily get the tpquery type OID at runtime,
-					 * so we assume anything that's not TEXTOID is tpquery
+					 * Handle tpquery type - text <@> tpquery operation
+					 * Since we can't easily get the tpquery type OID at
+					 * runtime, we validate by attempting to safely cast and
+					 * validate the structure
 					 */
 					TpQuery *query;
 					char	*index_name;
 					char	*current_index_name;
+					void	*ptr;
+
+					/* First check if the pointer looks reasonable */
+					ptr = DatumGetPointer(query_datum);
+					if (!ptr)
+					{
+						elog(ERROR, "null pointer passed as query argument");
+					}
 
 					PG_TRY();
 					{
-						query = (TpQuery *)DatumGetPointer(query_datum);
+						query = (TpQuery *)ptr;
 
 						/* Validate it's a proper tpquery by checking varlena
-						 * header */
+						 * header and basic structure constraints */
 						if (VARATT_IS_EXTENDED(query) ||
 							VARSIZE_ANY(query) <
-									VARHDRSZ + sizeof(int32) + sizeof(int32))
+									VARHDRSZ + sizeof(int32) + sizeof(int32) ||
+							VARSIZE_ANY(query) >
+									1000000) /* Sanity check for size */
 							ereport(ERROR,
 									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 									 errmsg("invalid tpquery data")));
@@ -1022,6 +1033,10 @@ tp_endscan(IndexScanDesc scan)
 	{
 		if (so->scan_context)
 			MemoryContextDelete(so->scan_context);
+
+		/* Free query vector if it was allocated */
+		if (so->query_vector)
+			pfree(so->query_vector);
 
 		pfree(so);
 		scan->opaque = NULL;
@@ -1130,6 +1145,10 @@ tp_execute_scoring_query(IndexScanDesc scan)
 					PointerGetDatum(index_name_text));
 
 			query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
+
+			/* Free existing query vector if present */
+			if (so->query_vector)
+				pfree(so->query_vector);
 
 			/* Store the converted vector for this query execution */
 			so->query_vector = query_vector;

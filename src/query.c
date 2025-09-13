@@ -86,6 +86,17 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	index_name_len = pq_getmsgint(buf, sizeof(int32));
 	query_text_len = pq_getmsgint(buf, sizeof(int32));
 
+	/* Validate lengths to prevent unbounded memory allocation */
+	if (index_name_len < 0 || index_name_len > 1000000) /* 1MB limit */
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid index name length: %d", index_name_len)));
+
+	if (query_text_len < 0 || query_text_len > 1000000) /* 1MB limit */
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid query text length: %d", query_text_len)));
+
 	if (index_name_len > 0)
 	{
 		index_name = palloc(index_name_len + 1);
