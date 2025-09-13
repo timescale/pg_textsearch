@@ -38,7 +38,7 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  Tapir index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
 -- Verify basic search works
 SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC;
  id |                content                 |  score  
 ----+----------------------------------------+---------
@@ -59,7 +59,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database concurrent processing improves performance', 'tech');
 -- Search to verify posting lists updated correctly
 SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 5;
  id |                content                 |  score  
@@ -116,7 +116,7 @@ ORDER BY source, id;
 Test 4: Bulk insert stress test
 -- Generate series of documents with overlapping terms
 INSERT INTO concurrent_test_docs (content, category)
-SELECT 
+SELECT
     'test document number ' || i || ' contains database and concurrent terms',
     'stress'
 FROM generate_series(1, 50) i;
@@ -129,9 +129,9 @@ FROM concurrent_test_docs;
 (1 row)
 
 -- Test top results still make sense
-SELECT id, substring(content, 1, 50) || '...' as content_preview, 
+SELECT id, substring(content, 1, 50) || '...' as content_preview,
        ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 8;
  id |                    content_preview                    |  score  
@@ -153,10 +153,9 @@ Test 5: Mixed insert and search operations
 BEGIN;
     INSERT INTO concurrent_test_docs (content, category) VALUES
     ('new concurrent database research paper', 'research');
-    
     -- Search within same transaction
     SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
-    FROM concurrent_test_docs 
+    FROM concurrent_test_docs
     ORDER BY score DESC
     LIMIT 3;
  id |             content              | score  
@@ -169,7 +168,7 @@ BEGIN;
 COMMIT;
 -- Verify the insert is visible after commit
 SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 3;
  id |             content              | score  
@@ -183,12 +182,12 @@ LIMIT 3;
 \echo 'Test 6: Update operations'
 Test 6: Update operations
 -- Update some documents to test posting list maintenance
-UPDATE concurrent_test_docs 
+UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 -- Verify search finds updated documents
 SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC;
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
@@ -285,7 +284,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('testing consistency with exact same terms', 'test');
 -- Search should find all variants
 SELECT id, content, ROUND((content <@> to_tpquery('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+FROM concurrent_test_docs
 ORDER BY score DESC, id;
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
@@ -400,7 +399,7 @@ ORDER BY simple_score DESC;
 (5 rows)
 
 -- Verify both indexes exist and function independently
-SELECT 
+SELECT
     i.indexrelid::regclass as index_name,
     pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size
 FROM pg_index i
@@ -419,13 +418,13 @@ DROP TABLE multi_idx_test CASCADE;
 -- Final verification
 \echo 'Final verification: Index statistics'
 Final verification: Index statistics
-SELECT 
+SELECT
     'concurrent_test_docs' as table_name,
     COUNT(*) as total_docs,
     COUNT(DISTINCT content) as unique_docs
 FROM concurrent_test_docs
 UNION ALL
-SELECT 
+SELECT
     'concurrent_test_docs2' as table_name,
     COUNT(*) as total_docs,
     COUNT(DISTINCT content) as unique_docs

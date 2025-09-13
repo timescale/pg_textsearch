@@ -141,7 +141,7 @@ SELECT COUNT(*) as count_before_delete
 FROM concurrent_test_docs;
 
 -- Delete some stress test documents
-DELETE FROM concurrent_test_docs
+DELETE FROM concurrent_test_docs 
 WHERE content LIKE 'test document number%' AND id % 5 = 0;
 
 -- Count after delete to verify cleanup
