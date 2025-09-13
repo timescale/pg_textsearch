@@ -45,6 +45,8 @@ Datum tpvector_eq(PG_FUNCTION_ARGS);
 
 /* Convenience functions */
 Datum tpvector_text_score(PG_FUNCTION_ARGS);
+Datum tp_text_text_score(PG_FUNCTION_ARGS);
+Datum text_tpvector_score(PG_FUNCTION_ARGS);
 
 /* Utility functions */
 TpVector *create_tpvector_from_strings(

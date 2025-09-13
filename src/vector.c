@@ -51,6 +51,8 @@ PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
 PG_FUNCTION_INFO_V1(tpvector_text_score);
+PG_FUNCTION_INFO_V1(tp_text_text_score);
+PG_FUNCTION_INFO_V1(text_tpvector_score);
 
 /*
  * tpvector input function
@@ -1070,10 +1072,74 @@ to_tpvector(PG_FUNCTION_ARGS)
 }
 
 /*
- * Score text against a tpvector query
+ * Score tpvector document against text query (tpvector <@> text operator)
  */
 Datum
 tpvector_text_score(PG_FUNCTION_ARGS)
+{
+	TpVector *doc_vec	 = (TpVector *)PG_GETARG_POINTER(0);
+	text	 *query_text = PG_GETARG_TEXT_PP(1);
+
+	char  *index_name;
+	text  *index_name_text;
+	Datum  query_vec_datum;
+	Datum  score_datum;
+	float8 score_result;
+
+	/* Extract index name from tpvector document */
+	index_name		= get_tpvector_index_name(doc_vec);
+	index_name_text = cstring_to_text(index_name);
+
+	/* Create query vector using to_tpvector */
+	query_vec_datum = DirectFunctionCall2(
+			to_tpvector,
+			PointerGetDatum(query_text),
+			PointerGetDatum(index_name_text));
+
+	/* Calculate score using tpvector_score (doc, query) */
+	score_datum = DirectFunctionCall2(
+			tpvector_score, PointerGetDatum(doc_vec), query_vec_datum);
+
+	score_result = DatumGetFloat8(score_datum);
+
+	pfree(index_name);
+
+	/* tpvector_score already returns negative score, don't negate again */
+	PG_RETURN_FLOAT8(score_result);
+}
+
+/*
+ * Score text against text (text <@> text operator)
+ *
+ * Note: This function is primarily intended for use within index scans where
+ * the corpus context is provided by the selected Tapir index. When called
+ * outside an index scan, it cannot determine the appropriate corpus and will
+ * return 0.0 with a warning.
+ */
+Datum
+tp_text_text_score(PG_FUNCTION_ARGS)
+{
+	text *document_text __attribute__((unused)) = PG_GETARG_TEXT_PP(0);
+	text *query_text __attribute__((unused))	= PG_GETARG_TEXT_PP(1);
+
+	/*
+	 * This operator is designed to work within index scans where the corpus
+	 * context is available. Outside that context, we cannot determine which
+	 * index/corpus to use for scoring.
+	 */
+	elog(WARNING,
+		 "text <@> text operator called outside index scan context - "
+		 "returning 0.0. Use tpvector <@> text for standalone scoring.");
+
+	PG_RETURN_FLOAT8(0.0);
+}
+
+/*
+ * Score text document against tpvector query (text <@> tpvector operator)
+ * This is the commutative version of tpvector_text_score.
+ */
+Datum
+text_tpvector_score(PG_FUNCTION_ARGS)
 {
 	text	 *document_text = PG_GETARG_TEXT_PP(0);
 	TpVector *query_vec		= (TpVector *)PG_GETARG_POINTER(1);
@@ -1084,7 +1150,7 @@ tpvector_text_score(PG_FUNCTION_ARGS)
 	Datum  score_datum;
 	float8 score_result;
 
-	/* Extract index name from tpvector */
+	/* Extract index name from tpvector query */
 	index_name		= get_tpvector_index_name(query_vec);
 	index_name_text = cstring_to_text(index_name);
 
@@ -1094,7 +1160,7 @@ tpvector_text_score(PG_FUNCTION_ARGS)
 			PointerGetDatum(document_text),
 			PointerGetDatum(index_name_text));
 
-	/* Calculate score using tpvector_score */
+	/* Calculate score using tpvector_score (doc, query) */
 	score_datum = DirectFunctionCall2(
 			tpvector_score, doc_vec_datum, PointerGetDatum(query_vec));
 

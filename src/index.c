@@ -904,50 +904,18 @@ tp_rescan(
 			/* Check for <@> operator strategy */
 			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 			{
-				/*
-				 * Extract query from ORDER BY key - it's a tpvector, not
-				 * text
-				 */
-				Datum	  query_datum  = orderby->sk_argument;
-				TpVector *query_vector = (TpVector *)DatumGetPointer(
-						query_datum);
+				Datum query_datum = orderby->sk_argument;
 				char *query_cstr;
 
-				/* Store the original query vector in scan state */
-				so->query_vector = query_vector;
-
-				/* Extract the original query text from the vector structure */
-				/* For now, we'll reconstruct the query from the vector terms
+				/*
+				 * For text <@> text operations, the query is always text
+				 * and always on the right side. Simply extract as text.
 				 */
-				if (query_vector && query_vector->entry_count > 0)
-				{
-					StringInfo	   query_buf   = makeStringInfo();
-					TpVectorEntry *entries_ptr = TPVECTOR_ENTRIES_PTR(
-							query_vector);
-					char *ptr	= (char *)entries_ptr;
-					bool  first = true;
+				text *query_text = DatumGetTextPP(query_datum);
+				query_cstr		 = text_to_cstring(query_text);
 
-					for (int j = 0; j < query_vector->entry_count; j++)
-					{
-						TpVectorEntry *entry = (TpVectorEntry *)ptr;
-
-						if (!first)
-							appendStringInfoChar(query_buf, ' ');
-						appendStringInfoString(query_buf, entry->lexeme);
-						first = false;
-
-						/* Move to next entry - ensure proper alignment */
-						ptr += sizeof(TpVectorEntry) +
-							   MAXALIGN(entry->lexeme_len);
-					}
-					query_cstr = pstrdup(query_buf->data);
-					pfree(query_buf->data);
-					pfree(query_buf);
-				}
-				else
-				{
-					query_cstr = pstrdup("");
-				}
+				/* Clear query vector since we're using text directly */
+				so->query_vector = NULL;
 
 				/* Store query for processing during gettuple */
 				if (so->query_text)
@@ -1087,12 +1055,32 @@ tp_execute_scoring_query(IndexScanDesc scan)
 			return false;
 		}
 
-		/* Use the original query vector stored during rescan */
+		/* Use the original query vector stored during rescan, or create one
+		 * from text */
 		query_vector = so->query_vector;
+
+		if (!query_vector && so->query_text)
+		{
+			/* We have a text query - convert it to a vector using the index */
+			char *index_name = RelationGetRelationName(scan->indexRelation);
+			text *index_name_text  = cstring_to_text(index_name);
+			text *query_text_datum = cstring_to_text(so->query_text);
+
+			Datum query_vec_datum = DirectFunctionCall2(
+					to_tpvector,
+					PointerGetDatum(query_text_datum),
+					PointerGetDatum(index_name_text));
+
+			query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
+
+			/* Store the converted vector for this query execution */
+			so->query_vector = query_vector;
+		}
 
 		if (!query_vector)
 		{
-			elog(WARNING, "No query vector available in scan state");
+			elog(WARNING,
+				 "No query available in scan state (neither vector nor text)");
 			pfree(metap);
 			return false;
 		}

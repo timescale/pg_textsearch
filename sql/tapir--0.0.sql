@@ -71,11 +71,24 @@ CREATE OPERATOR = (
     HASHES
 );
 
--- BM25 scoring function for text <@> tpvector operations
-CREATE FUNCTION tpvector_text_score(left_text text, right_vector tpvector)
+-- BM25 scoring function for tpvector <@> text operations (document <@> query)
+CREATE FUNCTION tpvector_text_score(left_vector tpvector, right_text text)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'tpvector_text_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- BM25 scoring function for text <@> text operations (primarily for index scans)
+CREATE FUNCTION tp_text_text_score(left_text text, right_text text)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'tp_text_text_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- BM25 scoring function for text <@> tpvector operations (document <@> query, commutative)
+CREATE FUNCTION text_tpvector_score(left_text text, right_vector tpvector)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'text_tpvector_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 
 -- <@> operator for tpvector <@> tpvector operations
 CREATE OPERATOR <@> (
@@ -84,16 +97,31 @@ CREATE OPERATOR <@> (
     PROCEDURE = tpvector_score
 );
 
--- <@> operator for text <@> tpvector operations (cross-type)
+-- <@> operator for tpvector <@> text operations (standalone document <@> query)
+CREATE OPERATOR <@> (
+    LEFTARG = tpvector,
+    RIGHTARG = text,
+    PROCEDURE = tpvector_text_score
+);
+
+-- <@> operator for text <@> text operations (index scan document <@> query)
+CREATE OPERATOR <@> (
+    LEFTARG = text,
+    RIGHTARG = text,
+    PROCEDURE = tp_text_text_score
+);
+
+-- <@> operator for text <@> tpvector operations (standalone document <@> query)
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = tpvector,
-    PROCEDURE = tpvector_text_score
+    PROCEDURE = text_tpvector_score
 );
 
 -- Tapir operator class for text columns
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
+    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops,
     OPERATOR    1   <@> (text, tpvector) FOR ORDER BY float_ops;
 
 -- Debug function to dump index contents

@@ -12,7 +12,7 @@ CREATE TABLE test_docs (
     content TEXT
 );
 
-INSERT INTO test_docs (content) VALUES 
+INSERT INTO test_docs (content) VALUES
     ('the quick brown fox'),
     ('jumped over the lazy dog'),
     ('sphinx of black quartz'),
@@ -27,7 +27,7 @@ CREATE INDEX docs_vector_idx ON test_docs USING tapir(content) WITH (text_config
 SELECT 'docs_vector_idx:{hello:2,world:1}'::tpvector;
 SELECT 'docs_vector_idx:{}'::tpvector;
 
--- Test to_tpvector function  
+-- Test to_tpvector function
 SELECT to_tpvector('hello world', 'docs_vector_idx');
 SELECT to_tpvector('postgresql search', 'docs_vector_idx');
 
@@ -40,7 +40,7 @@ SELECT to_tpvector('Testing 123 with numbers and text', 'docs_vector_idx');  -- 
 SELECT to_tpvector('hello', 'docs_vector_idx') = to_tpvector('world', 'docs_vector_idx');
 
 -- Test error cases
--- Should fail: vectors from different indexes  
+-- Should fail: vectors from different indexes
 \set ON_ERROR_STOP off
 SELECT 'index1:{hello:2,world:1}'::tpvector <@> 'index2:{hello:2,world:1}'::tpvector;
 \set ON_ERROR_STOP on
@@ -52,23 +52,23 @@ SELECT to_tpvector('test text', 'nonexistent_index');
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 
--- Test tapir scoring using vectorization
-SELECT 
+-- Test tapir scoring using standalone tpvector operations
+SELECT
     content,
-    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('hello world', 'docs_vector_idx'))::numeric, 4) as score
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> 'hello world'::text)::numeric, 4) as score
 FROM test_docs
 ORDER BY score;
 
--- Test different query terms
-SELECT 
+-- Test different query terms with standalone tpvector operations
+SELECT
     content,
-    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('postgresql', 'docs_vector_idx'))::numeric, 4) as postgresql_score,
-    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('search', 'docs_vector_idx'))::numeric, 4) as search_score
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> 'postgresql'::text)::numeric, 4) as postgresql_score,
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> 'search'::text)::numeric, 4) as search_score
 FROM test_docs
-ORDER BY (to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('postgresql', 'docs_vector_idx'))::float8 + 
-         (to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('search', 'docs_vector_idx'))::float8;
+ORDER BY (to_tpvector(content, 'docs_vector_idx') <@> 'postgresql'::text)::float8 +
+         (to_tpvector(content, 'docs_vector_idx') <@> 'search'::text)::float8;
 
--- Test vector serialization/deserialization  
+-- Test vector serialization/deserialization
 SELECT to_tpvector('hello', 'docs_vector_idx')::text;
 SELECT to_tpvector('test word', 'docs_vector_idx')::text;
 
@@ -76,7 +76,7 @@ SELECT to_tpvector('test word', 'docs_vector_idx')::text;
 SELECT to_tpvector('this is a longer test with multiple words and repetitions test test', 'docs_vector_idx');
 
 -- Test tpvector equality operator
-SELECT 
+SELECT
     to_tpvector('hello world', 'docs_vector_idx') = to_tpvector('hello world', 'docs_vector_idx') as should_be_true,
     to_tpvector('hello world', 'docs_vector_idx') = to_tpvector('world hello', 'docs_vector_idx') as depends_on_order;
 
@@ -85,12 +85,12 @@ SELECT 'docs_vector_idx:{hello:1,world:2}'::tpvector = 'docs_vector_idx:{hello:1
 SELECT 'docs_vector_idx:{hello:1,world:2}'::tpvector = 'docs_vector_idx:{world:2,hello:1}'::tpvector;
 
 -- Test scoring with real documents
-SELECT 
+SELECT
     id,
     content,
-    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('quick fox', 'docs_vector_idx'))::numeric, 4) as relevance
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> 'quick fox'::text)::numeric, 4) as relevance
 FROM test_docs
-WHERE to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('quick fox', 'docs_vector_idx') < 0  -- Remember: negative scores
+WHERE to_tpvector(content, 'docs_vector_idx') <@> 'quick fox'::text < 0  -- Remember: negative scores
 ORDER BY relevance
 LIMIT 3;
 
@@ -98,7 +98,7 @@ LIMIT 3;
 CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple');
 
 -- Compare stemmed vs non-stemmed
-SELECT 
+SELECT
     'running' as query,
     to_tpvector('running runner runs', 'docs_vector_idx') as english_stemmed,
     to_tpvector('running runner runs', 'docs_simple_idx') as simple_no_stem;
