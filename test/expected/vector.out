@@ -1,0 +1,199 @@
+-- Test tpvector type and operators functionality
+-- Load tapir extension
+CREATE EXTENSION IF NOT EXISTS tapir;
+NOTICE:  extension "tapir" already exists, skipping
+-- Cleanup any existing state first
+DROP TABLE IF EXISTS test_docs CASCADE;
+NOTICE:  table "test_docs" does not exist, skipping
+-- Setup test table
+CREATE TABLE test_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO test_docs (content) VALUES 
+    ('the quick brown fox'),
+    ('jumped over the lazy dog'),
+    ('sphinx of black quartz'),
+    ('hello world example'),
+    ('postgresql full text search');
+-- Create tapir index
+CREATE INDEX docs_vector_idx ON test_docs USING tapir(content) WITH (text_config='english');
+NOTICE:  Tapir index build started for relation docs_vector_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 5 documents, avg_length=3.20, text_config='english' (k1=1.20, b=0.75)
+-- Test tpvector I/O functions
+-- Test input/output with index name format
+SELECT 'docs_vector_idx:{hello:2,world:1}'::tpvector;
+             tpvector              
+-----------------------------------
+ docs_vector_idx:{hello:2,world:1}
+(1 row)
+
+SELECT 'docs_vector_idx:{}'::tpvector;
+      tpvector      
+--------------------
+ docs_vector_idx:{}
+(1 row)
+
+-- Test to_tpvector function  
+SELECT to_tpvector('hello world', 'docs_vector_idx');
+            to_tpvector            
+-----------------------------------
+ docs_vector_idx:{hello:1,world:1}
+(1 row)
+
+SELECT to_tpvector('postgresql search', 'docs_vector_idx');
+               to_tpvector               
+-----------------------------------------
+ docs_vector_idx:{postgresql:1,search:1}
+(1 row)
+
+-- Test to_tpvector edge cases
+SELECT to_tpvector('', 'docs_vector_idx');  -- empty text
+    to_tpvector     
+--------------------
+ docs_vector_idx:{}
+(1 row)
+
+SELECT to_tpvector('hello, world! How are you? I''m fine.', 'docs_vector_idx');  -- punctuation
+                 to_tpvector                  
+----------------------------------------------
+ docs_vector_idx:{fine:1,hello:1,m:1,world:1}
+(1 row)
+
+SELECT to_tpvector('Testing 123 with numbers and text', 'docs_vector_idx');  -- numbers
+                  to_tpvector                   
+------------------------------------------------
+ docs_vector_idx:{123:1,number:1,test:1,text:1}
+(1 row)
+
+-- Test that different queries create different vectors
+SELECT to_tpvector('hello', 'docs_vector_idx') = to_tpvector('world', 'docs_vector_idx');
+ ?column? 
+----------
+ f
+(1 row)
+
+-- Test error cases
+-- Should fail: vectors from different indexes  
+\set ON_ERROR_STOP off
+SELECT 'index1:{hello:2,world:1}'::tpvector <@> 'index2:{hello:2,world:1}'::tpvector;
+ERROR:  tpvector operands must use the same index
+HINT:  Document vector uses index "index1", query vector uses index "index2"
+\set ON_ERROR_STOP on
+-- Test nonexistent index error
+\set VERBOSITY terse
+\set ON_ERROR_STOP off
+SELECT to_tpvector('test text', 'nonexistent_index');
+ERROR:  index "nonexistent_index" does not exist
+\set ON_ERROR_STOP on
+\set VERBOSITY default
+-- Test tapir scoring using vectorization
+SELECT 
+    content,
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('hello world', 'docs_vector_idx'))::numeric, 4) as score
+FROM test_docs
+ORDER BY score;
+           content           |  score  
+-----------------------------+---------
+ hello world example         | -2.2549
+ the quick brown fox         |  0.0000
+ jumped over the lazy dog    |  0.0000
+ sphinx of black quartz      |  0.0000
+ postgresql full text search |  0.0000
+(5 rows)
+
+-- Test different query terms
+SELECT 
+    content,
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('postgresql', 'docs_vector_idx'))::numeric, 4) as postgresql_score,
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('search', 'docs_vector_idx'))::numeric, 4) as search_score
+FROM test_docs
+ORDER BY (to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('postgresql', 'docs_vector_idx'))::float8 + 
+         (to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('search', 'docs_vector_idx'))::float8;
+           content           | postgresql_score | search_score 
+-----------------------------+------------------+--------------
+ postgresql full text search |          -0.9967 |      -0.9967
+ the quick brown fox         |           0.0000 |       0.0000
+ jumped over the lazy dog    |           0.0000 |       0.0000
+ sphinx of black quartz      |           0.0000 |       0.0000
+ hello world example         |           0.0000 |       0.0000
+(5 rows)
+
+-- Test vector serialization/deserialization  
+SELECT to_tpvector('hello', 'docs_vector_idx')::text;
+        to_tpvector        
+---------------------------
+ docs_vector_idx:{hello:1}
+(1 row)
+
+SELECT to_tpvector('test word', 'docs_vector_idx')::text;
+           to_tpvector           
+---------------------------------
+ docs_vector_idx:{test:1,word:1}
+(1 row)
+
+-- Test with longer text
+SELECT to_tpvector('this is a longer test with multiple words and repetitions test test', 'docs_vector_idx');
+                         to_tpvector                          
+--------------------------------------------------------------
+ docs_vector_idx:{longer:1,multipl:1,repetit:1,test:3,word:1}
+(1 row)
+
+-- Test tpvector equality operator
+SELECT 
+    to_tpvector('hello world', 'docs_vector_idx') = to_tpvector('hello world', 'docs_vector_idx') as should_be_true,
+    to_tpvector('hello world', 'docs_vector_idx') = to_tpvector('world hello', 'docs_vector_idx') as depends_on_order;
+ should_be_true | depends_on_order 
+----------------+------------------
+ t              | t
+(1 row)
+
+-- Test direct tpvector equality (including order-independence fix)
+SELECT 'docs_vector_idx:{hello:1,world:2}'::tpvector = 'docs_vector_idx:{hello:1,world:2}'::tpvector;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT 'docs_vector_idx:{hello:1,world:2}'::tpvector = 'docs_vector_idx:{world:2,hello:1}'::tpvector;
+ ?column? 
+----------
+ t
+(1 row)
+
+-- Test scoring with real documents
+SELECT 
+    id,
+    content,
+    ROUND((to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('quick fox', 'docs_vector_idx'))::numeric, 4) as relevance
+FROM test_docs
+WHERE to_tpvector(content, 'docs_vector_idx') <@> to_tpvector('quick fox', 'docs_vector_idx') < 0  -- Remember: negative scores
+ORDER BY relevance
+LIMIT 3;
+ id |       content       | relevance 
+----+---------------------+-----------
+  1 | the quick brown fox |   -2.2549
+(1 row)
+
+-- Test with another index using simple config
+CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple');
+NOTICE:  Tapir index build started for relation docs_simple_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 5 documents, avg_length=4.00, text_config='simple' (k1=1.20, b=0.75)
+-- Compare stemmed vs non-stemmed
+SELECT 
+    'running' as query,
+    to_tpvector('running runner runs', 'docs_vector_idx') as english_stemmed,
+    to_tpvector('running runner runs', 'docs_simple_idx') as simple_no_stem;
+  query  |         english_stemmed          |               simple_no_stem                
+---------+----------------------------------+---------------------------------------------
+ running | docs_vector_idx:{run:2,runner:1} | docs_simple_idx:{runner:1,running:1,runs:1}
+(1 row)
+
+-- Cleanup
+DROP INDEX docs_vector_idx;
+DROP INDEX docs_simple_idx;
+DROP TABLE test_docs;

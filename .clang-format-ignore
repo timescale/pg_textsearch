@@ -1,0 +1,28 @@
+# Files to exclude from clang-format
+# Generated files and external dependencies
+
+# Generated build files
+*.o
+*.so
+*.dylib
+Makefile
+config.log
+config.status
+
+# PostgreSQL generated files
+sql/*.sql
+expected/*.out
+results/
+
+# Test output
+test/results/
+test/expected/
+
+# Any external or vendored code
+vendor/
+third_party/
+
+# Backup files from manual formatting
+*.orig
+*~
+*.bak

@@ -1,0 +1,197 @@
+# Run regression tests under memory sanitizer
+name: Sanitizer test
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+env:
+  name: "Sanitizer"
+  PG_SRC_DIR: "pgbuild"
+  PG_INSTALL_DIR: "postgresql"
+  extra_packages: "clang-15 llvm-15"
+  CC: "clang-15"
+  CXX: "clang-15"
+  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
+  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
+  LDFLAGS: "-fsanitize=address,undefined"
+
+  # Sanitizer options - create logs directory for better debugging
+  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=1 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
+  UBSAN_OPTIONS: "halt_on_error=1 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
+
+jobs:
+  sanitizer:
+    name: PostgreSQL 17 Sanitizer ubuntu-22.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Create sanitizer logs directory
+      run: mkdir -p ${{ github.workspace }}/sanitizer_logs
+
+    - name: Get date for caching
+      id: get-date
+      run: echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
+
+    - name: Cache PostgreSQL
+      id: cache-postgresql
+      uses: actions/cache@v4
+      with:
+        path: ~/${{ env.PG_SRC_DIR }}
+        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}"
+
+    - name: Build PostgreSQL with sanitizers
+      if: steps.cache-postgresql.outputs.cache-hit != 'true'
+      run: |
+        wget -q -O postgresql.tar.bz2 \
+          https://ftp.postgresql.org/pub/source/v17.0/postgresql-17.0.tar.bz2
+        mkdir -p ~/$PG_SRC_DIR
+        tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
+
+        cd ~/$PG_SRC_DIR
+        ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
+          --with-openssl --without-readline --without-zlib --without-libxml
+        make -j$(nproc)
+
+    - name: Install PostgreSQL
+      run: |
+        cd ~/$PG_SRC_DIR
+        make install
+        ~/$PG_INSTALL_DIR/bin/pg_config --version
+
+    - name: Verify sanitizers are enabled
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        echo "Verifying PostgreSQL was built with sanitizers..."
+
+        # Check if postgres binary contains sanitizer symbols
+        echo "Checking for AddressSanitizer symbols..."
+        if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
+          echo "✓ AddressSanitizer symbols found in postgres binary"
+        else
+          echo "✗ AddressSanitizer symbols NOT found in postgres binary"
+          echo "This suggests PostgreSQL was not built with -fsanitize=address"
+          exit 1
+        fi
+
+        # Check build flags were preserved
+        echo "Checking if postgres was built with sanitizer flags..."
+        if ldd ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
+          echo "✓ AddressSanitizer runtime library linked to postgres"
+        else
+          echo "⚠️  AddressSanitizer runtime library not found in ldd output"
+        fi
+
+        # Test that sanitizers are actually working by triggering a known issue
+        echo "Testing sanitizer detection with intentional buffer overflow..."
+        cat > test_sanitizer.c << 'EOF'
+        #include <stdio.h>
+        #include <stdlib.h>
+        int main() {
+            char *buf = malloc(10);
+            buf[10] = 'x';  // Buffer overflow - should be caught by AddressSanitizer
+            free(buf);
+            return 0;
+        }
+        EOF
+
+        # Compile and run test - should fail with sanitizer error
+        $CC $CFLAGS test_sanitizer.c -o test_sanitizer
+        if ./test_sanitizer; then
+          echo "⚠️  WARNING: Sanitizer test did not catch buffer overflow!"
+        else
+          echo "✓ Sanitizer correctly caught buffer overflow (exit code $?)"
+        fi
+        rm -f test_sanitizer test_sanitizer.c
+
+    - name: Build and install Tapir
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        make clean
+        make
+        make install
+
+    - name: Run regression tests
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+
+        # Set up test database
+        rm -rf tmp_sanitizer_test
+        mkdir -p tmp_sanitizer_test
+        initdb -D tmp_sanitizer_test/data --auth-local=trust
+
+        # Configure PostgreSQL
+        echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
+
+        # Start PostgreSQL
+        pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
+
+        # Create test database and run tests
+        createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression
+
+        echo "Running SQL regression tests under sanitizer..."
+        make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
+
+        # Run shell-based tests under sanitizer (more likely to find memory issues)
+        echo "Running concurrency tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./concurrency.sh
+        "
+
+        echo "Running crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./recovery.sh
+        "
+
+        # Clean up
+        pg_ctl stop -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile
+
+    - name: Collect sanitizer reports
+      if: always()
+      run: |
+        echo "Collecting all sanitizer logs..."
+        find ${{ github.workspace }}/sanitizer_logs -name "*.log*" -o -name "asan.*" -o -name "ubsan.*" | head -20 | while read file; do
+          echo "=== $file ==="
+          head -100 "$file" 2>/dev/null || echo "(file not readable or empty)"
+          echo
+        done
+
+    - name: Upload sanitizer logs and test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer-logs-and-results
+        path: |
+          ${{ github.workspace }}/sanitizer_logs/
+          test/regression.diffs
+          test/regression.out
+          test/results/
+          tmp_sanitizer_test/data/logfile
+        retention-days: 7
+
+    - name: Upload failure artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer-failure-debug
+        path: |
+          tmp_sanitizer_test/
+          test/scripts/tmp_*
+        retention-days: 7

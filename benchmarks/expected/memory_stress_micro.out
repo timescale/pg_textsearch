@@ -1,0 +1,118 @@
+psql:sql/memory_stress_micro.sql:15: NOTICE:  table "stress_docs_micro" does not exist, skipping
+psql:sql/memory_stress_micro.sql:68: NOTICE:  Tapir index build started for relation stress_micro_idx
+psql:sql/memory_stress_micro.sql:68: NOTICE:  Using text search configuration: english
+psql:sql/memory_stress_micro.sql:68: NOTICE:  Using index options: k1=1.20, b=0.75
+psql:sql/memory_stress_micro.sql:68: NOTICE:  Tapir index build completed: 1000 documents, avg_length=19.05, text_config='english' (k1=1.20, b=0.75)
+psql:sql/memory_stress_micro.sql:135: NOTICE:  Tapir index called without ORDER BY clause - providing high cost
+Timing is on.
+Starting Tapir micro memory stress benchmark...
+DROP TABLE
+Time: 2.605 ms
+CREATE TABLE
+Time: 16.553 ms
+Generating micro document dataset (1K documents)...
+INSERT 0 1000
+Time: 11.109 ms
+Document generation complete. Dataset summary:
+ total_docs |  avg_content_length  | max_content_length | min_content_length 
+------------+----------------------+--------------------+--------------------
+       1000 | 161.6930000000000000 |                189 |                150
+(1 row)
+
+Time: 4.344 ms
+
+Current Tapir configuration:
+ tapir.shared_memory_size 
+--------------------------
+ 64
+(1 row)
+
+Time: 0.072 ms
+ tapir.default_limit 
+---------------------
+ 1000
+(1 row)
+
+Time: 0.045 ms
+
+Creating Tapir index...
+CREATE INDEX
+Time: 817.227 ms
+Index created successfully! Running performance tests...
+
+=== Performance Test Results ===
+Test 1: Technical terms search
+ matches 
+---------
+       0
+(1 row)
+
+Time: 52.697 ms
+Test 2: AI/ML search
+ matches 
+---------
+       0
+(1 row)
+
+Time: 71.801 ms
+Test 3: Database search
+ matches 
+---------
+       0
+(1 row)
+
+Time: 56.136 ms
+Test 4: Top results with scores
+ title | score 
+-------+-------
+(0 rows)
+
+Time: 65.885 ms
+Test 5: Category-based analysis
+  category   | total_docs | programming_matches 
+-------------+------------+---------------------
+ Business    |        334 |                   0
+ Engineering |        333 |                   0
+ Technology  |        333 |                   0
+(3 rows)
+
+Time: 65.993 ms
+
+=== Memory Pressure Tests ===
+Test 6: Common terms (should find many matches)
+ matches 
+---------
+       0
+(1 row)
+
+Time: 104.978 ms
+Test 7: Specific terms (should find fewer matches)
+ matches 
+---------
+       0
+(1 row)
+
+Time: 22.652 ms
+Test 8: Complex multi-term query
+ matches 
+---------
+       0
+(1 row)
+
+Time: 251.223 ms
+
+=== Benchmark Summary ===
+          status           | total_documents |        index_status        |         query_status          
+---------------------------+-----------------+----------------------------+-------------------------------
+ Micro benchmark completed |            1000 | Index created successfully | Queries executed successfully
+(1 row)
+
+Time: 0.091 ms
+
+Cleaning up test resources...
+DROP TABLE
+Time: 7.166 ms
+
+Micro memory stress benchmark completed.
+This establishes baseline functionality with 1K documents.
+For true stress testing, try larger datasets or reduced memory settings.

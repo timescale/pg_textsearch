@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg_version: [15, 16, 17]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+    
+    - name: Start PostgreSQL
+      run: |
+        sudo systemctl start postgresql
+        sudo -u postgres createuser -s $USER
+        sudo -u postgres createdb $USER
+    
+    - name: Build extension (optimized)
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make clean
+        # Build optimized version for release
+        CFLAGS="-O3 -DNDEBUG" make
+        sudo make install
+    
+    - name: Run full test suite
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make installcheck
+        TEST_SIZE_MULTIPLIER=3.0 make test-concurrency
+    
+    - name: Package extension
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        mkdir -p dist/pg${{ matrix.pg_version }}
+        
+        # Copy extension files
+        cp tapir.control dist/pg${{ matrix.pg_version }}/
+        cp sql/tapir--0.0.sql dist/pg${{ matrix.pg_version }}/
+        
+        # Copy built library with version info
+        PG_LIB_DIR=$(pg_config --pkglibdir)
+        if [ -f "$PG_LIB_DIR/tapir.so" ]; then
+          cp "$PG_LIB_DIR/tapir.so" dist/pg${{ matrix.pg_version }}/
+        elif [ -f "tapir.dylib" ]; then
+          cp tapir.dylib dist/pg${{ matrix.pg_version }}/
+        fi
+        
+        # Create README for this version
+        cat > dist/pg${{ matrix.pg_version }}/README.txt << 'READMEEOF'
+        Tapir PostgreSQL Extension
+        PostgreSQL Version: ${{ matrix.pg_version }}
+        Built: $(date)
+        Commit: ${{ github.sha }}
+
+        Installation:
+        1. Copy tapir.control and tapir--0.0.sql to your PostgreSQL extension directory
+        2. Copy the library file to your PostgreSQL library directory
+        3. Run: CREATE EXTENSION tapir;
+
+        For detailed documentation, see: https://github.com/timescale/tapir
+        READMEEOF
+        
+        # Create tarball
+        cd dist
+        tar -czf ../tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz pg${{ matrix.pg_version }}/
+        cd ..
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}
+        path: |
+          dist/pg${{ matrix.pg_version }}/
+          tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        retention-days: 30
+    
+    - name: Upload release assets
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        asset_name: tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        asset_content_type: application/gzip

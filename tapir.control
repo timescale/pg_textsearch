@@ -1,0 +1,5 @@
+# tapir extension
+comment = 'Tapir full-text search with BM25 ranking for PostgreSQL'
+default_version = '0.0'
+module_pathname = '$libdir/tapir'
+relocatable = true
