@@ -133,7 +133,7 @@ jobs:
         # Configure PostgreSQL
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
-        echo "max_stack_depth = 16MB" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "max_stack_depth = 15MB" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
