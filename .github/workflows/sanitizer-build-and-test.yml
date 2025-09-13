@@ -137,10 +137,8 @@ jobs:
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
 
-        # Create test database and run tests
-        createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression
-
         echo "Running SQL regression tests under sanitizer..."
+        # Skip manual createdb - let regression framework handle it like TimescaleDB does
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
         # Run shell-based tests under sanitizer (more likely to find memory issues)
