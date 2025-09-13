@@ -50,9 +50,7 @@ PG_FUNCTION_INFO_V1(tpvector_score);
 PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
-PG_FUNCTION_INFO_V1(tpvector_text_score);
 PG_FUNCTION_INFO_V1(tp_text_text_score);
-PG_FUNCTION_INFO_V1(text_tpvector_score);
 
 /*
  * tpvector input function
@@ -1072,43 +1070,6 @@ to_tpvector(PG_FUNCTION_ARGS)
 }
 
 /*
- * Score tpvector document against text query (tpvector <@> text operator)
- */
-Datum
-tpvector_text_score(PG_FUNCTION_ARGS)
-{
-	TpVector *doc_vec	 = (TpVector *)PG_GETARG_POINTER(0);
-	text	 *query_text = PG_GETARG_TEXT_PP(1);
-
-	char  *index_name;
-	text  *index_name_text;
-	Datum  query_vec_datum;
-	Datum  score_datum;
-	float8 score_result;
-
-	/* Extract index name from tpvector document */
-	index_name		= get_tpvector_index_name(doc_vec);
-	index_name_text = cstring_to_text(index_name);
-
-	/* Create query vector using to_tpvector */
-	query_vec_datum = DirectFunctionCall2(
-			to_tpvector,
-			PointerGetDatum(query_text),
-			PointerGetDatum(index_name_text));
-
-	/* Calculate score using tpvector_score (doc, query) */
-	score_datum = DirectFunctionCall2(
-			tpvector_score, PointerGetDatum(doc_vec), query_vec_datum);
-
-	score_result = DatumGetFloat8(score_datum);
-
-	pfree(index_name);
-
-	/* tpvector_score already returns negative score, don't negate again */
-	PG_RETURN_FLOAT8(score_result);
-}
-
-/*
  * Score text against text (text <@> text operator)
  *
  * Note: This function is primarily intended for use within index scans where
@@ -1132,42 +1093,4 @@ tp_text_text_score(PG_FUNCTION_ARGS)
 		 "returning 0.0. Use tpvector <@> text for standalone scoring.");
 
 	PG_RETURN_FLOAT8(0.0);
-}
-
-/*
- * Score text document against tpvector query (text <@> tpvector operator)
- * This is the commutative version of tpvector_text_score.
- */
-Datum
-text_tpvector_score(PG_FUNCTION_ARGS)
-{
-	text	 *document_text = PG_GETARG_TEXT_PP(0);
-	TpVector *query_vec		= (TpVector *)PG_GETARG_POINTER(1);
-
-	char  *index_name;
-	text  *index_name_text;
-	Datum  doc_vec_datum;
-	Datum  score_datum;
-	float8 score_result;
-
-	/* Extract index name from tpvector query */
-	index_name		= get_tpvector_index_name(query_vec);
-	index_name_text = cstring_to_text(index_name);
-
-	/* Create document vector using to_tpvector */
-	doc_vec_datum = DirectFunctionCall2(
-			to_tpvector,
-			PointerGetDatum(document_text),
-			PointerGetDatum(index_name_text));
-
-	/* Calculate score using tpvector_score (doc, query) */
-	score_datum = DirectFunctionCall2(
-			tpvector_score, doc_vec_datum, PointerGetDatum(query_vec));
-
-	score_result = DatumGetFloat8(score_datum);
-
-	pfree(index_name);
-
-	/* tpvector_score already returns negative score, don't negate again */
-	PG_RETURN_FLOAT8(score_result);
 }

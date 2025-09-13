@@ -37,8 +37,8 @@ CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING tapir(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify basic search works
-SELECT id, content, ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC;
 
 -- Test 2: Simulate concurrent inserts with same terms
@@ -51,8 +51,8 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database concurrent processing improves performance', 'tech');
 
 -- Search to verify posting lists updated correctly
-SELECT id, content, ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 5;
 
@@ -83,7 +83,7 @@ ORDER BY source, id;
 
 -- Generate series of documents with overlapping terms
 INSERT INTO concurrent_test_docs (content, category)
-SELECT 
+SELECT
     'test document number ' || i || ' contains database and concurrent terms',
     'stress'
 FROM generate_series(1, 50) i;
@@ -93,9 +93,9 @@ SELECT COUNT(*) as total_matches
 FROM concurrent_test_docs;
 
 -- Test top results still make sense
-SELECT id, substring(content, 1, 50) || '...' as content_preview, 
-       ROUND((content <@> to_tpvector('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, substring(content, 1, 50) || '...' as content_preview,
+       ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 8;
 
@@ -106,17 +106,17 @@ LIMIT 8;
 BEGIN;
     INSERT INTO concurrent_test_docs (content, category) VALUES
     ('new concurrent database research paper', 'research');
-    
+
     -- Search within same transaction
-    SELECT id, content, ROUND((content <@> to_tpvector('research database', 'concurrent_idx1'))::numeric, 4) as score
-    FROM concurrent_test_docs 
+    SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+    FROM concurrent_test_docs
     ORDER BY score DESC
     LIMIT 3;
 COMMIT;
 
 -- Verify the insert is visible after commit
-SELECT id, content, ROUND((content <@> to_tpvector('research database', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC
 LIMIT 3;
 
@@ -124,13 +124,13 @@ LIMIT 3;
 \echo 'Test 6: Update operations'
 
 -- Update some documents to test posting list maintenance
-UPDATE concurrent_test_docs 
+UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 
 -- Verify search finds updated documents
-SELECT id, content, ROUND((content <@> to_tpvector('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC;
 
 -- Test 7: Delete operations
@@ -141,7 +141,7 @@ SELECT COUNT(*) as count_before_delete
 FROM concurrent_test_docs;
 
 -- Delete some stress test documents
-DELETE FROM concurrent_test_docs 
+DELETE FROM concurrent_test_docs
 WHERE content LIKE 'test document number%' AND id % 5 = 0;
 
 -- Count after delete to verify cleanup
@@ -158,8 +158,8 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('testing consistency with exact same terms', 'test');
 
 -- Search should find all variants
-SELECT id, content, ROUND((content <@> to_tpvector('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs 
+SELECT id, content, ROUND((content <@> to_tpquery('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+FROM concurrent_test_docs
 ORDER BY score DESC, id;
 
 -- Test 9: Multiple indexes on same table
@@ -190,17 +190,17 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello database world');
 
 -- Query using the English index
-SELECT id, content, ROUND((content <@> to_tpvector('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score DESC;
 
 -- Query using the Simple index
-SELECT id, content, ROUND((content <@> to_tpvector('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score DESC;
 
 -- Verify both indexes exist and function independently
-SELECT 
+SELECT
     i.indexrelid::regclass as index_name,
     pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size
 FROM pg_index i
@@ -214,13 +214,13 @@ DROP TABLE multi_idx_test CASCADE;
 -- Final verification
 \echo 'Final verification: Index statistics'
 
-SELECT 
+SELECT
     'concurrent_test_docs' as table_name,
     COUNT(*) as total_docs,
     COUNT(DISTINCT content) as unique_docs
 FROM concurrent_test_docs
 UNION ALL
-SELECT 
+SELECT
     'concurrent_test_docs2' as table_name,
     COUNT(*) as total_docs,
     COUNT(DISTINCT content) as unique_docs

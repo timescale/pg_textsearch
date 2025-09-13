@@ -70,7 +70,7 @@ ORDER BY 3
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
-SELECT a2.title, a2.content, ROUND((to_tpvector(a2.content, 'articles_tapir_idx') <@> a1.content)::numeric, 4) as score
+SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id

@@ -23,7 +23,6 @@ PG_FUNCTION_INFO_V1(tpquery_send);
 PG_FUNCTION_INFO_V1(to_tpquery_text);
 PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(text_tpquery_score);
-PG_FUNCTION_INFO_V1(tpvector_tpquery_score);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 
 /*
@@ -187,7 +186,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		PG_RETURN_FLOAT8(0.0);
 	}
 
-	/* Create document vector and score against query */
+	/* Create document vector and query vector, then score */
 	{
 		Datum doc_vector_datum = DirectFunctionCall2(
 				to_tpvector,
@@ -195,45 +194,18 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				CStringGetTextDatum(index_name));
 		TpVector *doc_vector = (TpVector *)DatumGetPointer(doc_vector_datum);
 
+		Datum query_vector_datum = DirectFunctionCall2(
+				to_tpvector,
+				CStringGetTextDatum(query_text),
+				CStringGetTextDatum(index_name));
+		TpVector *query_vector = (TpVector *)DatumGetPointer(
+				query_vector_datum);
+
 		result = DatumGetFloat8(DirectFunctionCall2(
-				tpvector_text_score,
+				tpvector_score,
 				PointerGetDatum(doc_vector),
-				CStringGetTextDatum(query_text)));
+				PointerGetDatum(query_vector)));
 	}
-
-	PG_RETURN_FLOAT8(result);
-}
-
-/*
- * BM25 scoring function for tpvector <@> tpquery operations
- */
-Datum
-tpvector_tpquery_score(PG_FUNCTION_ARGS)
-{
-	TpVector *document_vector  = (TpVector *)PG_GETARG_POINTER(0);
-	TpQuery	 *query			   = (TpQuery *)PG_GETARG_POINTER(1);
-	char	 *query_text	   = get_tpquery_text(query);
-	char	 *query_index_name = get_tpquery_index_name(query);
-	char	 *doc_index_name   = get_tpvector_index_name(document_vector);
-	float8	  result;
-
-	/* Validate index names match if query has index name */
-	if (query_index_name)
-	{
-		if (strcmp(doc_index_name, query_index_name) != 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("tpvector and tpquery must use the same index"),
-					 errhint("Document vector uses index \"%s\", query uses "
-							 "index \"%s\"",
-							 doc_index_name,
-							 query_index_name)));
-	}
-
-	result = DatumGetFloat8(DirectFunctionCall2(
-			tpvector_text_score,
-			PointerGetDatum(document_vector),
-			CStringGetTextDatum(query_text)));
 
 	PG_RETURN_FLOAT8(result);
 }

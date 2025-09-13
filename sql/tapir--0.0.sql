@@ -1,8 +1,7 @@
--- tapir extension version 0.0
+-- Tapir extension version 0.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION tapir" to load this file. \quit
-
 
 -- Access method
 
@@ -92,7 +91,7 @@ RETURNS tpquery
 AS 'MODULE_PATHNAME', 'to_tpquery_text_index'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Scoring operator: tpvector <@> tpvector → double precision
+-- Scoring function: tpvector <@> tpvector → double precision
 CREATE FUNCTION tpvector_score(tpvector, tpvector)
 RETURNS double precision
 AS 'MODULE_PATHNAME', 'tpvector_score'
@@ -113,34 +112,16 @@ CREATE OPERATOR = (
     HASHES
 );
 
--- BM25 scoring function for tpvector <@> text operations (document <@> query)
-CREATE FUNCTION tpvector_text_score(left_vector tpvector, right_text text)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'tpvector_text_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
 -- BM25 scoring function for text <@> text operations (primarily for index scans)
 CREATE FUNCTION tp_text_text_score(left_text text, right_text text)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'tp_text_text_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- BM25 scoring function for text <@> tpvector operations (document <@> query, commutative)
-CREATE FUNCTION text_tpvector_score(left_text text, right_vector tpvector)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'text_tpvector_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
 -- BM25 scoring function for text <@> tpquery operations
 CREATE FUNCTION text_tpquery_score(left_text text, right_query tpquery)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'text_tpquery_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
--- BM25 scoring function for tpvector <@> tpquery operations
-CREATE FUNCTION tpvector_tpquery_score(left_vector tpvector, right_query tpquery)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'tpvector_tpquery_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 -- tpquery equality function
@@ -150,20 +131,6 @@ AS 'MODULE_PATHNAME', 'tpquery_eq'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 
--- <@> operator for tpvector <@> tpvector operations
-CREATE OPERATOR <@> (
-    LEFTARG = tpvector,
-    RIGHTARG = tpvector,
-    PROCEDURE = tpvector_score
-);
-
--- <@> operator for tpvector <@> text operations (standalone document <@> query)
-CREATE OPERATOR <@> (
-    LEFTARG = tpvector,
-    RIGHTARG = text,
-    PROCEDURE = tpvector_text_score
-);
-
 -- <@> operator for text <@> text operations (index scan document <@> query)
 CREATE OPERATOR <@> (
     LEFTARG = text,
@@ -171,25 +138,11 @@ CREATE OPERATOR <@> (
     PROCEDURE = tp_text_text_score
 );
 
--- <@> operator for text <@> tpvector operations (standalone document <@> query)
-CREATE OPERATOR <@> (
-    LEFTARG = text,
-    RIGHTARG = tpvector,
-    PROCEDURE = text_tpvector_score
-);
-
 -- <@> operator for text <@> tpquery operations (primary operator)
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = tpquery,
     PROCEDURE = text_tpquery_score
-);
-
--- <@> operator for tpvector <@> tpquery operations (standalone document <@> query)
-CREATE OPERATOR <@> (
-    LEFTARG = tpvector,
-    RIGHTARG = tpquery,
-    PROCEDURE = tpvector_tpquery_score
 );
 
 -- = operator for tpquery equality
@@ -205,13 +158,9 @@ CREATE OPERATOR = (
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
     OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
-    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops,
-    OPERATOR    1   <@> (text, tpvector) FOR ORDER BY float_ops;
+    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops;
 
 -- Debug function to dump index contents
 CREATE FUNCTION tp_debug_dump_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
-
--- DSA-based system doesn't need memory pool monitoring
--- Memory usage is managed dynamically by PostgreSQL's DSA subsystem
