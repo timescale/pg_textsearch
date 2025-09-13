@@ -45,7 +45,7 @@ SELECT title, content, content <@> to_tpvector('database', 'limit_test_idx') as 
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-                               QUERY PLAN
+                               QUERY PLAN                               
 ------------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
@@ -56,7 +56,7 @@ SELECT title, content, ROUND((content <@> to_tpvector('database', 'limit_test_id
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-         title         |                              content                               |  score
+         title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
  Database Theory       | theoretical foundations of database systems and relational algebra | -0.4006
  Database Architecture | database system architecture with storage and indexing strategies  | -0.4006
@@ -71,7 +71,7 @@ SELECT title, ROUND((content <@> to_tpvector('search', 'limit_test_idx'))::numer
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-       title       |  score
+       title       |  score  
 -------------------+---------
  Search Technology | -1.6716
 (1 row)
@@ -81,7 +81,7 @@ SELECT title, ROUND((content <@> to_tpvector('optimization', 'limit_test_idx')):
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-        title         |  score
+        title         |  score  
 ----------------------+---------
  Query Optimization   | -1.0761
  Database Performance | -1.0761
@@ -93,7 +93,7 @@ SELECT title, ROUND((content <@> to_tpvector('algorithm', 'limit_test_idx'))::nu
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.0761
  Search Engines        | -1.0110
@@ -115,7 +115,7 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-                                               QUERY PLAN
+                                               QUERY PLAN                                               
 --------------------------------------------------------------------------------------------------------
  Limit
    ->  Sort
@@ -129,7 +129,7 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Database Theory       | -1.4767
  Database Architecture | -1.4767
@@ -147,7 +147,7 @@ SELECT title, ROUND((content <@> to_tpvector('performance', 'limit_test_idx'))::
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.6716
  Information Retrieval |  0.0000
@@ -161,7 +161,7 @@ SELECT title, ROUND((content <@> to_tpvector('text', 'limit_test_idx'))::numeric
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-      title      |  score
+      title      |  score  
 -----------------+---------
  Text Processing | -1.5705
 (1 row)
@@ -174,7 +174,7 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
- has_results
+ has_results 
 -------------
  f
 (1 row)
@@ -186,7 +186,7 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-     title      |  score
+     title      |  score  
 ----------------+---------
  Data Mining    | -1.9531
  Text Analytics | -1.9531
@@ -198,7 +198,7 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     WHERE content <@> to_tpvector('database', 'limit_test_idx') < -1
     LIMIT 2
 ) q1;
- query_name | results
+ query_name | results 
 ------------+---------
  Query 1    |       0
 (1 row)
@@ -208,7 +208,7 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     WHERE content <@> to_tpvector('search', 'limit_test_idx') < -1
     LIMIT 8
 ) q2;
- query_name | results
+ query_name | results 
 ------------+---------
  Query 2    |       3
 (1 row)
@@ -218,7 +218,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     WHERE content <@> to_tpvector('algorithm', 'limit_test_idx') < -1
     LIMIT 4
 ) q3;
- query_name | results
+ query_name | results 
 ------------+---------
  Query 3    |       4
 (1 row)
@@ -232,7 +232,7 @@ SELECT title, content <@> to_tpvector('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-                              QUERY PLAN
+                              QUERY PLAN                              
 ----------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
@@ -254,7 +254,7 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
- pushdown_safe_count
+ pushdown_safe_count 
 ---------------------
                    0
 (1 row)
@@ -268,7 +268,7 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
- pushdown_unsafe_count
+ pushdown_unsafe_count 
 -----------------------
                      2
 (1 row)
@@ -282,7 +282,7 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
- large_limit_has_results
+ large_limit_has_results 
 -------------------------
  f
 (1 row)
@@ -292,7 +292,7 @@ SELECT title, content <@> to_tpvector('zero_limit', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;
- title | score
+ title | score 
 -------+-------
 (0 rows)
 

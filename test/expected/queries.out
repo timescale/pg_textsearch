@@ -36,7 +36,7 @@ SELECT title, content, content <@> 'database' as score
 FROM articles
 ORDER BY 3
 LIMIT 5;
-                      QUERY PLAN
+                      QUERY PLAN                       
 -------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -59,7 +59,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-             title             |                                               content                                               | score
+             title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
  Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         | 0.0000
@@ -74,7 +74,7 @@ SELECT title, content, content <@> 'machine learning' as score
 FROM articles
 ORDER BY 3
 LIMIT 3;
-                        QUERY PLAN
+                        QUERY PLAN                        
 ----------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -97,7 +97,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-             title             |                                               content                                               | score
+             title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
  Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         | 0.0000
@@ -111,7 +111,7 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY 3
 LIMIT 10;
-                        QUERY PLAN
+                        QUERY PLAN                         
 -----------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -135,7 +135,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-             title             |                                               content                                               | score
+             title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Introduction to Databases     | postgresql database management system with advanced indexing capabilities for fast query processing | 0.0000
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
@@ -156,7 +156,7 @@ WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
 ORDER BY 3
 LIMIT 5;
-           title           |                                               content                                               |  score
+           title           |                                               content                                               |  score  
 ---------------------------+-----------------------------------------------------------------------------------------------------+---------
  Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            | -3.5324
  Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      | -3.2410
@@ -171,7 +171,7 @@ SELECT title, content, content <@> 'database optimization' as score
 FROM articles
 ORDER BY 3
 LIMIT 10;
-                          QUERY PLAN
+                          QUERY PLAN                           
 ---------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -194,7 +194,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-             title             |                                               content                                               | score
+             title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Introduction to Databases     | postgresql database management system with advanced indexing capabilities for fast query processing | 0.0000
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
@@ -217,7 +217,7 @@ SELECT s.term, a.title, a.content <@> s.term as score
 FROM search_terms s
 CROSS JOIN articles a
 ORDER BY s.term, a.content <@> s.term;
-                                                                                               QUERY PLAN
+                                                                                               QUERY PLAN                                                                                               
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Sort
    Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> (unnest('{database,"machine learning","search algorithms","text mining"}'::text[]))))
@@ -331,7 +331,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-       term        |             title             | score
+       term        |             title             | score  
 -------------------+-------------------------------+--------
  database          | Introduction to Databases     | 0.0000
  database          | Machine Learning Fundamentals | 0.0000

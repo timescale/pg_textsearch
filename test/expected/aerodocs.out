@@ -77,7 +77,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
- doc_id |           title_preview           | score
+ doc_id |           title_preview           | score  
 --------+-----------------------------------+--------
       1 | Aerodynamic Flow Over Wings       | 0.0000
       2 | Turbulent Boundary Layer Analysis | 0.0000
@@ -101,7 +101,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
- doc_id |           title_preview           | score
+ doc_id |           title_preview           | score  
 --------+-----------------------------------+--------
       1 | Aerodynamic Flow Over Wings       | 0.0000
       2 | Turbulent Boundary Layer Analysis | 0.0000
@@ -149,7 +149,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-        query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |           title_preview
+        query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |           title_preview           
 ---------------------------+--------+------------+---------------+--------------+----------------+-----------------------------------
  aerodynamic flow analysis |      1 |          1 |             1 |       0.0000 |         1.5000 | Aerodynamic Flow Over Wings
  aerodynamic flow analysis |      2 |          2 |               |       0.0000 |                | Turbulent Boundary Layer Analysis
@@ -186,7 +186,7 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
 WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
- query_id |        query_preview         | total_docs | matching_docs
+ query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
         1 | aerodynamic flow analysis... |          5 |             0
         2 | boundary layer turbulent...  |          5 |             0
@@ -202,7 +202,7 @@ SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design')::numeric, 4) a
 FROM aerodocs_documents
 ORDER BY 2 DESC
 LIMIT 10;
-                                            QUERY PLAN
+                                            QUERY PLAN                                             
 ---------------------------------------------------------------------------------------------------
  Limit  (cost=10000000001.15..10000000001.16 rows=5 width=36)
    ->  Sort  (cost=10000000001.15..10000000001.16 rows=5 width=36)
