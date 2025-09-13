@@ -21,7 +21,7 @@ repos:
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
-        exclude: (\.patch$|test/expected/.*\.out$)
+        exclude: (\.patch$|test/expected/.*\.out$|test/sql/.*\.sql$)
       - id: end-of-file-fixer
         exclude: \.patch$
       - id: check-yaml
