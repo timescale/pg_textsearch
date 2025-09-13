@@ -14,8 +14,8 @@ env:
   extra_packages: "clang-15 llvm-15"
   CC: "clang-15"
   CXX: "clang-15"
-  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
-  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
+  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
   LDFLAGS: "-fsanitize=address,undefined"
 
   # Sanitizer options - create logs directory for better debugging
@@ -133,7 +133,6 @@ jobs:
         # Configure PostgreSQL
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
-        echo "max_stack_depth = '100MB'" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
