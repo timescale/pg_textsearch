@@ -37,7 +37,6 @@ test-local: install
 	@mkdir -p tmp_check_shared
 	@initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
 	@echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
-	@echo "shared_preload_libraries = 'tapir'" >> tmp_check_shared/data/postgresql.conf
 	@echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
 	@echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
 	@echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf

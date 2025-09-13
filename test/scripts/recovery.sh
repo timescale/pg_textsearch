@@ -45,18 +45,17 @@ trap cleanup EXIT INT TERM
 
 setup_test_db() {
     log "Setting up temporary PostgreSQL instance..."
-    
+
     # Clean up any existing test data
     rm -rf "${DATA_DIR}"
     mkdir -p "${DATA_DIR}"
-    
+
     # Initialize test cluster
     initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
-    
+
     # Configure test instance
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
-shared_preload_libraries = 'tapir'
 log_statement = 'all'
 shared_buffers = 128MB
 max_connections = 20
@@ -68,10 +67,10 @@ EOF
     # Start PostgreSQL
     log "Starting test PostgreSQL instance on port ${TEST_PORT}..."
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
-    
+
     # Create test database
     createdb -p "${TEST_PORT}" "${TEST_DB}"
-    
+
     # Install extension
     psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION tapir;" >/dev/null
 }
@@ -86,20 +85,20 @@ run_sql_file() {
 
 simulate_crash() {
     log "Simulating PostgreSQL crash (SIGKILL)..."
-    
+
     # Get PostgreSQL process PID
     POSTGRES_PID=$(head -1 "${DATA_DIR}/postmaster.pid")
-    
+
     if [ -n "$POSTGRES_PID" ] && kill -0 "$POSTGRES_PID" 2>/dev/null; then
         # Kill PostgreSQL immediately (simulates crash)
         kill -9 "$POSTGRES_PID"
-        
+
         # Wait for process to die
         sleep 2
-        
+
         # Clean up PID file if it still exists
         rm -f "${DATA_DIR}/postmaster.pid"
-        
+
         log "PostgreSQL crashed (PID: $POSTGRES_PID)"
     else
         error "Could not find PostgreSQL process to kill"
@@ -108,13 +107,13 @@ simulate_crash() {
 
 restart_postgres() {
     log "Restarting PostgreSQL after crash..."
-    
+
     # Start PostgreSQL again
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
-    
+
     # Wait for startup
     sleep 2
-    
+
     # Verify connection works
     psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
     log "PostgreSQL restarted successfully"
@@ -122,7 +121,7 @@ restart_postgres() {
 
 test_crash_recovery() {
     log "Running crash recovery test..."
-    
+
     # Phase 1: Set up initial data
     log "Phase 1: Creating initial test data..."
     cat << 'EOF' | run_sql
@@ -147,66 +146,66 @@ EOF
     # Verify initial search works
     log "Verifying initial search functionality..."
     INITIAL_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    
+
     # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
     if [ -z "$INITIAL_COUNT" ]; then
         INITIAL_COUNT=0
     fi
     log "Initial search test passed (found $INITIAL_COUNT documents)"
-    
+
     # Phase 2: Simulate crash during operation
     log "Phase 2: Simulating crash..."
-    
+
     # Add more data that will be in WAL but not necessarily flushed
     run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('crash recovery test document', 'test');" &
     INSERT_PID=$!
-    
+
     # Give the insert a moment to start
     sleep 0.1
-    
+
     # Crash PostgreSQL
     simulate_crash
-    
+
     # Wait for insert process to complete (it will fail due to crash)
     wait $INSERT_PID 2>/dev/null || true
-    
+
     # Phase 3: Recovery
     log "Phase 3: Testing recovery..."
     restart_postgres
-    
+
     # Verify data consistency after crash
     log "Verifying data consistency after recovery..."
-    
+
     # Check if index still works
     RECOVERY_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    
+
     # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
     if [ -z "$RECOVERY_COUNT" ]; then
         RECOVERY_COUNT=0
     fi
     log "Recovery search test passed (found $RECOVERY_COUNT documents)"
-    
+
     # Test that we can still insert and search
     log "Testing post-recovery functionality..."
     run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('post recovery test document', 'test');"
-    
+
     POST_RECOVERY_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('test', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    
+
     # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
     if [ -z "$POST_RECOVERY_COUNT" ]; then
         POST_RECOVERY_COUNT=0
     fi
     log "Post-recovery insert test passed (found $POST_RECOVERY_COUNT documents)"
-    
+
     # Test index rebuild scenario
     log "Phase 4: Testing index rebuild after crash..."
-    
+
     # Drop and recreate index to test rebuild from heap
     run_sql "DROP INDEX crash_idx;"
     run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING tapir(content) WITH (text_config='english', k1=1.2, b=0.75);"
-    
+
     REBUILD_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx_rebuilt') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    
+
     # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
     if [ -z "$REBUILD_COUNT" ]; then
         REBUILD_COUNT=0
@@ -216,17 +215,17 @@ EOF
 
 main() {
     log "Starting Tapir crash recovery test..."
-    
+
     # Check if we have necessary tools
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found in PATH"
     command -v psql >/dev/null 2>&1 || error "psql not found in PATH"
     command -v createdb >/dev/null 2>&1 || error "createdb not found in PATH"
     command -v initdb >/dev/null 2>&1 || error "initdb not found in PATH"
-    
+
     # Run the test
     setup_test_db
     test_crash_recovery
-    
+
     log "✅ All crash recovery tests passed!"
     exit 0
 }

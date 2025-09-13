@@ -68,7 +68,7 @@ cleanup() {
 
     # Clean up temp directory
     rm -rf "${DATA_DIR}"
-    
+
     # Preserve the original exit code
     exit $exit_code
 }
@@ -78,7 +78,7 @@ trap cleanup EXIT INT TERM
 
 setup_test_db() {
     log "Setting up concurrent test PostgreSQL instance..."
-    
+
     # Clean up any existing test data and create fresh directory
     rm -rf "${DATA_DIR}"
     mkdir -p "${DATA_DIR}"
@@ -86,21 +86,21 @@ setup_test_db() {
     # Initialize test cluster first
     log "Initializing test database cluster..."
     initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
-    
+
     # Now check if tapir extension is available and can be loaded
     local pg_config_path=$(which pg_config 2>/dev/null || echo "")
     if [ -n "$pg_config_path" ]; then
         local lib_dir=$($pg_config_path --pkglibdir 2>/dev/null || echo "")
         if [ -n "$lib_dir" ] && [ -f "$lib_dir/tapir.so" ]; then
             log "Found tapir extension at $lib_dir/tapir.so"
-            
+
             # Check library dependencies
             log "Checking tapir library dependencies:"
             ldd "$lib_dir/tapir.so" 2>/dev/null | head -10 || log "ldd not available or failed"
-            
+
             # Check if library is readable and has correct permissions
             ls -la "$lib_dir/tapir.so"
-            
+
             # Test basic library loading with a minimal postgres process (now that DATA_DIR exists)
             log "Testing tapir library loading..."
             echo "LOAD 'tapir';" | timeout 10 postgres --single -D "${DATA_DIR}" template1 2>&1 | head -10 || warn "Tapir library loading test had issues"
@@ -129,28 +129,27 @@ log_min_messages = info
 log_line_prefix = '[%p] %t %u@%d: '
 
 # Load tapir extension
-shared_preload_libraries = 'tapir'
 EOF
 
     # Start PostgreSQL
     log "Starting test PostgreSQL instance on port ${TEST_PORT}..."
     log "Data directory: ${DATA_DIR}"
     log "Log file: ${LOGFILE}"
-    
+
     # Check if port is available
     if netstat -ln 2>/dev/null | grep -q ":${TEST_PORT} "; then
         warn "Port ${TEST_PORT} appears to be in use"
         netstat -ln 2>/dev/null | grep ":${TEST_PORT} " || true
     fi
-    
+
     # Try to start PostgreSQL with more verbose error reporting
     log "Running: pg_ctl start -D \"${DATA_DIR}\" -l \"${LOGFILE}\" -w"
     if ! pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w; then
         log "Failed to start PostgreSQL. Checking for issues..."
-        
+
         # Give the log file a moment to be created
         sleep 2
-        
+
         # Check if log file exists and show contents
         log "Checking for log file at: ${LOGFILE}"
         if [ -f "${LOGFILE}" ]; then
@@ -160,11 +159,11 @@ EOF
             log "Log file ${LOGFILE} not found after startup failure"
             log "Contents of data directory:"
             ls -la "${DATA_DIR}/"
-            
+
             # Look for PostgreSQL log files in various locations
             log "Looking for any log files in data directory:"
             find "${DATA_DIR}" -name "*.log" -exec echo "Found log: {}" \; -exec cat {} \; 2>/dev/null || log "No log files found"
-            
+
             # Check if PostgreSQL is using a different log location due to our config
             if [ -d "${DATA_DIR}/log" ]; then
                 log "Found log directory, checking contents:"
@@ -172,12 +171,12 @@ EOF
                 find "${DATA_DIR}/log" -name "*.log" -exec echo "Found log: {}" \; -exec cat {} \; 2>/dev/null || true
             fi
         fi
-        
+
         # Try to start postgres directly in foreground to see immediate errors
         log "Attempting direct postgres startup for debugging:"
         log "Starting postgres with: postgres -D ${DATA_DIR}"
         timeout 15 postgres -D "${DATA_DIR}" 2>&1 | head -50 || log "Direct postgres startup failed or timed out"
-        
+
         error "PostgreSQL startup failed - check output above for details"
     fi
 
@@ -420,7 +419,7 @@ test_high_load_stress() {
     local pids=()
 
     info "Starting $num_concurrent_sessions concurrent sessions with $operations_per_session operations each"
-    
+
     # Temporarily disable exit on error for this test to allow graceful handling
     set +e
 
@@ -486,14 +485,14 @@ test_high_load_stress() {
 
     # Final verification with simpler queries
     log "Running final verification queries..."
-    
+
     local final_total=$(run_sql "SELECT COUNT(*) FROM stress_docs;" 2>/dev/null | tail -1 | tr -d ' ' || echo "0")
     if [[ ! "$final_total" =~ ^[0-9]+$ ]]; then
         final_total="unknown"
     fi
-    
+
     log "✅ High-load stress test completed: $final_total total documents, $completed/$num_concurrent_sessions sessions successful"
-    
+
     # Re-enable exit on error
     set -e
 }
