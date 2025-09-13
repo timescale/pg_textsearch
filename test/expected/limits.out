@@ -169,7 +169,7 @@ LIMIT 1;
 -- Test 7: Large LIMIT (should still use index optimization)
 SELECT COUNT(*) > 0 as has_results
 FROM (
-    SELECT title, content <@> to_tpvector('system', 'limit_test_idx') as score
+    SELECT title, content <@> to_tpvector('nonexistent', 'limit_test_idx') as score
     FROM limit_test
     ORDER BY 2
     LIMIT 1000
@@ -277,7 +277,7 @@ FROM (
 -- Very large LIMIT (should still use index optimization efficiently)
 SELECT COUNT(*) > 0 as large_limit_has_results
 FROM (
-    SELECT title, content <@> to_tpvector('large_limit', 'limit_test_idx') as score
+    SELECT title, content <@> to_tpvector('nonexistent_term', 'limit_test_idx') as score
     FROM limit_test
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
