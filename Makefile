@@ -9,6 +9,7 @@ OBJS = \
 	src/posting.o \
 	src/index.o \
 	src/vector.o \
+	src/query.o \
 	src/stringtable.o \
 	src/limit.o
 

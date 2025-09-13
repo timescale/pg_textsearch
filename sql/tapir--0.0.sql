@@ -50,6 +50,48 @@ RETURNS tpvector
 AS 'MODULE_PATHNAME', 'to_tpvector'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- tpquery type
+
+CREATE FUNCTION tpquery_in(cstring)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'tpquery_in'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_out(tpquery)
+RETURNS cstring
+AS 'MODULE_PATHNAME', 'tpquery_out'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_recv(internal)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'tpquery_recv'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_send(tpquery)
+RETURNS bytea
+AS 'MODULE_PATHNAME', 'tpquery_send'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE TYPE tpquery (
+    INPUT = tpquery_in,
+    OUTPUT = tpquery_out,
+    RECEIVE = tpquery_recv,
+    SEND = tpquery_send,
+    STORAGE = extended,
+    ALIGNMENT = int4
+);
+
+-- Convert text to tpquery
+CREATE FUNCTION to_tpquery(input_text text)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'to_tpquery_text'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION to_tpquery(input_text text, index_name text)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'to_tpquery_text_index'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- Scoring operator: tpvector <@> tpvector → double precision
 CREATE FUNCTION tpvector_score(tpvector, tpvector)
 RETURNS double precision
@@ -89,6 +131,24 @@ RETURNS float8
 AS 'MODULE_PATHNAME', 'text_tpvector_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- BM25 scoring function for text <@> tpquery operations
+CREATE FUNCTION text_tpquery_score(left_text text, right_query tpquery)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'text_tpquery_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- BM25 scoring function for tpvector <@> tpquery operations
+CREATE FUNCTION tpvector_tpquery_score(left_vector tpvector, right_query tpquery)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'tpvector_tpquery_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- tpquery equality function
+CREATE FUNCTION tpquery_eq(tpquery, tpquery)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tpquery_eq'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 
 -- <@> operator for tpvector <@> tpvector operations
 CREATE OPERATOR <@> (
@@ -118,9 +178,33 @@ CREATE OPERATOR <@> (
     PROCEDURE = text_tpvector_score
 );
 
+-- <@> operator for text <@> tpquery operations (primary operator)
+CREATE OPERATOR <@> (
+    LEFTARG = text,
+    RIGHTARG = tpquery,
+    PROCEDURE = text_tpquery_score
+);
+
+-- <@> operator for tpvector <@> tpquery operations (standalone document <@> query)
+CREATE OPERATOR <@> (
+    LEFTARG = tpvector,
+    RIGHTARG = tpquery,
+    PROCEDURE = tpvector_tpquery_score
+);
+
+-- = operator for tpquery equality
+CREATE OPERATOR = (
+    LEFTARG = tpquery,
+    RIGHTARG = tpquery,
+    FUNCTION = tpquery_eq,
+    COMMUTATOR = =,
+    HASHES
+);
+
 -- Tapir operator class for text columns
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
+    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
     OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops,
     OPERATOR    1   <@> (text, tpvector) FOR ORDER BY float_ops;
 
