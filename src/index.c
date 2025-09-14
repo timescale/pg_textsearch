@@ -1135,10 +1135,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
 		ErrorData	 *errdata	 = CopyErrorData();
 
-		elog(WARNING,
-			 "Exception during BM25 search for query '%s': %s",
-			 so->query_text,
-			 errdata->message);
 		FreeErrorData(errdata);
 		MemoryContextSwitchTo(oldcontext);
 		success = false;
@@ -1299,10 +1295,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			&(so->result_ctids[so->current_pos].ip_blkid));
 	if (blknum == InvalidBlockNumber || blknum > TP_MAX_BLOCK_NUMBER)
 	{
-		elog(WARNING,
-			 "Suspicious block number %u at position %d, skipping this result",
-			 blknum,
-			 so->current_pos);
 		/* Skip this result and try the next one */
 		so->current_pos++;
 		if (so->current_pos >= so->result_count)
@@ -1438,15 +1430,6 @@ tp_costestimate(
 													   * searches */
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
-
-	elog(WARNING,
-		 "Tapir costestimate: startup=%f, total=%f, selectivity=%f, pages=%f, "
-		 "num_tuples=%f",
-		 *indexStartupCost,
-		 *indexTotalCost,
-		 *indexSelectivity,
-		 *indexPages,
-		 num_tuples);
 }
 
 /*

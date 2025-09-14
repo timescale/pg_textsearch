@@ -36,7 +36,6 @@ SELECT title, content, content <@> 'database'::tpquery as score
 FROM articles
 ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
                       QUERY PLAN                       
 -------------------------------------------------------
  Limit
@@ -48,7 +47,6 @@ SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as s
 FROM articles
 ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking
@@ -57,7 +55,6 @@ SELECT title, content, content <@> 'machine learning'::tpquery as score
 FROM articles
 ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
                          QUERY PLAN                          
 -------------------------------------------------------------
  Limit
@@ -69,7 +66,6 @@ SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric,
 FROM articles
 ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 3: Category-filtered search
@@ -79,7 +75,6 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
                           QUERY PLAN                          
 --------------------------------------------------------------
  Limit
@@ -93,7 +88,6 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -118,7 +112,6 @@ SELECT title, content, content <@> 'database optimization'::tpquery as score
 FROM articles
 ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Limit
@@ -130,7 +123,6 @@ SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::num
 FROM articles
 ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.159000, selectivity=0.100000, pages=1.000000, num_tuples=12.000000
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 6: Batch search with different queries (no index)

@@ -77,7 +77,6 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.157500, selectivity=0.100000, pages=1.000000, num_tuples=10.000000
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
@@ -97,7 +96,6 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.157500, selectivity=0.100000, pages=1.000000, num_tuples=10.000000
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
@@ -136,7 +134,6 @@ LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE q.query_id = 1 AND br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
-WARNING:  Tapir costestimate: startup=0.012500, total=0.157750, selectivity=0.100000, pages=1.000000, num_tuples=10.000000
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |                   title_preview                    
 ---------------------------+--------+------------+---------------+--------------+----------------+----------------------------------------------------
  aerodynamic flow analysis |      6 |          1 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
@@ -179,7 +176,6 @@ SELECT doc_id, ROUND((full_text <@> to_tpquery('supersonic aircraft design', 'cr
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx') ASC
 LIMIT 10;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.157500, selectivity=0.100000, pages=1.000000, num_tuples=10.000000
                                               QUERY PLAN                                              
 ------------------------------------------------------------------------------------------------------
  Limit  (cost=0.01..1.77 rows=10 width=44)

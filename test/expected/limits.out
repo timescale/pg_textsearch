@@ -45,7 +45,6 @@ SELECT title, content, content <@> to_tpquery('database', 'limit_test_idx') as s
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
                               QUERY PLAN                              
 ----------------------------------------------------------------------
  Limit
@@ -176,7 +175,6 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  has_results 
 -------------
  f
@@ -233,7 +231,6 @@ SELECT title, content <@> to_tpquery('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
                              QUERY PLAN                             
 --------------------------------------------------------------------
  Limit
@@ -256,7 +253,6 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  pushdown_safe_count 
 ---------------------
                    0
@@ -271,7 +267,6 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  pushdown_unsafe_count 
 -----------------------
                      2
@@ -287,7 +282,6 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  large_limit_has_results 
 -------------------------
  f
@@ -298,7 +292,6 @@ SELECT title, content <@> to_tpquery('zero_limit', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;
-WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  title | score 
 -------+-------
 (0 rows)
