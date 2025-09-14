@@ -180,10 +180,8 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	text	*document_text = PG_GETARG_TEXT_PP(0);
-	TpQuery *query		   = (TpQuery *)PG_GETARG_POINTER(1);
-	char	*query_text	   = get_tpquery_text(query);
-	char	*index_name	   = get_tpquery_index_name(query);
+	TpQuery *query		= (TpQuery *)PG_GETARG_POINTER(1);
+	char	*index_name = get_tpquery_index_name(query);
 	float8	 result;
 
 	if (!index_name)
@@ -197,26 +195,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		PG_RETURN_FLOAT8(0.0);
 	}
 
-	/* Create document vector and query vector, then score */
-	{
-		Datum doc_vector_datum = DirectFunctionCall2(
-				to_tpvector,
-				PointerGetDatum(document_text),
-				CStringGetTextDatum(index_name));
-		TpVector *doc_vector = (TpVector *)DatumGetPointer(doc_vector_datum);
-
-		Datum query_vector_datum = DirectFunctionCall2(
-				to_tpvector,
-				CStringGetTextDatum(query_text),
-				CStringGetTextDatum(index_name));
-		TpVector *query_vector = (TpVector *)DatumGetPointer(
-				query_vector_datum);
-
-		result = DatumGetFloat8(DirectFunctionCall2(
-				tpvector_score,
-				PointerGetDatum(doc_vector),
-				PointerGetDatum(query_vector)));
-	}
+	/* For standalone scoring outside index scan context, return 0.0 */
+	result = 0.0;
 
 	PG_RETURN_FLOAT8(result);
 }

@@ -46,7 +46,6 @@ PG_FUNCTION_INFO_V1(tpvector_in);
 PG_FUNCTION_INFO_V1(tpvector_out);
 PG_FUNCTION_INFO_V1(tpvector_recv);
 PG_FUNCTION_INFO_V1(tpvector_send);
-PG_FUNCTION_INFO_V1(tpvector_score);
 PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
@@ -309,10 +308,6 @@ tpvector_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * Function: tpvector_score(tpvector, tpvector) → double precision
- * Proper BM25 scoring using index statistics
- */
-/*
  * Validate tpvector inputs and extract index name
  */
 static char *
@@ -517,7 +512,7 @@ calculate_bm25_term_score(
 
 	/* Debug NaN detection */
 	if (isnan(term_score))
-		elog(LOG,
+		elog(WARNING,
 			 "NaN detected in BM25 term score calculation: "
 			 "idf=%f, numerator_d=%f, denominator_d=%f, query_freq=%d, "
 			 "tf=%f, doc_len=%f, avg_doc_len=%f, k1=%f, b=%f",
@@ -532,129 +527,6 @@ calculate_bm25_term_score(
 			 b);
 
 	return term_score;
-}
-
-Datum
-tpvector_score(PG_FUNCTION_ARGS)
-{
-	TpVector	   *doc_vec;
-	TpVector	   *query_vec;
-	char		   *index_name;
-	Oid				index_oid;
-	Relation		index_rel;
-	TpIndexMetaPage metap;
-	TpIndexState   *index_state;
-	float4			score = 0.0;
-	float4			k1, b, avg_doc_len, doc_length;
-	int32			total_docs;
-	int				query_count, query_idx = 0;
-	TpVectorEntry  *query_entry;
-
-	/* Get arguments */
-	doc_vec	  = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
-	query_vec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
-
-	/* Validate inputs and get index name */
-	index_name = validate_tpvector_inputs(doc_vec, query_vec);
-	if (!index_name)
-		PG_RETURN_FLOAT8(0.0);
-
-	/* Setup BM25 context (index, metadata, parameters) */
-	setup_bm25_context(
-			index_name,
-			&index_oid,
-			&index_rel,
-			&metap,
-			&index_state,
-			&k1,
-			&b,
-			&total_docs,
-			&avg_doc_len);
-
-	/* Calculate document length */
-	doc_length = calculate_doc_length(doc_vec);
-
-	/* Process query terms and calculate BM25 score */
-	query_count = query_vec->entry_count;
-	query_entry = get_tpvector_first_entry(query_vec);
-
-	for (query_idx = 0; query_idx < query_count && query_entry; query_idx++)
-	{
-		float4		   tf, idf;
-		TpPostingList *posting_list;
-		char		  *query_lexeme;
-		bool		   use_heap = false;
-
-		/* Use stack for reasonable lengths, heap for very long terms */
-		if (query_entry->lexeme_len < 1024)
-			query_lexeme = alloca(query_entry->lexeme_len + 1);
-		else
-		{
-			query_lexeme = palloc(query_entry->lexeme_len + 1);
-			use_heap	 = true;
-		}
-
-		memcpy(query_lexeme, query_entry->lexeme, query_entry->lexeme_len);
-		query_lexeme[query_entry->lexeme_len] = '\0';
-
-		/* Find term frequency in document */
-		tf = find_term_frequency(doc_vec, query_entry);
-		if (tf == 0.0)
-		{
-			/* Term not in document */
-			if (use_heap)
-				pfree(query_lexeme);
-			if (query_idx < query_count - 1)
-				query_entry = get_tpvector_next_entry(query_entry);
-			continue;
-		}
-
-		/* Get IDF from posting list or use default */
-		posting_list = tp_get_posting_list(index_state, query_lexeme);
-		if (posting_list && posting_list->doc_count > 0)
-			idf = tp_calculate_idf(
-					posting_list->doc_count,
-					total_docs,
-					index_state->stats.average_idf);
-		else
-			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
-
-		/* Calculate and accumulate BM25 term score */
-		score += calculate_bm25_term_score(
-				tf,
-				idf,
-				query_entry->frequency,
-				k1,
-				b,
-				doc_length,
-				avg_doc_len);
-
-		/* Clean up */
-		if (use_heap)
-			pfree(query_lexeme);
-		if (query_idx < query_count - 1)
-			query_entry = get_tpvector_next_entry(query_entry);
-	}
-
-	/* Clean up resources */
-	pfree(metap);
-	index_close(index_rel, AccessShareLock);
-	pfree(index_name);
-
-	/* Debug final score NaN detection */
-	if (isnan(score))
-		elog(LOG,
-			 "NaN detected in final BM25 score! score=%f, total_docs=%d, "
-			 "total_len=%ld, avg_doc_len=%f, k1=%f, b=%f",
-			 score,
-			 total_docs,
-			 index_state->stats.total_len,
-			 avg_doc_len,
-			 k1,
-			 b);
-
-	/* Return negative score for PostgreSQL ASC ordering */
-	PG_RETURN_FLOAT8(-score);
 }
 
 /*
@@ -901,8 +773,6 @@ get_tpvector_next_entry(TpVectorEntry *current)
 /*
  * to_tpvector(text, index_name) - Create a tpvector from text using index's
  * config
- *
- * This replaces both bm25_read_vectorize and bm25_write_vectorize
  */
 Datum
 to_tpvector(PG_FUNCTION_ARGS)
@@ -1034,13 +904,9 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 			/* Count positions as frequency (or 1 if no positions) */
 			if (we[i].haspos)
-			{
 				frequencies[i] = POSDATALEN(tsvector, &we[i]);
-			}
 			else
-			{
 				frequencies[i] = 1;
-			}
 		}
 	}
 	else

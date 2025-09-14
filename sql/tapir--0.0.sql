@@ -91,11 +91,6 @@ RETURNS tpquery
 AS 'MODULE_PATHNAME', 'to_tpquery_text_index'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Scoring function: tpvector <@> tpvector → double precision
-CREATE FUNCTION tpvector_score(tpvector, tpvector)
-RETURNS double precision
-AS 'MODULE_PATHNAME', 'tpvector_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Equality function: tpvector = tpvector → boolean
 CREATE FUNCTION tpvector_eq(tpvector, tpvector)
