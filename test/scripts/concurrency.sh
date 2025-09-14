@@ -242,7 +242,7 @@ concurrent_search_worker() {
     for i in $(seq 1 $num_searches); do
         local term=${search_terms[$((RANDOM % ${#search_terms[@]}))]}
 
-        local query_result=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('$term', '$index_name')) < -0.01;" 2>&1)
+        local query_result=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('$term', '$index_name')) < -0.01;" 2>&1)
         local count=$(echo "$query_result" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
         if [ -z "$count" ]; then
             warn "Search query failed for term '$term': $(echo "$query_result" | head -3 | tr '\n' '; ')"
@@ -316,7 +316,7 @@ test_concurrent_index_creation() {
     log "✅ Main index created successfully"
 
     # Test that concurrent operations work with existing index
-    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
     log "✅ Initial search found $search_count results"
 }
 
@@ -375,7 +375,7 @@ test_string_interning_consistency() {
     done
 
     # Verify search finds all documents
-    local identical_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('identical database search', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local identical_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('identical database search', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
     log "✅ String interning test: found $identical_count documents with identical terms"
 }
 
@@ -406,7 +406,7 @@ test_update_delete_concurrency() {
 
     # Verify index integrity
     local remaining_count=$(run_sql "SELECT COUNT(*) FROM stress_docs;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('updated concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('updated concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
 
     log "✅ Update/Delete test: $remaining_count documents remaining, $search_count match updated terms"
 }
@@ -516,9 +516,9 @@ run_concurrent_tests() {
     info "Unique sessions: $unique_sessions"
 
     # Test a few searches to make sure index is still functional
-    local search1=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search2=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search3=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpvector('performance stress', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search1=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search2=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search3=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('performance stress', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
 
     info "Final search verification:"
     info "  'database': $search1 results"

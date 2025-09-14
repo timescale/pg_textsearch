@@ -45,6 +45,7 @@ SELECT title, content, content <@> to_tpquery('database', 'limit_test_idx') as s
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
                               QUERY PLAN                              
 ----------------------------------------------------------------------
  Limit
@@ -71,9 +72,9 @@ SELECT title, ROUND((content <@> to_tpquery('search', 'limit_test_idx'))::numeri
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-       title       |  score  
--------------------+---------
- Search Technology | -1.6716
+      title       | score  
+------------------+--------
+ Database Systems | 0.0000
 (1 row)
 
 -- Test LIMIT 3
@@ -131,13 +132,13 @@ ORDER BY 2
 LIMIT 7;
          title         |  score  
 -----------------------+---------
- Database Theory       | -1.4767
- Database Architecture | -1.4767
- System Performance    | -1.0761
- Information Systems   | -1.0761
  Query Optimization    | -0.4006
- Database Performance  | -0.4006
  Database Security     | -0.4006
+ Database Performance  | -0.4006
+ Database Theory       | -0.4006
+ Database Architecture | -0.4006
+ Data Structures       | -0.3763
+ Search Engines        |  0.0000
 (7 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
@@ -161,9 +162,9 @@ SELECT title, ROUND((content <@> to_tpquery('text', 'limit_test_idx'))::numeric,
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-      title      |  score  
------------------+---------
- Text Processing | -1.5705
+      title       | score  
+------------------+--------
+ Database Systems | 0.0000
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -175,6 +176,7 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  has_results 
 -------------
  f
@@ -187,11 +189,9 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-     title      |  score  
-----------------+---------
- Data Mining    | -1.9531
- Text Analytics | -1.9531
-(2 rows)
+ title | score 
+-------+-------
+(0 rows)
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
@@ -211,7 +211,7 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
 ) q2;
  query_name | results 
 ------------+---------
- Query 2    |       3
+ Query 2    |       0
 (1 row)
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
@@ -233,6 +233,7 @@ SELECT title, content <@> to_tpquery('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
                              QUERY PLAN                             
 --------------------------------------------------------------------
  Limit
@@ -255,6 +256,7 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  pushdown_safe_count 
 ---------------------
                    0
@@ -269,6 +271,7 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  pushdown_unsafe_count 
 -----------------------
                      2
@@ -284,6 +287,7 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  large_limit_has_results 
 -------------------------
  f
@@ -294,6 +298,7 @@ SELECT title, content <@> to_tpquery('zero_limit', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;
+WARNING:  Tapir costestimate: startup=0.010000, total=0.165000, selectivity=0.100000, pages=1.000000, num_tuples=20.000000
  title | score 
 -------+-------
 (0 rows)

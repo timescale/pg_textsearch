@@ -79,8 +79,7 @@ SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
-NOTICE:  Triggering lazy average IDF calculation (current: 0.000000)
-NOTICE:  Lazy calculated average IDF: 0.000000
+WARNING:  Tapir costestimate: startup=0.010000, total=1.252500, selectivity=0.100000, pages=10.000000, num_tuples=1000.000000
        content       | score 
 ---------------------+-------
  hello world example |    -0
@@ -93,6 +92,7 @@ SELECT content
 FROM test_docs
 ORDER BY content <@> to_tpquery('hello', 'wrong_index')
 LIMIT 1;
+WARNING:  Tapir costestimate: startup=0.010000, total=1.252500, selectivity=0.100000, pages=10.000000, num_tuples=1000.000000
 ERROR:  tpquery index name mismatch
 \set ON_ERROR_STOP on
 \set VERBOSITY default

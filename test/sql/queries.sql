@@ -35,24 +35,24 @@ SET enable_seqscan = off;
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'database'::tpquery as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
 
 SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'machine learning'::tpquery as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
 
-SELECT title, content, ROUND((content <@> 'machine learning')::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric, 4) as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
 
 -- Test 3: Category-filtered search
@@ -60,13 +60,13 @@ EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'search algorithms'::tpquery as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY 3
+ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'search algorithms')::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'search algorithms'::tpquery)::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY 3
+ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -74,19 +74,19 @@ SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpquery(a1.content, 'artic
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
-ORDER BY 3
+ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
 LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'database optimization'::tpquery as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'database optimization')::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::numeric, 4) as score
 FROM articles
-ORDER BY 3
+ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
 
 -- Test 6: Batch search with different queries (no index)

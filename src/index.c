@@ -196,10 +196,11 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies	 = 0; /* No search strategies - ORDER BY only */
-	amroutine->amsupport	 = 0; /* No support functions */
-	amroutine->amoptsprocnum = 0;
-	amroutine->amcanorder = true; /* Can return ordered results for ORDER BY */
+	amroutine->amstrategies = 0; /* No search strategies - ORDER BY only */
+	amroutine->amsupport =
+			8; /* Support up to 8 functions, using 8 for distance */
+	amroutine->amoptsprocnum  = 0;
+	amroutine->amcanorder	  = false;
 	amroutine->amcanorderbyop = true; /* Supports ORDER BY operators */
 #if PG_VERSION_NUM >= 180000
 	amroutine->amcanhash			= false;
@@ -791,6 +792,8 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 	IndexScanDesc scan;
 	TpScanOpaque  so;
 
+	/* Debug logging to see scan parameters */
+
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* Allocate and initialize scan opaque data */
@@ -1261,6 +1264,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	Assert(scan != NULL);
 	Assert(so != NULL);
 
+	/* Debug logging to see if this is being called during execution */
+
 	/* Check if we have a query to process */
 	if (!so->query_text)
 	{
@@ -1377,6 +1382,10 @@ tp_costestimate(
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
+		elog(WARNING,
+			 "Tapir costestimate: path->indexorderbys is %s (len=%d)",
+			 path->indexorderbys ? "non-null" : "NULL",
+			 path->indexorderbys ? list_length(path->indexorderbys) : -1);
 		*indexStartupCost = get_float8_infinity();
 		*indexTotalCost	  = get_float8_infinity();
 		return;
@@ -1429,6 +1438,15 @@ tp_costestimate(
 													   * searches */
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
+
+	elog(WARNING,
+		 "Tapir costestimate: startup=%f, total=%f, selectivity=%f, pages=%f, "
+		 "num_tuples=%f",
+		 *indexStartupCost,
+		 *indexTotalCost,
+		 *indexSelectivity,
+		 *indexPages,
+		 num_tuples);
 }
 
 /*

@@ -138,10 +138,16 @@ CREATE OPERATOR = (
     HASHES
 );
 
+-- Support function for calculating BM25 distances (negative scores for ASC ordering)
+CREATE FUNCTION tp_distance(text, tpquery) RETURNS float8
+    AS 'MODULE_PATHNAME', 'tp_distance'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- Tapir operator class for text columns
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
-    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops;
+    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
+    FUNCTION    8   tp_distance(text, tpquery);
 
 -- Debug function to dump index contents
 CREATE FUNCTION tp_debug_dump_index(text) RETURNS text

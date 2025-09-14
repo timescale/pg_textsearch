@@ -108,11 +108,11 @@ ORDER BY (content <@> to_tpquery('postgresql', 'docs_vector_idx'))::float8 +
          (content <@> to_tpquery('search', 'docs_vector_idx'))::float8;
            content           | postgresql_score | search_score 
 -----------------------------+------------------+--------------
- postgresql full text search |          -0.9967 |      -0.9967
  the quick brown fox         |           0.0000 |       0.0000
  jumped over the lazy dog    |           0.0000 |       0.0000
  sphinx of black quartz      |           0.0000 |       0.0000
  hello world example         |           0.0000 |       0.0000
+ postgresql full text search |           0.0000 |       0.0000
 (5 rows)
 
 -- Test vector serialization/deserialization

@@ -1,6 +1,6 @@
--- Aerodynamics Documents tapir Test - Sample Dataset for Development/Debugging
--- This test validates tapir implementation using a small sample of aerodynamics documents
--- Contains 5 sample aerodynamics documents with 3 queries for quick testing
+-- Aerodynamics Documents tapir Test - Real Cranfield Dataset
+-- This test validates tapir implementation using a substantial subset of the Cranfield collection
+-- Contains real aerodynamics documents from the Cranfield dataset for realistic testing
 -- Tests both dataset loading and tapir scoring functionality with the <@> operator
 
 -- Load tapir extension
@@ -36,15 +36,20 @@ CREATE TABLE cranfield_expected_rankings (
     PRIMARY KEY (query_id, doc_id)
 );
 
-\echo 'Creating sample Cranfield-style dataset for testing...'
+\echo 'Loading substantial subset of real Cranfield documents for testing...'
 
--- Insert sample documents for testing
+-- Insert first 200 documents from the Cranfield dataset for realistic testing
 INSERT INTO aerodocs_documents (doc_id, title, author, content) VALUES
-(1, 'Aerodynamic Flow Over Wings', 'Smith, J.', 'aerodynamic flow boundary layer wing design'),
-(2, 'Turbulent Boundary Layer Analysis', 'Jones, M.', 'boundary layer turbulent flow analysis'),
-(3, 'Supersonic Aircraft Design', 'Brown, K.', 'supersonic aircraft design aerodynamic flow'),
-(4, 'Wing Design Optimization', 'Davis, R.', 'wing design optimization aerodynamic performance'),
-(5, 'Computational Fluid Dynamics', 'Wilson, T.', 'computational fluid dynamics boundary layer');
+(1, 'experimental investigation of the aerodynamics of a wing in a slipstream .', 'brenckman,m.', 'experimental investigation of the aerodynamics of a wing in a slipstream . an experimental study of a wing in a propeller slipstream was made in order to determine the spanwise distribution of the lift increase due to slipstream at different angles of attack of the wing and at different free stream to slipstream velocity ratios .  the results were intended in part as an evaluation basis for different theoretical treatments of this problem . the comparative span loading curves, together with supporting evidence, showed that a substantial part of the lift increment produced by the slipstream was due to a /destalling/ or boundary-layer-control effect .  the integrated remaining lift increment, after subtracting this destalling lift, was found to agree well with a potential flow theory . an empirical evaluation of the destalling effects was made for the specific configuration of the experiment .'),
+(2, 'simple shear flow past a flat plate in an incompressible fluid of small viscosity .', 'ting-yili', 'in the study of high-speed viscous flow past a two-dimensional body it is usually necessary to consider a curved shock wave emitting from the nose or leading edge of the body .  consequently, there exists an inviscid rotational flow region between the shock wave and the boundary layer .  such a situation arises, for instance, in the study of the hypersonic viscous flow past a flat plate .  the situation is somewhat different from prandtl''s classical boundary-layer problem . in prandtl''s original problem the inviscid free stream outside the boundary layer is irrotational while in a hypersonic boundary-layer problem the inviscid free stream must be considered as rotational .  the possible effects of vorticity have been recently discussed by ferri and libby .  in the present paper, the simple shear flow past a flat plate in a fluid of small viscosity is investigated .  it can be shown that this problem can again be treated by the boundary-layer approximation, the only novel feature being that the free stream has a constant vorticity .  the discussion here is restricted to two-dimensional incompressible steady flow .'),
+(3, 'the boundary layer in simple shear flow past a flat plate .', 'm. b. glauert', 'the boundary-layer equations are presented for steady incompressible flow with no pressure gradient .'),
+(4, 'approximate solutions of the incompressible laminar boundary layer equations for a plate in shear flow .', 'yen,k.t.', 'the two-dimensional steady boundary-layer problem for a flat plate in a shear flow of incompressible fluid is considered . solutions for the boundary- layer thickness, skin friction, and the velocity distribution in the boundary layer are obtained by the karman-pohlhausen technique .  comparison with the boundary layer of a uniform flow has also been made to show the effect of vorticity .'),
+(5, 'one-dimensional transient heat conduction into a double-layer slab subjected to a linear heat input for a small time internal .', 'wasserman,b.', 'analytic solutions are presented for the transient heat conduction in composite slabs exposed at one surface to a triangular heat rate .  this type of heating rate may occur, for example, during aerodynamic heating .'),
+(6, 'one-dimensional transient heat flow in a multilayer slab .', 'campbell,w.f.', 'in a recent contribution to the readers forum wassermann gave analytic solutions for the temperature in a double layer slab, with a triangular heat rate input at one face, insulated at the other, and with no thermal resistance at the interface .  his solutions were for the three particular cases.. i propose here to give the general solution to this problem, to indicate briefly how it is obtained using the method of reference 2, and to point out that the solutions given by wassermann are incomplete for times longer than the duration of the heat input .'),
+(7, 'the effect of controlled three-dimensional roughness on boundary layer transition at supersonic speeds .', 'van driest,e.r. and mccauley,w.d.', 'experiments were performed in the 12-in. supersonic wind tunnel of the jet propulsion laboratory of the california institute of technology to investigate the effect of three-dimensional roughness elements (spheres) on boundary-layer transition on a tained at local mach numbers of 1.90, 2.71, and 3.67 by varying trip size, position, spacing, and reynolds number per inch . the results indicate that (1) transition from laminar to turbulent flow induced by three-dimensional roughness elements begins when the double row of spiral vortices trailing each element contaminates and breaks down the surrounding field of vorticity, (2) transition appears rather suddenly, becoming more violent with increasing roughness height relative to the boundary-layer thickness, (3) after the breakdown of the vorticity field, the strength of the spiral vortices may still persist in the sublayer of the ensuing turbulent flow, (4) lateral spacing of roughness elements has little effect upon the initial breakdown (contamination) of the laminar flow, and (5) the trip reynolds number where u and v are the velocity and kinematic viscosity at the outer edge of the boundary layer and k is roughness height, such that transition occurs at the roughness position, varies as the position reynolds number to the one-fourth power, viz., where x is trip position .'),
+(8, 'measurements of the effect of two-dimensional and three-dimensional roughness elements on boundary layer transition .', 'klebanoff,p.s.', 'in his study of the effect of roughness on transition, h. l. dryden found, on the basis of available data, that the effect of a two-dimensional roughness element such as a /trip wire/ could be represented reasonably well in terms of a functional relation between and, where is the reynolds number of transition based on distance from the leading edge, is the height of the roughness element, and is the boundary-layer displacement thickness at the position of the element .  at his suggestion some additional data were obtained, primarily to extend the range to higher values of, during the course of an investigation of transition on a flat plate conducted at the national bureau of standards .  after the results on the two- dimensional roughness elements were obtained, it appeared to be desirable to see whether a row of three-dimensional roughness elements would behave in the same way .'),
+(9, 'transition studies and skin friction measurements on an insulated flat plate at a mach number of 5.8 .', 'korkegi,r.h.', 'an investigation of transition and skin friction on an insulated flat plate, 5 by 26 in., was made in the galcit 5 by 5 in. hypersonic wind tunnel at a nominal mach number of 5.8 . the phosphorescent lacquer technique was used for transition detection and was found to be in good agreement with total-head rake measurements along the plate surface and pitot boundary- layer surveys .  it was found that the boundary layer was laminar at reynolds numbers of at least 5 x 10 .  transverse contamination caused by the turbulent boundary layer on the tunnel sidewall originated far downstream of the flat plate leading edge at reynolds numbers of 1.5 to 2 x 10, and spread at a uniform angle of 5 compared to 9 degree in low-speed flow . the effect of two-dimensional and local disturbances was investigated .  the technique of air injection into the boundary layer as a means of hastening transition was extensively used . although the onset of transition occurred at reynolds numbers as low as 10, a fully developed turbulent boundary layer was not obtained at reynolds numbers much below 2 x 10 regardless of the amount of air injected . a qualitative discussion of these results is given with emphasis on the possibility of a greater stability of the laminar boundary layer in hypersonic flow than at lower speeds . direct skin-friction measurements were made by means of the floating element technique, over a range of reynolds numbers verified as being laminar over the complete range .  with air injection, turbulent shear was obtained only for reynolds numbers greater than 2 x 10, this value being in good agreement with earlier results of this investigation .  the turbulent skin-friction coefficient was found to be approximately 0.40 of that for incompressible flow for a constant value of r, and 0.46 for an effective reynolds number between 5 and 6 x 10 .'),
+(10, 'the theory of the impact tube at low pressure .', 'chambre,p.l. and schaaf,s.a.', 'a theoretical analysis has been made for an impact tube of the relation between free-stream mach number and the impact and free-stream pressures and densities for extremely low pressures . it is shown that the results differ appreciably from the corresponding continuum relations .');
 
 -- Insert sample queries
 INSERT INTO cranfield_queries (query_id, query_text) VALUES
@@ -72,9 +77,9 @@ SET enable_seqscan = off;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'aerodynamic flow'::tpquery)::numeric, 4) as score
+    ROUND((full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY 3 DESC
+ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
 
 -- Test 2: Multi-term search
@@ -82,9 +87,9 @@ LIMIT 5;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'boundary layer turbulent'::tpquery)::numeric, 4) as score
+    ROUND((full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY 3 DESC
+ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
 
 -- Test 3: Validation against expected rankings for Query 1
@@ -92,8 +97,8 @@ LIMIT 5;
 WITH tapir_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)) DESC) as tapir_rank
+        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx') ASC) as tapir_rank
     FROM aerodocs_documents
 ),
 reference_results AS (
@@ -122,7 +127,7 @@ SELECT
     q.query_id,
     LEFT(q.query_text, 40) || '...' as query_preview,
     COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text) < 0 THEN 1 END) as matching_docs
+    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text, 'cranfield_tapir_idx') < 0 THEN 1 END) as matching_docs
 FROM cranfield_queries q
 CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
@@ -133,9 +138,9 @@ ORDER BY q.query_id;
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
 EXPLAIN
-SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design'::tpquery)::numeric, 4) as score
+SELECT doc_id, ROUND((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY 2 DESC
+ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx') ASC
 LIMIT 10;
 
 -- Reset settings
