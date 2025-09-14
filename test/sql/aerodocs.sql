@@ -72,7 +72,7 @@ SET enable_seqscan = off;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'aerodynamic flow')::numeric, 4) as score
+    ROUND((full_text <@> 'aerodynamic flow'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 3 DESC
 LIMIT 5;
@@ -82,7 +82,7 @@ LIMIT 5;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'boundary layer turbulent')::numeric, 4) as score
+    ROUND((full_text <@> 'boundary layer turbulent'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 3 DESC
 LIMIT 5;
@@ -92,8 +92,8 @@ LIMIT 5;
 WITH tapir_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> (SELECT query_text FROM cranfield_queries WHERE query_id = 1))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> (SELECT query_text FROM cranfield_queries WHERE query_id = 1) DESC) as tapir_rank
+        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)))::numeric, 4) as tapir_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)) DESC) as tapir_rank
     FROM aerodocs_documents
 ),
 reference_results AS (
@@ -122,7 +122,7 @@ SELECT
     q.query_id,
     LEFT(q.query_text, 40) || '...' as query_preview,
     COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> q.query_text < 0 THEN 1 END) as matching_docs
+    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text) < 0 THEN 1 END) as matching_docs
 FROM cranfield_queries q
 CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
@@ -133,7 +133,7 @@ ORDER BY q.query_id;
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
 EXPLAIN
-SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design')::numeric, 4) as score
+SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 2 DESC
 LIMIT 10;

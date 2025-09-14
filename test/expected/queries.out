@@ -32,7 +32,7 @@ NOTICE:  Tapir index build completed: 12 documents, avg_length=9.17, text_config
 SET enable_seqscan = off;
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database' as score
+SELECT title, content, content <@> 'database'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 5;
@@ -40,25 +40,37 @@ LIMIT 5;
 -------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database'::text)
+         Order By: (content <@> 'database'::tpquery)
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
 FROM articles
 ORDER BY 3
 LIMIT 5;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
              title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
@@ -70,33 +82,45 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning' as score
+SELECT title, content, content <@> 'machine learning'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 3;
-                        QUERY PLAN                        
-----------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'machine learning'::text)
+         Order By: (content <@> 'machine learning'::tpquery)
 (3 rows)
 
 SELECT title, content, ROUND((content <@> 'machine learning')::numeric, 4) as score
 FROM articles
 ORDER BY 3
 LIMIT 3;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
              title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
@@ -106,16 +130,16 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms' as score
+SELECT title, content, content <@> 'search algorithms'::tpquery as score
 FROM articles
 WHERE category = 'technology'
 ORDER BY 3
 LIMIT 10;
-                        QUERY PLAN                         
------------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'search algorithms'::text)
+         Order By: (content <@> 'search algorithms'::tpquery)
          Filter: (category = 'technology'::text)
 (4 rows)
 
@@ -124,17 +148,28 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY 3
 LIMIT 10;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
              title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Introduction to Databases     | postgresql database management system with advanced indexing capabilities for fast query processing | 0.0000
@@ -167,33 +202,45 @@ LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization' as score
+SELECT title, content, content <@> 'database optimization'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 10;
-                          QUERY PLAN                           
----------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database optimization'::text)
+         Order By: (content <@> 'database optimization'::tpquery)
 (3 rows)
 
 SELECT title, content, ROUND((content <@> 'database optimization')::numeric, 4) as score
 FROM articles
 ORDER BY 3
 LIMIT 10;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
              title             |                                               content                                               | score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+--------
  Introduction to Databases     | postgresql database management system with advanced indexing capabilities for fast query processing | 0.0000
@@ -213,14 +260,14 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> s.term as score
+SELECT s.term, a.title, a.content <@> to_tpquery(s.term) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> s.term;
-                                                                                               QUERY PLAN                                                                                               
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
+                                                                                                     QUERY PLAN                                                                                                     
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Sort
-   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> (unnest('{database,"machine learning","search algorithms","text mining"}'::text[]))))
+   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_tpquery((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])))))
    ->  Nested Loop
          ->  ProjectSet
                ->  Result
@@ -231,106 +278,202 @@ ORDER BY s.term, a.content <@> s.term;
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> s.term)::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_tpquery(s.term))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> s.term;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
        term        |             title             | score  
 -------------------+-------------------------------+--------
  database          | Introduction to Databases     | 0.0000

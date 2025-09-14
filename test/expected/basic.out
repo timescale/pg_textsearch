@@ -93,7 +93,7 @@ SELECT content
 FROM test_docs
 ORDER BY content <@> to_tpquery('hello', 'wrong_index')
 LIMIT 1;
-ERROR:  unsupported argument type for <@> operator
+ERROR:  tpquery index name mismatch
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 -- Clean up

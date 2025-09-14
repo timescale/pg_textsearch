@@ -50,7 +50,6 @@ PG_FUNCTION_INFO_V1(tpvector_score);
 PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
-PG_FUNCTION_INFO_V1(tp_text_text_score);
 
 /*
  * tpvector input function
@@ -1067,30 +1066,4 @@ to_tpvector(PG_FUNCTION_ARGS)
 	/* Don't free StringInfo data - it's managed by memory context */
 
 	PG_RETURN_POINTER(result);
-}
-
-/*
- * Score text against text (text <@> text operator)
- *
- * Note: This function is primarily intended for use within index scans where
- * the corpus context is provided by the selected Tapir index. When called
- * outside an index scan, it cannot determine the appropriate corpus and will
- * return 0.0 with a warning.
- */
-Datum
-tp_text_text_score(PG_FUNCTION_ARGS)
-{
-	text *document_text __attribute__((unused)) = PG_GETARG_TEXT_PP(0);
-	text *query_text __attribute__((unused))	= PG_GETARG_TEXT_PP(1);
-
-	/*
-	 * This operator is designed to work within index scans where the corpus
-	 * context is available. Outside that context, we cannot determine which
-	 * index/corpus to use for scoring.
-	 */
-	elog(WARNING,
-		 "text <@> text operator called outside index scan context - "
-		 "returning 0.0. Use tpvector <@> text for standalone scoring.");
-
-	PG_RETURN_FLOAT8(0.0);
 }

@@ -68,15 +68,20 @@ Test 1: Basic search with <@> operator
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'aerodynamic flow')::numeric, 4) as score
+    ROUND((full_text <@> 'aerodynamic flow'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 3 DESC
 LIMIT 5;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
  doc_id |           title_preview           | score  
 --------+-----------------------------------+--------
       1 | Aerodynamic Flow Over Wings       | 0.0000
@@ -92,15 +97,20 @@ Test 2: Multi-term search
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> 'boundary layer turbulent')::numeric, 4) as score
+    ROUND((full_text <@> 'boundary layer turbulent'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 3 DESC
 LIMIT 5;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
  doc_id |           title_preview           | score  
 --------+-----------------------------------+--------
       1 | Aerodynamic Flow Over Wings       | 0.0000
@@ -116,8 +126,8 @@ Test 3: Validation against Cranfield reference results
 WITH tapir_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> (SELECT query_text FROM cranfield_queries WHERE query_id = 1))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> (SELECT query_text FROM cranfield_queries WHERE query_id = 1) DESC) as tapir_rank
+        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)))::numeric, 4) as tapir_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1)) DESC) as tapir_rank
     FROM aerodocs_documents
 ),
 reference_results AS (
@@ -139,16 +149,26 @@ LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE q.query_id = 1 AND br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |           title_preview           
 ---------------------------+--------+------------+---------------+--------------+----------------+-----------------------------------
  aerodynamic flow analysis |      1 |          1 |             1 |       0.0000 |         1.5000 | Aerodynamic Flow Over Wings
@@ -165,27 +185,42 @@ SELECT
     q.query_id,
     LEFT(q.query_text, 40) || '...' as query_preview,
     COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> q.query_text < 0 THEN 1 END) as matching_docs
+    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text) < 0 THEN 1 END) as matching_docs
 FROM cranfield_queries q
 CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
 GROUP BY q.query_id, q.query_text
 ORDER BY q.query_id;
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
-WARNING:  text <@> text operator called outside index scan context - returning 0.0. Use tpvector <@> text for standalone scoring.
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+WARNING:  text <@> tpquery operator called without index name - returning 0.0
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
  query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
         1 | aerodynamic flow analysis... |          5 |             0
@@ -198,15 +233,15 @@ WARNING:  text <@> text operator called outside index scan context - returning 0
 Test 5: Verify index usage with EXPLAIN
 SET jit = off;
 EXPLAIN
-SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design')::numeric, 4) as score
+SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design'::tpquery)::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY 2 DESC
 LIMIT 10;
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
  Limit  (cost=10000000001.15..10000000001.16 rows=5 width=36)
    ->  Sort  (cost=10000000001.15..10000000001.16 rows=5 width=36)
-         Sort Key: (round(((full_text <@> 'supersonic aircraft design'::text))::numeric, 4)) DESC
+         Sort Key: (round(((full_text <@> 'supersonic aircraft design'::tpquery))::numeric, 4)) DESC
          ->  Seq Scan on aerodocs_documents  (cost=10000000000.00..10000000001.09 rows=5 width=36)
 (4 rows)
 

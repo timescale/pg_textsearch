@@ -112,11 +112,6 @@ CREATE OPERATOR = (
     HASHES
 );
 
--- BM25 scoring function for text <@> text operations (primarily for index scans)
-CREATE FUNCTION tp_text_text_score(left_text text, right_text text)
-RETURNS float8
-AS 'MODULE_PATHNAME', 'tp_text_text_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 -- BM25 scoring function for text <@> tpquery operations
 CREATE FUNCTION text_tpquery_score(left_text text, right_query tpquery)
@@ -131,14 +126,8 @@ AS 'MODULE_PATHNAME', 'tpquery_eq'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 
--- <@> operator for text <@> text operations (index scan document <@> query)
-CREATE OPERATOR <@> (
-    LEFTARG = text,
-    RIGHTARG = text,
-    PROCEDURE = tp_text_text_score
-);
 
--- <@> operator for text <@> tpquery operations (primary operator)
+-- <@> operator for text <@> tpquery operations
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = tpquery,
@@ -157,8 +146,7 @@ CREATE OPERATOR = (
 -- Tapir operator class for text columns
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
-    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
-    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops;
+    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops;
 
 -- Debug function to dump index contents
 CREATE FUNCTION tp_debug_dump_index(text) RETURNS text

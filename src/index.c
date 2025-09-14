@@ -907,81 +907,42 @@ tp_rescan(
 			{
 				Datum query_datum = orderby->sk_argument;
 				char *query_cstr;
-				Oid	  righttype = orderby->sk_subtype;
 
-				/* Handle different argument types by checking the operator */
-				if (righttype == TEXTOID)
+				/*
+				 * Handle tpquery type - text <@> tpquery operation
+				 * PostgreSQL's type system guarantees this is a tpquery
+				 */
+				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
+				char	*index_name;
+				char	*current_index_name;
+
+				/* Validate it's a proper tpquery by checking varlena header */
+				if (VARATT_IS_EXTENDED(query) ||
+					VARSIZE_ANY(query) <
+							VARHDRSZ + sizeof(int32) + sizeof(int32))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid tpquery data")));
+
+				index_name		   = get_tpquery_index_name(query);
+				current_index_name = RelationGetRelationName(
+						scan->indexRelation);
+
+				/* Validate index name if provided in query */
+				if (index_name)
 				{
-					/* text <@> text operation */
-					text *query_text = DatumGetTextPP(query_datum);
-					query_cstr		 = text_to_cstring(query_text);
-				}
-				else
-				{
-					/*
-					 * Handle tpquery type - text <@> tpquery operation
-					 * Since we can't easily get the tpquery type OID at
-					 * runtime, we validate by attempting to safely cast and
-					 * validate the structure
-					 */
-					TpQuery *query;
-					char	*index_name;
-					char	*current_index_name;
-					void	*ptr;
-
-					/* First check if the pointer looks reasonable */
-					ptr = DatumGetPointer(query_datum);
-					if (!ptr)
-					{
-						elog(ERROR, "null pointer passed as query argument");
-					}
-
-					PG_TRY();
-					{
-						query = (TpQuery *)ptr;
-
-						/* Validate it's a proper tpquery by checking varlena
-						 * header and basic structure constraints */
-						if (VARATT_IS_EXTENDED(query) ||
-							VARSIZE_ANY(query) <
-									VARHDRSZ + sizeof(int32) + sizeof(int32) ||
-							VARSIZE_ANY(query) >
-									1000000) /* Sanity check for size */
-							ereport(ERROR,
-									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-									 errmsg("invalid tpquery data")));
-
-						index_name		   = get_tpquery_index_name(query);
-						current_index_name = RelationGetRelationName(
-								scan->indexRelation);
-
-						/* Validate index name if provided in query */
-						if (index_name)
-						{
-							if (strcmp(index_name, current_index_name) != 0)
-								ereport(ERROR,
-										(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-										 errmsg("tpquery index name mismatch"),
-										 errhint("Query specifies index "
-												 "\"%s\" but scan is on index "
-												 "\"%s\"",
-												 index_name,
-												 current_index_name)));
-						}
-
-						query_cstr = pstrdup(get_tpquery_text(query));
-					}
-					PG_CATCH();
-					{
-						/* Not a valid tpquery, treat as error */
+					if (strcmp(index_name, current_index_name) != 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("unsupported argument type for <@> "
-										"operator"),
-								 errhint("Use text or tpquery type")));
-					}
-					PG_END_TRY();
+								 errmsg("tpquery index name mismatch"),
+								 errhint("Query specifies index "
+										 "\"%s\" but scan is on index "
+										 "\"%s\"",
+										 index_name,
+										 current_index_name)));
 				}
+
+				query_cstr = pstrdup(get_tpquery_text(query));
 
 				/* Clear query vector since we're using text directly */
 				so->query_vector = NULL;

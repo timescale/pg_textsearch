@@ -33,19 +33,19 @@ SET enable_seqscan = off;
 
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database' as score
+SELECT title, content, content <@> 'database'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
 FROM articles
 ORDER BY 3
 LIMIT 5;
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning' as score
+SELECT title, content, content <@> 'machine learning'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 3;
@@ -57,7 +57,7 @@ LIMIT 3;
 
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms' as score
+SELECT title, content, content <@> 'search algorithms'::tpquery as score
 FROM articles
 WHERE category = 'technology'
 ORDER BY 3
@@ -79,7 +79,7 @@ LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization' as score
+SELECT title, content, content <@> 'database optimization'::tpquery as score
 FROM articles
 ORDER BY 3
 LIMIT 10;
@@ -94,18 +94,18 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> s.term as score
+SELECT s.term, a.title, a.content <@> to_tpquery(s.term) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> s.term;
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> s.term)::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_tpquery(s.term))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> s.term;
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
 
 -- Cleanup
 DROP TABLE articles CASCADE;
