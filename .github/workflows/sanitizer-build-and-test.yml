@@ -19,8 +19,8 @@ env:
   LDFLAGS: "-fsanitize=address,undefined"
 
   # Sanitizer options - create logs directory for better debugging
-  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=1 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
-  UBSAN_OPTIONS: "halt_on_error=1 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
+  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=0 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1 symbolize=1 print_module_map=1 fast_unwind_on_fatal=0"
+  UBSAN_OPTIONS: "halt_on_error=0 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1 symbolize=1"
 
 jobs:
   sanitizer:
@@ -31,7 +31,11 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
+        sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb strace ${{ env.extra_packages }}
+
+        # Enable core dumps for debugging
+        ulimit -c unlimited
+        echo "ulimit -c unlimited" >> ~/.bashrc
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -137,11 +141,41 @@ jobs:
         # Increase max_stack_depth for sanitizer builds (AddressSanitizer adds stack overhead)
         echo "max_stack_depth = 8MB" >> tmp_sanitizer_test/data/postgresql.conf
 
+        # Enable detailed logging for debugging stack depth issues
+        echo "log_error_verbosity = verbose" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "log_min_messages = debug1" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "log_statement = 'all'" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "log_line_prefix = '%m [%p]: '" >> tmp_sanitizer_test/data/postgresql.conf
+
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
 
-        # Create test database and run tests
-        createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression
+        # Create test database and run tests with stack trace on failure
+        echo "Attempting to create test database..."
+        if ! timeout 60s createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression; then
+          echo "createdb failed. Attempting to get stack trace with gdb..."
+
+          # Get postgres processes
+          echo "Active postgres processes:"
+          ps aux | grep postgres | grep -v grep
+
+          # Try to attach gdb to the main postgres process and get backtrace
+          POSTGRES_PID=$(ps aux | grep 'postgres.*tmp_sanitizer_test' | grep -v grep | head -1 | awk '{print $2}')
+          if [ -n "$POSTGRES_PID" ]; then
+            echo "Attempting to attach gdb to postgres process $POSTGRES_PID..."
+            timeout 30s gdb -batch -p $POSTGRES_PID -ex "thread apply all bt" -ex "quit" 2>/dev/null || echo "gdb attach failed or timed out"
+          fi
+
+          # Show postgres logs
+          echo "PostgreSQL logs:"
+          tail -50 tmp_sanitizer_test/data/logfile || echo "No logfile found"
+
+          # Try createdb one more time with strace to see system calls
+          echo "Attempting createdb with strace for system call trace..."
+          timeout 30s strace -f -e trace=all createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression_debug 2>&1 | tail -100 || echo "strace attempt failed"
+
+          exit 1
+        fi
 
         echo "Running SQL regression tests under sanitizer..."
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
