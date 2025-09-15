@@ -945,7 +945,11 @@ tp_rescan(
 				query_cstr = pstrdup(get_tpquery_text(query));
 
 				/* Clear query vector since we're using text directly */
-				so->query_vector = NULL;
+				if (so->query_vector)
+				{
+					pfree(so->query_vector);
+					so->query_vector = NULL;
+				}
 
 				/* Store query for processing during gettuple */
 				if (so->query_text)
