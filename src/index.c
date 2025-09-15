@@ -196,9 +196,8 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies = 0; /* No search strategies - ORDER BY only */
-	amroutine->amsupport =
-			8; /* Support up to 8 functions, using 8 for distance */
+	amroutine->amstrategies	  = 0; /* No search strategies - ORDER BY only */
+	amroutine->amsupport	  = 8; /* 8 for distance */
 	amroutine->amoptsprocnum  = 0;
 	amroutine->amcanorder	  = false;
 	amroutine->amcanorderbyop = true; /* Supports ORDER BY operators */
@@ -792,8 +791,6 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 	IndexScanDesc scan;
 	TpScanOpaque  so;
 
-	/* Debug logging to see scan parameters */
-
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* Allocate and initialize scan opaque data */
@@ -1024,11 +1021,12 @@ tp_endscan(IndexScanDesc scan)
 static bool
 tp_execute_scoring_query(IndexScanDesc scan)
 {
-	TpScanOpaque	so = (TpScanOpaque)scan->opaque;
-	TpIndexMetaPage metap;
-	bool			success		= false;
-	TpIndexState   *index_state = NULL;
-	TpVector	   *query_vector;
+	TpScanOpaque		so = (TpScanOpaque)scan->opaque;
+	TpIndexMetaPage		metap;
+	bool				success		= false;
+	TpIndexState	   *index_state = NULL;
+	TpVector		   *query_vector;
+	const MemoryContext oldcontext_func = CurrentMemoryContext;
 
 	if (!so || !so->query_text)
 		return false;
@@ -1071,6 +1069,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
+		MemoryContextSwitchTo(oldcontext_func);
 		elog(WARNING,
 			 "Exception while getting metapage for index %s",
 			 RelationGetRelationName(scan->indexRelation));
@@ -1120,8 +1119,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 		if (!query_vector)
 		{
-			elog(WARNING,
-				 "No query available in scan state (neither vector nor text)");
+			elog(WARNING, "No query vector available in scan state");
 			pfree(metap);
 			return false;
 		}
@@ -1132,11 +1130,11 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
-		ErrorData	 *errdata	 = CopyErrorData();
+		ErrorData *errdata;
 
+		MemoryContextSwitchTo(oldcontext_func);
+		errdata = CopyErrorData();
 		FreeErrorData(errdata);
-		MemoryContextSwitchTo(oldcontext);
 		success = false;
 	}
 	PG_END_TRY();
@@ -1260,13 +1258,9 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	Assert(scan != NULL);
 	Assert(so != NULL);
 
-	/* Debug logging to see if this is being called during execution */
-
 	/* Check if we have a query to process */
 	if (!so->query_text)
-	{
 		return false;
-	}
 
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && !so->eof_reached)
@@ -1280,9 +1274,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/* Check if we've reached the end */
 	if (so->current_pos >= so->result_count || so->eof_reached)
-	{
 		return false;
-	}
 
 	Assert(so->scan_context != NULL);
 	Assert(so->result_ctids != NULL);
@@ -1374,7 +1366,7 @@ tp_costestimate(
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
-		elog(WARNING,
+		elog(DEBUG1,
 			 "Tapir costestimate: path->indexorderbys is %s (len=%d)",
 			 path->indexorderbys ? "non-null" : "NULL",
 			 path->indexorderbys ? list_length(path->indexorderbys) : -1);
@@ -1389,9 +1381,7 @@ tp_costestimate(
 		int limit = (int)root->limit_tuples;
 
 		if (tp_can_pushdown_limit(root, path, limit))
-		{
 			tp_store_query_limit(path->indexinfo->indexoid, limit);
-		}
 	}
 
 	/* Try to get actual statistics from the index */
@@ -1404,11 +1394,11 @@ tp_costestimate(
 		{
 			metap = tp_get_metapage(index_rel);
 			if (metap && metap->total_docs > 0)
-			{
 				num_tuples = (double)metap->total_docs;
-			}
+
 			if (metap)
 				pfree(metap);
+
 			index_close(index_rel, AccessShareLock);
 		}
 	}
@@ -1423,11 +1413,22 @@ tp_costestimate(
 	*indexTotalCost	  = costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
 
 	/*
-	 * Make index scan very attractive
+	 * Calculate selectivity based on LIMIT if available, otherwise use default
 	 */
-	*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
-													   * selectivity for text
-													   * searches */
+	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX &&
+		num_tuples > 0)
+	{
+		/* Use LIMIT as upper bound for selectivity calculation */
+		double limit_selectivity = Min(1.0, root->limit_tuples / num_tuples);
+		*indexSelectivity =
+				Max(limit_selectivity, TP_DEFAULT_INDEX_SELECTIVITY);
+	}
+	else
+	{
+		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
+														   * selectivity for
+														   * text searches */
+	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
 }

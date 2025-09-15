@@ -123,7 +123,6 @@ FROM generate_series(1, 50) i;
 -- Verify search still works with larger dataset
 SELECT COUNT(*) as total_matches
 FROM concurrent_test_docs;
-WARNING:  Tapir costestimate: path->indexorderbys is NULL (len=-1)
  total_matches 
 ---------------
             58
@@ -259,7 +258,6 @@ Test 7: Delete operations
 -- Count before delete
 SELECT COUNT(*) as count_before_delete
 FROM concurrent_test_docs;
-WARNING:  Tapir costestimate: path->indexorderbys is NULL (len=-1)
  count_before_delete 
 ---------------------
                   59
@@ -271,7 +269,6 @@ WHERE content LIKE 'test document number%' AND id % 5 = 0;
 -- Count after delete to verify cleanup
 SELECT COUNT(*) as count_after_delete
 FROM concurrent_test_docs;
-WARNING:  Tapir costestimate: path->indexorderbys is NULL (len=-1)
  count_after_delete 
 --------------------
                  49

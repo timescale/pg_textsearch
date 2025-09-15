@@ -73,15 +73,20 @@ AND indexrelid::regclass::text LIKE '%tapir%';
 (1 row)
 
 -- Test tpquery with new operators
-INSERT INTO test_docs (content) VALUES ('hello world example'), ('database system design');
+INSERT INTO test_docs (content) VALUES
+    ('hello world example'),
+    ('database system design'),
+    ('the quick brown fox'),
+    ('jumped over lazy dog'),
+    ('sphinx of black quartz');
 -- Test text <@> tpquery operator (should work)
 SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
-       content       | score 
----------------------+-------
- hello world example |    -0
+       content       |        score        
+---------------------+---------------------
+ hello world example | -1.0986123085021973
 (1 row)
 
 -- Test index name mismatch error in index scan context

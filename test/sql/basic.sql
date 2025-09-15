@@ -35,7 +35,12 @@ WHERE indrelid = 'test_docs'::regclass
 AND indexrelid::regclass::text LIKE '%tapir%';
 
 -- Test tpquery with new operators
-INSERT INTO test_docs (content) VALUES ('hello world example'), ('database system design');
+INSERT INTO test_docs (content) VALUES
+    ('hello world example'),
+    ('database system design'),
+    ('the quick brown fox'),
+    ('jumped over lazy dog'),
+    ('sphinx of black quartz');
 
 -- Test text <@> tpquery operator (should work)
 SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
