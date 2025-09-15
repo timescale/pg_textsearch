@@ -1,6 +1,10 @@
-# Run regression tests under memory sanitizer - TEMPORARILY DISABLED
+# Run regression tests under memory sanitizer
 name: Sanitizer test
 on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
   workflow_dispatch:
 
 env:
