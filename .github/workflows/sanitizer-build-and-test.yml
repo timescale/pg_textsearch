@@ -134,6 +134,9 @@ jobs:
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
 
+        # Increase max_stack_depth for sanitizer builds (AddressSanitizer adds stack overhead)
+        echo "max_stack_depth = 8MB" >> tmp_sanitizer_test/data/postgresql.conf
+
         # Start PostgreSQL
         pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
 
