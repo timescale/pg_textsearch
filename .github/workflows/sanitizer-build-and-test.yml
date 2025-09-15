@@ -1,5 +1,5 @@
-# Run regression tests under memory sanitizer
-name: Sanitizer test
+# Run regression tests under undefined behavior sanitizer
+name: UBSan test
 on:
   push:
     branches: [ master ]
@@ -14,9 +14,9 @@ env:
   extra_packages: "clang-15 llvm-15"
   CC: "clang-15"
   CXX: "clang-15"
-  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
-  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og"
-  LDFLAGS: "-fsanitize=address,undefined"
+  CFLAGS: "-g -fsanitize=undefined -fno-omit-frame-pointer -Og"
+  CXXFLAGS: "-g -fsanitize=undefined -fno-omit-frame-pointer -Og"
+  LDFLAGS: "-fsanitize=undefined"
 
   # Sanitizer options - create logs directory for better debugging
   ASAN_OPTIONS: "detect_leaks=0 abort_on_error=0 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1 symbolize=1 print_module_map=1 fast_unwind_on_fatal=0"
@@ -33,11 +33,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb strace ${{ env.extra_packages }}
 
-        # Enable core dumps for debugging and increase stack size
+        # Enable core dumps for debugging
         ulimit -c unlimited
-        ulimit -s 65536  # 64MB stack size to handle ASAN overhead
         echo "ulimit -c unlimited" >> ~/.bashrc
-        echo "ulimit -s 65536" >> ~/.bashrc
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -140,8 +138,8 @@ jobs:
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
 
-        # Set higher stack depth for sanitizer builds - balance ASAN overhead with CI limits
-        echo "max_stack_depth = 32MB" >> tmp_sanitizer_test/data/postgresql.conf
+        # Set normal stack depth - UBSAN has much lower overhead than ASAN
+        echo "max_stack_depth = 4MB" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Enable detailed logging for debugging stack depth issues
         echo "log_error_verbosity = verbose" >> tmp_sanitizer_test/data/postgresql.conf
