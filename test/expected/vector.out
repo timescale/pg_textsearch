@@ -1,6 +1,7 @@
 -- Test tpvector type and operators functionality
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+NOTICE:  extension "tapir" already exists, skipping
 -- Cleanup any existing state first
 DROP TABLE IF EXISTS test_docs CASCADE;
 NOTICE:  table "test_docs" does not exist, skipping
