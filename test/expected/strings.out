@@ -41,6 +41,8 @@ SELECT id, LEFT(content, 80) || '...' as content_preview,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
 LIMIT 5;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |                                   content_preview                                   | score  
 ----+-------------------------------------------------------------------------------------+--------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | 0.0000
@@ -213,6 +215,8 @@ FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
     AND content <@> to_tpquery('term allocation', 'long_strings_idx') < 0
 ORDER BY content_length;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |     category     | content_length |    allocation_type     |  score  
 ----+------------------+----------------+------------------------+---------
  14 | mixed_allocation |           1730 | Heap allocation likely | -1.2995

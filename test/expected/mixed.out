@@ -40,6 +40,8 @@ NOTICE:  Tapir index build completed: 5 documents, avg_length=3.80, text_config=
 SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |                content                 |  score  
 ----+----------------------------------------+---------
   2 | concurrent programming patterns        | -1.2021
@@ -62,6 +64,8 @@ SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concur
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |                           content                           |  score  
 ----+-------------------------------------------------------------+---------
   8 | database concurrent processing improves performance         | -0.5052
@@ -134,6 +138,8 @@ SELECT id, substring(content, 1, 50) || '...' as content_preview,
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 8;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |                    content_preview                    |  score  
 ----+-------------------------------------------------------+---------
   8 | database concurrent processing improves performanc... | -0.6120
@@ -189,6 +195,8 @@ WHERE id IN (1, 2);
 SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
   5 | database indexing strategies                                   | -0.3492

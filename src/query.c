@@ -184,33 +184,35 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	text			   *text_arg   = PG_GETARG_TEXT_PP(0);
-	TpQuery			   *query	   = (TpQuery *)PG_GETARG_POINTER(1);
-	char			   *index_name = get_tpquery_index_name(query);
-	char			   *query_text = get_tpquery_text(query);
-	char			   *text_str;
-	Oid					index_oid;
-	Relation			index_rel = NULL;
-	TpIndexMetaPage		metap	  = NULL;
-	Oid					text_config_oid;
-	Datum				tsvector_datum;
-	TSVector			tsvector;
-	WordEntry		   *entries;
-	char			   *lexemes_start;
-	Datum				query_tsvector_datum;
-	TSVector			query_tsvector;
-	WordEntry		   *query_entries;
-	char			   *query_lexemes_start;
-	TpIndexState	   *index_state;
-	float4				avg_doc_len;
-	int32				total_docs;
-	float8				result = 0.0;
-	int					i, q_i;
-	float4				doc_length;
-	int					doc_term_count;
-	int					query_term_count;
-	int					term_freq;
-	const MemoryContext oldcontext = CurrentMemoryContext;
+	static MemoryContext last_query_context = NULL;
+	static bool			 warned_this_query	= false;
+	text				*text_arg			= PG_GETARG_TEXT_PP(0);
+	TpQuery				*query				= (TpQuery *)PG_GETARG_POINTER(1);
+	char				*index_name			= get_tpquery_index_name(query);
+	char				*query_text			= get_tpquery_text(query);
+	char				*text_str;
+	Oid					 index_oid;
+	Relation			 index_rel = NULL;
+	TpIndexMetaPage		 metap	   = NULL;
+	Oid					 text_config_oid;
+	Datum				 tsvector_datum;
+	TSVector			 tsvector;
+	WordEntry			*entries;
+	char				*lexemes_start;
+	Datum				 query_tsvector_datum;
+	TSVector			 query_tsvector;
+	WordEntry			*query_entries;
+	char				*query_lexemes_start;
+	TpIndexState		*index_state;
+	float4				 avg_doc_len;
+	int32				 total_docs;
+	float8				 result = 0.0;
+	int					 i, q_i;
+	float4				 doc_length;
+	int					 doc_term_count;
+	int					 query_term_count;
+	int					 term_freq;
+	const MemoryContext	 oldcontext = CurrentMemoryContext;
 
 	if (!index_name)
 	{
@@ -233,6 +235,23 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("index \"%s\" not found", index_name)));
+	}
+
+	/* Reset warning flag for new queries by detecting context change */
+	if (CurrentMemoryContext != last_query_context)
+	{
+		last_query_context = CurrentMemoryContext;
+		warned_this_query  = false;
+	}
+
+	/* Warn about standalone scoring performance - once per query */
+	if (!warned_this_query)
+	{
+		ereport(WARNING,
+				(errmsg("using standalone scoring which can be slow"),
+				 errhint("Consider using ORDER BY with LIMIT for better "
+						 "performance")));
+		warned_this_query = true;
 	}
 
 	PG_TRY();

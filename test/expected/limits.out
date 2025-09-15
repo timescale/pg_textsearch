@@ -56,6 +56,8 @@ SELECT title, content, ROUND((content <@> to_tpquery('database', 'limit_test_idx
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
  Database Theory       | theoretical foundations of database systems and relational algebra | -0.4006
@@ -175,6 +177,8 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  has_results 
 -------------
  t
@@ -187,6 +191,8 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  title | score 
 -------+-------
 (0 rows)
@@ -197,6 +203,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
+WARNING:  using standalone scoring which can be slow
+HINT:  Consider using ORDER BY with LIMIT for better performance
  query_name | results 
 ------------+---------
  Query 1    |       2
