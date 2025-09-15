@@ -25,10 +25,10 @@ psql -c "CREATE EXTENSION IF NOT EXISTS tapir;" || {
 echo "Tapir extension loaded successfully."
 echo ""
 
-# Show initial configuration
+# Show initial configuration (skip if parameters not available)
 echo "=== Initial Configuration ==="
-psql -c "SHOW tapir.shared_memory_size;"
-psql -c "SHOW tapir.default_limit;"
+psql -c "SHOW tapir.index_memory_limit;" 2>/dev/null || echo "tapir.index_memory_limit: (parameter not visible)"
+psql -c "SHOW tapir.default_limit;" 2>/dev/null || echo "tapir.default_limit: (parameter not visible)"
 echo ""
 
 # Choose benchmark size based on argument
@@ -40,7 +40,7 @@ case "$BENCHMARK_SIZE" in
         BENCHMARK_FILE="sql/memory_stress_micro.sql"
         echo "Running MICRO memory stress benchmark (1K documents, ~1 minute)"
         ;;
-    "small") 
+    "small")
         BENCHMARK_FILE="sql/memory_stress_small.sql"
         echo "Running SMALL memory stress benchmark (25K documents, ~5-10 minutes)"
         ;;
@@ -73,7 +73,7 @@ if psql -f "$(dirname "$0")/$BENCHMARK_FILE" 2>&1; then
             echo "Micro benchmark establishes baseline functionality."
             echo "Try 'small' or 'large' sizes for stress testing."
             ;;
-        "small"|"large") 
+        "small"|"large")
             echo "If benchmark completed without memory errors, try:"
             echo "- Reducing tapir.shared_memory_size in postgresql.conf"
             echo "- Running 'large' size for maximum stress"
