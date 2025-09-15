@@ -98,6 +98,33 @@ SELECT
     to_tpvector('running runner runs', 'docs_vector_idx') as english_stemmed,
     to_tpvector('running runner runs', 'docs_simple_idx') as simple_no_stem;
 
+-- Test scoring consistency: ORDER BY vs standalone scoring
+\echo 'Testing ORDER BY vs standalone scoring consistency'
+WITH order_by_scores AS (
+    SELECT id, content,
+           ROUND((content <@> to_tpquery('fox dog', 'docs_simple_idx'))::numeric, 6) as order_by_score
+    FROM test_docs
+    ORDER BY content <@> to_tpquery('fox dog', 'docs_simple_idx')
+    LIMIT 3
+),
+standalone_scores AS (
+    -- Force standalone scoring by using all documents and calculating scores explicitly
+    SELECT id, content,
+           ROUND((content <@> to_tpquery('fox dog', 'docs_simple_idx'))::numeric, 6) as standalone_score
+    FROM test_docs
+    -- No WHERE clause to force sequential scan and standalone scoring for all rows
+)
+SELECT o.id,
+       o.order_by_score,
+       s.standalone_score,
+       CASE WHEN abs(o.order_by_score - s.standalone_score) < 0.000001
+            THEN '✓ SCORES MATCH'
+            ELSE '✗ SCORES DIFFER'
+       END as score_consistency
+FROM order_by_scores o
+JOIN standalone_scores s ON o.id = s.id
+ORDER BY o.id;
+
 -- Cleanup
 DROP INDEX docs_vector_idx;
 DROP INDEX docs_simple_idx;

@@ -107,5 +107,31 @@ FROM search_terms s
 CROSS JOIN articles a
 ORDER BY s.term, a.content <@> to_tpquery(s.term);
 
+-- Test scoring consistency for multi-term query
+\echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
+WITH order_by_results AS (
+    SELECT id, title,
+           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
+    FROM articles
+    ORDER BY content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx')
+    LIMIT 2
+),
+standalone_results AS (
+    SELECT id, title,
+           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
+    FROM articles
+    WHERE id IN (SELECT id FROM order_by_results)
+)
+SELECT o.id, o.title,
+       o.order_by_score,
+       s.standalone_score,
+       CASE WHEN abs(o.order_by_score - s.standalone_score) < 0.000001
+            THEN '✓ CONSISTENT'
+            ELSE '✗ INCONSISTENT'
+       END as consistency_check
+FROM order_by_results o
+JOIN standalone_results s ON o.id = s.id
+ORDER BY o.id;
+
 -- Cleanup
 DROP TABLE articles CASCADE;

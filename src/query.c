@@ -235,6 +235,12 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				 errmsg("index \"%s\" not found", index_name)));
 	}
 
+	/* Warn about standalone scoring performance */
+	ereport(WARNING,
+			(errmsg("using standalone scoring which can be slow"),
+			 errhint("Consider using ORDER BY with LIMIT for better "
+					 "performance")));
+
 	PG_TRY();
 	{
 		/* Open the index relation */

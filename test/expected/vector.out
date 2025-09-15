@@ -1,7 +1,6 @@
 -- Test tpvector type and operators functionality
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Cleanup any existing state first
 DROP TABLE IF EXISTS test_docs CASCADE;
 NOTICE:  table "test_docs" does not exist, skipping
@@ -185,6 +184,39 @@ SELECT
 ---------+----------------------------------+---------------------------------------------
  running | docs_vector_idx:{run:2,runner:1} | docs_simple_idx:{runner:1,running:1,runs:1}
 (1 row)
+
+-- Test scoring consistency: ORDER BY vs standalone scoring
+\echo 'Testing ORDER BY vs standalone scoring consistency'
+Testing ORDER BY vs standalone scoring consistency
+WITH order_by_scores AS (
+    SELECT id, content,
+           ROUND((content <@> to_tpquery('fox dog', 'docs_simple_idx'))::numeric, 6) as order_by_score
+    FROM test_docs
+    ORDER BY content <@> to_tpquery('fox dog', 'docs_simple_idx')
+    LIMIT 3
+),
+standalone_scores AS (
+    -- Force standalone scoring by using all documents and calculating scores explicitly
+    SELECT id, content,
+           ROUND((content <@> to_tpquery('fox dog', 'docs_simple_idx'))::numeric, 6) as standalone_score
+    FROM test_docs
+    -- No WHERE clause to force sequential scan and standalone scoring for all rows
+)
+SELECT o.id,
+       o.order_by_score,
+       s.standalone_score,
+       CASE WHEN abs(o.order_by_score - s.standalone_score) < 0.000001
+            THEN '✓ SCORES MATCH'
+            ELSE '✗ SCORES DIFFER'
+       END as score_consistency
+FROM order_by_scores o
+JOIN standalone_scores s ON o.id = s.id
+ORDER BY o.id;
+ id | order_by_score | standalone_score | score_consistency 
+----+----------------+------------------+-------------------
+  1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
+  2 |      -0.996679 |        -0.996679 | ✓ SCORES MATCH
+(2 rows)
 
 -- Cleanup
 DROP INDEX docs_vector_idx;
