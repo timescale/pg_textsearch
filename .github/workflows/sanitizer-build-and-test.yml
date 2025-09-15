@@ -48,7 +48,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}"
+        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
 
     - name: Build PostgreSQL with sanitizers
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
