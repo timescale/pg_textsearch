@@ -138,8 +138,8 @@ jobs:
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
 
-        # Disable stack depth checking for sanitizer builds - ASAN causes deep call stacks
-        echo "max_stack_depth = 0" >> tmp_sanitizer_test/data/postgresql.conf
+        # Set very high stack depth for sanitizer builds - ASAN adds significant overhead
+        echo "max_stack_depth = 100MB" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Enable detailed logging for debugging stack depth issues
         echo "log_error_verbosity = verbose" >> tmp_sanitizer_test/data/postgresql.conf
