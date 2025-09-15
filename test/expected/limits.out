@@ -56,8 +56,8 @@ SELECT title, content, ROUND((content <@> to_tpquery('database', 'limit_test_idx
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
  Database Theory       | theoretical foundations of database systems and relational algebra | -0.4006
@@ -73,6 +73,8 @@ SELECT title, ROUND((content <@> to_tpquery('search', 'limit_test_idx'))::numeri
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
       title       | score  
 ------------------+--------
  Database Systems | 0.0000
@@ -83,6 +85,8 @@ SELECT title, ROUND((content <@> to_tpquery('optimization', 'limit_test_idx'))::
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
         title         |  score  
 ----------------------+---------
  Query Optimization   | -1.0761
@@ -95,6 +99,8 @@ SELECT title, ROUND((content <@> to_tpquery('algorithm', 'limit_test_idx'))::num
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.0761
@@ -131,6 +137,8 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
  Query Optimization    | -0.4006
@@ -149,6 +157,8 @@ SELECT title, ROUND((content <@> to_tpquery('performance', 'limit_test_idx'))::n
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.6716
@@ -163,6 +173,8 @@ SELECT title, ROUND((content <@> to_tpquery('text', 'limit_test_idx'))::numeric,
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
       title       | score  
 ------------------+--------
  Database Systems | 0.0000
@@ -177,8 +189,8 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  has_results 
 -------------
  t
@@ -191,8 +203,8 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  title | score 
 -------+-------
 (0 rows)
@@ -203,8 +215,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -215,6 +227,8 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_name | results 
 ------------+---------
  Query 2    |       3
@@ -225,6 +239,8 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_name | results 
 ------------+---------
  Query 3    |       4
@@ -275,6 +291,8 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  pushdown_unsafe_count 
 -----------------------
                      2
@@ -290,6 +308,8 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  large_limit_has_results 
 -------------------------
  t

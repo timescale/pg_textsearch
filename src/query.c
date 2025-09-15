@@ -1,6 +1,7 @@
 #include <postgres.h>
 
 #include <access/relation.h>
+#include <access/xact.h>
 #include <catalog/namespace.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
@@ -184,35 +185,36 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	static MemoryContext last_query_context = NULL;
-	static bool			 warned_this_query	= false;
-	text				*text_arg			= PG_GETARG_TEXT_PP(0);
-	TpQuery				*query				= (TpQuery *)PG_GETARG_POINTER(1);
-	char				*index_name			= get_tpquery_index_name(query);
-	char				*query_text			= get_tpquery_text(query);
-	char				*text_str;
-	Oid					 index_oid;
-	Relation			 index_rel = NULL;
-	TpIndexMetaPage		 metap	   = NULL;
-	Oid					 text_config_oid;
-	Datum				 tsvector_datum;
-	TSVector			 tsvector;
-	WordEntry			*entries;
-	char				*lexemes_start;
-	Datum				 query_tsvector_datum;
-	TSVector			 query_tsvector;
-	WordEntry			*query_entries;
-	char				*query_lexemes_start;
-	TpIndexState		*index_state;
-	float4				 avg_doc_len;
-	int32				 total_docs;
-	float8				 result = 0.0;
-	int					 i, q_i;
-	float4				 doc_length;
-	int					 doc_term_count;
-	int					 query_term_count;
-	int					 term_freq;
-	const MemoryContext	 oldcontext = CurrentMemoryContext;
+	static TimestampTz	last_statement_start  = 0;
+	static bool			warned_this_statement = false;
+	TimestampTz			current_statement_start;
+	text			   *text_arg   = PG_GETARG_TEXT_PP(0);
+	TpQuery			   *query	   = (TpQuery *)PG_GETARG_POINTER(1);
+	char			   *index_name = get_tpquery_index_name(query);
+	char			   *query_text = get_tpquery_text(query);
+	char			   *text_str;
+	Oid					index_oid;
+	Relation			index_rel = NULL;
+	TpIndexMetaPage		metap	  = NULL;
+	Oid					text_config_oid;
+	Datum				tsvector_datum;
+	TSVector			tsvector;
+	WordEntry		   *entries;
+	char			   *lexemes_start;
+	Datum				query_tsvector_datum;
+	TSVector			query_tsvector;
+	WordEntry		   *query_entries;
+	char			   *query_lexemes_start;
+	TpIndexState	   *index_state;
+	float4				avg_doc_len;
+	int32				total_docs;
+	float8				result = 0.0;
+	int					i, q_i;
+	float4				doc_length;
+	int					doc_term_count;
+	int					query_term_count;
+	int					term_freq;
+	const MemoryContext oldcontext = CurrentMemoryContext;
 
 	if (!index_name)
 	{
@@ -237,21 +239,22 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				 errmsg("index \"%s\" not found", index_name)));
 	}
 
-	/* Reset warning flag for new queries by detecting context change */
-	if (CurrentMemoryContext != last_query_context)
+	/* Reset warning flag for new statements */
+	current_statement_start = GetCurrentStatementStartTimestamp();
+	if (current_statement_start != last_statement_start)
 	{
-		last_query_context = CurrentMemoryContext;
-		warned_this_query  = false;
+		last_statement_start  = current_statement_start;
+		warned_this_statement = false;
 	}
 
-	/* Warn about standalone scoring performance - once per query */
-	if (!warned_this_query)
+	/* Warn about standalone scoring performance - once per statement */
+	if (!warned_this_statement)
 	{
 		ereport(WARNING,
-				(errmsg("using standalone scoring which can be slow"),
-				 errhint("Consider using ORDER BY with LIMIT for better "
-						 "performance")));
-		warned_this_query = true;
+				(errmsg("using row-at-a-time scoring which can be slow"),
+				 errhint("Consider ORDER BY with LIMIT but no explicit "
+						 "scoring in SELECT")));
+		warned_this_statement = true;
 	}
 
 	PG_TRY();

@@ -97,8 +97,8 @@ WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
 ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
 LIMIT 5;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
              title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -1.4458
@@ -182,10 +182,8 @@ SELECT o.id, o.title,
 FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -2.451850 |        -2.451850 | ✓ CONSISTENT

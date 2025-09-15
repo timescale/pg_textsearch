@@ -89,8 +89,8 @@ SELECT
     ROUND((content <@> to_tpquery('hello world', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
 ORDER BY score;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
            content           |  score  
 -----------------------------+---------
  hello world example         | -2.2549
@@ -108,6 +108,8 @@ SELECT
 FROM test_docs
 ORDER BY (content <@> to_tpquery('postgresql', 'docs_vector_idx'))::float8 +
          (content <@> to_tpquery('search', 'docs_vector_idx'))::float8;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
            content           | postgresql_score | search_score 
 -----------------------------+------------------+--------------
  the quick brown fox         |           0.0000 |       0.0000
@@ -167,8 +169,8 @@ SELECT
 FROM test_docs
 ORDER BY content <@> to_tpquery('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |       content       | relevance 
 ----+---------------------+-----------
   1 | the quick brown fox |   -2.2549
@@ -217,14 +219,8 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
-WARNING:  using standalone scoring which can be slow
-HINT:  Consider using ORDER BY with LIMIT for better performance
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
   1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
