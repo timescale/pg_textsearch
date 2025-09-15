@@ -79,11 +79,11 @@ ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
+      1 | experimental investigation of the aerodynamics of a wing in  | -1.6870
+      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
       9 | transition studies and skin friction measurements on an insu |  0.0000
       7 | the effect of controlled three-dimensional roughness on boun |  0.0000
-      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
-      1 | experimental investigation of the aerodynamics of a wing in  | -1.6870
+      6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -98,11 +98,11 @@ ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_i
 LIMIT 5;
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
-      8 | measurements of the effect of two-dimensional and three-dime | -0.5284
-      2 | simple shear flow past a flat plate in an incompressible flu | -0.6572
-      7 | the effect of controlled three-dimensional roughness on boun | -0.5875
       9 | transition studies and skin friction measurements on an insu | -0.6162
+      7 | the effect of controlled three-dimensional roughness on boun | -0.5875
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.6572
+      8 | measurements of the effect of two-dimensional and three-dime | -0.5284
+      6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
 (5 rows)
 
 -- Test 3: Validation against expected rankings for Query 1
@@ -136,15 +136,15 @@ WHERE q.query_id = 1 AND br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |                   title_preview                    
 ---------------------------+--------+------------+---------------+--------------+----------------+----------------------------------------------------
- aerodynamic flow analysis |      6 |          1 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
- aerodynamic flow analysis |      3 |          2 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
- aerodynamic flow analysis |      9 |          3 |               |       0.0000 |                | transition studies and skin friction measurements 
- aerodynamic flow analysis |      7 |          4 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
- aerodynamic flow analysis |      4 |          5 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
- aerodynamic flow analysis |      2 |          6 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
- aerodynamic flow analysis |      5 |          7 |               |      -1.5650 |                | one-dimensional transient heat conduction into a d
- aerodynamic flow analysis |      1 |          8 |             1 |      -1.6870 |         1.5000 | experimental investigation of the aerodynamics of 
- aerodynamic flow analysis |     10 |          9 |               |      -2.4331 |                | the theory of the impact tube at low pressure .
+ aerodynamic flow analysis |     10 |          1 |               |      -2.4331 |                | the theory of the impact tube at low pressure .
+ aerodynamic flow analysis |      1 |          2 |             1 |      -1.6870 |         1.5000 | experimental investigation of the aerodynamics of 
+ aerodynamic flow analysis |      5 |          3 |               |      -1.5650 |                | one-dimensional transient heat conduction into a d
+ aerodynamic flow analysis |      2 |          4 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
+ aerodynamic flow analysis |      9 |          5 |               |       0.0000 |                | transition studies and skin friction measurements 
+ aerodynamic flow analysis |      7 |          6 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
+ aerodynamic flow analysis |      4 |          7 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
+ aerodynamic flow analysis |      3 |          8 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
+ aerodynamic flow analysis |      6 |          9 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
 (9 rows)
 
 -- Test 4: Performance test with multiple queries
@@ -178,8 +178,8 @@ ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir
 LIMIT 10;
                                               QUERY PLAN                                              
 ------------------------------------------------------------------------------------------------------
- Limit  (cost=0.01..4.52 rows=10 width=44)
-   ->  Index Scan using cranfield_tapir_idx on aerodocs_documents  (cost=0.01..4.52 rows=10 width=44)
+ Limit  (cost=0.01..1.77 rows=10 width=44)
+   ->  Index Scan using cranfield_tapir_idx on aerodocs_documents  (cost=0.01..1.77 rows=10 width=44)
          Order By: (full_text <@> 'cranfield_tapir_idx:{supersonic aircraft design}'::tpquery)
 (3 rows)
 

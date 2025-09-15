@@ -776,7 +776,7 @@ tp_score_documents(
 
 		j = i - 1;
 
-		while (j >= 0 && sorted_docs[j]->score > key->score)
+		while (j >= 0 && sorted_docs[j]->score < key->score)
 		{
 			sorted_docs[j + 1] = sorted_docs[j];
 			j--;
