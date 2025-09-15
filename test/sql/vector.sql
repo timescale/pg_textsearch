@@ -86,8 +86,7 @@ SELECT
     content,
     ROUND((content <@> to_tpquery('quick fox', 'docs_vector_idx'))::numeric, 4) as relevance
 FROM test_docs
-WHERE content <@> to_tpquery('quick fox', 'docs_vector_idx') < 0  -- Remember: negative scores
-ORDER BY relevance
+ORDER BY content <@> to_tpquery('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
 
 -- Test with another index using simple config

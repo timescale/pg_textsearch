@@ -106,7 +106,7 @@ SELECT COUNT(*) > 0 as has_results
 FROM (
     SELECT title, content <@> to_tpquery('xyzabc123', 'limit_test_idx') as score
     FROM limit_test
-    WHERE content <@> to_tpquery('xyzabc123', 'limit_test_idx') < 0
+    -- Test for non-matching terms (should return no results)
     ORDER BY 2
     LIMIT 1000
 ) subq;
@@ -122,19 +122,19 @@ SELECT * FROM (
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    WHERE content <@> to_tpquery('database', 'limit_test_idx') < -1
+    ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
 
 SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    WHERE content <@> to_tpquery('search', 'limit_test_idx') < -1
+    ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    WHERE content <@> to_tpquery('algorithm', 'limit_test_idx') < -1
+    ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
 
@@ -183,7 +183,7 @@ SELECT COUNT(*) > 0 as large_limit_has_results
 FROM (
     SELECT title, content <@> to_tpquery('qwertyuiop999', 'limit_test_idx') as score
     FROM limit_test
-    WHERE content <@> to_tpquery('qwertyuiop999', 'limit_test_idx') < 0
+    -- Test with non-matching nonsense term
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;

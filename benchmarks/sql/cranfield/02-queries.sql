@@ -94,7 +94,8 @@ SELECT
     ROUND(MIN((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as min_score,
     ROUND(MAX((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as max_score
 FROM cranfield_full_documents
-WHERE full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx') < 0;
+ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx')
+LIMIT 1000;
 
 -- Reset settings
 SET enable_indexscan = on;
