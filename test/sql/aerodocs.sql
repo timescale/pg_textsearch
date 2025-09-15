@@ -137,7 +137,7 @@ ORDER BY q.query_id;
 -- Test 5: Index usage verification
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
-EXPLAIN
+EXPLAIN (COSTS OFF)
 SELECT doc_id, ROUND((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx') ASC
