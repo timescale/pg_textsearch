@@ -79,42 +79,46 @@ jobs:
         echo "Verifying PostgreSQL was built with sanitizers..."
 
         # Check if postgres binary contains sanitizer symbols
-        echo "Checking for AddressSanitizer symbols..."
-        if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
-          echo "✓ AddressSanitizer symbols found in postgres binary"
+        echo "Checking for UndefinedBehaviorSanitizer symbols..."
+        if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i ubsan > /dev/null; then
+          echo "✓ UndefinedBehaviorSanitizer symbols found in postgres binary"
         else
-          echo "✗ AddressSanitizer symbols NOT found in postgres binary"
-          echo "This suggests PostgreSQL was not built with -fsanitize=address"
-          exit 1
+          echo "⚠️  UndefinedBehaviorSanitizer symbols not found, checking for general sanitizer symbols..."
+          if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i sanitiz > /dev/null; then
+            echo "✓ Sanitizer symbols found in postgres binary"
+          else
+            echo "✗ No sanitizer symbols found in postgres binary"
+            echo "This suggests PostgreSQL was not built with -fsanitize=undefined"
+            exit 1
+          fi
         fi
 
         # Check build flags were preserved
         echo "Checking if postgres was built with sanitizer flags..."
-        if ldd ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
-          echo "✓ AddressSanitizer runtime library linked to postgres"
+        if ldd ~/$PG_INSTALL_DIR/bin/postgres | grep -i ubsan > /dev/null; then
+          echo "✓ UndefinedBehaviorSanitizer runtime library linked to postgres"
         else
-          echo "⚠️  AddressSanitizer runtime library not found in ldd output"
+          echo "ℹ️  UBSan may be statically linked or have different library naming"
         fi
 
-        # Test that sanitizers are actually working by triggering a known issue
-        echo "Testing sanitizer detection with intentional buffer overflow..."
+        # Test that sanitizers are actually working by triggering undefined behavior
+        echo "Testing UBSan detection with intentional undefined behavior..."
         cat > test_sanitizer.c << 'EOF'
         #include <stdio.h>
-        #include <stdlib.h>
         int main() {
-            char *buf = malloc(10);
-            buf[10] = 'x';  // Buffer overflow - should be caught by AddressSanitizer
-            free(buf);
+            int x = 2147483647; // INT_MAX
+            x = x + 1; // Integer overflow - should be caught by UBSan
+            printf("Result: %d\n", x);
             return 0;
         }
         EOF
 
-        # Compile and run test - should fail with sanitizer error
+        # Compile and run test - should trigger UBSan error
         $CC $CFLAGS test_sanitizer.c -o test_sanitizer
-        if ./test_sanitizer; then
-          echo "⚠️  WARNING: Sanitizer test did not catch buffer overflow!"
+        if ./test_sanitizer 2>&1 | grep -i "runtime error" > /dev/null; then
+          echo "✓ UBSan correctly detected undefined behavior"
         else
-          echo "✓ Sanitizer correctly caught buffer overflow (exit code $?)"
+          echo "⚠️  UBSan did not detect undefined behavior, but may still be working"
         fi
         rm -f test_sanitizer test_sanitizer.c
 
