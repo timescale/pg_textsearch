@@ -178,8 +178,8 @@ ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir
 LIMIT 10;
                                               QUERY PLAN                                              
 ------------------------------------------------------------------------------------------------------
- Limit  (cost=0.01..1.77 rows=10 width=44)
-   ->  Index Scan using cranfield_tapir_idx on aerodocs_documents  (cost=0.01..1.77 rows=10 width=44)
+ Limit  (cost=0.01..4.52 rows=10 width=44)
+   ->  Index Scan using cranfield_tapir_idx on aerodocs_documents  (cost=0.01..4.52 rows=10 width=44)
          Order By: (full_text <@> 'cranfield_tapir_idx:{supersonic aircraft design}'::tpquery)
 (3 rows)
 
