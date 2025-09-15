@@ -33,9 +33,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb strace ${{ env.extra_packages }}
 
-        # Enable core dumps for debugging
+        # Enable core dumps for debugging and increase stack size
         ulimit -c unlimited
+        ulimit -s 65536  # 64MB stack size to handle ASAN overhead
         echo "ulimit -c unlimited" >> ~/.bashrc
+        echo "ulimit -s 65536" >> ~/.bashrc
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -138,8 +140,8 @@ jobs:
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
 
-        # Set very high stack depth for sanitizer builds - ASAN adds significant overhead
-        echo "max_stack_depth = 100MB" >> tmp_sanitizer_test/data/postgresql.conf
+        # Set higher stack depth for sanitizer builds - balance ASAN overhead with CI limits
+        echo "max_stack_depth = 32MB" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Enable detailed logging for debugging stack depth issues
         echo "log_error_verbosity = verbose" >> tmp_sanitizer_test/data/postgresql.conf
@@ -163,7 +165,7 @@ jobs:
           POSTGRES_PID=$(ps aux | grep 'postgres.*tmp_sanitizer_test' | grep -v grep | head -1 | awk '{print $2}')
           if [ -n "$POSTGRES_PID" ]; then
             echo "Attempting to attach gdb to postgres process $POSTGRES_PID..."
-            timeout 30s gdb -batch -p $POSTGRES_PID -ex "thread apply all bt" -ex "quit" 2>/dev/null || echo "gdb attach failed or timed out"
+            timeout 30s gdb -batch -p $POSTGRES_PID -ex "thread apply all bt" -ex "quit" 2>&1 || echo "gdb attach failed or timed out"
           fi
 
           # Show postgres logs
