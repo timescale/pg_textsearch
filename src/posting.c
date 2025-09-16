@@ -553,49 +553,14 @@ typedef struct DocumentScoreEntry
 	float4			doc_length; /* Document length (for BM25 calculation) */
 } DocumentScoreEntry;
 
-int
-tp_score_documents(
-		TpIndexState *index_state,
-		Relation	  index_relation,
-		char		**query_terms,
-		int32		 *query_frequencies,
-		int			  query_term_count,
-		float4		  k1,
-		float4		  b,
-		int			  max_results,
-		ItemPointer	  result_ctids,
-		float4		**result_scores)
+/*
+ * Create and initialize hash table for document scores
+ */
+static HTAB *
+tp_create_doc_scores_hash(int max_results, int32 total_docs)
 {
 	HASHCTL hash_ctl;
-
-	HTAB				*doc_scores_hash;
-	DocumentScoreEntry	*doc_entry;
-	float4				 avg_doc_len;
-	int32				 total_docs;
-	bool				 found;
-	int					 result_count = 0;
-	DocumentScoreEntry **sorted_docs;
-	int					 i, j;
-	int					 hash_size;
-
-	/* Validate inputs */
-	if (!index_state)
-		elog(ERROR, "tp_score_documents: NULL index_state");
-	if (!query_terms)
-		elog(ERROR, "tp_score_documents: NULL query_terms");
-	if (!query_frequencies)
-		elog(ERROR, "tp_score_documents: NULL query_frequencies");
-	if (!result_ctids)
-		elog(ERROR, "tp_score_documents: NULL result_ctids");
-	if (!result_scores)
-		elog(ERROR, "tp_score_documents: NULL result_scores");
-
-	total_docs	= index_state->stats.total_docs;
-	avg_doc_len = total_docs > 0 ? (float4)(index_state->stats.total_len /
-											(double)total_docs)
-								 : 0.0f;
-
-	/* Create hash table for accumulating document scores */
+	int		hash_size;
 
 	/* Ensure reasonable hash table size with upper bounds */
 	hash_size = max_results * 2;
@@ -613,12 +578,25 @@ tp_score_documents(
 	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
 
 	/* Create hash table */
-	doc_scores_hash = hash_create(
+	return hash_create(
 			"DocScores", hash_size, &hash_ctl, HASH_ELEM | HASH_BLOBS);
+}
 
-	if (!doc_scores_hash)
-		elog(ERROR, "Failed to create document scores hash table");
-
+/*
+ * Calculate BM25 scores for matching documents
+ */
+static int
+tp_calculate_bm25_scores(
+		TpIndexState *index_state,
+		char		**query_terms,
+		int32		 *query_frequencies,
+		int			  query_term_count,
+		float4		  k1,
+		float4		  b,
+		float4		  avg_doc_len,
+		int32		  total_docs,
+		HTAB		 *doc_scores_hash)
+{
 	/* Single pass through all posting lists */
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
@@ -654,11 +632,13 @@ tp_score_documents(
 		}
 		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
 		{
-			TpPostingEntry *entry = &entries[doc_idx];
-			float4			tf	  = entry->frequency;
-			float4			doc_len;
-			float4			term_score;
-			double			numerator_d, denominator_d;
+			TpPostingEntry	   *entry = &entries[doc_idx];
+			float4				tf	  = entry->frequency;
+			float4				doc_len;
+			float4				term_score;
+			double				numerator_d, denominator_d;
+			DocumentScoreEntry *doc_entry;
+			bool				found;
 
 			/* Look up document length from hash table */
 			doc_len = (float4)
@@ -734,7 +714,20 @@ tp_score_documents(
 		}
 	}
 
-	/* Extract and sort documents by score */
+	return hash_get_num_entries(doc_scores_hash);
+}
+
+/*
+ * Extract and sort documents by BM25 score (descending)
+ */
+static DocumentScoreEntry **
+tp_extract_and_sort_documents(
+		HTAB *doc_scores_hash, int max_results, int *actual_count)
+{
+	DocumentScoreEntry **sorted_docs;
+	int					 result_count;
+	int					 i, j;
+
 	/* First, count how many unique documents we have */
 	result_count = hash_get_num_entries(doc_scores_hash);
 
@@ -789,176 +782,247 @@ tp_score_documents(
 		sorted_docs[j + 1] = key;
 	}
 
-	/* Fill remaining slots with zero-scored documents if needed */
-	if (result_count < max_results && index_relation != NULL)
+	*actual_count = result_count;
+	return sorted_docs;
+}
+
+/*
+ * Fill remaining slots with zero-scored documents if needed
+ */
+static int
+tp_fill_zero_scored_documents(
+		Relation			 index_relation,
+		DocumentScoreEntry **sorted_docs,
+		int					 scored_count,
+		int					 max_results,
+		ItemPointer			 additional_ctids)
+{
+	TpIndexMetaPage metap;
+	BlockNumber		current_page;
+	int				additional_count = 0;
+	HTAB		   *seen_docs_hash	 = NULL;
+	HASHCTL			seen_docs_ctl;
+	int				i;
+
+	/* Get metapage to find first docid page */
+	metap = tp_get_metapage(index_relation);
+
+	if (metap == NULL || metap->first_docid_page == InvalidBlockNumber)
 	{
-		TpIndexMetaPage metap;
-		BlockNumber		current_page;
-		int				additional_count = 0;
-		ItemPointer		additional_ctids = NULL;
-		HTAB		   *seen_docs_hash	 = NULL;
-		HASHCTL			seen_docs_ctl;
-
-		/* Get metapage to find first docid page */
-		metap = tp_get_metapage(index_relation);
-
-		if (metap != NULL && metap->first_docid_page != InvalidBlockNumber)
-		{
-			/* Create hash table to track documents we've already included */
-			memset(&seen_docs_ctl, 0, sizeof(seen_docs_ctl));
-			seen_docs_ctl.keysize	= sizeof(ItemPointerData);
-			seen_docs_ctl.entrysize = sizeof(ItemPointerData);
-			seen_docs_ctl.hcxt		= CurrentMemoryContext;
-
-			seen_docs_hash = hash_create(
-					"seen_documents",
-					result_count + max_results,
-					&seen_docs_ctl,
-					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-
-			/* Add already scored documents to seen hash */
-			for (i = 0; i < result_count; i++)
-			{
-				hash_search(
-						seen_docs_hash,
-						&sorted_docs[i]->ctid,
-						HASH_ENTER,
-						NULL);
-			}
-
-			/* Allocate space for additional documents */
-			additional_ctids = palloc(
-					(max_results - result_count) * sizeof(ItemPointerData));
-
-			/* Iterate through docid pages to find additional documents */
-			current_page = metap->first_docid_page;
-
-			while (current_page != InvalidBlockNumber &&
-				   additional_count < (max_results - result_count))
-			{
-				Buffer			   docid_buf;
-				Page			   docid_page;
-				TpDocidPageHeader *docid_header;
-				ItemPointer		   docids;
-
-				docid_buf = ReadBuffer(index_relation, current_page);
-				LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-				docid_page	 = BufferGetPage(docid_buf);
-				docid_header = (TpDocidPageHeader *)PageGetContents(
-						docid_page);
-
-				/* Validate page magic */
-				if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
-				{
-					UnlockReleaseBuffer(docid_buf);
-					break;
-				}
-
-				/* Process each docid on this page */
-				docids = (ItemPointer)((char *)docid_header +
-									   sizeof(TpDocidPageHeader));
-
-				for (i = 0; i < (int)docid_header->num_docids &&
-							additional_count < (max_results - result_count);
-					 i++)
-				{
-					ItemPointer ctid = &docids[i];
-					bool		doc_found;
-
-					/* Check if we've already included this document */
-					hash_search(seen_docs_hash, ctid, HASH_FIND, &doc_found);
-
-					if (!doc_found)
-					{
-						/* Add this document with zero score */
-						additional_ctids[additional_count] = *ctid;
-						additional_count++;
-
-						/* Mark as seen to avoid duplicates */
-						hash_search(seen_docs_hash, ctid, HASH_ENTER, NULL);
-					}
-				}
-
-				/* Move to next page */
-				current_page = docid_header->next_page;
-				UnlockReleaseBuffer(docid_buf);
-			}
-
-			/* Clean up */
-			if (seen_docs_hash)
-				hash_destroy(seen_docs_hash);
-		}
-
-		/* Combine scored and zero-scored results */
-		if (additional_count > 0)
-		{
-			int total_results = result_count + additional_count;
-
-			*result_scores = palloc(total_results * sizeof(float4));
-
-			/* Copy scored results */
-			for (i = 0; i < result_count; i++)
-			{
-				result_ctids[i]		= sorted_docs[i]->ctid;
-				(*result_scores)[i] = sorted_docs[i]->score;
-			}
-
-			/* Add zero-scored results */
-			for (i = 0; i < additional_count; i++)
-			{
-				result_ctids[result_count + i]	   = additional_ctids[i];
-				(*result_scores)[result_count + i] = 0.0;
-			}
-
-			result_count = total_results;
-			pfree(additional_ctids);
-		}
-		else
-		{
-			/* No additional documents, use original allocation */
-			if (result_count > 0)
-			{
-				*result_scores = palloc(result_count * sizeof(float4));
-				for (i = 0; i < result_count; i++)
-				{
-					result_ctids[i]		= sorted_docs[i]->ctid;
-					(*result_scores)[i] = sorted_docs[i]->score;
-				}
-			}
-			else
-			{
-				*result_scores = NULL;
-			}
-		}
-
-		/* Clean up metapage */
 		if (metap)
 			pfree(metap);
+		return 0;
+	}
+
+	/* Create hash table to track documents we've already included */
+	memset(&seen_docs_ctl, 0, sizeof(seen_docs_ctl));
+	seen_docs_ctl.keysize	= sizeof(ItemPointerData);
+	seen_docs_ctl.entrysize = sizeof(ItemPointerData);
+	seen_docs_ctl.hcxt		= CurrentMemoryContext;
+
+	seen_docs_hash = hash_create(
+			"seen_documents",
+			scored_count + max_results,
+			&seen_docs_ctl,
+			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	/* Add already scored documents to seen hash */
+	for (i = 0; i < scored_count; i++)
+	{
+		hash_search(seen_docs_hash, &sorted_docs[i]->ctid, HASH_ENTER, NULL);
+	}
+
+	/* Iterate through docid pages to find additional documents */
+	current_page = metap->first_docid_page;
+
+	while (current_page != InvalidBlockNumber &&
+		   additional_count < (max_results - scored_count))
+	{
+		Buffer			   docid_buf;
+		Page			   docid_page;
+		TpDocidPageHeader *docid_header;
+		ItemPointer		   docids;
+
+		docid_buf = ReadBuffer(index_relation, current_page);
+		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+		docid_page	 = BufferGetPage(docid_buf);
+		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+		/* Validate page magic */
+		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
+		{
+			UnlockReleaseBuffer(docid_buf);
+			break;
+		}
+
+		/* Process each docid on this page */
+		docids = (ItemPointer)((char *)docid_header +
+							   sizeof(TpDocidPageHeader));
+
+		for (i = 0; i < (int)docid_header->num_docids &&
+					additional_count < (max_results - scored_count);
+			 i++)
+		{
+			ItemPointer ctid = &docids[i];
+			bool		doc_found;
+
+			/* Check if we've already included this document */
+			hash_search(seen_docs_hash, ctid, HASH_FIND, &doc_found);
+
+			if (!doc_found)
+			{
+				/* Add this document with zero score */
+				additional_ctids[additional_count] = *ctid;
+				additional_count++;
+
+				/* Mark as seen to avoid duplicates */
+				hash_search(seen_docs_hash, ctid, HASH_ENTER, NULL);
+			}
+		}
+
+		/* Move to next page */
+		current_page = docid_header->next_page;
+		UnlockReleaseBuffer(docid_buf);
+	}
+
+	/* Clean up */
+	if (seen_docs_hash)
+		hash_destroy(seen_docs_hash);
+	if (metap)
+		pfree(metap);
+
+	return additional_count;
+}
+
+/*
+ * Copy results to output arrays
+ */
+static void
+tp_copy_results_to_output(
+		DocumentScoreEntry **sorted_docs,
+		int					 scored_count,
+		ItemPointer			 additional_ctids,
+		int					 additional_count,
+		ItemPointer			 result_ctids,
+		float4			   **result_scores)
+{
+	int total_results = scored_count + additional_count;
+	int i;
+
+	if (total_results > 0)
+	{
+		*result_scores = palloc(total_results * sizeof(float4));
+
+		/* Copy scored results */
+		for (i = 0; i < scored_count; i++)
+		{
+			result_ctids[i]		= sorted_docs[i]->ctid;
+			(*result_scores)[i] = sorted_docs[i]->score;
+		}
+
+		/* Add zero-scored results */
+		for (i = 0; i < additional_count; i++)
+		{
+			result_ctids[scored_count + i]	   = additional_ctids[i];
+			(*result_scores)[scored_count + i] = 0.0;
+		}
 	}
 	else
 	{
-		/* Copy sorted results to output arrays */
-		if (result_count > 0)
-		{
-			*result_scores = palloc(result_count * sizeof(float4));
-			for (i = 0; i < result_count; i++)
-			{
-				result_ctids[i]		= sorted_docs[i]->ctid;
-				(*result_scores)[i] = sorted_docs[i]->score;
-			}
-		}
-		else
-		{
-			*result_scores = NULL;
-		}
+		*result_scores = NULL;
 	}
+}
+
+int
+tp_score_documents(
+		TpIndexState *index_state,
+		Relation	  index_relation,
+		char		**query_terms,
+		int32		 *query_frequencies,
+		int			  query_term_count,
+		float4		  k1,
+		float4		  b,
+		int			  max_results,
+		ItemPointer	  result_ctids,
+		float4		**result_scores)
+{
+	HTAB				*doc_scores_hash;
+	DocumentScoreEntry **sorted_docs;
+	float4				 avg_doc_len;
+	int32				 total_docs;
+	int					 scored_count	  = 0;
+	int					 additional_count = 0;
+	ItemPointer			 additional_ctids = NULL;
+
+	/* Validate inputs */
+	if (!index_state)
+		elog(ERROR, "tp_score_documents: NULL index_state");
+	if (!query_terms)
+		elog(ERROR, "tp_score_documents: NULL query_terms");
+	if (!query_frequencies)
+		elog(ERROR, "tp_score_documents: NULL query_frequencies");
+	if (!result_ctids)
+		elog(ERROR, "tp_score_documents: NULL result_ctids");
+	if (!result_scores)
+		elog(ERROR, "tp_score_documents: NULL result_scores");
+
+	total_docs	= index_state->stats.total_docs;
+	avg_doc_len = total_docs > 0 ? (float4)(index_state->stats.total_len /
+											(double)total_docs)
+								 : 0.0f;
+
+	/* Create hash table for accumulating document scores */
+	doc_scores_hash = tp_create_doc_scores_hash(max_results, total_docs);
+	if (!doc_scores_hash)
+		elog(ERROR, "Failed to create document scores hash table");
+
+	/* Calculate BM25 scores for matching documents */
+	tp_calculate_bm25_scores(
+			index_state,
+			query_terms,
+			query_frequencies,
+			query_term_count,
+			k1,
+			b,
+			avg_doc_len,
+			total_docs,
+			doc_scores_hash);
+
+	/* Extract and sort documents by score */
+	sorted_docs = tp_extract_and_sort_documents(
+			doc_scores_hash, max_results, &scored_count);
+
+	/* Fill remaining slots with zero-scored documents if needed */
+	if (scored_count < max_results && index_relation != NULL)
+	{
+		additional_ctids = palloc(
+				(max_results - scored_count) * sizeof(ItemPointerData));
+
+		additional_count = tp_fill_zero_scored_documents(
+				index_relation,
+				sorted_docs,
+				scored_count,
+				max_results,
+				additional_ctids);
+	}
+
+	/* Copy results to output arrays */
+	tp_copy_results_to_output(
+			sorted_docs,
+			scored_count,
+			additional_ctids,
+			additional_count,
+			result_ctids,
+			result_scores);
 
 	/* Cleanup */
 	if (sorted_docs)
 		pfree(sorted_docs);
+	if (additional_ctids)
+		pfree(additional_ctids);
 	hash_destroy(doc_scores_hash);
 
-	return result_count;
+	return scored_count + additional_count;
 }
 
 /*
