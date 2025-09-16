@@ -149,6 +149,25 @@ INSERT INTO documents (content) VALUES (...);
 CREATE INDEX docs_tapir_idx ON documents USING tapir(content) WITH (text_config='english');
 ```
 
+### Query Performance
+
+Computing ranked results is more efficient than computing ranked results with scores, especially for large result sets. When scores are included in SELECT clauses, Tapir performs additional standalone scoring calculations that can impact performance:
+
+```sql
+-- Efficient: index-based ranking only
+SELECT id, title FROM documents
+ORDER BY content <@> to_tpquery('search terms', 'docs_tapir_idx')
+LIMIT 10;
+
+-- Less efficient: requires standalone scoring for each result
+SELECT id, title, content <@> to_tpquery('search terms', 'docs_tapir_idx') as score
+FROM documents
+ORDER BY content <@> to_tpquery('search terms', 'docs_tapir_idx')
+LIMIT 10;
+-- WARNING: using standalone scoring which can be slow
+-- HINT: Consider using ORDER BY with LIMIT for better performance
+```
+
 ## Monitoring
 
 ```sql

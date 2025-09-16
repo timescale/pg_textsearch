@@ -1,6 +1,6 @@
 -- Memory stress benchmark for Tapir extension
 -- Tests behavior when shared memory is exhausted with large document dataset
--- 
+--
 -- This benchmark:
 -- 1. Sets a very small shared memory limit (1MB)
 -- 2. Creates a large table with randomly generated documents
@@ -29,12 +29,12 @@ CREATE TABLE stress_docs (
 -- Insert documents with randomly generated content
 -- Using various content patterns to create realistic text diversity
 INSERT INTO stress_docs (title, content, category, tags)
-SELECT 
+SELECT
     'Document ' || i,
     -- Generate varied content lengths and vocabularies
     CASE (i % 10)
         WHEN 0 THEN 'artificial intelligence machine learning deep neural networks data science algorithm optimization performance scalability distributed systems cloud computing microservices containerization kubernetes docker database postgresql indexing search ranking relevance information retrieval natural language processing text mining sentiment analysis classification clustering regression prediction model training validation testing deployment monitoring logging metrics analytics big data hadoop spark kafka elasticsearch mongodb redis caching memory optimization query performance database design normalization denormalization sharding replication consistency availability partition tolerance CAP theorem ACID transactions isolation levels concurrency control deadlock prevention'
-        WHEN 1 THEN 'software engineering development programming languages python java javascript typescript go rust c plus plus scala kotlin swift objective c ruby php perl shell bash scripting automation testing unit integration system performance load stress testing continuous integration deployment devops infrastructure as code terraform ansible chef puppet monitoring alerting logging observability tracing metrics dashboards grafana prometheus elk stack version control git github gitlab bitbucket code review pull requests merge conflicts branching strategies gitflow feature branches hotfixes releases semantic versioning'  
+        WHEN 1 THEN 'software engineering development programming languages python java javascript typescript go rust c plus plus scala kotlin swift objective c ruby php perl shell bash scripting automation testing unit integration system performance load stress testing continuous integration deployment devops infrastructure as code terraform ansible chef puppet monitoring alerting logging observability tracing metrics dashboards grafana prometheus elk stack version control git github gitlab bitbucket code review pull requests merge conflicts branching strategies gitflow feature branches hotfixes releases semantic versioning'
         WHEN 2 THEN 'web development frontend backend fullstack html css javascript typescript react vue angular node express django flask spring boot ruby rails php laravel codeigniter symfony asp net mvc api rest graphql soap microservices architecture patterns mvc mvp mvvm observer factory singleton repository dependency injection inversion of control aspect oriented programming functional programming object oriented programming design patterns solid principles clean code refactoring technical debt documentation'
         WHEN 3 THEN 'cybersecurity information security network security application security data protection privacy encryption decryption hashing salting authentication authorization access control identity management single sign on multi factor authentication oauth jwt tokens vulnerability assessment penetration testing security auditing compliance regulations gdpr hipaa sox pci dss threat modeling risk assessment incident response disaster recovery business continuity backup strategies data retention policies'
         WHEN 4 THEN 'data analytics business intelligence data warehousing extract transform load etl data pipelines batch streaming processing apache airflow luigi prefect data quality data governance master data management metadata lineage cataloging discovery profiling cleansing standardization validation enrichment aggregation reporting dashboards visualization tableau power bi looker qlik sense statistical analysis hypothesis testing confidence intervals correlation causation regression classification clustering'
@@ -46,17 +46,17 @@ SELECT
     END ||
     ' Additional content block ' || i || ' with unique identifier ' || md5(i::text) ||
     ' More varied text to increase vocabulary diversity and term frequency distribution across documents.',
-    
+
     CASE (i % 5)
         WHEN 0 THEN 'Technology'
-        WHEN 1 THEN 'Science'  
+        WHEN 1 THEN 'Science'
         WHEN 2 THEN 'Business'
         WHEN 3 THEN 'Engineering'
         ELSE 'Research'
     END,
-    
+
     ARRAY[
-        CASE (i % 8) 
+        CASE (i % 8)
             WHEN 0 THEN 'programming'
             WHEN 1 THEN 'database'
             WHEN 2 THEN 'algorithm'
@@ -72,26 +72,14 @@ SELECT
 FROM generate_series(1, 100000) AS i;  -- 100K documents to stress memory
 
 \echo 'Document generation complete. Table contains:'
-SELECT COUNT(*) as total_docs, 
+SELECT COUNT(*) as total_docs,
        AVG(LENGTH(content)) as avg_content_length,
        MAX(LENGTH(content)) as max_content_length
 FROM stress_docs;
 
-\echo ''
-\echo 'Current Tapir configuration:'
-SHOW tapir.shared_memory_size;
-SHOW tapir.default_limit;
-
-\echo ''
-\echo 'Attempting to create Tapir index with limited memory...'
-\echo 'This should demonstrate memory exhaustion behavior.'
-
--- This should show memory pressure or fail with large dataset
-\echo 'Creating index without CONCURRENTLY to catch any immediate memory issues...'
-
-CREATE INDEX stress_content_idx 
-ON stress_docs 
-USING tapir(content) 
+CREATE INDEX stress_content_idx
+ON stress_docs
+USING tapir(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 -- If we get here, let's try some queries to stress the system further
@@ -99,29 +87,36 @@ WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Try various queries to stress the system
 SELECT 'Query 1: Common terms' as test_name;
-SELECT COUNT(*) 
-FROM stress_docs 
-WHERE content <@> to_tpvector('algorithm optimization performance', 'stress_content_idx') > 0
-LIMIT 100;
+SELECT COUNT(*) FROM (
+    SELECT 1
+    FROM stress_docs
+    ORDER BY content <@> to_tpquery('algorithm optimization performance', 'stress_content_idx')
+    LIMIT 100
+) subq;
 
-SELECT 'Query 2: Technical terms' as test_name;  
-SELECT COUNT(*)
-FROM stress_docs
-WHERE content <@> to_tpvector('machine learning artificial intelligence', 'stress_content_idx') > 0
-LIMIT 100;
+SELECT 'Query 2: Technical terms' as test_name;
+SELECT COUNT(*) FROM (
+    SELECT 1
+    FROM stress_docs
+    ORDER BY content <@> to_tpquery('machine learning artificial intelligence', 'stress_content_idx')
+    LIMIT 100
+) subq;
 
 SELECT 'Query 3: Specific terms' as test_name;
-SELECT COUNT(*)
-FROM stress_docs  
-WHERE content <@> to_tpvector('postgresql database indexing search', 'stress_content_idx') > 0
-LIMIT 100;
+SELECT COUNT(*) FROM (
+    SELECT 1
+    FROM stress_docs
+    ORDER BY content <@> to_tpquery('postgresql database indexing search', 'stress_content_idx')
+    LIMIT 100
+) subq;
 
--- Try a larger result set to stress memory further
 \echo 'Query 4: Large result set to stress memory allocation'
-SELECT COUNT(*)
-FROM stress_docs
-WHERE content <@> to_tpvector('the and of to in', 'stress_content_idx') > 0
-LIMIT 10000;
+SELECT COUNT(*) FROM (
+    SELECT 1
+    FROM stress_docs
+    ORDER BY content <@> to_tpquery('the and of to in', 'stress_content_idx')
+    LIMIT 10000
+) subq;
 
 -- Clean up
 \echo ''

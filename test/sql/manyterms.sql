@@ -32,10 +32,10 @@ SELECT id, content FROM manyterms_test WHERE content = 'alpha' ORDER BY id LIMIT
 SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT 1;
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, content <@> to_tpvector('fifty', 'manyterms_idx') as score
+SELECT id, content, content <@> to_tpquery('fifty', 'manyterms_idx') as score
 FROM manyterms_test
 WHERE content = 'fifty'
-ORDER BY score DESC
+ORDER BY score
 LIMIT 1;
 
 -- Clean up

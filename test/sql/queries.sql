@@ -11,7 +11,7 @@ CREATE TABLE articles (
     category TEXT
 );
 
-INSERT INTO articles (title, content, category) VALUES 
+INSERT INTO articles (title, content, category) VALUES
     ('Introduction to Databases', 'postgresql database management system with advanced indexing capabilities for fast query processing', 'technology'),
     ('Machine Learning Fundamentals', 'machine learning algorithms and artificial intelligence techniques for data analysis and prediction', 'technology'),
     ('Text Search Algorithms', 'full text search with tapir ranking and relevance scoring for information retrieval systems', 'technology'),
@@ -32,61 +32,61 @@ CREATE INDEX articles_tapir_idx ON articles USING tapir(content) WITH (text_conf
 SET enable_seqscan = off;
 
 -- Test 1: Basic text similarity search with LIMIT
-EXPLAIN (COSTS OFF) 
-SELECT title, content, content <@> to_tpvector('database', 'articles_tapir_idx') as score
-FROM articles 
-ORDER BY 3
+EXPLAIN (COSTS OFF)
+SELECT title, content, content <@> 'database'::tpquery as score
+FROM articles
+ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> to_tpvector('database', 'articles_tapir_idx'))::numeric, 4) as score
-FROM articles 
-ORDER BY 3
+SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
+FROM articles
+ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> to_tpvector('machine learning', 'articles_tapir_idx') as score
-FROM articles 
-ORDER BY 3
+SELECT title, content, content <@> 'machine learning'::tpquery as score
+FROM articles
+ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
 
-SELECT title, content, ROUND((content <@> to_tpvector('machine learning', 'articles_tapir_idx'))::numeric, 4) as score
-FROM articles 
-ORDER BY 3
+SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric, 4) as score
+FROM articles
+ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
 
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> to_tpvector('search algorithms', 'articles_tapir_idx') as score
-FROM articles 
+SELECT title, content, content <@> 'search algorithms'::tpquery as score
+FROM articles
 WHERE category = 'technology'
-ORDER BY 3
+ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> to_tpvector('search algorithms', 'articles_tapir_idx'))::numeric, 4) as score
-FROM articles 
+SELECT title, content, ROUND((content <@> 'search algorithms'::tpquery)::numeric, 4) as score
+FROM articles
 WHERE category = 'technology'
-ORDER BY 3
+ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
 
--- Test 4: Find similar articles to a specific one (no index)
-SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpvector(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
+-- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
+SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
-ORDER BY 3
+ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
 LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> to_tpvector('database optimization', 'articles_tapir_idx') as score
-FROM articles 
-ORDER BY 3
+SELECT title, content, content <@> 'database optimization'::tpquery as score
+FROM articles
+ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> to_tpvector('database optimization', 'articles_tapir_idx'))::numeric, 4) as score
-FROM articles 
-ORDER BY 3
+SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::numeric, 4) as score
+FROM articles
+ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
 
 -- Test 6: Batch search with different queries (no index)
@@ -94,18 +94,44 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> to_tpvector(s.term, 'articles_tapir_idx') as score
+SELECT s.term, a.title, a.content <@> to_tpquery(s.term) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpvector(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> to_tpvector(s.term, 'articles_tapir_idx'))::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_tpquery(s.term))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpvector(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_tpquery(s.term);
+
+-- Test scoring consistency for multi-term query
+\echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
+WITH order_by_results AS (
+    SELECT id, title,
+           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
+    FROM articles
+    ORDER BY content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx')
+    LIMIT 2
+),
+standalone_results AS (
+    SELECT id, title,
+           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
+    FROM articles
+    WHERE id IN (SELECT id FROM order_by_results)
+)
+SELECT o.id, o.title,
+       o.order_by_score,
+       s.standalone_score,
+       CASE WHEN abs(o.order_by_score - s.standalone_score) < 0.000001
+            THEN '✓ CONSISTENT'
+            ELSE '✗ INCONSISTENT'
+       END as consistency_check
+FROM order_by_results o
+JOIN standalone_results s ON o.id = s.id
+ORDER BY o.id;
 
 -- Cleanup
 DROP TABLE articles CASCADE;

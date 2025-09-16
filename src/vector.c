@@ -46,11 +46,8 @@ PG_FUNCTION_INFO_V1(tpvector_in);
 PG_FUNCTION_INFO_V1(tpvector_out);
 PG_FUNCTION_INFO_V1(tpvector_recv);
 PG_FUNCTION_INFO_V1(tpvector_send);
-PG_FUNCTION_INFO_V1(tpvector_score);
 PG_FUNCTION_INFO_V1(tpvector_eq);
-PG_FUNCTION_INFO_V1(tp_score_texts);
 PG_FUNCTION_INFO_V1(to_tpvector);
-PG_FUNCTION_INFO_V1(tpvector_text_score);
 
 /*
  * tpvector input function
@@ -310,355 +307,6 @@ tpvector_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * Function: tpvector_score(tpvector, tpvector) → double precision
- * Proper BM25 scoring using index statistics
- */
-/*
- * Validate tpvector inputs and extract index name
- */
-static char *
-validate_tpvector_inputs(TpVector *doc_vec, TpVector *query_vec)
-{
-	char *doc_index_name;
-	char *query_index_name;
-	char *index_name;
-
-	if (!doc_vec || !query_vec)
-		return NULL;
-
-	if (VARSIZE(doc_vec) < sizeof(TpVector) ||
-		VARSIZE(query_vec) < sizeof(TpVector))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid tpvector structure size")));
-	}
-
-	/* Both vectors should use the same index */
-	doc_index_name	 = get_tpvector_index_name(doc_vec);
-	query_index_name = get_tpvector_index_name(query_vec);
-
-	if (strcmp(doc_index_name, query_index_name) != 0)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("tpvector operands must use the same index"),
-				 errhint("Document vector uses index \"%s\", query vector "
-						 "uses index \"%s\"",
-						 doc_index_name,
-						 query_index_name)));
-	}
-
-	index_name = pstrdup(doc_index_name);
-	pfree(doc_index_name);
-	pfree(query_index_name);
-
-	return index_name;
-}
-
-/*
- * Setup index relation and get BM25 parameters and corpus statistics
- */
-static bool
-setup_bm25_context(
-		const char		*index_name,
-		Oid				*index_oid_out,
-		Relation		*index_rel_out,
-		TpIndexMetaPage *metap_out,
-		TpIndexState   **index_state_out,
-		float4			*k1_out,
-		float4			*b_out,
-		int32			*total_docs_out,
-		float4			*avg_doc_len_out)
-{
-	Oid				index_oid;
-	Relation		index_rel;
-	TpIndexMetaPage metap;
-	TpIndexState   *index_state;
-
-	/* Look up the index in current search path */
-	index_oid = RelnameGetRelid(index_name);
-	if (!OidIsValid(index_oid))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("index \"%s\" does not exist", index_name)));
-
-	/* Open the index relation */
-	index_rel = index_open(index_oid, AccessShareLock);
-
-	/* Get index metadata */
-	metap = tp_get_metapage(index_rel);
-	if (!metap)
-	{
-		index_close(index_rel, AccessShareLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("could not read BM25 index metadata")));
-	}
-
-	/* Get the index state from shared memory */
-	index_state = tp_get_index_state(index_oid);
-	if (!index_state)
-	{
-		pfree(metap);
-		index_close(index_rel, AccessShareLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("could not access BM25 index state")));
-	}
-
-	/* Calculate average IDF if not already done (lazy calculation) */
-	if (index_state->stats.average_idf <= 0.0001f &&
-		index_state->stats.total_docs > 0)
-	{
-		elog(NOTICE,
-			 "Triggering lazy average IDF calculation (current: %.6f)",
-			 index_state->stats.average_idf);
-		tp_calculate_average_idf(index_state);
-		elog(NOTICE,
-			 "Lazy calculated average IDF: %.6f",
-			 index_state->stats.average_idf);
-	}
-
-	/* Set output parameters */
-	*index_oid_out	 = index_oid;
-	*index_rel_out	 = index_rel;
-	*metap_out		 = metap;
-	*index_state_out = index_state;
-	*k1_out			 = metap->k1;
-	*b_out			 = metap->b;
-	*total_docs_out	 = index_state->stats.total_docs;
-	*avg_doc_len_out = index_state->stats.total_docs > 0
-							 ? (float4)(index_state->stats.total_len /
-										(double)index_state->stats.total_docs)
-							 : 0.0f;
-
-	return true;
-}
-
-/*
- * Calculate document length from tpvector
- */
-static float4
-calculate_doc_length(TpVector *doc_vec)
-{
-	int			   doc_count  = doc_vec->entry_count;
-	TpVectorEntry *doc_entry  = get_tpvector_first_entry(doc_vec);
-	float4		   doc_length = 0.0;
-	int			   doc_idx;
-
-	for (doc_idx = 0; doc_idx < doc_count && doc_entry; doc_idx++)
-	{
-		doc_length += doc_entry->frequency;
-		if (doc_idx < doc_count - 1)
-			doc_entry = get_tpvector_next_entry(doc_entry);
-	}
-
-	return doc_length;
-}
-
-/*
- * Find term frequency in document vector for a specific query term
- */
-static float4
-find_term_frequency(TpVector *doc_vec, TpVectorEntry *query_entry)
-{
-	int			   doc_count = doc_vec->entry_count;
-	TpVectorEntry *doc_entry = get_tpvector_first_entry(doc_vec);
-	int			   doc_idx;
-
-	for (doc_idx = 0; doc_idx < doc_count && doc_entry; doc_idx++)
-	{
-		if (query_entry->lexeme_len == doc_entry->lexeme_len &&
-			memcmp(query_entry->lexeme,
-				   doc_entry->lexeme,
-				   query_entry->lexeme_len) == 0)
-			return doc_entry->frequency;
-
-		if (doc_idx < doc_count - 1)
-			doc_entry = get_tpvector_next_entry(doc_entry);
-	}
-
-	return 0.0;
-}
-
-/*
- * Calculate BM25 term score
- */
-static float4
-calculate_bm25_term_score(
-		float4 tf,
-		float4 idf,
-		int	   query_freq,
-		float4 k1,
-		float4 b,
-		float4 doc_length,
-		float4 avg_doc_len)
-{
-	double numerator_d = (double)tf * ((double)k1 + 1.0);
-	double denominator_d;
-	float4 term_score;
-
-	/* Avoid division by zero - if avg_doc_len is 0, use simplified formula */
-	if (avg_doc_len > 0.0f)
-	{
-		denominator_d = (double)tf +
-						(double)k1 * (1.0 - (double)b +
-									  (double)b * ((double)doc_length /
-												   (double)avg_doc_len));
-	}
-	else
-	{
-		/* When avg_doc_len is 0 (no corpus stats), fall back to standard TF */
-		denominator_d = (double)tf + (double)k1;
-	}
-
-	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-						  (double)query_freq);
-
-	/* Debug NaN detection */
-	if (isnan(term_score))
-		elog(LOG,
-			 "NaN detected in BM25 term score calculation: "
-			 "idf=%f, numerator_d=%f, denominator_d=%f, query_freq=%d, "
-			 "tf=%f, doc_len=%f, avg_doc_len=%f, k1=%f, b=%f",
-			 idf,
-			 numerator_d,
-			 denominator_d,
-			 query_freq,
-			 tf,
-			 doc_length,
-			 avg_doc_len,
-			 k1,
-			 b);
-
-	return term_score;
-}
-
-Datum
-tpvector_score(PG_FUNCTION_ARGS)
-{
-	TpVector	   *doc_vec;
-	TpVector	   *query_vec;
-	char		   *index_name;
-	Oid				index_oid;
-	Relation		index_rel;
-	TpIndexMetaPage metap;
-	TpIndexState   *index_state;
-	float4			score = 0.0;
-	float4			k1, b, avg_doc_len, doc_length;
-	int32			total_docs;
-	int				query_count, query_idx = 0;
-	TpVectorEntry  *query_entry;
-
-	/* Get arguments */
-	doc_vec	  = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
-	query_vec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
-
-	/* Validate inputs and get index name */
-	index_name = validate_tpvector_inputs(doc_vec, query_vec);
-	if (!index_name)
-		PG_RETURN_FLOAT8(0.0);
-
-	/* Setup BM25 context (index, metadata, parameters) */
-	setup_bm25_context(
-			index_name,
-			&index_oid,
-			&index_rel,
-			&metap,
-			&index_state,
-			&k1,
-			&b,
-			&total_docs,
-			&avg_doc_len);
-
-	/* Calculate document length */
-	doc_length = calculate_doc_length(doc_vec);
-
-	/* Process query terms and calculate BM25 score */
-	query_count = query_vec->entry_count;
-	query_entry = get_tpvector_first_entry(query_vec);
-
-	for (query_idx = 0; query_idx < query_count && query_entry; query_idx++)
-	{
-		float4		   tf, idf;
-		TpPostingList *posting_list;
-		char		  *query_lexeme;
-		bool		   use_heap = false;
-
-		/* Use stack for reasonable lengths, heap for very long terms */
-		if (query_entry->lexeme_len < 1024)
-			query_lexeme = alloca(query_entry->lexeme_len + 1);
-		else
-		{
-			query_lexeme = palloc(query_entry->lexeme_len + 1);
-			use_heap	 = true;
-		}
-
-		memcpy(query_lexeme, query_entry->lexeme, query_entry->lexeme_len);
-		query_lexeme[query_entry->lexeme_len] = '\0';
-
-		/* Find term frequency in document */
-		tf = find_term_frequency(doc_vec, query_entry);
-		if (tf == 0.0)
-		{
-			/* Term not in document */
-			if (use_heap)
-				pfree(query_lexeme);
-			if (query_idx < query_count - 1)
-				query_entry = get_tpvector_next_entry(query_entry);
-			continue;
-		}
-
-		/* Get IDF from posting list or use default */
-		posting_list = tp_get_posting_list(index_state, query_lexeme);
-		if (posting_list && posting_list->doc_count > 0)
-			idf = tp_calculate_idf(
-					posting_list->doc_count,
-					total_docs,
-					index_state->stats.average_idf);
-		else
-			idf = (float4)log((double)(total_docs + 0.5) / 0.5);
-
-		/* Calculate and accumulate BM25 term score */
-		score += calculate_bm25_term_score(
-				tf,
-				idf,
-				query_entry->frequency,
-				k1,
-				b,
-				doc_length,
-				avg_doc_len);
-
-		/* Clean up */
-		if (use_heap)
-			pfree(query_lexeme);
-		if (query_idx < query_count - 1)
-			query_entry = get_tpvector_next_entry(query_entry);
-	}
-
-	/* Clean up resources */
-	pfree(metap);
-	index_close(index_rel, AccessShareLock);
-	pfree(index_name);
-
-	/* Debug final score NaN detection */
-	if (isnan(score))
-		elog(LOG,
-			 "NaN detected in final BM25 score! score=%f, total_docs=%d, "
-			 "total_len=%ld, avg_doc_len=%f, k1=%f, b=%f",
-			 score,
-			 total_docs,
-			 index_state->stats.total_len,
-			 avg_doc_len,
-			 k1,
-			 b);
-
-	/* Return negative score for PostgreSQL ASC ordering */
-	PG_RETURN_FLOAT8(-score);
-}
-
-/*
  * Equality function: tpvector = tpvector → boolean
  */
 Datum
@@ -739,10 +387,10 @@ tpvector_eq(PG_FUNCTION_ARGS)
 char *
 get_tpvector_index_name(TpVector *tpvec)
 {
-	int	  name_len;
-	char *index_name;
-	char *name_ptr;
-	int	  vector_total_size;
+	int			 name_len;
+	char		*index_name;
+	char		*name_ptr;
+	unsigned int vector_total_size;
 
 	/* Validate input */
 	if (!tpvec)
@@ -902,8 +550,6 @@ get_tpvector_next_entry(TpVectorEntry *current)
 /*
  * to_tpvector(text, index_name) - Create a tpvector from text using index's
  * config
- *
- * This replaces both bm25_read_vectorize and bm25_write_vectorize
  */
 Datum
 to_tpvector(PG_FUNCTION_ARGS)
@@ -1035,13 +681,9 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 			/* Count positions as frequency (or 1 if no positions) */
 			if (we[i].haspos)
-			{
 				frequencies[i] = POSDATALEN(tsvector, &we[i]);
-			}
 			else
-			{
 				frequencies[i] = 1;
-			}
 		}
 	}
 	else
@@ -1067,41 +709,4 @@ to_tpvector(PG_FUNCTION_ARGS)
 	/* Don't free StringInfo data - it's managed by memory context */
 
 	PG_RETURN_POINTER(result);
-}
-
-/*
- * Score text against a tpvector query
- */
-Datum
-tpvector_text_score(PG_FUNCTION_ARGS)
-{
-	text	 *document_text = PG_GETARG_TEXT_PP(0);
-	TpVector *query_vec		= (TpVector *)PG_GETARG_POINTER(1);
-
-	char  *index_name;
-	text  *index_name_text;
-	Datum  doc_vec_datum;
-	Datum  score_datum;
-	float8 score_result;
-
-	/* Extract index name from tpvector */
-	index_name		= get_tpvector_index_name(query_vec);
-	index_name_text = cstring_to_text(index_name);
-
-	/* Create document vector using to_tpvector */
-	doc_vec_datum = DirectFunctionCall2(
-			to_tpvector,
-			PointerGetDatum(document_text),
-			PointerGetDatum(index_name_text));
-
-	/* Calculate score using tpvector_score */
-	score_datum = DirectFunctionCall2(
-			tpvector_score, doc_vec_datum, PointerGetDatum(query_vec));
-
-	score_result = DatumGetFloat8(score_datum);
-
-	pfree(index_name);
-
-	/* tpvector_score already returns negative score, don't negate again */
-	PG_RETURN_FLOAT8(score_result);
 }

@@ -21,18 +21,18 @@ SELECT
     LEFT(q.query_text, 50) || '...' as query_preview,
     d.doc_id,
     LEFT(d.title, 60) as title_preview,
-    d.full_text <@> to_tpvector(q.query_text, 'cranfield_full_tapir_idx') as score
+    d.full_text <@> to_tpquery(q.query_text, 'cranfield_full_tapir_idx') as score
 FROM cranfield_full_queries q, cranfield_full_documents d
 WHERE q.query_id IN (1, 10, 50)  -- Sample queries
 ORDER BY q.query_id, score
 LIMIT 15;
 
--- Benchmark 2: Multi-term search performance  
+-- Benchmark 2: Multi-term search performance
 \echo 'Benchmark 2: Multi-term search'
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    full_text <@> to_tpvector('aerodynamic flow boundary layer', 'cranfield_full_tapir_idx') as score
+    full_text <@> to_tpquery('aerodynamic flow boundary layer', 'cranfield_full_tapir_idx') as score
 FROM cranfield_full_documents
 ORDER BY score
 LIMIT 10;
@@ -43,7 +43,7 @@ SELECT
     q.query_id,
     LEFT(q.query_text, 40) || '...' as query_preview,
     COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> to_tpvector(q.query_text, 'cranfield_full_tapir_idx') > 0 THEN 1 END) as matching_docs
+    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text, 'cranfield_full_tapir_idx') > 0 THEN 1 END) as matching_docs
 FROM cranfield_full_queries q
 CROSS JOIN cranfield_full_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries
@@ -55,8 +55,8 @@ ORDER BY q.query_id;
 WITH bm25_results AS (
     SELECT
         doc_id,
-        full_text <@> to_tpvector((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx') as bm25_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpvector((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx')) as bm25_rank
+        full_text <@> to_tpquery((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx') as bm25_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx')) as bm25_rank
     FROM cranfield_full_documents
 ),
 reference_results AS (
@@ -81,20 +81,21 @@ ORDER BY br.bm25_rank;
 -- Benchmark 5: Query plan verification with EXPLAIN
 \echo 'Benchmark 5: Query plan verification'
 EXPLAIN
-SELECT doc_id, full_text <@> to_tpvector('wing design aerodynamic', 'cranfield_full_tapir_idx') as score
+SELECT doc_id, full_text <@> to_tpquery('wing design aerodynamic', 'cranfield_full_tapir_idx') as score
 FROM cranfield_full_documents
 ORDER BY 2
 LIMIT 10;
 
 -- Benchmark 6: Complex query performance
 \echo 'Benchmark 6: Complex query patterns'
-SELECT 
+SELECT
     COUNT(*) as total_results,
-    ROUND(AVG((full_text <@> to_tpvector('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as avg_score,
-    ROUND(MIN((full_text <@> to_tpvector('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as min_score,
-    ROUND(MAX((full_text <@> to_tpvector('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as max_score
+    ROUND(AVG((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as avg_score,
+    ROUND(MIN((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as min_score,
+    ROUND(MAX((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as max_score
 FROM cranfield_full_documents
-WHERE full_text <@> to_tpvector('supersonic aircraft design', 'cranfield_full_tapir_idx') < 0;
+ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_full_tapir_idx')
+LIMIT 1000;
 
 -- Reset settings
 SET enable_indexscan = on;

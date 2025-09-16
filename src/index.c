@@ -29,6 +29,7 @@
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
+#include "query.h"
 #include "vector.h"
 
 /* Forward declarations */
@@ -195,10 +196,10 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies	 = 0; /* No search strategies - ORDER BY only */
-	amroutine->amsupport	 = 0; /* No support functions */
-	amroutine->amoptsprocnum = 0;
-	amroutine->amcanorder = true; /* Can return ordered results for ORDER BY */
+	amroutine->amstrategies	  = 0; /* No search strategies - ORDER BY only */
+	amroutine->amsupport	  = 8; /* 8 for distance */
+	amroutine->amoptsprocnum  = 0;
+	amroutine->amcanorder	  = false;
 	amroutine->amcanorderbyop = true; /* Supports ORDER BY operators */
 #if PG_VERSION_NUM >= 180000
 	amroutine->amcanhash			= false;
@@ -423,6 +424,7 @@ tp_process_document(
 		IndexInfo	   *indexInfo,
 		Oid				text_config_oid,
 		TpIndexState   *index_state,
+		Relation		index,
 		uint64		   *total_docs)
 {
 	bool		isnull;
@@ -497,7 +499,11 @@ tp_process_document(
 		pfree(frequencies);
 	}
 
+	/* Store the docid for crash recovery */
+	tp_add_docid_to_pages(index, ctid);
+
 	(*total_docs)++;
+
 	pfree(document_str);
 
 	return true;
@@ -555,7 +561,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
-				slot, indexInfo, text_config_oid, index_state, &total_docs);
+				slot,
+				indexInfo,
+				text_config_oid,
+				index_state,
+				index,
+				&total_docs);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -904,49 +915,50 @@ tp_rescan(
 			/* Check for <@> operator strategy */
 			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 			{
-				/*
-				 * Extract query from ORDER BY key - it's a tpvector, not
-				 * text
-				 */
-				Datum	  query_datum  = orderby->sk_argument;
-				TpVector *query_vector = (TpVector *)DatumGetPointer(
-						query_datum);
+				Datum query_datum = orderby->sk_argument;
 				char *query_cstr;
 
-				/* Store the original query vector in scan state */
-				so->query_vector = query_vector;
-
-				/* Extract the original query text from the vector structure */
-				/* For now, we'll reconstruct the query from the vector terms
+				/*
+				 * Handle tpquery type - text <@> tpquery operation
+				 * PostgreSQL's type system guarantees this is a tpquery
 				 */
-				if (query_vector && query_vector->entry_count > 0)
+				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
+				char	*index_name;
+				char	*current_index_name;
+
+				/* Validate it's a proper tpquery by checking varlena header */
+				if (VARATT_IS_EXTENDED(query) ||
+					VARSIZE_ANY(query) <
+							VARHDRSZ + sizeof(int32) + sizeof(int32))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid tpquery data")));
+
+				index_name		   = get_tpquery_index_name(query);
+				current_index_name = RelationGetRelationName(
+						scan->indexRelation);
+
+				/* Validate index name if provided in query */
+				if (index_name)
 				{
-					StringInfo	   query_buf   = makeStringInfo();
-					TpVectorEntry *entries_ptr = TPVECTOR_ENTRIES_PTR(
-							query_vector);
-					char *ptr	= (char *)entries_ptr;
-					bool  first = true;
-
-					for (int j = 0; j < query_vector->entry_count; j++)
-					{
-						TpVectorEntry *entry = (TpVectorEntry *)ptr;
-
-						if (!first)
-							appendStringInfoChar(query_buf, ' ');
-						appendStringInfoString(query_buf, entry->lexeme);
-						first = false;
-
-						/* Move to next entry - ensure proper alignment */
-						ptr += sizeof(TpVectorEntry) +
-							   MAXALIGN(entry->lexeme_len);
-					}
-					query_cstr = pstrdup(query_buf->data);
-					pfree(query_buf->data);
-					pfree(query_buf);
+					if (strcmp(index_name, current_index_name) != 0)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("tpquery index name mismatch"),
+								 errhint("Query specifies index "
+										 "\"%s\" but scan is on index "
+										 "\"%s\"",
+										 index_name,
+										 current_index_name)));
 				}
-				else
+
+				query_cstr = pstrdup(get_tpquery_text(query));
+
+				/* Clear query vector since we're using text directly */
+				if (so->query_vector)
 				{
-					query_cstr = pstrdup("");
+					pfree(so->query_vector);
+					so->query_vector = NULL;
 				}
 
 				/* Store query for processing during gettuple */
@@ -996,6 +1008,10 @@ tp_endscan(IndexScanDesc scan)
 	{
 		if (so->scan_context)
 			MemoryContextDelete(so->scan_context);
+
+		/* Free query vector if it was allocated */
+		if (so->query_vector)
+			pfree(so->query_vector);
 
 		pfree(so);
 		scan->opaque = NULL;
@@ -1087,8 +1103,31 @@ tp_execute_scoring_query(IndexScanDesc scan)
 			return false;
 		}
 
-		/* Use the original query vector stored during rescan */
+		/* Use the original query vector stored during rescan, or create one
+		 * from text */
 		query_vector = so->query_vector;
+
+		if (!query_vector && so->query_text)
+		{
+			/* We have a text query - convert it to a vector using the index */
+			char *index_name = RelationGetRelationName(scan->indexRelation);
+			text *index_name_text  = cstring_to_text(index_name);
+			text *query_text_datum = cstring_to_text(so->query_text);
+
+			Datum query_vec_datum = DirectFunctionCall2(
+					to_tpvector,
+					PointerGetDatum(query_text_datum),
+					PointerGetDatum(index_name_text));
+
+			query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
+
+			/* Free existing query vector if present */
+			if (so->query_vector)
+				pfree(so->query_vector);
+
+			/* Store the converted vector for this query execution */
+			so->query_vector = query_vector;
+		}
 
 		if (!query_vector)
 		{
@@ -1103,15 +1142,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
-		ErrorData	 *errdata	 = CopyErrorData();
-
-		elog(WARNING,
-			 "Exception during BM25 search for query '%s': %s",
-			 so->query_text,
-			 errdata->message);
-		FreeErrorData(errdata);
-		MemoryContextSwitchTo(oldcontext);
 		success = false;
 	}
 	PG_END_TRY();
@@ -1200,6 +1230,7 @@ tp_search_posting_lists(
 
 	result_count = tp_score_documents(
 			index_state,
+			scan->indexRelation,
 			query_terms,
 			query_frequencies,
 			entry_count,
@@ -1237,9 +1268,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/* Check if we have a query to process */
 	if (!so->query_text)
-	{
 		return false;
-	}
 
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && !so->eof_reached)
@@ -1253,9 +1282,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/* Check if we've reached the end */
 	if (so->current_pos >= so->result_count || so->eof_reached)
-	{
 		return false;
-	}
 
 	Assert(so->scan_context != NULL);
 	Assert(so->result_ctids != NULL);
@@ -1268,10 +1295,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			&(so->result_ctids[so->current_pos].ip_blkid));
 	if (blknum == InvalidBlockNumber || blknum > TP_MAX_BLOCK_NUMBER)
 	{
-		elog(WARNING,
-			 "Suspicious block number %u at position %d, skipping this result",
-			 blknum,
-			 so->current_pos);
 		/* Skip this result and try the next one */
 		so->current_pos++;
 		if (so->current_pos >= so->result_count)
@@ -1351,6 +1374,10 @@ tp_costestimate(
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
+		elog(DEBUG1,
+			 "Tapir costestimate: path->indexorderbys is %s (len=%d)",
+			 path->indexorderbys ? "non-null" : "NULL",
+			 path->indexorderbys ? list_length(path->indexorderbys) : -1);
 		*indexStartupCost = get_float8_infinity();
 		*indexTotalCost	  = get_float8_infinity();
 		return;
@@ -1362,9 +1389,7 @@ tp_costestimate(
 		int limit = (int)root->limit_tuples;
 
 		if (tp_can_pushdown_limit(root, path, limit))
-		{
 			tp_store_query_limit(path->indexinfo->indexoid, limit);
-		}
 	}
 
 	/* Try to get actual statistics from the index */
@@ -1377,11 +1402,11 @@ tp_costestimate(
 		{
 			metap = tp_get_metapage(index_rel);
 			if (metap && metap->total_docs > 0)
-			{
 				num_tuples = (double)metap->total_docs;
-			}
+
 			if (metap)
 				pfree(metap);
+
 			index_close(index_rel, AccessShareLock);
 		}
 	}
@@ -1396,11 +1421,22 @@ tp_costestimate(
 	*indexTotalCost	  = costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
 
 	/*
-	 * Make index scan very attractive
+	 * Calculate selectivity based on LIMIT if available, otherwise use default
 	 */
-	*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
-													   * selectivity for text
-													   * searches */
+	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX &&
+		num_tuples > 0)
+	{
+		/* Use LIMIT as upper bound for selectivity calculation */
+		double limit_selectivity = Min(1.0, root->limit_tuples / num_tuples);
+		*indexSelectivity =
+				Max(limit_selectivity, TP_DEFAULT_INDEX_SELECTIVITY);
+	}
+	else
+	{
+		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
+														   * selectivity for
+														   * text searches */
+	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
 }

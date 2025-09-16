@@ -12,10 +12,10 @@ jobs:
     strategy:
       matrix:
         pg_version: [17]
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install PostgreSQL ${{ matrix.pg_version }}
       run: |
         sudo apt-get update
@@ -24,17 +24,17 @@ jobs:
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
-    
+
     - name: Install build dependencies
       run: |
         sudo apt-get install -y build-essential bc
-        
+
     - name: Start PostgreSQL
       run: |
         sudo systemctl start postgresql
         sudo -u postgres createuser -s $USER
         sudo -u postgres createdb $USER
-    
+
     - name: Build extension
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
@@ -42,32 +42,31 @@ jobs:
         # Build with strict compiler warnings like pgvector
         CFLAGS="-Wall -Wextra -Werror" make
         sudo env "PATH=$PATH" make install
-    
+
     - name: Run regression tests
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
         # Verify extension is installed
         echo "Checking if tapir.so is installed..."
         ls -la /usr/lib/postgresql/${{ matrix.pg_version }}/lib/tapir.so
-        
+
         # Run the test setup manually since extension is already installed
         rm -rf tmp_check_shared
         mkdir -p tmp_check_shared
         initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
         echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
-        echo "shared_preload_libraries = 'tapir'" >> tmp_check_shared/data/postgresql.conf
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
-        
+
         # Try to start PostgreSQL and show logs if it fails
         if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w; then
           echo "PostgreSQL failed to start. Log contents:"
           cat tmp_check_shared/data/logfile
           exit 1
         fi
-        
+
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
         if ! /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress --use-existing --host=$PWD/tmp_check_shared --port=55433 --inputdir=test --outputdir=test basic index vector queries aerodocs mixed strings limits --dbname=contrib_regression; then
           echo "Tests failed. Showing regression diffs:"
@@ -80,7 +79,7 @@ jobs:
         fi
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile
         rm -rf tmp_check_shared
-    
+
     - name: Run shell-based tests
       timeout-minutes: 15
       run: |
@@ -92,7 +91,7 @@ jobs:
           echo "✗ Concurrency tests failed"
           exit 1
         fi
-        
+
     - name: Upload test results on failure
       if: failure()
       uses: actions/upload-artifact@v4
@@ -112,10 +111,10 @@ jobs:
         config:
           - { cc: gcc, pg_version: 17 }
           - { cc: clang, pg_version: 17 }
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install PostgreSQL and build tools
       run: |
         sudo apt-get update
@@ -124,7 +123,7 @@ jobs:
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
-        
+
     - name: Build with ${{ matrix.config.cc }}
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.config.pg_version }}/bin:$PATH"
@@ -132,12 +131,12 @@ jobs:
         make clean
         # Build with strict warnings to catch issues early
         CFLAGS="-Wall -Wextra -Werror" make
-        
+
   performance-test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install PostgreSQL 17
       run: |
         sudo apt-get update
@@ -146,18 +145,18 @@ jobs:
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
-        
+
     - name: Start PostgreSQL
       run: |
         sudo systemctl start postgresql
         sudo -u postgres createuser -s $USER
         sudo -u postgres createdb $USER
-        
+
     - name: Build and install extension
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean && make && sudo make install
-        
+
     - name: Run performance benchmarks
       timeout-minutes: 20
       run: |
@@ -165,7 +164,7 @@ jobs:
         # Run larger concurrency test for performance validation
         echo "Running performance benchmarks..."
         cd test/scripts && TEST_SIZE_MULTIPLIER=5.0 ./concurrency.sh
-        
+
     - name: Upload performance results
       if: always()
       uses: actions/upload-artifact@v4

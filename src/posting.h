@@ -63,6 +63,7 @@ extern float4 bm25_score_document(
 
 extern int tp_score_documents(
 		TpIndexState *index_state,
+		Relation	  index_relation,
 		char		**query_terms,
 		int32		 *query_frequencies,
 		int			  query_term_count,

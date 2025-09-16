@@ -1,8 +1,7 @@
--- tapir extension version 0.0
+-- Tapir extension version 0.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION tapir" to load this file. \quit
-
 
 -- Access method
 
@@ -50,11 +49,48 @@ RETURNS tpvector
 AS 'MODULE_PATHNAME', 'to_tpvector'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Scoring operator: tpvector <@> tpvector → double precision
-CREATE FUNCTION tpvector_score(tpvector, tpvector)
-RETURNS double precision
-AS 'MODULE_PATHNAME', 'tpvector_score'
+-- tpquery type
+
+CREATE FUNCTION tpquery_in(cstring)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'tpquery_in'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_out(tpquery)
+RETURNS cstring
+AS 'MODULE_PATHNAME', 'tpquery_out'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_recv(internal)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'tpquery_recv'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION tpquery_send(tpquery)
+RETURNS bytea
+AS 'MODULE_PATHNAME', 'tpquery_send'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE TYPE tpquery (
+    INPUT = tpquery_in,
+    OUTPUT = tpquery_out,
+    RECEIVE = tpquery_recv,
+    SEND = tpquery_send,
+    STORAGE = extended,
+    ALIGNMENT = int4
+);
+
+-- Convert text to tpquery
+CREATE FUNCTION to_tpquery(input_text text)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'to_tpquery_text'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION to_tpquery(input_text text, index_name text)
+RETURNS tpquery
+AS 'MODULE_PATHNAME', 'to_tpquery_text_index'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 
 -- Equality function: tpvector = tpvector → boolean
 CREATE FUNCTION tpvector_eq(tpvector, tpvector)
@@ -71,35 +107,49 @@ CREATE OPERATOR = (
     HASHES
 );
 
--- BM25 scoring function for text <@> tpvector operations
-CREATE FUNCTION tpvector_text_score(left_text text, right_vector tpvector)
+
+-- BM25 scoring function for text <@> tpquery operations
+CREATE FUNCTION text_tpquery_score(left_text text, right_query tpquery)
 RETURNS float8
-AS 'MODULE_PATHNAME', 'tpvector_text_score'
+AS 'MODULE_PATHNAME', 'text_tpquery_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- <@> operator for tpvector <@> tpvector operations
-CREATE OPERATOR <@> (
-    LEFTARG = tpvector,
-    RIGHTARG = tpvector,
-    PROCEDURE = tpvector_score
-);
+-- tpquery equality function
+CREATE FUNCTION tpquery_eq(tpquery, tpquery)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tpquery_eq'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- <@> operator for text <@> tpvector operations (cross-type)
+
+
+-- <@> operator for text <@> tpquery operations
 CREATE OPERATOR <@> (
     LEFTARG = text,
-    RIGHTARG = tpvector,
-    PROCEDURE = tpvector_text_score
+    RIGHTARG = tpquery,
+    PROCEDURE = text_tpquery_score
 );
+
+-- = operator for tpquery equality
+CREATE OPERATOR = (
+    LEFTARG = tpquery,
+    RIGHTARG = tpquery,
+    FUNCTION = tpquery_eq,
+    COMMUTATOR = =,
+    HASHES
+);
+
+-- Support function for calculating BM25 distances (negative scores for ASC ordering)
+CREATE FUNCTION tp_distance(text, tpquery) RETURNS float8
+    AS 'MODULE_PATHNAME', 'tp_distance'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Tapir operator class for text columns
 CREATE OPERATOR CLASS text_tp_ops
 DEFAULT FOR TYPE text USING tapir AS
-    OPERATOR    1   <@> (text, tpvector) FOR ORDER BY float_ops;
+    OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
+    FUNCTION    8   tp_distance(text, tpquery);
 
 -- Debug function to dump index contents
 CREATE FUNCTION tp_debug_dump_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
-
--- DSA-based system doesn't need memory pool monitoring
--- Memory usage is managed dynamically by PostgreSQL's DSA subsystem

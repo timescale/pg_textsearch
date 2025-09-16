@@ -40,11 +40,7 @@ Datum tpvector_send(PG_FUNCTION_ARGS);
 Datum to_tpvector(PG_FUNCTION_ARGS);
 
 /* Operator functions */
-Datum tpvector_score(PG_FUNCTION_ARGS);
 Datum tpvector_eq(PG_FUNCTION_ARGS);
-
-/* Convenience functions */
-Datum tpvector_text_score(PG_FUNCTION_ARGS);
 
 /* Utility functions */
 TpVector *create_tpvector_from_strings(

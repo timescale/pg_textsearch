@@ -6,7 +6,7 @@ repos:
         types: [c]
         files: ^src/.*\.(c|h)$
         args: [--style=file]
-        
+
   - repo: local
     hooks:
       - id: tapir-format-check
@@ -16,12 +16,12 @@ repos:
         files: ^src/.*\.(c|h)$
         args: [--dry-run, --Werror]
         pass_filenames: true
-        
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
-        exclude: \.patch$
+        exclude: (\.patch$|test/expected/.*\.out$|test/sql/.*\.sql$)
       - id: end-of-file-fixer
         exclude: \.patch$
       - id: check-yaml
