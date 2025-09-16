@@ -1142,10 +1142,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
-		ErrorData *errdata;
-
-		errdata = CopyErrorData();
-		FreeErrorData(errdata);
 		success = false;
 	}
 	PG_END_TRY();
