@@ -2,24 +2,24 @@ name: Code Formatting Check
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ main, main ]
   pull_request:
-    branches: [ master, main ]
+    branches: [ main, main ]
 
 jobs:
   format-check:
     name: Check C Code Formatting
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Install clang-format
       run: |
         sudo apt-get update
         sudo apt-get install -y clang-format
-        
+
     - name: Check formatting
       run: |
         # Find all C source and header files
@@ -34,7 +34,7 @@ jobs:
             echo "✅ $file is properly formatted"
           fi
         done
-        
+
     - name: Suggest formatting command
       if: failure()
       run: |
