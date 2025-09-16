@@ -9,13 +9,17 @@
 #include <postgres.h>
 
 #include <access/heapam.h>
+#include <access/relscan.h>
 #include <math.h>
 #include <miscadmin.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
+#include <utils/hsearch.h>
+#include <utils/snapmgr.h>
 
 #include "constants.h"
 #include "memtable.h"
+#include "metapage.h"
 #include "posting.h"
 #include "stringtable.h"
 
@@ -552,6 +556,7 @@ typedef struct DocumentScoreEntry
 int
 tp_score_documents(
 		TpIndexState *index_state,
+		Relation	  index_relation,
 		char		**query_terms,
 		int32		 *query_frequencies,
 		int			  query_term_count,
@@ -784,19 +789,168 @@ tp_score_documents(
 		sorted_docs[j + 1] = key;
 	}
 
-	/* Copy sorted results to output arrays */
-	if (result_count > 0)
+	/* Fill remaining slots with zero-scored documents if needed */
+	if (result_count < max_results && index_relation != NULL)
 	{
-		*result_scores = palloc(result_count * sizeof(float4));
-		for (i = 0; i < result_count; i++)
+		TpIndexMetaPage metap;
+		BlockNumber		current_page;
+		int				additional_count = 0;
+		ItemPointer		additional_ctids = NULL;
+		HTAB		   *seen_docs_hash	 = NULL;
+		HASHCTL			seen_docs_ctl;
+
+		/* Get metapage to find first docid page */
+		metap = tp_get_metapage(index_relation);
+
+		if (metap != NULL && metap->first_docid_page != InvalidBlockNumber)
 		{
-			result_ctids[i]		= sorted_docs[i]->ctid;
-			(*result_scores)[i] = sorted_docs[i]->score;
+			/* Create hash table to track documents we've already included */
+			memset(&seen_docs_ctl, 0, sizeof(seen_docs_ctl));
+			seen_docs_ctl.keysize	= sizeof(ItemPointerData);
+			seen_docs_ctl.entrysize = sizeof(ItemPointerData);
+			seen_docs_ctl.hcxt		= CurrentMemoryContext;
+
+			seen_docs_hash = hash_create(
+					"seen_documents",
+					result_count + max_results,
+					&seen_docs_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+			/* Add already scored documents to seen hash */
+			for (i = 0; i < result_count; i++)
+			{
+				hash_search(
+						seen_docs_hash,
+						&sorted_docs[i]->ctid,
+						HASH_ENTER,
+						NULL);
+			}
+
+			/* Allocate space for additional documents */
+			additional_ctids = palloc(
+					(max_results - result_count) * sizeof(ItemPointerData));
+
+			/* Iterate through docid pages to find additional documents */
+			current_page = metap->first_docid_page;
+
+			while (current_page != InvalidBlockNumber &&
+				   additional_count < (max_results - result_count))
+			{
+				Buffer			   docid_buf;
+				Page			   docid_page;
+				TpDocidPageHeader *docid_header;
+				ItemPointer		   docids;
+
+				docid_buf = ReadBuffer(index_relation, current_page);
+				LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+				docid_page	 = BufferGetPage(docid_buf);
+				docid_header = (TpDocidPageHeader *)PageGetContents(
+						docid_page);
+
+				/* Validate page magic */
+				if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
+				{
+					UnlockReleaseBuffer(docid_buf);
+					break;
+				}
+
+				/* Process each docid on this page */
+				docids = (ItemPointer)((char *)docid_header +
+									   sizeof(TpDocidPageHeader));
+
+				for (i = 0; i < (int)docid_header->num_docids &&
+							additional_count < (max_results - result_count);
+					 i++)
+				{
+					ItemPointer ctid = &docids[i];
+					bool		doc_found;
+
+					/* Check if we've already included this document */
+					hash_search(seen_docs_hash, ctid, HASH_FIND, &doc_found);
+
+					if (!doc_found)
+					{
+						/* Add this document with zero score */
+						additional_ctids[additional_count] = *ctid;
+						additional_count++;
+
+						/* Mark as seen to avoid duplicates */
+						hash_search(seen_docs_hash, ctid, HASH_ENTER, NULL);
+					}
+				}
+
+				/* Move to next page */
+				current_page = docid_header->next_page;
+				UnlockReleaseBuffer(docid_buf);
+			}
+
+			/* Clean up */
+			if (seen_docs_hash)
+				hash_destroy(seen_docs_hash);
 		}
+
+		/* Combine scored and zero-scored results */
+		if (additional_count > 0)
+		{
+			int total_results = result_count + additional_count;
+
+			*result_scores = palloc(total_results * sizeof(float4));
+
+			/* Copy scored results */
+			for (i = 0; i < result_count; i++)
+			{
+				result_ctids[i]		= sorted_docs[i]->ctid;
+				(*result_scores)[i] = sorted_docs[i]->score;
+			}
+
+			/* Add zero-scored results */
+			for (i = 0; i < additional_count; i++)
+			{
+				result_ctids[result_count + i]	   = additional_ctids[i];
+				(*result_scores)[result_count + i] = 0.0;
+			}
+
+			result_count = total_results;
+			pfree(additional_ctids);
+		}
+		else
+		{
+			/* No additional documents, use original allocation */
+			if (result_count > 0)
+			{
+				*result_scores = palloc(result_count * sizeof(float4));
+				for (i = 0; i < result_count; i++)
+				{
+					result_ctids[i]		= sorted_docs[i]->ctid;
+					(*result_scores)[i] = sorted_docs[i]->score;
+				}
+			}
+			else
+			{
+				*result_scores = NULL;
+			}
+		}
+
+		/* Clean up metapage */
+		if (metap)
+			pfree(metap);
 	}
 	else
 	{
-		*result_scores = NULL;
+		/* Copy sorted results to output arrays */
+		if (result_count > 0)
+		{
+			*result_scores = palloc(result_count * sizeof(float4));
+			for (i = 0; i < result_count; i++)
+			{
+				result_ctids[i]		= sorted_docs[i]->ctid;
+				(*result_scores)[i] = sorted_docs[i]->score;
+			}
+		}
+		else
+		{
+			*result_scores = NULL;
+		}
 	}
 
 	/* Cleanup */

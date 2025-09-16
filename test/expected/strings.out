@@ -46,7 +46,11 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                                   content_preview                                   | score  
 ----+-------------------------------------------------------------------------------------+--------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | 0.0000
-(1 row)
+  2 | API endpoint: https://api.search-service.example.org/v2/documents/search/bm25?qu... | 0.0000
+  3 | Documentation available at https://docs.postgresql-extensions.community/tapir/ge... | 0.0000
+  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src/posting-list-manage... | 0.0000
+  5 | Log file: /var/log/postgresql/tapir-extension/performance-monitoring/bm25-scorin... | 0.0000
+(5 rows)
 
 -- Test 2: Search for technical terms
 SELECT id, category,

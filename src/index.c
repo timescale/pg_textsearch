@@ -424,6 +424,7 @@ tp_process_document(
 		IndexInfo	   *indexInfo,
 		Oid				text_config_oid,
 		TpIndexState   *index_state,
+		Relation		index,
 		uint64		   *total_docs)
 {
 	bool		isnull;
@@ -498,7 +499,11 @@ tp_process_document(
 		pfree(frequencies);
 	}
 
+	/* Store the docid for crash recovery */
+	tp_add_docid_to_pages(index, ctid);
+
 	(*total_docs)++;
+
 	pfree(document_str);
 
 	return true;
@@ -556,7 +561,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
-				slot, indexInfo, text_config_oid, index_state, &total_docs);
+				slot,
+				indexInfo,
+				text_config_oid,
+				index_state,
+				index,
+				&total_docs);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -1025,12 +1035,11 @@ tp_endscan(IndexScanDesc scan)
 static bool
 tp_execute_scoring_query(IndexScanDesc scan)
 {
-	TpScanOpaque		so = (TpScanOpaque)scan->opaque;
-	TpIndexMetaPage		metap;
-	bool				success		= false;
-	TpIndexState	   *index_state = NULL;
-	TpVector		   *query_vector;
-	const MemoryContext oldcontext_func = CurrentMemoryContext;
+	TpScanOpaque	so = (TpScanOpaque)scan->opaque;
+	TpIndexMetaPage metap;
+	bool			success		= false;
+	TpIndexState   *index_state = NULL;
+	TpVector	   *query_vector;
 
 	if (!so || !so->query_text)
 		return false;
@@ -1073,7 +1082,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_CATCH();
 	{
-		MemoryContextSwitchTo(oldcontext_func);
 		elog(WARNING,
 			 "Exception while getting metapage for index %s",
 			 RelationGetRelationName(scan->indexRelation));
@@ -1136,7 +1144,6 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	{
 		ErrorData *errdata;
 
-		MemoryContextSwitchTo(oldcontext_func);
 		errdata = CopyErrorData();
 		FreeErrorData(errdata);
 		success = false;
@@ -1227,6 +1234,7 @@ tp_search_posting_lists(
 
 	result_count = tp_score_documents(
 			index_state,
+			scan->indexRelation,
 			query_terms,
 			query_frequencies,
 			entry_count,

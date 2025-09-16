@@ -171,10 +171,12 @@ ORDER BY content <@> to_tpquery('quick fox', 'docs_vector_idx')  -- BM25 scoring
 LIMIT 3;
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
- id |       content       | relevance 
-----+---------------------+-----------
-  1 | the quick brown fox |   -2.2549
-(1 row)
+ id |         content          | relevance 
+----+--------------------------+-----------
+  1 | the quick brown fox      |   -2.2549
+  2 | jumped over the lazy dog |    0.0000
+  3 | sphinx of black quartz   |    0.0000
+(3 rows)
 
 -- Test with another index using simple config
 CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple');
@@ -225,7 +227,8 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
 ----+----------------+------------------+-------------------
   1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
   2 |      -0.996679 |        -0.996679 | ✓ SCORES MATCH
-(2 rows)
+  3 |       0.000000 |         0.000000 | ✓ SCORES MATCH
+(3 rows)
 
 -- Cleanup
 DROP INDEX docs_vector_idx;

@@ -150,7 +150,8 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  aerodynamic flow analysis |      4 |          7 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
  aerodynamic flow analysis |      3 |          8 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
  aerodynamic flow analysis |      6 |          9 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
-(9 rows)
+ aerodynamic flow analysis |      8 |         10 |               |       0.0000 |                | measurements of the effect of two-dimensional and 
+(10 rows)
 
 -- Test 4: Performance test with multiple queries
 \echo 'Test 4: Performance test with top-k search'

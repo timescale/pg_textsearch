@@ -231,7 +231,7 @@ WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_name | results 
 ------------+---------
- Query 2    |       3
+ Query 2    |       8
 (1 row)
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
@@ -277,9 +277,11 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  pushdown_safe_count 
 ---------------------
-                   0
+                   2
 (1 row)
 
 -- Test with unsafe pushdown case (has WHERE clause)
