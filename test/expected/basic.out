@@ -104,3 +104,4 @@ ERROR:  tpquery index name mismatch
 \set VERBOSITY default
 -- Clean up
 DROP TABLE test_docs CASCADE;
+DROP EXTENSION tapir CASCADE;

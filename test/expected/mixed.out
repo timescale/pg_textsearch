@@ -2,7 +2,6 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Clean up from any previous tests
@@ -440,3 +439,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
+DROP EXTENSION tapir CASCADE;

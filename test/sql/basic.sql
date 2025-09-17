@@ -63,3 +63,4 @@ LIMIT 1;
 
 -- Clean up
 DROP TABLE test_docs CASCADE;
+DROP EXTENSION tapir CASCADE;

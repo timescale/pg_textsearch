@@ -200,3 +200,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
+DROP EXTENSION tapir CASCADE;

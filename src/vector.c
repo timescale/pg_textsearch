@@ -229,7 +229,7 @@ tpvector_out(PG_FUNCTION_ARGS)
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
-		if (entry->lexeme_len < 1024)
+		if (entry->lexeme_len < 256)
 		{
 			lexeme = alloca(entry->lexeme_len + 1);
 		}

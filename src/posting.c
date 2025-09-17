@@ -119,9 +119,6 @@ tp_add_document_terms(
 		int32		  doc_length)
 {
 	int i;
-	/* dsa_area *area; -- unused while doc_lengths disabled */
-	/* dshash_table *doc_lengths_hash = NULL; -- unused while doc_lengths
-	 * disabled */
 
 	Assert(index_state != NULL);
 	Assert(ctid != NULL);
@@ -154,7 +151,6 @@ tp_add_document_terms(
 	}
 
 	/* Store document length in hash table (once per document, not per term) */
-	if (doc_length > 0)
 	{
 		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
 		dshash_table	 *doc_lengths_hash;
@@ -197,17 +193,11 @@ tp_add_document_terms(
 				dshash_find_or_insert(doc_lengths_hash, ctid, &found);
 		if (doc_entry)
 		{
-			if (!found)
-			{
-				/* New document - copy the ctid and set length */
-				ItemPointerCopy(ctid, &doc_entry->ctid);
-				doc_entry->doc_length = doc_length;
-			}
-			else
-			{
-				/* Document already exists - update length */
-				doc_entry->doc_length += doc_length;
-			}
+			/* Should always be a new document in this context */
+			Assert(!found);
+			/* New document - copy the ctid and set length */
+			ItemPointerCopy(ctid, &doc_entry->ctid);
+			doc_entry->doc_length = doc_length;
 			dshash_release_lock(doc_lengths_hash, doc_entry);
 		}
 
@@ -1180,7 +1170,7 @@ tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 	if (!doc_lengths_hash)
 	{
 		LWLockRelease(&index_state->doc_lengths_lock);
-		return 0;
+		elog(ERROR, "Failed to attach to doc_lengths hash table");
 	}
 
 	/* Look up the document */

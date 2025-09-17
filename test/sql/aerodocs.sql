@@ -134,3 +134,4 @@ SET enable_seqscan = on;
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
 DROP TABLE cranfield_queries CASCADE;
+DROP EXTENSION tapir CASCADE;

@@ -1,7 +1,6 @@
 -- This test demonstrates top-k tapir query patterns for efficient text search
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Setup test data with realistic documents
@@ -196,3 +195,4 @@ NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.0060
 
 -- Cleanup
 DROP TABLE articles CASCADE;
+DROP EXTENSION tapir CASCADE;

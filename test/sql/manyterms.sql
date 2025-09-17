@@ -2,7 +2,7 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 
-CREATE EXTENSION tapir;
+CREATE EXTENSION IF NOT EXISTS tapir;
 
 -- Enable score logging for testing
 SET tapir.log_scores = true;
@@ -35,7 +35,7 @@ SELECT id, content FROM manyterms_test WHERE content = 'alpha' ORDER BY id LIMIT
 SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT 1;
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, content <@> to_tpquery('fifty', 'manyterms_idx') as score
+SELECT id, content, ROUND((content <@> to_tpquery('fifty', 'manyterms_idx'))::numeric, 4) as score
 FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
@@ -44,3 +44,4 @@ LIMIT 1;
 -- Clean up
 DROP INDEX manyterms_idx;
 DROP TABLE manyterms_test;
+DROP EXTENSION tapir CASCADE;

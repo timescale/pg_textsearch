@@ -232,3 +232,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
+DROP EXTENSION tapir CASCADE;

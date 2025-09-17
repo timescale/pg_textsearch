@@ -329,7 +329,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			float4		   term_score;
 			double		   numerator_d, denominator_d;
 			int			   query_freq;
-			char		   term_buf[256];
+			char		  *term_buf;
+			bool		   use_heap = false;
 
 			if (query_entries[q_i].haspos)
 				query_freq = (int32)
@@ -357,12 +358,27 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				continue; /* Query term not in document */
 
 			/* Get posting list for this term - need null-terminated string */
-			memcpy(term_buf, query_lexeme, Min(query_entries[q_i].len, 255));
-			term_buf[Min(query_entries[q_i].len, 255)] = '\0';
+			/* Use stack allocation for short strings, heap for long ones */
+			if (query_entries[q_i].len < 256)
+			{
+				term_buf = alloca(query_entries[q_i].len + 1);
+			}
+			else
+			{
+				term_buf = palloc(query_entries[q_i].len + 1);
+				use_heap = true;
+			}
+			memcpy(term_buf, query_lexeme, query_entries[q_i].len);
+			term_buf[query_entries[q_i].len] = '\0';
 
 			posting_list = tp_get_posting_list(index_state, term_buf);
 			if (!posting_list || posting_list->doc_count == 0)
+			{
+				/* Free heap-allocated term buffer if needed */
+				if (use_heap)
+					pfree(term_buf);
 				continue; /* Term not in index, skip */
+			}
 
 			/* Calculate IDF */
 			idf = tp_calculate_idf(
@@ -390,6 +406,10 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 			/* Accumulate the score */
 			result += term_score;
+
+			/* Free heap-allocated term buffer if needed */
+			if (use_heap)
+				pfree(term_buf);
 		}
 
 		/* Clean up */

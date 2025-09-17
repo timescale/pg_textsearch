@@ -138,3 +138,4 @@ ORDER BY o.id;
 
 -- Cleanup
 DROP TABLE articles CASCADE;
+DROP EXTENSION tapir CASCADE;

@@ -57,3 +57,4 @@ SELECT
 DROP INDEX docs_english_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
+DROP EXTENSION tapir CASCADE;

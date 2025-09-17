@@ -153,3 +153,4 @@ WHERE category = 'extreme'
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
+DROP EXTENSION tapir CASCADE;

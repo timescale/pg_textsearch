@@ -3,7 +3,6 @@
 SET log_duration = off;
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -214,6 +213,14 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,16), BM25_score=-1.6716
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.5705
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.4809
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=-0.0000
  query_name | results 
 ------------+---------
  Query 2    |       8
@@ -311,3 +318,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
+DROP EXTENSION tapir CASCADE;

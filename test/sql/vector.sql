@@ -133,3 +133,4 @@ ORDER BY o.id;
 DROP INDEX docs_vector_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
+DROP EXTENSION tapir CASCADE;
