@@ -39,7 +39,7 @@ CREATE INDEX limit_test_idx ON limit_test USING tapir(content) WITH (text_config
 NOTICE:  Tapir index build started for relation limit_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  too many dynamic shared memory segments
+NOTICE:  Tapir index build completed: 20 documents, avg_length=6.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
 EXPLAIN (COSTS OFF)
@@ -47,38 +47,68 @@ SELECT title, content, content <@> to_tpquery('database', 'limit_test_idx') as s
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'limit_test_idx:{database}'::tpquery))
-         ->  Seq Scan on limit_test
-(4 rows)
+   ->  Index Scan using limit_test_idx on limit_test
+         Order By: (content <@> 'limit_test_idx:{database}'::tpquery)
+(3 rows)
 
 SELECT title, content, ROUND((content <@> to_tpquery('database', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-ERROR:  index "limit_test_idx" not found
+         title         |                              content                               |  score  
+-----------------------+--------------------------------------------------------------------+---------
+ Database Theory       | theoretical foundations of database systems and relational algebra | -0.4006
+ Database Architecture | database system architecture with storage and indexing strategies  | -0.4006
+ Database Performance  | database optimization strategies for improving query performance   | -0.4006
+ Query Optimization    | query optimization techniques for efficient database operations    | -0.4006
+ Database Security     | database security measures and access control mechanisms           | -0.4006
+(5 rows)
+
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
 SELECT title, ROUND((content <@> to_tpquery('search', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-ERROR:  index "limit_test_idx" not found
+       title       |  score  
+-------------------+---------
+ Search Technology | -1.6716
+(1 row)
+
 -- Test LIMIT 3
 SELECT title, ROUND((content <@> to_tpquery('optimization', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-ERROR:  index "limit_test_idx" not found
+        title         |  score  
+----------------------+---------
+ Query Optimization   | -1.0761
+ Database Performance | -1.0761
+ Algorithm Design     | -1.0761
+(3 rows)
+
 -- Test LIMIT 10
 SELECT title, ROUND((content <@> to_tpquery('algorithm', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
-ERROR:  index "limit_test_idx" not found
+         title         |  score  
+-----------------------+---------
+ Algorithm Design      | -1.0761
+ Search Engines        | -1.0110
+ Text Processing       | -1.0110
+ Machine Learning      | -1.0110
+ Search Algorithms     | -0.9534
+ Distributed Systems   |  0.0000
+ Database Architecture |  0.0000
+ Query Optimization    |  0.0000
+ Text Analytics        |  0.0000
+ Information Systems   |  0.0000
+(10 rows)
+
 -- Test 3: LIMIT with WHERE clause (should prevent pushdown for safety)
 -- This should NOT use LIMIT pushdown due to additional WHERE clause
 EXPLAIN (COSTS OFF)
@@ -92,18 +122,26 @@ LIMIT 7;
  Limit
    ->  Sort
          Sort Key: (round(((content <@> 'limit_test_idx:{database system}'::tpquery))::numeric, 4))
-         ->  Bitmap Heap Scan on limit_test
-               Recheck Cond: (id > 5)
-               ->  Bitmap Index Scan on limit_test_pkey
-                     Index Cond: (id > 5)
-(7 rows)
+         ->  Seq Scan on limit_test
+               Filter: (id > 5)
+(5 rows)
 
 SELECT title, ROUND((content <@> to_tpquery('database system', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-ERROR:  index "limit_test_idx" not found
+         title         |  score  
+-----------------------+---------
+ Database Theory       | -1.4767
+ Database Architecture | -1.4767
+ System Performance    | -1.0761
+ Information Systems   | -1.0761
+ Query Optimization    | -0.4006
+ Database Performance  | -0.4006
+ Database Security     | -0.4006
+(7 rows)
+
 -- Test 4: No LIMIT (should use default behavior)
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
 -- Test 5: LIMIT with OFFSET
@@ -111,13 +149,25 @@ SELECT title, ROUND((content <@> to_tpquery('performance', 'limit_test_idx'))::n
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
-ERROR:  index "limit_test_idx" not found
+         title         |  score  
+-----------------------+---------
+ Algorithm Design      | -1.6716
+ Information Retrieval |  0.0000
+ Text Processing       |  0.0000
+ Data Mining           |  0.0000
+ Machine Learning      |  0.0000
+(5 rows)
+
 -- Test 6: Very small LIMIT (edge case)
 SELECT title, ROUND((content <@> to_tpquery('text', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-ERROR:  index "limit_test_idx" not found
+      title      |  score  
+-----------------+---------
+ Text Processing | -1.5705
+(1 row)
+
 -- Test 7: Large LIMIT (should still use index optimization)
 SELECT COUNT(*) > 0 as has_results
 FROM (
@@ -127,7 +177,11 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-ERROR:  index "limit_test_idx" not found
+ has_results 
+-------------
+ t
+(1 row)
+
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
     SELECT title, ROUND((content <@> to_tpquery('mining', 'limit_test_idx'))::numeric, 4) as score
@@ -135,26 +189,57 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-ERROR:  index "limit_test_idx" not found
+     title      |  score  
+----------------+---------
+ Data Mining    | -1.9531
+ Text Analytics | -1.9531
+(2 rows)
+
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-ERROR:  index "limit_test_idx" not found
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,15), BM25_score=-0.4006
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,11), BM25_score=-0.4006
+ query_name | results 
+------------+---------
+ Query 1    |       2
+(1 row)
+
 SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
     ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
-ERROR:  index "limit_test_idx" not found
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,16), BM25_score=-1.6716
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.5705
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.4809
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=-0.0000
+ query_name | results 
+------------+---------
+ Query 2    |       8
+(1 row)
+
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
     ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
-ERROR:  index "limit_test_idx" not found
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,18), BM25_score=-1.0761
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,6), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.9534
+ query_name | results 
+------------+---------
+ Query 3    |       4
+(1 row)
+
 -- Test 10: LIMIT pushdown safety verification
 -- These tests verify that LIMIT pushdown is only used when safe
 -- Safe case: Simple ORDER BY with tapir score, no WHERE clause
@@ -164,13 +249,12 @@ SELECT title, content <@> to_tpquery('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-                              QUERY PLAN                              
-----------------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'limit_test_idx:{simple}'::tpquery))
-         ->  Seq Scan on limit_test
-(4 rows)
+   ->  Index Scan using limit_test_idx on limit_test
+         Order By: (content <@> 'limit_test_idx:{simple}'::tpquery)
+(3 rows)
 
 -- Case: Multiple ORDER BY clauses
 -- Tapir requires exactly one ORDER BY, so not using the index here is correct behavior
@@ -187,7 +271,13 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-ERROR:  index "limit_test_idx" not found
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
+ pushdown_safe_count 
+---------------------
+                   2
+(1 row)
+
 -- Test with unsafe pushdown case (has WHERE clause)
 SELECT COUNT(*) as pushdown_unsafe_count
 FROM (
@@ -197,7 +287,11 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-ERROR:  index "limit_test_idx" not found
+ pushdown_unsafe_count 
+-----------------------
+                     2
+(1 row)
+
 -- Test 12: Edge cases for LIMIT pushdown
 -- Very large LIMIT (should still use index optimization efficiently)
 SELECT COUNT(*) > 0 as large_limit_has_results
@@ -208,7 +302,11 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-ERROR:  index "limit_test_idx" not found
+ large_limit_has_results 
+-------------------------
+ t
+(1 row)
+
 -- LIMIT 0 edge case
 SELECT title, content <@> to_tpquery('zero_limit', 'limit_test_idx') as score
 FROM limit_test

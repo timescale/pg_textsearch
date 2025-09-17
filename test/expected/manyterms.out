@@ -12,7 +12,7 @@ CREATE INDEX manyterms_idx ON manyterms_test USING tapir(content) WITH (text_con
 NOTICE:  Tapir index build started for relation manyterms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  too many dynamic shared memory segments
+NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Add enough unique terms to exceed initial hash table capacity
 -- With 64 buckets at 0.75 load factor, >48 unique terms should trigger automatic resize
 INSERT INTO manyterms_test (content) VALUES
@@ -52,8 +52,12 @@ FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
 LIMIT 1;
-ERROR:  index "manyterms_idx" not found
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,74), BM25_score=-3.9703
+ id | content |       score       
+----+---------+-------------------
+ 74 | fifty   | -3.97029185295105
+(1 row)
+
 -- Clean up
 DROP INDEX manyterms_idx;
-ERROR:  index "manyterms_idx" does not exist
 DROP TABLE manyterms_test;
