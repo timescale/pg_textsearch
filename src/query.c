@@ -182,6 +182,166 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(result);
 }
 
+typedef struct BM25ScoringContext
+{
+	Oid			  text_config_oid;
+	TpIndexState *index_state;
+	float4		  avg_doc_len;
+	int32		  total_docs;
+	TSVector	  doc_tsvector;
+	TSVector	  query_tsvector;
+	float4		  doc_length;
+} BM25ScoringContext;
+
+static float4
+calculate_document_length(TSVector tsvector)
+{
+	WordEntry *entries		  = ARRPTR(tsvector);
+	float4	   doc_length	  = 0.0f;
+	int		   doc_term_count = tsvector->size;
+
+	for (int i = 0; i < doc_term_count; i++)
+	{
+		int term_freq;
+		if (entries[i].haspos)
+			term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
+		else
+			term_freq = 1;
+		doc_length += term_freq;
+	}
+	return doc_length;
+}
+
+static TSVector
+tokenize_text(text *text_arg, Oid text_config_oid)
+{
+	Datum tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid, /* collation */
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(text_arg));
+
+	return DatumGetTSVector(tsvector_datum);
+}
+
+static TSVector
+tokenize_query_text(char *query_text, Oid text_config_oid)
+{
+	Datum tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid,
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(cstring_to_text(query_text)));
+
+	return DatumGetTSVector(tsvector_datum);
+}
+
+static float4
+find_term_frequency_in_doc(
+		TSVector doc_tsvector, char *query_lexeme, int query_lexeme_len)
+{
+	WordEntry *entries		  = ARRPTR(doc_tsvector);
+	char	  *lexemes_start  = STRPTR(doc_tsvector);
+	int		   doc_term_count = doc_tsvector->size;
+
+	for (int i = 0; i < doc_term_count; i++)
+	{
+		char *doc_lexeme = lexemes_start + entries[i].pos;
+
+		if (entries[i].len == query_lexeme_len &&
+			memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
+		{
+			if (entries[i].haspos)
+				return (int32)POSDATALEN(doc_tsvector, &entries[i]);
+			else
+				return 1.0f;
+		}
+	}
+	return 0.0f;
+}
+
+static float8
+calculate_bm25_score_for_query_terms(BM25ScoringContext *ctx)
+{
+	WordEntry *query_entries	   = ARRPTR(ctx->query_tsvector);
+	char	  *query_lexemes_start = STRPTR(ctx->query_tsvector);
+	int		   query_term_count	   = ctx->query_tsvector->size;
+	float8	   result			   = 0.0;
+
+	for (int q_i = 0; q_i < query_term_count; q_i++)
+	{
+		char *query_lexeme = query_lexemes_start + query_entries[q_i].pos;
+		TpPostingList *posting_list;
+		float4		   idf;
+		float4		   tf;
+		float4		   term_score;
+		double		   numerator_d, denominator_d;
+		int			   query_freq;
+		char		  *term_buf;
+		bool		   use_heap = false;
+
+		if (query_entries[q_i].haspos)
+			query_freq = (int32)
+					POSDATALEN(ctx->query_tsvector, &query_entries[q_i]);
+		else
+			query_freq = 1;
+
+		tf = find_term_frequency_in_doc(
+				ctx->doc_tsvector, query_lexeme, query_entries[q_i].len);
+		if (tf == 0.0f)
+			continue;
+
+		if (query_entries[q_i].len < 256)
+		{
+			term_buf = alloca(query_entries[q_i].len + 1);
+		}
+		else
+		{
+			term_buf = palloc(query_entries[q_i].len + 1);
+			use_heap = true;
+		}
+		memcpy(term_buf, query_lexeme, query_entries[q_i].len);
+		term_buf[query_entries[q_i].len] = '\0';
+
+		posting_list = tp_get_posting_list(ctx->index_state, term_buf);
+		if (!posting_list || posting_list->doc_count == 0)
+		{
+			if (use_heap)
+				pfree(term_buf);
+			continue;
+		}
+
+		idf = tp_calculate_idf(
+				posting_list->doc_count,
+				ctx->total_docs,
+				ctx->index_state->stats.average_idf);
+
+		numerator_d = (double)tf * (1.2 + 1.0);
+
+		if (ctx->avg_doc_len > 0.0f)
+		{
+			denominator_d = (double)tf +
+							1.2 * (1.0 - 0.75 +
+								   0.75 * ((double)ctx->doc_length /
+										   (double)ctx->avg_doc_len));
+		}
+		else
+		{
+			denominator_d = (double)tf + 1.2;
+		}
+
+		term_score = (float4)((double)idf * (numerator_d / denominator_d) *
+							  (double)query_freq);
+
+		result += term_score;
+
+		if (use_heap)
+			pfree(term_buf);
+	}
+
+	return result;
+}
+
 /*
  * BM25 scoring function for text <@> tpquery operations
  */
@@ -200,27 +360,16 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	Oid				   text_config_oid;
-	Datum			   tsvector_datum;
 	TSVector		   tsvector;
-	WordEntry		  *entries;
-	char			  *lexemes_start;
-	Datum			   query_tsvector_datum;
 	TSVector		   query_tsvector;
-	WordEntry		  *query_entries;
-	char			  *query_lexemes_start;
 	TpIndexState	  *index_state;
 	float4			   avg_doc_len;
 	int32			   total_docs;
 	float8			   result = 0.0;
-	int				   i, q_i;
 	float4			   doc_length;
-	int				   doc_term_count;
-	int				   query_term_count;
-	int				   term_freq;
 
 	if (!index_name)
 	{
-		/* No index name - return ERROR as requested */
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("text <@> tpquery operator requires index name"),
@@ -284,132 +433,25 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 									 : 0.0f;
 
 		/* Tokenize the document text using the index's text configuration */
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid, /* collation */
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(text_arg));
-
-		tsvector	  = DatumGetTSVector(tsvector_datum);
-		entries		  = ARRPTR(tsvector);
-		lexemes_start = STRPTR(tsvector);
+		tsvector = tokenize_text(text_arg, text_config_oid);
 
 		/* Tokenize the query text to get query terms */
-		query_tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid,
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(cstring_to_text(query_text)));
+		query_tsvector = tokenize_query_text(query_text, text_config_oid);
 
-		query_tsvector		= DatumGetTSVector(query_tsvector_datum);
-		query_entries		= ARRPTR(query_tsvector);
-		query_lexemes_start = STRPTR(query_tsvector);
+		/* Calculate document length */
+		doc_length = calculate_document_length(tsvector);
 
-		/* Calculate document length and prepare term data */
-		doc_length		 = 0.0f;
-		doc_term_count	 = tsvector->size;
-		query_term_count = query_tsvector->size;
-
-		for (i = 0; i < doc_term_count; i++)
+		/* Calculate BM25 score for all query terms */
 		{
-			if (entries[i].haspos)
-				term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
-			else
-				term_freq = 1;
-			doc_length += term_freq;
-		}
-
-		/* Calculate BM25 score for each query term */
-		for (q_i = 0; q_i < query_term_count; q_i++)
-		{
-			char *query_lexeme = query_lexemes_start + query_entries[q_i].pos;
-			TpPostingList *posting_list;
-			float4		   idf;
-			float4		   tf = 0.0f; /* term frequency in document */
-			float4		   term_score;
-			double		   numerator_d, denominator_d;
-			int			   query_freq;
-			char		  *term_buf;
-			bool		   use_heap = false;
-
-			if (query_entries[q_i].haspos)
-				query_freq = (int32)
-						POSDATALEN(query_tsvector, &query_entries[q_i]);
-			else
-				query_freq = 1;
-
-			/* Find term frequency in the document */
-			for (i = 0; i < doc_term_count; i++)
-			{
-				char *doc_lexeme = lexemes_start + entries[i].pos;
-
-				if (entries[i].len == query_entries[q_i].len &&
-					memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
-				{
-					if (entries[i].haspos)
-						tf = (int32)POSDATALEN(tsvector, &entries[i]);
-					else
-						tf = 1;
-					break;
-				}
-			}
-
-			if (tf == 0.0f)
-				continue; /* Query term not in document */
-
-			/* Get posting list for this term - need null-terminated string */
-			/* Use stack allocation for short strings, heap for long ones */
-			if (query_entries[q_i].len < 256)
-			{
-				term_buf = alloca(query_entries[q_i].len + 1);
-			}
-			else
-			{
-				term_buf = palloc(query_entries[q_i].len + 1);
-				use_heap = true;
-			}
-			memcpy(term_buf, query_lexeme, query_entries[q_i].len);
-			term_buf[query_entries[q_i].len] = '\0';
-
-			posting_list = tp_get_posting_list(index_state, term_buf);
-			if (!posting_list || posting_list->doc_count == 0)
-			{
-				/* Free heap-allocated term buffer if needed */
-				if (use_heap)
-					pfree(term_buf);
-				continue; /* Term not in index, skip */
-			}
-
-			/* Calculate IDF */
-			idf = tp_calculate_idf(
-					posting_list->doc_count,
-					total_docs,
-					index_state->stats.average_idf);
-
-			/* Calculate BM25 term score - using default k1=1.2, b=0.75 */
-			numerator_d = (double)tf * (1.2 + 1.0);
-
-			if (avg_doc_len > 0.0f)
-			{
-				denominator_d = (double)tf +
-								1.2 * (1.0 - 0.75 +
-									   0.75 * ((double)doc_length /
-											   (double)avg_doc_len));
-			}
-			else
-			{
-				denominator_d = (double)tf + 1.2;
-			}
-
-			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-								  (double)query_freq);
-
-			/* Accumulate the score */
-			result += term_score;
-
-			/* Free heap-allocated term buffer if needed */
-			if (use_heap)
-				pfree(term_buf);
+			BM25ScoringContext ctx =
+					{.text_config_oid = text_config_oid,
+					 .index_state	  = index_state,
+					 .avg_doc_len	  = avg_doc_len,
+					 .total_docs	  = total_docs,
+					 .doc_tsvector	  = tsvector,
+					 .query_tsvector  = query_tsvector,
+					 .doc_length	  = doc_length};
+			result += calculate_bm25_score_for_query_terms(&ctx);
 		}
 
 		/* Clean up */

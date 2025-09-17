@@ -59,7 +59,6 @@ jobs:
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
-        echo "client_min_messages = NOTICE" >> tmp_check_shared/data/postgresql.conf
 
         # Try to start PostgreSQL and show logs if it fails
         if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w; then
@@ -69,10 +68,6 @@ jobs:
         fi
 
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        # Set PGCLIENTENCODING to ensure proper message handling
-        export PGCLIENTENCODING=UTF8
-        # Force client_min_messages to NOTICE for all connections
-        export PGOPTIONS="-c client_min_messages=NOTICE"
         if ! /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress --use-existing --host=$PWD/tmp_check_shared --port=55433 --inputdir=test --outputdir=test basic index vector queries aerodocs mixed strings limits --dbname=contrib_regression; then
           echo "Tests failed. Showing regression diffs:"
           if [ -f test/regression.diffs ]; then
