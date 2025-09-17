@@ -1,0 +1,75 @@
+-- Test the tapir.log_index_scan_scores GUC setting
+-- This tests the new GUC variable for logging index scan scores
+-- Load tapir extension
+CREATE EXTENSION IF NOT EXISTS tapir;
+-- Simple test table
+CREATE TABLE test_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+-- Insert test data
+INSERT INTO test_docs (content) VALUES
+    ('database management system'),
+    ('machine learning algorithms'),
+    ('text search capabilities');
+-- Create tapir index
+CREATE INDEX test_docs_idx ON test_docs USING tapir(content) WITH (text_config='english');
+NOTICE:  Tapir index build started for relation test_docs_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 3 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+-- Disable sequential scans to force index usage
+SET enable_seqscan = off;
+-- Test 1: Enable GUC logging
+SET tapir.log_index_scan_scores = true;
+SET client_min_messages = log;
+-- This should produce INDEX_SCAN_SCORES and INDEX_SCAN_SCORE log messages
+SELECT content FROM test_docs
+ORDER BY content <@> to_tpquery('database', 'test_docs_idx')
+LIMIT 2;
+LOG:  INDEX_SCAN_SCORES: Found 2 documents for query 'database'
+LOG:  INDEX_SCAN_SCORE: ctid=(0,1) score=0.864474
+LOG:  INDEX_SCAN_SCORE: ctid=(0,2) score=-0.000000
+LOG:  tp_gettuple returning pos=0, ctid=(0,1), stored_score=0.864474
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+LOG:  tp_gettuple returning pos=1, ctid=(0,2), stored_score=-0.000000
+           content           
+-----------------------------
+ database management system
+ machine learning algorithms
+(2 rows)
+
+-- Test 2: Disable GUC logging
+SET tapir.log_index_scan_scores = false;
+SET client_min_messages = notice;
+-- This should NOT produce INDEX_SCAN_SCORE log messages
+SELECT content FROM test_docs
+ORDER BY content <@> to_tpquery('machine', 'test_docs_idx')
+LIMIT 2;
+WARNING:  using row-at-a-time scoring which can be slow
+HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+           content           
+-----------------------------
+ machine learning algorithms
+ database management system
+(2 rows)
+
+-- Test 3: Verify GUC can be set at different levels
+SET tapir.log_index_scan_scores = true;
+SHOW tapir.log_index_scan_scores;
+ tapir.log_index_scan_scores 
+-----------------------------
+ on
+(1 row)
+
+-- Reset to default
+RESET tapir.log_index_scan_scores;
+SHOW tapir.log_index_scan_scores;
+ tapir.log_index_scan_scores 
+-----------------------------
+ off
+(1 row)
+
+-- Cleanup
+DROP TABLE test_docs CASCADE;

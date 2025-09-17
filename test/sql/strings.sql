@@ -1,6 +1,7 @@
 -- Test long string handling including URLs, paths, and long terms
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
 
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;

@@ -2,6 +2,7 @@
 
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
 
 -- Setup test table
 CREATE TABLE test_docs (

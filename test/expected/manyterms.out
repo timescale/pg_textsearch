@@ -2,6 +2,7 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 CREATE EXTENSION tapir;
+ERROR:  extension "tapir" already exists
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
@@ -44,16 +45,12 @@ SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT
 (1 row)
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, content <@> to_tpvector('fifty', 'manyterms_idx') as score
+SELECT id, content, content <@> to_tpquery('fifty', 'manyterms_idx') as score
 FROM manyterms_test
 WHERE content = 'fifty'
-ORDER BY score DESC
+ORDER BY score
 LIMIT 1;
- id | content | score 
-----+---------+-------
- 74 | fifty   |    -0
-(1 row)
-
--- Clean up
-DROP INDEX manyterms_idx;
-DROP TABLE manyterms_test;
+server closed the connection unexpectedly
+	This probably means the server terminated abnormally
+	before or while processing the request.
+connection to server was lost

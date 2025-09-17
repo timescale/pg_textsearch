@@ -2,6 +2,7 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 NOTICE:  extension "tapir" already exists, skipping
+SET tapir.log_scores = true;
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,
@@ -47,6 +48,10 @@ SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as s
 FROM articles
 ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=10, df=3, idf=0.9985, score=0.962725
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-1.006012
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking
@@ -66,6 +71,11 @@ SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric,
 FROM articles
 ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
+NOTICE:    tp_calculate_bm25 term='learn': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='learn': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='machin': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='machin': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-2.891678
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 3: Category-filtered search
@@ -88,6 +98,14 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=10, df=4, idf=0.6360, score=0.613184
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=11, df=4, idf=0.6360, score=0.587889
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=9, df=4, idf=0.6360, score=0.640755
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=8, df=4, idf=0.6360, score=0.670921
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-1.646766
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -99,13 +117,13 @@ ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
 LIMIT 5;
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-             title             |                                               content                                               |  score  
--------------------------------+-----------------------------------------------------------------------------------------------------+---------
- Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -1.4458
- Information Retrieval         | information retrieval and search engines using vector space models and term frequency analysis      | -1.3265
- Natural Language Processing   | natural language processing techniques including parsing stemming and semantic analysis             |  0.0000
- Database Optimization         | database indexing and query optimization strategies for improving performance in large datasets     |  0.0000
- Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction |  0.0000
+           title           |                                               content                                               |  score  
+---------------------------+-----------------------------------------------------------------------------------------------------+---------
+ Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            | -3.5324
+ Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      | -3.2410
+ Document Classification   | text mining and document classification using machine learning and statistical methods              | -1.4458
+ Distributed Computing     | distributed systems and scalability challenges in modern cloud computing environments               | -1.0534
+ Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | -0.9627
 (5 rows)
 
 -- Test 5: Top results with scoring
@@ -125,6 +143,11 @@ SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::num
 FROM articles
 ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=10, df=3, idf=0.9985, score=0.962725
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='optim': tf=1, doc_len=9, df=1, idf=2.0369, score=2.052146
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.058157
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 6: Batch search with different queries (no index)
@@ -182,11 +205,20 @@ SELECT o.id, o.title,
 FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=9, df=3, idf=0.9985, score=1.006012
+NOTICE:    tp_calculate_bm25 term='learn': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='learn': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='machin': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:    tp_calculate_bm25 term='machin': tf=1, doc_len=9, df=2, idf=1.4351, score=1.445839
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-3.897689
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.006012
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
-  2 | Machine Learning Fundamentals |      -2.451850 |        -2.451850 | ✓ CONSISTENT
+  2 | Machine Learning Fundamentals |      -3.897689 |        -3.897689 | ✓ CONSISTENT
   8 | Search Engine Design          |      -1.006012 |        -1.006012 | ✓ CONSISTENT
 (2 rows)
 

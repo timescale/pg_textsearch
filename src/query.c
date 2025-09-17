@@ -20,6 +20,9 @@
 #include "query.h"
 #include "vector.h"
 
+/* External GUC variable for score logging */
+extern bool tp_log_scores;
+
 PG_FUNCTION_INFO_V1(tpquery_in);
 PG_FUNCTION_INFO_V1(tpquery_out);
 PG_FUNCTION_INFO_V1(tpquery_recv);
@@ -326,6 +329,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			float4		   term_score;
 			double		   numerator_d, denominator_d;
 			int			   query_freq;
+			char		   term_buf[256];
 
 			if (query_entries[q_i].haspos)
 				query_freq = (int32)
@@ -337,6 +341,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			for (i = 0; i < doc_term_count; i++)
 			{
 				char *doc_lexeme = lexemes_start + entries[i].pos;
+
 				if (entries[i].len == query_entries[q_i].len &&
 					memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
 				{
@@ -349,16 +354,15 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			}
 
 			if (tf == 0.0f)
-			{
 				continue; /* Query term not in document */
-			}
 
-			/* Get posting list for this term */
-			posting_list = tp_get_posting_list(index_state, query_lexeme);
+			/* Get posting list for this term - need null-terminated string */
+			memcpy(term_buf, query_lexeme, Min(query_entries[q_i].len, 255));
+			term_buf[Min(query_entries[q_i].len, 255)] = '\0';
+
+			posting_list = tp_get_posting_list(index_state, term_buf);
 			if (!posting_list || posting_list->doc_count == 0)
-			{
 				continue; /* Term not in index, skip */
-			}
 
 			/* Calculate IDF */
 			idf = tp_calculate_idf(

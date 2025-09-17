@@ -5,6 +5,7 @@
 
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
 
 \set ON_ERROR_STOP on
 \echo 'Testing tapir with sample aerodynamics documents...'

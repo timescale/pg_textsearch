@@ -3,6 +3,7 @@
 -- and verifies the system continues to work correctly
 
 CREATE EXTENSION tapir;
+SET tapir.log_scores = true;
 
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);

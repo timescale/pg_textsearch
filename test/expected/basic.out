@@ -1,6 +1,7 @@
 -- Basic functionality tests for tapir extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
 -- Test tpvector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
  pg_typeof 
@@ -84,6 +85,8 @@ SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
+NOTICE:    tp_calculate_bm25 term='hello': tf=1, doc_len=3, df=1, idf=1.0986, score=1.098612
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.098612
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
        content       |        score        

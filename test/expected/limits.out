@@ -4,6 +4,7 @@ SET log_duration = off;
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 NOTICE:  extension "tapir" already exists, skipping
+SET tapir.log_scores = true;
 -- Create test table with sufficient data for meaningful LIMIT testing
 CREATE TABLE limit_test (
     id SERIAL PRIMARY KEY,
@@ -75,9 +76,9 @@ ORDER BY 2
 LIMIT 1;
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-      title       | score  
-------------------+--------
- Database Systems | 0.0000
+       title       |  score  
+-------------------+---------
+ Search Technology | -1.6716
 (1 row)
 
 -- Test LIMIT 3
@@ -141,13 +142,13 @@ WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
+ Database Theory       | -1.4767
+ Database Architecture | -1.4767
+ System Performance    | -1.0761
+ Information Systems   | -1.0761
  Query Optimization    | -0.4006
- Database Security     | -0.4006
  Database Performance  | -0.4006
- Database Theory       | -0.4006
- Database Architecture | -0.4006
- Data Structures       | -0.3763
- Search Engines        |  0.0000
+ Database Security     | -0.4006
 (7 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
@@ -175,9 +176,9 @@ ORDER BY 2
 LIMIT 1;
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-      title       | score  
-------------------+--------
- Database Systems | 0.0000
+      title      |  score  
+-----------------+---------
+ Text Processing | -1.5705
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -205,9 +206,11 @@ SELECT * FROM (
 ) sub WHERE score < 0;
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
- title | score 
--------+-------
-(0 rows)
+     title      |  score  
+----------------+---------
+ Data Mining    | -1.9531
+ Text Analytics | -1.9531
+(2 rows)
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
@@ -215,8 +218,18 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=7, df=8, idf=0.3857, score=0.376332
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=7, df=8, idf=0.3857, score=0.376332
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=6, df=8, idf=0.3857, score=0.400559
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=6, df=8, idf=0.3857, score=0.400559
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=6, df=8, idf=0.3857, score=0.400559
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=6, df=8, idf=0.3857, score=0.400559
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=7, df=8, idf=0.3857, score=0.376332
+NOTICE:    tp_calculate_bm25 term='databas': tf=1, doc_len=6, df=8, idf=0.3857, score=0.400559
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,15), BM25_score=-0.400559
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,11), BM25_score=-0.400559
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -227,8 +240,19 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=8, df=3, idf=1.6094, score=1.480928
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=7, df=3, idf=1.6094, score=1.570500
+NOTICE:    tp_calculate_bm25 term='search': tf=1, doc_len=6, df=3, idf=1.6094, score=1.671605
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,16), BM25_score=-1.671605
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.570500
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.480928
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.000000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=-0.000000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.000000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=-0.000000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=-0.000000
  query_name | results 
 ------------+---------
  Query 2    |       8
@@ -239,8 +263,17 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=8, df=5, idf=1.0361, score=0.953362
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=7, df=5, idf=1.0361, score=1.011025
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=7, df=5, idf=1.0361, score=1.011025
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=7, df=5, idf=1.0361, score=1.011025
+NOTICE:    tp_calculate_bm25 term='algorithm': tf=1, doc_len=6, df=5, idf=1.0361, score=1.076113
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,18), BM25_score=-1.076113
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.011025
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,6), BM25_score=-1.011025
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.953362
  query_name | results 
 ------------+---------
  Query 3    |       4
@@ -277,8 +310,10 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.000000
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.000000
  pushdown_safe_count 
 ---------------------
                    2

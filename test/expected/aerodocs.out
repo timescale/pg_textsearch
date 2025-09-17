@@ -5,6 +5,7 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 NOTICE:  extension "tapir" already exists, skipping
+SET tapir.log_scores = true;
 \set ON_ERROR_STOP on
 \echo 'Testing tapir with sample aerodynamics documents...'
 Testing tapir with sample aerodynamics documents...
@@ -76,15 +77,29 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
+NOTICE:    tp_calculate_bm25 term='aerodynam': tf=2, doc_len=87, df=2, idf=1.2238, score=1.687014
+NOTICE:    tp_calculate_bm25 term='aerodynam': tf=1, doc_len=41, df=2, idf=1.2238, score=1.565045
+NOTICE:    tp_calculate_bm25 term='flow': tf=1, doc_len=87, df=7, idf=0.3932, score=0.394647
+NOTICE:    tp_calculate_bm25 term='flow': tf=6, doc_len=125, df=7, idf=0.3932, score=0.684567
+NOTICE:    tp_calculate_bm25 term='flow': tf=2, doc_len=21, df=7, idf=0.3932, score=0.687791
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=52, df=7, idf=0.3932, score=0.677000
+NOTICE:    tp_calculate_bm25 term='flow': tf=1, doc_len=59, df=7, idf=0.3932, score=0.454113
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=155, df=7, idf=0.3932, score=0.530793
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=207, df=7, idf=0.3932, score=0.478610
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.081661
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.684567
+NOTICE:  Tapir index scan: doc_pos=2, tid=(1,1), BM25_score=-0.530793
+NOTICE:  Tapir index scan: doc_pos=3, tid=(1,3), BM25_score=-0.478610
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,6), BM25_score=-0.454113
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      1 | experimental investigation of the aerodynamics of a wing in  | -1.6870
-      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
-      7 | the effect of controlled three-dimensional roughness on boun |  0.0000
-      9 | transition studies and skin friction measurements on an insu |  0.0000
-      6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.0817
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.6846
+      7 | the effect of controlled three-dimensional roughness on boun | -0.5308
+      9 | transition studies and skin friction measurements on an insu | -0.4786
+      6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -97,14 +112,37 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
+NOTICE:    tp_calculate_bm25 term='boundari': tf=1, doc_len=87, df=7, idf=0.3932, score=0.394647
+NOTICE:    tp_calculate_bm25 term='boundari': tf=5, doc_len=125, df=7, idf=0.3932, score=0.657153
+NOTICE:    tp_calculate_bm25 term='boundari': tf=2, doc_len=21, df=7, idf=0.3932, score=0.687791
+NOTICE:    tp_calculate_bm25 term='boundari': tf=5, doc_len=52, df=7, idf=0.3932, score=0.741456
+NOTICE:    tp_calculate_bm25 term='boundari': tf=4, doc_len=155, df=7, idf=0.3932, score=0.587544
+NOTICE:    tp_calculate_bm25 term='boundari': tf=2, doc_len=95, df=7, idf=0.3932, score=0.528430
+NOTICE:    tp_calculate_bm25 term='boundari': tf=6, doc_len=207, df=7, idf=0.3932, score=0.616244
+NOTICE:    tp_calculate_bm25 term='layer': tf=1, doc_len=87, df=9, idf=0.3932, score=0.394647
+NOTICE:    tp_calculate_bm25 term='layer': tf=5, doc_len=125, df=9, idf=0.3932, score=0.657153
+NOTICE:    tp_calculate_bm25 term='layer': tf=2, doc_len=21, df=9, idf=0.3932, score=0.687791
+NOTICE:    tp_calculate_bm25 term='layer': tf=5, doc_len=52, df=9, idf=0.3932, score=0.741456
+NOTICE:    tp_calculate_bm25 term='layer': tf=1, doc_len=41, df=9, idf=0.3932, score=0.502820
+NOTICE:    tp_calculate_bm25 term='layer': tf=1, doc_len=59, df=9, idf=0.3932, score=0.454113
+NOTICE:    tp_calculate_bm25 term='layer': tf=4, doc_len=155, df=9, idf=0.3932, score=0.587544
+NOTICE:    tp_calculate_bm25 term='layer': tf=2, doc_len=95, df=9, idf=0.3932, score=0.528430
+NOTICE:    tp_calculate_bm25 term='layer': tf=6, doc_len=207, df=9, idf=0.3932, score=0.616244
+NOTICE:    tp_calculate_bm25 term='turbul': tf=2, doc_len=155, df=2, idf=1.2238, score=1.384632
+NOTICE:    tp_calculate_bm25 term='turbul': tf=4, doc_len=207, df=2, idf=1.2238, score=1.676961
+NOTICE:  Tapir index scan: doc_pos=0, tid=(1,3), BM25_score=-2.909449
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(1,1), BM25_score=-2.559720
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.314307
+NOTICE:  Tapir index scan: doc_pos=3, tid=(1,2), BM25_score=-1.056859
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,6), BM25_score=-0.454113
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      9 | transition studies and skin friction measurements on an insu | -0.6162
-      7 | the effect of controlled three-dimensional roughness on boun | -0.5875
-      2 | simple shear flow past a flat plate in an incompressible flu | -0.6572
-      8 | measurements of the effect of two-dimensional and three-dime | -0.5284
+      9 | transition studies and skin friction measurements on an insu | -2.9094
+      7 | the effect of controlled three-dimensional roughness on boun | -2.5597
+      2 | simple shear flow past a flat plate in an incompressible flu | -1.3143
+      8 | measurements of the effect of two-dimensional and three-dime | -1.0569
       6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
 (5 rows)
 
@@ -137,19 +175,39 @@ LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE q.query_id = 1 AND br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
+NOTICE:    tp_calculate_bm25 term='aerodynam': tf=2, doc_len=87, df=2, idf=1.2238, score=1.687014
+NOTICE:    tp_calculate_bm25 term='aerodynam': tf=1, doc_len=41, df=2, idf=1.2238, score=1.565045
+NOTICE:    tp_calculate_bm25 term='analysi': tf=1, doc_len=36, df=1, idf=1.8458, score=2.433055
+NOTICE:    tp_calculate_bm25 term='flow': tf=1, doc_len=87, df=7, idf=0.3932, score=0.394647
+NOTICE:    tp_calculate_bm25 term='flow': tf=6, doc_len=125, df=7, idf=0.3932, score=0.684567
+NOTICE:    tp_calculate_bm25 term='flow': tf=2, doc_len=21, df=7, idf=0.3932, score=0.687791
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=52, df=7, idf=0.3932, score=0.677000
+NOTICE:    tp_calculate_bm25 term='flow': tf=1, doc_len=59, df=7, idf=0.3932, score=0.454113
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=155, df=7, idf=0.3932, score=0.530793
+NOTICE:    tp_calculate_bm25 term='flow': tf=3, doc_len=207, df=7, idf=0.3932, score=0.478610
+NOTICE:  Tapir index scan: doc_pos=0, tid=(1,4), BM25_score=-2.433055
 WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-2.081661
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,5), BM25_score=-1.565045
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-0.687791
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.684567
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.677000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(1,1), BM25_score=-0.530793
+NOTICE:  Tapir index scan: doc_pos=7, tid=(1,3), BM25_score=-0.478610
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,6), BM25_score=-0.454113
+NOTICE:  Tapir index scan: doc_pos=9, tid=(1,2), BM25_score=-0.000000
         query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |                   title_preview                    
 ---------------------------+--------+------------+---------------+--------------+----------------+----------------------------------------------------
  aerodynamic flow analysis |     10 |          1 |               |      -2.4331 |                | the theory of the impact tube at low pressure .
- aerodynamic flow analysis |      1 |          2 |             1 |      -1.6870 |         1.5000 | experimental investigation of the aerodynamics of 
+ aerodynamic flow analysis |      1 |          2 |             1 |      -2.0817 |         1.5000 | experimental investigation of the aerodynamics of 
  aerodynamic flow analysis |      5 |          3 |               |      -1.5650 |                | one-dimensional transient heat conduction into a d
- aerodynamic flow analysis |      3 |          4 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
- aerodynamic flow analysis |      2 |          5 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
- aerodynamic flow analysis |      4 |          6 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
- aerodynamic flow analysis |      7 |          7 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
- aerodynamic flow analysis |      9 |          8 |               |       0.0000 |                | transition studies and skin friction measurements 
- aerodynamic flow analysis |      6 |          9 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
+ aerodynamic flow analysis |      3 |          4 |             2 |      -0.6878 |         1.2000 | the boundary layer in simple shear flow past a fla
+ aerodynamic flow analysis |      2 |          5 |               |      -0.6846 |                | simple shear flow past a flat plate in an incompre
+ aerodynamic flow analysis |      4 |          6 |             3 |      -0.6770 |         1.0000 | approximate solutions of the incompressible lamina
+ aerodynamic flow analysis |      7 |          7 |               |      -0.5308 |                | the effect of controlled three-dimensional roughne
+ aerodynamic flow analysis |      9 |          8 |               |      -0.4786 |                | transition studies and skin friction measurements 
+ aerodynamic flow analysis |      6 |          9 |               |      -0.4541 |                | one-dimensional transient heat flow in a multilaye
  aerodynamic flow analysis |      8 |         10 |               |       0.0000 |                | measurements of the effect of two-dimensional and 
 (10 rows)
 
@@ -170,9 +228,9 @@ WARNING:  using row-at-a-time scoring which can be slow
 HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
-        1 | aerodynamic flow analysis... |         10 |             3
+        1 | aerodynamic flow analysis... |         10 |             9
         2 | boundary layer turbulent...  |         10 |             9
-        3 | wing design optimization...  |         10 |             0
+        3 | wing design optimization...  |         10 |             1
 (3 rows)
 
 -- Test 5: Index usage verification

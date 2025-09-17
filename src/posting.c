@@ -27,6 +27,9 @@
 /* Configuration parameters */
 int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;
 
+/* External GUC variable for score logging */
+extern bool tp_log_scores;
+
 /* Forward declarations */
 static uint32 tp_itemptr_hash(const void *key, Size keysize, void *arg);
 static int
@@ -775,6 +778,20 @@ tp_calculate_bm25_scores(
 
 			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
 								  (double)query_frequencies[term_idx]);
+
+			/* Debug logging for term score in index scan */
+			if (tp_log_scores)
+			{
+				elog(NOTICE,
+					 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
+					 "df=%d, idf=%.4f, score=%.6f",
+					 term,
+					 tf,
+					 doc_len,
+					 posting_list->doc_count,
+					 idf,
+					 term_score);
+			}
 
 			/* Debug NaN detection */
 			if (isnan(term_score))
