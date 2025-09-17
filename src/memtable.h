@@ -115,8 +115,6 @@ typedef struct TpIndexState
 	/* Document length hash table stored in this DSA */
 	dshash_table_handle doc_lengths_handle; /* Handle for document length hash
 											 * table */
-	dshash_table *doc_lengths_hash; /* Per-backend attachment to doc length
-									 * table */
 
 	/* Corpus statistics for BM25 */
 	TpCorpusStatistics stats; /* Corpus statistics */

@@ -139,7 +139,7 @@ tp_init_index_dsa_callback(void *ptr)
 	/* Initialize state */
 	state->string_hash_handle = DSHASH_HANDLE_INVALID;
 	state->total_terms		  = 0;
-	state->doc_lengths_hash	  = NULL; /* Will be attached when needed */
+	state->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Initialize corpus statistics */
 	memset(&state->stats, 0, sizeof(TpCorpusStatistics));

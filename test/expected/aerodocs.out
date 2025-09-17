@@ -82,8 +82,8 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
 --------+--------------------------------------------------------------+---------
       1 | experimental investigation of the aerodynamics of a wing in  | -1.6870
       2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
-      9 | transition studies and skin friction measurements on an insu |  0.0000
       7 | the effect of controlled three-dimensional roughness on boun |  0.0000
+      9 | transition studies and skin friction measurements on an insu |  0.0000
       6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
 (5 rows)
 
@@ -144,11 +144,11 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  aerodynamic flow analysis |     10 |          1 |               |      -2.4331 |                | the theory of the impact tube at low pressure .
  aerodynamic flow analysis |      1 |          2 |             1 |      -1.6870 |         1.5000 | experimental investigation of the aerodynamics of 
  aerodynamic flow analysis |      5 |          3 |               |      -1.5650 |                | one-dimensional transient heat conduction into a d
- aerodynamic flow analysis |      2 |          4 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
- aerodynamic flow analysis |      9 |          5 |               |       0.0000 |                | transition studies and skin friction measurements 
- aerodynamic flow analysis |      7 |          6 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
- aerodynamic flow analysis |      4 |          7 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
- aerodynamic flow analysis |      3 |          8 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
+ aerodynamic flow analysis |      3 |          4 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
+ aerodynamic flow analysis |      2 |          5 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
+ aerodynamic flow analysis |      4 |          6 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
+ aerodynamic flow analysis |      7 |          7 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
+ aerodynamic flow analysis |      9 |          8 |               |       0.0000 |                | transition studies and skin friction measurements 
  aerodynamic flow analysis |      6 |          9 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
  aerodynamic flow analysis |      8 |         10 |               |       0.0000 |                | measurements of the effect of two-dimensional and 
 (10 rows)
