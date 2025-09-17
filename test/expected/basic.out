@@ -86,7 +86,7 @@ SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.098612
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.0986
        content       |        score        
 ---------------------+---------------------
  hello world example | -1.0986123085021973
