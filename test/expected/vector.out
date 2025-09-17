@@ -168,9 +168,6 @@ SELECT
 FROM test_docs
 ORDER BY content <@> to_tpquery('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.2549
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
  id |         content          | relevance 
 ----+--------------------------+-----------
   1 | the quick brown fox      |   -2.2549
@@ -221,9 +218,6 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.0986
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.9967
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
  id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
   1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
