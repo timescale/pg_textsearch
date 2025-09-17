@@ -1,8 +1,10 @@
-# tapir
+# Tapir
 
 ![Tapir and Friends](images/tapir_and_friends.png)
 
 [![CI](https://github.com/timescale/tapir/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/tapir/actions/workflows/ci.yml)
+
+**T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval
 
 Open-source full-text search for Postgres.  Supports:
 
@@ -147,25 +149,6 @@ INSERT INTO documents (content) VALUES (...);
 
 -- Then create index
 CREATE INDEX docs_tapir_idx ON documents USING tapir(content) WITH (text_config='english');
-```
-
-### Query Performance
-
-Computing ranked results is more efficient than computing ranked results with scores, especially for large result sets. When scores are included in SELECT clauses, Tapir performs additional standalone scoring calculations that can impact performance:
-
-```sql
--- Efficient: index-based ranking only
-SELECT id, title FROM documents
-ORDER BY content <@> to_tpquery('search terms', 'docs_tapir_idx')
-LIMIT 10;
-
--- Less efficient: requires standalone scoring for each result
-SELECT id, title, content <@> to_tpquery('search terms', 'docs_tapir_idx') as score
-FROM documents
-ORDER BY content <@> to_tpquery('search terms', 'docs_tapir_idx')
-LIMIT 10;
--- WARNING: using standalone scoring which can be slow
--- HINT: Consider using ORDER BY with LIMIT for better performance
 ```
 
 ## Monitoring
@@ -328,24 +311,6 @@ brew install pre-commit && pre-commit install  # macOS
 # pip install pre-commit && pre-commit install  # Linux
 ```
 
-### GitHub Actions
-
-The project includes comprehensive CI/CD:
-
-- **CI Workflow** (`.github/workflows/ci.yml`):
-  - Tests against PostgreSQL versions 15, 16, 17
-  - Runs on multiple compilers (gcc, clang)
-  - Includes performance benchmarks with configurable test size
-  - Automatically uploads test artifacts on failure
-
-- **Release Workflow** (`.github/workflows/release.yml`):
-  - Triggered on version tags (`v*`) and releases
-  - Builds optimized binaries for all supported PostgreSQL versions
-  - Packages extension files for distribution
-  - Uploads release assets to GitHub
-
-Use `TEST_SIZE_MULTIPLIER=X.X` to scale concurrency test size (e.g., `TEST_SIZE_MULTIPLIER=5.0` for intensive testing).
-
 ### Code Style
 
 - 79-character line limit, tab indentation
@@ -355,6 +320,12 @@ Use `TEST_SIZE_MULTIPLIER=X.X` to scale concurrency test size (e.g., `TEST_SIZE_
 - Multiline function prototypes followed by blank line
 - PostgreSQL naming conventions (snake_case)
 - Format with: `make format`
+
+## Bug Reports & Feature Requests
+
+- **Bug Reports**: [Create an issue](https://github.com/timescale/tapir/issues/new?labels=bug&template=bug_report.md)
+- **Feature Requests**: [Request a feature](https://github.com/timescale/tapir/issues/new?labels=enhancement&template=feature_request.md)
+- **General Discussion**: [Start a discussion](https://github.com/timescale/tapir/discussions)
 
 ## Contributing
 
