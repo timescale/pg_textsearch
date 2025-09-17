@@ -3,6 +3,9 @@
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Test tpvector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
 

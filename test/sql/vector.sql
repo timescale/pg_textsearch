@@ -3,6 +3,9 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Cleanup any existing state first
 DROP TABLE IF EXISTS test_docs CASCADE;
 

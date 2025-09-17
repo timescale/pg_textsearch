@@ -3,6 +3,8 @@
 -- and verifies the system continues to work correctly
 CREATE EXTENSION tapir;
 ERROR:  extension "tapir" already exists
+-- Enable score logging for testing
+SET tapir.log_scores = true;
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
@@ -50,7 +52,11 @@ FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
 LIMIT 1;
-server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-connection to server was lost
+ id | content |       score       
+----+---------+-------------------
+ 74 | fifty   | -3.97029185295105
+(1 row)
+
+-- Clean up
+DROP INDEX manyterms_idx;
+DROP TABLE manyterms_test;

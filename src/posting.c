@@ -782,7 +782,7 @@ tp_calculate_bm25_scores(
 			/* Debug logging for term score in index scan */
 			if (tp_log_scores)
 			{
-				elog(NOTICE,
+				elog(DEBUG1,
 					 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
 					 "df=%d, idf=%.4f, score=%.6f",
 					 term,

@@ -2,6 +2,7 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 NOTICE:  extension "tapir" already exists, skipping
+-- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;
@@ -42,14 +43,6 @@ SELECT id, LEFT(content, 80) || '...' as content_preview,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
 LIMIT 5;
-NOTICE:    tp_calculate_bm25 term='websit': tf=1, doc_len=8, df=1, idf=1.8458, score=2.051701
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.051701
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.000000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.000000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-0.000000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=-0.000000
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
@@ -65,8 +58,6 @@ SELECT id, category,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('postgresql extension', 'long_strings_idx')
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |  category  |  score  
 ----+------------+---------
   6 | config     | -3.1558
@@ -87,8 +78,6 @@ SELECT id, LEFT(content, 60) || '...' as content_preview,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('file log error', 'long_strings_idx')
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
   5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.3436
@@ -122,8 +111,6 @@ SELECT id, ROUND((content <@> to_tpquery('algorithm bm25', 'long_strings_idx')):
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('algorithm bm25', 'long_strings_idx')
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |  score  
 ----+---------
   8 | -1.2419
@@ -146,8 +133,6 @@ SELECT
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('postgresql tapir extension search', 'long_strings_idx')
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |  category  | multi_term_score 
 ----+------------+------------------
   6 | config     |          -4.8534
@@ -183,8 +168,6 @@ SELECT id, LEFT(content, 50) || '...' as preview,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('document ridiculously long', 'long_strings_idx')
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
  11 | This document contains a ridiculously long compoun... | -4.8824
@@ -236,8 +219,6 @@ FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
     AND content <@> to_tpquery('term allocation', 'long_strings_idx') < 0
 ORDER BY content_length;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
  12 | stack_test       |            612 | Stack allocation likely | -1.2024
@@ -256,8 +237,6 @@ SELECT
 FROM long_string_docs
 WHERE category = 'extreme'
     AND content <@> to_tpquery('extreme testing', 'long_strings_idx') < 0;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
       test_name      | total_length |  score  
 ---------------------+--------------+---------
  Extreme length test |        23614 | -3.8411

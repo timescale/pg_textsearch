@@ -4,6 +4,9 @@
 
 CREATE EXTENSION tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 

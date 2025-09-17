@@ -3,6 +3,9 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,

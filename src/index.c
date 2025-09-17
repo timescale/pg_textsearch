@@ -1342,7 +1342,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			/* Log score if GUC is enabled */
 			if (tp_log_scores)
 			{
-				elog(NOTICE,
+				elog(DEBUG1,
 					 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
 					 "BM25_score=%.6f",
 					 so->current_pos,

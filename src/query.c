@@ -249,10 +249,10 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		warned_this_statement = false;
 	}
 
-	/* Warn about standalone scoring performance - once per statement */
+	/* Debug message about standalone scoring - once per statement */
 	if (!warned_this_statement)
 	{
-		ereport(WARNING,
+		ereport(DEBUG1,
 				(errmsg("using row-at-a-time scoring which can be slow"),
 				 errhint("Consider ORDER BY with LIMIT but no explicit "
 						 "scoring in SELECT")));
