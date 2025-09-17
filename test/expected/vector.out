@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS tapir;
 NOTICE:  extension "tapir" already exists, skipping
 -- Enable score logging for testing
 SET tapir.log_scores = true;
+SET client_min_messages = NOTICE;
 -- Cleanup any existing state first
 DROP TABLE IF EXISTS test_docs CASCADE;
 NOTICE:  table "test_docs" does not exist, skipping

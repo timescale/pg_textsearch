@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS tapir;
 
 -- Enable score logging for testing
 SET tapir.log_scores = true;
+SET client_min_messages = NOTICE;
 
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;
