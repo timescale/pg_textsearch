@@ -1339,17 +1339,14 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 			scan->xs_orderbynulls[0] = false;
 
-			/* Log score if GUC is enabled */
-			if (tp_log_scores)
-			{
-				elog(DEBUG1,
-					 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
-					 "BM25_score=%.6f",
-					 so->current_pos,
-					 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
-					 scan->xs_heaptid.ip_posid,
-					 bm25_score);
-			}
+			/* Log score - NOTICE if GUC enabled, DEBUG1 otherwise */
+			elog(tp_log_scores ? NOTICE : DEBUG1,
+				 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
+				 "BM25_score=%.6f",
+				 so->current_pos,
+				 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
+				 scan->xs_heaptid.ip_posid,
+				 bm25_score);
 		}
 		else
 		{

@@ -52,6 +52,7 @@ FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
 LIMIT 1;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,74), BM25_score=-3.970292
  id | content |       score       
 ----+---------+-------------------
  74 | fifty   | -3.97029185295105

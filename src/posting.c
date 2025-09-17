@@ -780,18 +780,15 @@ tp_calculate_bm25_scores(
 								  (double)query_frequencies[term_idx]);
 
 			/* Debug logging for term score in index scan */
-			if (tp_log_scores)
-			{
-				elog(DEBUG1,
-					 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
-					 "df=%d, idf=%.4f, score=%.6f",
-					 term,
-					 tf,
-					 doc_len,
-					 posting_list->doc_count,
-					 idf,
-					 term_score);
-			}
+			elog(DEBUG1,
+				 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
+				 "df=%d, idf=%.4f, score=%.6f",
+				 term,
+				 tf,
+				 doc_len,
+				 posting_list->doc_count,
+				 idf,
+				 term_score);
 
 			/* Debug NaN detection */
 			if (isnan(term_score))

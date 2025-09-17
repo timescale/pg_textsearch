@@ -49,6 +49,7 @@ SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as s
 FROM articles
 ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-1.006012
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking
@@ -68,6 +69,7 @@ SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric,
 FROM articles
 ORDER BY content <@> 'machine learning'::tpquery
 LIMIT 3;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-2.891678
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 3: Category-filtered search
@@ -90,6 +92,7 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::tpquery
 LIMIT 10;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-1.646766
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -125,6 +128,7 @@ SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::num
 FROM articles
 ORDER BY content <@> 'database optimization'::tpquery
 LIMIT 10;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.058157
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 6: Batch search with different queries (no index)
@@ -182,6 +186,8 @@ SELECT o.id, o.title,
 FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-3.897689
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.006012
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -3.897689 |        -3.897689 | ✓ CONSISTENT
