@@ -5,7 +5,6 @@ SET log_duration = off;
 
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-SET tapir.log_scores = true;
 
 -- Create test table with sufficient data for meaningful LIMIT testing
 CREATE TABLE limit_test (

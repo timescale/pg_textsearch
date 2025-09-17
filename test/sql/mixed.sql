@@ -3,7 +3,6 @@
 -- and that operations like inserts, searches, and index building work correctly
 
 CREATE EXTENSION IF NOT EXISTS tapir;
-SET tapir.log_scores = true;
 
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
