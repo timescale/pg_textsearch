@@ -43,6 +43,11 @@ SELECT id, LEFT(content, 80) || '...' as content_preview,
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
 LIMIT 5;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0517
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=-0.0000
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
