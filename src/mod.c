@@ -18,6 +18,9 @@ relopt_kind tp_relopt_kind;
 /* External variable from limits module */
 extern int tp_default_limit;
 
+/* Global variable for score logging */
+bool tp_log_scores = false;
+
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -65,6 +68,19 @@ _PG_init(void)
 			1,						/* min 1 */
 			TP_MAX_QUERY_LIMIT,		/* max 100k */
 			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"tapir.log_scores",
+			"Log BM25 scores during index scans",
+			"When enabled, logs the BM25 score for each document returned "
+			"during index scans. Useful for debugging score calculation.",
+			&tp_log_scores,
+			false,		 /* default off */
+			PGC_USERSET, /* Can be changed per session */
 			0,
 			NULL,
 			NULL,
