@@ -836,9 +836,6 @@ tp_extract_and_sort_documents(
 	/* First, count how many unique documents we have */
 	result_count = hash_get_num_entries(doc_scores_hash);
 
-	if (result_count > max_results)
-		result_count = max_results;
-
 	/* Allocate array for sorting (even if result_count is 0) */
 	sorted_docs = result_count > 0
 						? palloc(result_count * sizeof(DocumentScoreEntry *))
@@ -886,6 +883,10 @@ tp_extract_and_sort_documents(
 		}
 		sorted_docs[j + 1] = key;
 	}
+
+	/* Truncate to max_results after sorting */
+	if (result_count > max_results)
+		result_count = max_results;
 
 	*actual_count = result_count;
 	return sorted_docs;

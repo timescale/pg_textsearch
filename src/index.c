@@ -852,9 +852,20 @@ tp_rescan(
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
 		if (query_limit > 0)
+		{
 			so->limit = query_limit;
+			elog(DEBUG1,
+				 "tapir: LIMIT optimization active, limit=%d for index %s",
+				 query_limit,
+				 RelationGetRelationName(scan->indexRelation));
+		}
 		else
+		{
 			so->limit = -1; /* No limit */
+			elog(DEBUG1,
+				 "tapir: No LIMIT optimization, using default for index %s",
+				 RelationGetRelationName(scan->indexRelation));
+		}
 	}
 
 	/* Reset scan state */
@@ -1180,9 +1191,17 @@ tp_search_posting_lists(
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so && so->limit > 0)
+	{
 		max_results = so->limit;
+		elog(DEBUG1, "tapir: Using query LIMIT=%d for search", so->limit);
+	}
 	else
+	{
 		max_results = tp_default_limit;
+		elog(DEBUG1,
+			 "tapir: Using default limit=%d for search (no query limit)",
+			 tp_default_limit);
+	}
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
