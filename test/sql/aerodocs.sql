@@ -6,6 +6,9 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 \set ON_ERROR_STOP on
 \echo 'Testing tapir with sample aerodynamics documents...'
 
@@ -28,13 +31,7 @@ CREATE TABLE cranfield_queries (
     query_text TEXT NOT NULL
 );
 
-CREATE TABLE cranfield_expected_rankings (
-    query_id INTEGER NOT NULL,
-    doc_id INTEGER NOT NULL,
-    rank INTEGER NOT NULL,
-    tapir_score FLOAT NOT NULL,
-    PRIMARY KEY (query_id, doc_id)
-);
+-- Expected rankings table removed - we test against actual output
 
 \echo 'Loading subset of Cranfield documents for testing...'
 
@@ -56,11 +53,7 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 (2, 'boundary layer turbulent'),
 (3, 'wing design optimization');
 
--- Insert sample expected rankings (for testing purposes)
-INSERT INTO cranfield_expected_rankings (query_id, doc_id, rank, tapir_score) VALUES
-(1, 1, 1, 1.5),
-(1, 3, 2, 1.2),
-(1, 4, 3, 1.0);
+-- Expected rankings are now captured in the test's expected output file
 
 -- Create tapir index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING tapir(full_text)
@@ -91,33 +84,23 @@ FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
 
--- Test 3: Validation against expected rankings for Query 1
-\echo 'Test 3: Validation against Cranfield reference results'
+-- Test 3: Top-10 results for first query
+\echo 'Test 3: Top-10 results for first query'
 WITH tapir_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx') ASC) as tapir_rank
+        ROUND((full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as tapir_rank
     FROM aerodocs_documents
-),
-reference_results AS (
-    SELECT doc_id, rank as expected_rank, tapir_score as expected_score
-    FROM cranfield_expected_rankings
-    WHERE query_id = 1 AND rank <= 10
 )
 SELECT
-    q.query_text,
     br.doc_id,
     br.tapir_rank,
-    rr.expected_rank,
-    ROUND(br.tapir_score::numeric, 4) as actual_score,
-    ROUND(rr.expected_score::numeric, 4) as expected_score,
+    br.tapir_score as score,
     LEFT(d.title, 50) as title_preview
-FROM cranfield_queries q
-CROSS JOIN tapir_results br
-LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
+FROM tapir_results br
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
-WHERE q.query_id = 1 AND br.tapir_rank <= 10
+WHERE br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
 
 -- Test 4: Performance test with multiple queries
@@ -151,4 +134,4 @@ SET enable_seqscan = on;
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
 DROP TABLE cranfield_queries CASCADE;
-DROP TABLE cranfield_expected_rankings CASCADE;
+DROP EXTENSION tapir CASCADE;

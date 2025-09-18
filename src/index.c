@@ -32,6 +32,9 @@
 #include "query.h"
 #include "vector.h"
 
+/* External GUC variable for score logging */
+extern bool tp_log_scores;
+
 /* Forward declarations */
 static bool tp_search_posting_lists(
 		IndexScanDesc	scan,
@@ -1335,6 +1338,15 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			bm25_score				 = -so->result_scores[so->current_pos];
 			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 			scan->xs_orderbynulls[0] = false;
+
+			/* Log score - NOTICE if GUC enabled, DEBUG1 otherwise */
+			elog(tp_log_scores ? NOTICE : DEBUG1,
+				 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
+				 "BM25_score=%.4f",
+				 so->current_pos,
+				 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
+				 scan->xs_heaptid.ip_posid,
+				 bm25_score);
 		}
 		else
 		{

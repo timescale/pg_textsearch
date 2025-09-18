@@ -6,6 +6,11 @@ SET log_duration = off;
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+SET client_min_messages = NOTICE;
+SET enable_seqscan = false;
+
 -- Create test table with sufficient data for meaningful LIMIT testing
 CREATE TABLE limit_test (
     id SERIAL PRIMARY KEY,
@@ -196,3 +201,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
+DROP EXTENSION tapir CASCADE;

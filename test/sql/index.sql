@@ -3,6 +3,9 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Setup test table
 CREATE TABLE test_docs (
     id SERIAL PRIMARY KEY,
@@ -54,3 +57,4 @@ SELECT
 DROP INDEX docs_english_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
+DROP EXTENSION tapir CASCADE;

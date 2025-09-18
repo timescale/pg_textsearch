@@ -4,7 +4,8 @@
 -- Tests both dataset loading and tapir scoring functionality with the <@> operator
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
+-- Enable score logging for testing
+SET tapir.log_scores = true;
 \set ON_ERROR_STOP on
 \echo 'Testing tapir with sample aerodynamics documents...'
 Testing tapir with sample aerodynamics documents...
@@ -25,13 +26,7 @@ CREATE TABLE cranfield_queries (
     query_id INTEGER PRIMARY KEY,
     query_text TEXT NOT NULL
 );
-CREATE TABLE cranfield_expected_rankings (
-    query_id INTEGER NOT NULL,
-    doc_id INTEGER NOT NULL,
-    rank INTEGER NOT NULL,
-    tapir_score FLOAT NOT NULL,
-    PRIMARY KEY (query_id, doc_id)
-);
+-- Expected rankings table removed - we test against actual output
 \echo 'Loading subset of Cranfield documents for testing...'
 Loading subset of Cranfield documents for testing...
 INSERT INTO aerodocs_documents (doc_id, title, author, content) VALUES
@@ -50,11 +45,7 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 (1, 'aerodynamic flow analysis'),
 (2, 'boundary layer turbulent'),
 (3, 'wing design optimization');
--- Insert sample expected rankings (for testing purposes)
-INSERT INTO cranfield_expected_rankings (query_id, doc_id, rank, tapir_score) VALUES
-(1, 1, 1, 1.5),
-(1, 3, 2, 1.2),
-(1, 4, 3, 1.0);
+-- Expected rankings are now captured in the test's expected output file
 -- Create tapir index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING tapir(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
@@ -76,15 +67,18 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0817
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.6846
+NOTICE:  Tapir index scan: doc_pos=2, tid=(1,1), BM25_score=-0.5308
+NOTICE:  Tapir index scan: doc_pos=3, tid=(1,3), BM25_score=-0.4786
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,6), BM25_score=-0.4541
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      1 | experimental investigation of the aerodynamics of a wing in  | -1.6870
-      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
-      9 | transition studies and skin friction measurements on an insu |  0.0000
-      7 | the effect of controlled three-dimensional roughness on boun |  0.0000
-      6 | one-dimensional transient heat flow in a multilayer slab .   |  0.0000
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.0817
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.6846
+      7 | the effect of controlled three-dimensional roughness on boun | -0.5308
+      9 | transition studies and skin friction measurements on an insu | -0.4786
+      6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -97,60 +91,61 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(1,3), BM25_score=-2.9094
+NOTICE:  Tapir index scan: doc_pos=1, tid=(1,1), BM25_score=-2.5597
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.3143
+NOTICE:  Tapir index scan: doc_pos=3, tid=(1,2), BM25_score=-1.0569
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,6), BM25_score=-0.4541
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      9 | transition studies and skin friction measurements on an insu | -0.6162
-      7 | the effect of controlled three-dimensional roughness on boun | -0.5875
-      2 | simple shear flow past a flat plate in an incompressible flu | -0.6572
-      8 | measurements of the effect of two-dimensional and three-dime | -0.5284
+      9 | transition studies and skin friction measurements on an insu | -2.9094
+      7 | the effect of controlled three-dimensional roughness on boun | -2.5597
+      2 | simple shear flow past a flat plate in an incompressible flu | -1.3143
+      8 | measurements of the effect of two-dimensional and three-dime | -1.0569
       6 | one-dimensional transient heat flow in a multilayer slab .   | -0.4541
 (5 rows)
 
--- Test 3: Validation against expected rankings for Query 1
-\echo 'Test 3: Validation against Cranfield reference results'
-Test 3: Validation against Cranfield reference results
+-- Test 3: Top-10 results for first query
+\echo 'Test 3: Top-10 results for first query'
+Test 3: Top-10 results for first query
 WITH tapir_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery((SELECT query_text FROM cranfield_queries WHERE query_id = 1), 'cranfield_tapir_idx') ASC) as tapir_rank
+        ROUND((full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as tapir_rank
     FROM aerodocs_documents
-),
-reference_results AS (
-    SELECT doc_id, rank as expected_rank, tapir_score as expected_score
-    FROM cranfield_expected_rankings
-    WHERE query_id = 1 AND rank <= 10
 )
 SELECT
-    q.query_text,
     br.doc_id,
     br.tapir_rank,
-    rr.expected_rank,
-    ROUND(br.tapir_score::numeric, 4) as actual_score,
-    ROUND(rr.expected_score::numeric, 4) as expected_score,
+    br.tapir_score as score,
     LEFT(d.title, 50) as title_preview
-FROM cranfield_queries q
-CROSS JOIN tapir_results br
-LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
+FROM tapir_results br
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
-WHERE q.query_id = 1 AND br.tapir_rank <= 10
+WHERE br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-        query_text         | doc_id | tapir_rank | expected_rank | actual_score | expected_score |                   title_preview                    
----------------------------+--------+------------+---------------+--------------+----------------+----------------------------------------------------
- aerodynamic flow analysis |     10 |          1 |               |      -2.4331 |                | the theory of the impact tube at low pressure .
- aerodynamic flow analysis |      1 |          2 |             1 |      -1.6870 |         1.5000 | experimental investigation of the aerodynamics of 
- aerodynamic flow analysis |      5 |          3 |               |      -1.5650 |                | one-dimensional transient heat conduction into a d
- aerodynamic flow analysis |      2 |          4 |               |       0.0000 |                | simple shear flow past a flat plate in an incompre
- aerodynamic flow analysis |      9 |          5 |               |       0.0000 |                | transition studies and skin friction measurements 
- aerodynamic flow analysis |      7 |          6 |               |       0.0000 |                | the effect of controlled three-dimensional roughne
- aerodynamic flow analysis |      4 |          7 |             3 |       0.0000 |         1.0000 | approximate solutions of the incompressible lamina
- aerodynamic flow analysis |      3 |          8 |             2 |       0.0000 |         1.2000 | the boundary layer in simple shear flow past a fla
- aerodynamic flow analysis |      6 |          9 |               |       0.0000 |                | one-dimensional transient heat flow in a multilaye
- aerodynamic flow analysis |      8 |         10 |               |       0.0000 |                | measurements of the effect of two-dimensional and 
+NOTICE:  Tapir index scan: doc_pos=0, tid=(1,4), BM25_score=-2.4331
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-2.0817
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,5), BM25_score=-1.5650
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-0.6878
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.6846
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.6770
+NOTICE:  Tapir index scan: doc_pos=6, tid=(1,1), BM25_score=-0.5308
+NOTICE:  Tapir index scan: doc_pos=7, tid=(1,3), BM25_score=-0.4786
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,6), BM25_score=-0.4541
+NOTICE:  Tapir index scan: doc_pos=9, tid=(1,2), BM25_score=-0.0000
+ doc_id | tapir_rank |  score  |                   title_preview                    
+--------+------------+---------+----------------------------------------------------
+     10 |          1 | -2.4331 | the theory of the impact tube at low pressure .
+      1 |          2 | -2.0817 | experimental investigation of the aerodynamics of 
+      5 |          3 | -1.5650 | one-dimensional transient heat conduction into a d
+      3 |          4 | -0.6878 | the boundary layer in simple shear flow past a fla
+      2 |          5 | -0.6846 | simple shear flow past a flat plate in an incompre
+      4 |          6 | -0.6770 | approximate solutions of the incompressible lamina
+      7 |          7 | -0.5308 | the effect of controlled three-dimensional roughne
+      9 |          8 | -0.4786 | transition studies and skin friction measurements 
+      6 |          9 | -0.4541 | one-dimensional transient heat flow in a multilaye
+      8 |         10 |  0.0000 | measurements of the effect of two-dimensional and 
 (10 rows)
 
 -- Test 4: Performance test with multiple queries
@@ -166,13 +161,11 @@ CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
 GROUP BY q.query_id, q.query_text
 ORDER BY q.query_id;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
-        1 | aerodynamic flow analysis... |         10 |             3
+        1 | aerodynamic flow analysis... |         10 |             9
         2 | boundary layer turbulent...  |         10 |             9
-        3 | wing design optimization...  |         10 |             0
+        3 | wing design optimization...  |         10 |             1
 (3 rows)
 
 -- Test 5: Index usage verification
@@ -200,4 +193,4 @@ All tests demonstrate proper tapir functionality with the <@> operator.
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
 DROP TABLE cranfield_queries CASCADE;
-DROP TABLE cranfield_expected_rankings CASCADE;
+DROP EXTENSION tapir CASCADE;

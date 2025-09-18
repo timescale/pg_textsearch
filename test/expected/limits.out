@@ -3,7 +3,10 @@
 SET log_duration = off;
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+SET client_min_messages = NOTICE;
+SET enable_seqscan = false;
 -- Create test table with sufficient data for meaningful LIMIT testing
 CREATE TABLE limit_test (
     id SERIAL PRIMARY KEY,
@@ -56,8 +59,6 @@ SELECT title, content, ROUND((content <@> to_tpquery('database', 'limit_test_idx
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
  Database Theory       | theoretical foundations of database systems and relational algebra | -0.4006
@@ -73,11 +74,9 @@ SELECT title, ROUND((content <@> to_tpquery('search', 'limit_test_idx'))::numeri
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-      title       | score  
-------------------+--------
- Database Systems | 0.0000
+       title       |  score  
+-------------------+---------
+ Search Technology | -1.6716
 (1 row)
 
 -- Test LIMIT 3
@@ -85,8 +84,6 @@ SELECT title, ROUND((content <@> to_tpquery('optimization', 'limit_test_idx'))::
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
         title         |  score  
 ----------------------+---------
  Query Optimization   | -1.0761
@@ -99,8 +96,6 @@ SELECT title, ROUND((content <@> to_tpquery('algorithm', 'limit_test_idx'))::num
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.0761
@@ -128,8 +123,8 @@ LIMIT 7;
  Limit
    ->  Sort
          Sort Key: (round(((content <@> 'limit_test_idx:{database system}'::tpquery))::numeric, 4))
-         ->  Seq Scan on limit_test
-               Filter: (id > 5)
+         ->  Index Scan using limit_test_pkey on limit_test
+               Index Cond: (id > 5)
 (5 rows)
 
 SELECT title, ROUND((content <@> to_tpquery('database system', 'limit_test_idx'))::numeric, 4) as score
@@ -137,17 +132,15 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
+ Database Theory       | -1.4767
+ Database Architecture | -1.4767
+ System Performance    | -1.0761
+ Information Systems   | -1.0761
  Query Optimization    | -0.4006
- Database Security     | -0.4006
  Database Performance  | -0.4006
- Database Theory       | -0.4006
- Database Architecture | -0.4006
- Data Structures       | -0.3763
- Search Engines        |  0.0000
+ Database Security     | -0.4006
 (7 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
@@ -157,8 +150,6 @@ SELECT title, ROUND((content <@> to_tpquery('performance', 'limit_test_idx'))::n
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
          title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.6716
@@ -173,11 +164,9 @@ SELECT title, ROUND((content <@> to_tpquery('text', 'limit_test_idx'))::numeric,
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
-      title       | score  
-------------------+--------
- Database Systems | 0.0000
+      title      |  score  
+-----------------+---------
+ Text Processing | -1.5705
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -189,8 +178,26 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,6), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=10, tid=(0,11), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=11, tid=(0,12), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=12, tid=(0,13), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=13, tid=(0,14), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=14, tid=(0,15), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=15, tid=(0,16), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=16, tid=(0,17), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=17, tid=(0,18), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=18, tid=(0,19), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=19, tid=(0,20), BM25_score=-0.0000
  has_results 
 -------------
  t
@@ -203,11 +210,11 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
- title | score 
--------+-------
-(0 rows)
+     title      |  score  
+----------------+---------
+ Data Mining    | -1.9531
+ Text Analytics | -1.9531
+(2 rows)
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
@@ -215,8 +222,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,15), BM25_score=-0.4006
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,11), BM25_score=-0.4006
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -227,8 +234,14 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,16), BM25_score=-1.6716
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.5705
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-1.4809
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=-0.0000
  query_name | results 
 ------------+---------
  Query 2    |       8
@@ -239,8 +252,10 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,18), BM25_score=-1.0761
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,6), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.9534
  query_name | results 
 ------------+---------
  Query 3    |       4
@@ -277,8 +292,8 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
  pushdown_safe_count 
 ---------------------
                    2
@@ -293,11 +308,11 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
  pushdown_unsafe_count 
 -----------------------
-                     2
+                     1
 (1 row)
 
 -- Test 12: Edge cases for LIMIT pushdown
@@ -310,8 +325,26 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,6), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=10, tid=(0,11), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=11, tid=(0,12), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=12, tid=(0,13), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=13, tid=(0,14), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=14, tid=(0,15), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=15, tid=(0,16), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=16, tid=(0,17), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=17, tid=(0,18), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=18, tid=(0,19), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=19, tid=(0,20), BM25_score=-0.0000
  large_limit_has_results 
 -------------------------
  t
@@ -328,3 +361,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
+DROP EXTENSION tapir CASCADE;

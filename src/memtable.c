@@ -139,7 +139,7 @@ tp_init_index_dsa_callback(void *ptr)
 	/* Initialize state */
 	state->string_hash_handle = DSHASH_HANDLE_INVALID;
 	state->total_terms		  = 0;
-	state->doc_lengths_hash	  = NULL; /* Will be attached when needed */
+	state->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Initialize corpus statistics */
 	memset(&state->stats, 0, sizeof(TpCorpusStatistics));
@@ -335,6 +335,7 @@ tp_destroy_index_dsa(Oid index_oid)
 	char				 *segment_name;
 	IndexStateCacheEntry *cache_entry;
 	bool				  found;
+	dsa_area			 *area = NULL;
 
 	segment_name = tp_get_dsm_segment_name(index_oid);
 
@@ -345,25 +346,36 @@ tp_destroy_index_dsa(Oid index_oid)
 				index_state_cache, &index_oid, HASH_REMOVE, &found);
 		if (found && cache_entry)
 		{
-			/*
-			 * Note: We don't detach from the DSA area here because: 1. The
-			 * area might already be detached/freed by PostgreSQL 2. Other
-			 * backends might still be using it 3. It will be cleaned up when
-			 * the DSM segment is destroyed
-			 *
-			 * Just clear our local reference.
-			 */
+			area			   = cache_entry->area;
 			cache_entry->area  = NULL;
 			cache_entry->state = NULL;
 		}
 	}
 
 	/*
-	 * Log that we're cleaning up the index. We don't need to check if the DSM
-	 * segment exists or destroy it here because: 1. Other backends might
-	 * still be using it 2. PostgreSQL will clean it up when all backends
-	 * detach 3. The segment will be reused if an index with the same OID is
-	 * created
+	 * If we found a cached area, we need to clean it up properly.
+	 * We unpin and detach to allow the DSA area to be destroyed
+	 * when all backends are done with it.
+	 */
+	if (area != NULL)
+	{
+		/*
+		 * Unpin the area. This reverses the dsa_pin() we did when
+		 * creating the index. Once unpinned, the area can be
+		 * destroyed when all backends detach.
+		 */
+		dsa_unpin(area);
+
+		/*
+		 * Detach from the DSA area to release our reference.
+		 * This is safe because we've removed it from the cache.
+		 */
+		dsa_detach(area);
+	}
+
+	/*
+	 * The Named DSM segment will be cleaned up by PostgreSQL.
+	 * It can be reused if an index with the same OID is created later.
 	 */
 
 	pfree(segment_name);

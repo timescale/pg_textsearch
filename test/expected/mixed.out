@@ -2,7 +2,8 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
+-- Enable score logging for testing
+SET tapir.log_scores = true;
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
 NOTICE:  table "concurrent_test_docs" does not exist, skipping
@@ -40,8 +41,6 @@ NOTICE:  Tapir index build completed: 5 documents, avg_length=3.80, text_config=
 SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                content                 |  score  
 ----+----------------------------------------+---------
   2 | concurrent programming patterns        | -1.2021
@@ -64,8 +63,6 @@ SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concur
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                           content                           |  score  
 ----+-------------------------------------------------------------+---------
   8 | database concurrent processing improves performance         | -0.5052
@@ -138,8 +135,6 @@ SELECT id, substring(content, 1, 50) || '...' as content_preview,
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 8;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                    content_preview                    |  score  
 ----+-------------------------------------------------------+---------
   8 | database concurrent processing improves performanc... | -0.6120
@@ -164,13 +159,11 @@ BEGIN;
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
- id |                       content                       |  score  
-----+-----------------------------------------------------+---------
-  5 | database indexing strategies                        | -0.3497
-  1 | database query optimization techniques              | -0.3261
-  8 | database concurrent processing improves performance | -0.3054
+ id |                content                 |  score  
+----+----------------------------------------+---------
+ 59 | new concurrent database research paper | -4.5429
+  5 | database indexing strategies           | -0.3497
+  1 | database query optimization techniques | -0.3261
 (3 rows)
 
 COMMIT;
@@ -179,13 +172,11 @@ SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurre
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
- id |                       content                       |  score  
-----+-----------------------------------------------------+---------
-  5 | database indexing strategies                        | -0.3497
-  1 | database query optimization techniques              | -0.3261
-  8 | database concurrent processing improves performance | -0.3054
+ id |                content                 |  score  
+----+----------------------------------------+---------
+ 59 | new concurrent database research paper | -4.5429
+  5 | database indexing strategies           | -0.3497
+  1 | database query optimization techniques | -0.3261
 (3 rows)
 
 -- Test 6: Index integrity under updates
@@ -199,15 +190,13 @@ WHERE id IN (1, 2);
 SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
+  2 | updated database system with enhanced concurrent features      | -3.7265
+  1 | updated database system with enhanced concurrent features      | -3.7265
   5 | database indexing strategies                                   | -0.3492
   8 | database concurrent processing improves performance            | -0.3048
  59 | new concurrent database research paper                         | -0.3048
-  1 | updated database system with enhanced concurrent features      | -0.2866
-  2 | updated database system with enhanced concurrent features      | -0.2866
   6 | database systems require concurrent access control             | -0.2866
   7 | concurrent database operations need careful synchronization    | -0.2866
  15 | test document number 7 contains database and concurrent terms  | -0.2560
@@ -298,13 +287,51 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 SELECT id, content, ROUND((content <@> to_tpquery('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score, id;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
- 60 | exact same terms for testing consistency                       | -3.5120
- 61 | exact same terms for testing consistency                       | -3.5120
- 62 | testing consistency with exact same terms                      | -3.5120
+ 60 | exact same terms for testing consistency                       | -3.8356
+ 61 | exact same terms for testing consistency                       | -3.8356
+ 62 | testing consistency with exact same terms                      | -3.8356
+  9 | test document number 1 contains database and concurrent terms  | -0.2536
+ 11 | test document number 3 contains database and concurrent terms  | -0.2536
+ 12 | test document number 4 contains database and concurrent terms  | -0.2536
+ 13 | test document number 5 contains database and concurrent terms  | -0.2536
+ 14 | test document number 6 contains database and concurrent terms  | -0.2536
+ 16 | test document number 8 contains database and concurrent terms  | -0.2536
+ 17 | test document number 9 contains database and concurrent terms  | -0.2536
+ 18 | test document number 10 contains database and concurrent terms | -0.2536
+ 19 | test document number 11 contains database and concurrent terms | -0.2536
+ 21 | test document number 13 contains database and concurrent terms | -0.2536
+ 22 | test document number 14 contains database and concurrent terms | -0.2536
+ 23 | test document number 15 contains database and concurrent terms | -0.2536
+ 24 | test document number 16 contains database and concurrent terms | -0.2536
+ 26 | test document number 18 contains database and concurrent terms | -0.2536
+ 27 | test document number 19 contains database and concurrent terms | -0.2536
+ 28 | test document number 20 contains database and concurrent terms | -0.2536
+ 29 | test document number 21 contains database and concurrent terms | -0.2536
+ 31 | test document number 23 contains database and concurrent terms | -0.2536
+ 32 | test document number 24 contains database and concurrent terms | -0.2536
+ 33 | test document number 25 contains database and concurrent terms | -0.2536
+ 34 | test document number 26 contains database and concurrent terms | -0.2536
+ 36 | test document number 28 contains database and concurrent terms | -0.2536
+ 37 | test document number 29 contains database and concurrent terms | -0.2536
+ 38 | test document number 30 contains database and concurrent terms | -0.2536
+ 39 | test document number 31 contains database and concurrent terms | -0.2536
+ 41 | test document number 33 contains database and concurrent terms | -0.2536
+ 42 | test document number 34 contains database and concurrent terms | -0.2536
+ 43 | test document number 35 contains database and concurrent terms | -0.2536
+ 44 | test document number 36 contains database and concurrent terms | -0.2536
+ 46 | test document number 38 contains database and concurrent terms | -0.2536
+ 47 | test document number 39 contains database and concurrent terms | -0.2536
+ 48 | test document number 40 contains database and concurrent terms | -0.2536
+ 49 | test document number 41 contains database and concurrent terms | -0.2536
+ 51 | test document number 43 contains database and concurrent terms | -0.2536
+ 52 | test document number 44 contains database and concurrent terms | -0.2536
+ 53 | test document number 45 contains database and concurrent terms | -0.2536
+ 54 | test document number 46 contains database and concurrent terms | -0.2536
+ 56 | test document number 48 contains database and concurrent terms | -0.2536
+ 57 | test document number 49 contains database and concurrent terms | -0.2536
+ 58 | test document number 50 contains database and concurrent terms | -0.2536
   1 | updated database system with enhanced concurrent features      |  0.0000
   2 | updated database system with enhanced concurrent features      |  0.0000
   3 | shared memory management systems                               |  0.0000
@@ -313,46 +340,6 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
   6 | database systems require concurrent access control             |  0.0000
   7 | concurrent database operations need careful synchronization    |  0.0000
   8 | database concurrent processing improves performance            |  0.0000
-  9 | test document number 1 contains database and concurrent terms  |  0.0000
- 11 | test document number 3 contains database and concurrent terms  |  0.0000
- 12 | test document number 4 contains database and concurrent terms  |  0.0000
- 13 | test document number 5 contains database and concurrent terms  |  0.0000
- 14 | test document number 6 contains database and concurrent terms  |  0.0000
- 16 | test document number 8 contains database and concurrent terms  |  0.0000
- 17 | test document number 9 contains database and concurrent terms  |  0.0000
- 18 | test document number 10 contains database and concurrent terms |  0.0000
- 19 | test document number 11 contains database and concurrent terms |  0.0000
- 21 | test document number 13 contains database and concurrent terms |  0.0000
- 22 | test document number 14 contains database and concurrent terms |  0.0000
- 23 | test document number 15 contains database and concurrent terms |  0.0000
- 24 | test document number 16 contains database and concurrent terms |  0.0000
- 26 | test document number 18 contains database and concurrent terms |  0.0000
- 27 | test document number 19 contains database and concurrent terms |  0.0000
- 28 | test document number 20 contains database and concurrent terms |  0.0000
- 29 | test document number 21 contains database and concurrent terms |  0.0000
- 31 | test document number 23 contains database and concurrent terms |  0.0000
- 32 | test document number 24 contains database and concurrent terms |  0.0000
- 33 | test document number 25 contains database and concurrent terms |  0.0000
- 34 | test document number 26 contains database and concurrent terms |  0.0000
- 36 | test document number 28 contains database and concurrent terms |  0.0000
- 37 | test document number 29 contains database and concurrent terms |  0.0000
- 38 | test document number 30 contains database and concurrent terms |  0.0000
- 39 | test document number 31 contains database and concurrent terms |  0.0000
- 41 | test document number 33 contains database and concurrent terms |  0.0000
- 42 | test document number 34 contains database and concurrent terms |  0.0000
- 43 | test document number 35 contains database and concurrent terms |  0.0000
- 44 | test document number 36 contains database and concurrent terms |  0.0000
- 46 | test document number 38 contains database and concurrent terms |  0.0000
- 47 | test document number 39 contains database and concurrent terms |  0.0000
- 48 | test document number 40 contains database and concurrent terms |  0.0000
- 49 | test document number 41 contains database and concurrent terms |  0.0000
- 51 | test document number 43 contains database and concurrent terms |  0.0000
- 52 | test document number 44 contains database and concurrent terms |  0.0000
- 53 | test document number 45 contains database and concurrent terms |  0.0000
- 54 | test document number 46 contains database and concurrent terms |  0.0000
- 56 | test document number 48 contains database and concurrent terms |  0.0000
- 57 | test document number 49 contains database and concurrent terms |  0.0000
- 58 | test document number 50 contains database and concurrent terms |  0.0000
  59 | new concurrent database research paper                         |  0.0000
 (52 rows)
 
@@ -390,8 +377,6 @@ INSERT INTO multi_idx_test (content) VALUES
 SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |            content             | english_score 
 ----+--------------------------------+---------------
   1 | hello world from the test      |       -0.2039
@@ -405,8 +390,6 @@ HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
 SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score;
-WARNING:  using row-at-a-time scoring which can be slow
-HINT:  Consider ORDER BY with LIMIT but no explicit scoring in SELECT
  id |            content             | simple_score 
 ----+--------------------------------+--------------
   5 | hello database world           |      -0.1335
@@ -456,3 +439,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
+DROP EXTENSION tapir CASCADE;

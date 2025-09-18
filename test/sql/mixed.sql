@@ -4,6 +4,9 @@
 
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
 DROP TABLE IF EXISTS concurrent_test_docs2 CASCADE;
@@ -229,3 +232,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
+DROP EXTENSION tapir CASCADE;

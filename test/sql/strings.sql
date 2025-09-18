@@ -2,6 +2,11 @@
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
 
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+SET client_min_messages = NOTICE;
+SET enable_seqscan = false;
+
 -- Setup test table for long strings
 DROP TABLE IF EXISTS long_string_docs CASCADE;
 CREATE TABLE long_string_docs (
@@ -149,3 +154,4 @@ WHERE category = 'extreme'
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
+DROP EXTENSION tapir CASCADE;

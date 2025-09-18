@@ -17,6 +17,7 @@
 #include <utils/hsearch.h>
 #include <utils/snapmgr.h>
 
+#include "common/hashfn.h"
 #include "constants.h"
 #include "memtable.h"
 #include "metapage.h"
@@ -25,6 +26,68 @@
 
 /* Configuration parameters */
 int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;
+
+/* External GUC variable for score logging */
+extern bool tp_log_scores;
+
+/* Forward declarations */
+static uint32 tp_itemptr_hash(const void *key, Size keysize, void *arg);
+static int
+tp_itemptr_compare(const void *a, const void *b, Size keysize, void *arg);
+static void
+tp_itemptr_copy(void *dest, const void *src, Size keysize, void *arg);
+
+/*
+ * Hash function for ItemPointer keys
+ */
+static uint32
+tp_itemptr_hash(const void *key, Size keysize, void *arg)
+{
+	const ItemPointerData *item = (const ItemPointerData *)key;
+	uint32				   h;
+
+	(void)keysize; /* unused */
+	(void)arg;	   /* unused */
+
+	h = hash_uint32(BlockIdGetBlockNumber(&item->ip_blkid));
+	h = hash_combine(h, hash_uint32(item->ip_posid));
+	return h;
+}
+
+/*
+ * Compare function for ItemPointer keys
+ */
+static int
+tp_itemptr_compare(const void *a, const void *b, Size keysize, void *arg)
+{
+	(void)keysize; /* unused */
+	(void)arg;	   /* unused */
+	return ItemPointerCompare((ItemPointer)a, (ItemPointer)b);
+}
+
+/*
+ * Copy function for ItemPointer keys
+ */
+static void
+tp_itemptr_copy(void *dest, const void *src, Size keysize, void *arg)
+{
+	(void)keysize; /* unused */
+	(void)arg;	   /* unused */
+	ItemPointerCopy((ItemPointer)src, (ItemPointer)dest);
+}
+
+/*
+ * Parameters for document lengths hash table - must be static/global
+ * because dshash stores a pointer to this structure
+ */
+static const dshash_parameters doc_lengths_hash_params = {
+		.key_size		  = sizeof(ItemPointerData),
+		.entry_size		  = sizeof(TpDocLengthEntry),
+		.hash_function	  = tp_itemptr_hash,
+		.compare_function = tp_itemptr_compare,
+		.copy_function	  = tp_itemptr_copy,
+		.tranche_id		  = TP_TRANCHE_DOC_LENGTHS,
+};
 
 /* Forward declarations */
 TpPostingList *
@@ -88,27 +151,58 @@ tp_add_document_terms(
 	}
 
 	/* Store document length in hash table (once per document, not per term) */
-	if (index_state->doc_lengths_hash)
 	{
-		TpDocLengthEntry  doc_entry;
-		TpDocLengthEntry *existing_entry;
+		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+		dshash_table	 *doc_lengths_hash;
+		TpDocLengthEntry *doc_entry;
 		bool			  found;
 
-		/* Set up the entry */
-		doc_entry.ctid		 = *ctid;
-		doc_entry.doc_length = doc_length;
-
-		/* Insert into hash table */
 		LWLockAcquire(&index_state->doc_lengths_lock, LW_EXCLUSIVE);
-		existing_entry = (TpDocLengthEntry *)dshash_find_or_insert(
-				index_state->doc_lengths_hash, &doc_entry.ctid, &found);
 
-		if (!found)
+		/* Create or attach to doc_lengths hash table */
+		if (index_state->doc_lengths_handle == DSHASH_HANDLE_INVALID)
 		{
-			/* New document - store the length */
-			existing_entry->doc_length = doc_length;
+			/* Create new hash table */
+			doc_lengths_hash =
+					dshash_create(area, &doc_lengths_hash_params, NULL);
+			if (!doc_lengths_hash)
+			{
+				LWLockRelease(&index_state->doc_lengths_lock);
+				elog(ERROR, "Failed to create doc_lengths hash table");
+			}
+			index_state->doc_lengths_handle = dshash_get_hash_table_handle(
+					doc_lengths_hash);
+		}
+		else
+		{
+			/* Attach to existing hash table */
+			doc_lengths_hash = dshash_attach(
+					area,
+					&doc_lengths_hash_params,
+					index_state->doc_lengths_handle,
+					NULL);
+			if (!doc_lengths_hash)
+			{
+				LWLockRelease(&index_state->doc_lengths_lock);
+				elog(ERROR, "Failed to attach to doc_lengths hash table");
+			}
 		}
 
+		/* Insert or update document length */
+		doc_entry = (TpDocLengthEntry *)
+				dshash_find_or_insert(doc_lengths_hash, ctid, &found);
+		if (doc_entry)
+		{
+			/* Should always be a new document in this context */
+			Assert(!found);
+			/* New document - copy the ctid and set length */
+			ItemPointerCopy(ctid, &doc_entry->ctid);
+			doc_entry->doc_length = doc_length;
+			dshash_release_lock(doc_lengths_hash, doc_entry);
+		}
+
+		/* Detach from hash table */
+		dshash_detach(doc_lengths_hash);
 		LWLockRelease(&index_state->doc_lengths_lock);
 	}
 
@@ -675,6 +769,17 @@ tp_calculate_bm25_scores(
 			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
 								  (double)query_frequencies[term_idx]);
 
+			/* Debug logging for term score in index scan */
+			elog(DEBUG1,
+				 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
+				 "df=%d, idf=%.4f, score=%.6f",
+				 term,
+				 tf,
+				 doc_len,
+				 posting_list->doc_count,
+				 idf,
+				 term_score);
+
 			/* Debug NaN detection */
 			if (isnan(term_score))
 			{
@@ -1042,21 +1147,42 @@ tp_get_corpus_statistics(TpIndexState *index_state)
 int32
 tp_get_document_length(TpIndexState *index_state, ItemPointer ctid)
 {
-	TpDocLengthEntry *entry;
 	int32			  doc_length = 0;
+	dsa_area		 *area;
+	dshash_table	 *doc_lengths_hash;
+	TpDocLengthEntry *doc_entry;
 
-	if (!index_state->doc_lengths_hash)
-	{
+	if (index_state->doc_lengths_handle == DSHASH_HANDLE_INVALID)
 		return 0;
-	}
+
+	area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+	if (!area)
+		return 0;
 
 	LWLockAcquire(&index_state->doc_lengths_lock, LW_SHARED);
-	entry = (TpDocLengthEntry *)
-			dshash_find(index_state->doc_lengths_hash, ctid, false);
-	if (entry)
+
+	/* Attach to existing hash table */
+	doc_lengths_hash = dshash_attach(
+			area,
+			&doc_lengths_hash_params,
+			index_state->doc_lengths_handle,
+			NULL);
+	if (!doc_lengths_hash)
 	{
-		doc_length = entry->doc_length;
+		LWLockRelease(&index_state->doc_lengths_lock);
+		elog(ERROR, "Failed to attach to doc_lengths hash table");
 	}
+
+	/* Look up the document */
+	doc_entry = (TpDocLengthEntry *)dshash_find(doc_lengths_hash, ctid, false);
+	if (doc_entry)
+	{
+		doc_length = doc_entry->doc_length;
+		dshash_release_lock(doc_lengths_hash, doc_entry);
+	}
+
+	/* Detach from hash table */
+	dshash_detach(doc_lengths_hash);
 	LWLockRelease(&index_state->doc_lengths_lock);
 
 	return doc_length;
