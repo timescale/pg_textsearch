@@ -199,7 +199,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	/* Check if current page has room for another docid */
 	page_capacity = TP_DOCIDS_PER_PAGE;
 
-	if (docid_header->num_docids >= page_capacity)
+	if ((int)docid_header->num_docids >= page_capacity)
 	{
 		/* Current page is full, create a new one */
 		Buffer			   new_buf = ReadBuffer(index, P_NEW);
@@ -290,7 +290,7 @@ tp_recover_from_docid_pages(Relation index)
 
 		{
 			int i;
-			for (i = 0; i < docid_header->num_docids; i++)
+			for (i = 0; i < (int)docid_header->num_docids; i++)
 			{
 				ItemPointer	  ctid = &docids[i];
 				Relation	  heap_rel;

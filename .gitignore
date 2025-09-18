@@ -33,3 +33,8 @@ CLAUDE.md
 
 # VSCode files
 compile_commands.json
+
+# Local PostgreSQL development scripts (machine-specific)
+scripts/pg-switch.sh
+scripts/build-test-16.sh
+scripts/build-test-17.sh
