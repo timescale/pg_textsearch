@@ -524,9 +524,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	double			  k1, b;
 	TableScanDesc	  scan;
 	TupleTableSlot	 *slot;
-	uint64			  total_docs = 0;
-	uint64			  total_len	 = 0;
-	TpIndexState	 *index_state;
+	uint64			  total_docs  = 0;
+	uint64			  total_len	  = 0;
+	TpIndexState	 *index_state = NULL;
 
 	/* Tapir index build started */
 	elog(NOTICE,
@@ -722,7 +722,7 @@ tp_insert(
 	int			   term_count;
 	int			   doc_length = 0;
 	int			   i;
-	TpIndexState  *index_state;
+	TpIndexState  *index_state = NULL;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -1665,7 +1665,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	char		  *index_name;
 	StringInfoData result;
 	Oid			   index_oid;
-	TpIndexState  *index_state;
+	TpIndexState  *index_state = NULL;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
