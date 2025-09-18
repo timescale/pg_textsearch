@@ -252,7 +252,6 @@ tp_recover_from_docid_pages(Relation index)
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
-	int				   total_recovered = 0;
 
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -399,7 +398,6 @@ tp_recover_from_docid_pages(Relation index)
 							}
 							pfree(terms);
 							pfree(frequencies);
-							total_recovered++;
 						}
 
 						/* Free the vector */

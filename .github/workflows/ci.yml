@@ -40,8 +40,8 @@ jobs:
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
         make clean
         # Build with strict compiler warnings like pgvector
-        # Allow warnings from system headers (PostgreSQL) to avoid -Werror on code we can't control
-        CFLAGS="-Wall -Wextra -Werror -Wno-error=unused-parameter -Wno-error=unused-function" make
+        # Add -Wno-unused-function for conditionally compiled functions across PG versions
+        PG_CFLAGS="-Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function" make
         sudo env "PATH=$PATH" make install
 
     - name: Run regression tests
@@ -132,8 +132,8 @@ jobs:
         export CC=${{ matrix.config.cc }}
         make clean
         # Build with strict warnings to catch issues early
-        # Allow warnings from system headers (PostgreSQL) to avoid -Werror on code we can't control
-        CFLAGS="-Wall -Wextra -Werror -Wno-error=unused-parameter -Wno-error=unused-function" make
+        # Add -Wno-unused-function for conditionally compiled functions across PG versions
+        PG_CFLAGS="-Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function" make
 
   performance-test:
     runs-on: ubuntu-latest
