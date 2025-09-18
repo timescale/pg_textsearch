@@ -12,6 +12,7 @@
 #include <access/relscan.h>
 #include <math.h>
 #include <miscadmin.h>
+#include <storage/bufmgr.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
@@ -85,8 +86,10 @@ static const dshash_parameters doc_lengths_hash_params = {
 		.entry_size		  = sizeof(TpDocLengthEntry),
 		.hash_function	  = tp_itemptr_hash,
 		.compare_function = tp_itemptr_compare,
-		.copy_function	  = tp_itemptr_copy,
-		.tranche_id		  = TP_TRANCHE_DOC_LENGTHS,
+#if PG_VERSION_NUM >= 170000
+		.copy_function = tp_itemptr_copy,
+#endif
+		.tranche_id = TP_TRANCHE_DOC_LENGTHS,
 };
 
 /* Forward declarations */
