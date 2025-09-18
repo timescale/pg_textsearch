@@ -547,11 +547,23 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		elog(NOTICE, "Using text search configuration: %s", text_config_name);
 	elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
 
-	/* Initialize metapage */
-	tp_build_init_metapage(index, text_config_oid, k1, b);
+	/* Tapir indexes are not supported on temporary tables */
+	if (!RelationNeedsWAL(heap))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("Tapir indexes are not supported on temporary tables"),
+				 errhint("Use a regular table instead of a temporary table "
+						 "for Tapir full-text search.")));
+	}
+	else
+	{
+		/* Initialize metapage for persistent tables */
+		tp_build_init_metapage(index, text_config_oid, k1, b);
 
-	/* Initialize index state */
-	index_state = tp_get_index_state(RelationGetRelid(index));
+		/* Initialize shared memory index state for persistent tables */
+		index_state = tp_get_index_state(RelationGetRelid(index));
+	}
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
@@ -560,7 +572,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Setup table scanning */
 	tp_setup_table_scan(heap, &scan, &slot);
 
-	/* Process each document in the heap */
+	/* Normal processing for persistent tables */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
@@ -1668,60 +1680,120 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 	if (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
-		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+		dsa_area		  *area			= NULL;
+		TpStringHashTable *string_table = NULL;
+		uint32			   term_count	= 0;
 
-		if (area)
+		PG_TRY();
 		{
-			TpStringHashTable *string_table = tp_hash_table_attach_dsa(
-					area, index_state->string_hash_handle);
-
-			if (string_table)
-			{
-				uint32			   term_count = 0;
-				dshash_seq_status  status;
-				TpStringHashEntry *entry;
-
-				/* Iterate through all entries using dshash sequential scan */
-				dshash_seq_init(
-						&status,
-						string_table->dshash,
-						false); /* shared lock */
-
-				while ((entry = (TpStringHashEntry *)dshash_seq_next(
-								&status)) != NULL)
-				{
-					/* Show term info if it has a posting list */
-					if (DsaPointerIsValid(entry->key.flag_field))
-					{
-						TpPostingList *posting_list =
-								dsa_get_address(area, entry->key.flag_field);
-						char *stored_str = dsa_get_address(
-								area, entry->key.string_or_ptr);
-
-						appendStringInfo(
-								&result,
-								"  '%s': doc_freq=%d\n",
-								stored_str,
-								posting_list->doc_count);
-						term_count++;
-					}
-				}
-
-				dshash_seq_term(&status);
-				tp_hash_table_detach_dsa(string_table);
-
-				appendStringInfo(&result, "Total terms: %u\n", term_count);
-			}
-			else
+			area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+			if (!area)
 			{
 				appendStringInfo(
 						&result,
-						"  ERROR: Cannot attach to string hash table\n");
+						"  ERROR: Could not get DSA area for index (recovery "
+						"issue?)\n");
+				appendStringInfo(
+						&result,
+						"  HINT: Try rebuilding the index to restore "
+						"functionality\n");
+			}
+			else
+			{
+				string_table = tp_hash_table_attach_dsa(
+						area, index_state->string_hash_handle);
+				if (!string_table)
+				{
+					appendStringInfo(
+							&result,
+							"  ERROR: Could not attach to string hash table "
+							"(handle may be stale after recovery)\n");
+					appendStringInfo(
+							&result,
+							"  HINT: Try rebuilding the index to restore "
+							"functionality\n");
+				}
+				else
+				{
+					dshash_seq_status  status;
+					TpStringHashEntry *entry;
+
+					/* Iterate through all entries using dshash sequential scan
+					 */
+					dshash_seq_init(
+							&status,
+							string_table->dshash,
+							false); /* shared lock */
+
+					while ((entry = (TpStringHashEntry *)dshash_seq_next(
+									&status)) != NULL)
+					{
+						/* Show term info if it has a posting list */
+						if (DsaPointerIsValid(entry->key.flag_field))
+						{
+							PG_TRY();
+							{
+								TpPostingList *posting_list = dsa_get_address(
+										area, entry->key.flag_field);
+								char *stored_str = dsa_get_address(
+										area, entry->key.string_or_ptr);
+
+								appendStringInfo(
+										&result,
+										"  '%s': doc_freq=%d\n",
+										stored_str,
+										posting_list->doc_count);
+								term_count++;
+							}
+							PG_CATCH();
+							{
+								/* Handle invalid DSA pointers gracefully */
+								appendStringInfo(
+										&result,
+										"  <invalid entry>: DSA pointer "
+										"corrupted\n");
+								term_count++;
+								/* Clear error state and continue */
+								FlushErrorState();
+							}
+							PG_END_TRY();
+						}
+					}
+
+					dshash_seq_term(&status);
+					appendStringInfo(&result, "Total terms: %u\n", term_count);
+				}
 			}
 		}
-		else
+		PG_CATCH();
 		{
-			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
+			/* Handle any DSA-related errors gracefully */
+			appendStringInfo(
+					&result,
+					"  ERROR: DSA area access failed (likely due to recovery "
+					"issues)\n");
+			appendStringInfo(
+					&result,
+					"  HINT: Try rebuilding the index to restore "
+					"functionality\n");
+			/* Clear error state to prevent crash */
+			FlushErrorState();
+		}
+		PG_END_TRY();
+
+		/* Clean up resources */
+		if (string_table)
+		{
+			PG_TRY();
+			{
+				tp_hash_table_detach_dsa(string_table);
+			}
+			PG_CATCH();
+			{
+				/* Ignore cleanup errors */
+				FlushErrorState();
+			}
+			PG_END_TRY();
 		}
 	}
 	else

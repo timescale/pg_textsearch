@@ -225,9 +225,14 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 
 		if (state->area_handle == DSA_HANDLE_INVALID)
 		{
-			/* Shouldn't happen but handle gracefully */
+			/*
+			 * DSA handle is invalid - this can happen after recovery
+			 * Create a new DSA area and reset the shared memory structures
+			 */
 			elog(WARNING,
-				 "Existing segment has invalid DSA handle, creating new area");
+				 "Existing segment has invalid DSA handle (likely due to "
+				 "recovery), creating new area for index %u",
+				 index_oid);
 			area = dsa_create(TP_TRANCHE_POSTING);
 			if (!area)
 				elog(ERROR,
@@ -236,20 +241,63 @@ tp_get_or_create_index_dsa(Oid index_oid, dsa_area **area_out)
 
 			state->area_handle	   = dsa_get_handle(area);
 			state->dsa_initialized = true;
+
+			/* Reset stale hash handles after recovery */
+			state->string_hash_handle = DSHASH_HANDLE_INVALID;
+			state->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+			state->total_terms		  = 0;
+
 			dsa_pin(area);
 			dsa_pin_mapping(area);
 		}
 		else
 		{
-			area = dsa_attach(state->area_handle);
-			if (!area)
-				elog(ERROR,
-					 "Failed to attach to DSA area %u for index %u",
-					 state->area_handle,
+			/* Try to attach to existing DSA area */
+			PG_TRY();
+			{
+				area = dsa_attach(state->area_handle);
+				if (!area)
+				{
+					elog(WARNING,
+						 "Failed to attach to DSA area %u for index %u - "
+						 "handle may be stale",
+						 state->area_handle,
+						 index_oid);
+					goto create_new_area;
+				}
+				/* Pin mapping in this backend */
+				dsa_pin_mapping(area);
+			}
+			PG_CATCH();
+			{
+				/* DSA attachment failed - likely due to stale handle after
+				 * recovery */
+				elog(WARNING,
+					 "DSA attachment failed for index %u (likely stale handle "
+					 "after recovery), creating new area",
 					 index_oid);
+				FlushErrorState();
 
-			/* Pin mapping in this backend */
-			dsa_pin_mapping(area);
+			create_new_area:
+				/* Create new DSA area and reset handles */
+				area = dsa_create(TP_TRANCHE_POSTING);
+				if (!area)
+					elog(ERROR,
+						 "Failed to create replacement DSA area for index %u",
+						 index_oid);
+
+				state->area_handle	   = dsa_get_handle(area);
+				state->dsa_initialized = true;
+
+				/* Reset stale hash handles after recovery */
+				state->string_hash_handle = DSHASH_HANDLE_INVALID;
+				state->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+				state->total_terms		  = 0;
+
+				dsa_pin(area);
+				dsa_pin_mapping(area);
+			}
+			PG_END_TRY();
 		}
 	}
 
