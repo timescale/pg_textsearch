@@ -1612,6 +1612,48 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
+ * Helper function to safely access DSA pointers and format term entry
+ */
+static bool
+tp_debug_format_term_entry(
+		dsa_area		  *area,
+		TpStringHashEntry *entry,
+		StringInfo		   result,
+		uint32			  *term_count)
+{
+	volatile bool  access_failed = false;
+	TpPostingList *posting_list	 = NULL;
+	char		  *stored_str	 = NULL;
+
+	PG_TRY();
+	{
+		posting_list = dsa_get_address(area, entry->key.flag_field);
+		stored_str	 = dsa_get_address(area, entry->key.string_or_ptr);
+	}
+	PG_CATCH();
+	{
+		access_failed = true;
+		FlushErrorState();
+	}
+	PG_END_TRY();
+
+	if (!access_failed && posting_list && stored_str)
+	{
+		appendStringInfo(
+				result,
+				"  '%s': doc_freq=%d\n",
+				stored_str,
+				posting_list->doc_count);
+	}
+	else
+	{
+		appendStringInfo(result, "  <invalid entry>: DSA pointer corrupted\n");
+	}
+	(*term_count)++;
+	return true;
+}
+
+/*
  * tp_debug_dump_index - Debug function to show internal index structure
  */
 PG_FUNCTION_INFO_V1(tp_debug_dump_index);
@@ -1731,32 +1773,8 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 						/* Show term info if it has a posting list */
 						if (DsaPointerIsValid(entry->key.flag_field))
 						{
-							PG_TRY();
-							{
-								TpPostingList *posting_list = dsa_get_address(
-										area, entry->key.flag_field);
-								char *stored_str = dsa_get_address(
-										area, entry->key.string_or_ptr);
-
-								appendStringInfo(
-										&result,
-										"  '%s': doc_freq=%d\n",
-										stored_str,
-										posting_list->doc_count);
-								term_count++;
-							}
-							PG_CATCH();
-							{
-								/* Handle invalid DSA pointers gracefully */
-								appendStringInfo(
-										&result,
-										"  <invalid entry>: DSA pointer "
-										"corrupted\n");
-								term_count++;
-								/* Clear error state and continue */
-								FlushErrorState();
-							}
-							PG_END_TRY();
+							tp_debug_format_term_entry(
+									area, entry, &result, &term_count);
 						}
 					}
 
