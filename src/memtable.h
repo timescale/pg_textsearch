@@ -156,3 +156,11 @@ extern dsa_area *
 tp_get_dsa_area_for_index(TpIndexState *index_state, Oid index_oid);
 extern IndexStateCacheEntry *get_cached_index_state(Oid index_oid);
 extern TpIndexState			*tp_get_index_state(Oid index_oid);
+
+/* PostgreSQL 16 compatibility */
+#if PG_VERSION_NUM < 170000
+extern void tp_compat_cleanup_dsm_segments(void);
+#endif
+
+/* Cleanup functions */
+extern void tp_cleanup_index_shared_memory(Oid index_oid);

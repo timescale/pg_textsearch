@@ -42,9 +42,21 @@ int tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
 #if PG_VERSION_NUM < 170000
 /*
  * PostgreSQL 16 compatibility layer for GetNamedDSMSegment
- * This provides basic named segment functionality without the full registry
+ * This provides basic named segment functionality with a simple registry
  */
 typedef void (*dsm_segment_init_callback)(void *ptr);
+
+/* Simple segment registry for PG16 compatibility */
+typedef struct TpSegmentEntry
+{
+	char				   name[64];
+	dsm_segment			  *segment;
+	void				  *ptr;
+	size_t				   size;
+	struct TpSegmentEntry *next;
+} TpSegmentEntry;
+
+static TpSegmentEntry *tp_segment_registry = NULL;
 
 static void *
 tp_compat_get_named_dsm_segment(
@@ -53,33 +65,87 @@ tp_compat_get_named_dsm_segment(
 		dsm_segment_init_callback init_callback,
 		bool					 *found)
 {
-	dsm_segment *seg;
-	void		*ptr;
+	TpSegmentEntry *entry;
+	dsm_segment	   *seg;
+	void		   *ptr;
 
-	/*
-	 * For PostgreSQL 16, we'll use a simpler approach without named registry.
-	 * This creates a new segment each time, which is less efficient but works.
-	 * In practice, this will be cached by our backend-local cache.
-	 */
+	/* Look for existing segment */
+	for (entry = tp_segment_registry; entry != NULL; entry = entry->next)
+	{
+		if (strcmp(entry->name, name) == 0)
+		{
+			/* Found existing segment - verify it's still valid */
+			if (entry->segment && entry->ptr)
+			{
+				*found = true;
+				return entry->ptr;
+			}
+			else
+			{
+				/* Remove invalid entry */
+				/* Note: For simplicity, we just mark it as invalid
+				 * rather than removing it from the linked list */
+				entry->segment = NULL;
+				entry->ptr	   = NULL;
+				break;
+			}
+		}
+	}
+
+	/* Create new segment */
 	seg = dsm_create(size, 0);
 	if (!seg)
 		elog(ERROR, "Failed to create DSM segment for %s", name);
 
 	ptr = dsm_segment_address(seg);
 	if (!ptr)
+	{
+		dsm_detach(seg);
 		elog(ERROR, "Failed to get DSM segment address for %s", name);
+	}
 
 	/* Initialize the segment */
 	if (init_callback)
 		init_callback(ptr);
 
-	/* Mark as "newly created" since we can't detect existing segments */
-	*found = false;
+	/* Add to registry */
+	entry = (TpSegmentEntry *)
+			MemoryContextAlloc(TopMemoryContext, sizeof(TpSegmentEntry));
+	strncpy(entry->name, name, sizeof(entry->name) - 1);
+	entry->name[sizeof(entry->name) - 1] = '\0';
+	entry->segment						 = seg;
+	entry->ptr							 = ptr;
+	entry->size							 = size;
+	entry->next							 = tp_segment_registry;
+	tp_segment_registry					 = entry;
 
-	/* Pin the segment to keep it alive */
+	/* Pin the segment to keep it alive across backends */
 	dsm_pin_segment(seg);
 
+	*found = false;
 	return ptr;
+}
+
+void
+tp_compat_cleanup_dsm_segments(void)
+{
+	TpSegmentEntry *entry, *next;
+
+	for (entry = tp_segment_registry; entry != NULL; entry = next)
+	{
+		next = entry->next;
+
+		if (entry->segment)
+		{
+			dsm_handle handle = dsm_segment_handle(entry->segment);
+			dsm_unpin_segment(handle);
+			dsm_detach(entry->segment);
+		}
+
+		pfree(entry);
+	}
+
+	tp_segment_registry = NULL;
 }
 
 #define GetNamedDSMSegment tp_compat_get_named_dsm_segment
@@ -476,4 +542,9 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		if (found)
 			tp_destroy_index_dsa(index_oid);
 	}
+
+#if PG_VERSION_NUM < 170000
+	/* For PostgreSQL 16, also cleanup our compatibility DSM registry */
+	tp_compat_cleanup_dsm_segments();
+#endif
 }
