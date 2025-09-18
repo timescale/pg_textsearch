@@ -66,9 +66,8 @@ tp_itemptr_compare(const void *a, const void *b, Size keysize, void *arg)
 	return ItemPointerCompare((ItemPointer)a, (ItemPointer)b);
 }
 
-#if PG_VERSION_NUM >= 170000
 /*
- * Copy function for ItemPointer keys (PostgreSQL 17+ only)
+ * Copy function for ItemPointer keys
  */
 static void
 tp_itemptr_copy(void *dest, const void *src, Size keysize, void *arg)
@@ -77,7 +76,6 @@ tp_itemptr_copy(void *dest, const void *src, Size keysize, void *arg)
 	(void)arg;	   /* unused */
 	ItemPointerCopy((ItemPointer)src, (ItemPointer)dest);
 }
-#endif
 
 /*
  * Parameters for document lengths hash table - must be static/global

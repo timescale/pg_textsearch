@@ -209,32 +209,28 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->amconsistentequality = false;
 	amroutine->amconsistentordering = false;
 #endif
-	amroutine->amcanbackward = false; /* Cannot scan backwards */
-	amroutine->amcanunique	 = false; /* Cannot enforce uniqueness */
-	amroutine->amcanmulticol = false; /* Single column only */
-	amroutine->amoptionalkey = true;  /* Can scan without search key */
-	amroutine->amsearcharray = false; /* No array search support */
-	amroutine->amsearchnulls = false; /* Cannot search for NULLs */
-	amroutine->amstorage	 = false; /* No separate storage type */
-	amroutine->amclusterable = false; /* Cannot cluster on this index */
-	amroutine->ampredlocks	 = false; /* No predicate locking */
-	amroutine->amcanparallel = false; /* No parallel scan support yet */
-#if PG_VERSION_NUM >= 170000
+	amroutine->amcanbackward	  = false; /* Cannot scan backwards */
+	amroutine->amcanunique		  = false; /* Cannot enforce uniqueness */
+	amroutine->amcanmulticol	  = false; /* Single column only */
+	amroutine->amoptionalkey	  = true;  /* Can scan without search key */
+	amroutine->amsearcharray	  = false; /* No array search support */
+	amroutine->amsearchnulls	  = false; /* Cannot search for NULLs */
+	amroutine->amstorage		  = false; /* No separate storage type */
+	amroutine->amclusterable	  = false; /* Cannot cluster on this index */
+	amroutine->ampredlocks		  = false; /* No predicate locking */
+	amroutine->amcanparallel	  = false; /* No parallel scan support yet */
 	amroutine->amcanbuildparallel = true;
-#endif
-	amroutine->amcaninclude			   = false; /* No INCLUDE columns */
+	amroutine->amcaninclude		  = false;		/* No INCLUDE columns */
 	amroutine->amusemaintenanceworkmem = false; /* Use work_mem for builds */
 	amroutine->amsummarizing		   = false;
 	amroutine->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
 	amroutine->amkeytype			   = InvalidOid;
 
 	/* Interface functions */
-	amroutine->ambuild		= tp_build;
-	amroutine->ambuildempty = tp_buildempty;
-	amroutine->aminsert		= tp_insert;
-#if PG_VERSION_NUM >= 170000
-	amroutine->aminsertcleanup = NULL;
-#endif
+	amroutine->ambuild			= tp_build;
+	amroutine->ambuildempty		= tp_buildempty;
+	amroutine->aminsert			= tp_insert;
+	amroutine->aminsertcleanup	= NULL;
 	amroutine->ambulkdelete		= tp_bulkdelete;
 	amroutine->amvacuumcleanup	= tp_vacuumcleanup;
 	amroutine->amcanreturn		= NULL;

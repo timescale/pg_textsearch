@@ -20,9 +20,7 @@
 #include <utils/memutils.h>
 
 #include "common/hashfn.h"
-#if PG_VERSION_NUM >= 170000
 #include "common/hashfn_unstable.h"
-#endif
 #include "stringtable.h"
 
 /*
@@ -104,9 +102,8 @@ tp_string_compare_function(
 	return strcmp(str_a, str_b);
 }
 
-#if PG_VERSION_NUM >= 170000
 /*
- * Copy function for variant string keys (PostgreSQL 17+ only)
+ * Copy function for variant string keys
  * Simple structure copy
  */
 static void
@@ -119,7 +116,6 @@ tp_string_copy_function(
 	Assert(keysize == sizeof(TpStringKey));
 	*((TpStringKey *)dest) = *((TpStringKey *)src);
 }
-#endif
 
 /*
  * Create and initialize a new string hash table using dshash
@@ -137,10 +133,8 @@ tp_hash_table_create_dsa(dsa_area *area)
 	params.entry_size		= sizeof(TpStringHashEntry);
 	params.hash_function	= tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
-#if PG_VERSION_NUM >= 170000
-	params.copy_function = tp_string_copy_function;
-#endif
-	params.tranche_id = TP_STRING_HASH_TRANCHE_ID;
+	params.copy_function	= tp_string_copy_function;
+	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
 
 	/* Allocate wrapper structure */
 	ht = (TpStringHashTable *)
@@ -172,10 +166,8 @@ tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
 	params.entry_size		= sizeof(TpStringHashEntry);
 	params.hash_function	= tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
-#if PG_VERSION_NUM >= 170000
-	params.copy_function = tp_string_copy_function;
-#endif
-	params.tranche_id = TP_STRING_HASH_TRANCHE_ID;
+	params.copy_function	= tp_string_copy_function;
+	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
 
 	/* Allocate wrapper structure */
 	ht = (TpStringHashTable *)

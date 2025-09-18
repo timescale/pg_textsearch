@@ -122,21 +122,6 @@ _PG_init(void)
 }
 
 /*
- * Extension cleanup - called when the extension is unloaded
- */
-void
-_PG_fini(void)
-{
-#if PG_VERSION_NUM < 170000
-	/* Clean up DSM segments for PostgreSQL 16 compatibility */
-	tp_compat_cleanup_dsm_segments();
-#endif
-
-	/* Restore previous object access hook */
-	object_access_hook = prev_object_access_hook;
-}
-
-/*
  * Object access hook function for cleaning up shared memory when indexes are
  * dropped
  */
