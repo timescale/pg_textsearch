@@ -18,6 +18,12 @@
 #include <utils/dsa.h>
 #include <utils/guc.h>
 #include <utils/memutils.h>
+#if PG_VERSION_NUM >= 170000
+#include <storage/dsm_registry.h>
+#else
+#include <storage/dsm.h>
+#include <storage/shmem.h>
+#endif
 
 #include "common/hashfn.h"
 #include "constants.h"

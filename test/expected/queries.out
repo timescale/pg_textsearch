@@ -186,11 +186,11 @@ FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-3.8977
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.0060
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,7), BM25_score=-2.8917
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -3.897689 |        -3.897689 | ✓ CONSISTENT
-  8 | Search Engine Design          |      -1.006012 |        -1.006012 | ✓ CONSISTENT
+  7 | Document Classification       |      -2.891678 |        -2.891678 | ✓ CONSISTENT
 (2 rows)
 
 -- Cleanup

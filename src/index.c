@@ -852,9 +852,20 @@ tp_rescan(
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
 		if (query_limit > 0)
+		{
 			so->limit = query_limit;
+			elog(DEBUG1,
+				 "tapir: LIMIT optimization active, limit=%d for index %s",
+				 query_limit,
+				 RelationGetRelationName(scan->indexRelation));
+		}
 		else
+		{
 			so->limit = -1; /* No limit */
+			elog(DEBUG1,
+				 "tapir: No LIMIT optimization, using default for index %s",
+				 RelationGetRelationName(scan->indexRelation));
+		}
 	}
 
 	/* Reset scan state */
@@ -911,86 +922,91 @@ tp_rescan(
 		if (!metap)
 			metap = tp_get_metapage(scan->indexRelation);
 
-		for (int i = 0; i < norderbys; i++)
 		{
-			ScanKey orderby = &orderbys[i];
-
-			/* Check for <@> operator strategy */
-			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
+			int i;
+			for (i = 0; i < norderbys; i++)
 			{
-				Datum query_datum = orderby->sk_argument;
-				char *query_cstr;
+				ScanKey orderby = &orderbys[i];
 
-				/*
-				 * Handle tpquery type - text <@> tpquery operation
-				 * PostgreSQL's type system guarantees this is a tpquery
-				 */
-				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
-				char	*index_name;
-				char	*current_index_name;
-
-				/* Validate it's a proper tpquery by checking varlena header */
-				if (VARATT_IS_EXTENDED(query) ||
-					VARSIZE_ANY(query) <
-							VARHDRSZ + sizeof(int32) + sizeof(int32))
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("invalid tpquery data")));
-
-				index_name		   = get_tpquery_index_name(query);
-				current_index_name = RelationGetRelationName(
-						scan->indexRelation);
-
-				/* Validate index name if provided in query */
-				if (index_name)
+				/* Check for <@> operator strategy */
+				if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 				{
-					if (strcmp(index_name, current_index_name) != 0)
+					Datum query_datum = orderby->sk_argument;
+					char *query_cstr;
+
+					/*
+					 * Handle tpquery type - text <@> tpquery operation
+					 * PostgreSQL's type system guarantees this is a tpquery
+					 */
+					TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
+					char	*index_name;
+					char	*current_index_name;
+
+					/* Validate it's a proper tpquery by checking varlena
+					 * header */
+					if (VARATT_IS_EXTENDED(query) ||
+						VARSIZE_ANY(query) <
+								VARHDRSZ + sizeof(int32) + sizeof(int32))
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("tpquery index name mismatch"),
-								 errhint("Query specifies index "
-										 "\"%s\" but scan is on index "
-										 "\"%s\"",
-										 index_name,
-										 current_index_name)));
+								 errmsg("invalid tpquery data")));
+
+					index_name		   = get_tpquery_index_name(query);
+					current_index_name = RelationGetRelationName(
+							scan->indexRelation);
+
+					/* Validate index name if provided in query */
+					if (index_name)
+					{
+						if (strcmp(index_name, current_index_name) != 0)
+							ereport(ERROR,
+									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+									 errmsg("tpquery index name mismatch"),
+									 errhint("Query specifies index "
+											 "\"%s\" but scan is on index "
+											 "\"%s\"",
+											 index_name,
+											 current_index_name)));
+					}
+
+					query_cstr = pstrdup(get_tpquery_text(query));
+
+					/* Clear query vector since we're using text directly */
+					if (so->query_vector)
+					{
+						pfree(so->query_vector);
+						so->query_vector = NULL;
+					}
+
+					/* Store query for processing during gettuple */
+					if (so->query_text)
+					{
+						/*
+						 * Free old query text if it was allocated in scan
+						 * context
+						 */
+						MemoryContext oldcontext = MemoryContextSwitchTo(
+								so->scan_context);
+
+						pfree(so->query_text);
+						MemoryContextSwitchTo(oldcontext);
+					}
+
+					/* Allocate new query text in scan context */
+					{
+						MemoryContext oldcontext = MemoryContextSwitchTo(
+								so->scan_context);
+
+						so->query_text = pstrdup(query_cstr);
+						MemoryContextSwitchTo(oldcontext);
+					}
+
+					/* Mark all docs as candidates for ORDER BY operation */
+					if (metap && metap->total_docs > 0)
+						so->result_count = metap->total_docs;
+
+					pfree(query_cstr);
 				}
-
-				query_cstr = pstrdup(get_tpquery_text(query));
-
-				/* Clear query vector since we're using text directly */
-				if (so->query_vector)
-				{
-					pfree(so->query_vector);
-					so->query_vector = NULL;
-				}
-
-				/* Store query for processing during gettuple */
-				if (so->query_text)
-				{
-					/*
-					 * Free old query text if it was allocated in scan context
-					 */
-					MemoryContext oldcontext = MemoryContextSwitchTo(
-							so->scan_context);
-
-					pfree(so->query_text);
-					MemoryContextSwitchTo(oldcontext);
-				}
-
-				/* Allocate new query text in scan context */
-				{
-					MemoryContext oldcontext = MemoryContextSwitchTo(
-							so->scan_context);
-
-					so->query_text = pstrdup(query_cstr);
-					MemoryContextSwitchTo(oldcontext);
-				}
-
-				/* Mark all docs as candidates for ORDER BY operation */
-				if (metap && metap->total_docs > 0)
-					so->result_count = metap->total_docs;
-
-				pfree(query_cstr);
 			}
 		}
 
@@ -1180,9 +1196,17 @@ tp_search_posting_lists(
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so && so->limit > 0)
+	{
 		max_results = so->limit;
+		elog(DEBUG1, "tapir: Using query LIMIT=%d for search", so->limit);
+	}
 	else
+	{
 		max_results = tp_default_limit;
+		elog(DEBUG1,
+			 "tapir: Using default limit=%d for search (no query limit)",
+			 tp_default_limit);
+	}
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
@@ -1191,24 +1215,27 @@ tp_search_posting_lists(
 
 	/* Parse the query vector entries */
 	ptr = (char *)entries_ptr;
-	for (int i = 0; i < entry_count; i++)
 	{
-		TpVectorEntry *entry = (TpVectorEntry *)ptr;
-		char		  *term_str;
+		int i;
+		for (i = 0; i < entry_count; i++)
+		{
+			TpVectorEntry *entry = (TpVectorEntry *)ptr;
+			char		  *term_str;
 
-		/*
-		 * Always allocate on heap for query terms array since we need to keep
-		 * them
-		 */
-		term_str = palloc(entry->lexeme_len + 1);
-		memcpy(term_str, entry->lexeme, entry->lexeme_len);
-		term_str[entry->lexeme_len] = '\0';
+			/*
+			 * Always allocate on heap for query terms array since we need to
+			 * keep them
+			 */
+			term_str = palloc(entry->lexeme_len + 1);
+			memcpy(term_str, entry->lexeme, entry->lexeme_len);
+			term_str[entry->lexeme_len] = '\0';
 
-		/* Store the term string directly in query terms array */
-		query_terms[i]		 = term_str;
-		query_frequencies[i] = entry->frequency;
+			/* Store the term string directly in query terms array */
+			query_terms[i]		 = term_str;
+			query_frequencies[i] = entry->frequency;
 
-		ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
+			ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
+		}
 	}
 
 	/* Allocate result arrays in scan context */
@@ -1247,8 +1274,11 @@ tp_search_posting_lists(
 	so->current_pos	 = 0;
 
 	/* Free the query terms array and individual term strings */
-	for (int i = 0; i < entry_count; i++)
-		pfree(query_terms[i]);
+	{
+		int i;
+		for (i = 0; i < entry_count; i++)
+			pfree(query_terms[i]);
+	}
 
 	pfree(query_terms);
 	pfree(query_frequencies);

@@ -200,14 +200,17 @@ calculate_document_length(TSVector tsvector)
 	float4	   doc_length	  = 0.0f;
 	int		   doc_term_count = tsvector->size;
 
-	for (int i = 0; i < doc_term_count; i++)
 	{
-		int term_freq;
-		if (entries[i].haspos)
-			term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
-		else
-			term_freq = 1;
-		doc_length += term_freq;
+		int i;
+		for (i = 0; i < doc_term_count; i++)
+		{
+			int term_freq;
+			if (entries[i].haspos)
+				term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
+			else
+				term_freq = 1;
+			doc_length += term_freq;
+		}
 	}
 	return doc_length;
 }
@@ -244,17 +247,20 @@ find_term_frequency_in_doc(
 	char	  *lexemes_start  = STRPTR(doc_tsvector);
 	int		   doc_term_count = doc_tsvector->size;
 
-	for (int i = 0; i < doc_term_count; i++)
 	{
-		char *doc_lexeme = lexemes_start + entries[i].pos;
-
-		if (entries[i].len == query_lexeme_len &&
-			memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
+		int i;
+		for (i = 0; i < doc_term_count; i++)
 		{
-			if (entries[i].haspos)
-				return (int32)POSDATALEN(doc_tsvector, &entries[i]);
-			else
-				return 1.0f;
+			char *doc_lexeme = lexemes_start + entries[i].pos;
+
+			if (entries[i].len == query_lexeme_len &&
+				memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
+			{
+				if (entries[i].haspos)
+					return (int32)POSDATALEN(doc_tsvector, &entries[i]);
+				else
+					return 1.0f;
+			}
 		}
 	}
 	return 0.0f;
@@ -268,75 +274,78 @@ calculate_bm25_score_for_query_terms(BM25ScoringContext *ctx)
 	int		   query_term_count	   = ctx->query_tsvector->size;
 	float8	   result			   = 0.0;
 
-	for (int q_i = 0; q_i < query_term_count; q_i++)
 	{
-		char *query_lexeme = query_lexemes_start + query_entries[q_i].pos;
-		TpPostingList *posting_list;
-		float4		   idf;
-		float4		   tf;
-		float4		   term_score;
-		double		   numerator_d, denominator_d;
-		int			   query_freq;
-		char		  *term_buf;
-		bool		   use_heap = false;
-
-		if (query_entries[q_i].haspos)
-			query_freq = (int32)
-					POSDATALEN(ctx->query_tsvector, &query_entries[q_i]);
-		else
-			query_freq = 1;
-
-		tf = find_term_frequency_in_doc(
-				ctx->doc_tsvector, query_lexeme, query_entries[q_i].len);
-		if (tf == 0.0f)
-			continue;
-
-		if (query_entries[q_i].len < 256)
+		int q_i;
+		for (q_i = 0; q_i < query_term_count; q_i++)
 		{
-			term_buf = alloca(query_entries[q_i].len + 1);
-		}
-		else
-		{
-			term_buf = palloc(query_entries[q_i].len + 1);
-			use_heap = true;
-		}
-		memcpy(term_buf, query_lexeme, query_entries[q_i].len);
-		term_buf[query_entries[q_i].len] = '\0';
+			char *query_lexeme = query_lexemes_start + query_entries[q_i].pos;
+			TpPostingList *posting_list;
+			float4		   idf;
+			float4		   tf;
+			float4		   term_score;
+			double		   numerator_d, denominator_d;
+			int			   query_freq;
+			char		  *term_buf;
+			bool		   use_heap = false;
 
-		posting_list = tp_get_posting_list(ctx->index_state, term_buf);
-		if (!posting_list || posting_list->doc_count == 0)
-		{
+			if (query_entries[q_i].haspos)
+				query_freq = (int32)
+						POSDATALEN(ctx->query_tsvector, &query_entries[q_i]);
+			else
+				query_freq = 1;
+
+			tf = find_term_frequency_in_doc(
+					ctx->doc_tsvector, query_lexeme, query_entries[q_i].len);
+			if (tf == 0.0f)
+				continue;
+
+			if (query_entries[q_i].len < 256)
+			{
+				term_buf = alloca(query_entries[q_i].len + 1);
+			}
+			else
+			{
+				term_buf = palloc(query_entries[q_i].len + 1);
+				use_heap = true;
+			}
+			memcpy(term_buf, query_lexeme, query_entries[q_i].len);
+			term_buf[query_entries[q_i].len] = '\0';
+
+			posting_list = tp_get_posting_list(ctx->index_state, term_buf);
+			if (!posting_list || posting_list->doc_count == 0)
+			{
+				if (use_heap)
+					pfree(term_buf);
+				continue;
+			}
+
+			idf = tp_calculate_idf(
+					posting_list->doc_count,
+					ctx->total_docs,
+					ctx->index_state->stats.average_idf);
+
+			numerator_d = (double)tf * (1.2 + 1.0);
+
+			if (ctx->avg_doc_len > 0.0f)
+			{
+				denominator_d = (double)tf +
+								1.2 * (1.0 - 0.75 +
+									   0.75 * ((double)ctx->doc_length /
+											   (double)ctx->avg_doc_len));
+			}
+			else
+			{
+				denominator_d = (double)tf + 1.2;
+			}
+
+			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
+								  (double)query_freq);
+
+			result += term_score;
+
 			if (use_heap)
 				pfree(term_buf);
-			continue;
 		}
-
-		idf = tp_calculate_idf(
-				posting_list->doc_count,
-				ctx->total_docs,
-				ctx->index_state->stats.average_idf);
-
-		numerator_d = (double)tf * (1.2 + 1.0);
-
-		if (ctx->avg_doc_len > 0.0f)
-		{
-			denominator_d = (double)tf +
-							1.2 * (1.0 - 0.75 +
-								   0.75 * ((double)ctx->doc_length /
-										   (double)ctx->avg_doc_len));
-		}
-		else
-		{
-			denominator_d = (double)tf + 1.2;
-		}
-
-		term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-							  (double)query_freq);
-
-		result += term_score;
-
-		if (use_heap)
-			pfree(term_buf);
 	}
 
 	return result;

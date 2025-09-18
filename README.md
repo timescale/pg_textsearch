@@ -10,7 +10,7 @@ Open-source full-text search for Postgres.  Supports:
 
 - BM25 ranking with configurable parameters (k1, b)
 - PostgreSQL text search configurations (english, french, german, etc.)
-- tpvector data type for scoring operations
+- tpquery data type for scoring operations
 
 🚀 **Development Status**: Pre-alpha release.  Memtable-based implementation is
 in place and working.
@@ -19,7 +19,7 @@ in place and working.
 
 ### Linux and Mac
 
-Compile and install the extension (requires PostgreSQL 17+)
+Compile and install the extension (requires PostgreSQL 17)
 
 ```sh
 cd /tmp
@@ -58,14 +58,18 @@ CREATE INDEX docs_tapir_idx ON documents USING tapir(content) WITH (text_config=
 Get the most relevant documents using the `<@>` operator
 
 ```sql
-SELECT * FROM documents ORDER BY content <@> to_tpvector('database system', 'docs_tapir_idx') LIMIT 5;
+SELECT * FROM documents ORDER BY content <@> to_tpquery('docs_tapir_idx:database system') LIMIT 5;
 ```
 
 Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` order index scans on operators. Lower scores indicate better matches.
 
+For WHERE clause queries, use tpquery with index name:
+```sql
+SELECT * FROM documents WHERE content <@> to_tpquery('docs_tapir_idx:database system') < -1.0;
+```
+
 Supported operations:
-- `text <@> tpvector` - Score text against a query vector
-- `tpvector <@> tpvector` - Vector similarity scoring
+- `text <@> tpquery` - Score text against a query
 
 ## Indexing
 
@@ -101,43 +105,35 @@ CREATE INDEX docs_de_idx ON german_docs USING tapir(content) WITH (text_config='
 
 ## Data Types
 
-### tpvector
+### tpquery
 
-The `tpvector` type stores term frequencies with index context for BM25 scoring:
+The `tpquery` type represents queries for BM25 scoring with optional index context:
 
 ```sql
--- Create a tpvector using to_tpvector
-SELECT to_tpvector('search query text', 'my_index');
--- Returns: my_index:{queri:1,search:1,text:1}
+-- Create a tpquery with index name for WHERE clause queries
+SELECT to_tpquery('docs_tapir_idx:search query text');
+-- Returns: docs_tapir_idx:search query text
 
--- Format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
--- The index name identifies which Tapir index configuration to use
--- The lexemes are stemmed/processed terms with their frequencies
+-- Create a tpquery without index name (for ORDER BY)
+SELECT to_tpquery('search query text');
+-- Returns: search query text
 ```
 
-#### tpvector Functions
+#### tpquery Functions
 
 Function | Description
 --- | ---
-to_tpvector(text, index_name) → tpvector | Create tpvector from text using index's config
-tpvector <@> tpvector → double precision | BM25 scoring operator
-tpvector = tpvector → boolean | Equality comparison
-text <@> tpvector → double precision | Score text against query vector
+to_tpquery(text) → tpquery | Create tpquery from text
+text <@> tpquery → double precision | BM25 scoring operator
+tpquery = tpquery → boolean | Equality comparison
+
 
 ## Functions
 
-### Vector Operations
-
 Function | Description
 --- | ---
-to_tpvector(text, index_name) → tpvector | Create tpvector using index's text configuration
-
-### Scoring
-
-Function | Description
---- | ---
-tpvector_score(tpvector, tpvector) → double precision | Score two tpvectors (used by <@> operator)
-text_tpvector_score(text, tpvector) → double precision | Score text against tpvector (used by <@> operator)
+to_tpquery(text) → tpquery | Create tpquery from text
+text <@> tpquery → double precision | BM25 scoring operator
 
 ## Performance
 
@@ -196,9 +192,9 @@ INSERT INTO articles (title, content) VALUES
     ('Information Retrieval', 'BM25 is a ranking function used in search engines');
 
 -- Find relevant documents
-SELECT title, content <@> to_tpvector('database search', 'articles_tapir_idx') as score
+SELECT title, content <@> to_tpquery('articles_tapir_idx:database search') as score
 FROM articles
-ORDER BY content <@> to_tpvector('database search', 'articles_tapir_idx');
+ORDER BY content <@> to_tpquery('articles_tapir_idx:database search');
 ```
 
 Also supports different languages and custom parameters:
@@ -335,4 +331,4 @@ brew install pre-commit && pre-commit install  # macOS
 4. Ensure `make installcheck` and `make test-concurrency` pass
 5. Submit a pull request
 
-All pull requests are automatically tested against multiple PostgreSQL versions.
+All pull requests are automatically tested against PostgreSQL 17.
