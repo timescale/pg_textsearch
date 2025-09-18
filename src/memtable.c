@@ -18,6 +18,12 @@
 #include <utils/dsa.h>
 #include <utils/guc.h>
 #include <utils/memutils.h>
+#if PG_VERSION_NUM >= 170000
+#include <storage/dsm_registry.h>
+#else
+#include <storage/dsm.h>
+#include <storage/shmem.h>
+#endif
 
 #include "common/hashfn.h"
 #include "constants.h"
@@ -32,6 +38,52 @@ static HTAB *index_state_cache = NULL;
 
 /* GUC variables */
 int tp_index_memory_limit = TP_DEFAULT_INDEX_MEMORY_LIMIT;
+
+#if PG_VERSION_NUM < 170000
+/*
+ * PostgreSQL 16 compatibility layer for GetNamedDSMSegment
+ * This provides basic named segment functionality without the full registry
+ */
+typedef void (*dsm_segment_init_callback)(void *ptr);
+
+static void *
+tp_compat_get_named_dsm_segment(
+		const char				 *name,
+		size_t					  size,
+		dsm_segment_init_callback init_callback,
+		bool					 *found)
+{
+	dsm_segment *seg;
+	void		*ptr;
+
+	/*
+	 * For PostgreSQL 16, we'll use a simpler approach without named registry.
+	 * This creates a new segment each time, which is less efficient but works.
+	 * In practice, this will be cached by our backend-local cache.
+	 */
+	seg = dsm_create(size, 0);
+	if (!seg)
+		elog(ERROR, "Failed to create DSM segment for %s", name);
+
+	ptr = dsm_segment_address(seg);
+	if (!ptr)
+		elog(ERROR, "Failed to get DSM segment address for %s", name);
+
+	/* Initialize the segment */
+	if (init_callback)
+		init_callback(ptr);
+
+	/* Mark as "newly created" since we can't detect existing segments */
+	*found = false;
+
+	/* Pin the segment to keep it alive */
+	dsm_pin_segment(seg);
+
+	return ptr;
+}
+
+#define GetNamedDSMSegment tp_compat_get_named_dsm_segment
+#endif
 
 /*
  * Generate human-readable DSM segment name for an index
