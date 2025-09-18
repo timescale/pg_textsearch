@@ -10,7 +10,7 @@ Open-source full-text search for Postgres.  Supports:
 
 - BM25 ranking with configurable parameters (k1, b)
 - PostgreSQL text search configurations (english, french, german, etc.)
-- tpvector and tpquery data types for scoring operations
+- tpquery data type for scoring operations
 
 🚀 **Development Status**: Pre-alpha release.  Memtable-based implementation is
 in place and working.
@@ -65,13 +65,11 @@ Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` o
 
 For WHERE clause queries, use tpquery with index name:
 ```sql
-SELECT * FROM documents WHERE content <@> to_tpquery('docs_tapir_idx:database system') > -1.0;
+SELECT * FROM documents WHERE content <@> to_tpquery('docs_tapir_idx:database system') < -1.0;
 ```
 
 Supported operations:
-- `text <@> tpquery` - Score text against a query (primary operation)
-- `text <@> tpvector` - Score text against a query vector (legacy)
-- `tpvector <@> tpvector` - Vector similarity scoring (legacy)
+- `text <@> tpquery` - Score text against a query
 
 ## Indexing
 
@@ -112,16 +110,13 @@ CREATE INDEX docs_de_idx ON german_docs USING tapir(content) WITH (text_config='
 The `tpquery` type represents queries for BM25 scoring with optional index context:
 
 ```sql
--- Create a tpquery using to_tpquery with index name
-SELECT to_tpquery('docs_idx:search query text');
--- Returns: docs_idx:search query text
+-- Create a tpquery with index name for WHERE clause queries
+SELECT to_tpquery('docs_tapir_idx:search query text');
+-- Returns: docs_tapir_idx:search query text
 
--- Create a tpquery without index name (for use in non-WHERE contexts)
+-- Create a tpquery without index name (for ORDER BY)
 SELECT to_tpquery('search query text');
 -- Returns: search query text
-
--- Format: "index_name:query terms" or "query terms"
--- The index name identifies which Tapir index configuration to use for WHERE clause queries
 ```
 
 #### tpquery Functions
@@ -129,50 +124,16 @@ SELECT to_tpquery('search query text');
 Function | Description
 --- | ---
 to_tpquery(text) → tpquery | Create tpquery from text
-to_tpquery(text, index_name) → tpquery | Create tpquery with index name for WHERE clause queries
+text <@> tpquery → double precision | BM25 scoring operator
 tpquery = tpquery → boolean | Equality comparison
-text <@> tpquery → double precision | BM25 scoring operator (primary)
 
-### tpvector
-
-The `tpvector` type stores term frequencies with index context for BM25 scoring:
-
-```sql
--- Create a tpvector using to_tpvector
-SELECT to_tpvector('search query text', 'my_index');
--- Returns: my_index:{queri:1,search:1,text:1}
-
--- Format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
--- The index name identifies which Tapir index configuration to use
--- The lexemes are stemmed/processed terms with their frequencies
-```
-
-#### tpvector Functions
-
-Function | Description
---- | ---
-to_tpvector(text, index_name) → tpvector | Create tpvector from text using index's config
-tpvector <@> tpvector → double precision | BM25 scoring operator (legacy)
-tpvector = tpvector → boolean | Equality comparison
-text <@> tpvector → double precision | Score text against query vector (legacy)
 
 ## Functions
-
-### Query Operations
 
 Function | Description
 --- | ---
 to_tpquery(text) → tpquery | Create tpquery from text
-to_tpquery(text, index_name) → tpquery | Create tpquery with index name for WHERE clause queries
-to_tpvector(text, index_name) → tpvector | Create tpvector using index's text configuration (legacy)
-
-### Scoring
-
-Function | Description
---- | ---
-text_tpquery_score(text, tpquery) → double precision | Score text against tpquery (used by <@> operator)
-tpvector_score(tpvector, tpvector) → double precision | Score two tpvectors (used by <@> operator)
-text_tpvector_score(text, tpvector) → double precision | Score text against tpvector (used by <@> operator)
+text <@> tpquery → double precision | BM25 scoring operator
 
 ## Performance
 
