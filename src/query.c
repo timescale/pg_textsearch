@@ -348,25 +348,22 @@ calculate_bm25_score_for_query_terms(BM25ScoringContext *ctx)
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	static TimestampTz last_statement_start	 = 0;
-	static bool		   warned_this_statement = false;
-	TimestampTz		   current_statement_start;
-	text			  *text_arg	  = PG_GETARG_TEXT_PP(0);
-	TpQuery			  *query	  = (TpQuery *)PG_GETARG_POINTER(1);
-	char			  *index_name = get_tpquery_index_name(query);
-	char			  *query_text = get_tpquery_text(query);
-	char			  *text_str;
-	Oid				   index_oid;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	Oid				   text_config_oid;
-	TSVector		   tsvector;
-	TSVector		   query_tsvector;
-	TpIndexState	  *index_state;
-	float4			   avg_doc_len;
-	int32			   total_docs;
-	float8			   result = 0.0;
-	float4			   doc_length;
+	text		   *text_arg   = PG_GETARG_TEXT_PP(0);
+	TpQuery		   *query	   = (TpQuery *)PG_GETARG_POINTER(1);
+	char		   *index_name = get_tpquery_index_name(query);
+	char		   *query_text = get_tpquery_text(query);
+	char		   *text_str;
+	Oid				index_oid;
+	Relation		index_rel = NULL;
+	TpIndexMetaPage metap	  = NULL;
+	Oid				text_config_oid;
+	TSVector		tsvector;
+	TSVector		query_tsvector;
+	TpIndexState   *index_state;
+	float4			avg_doc_len;
+	int32			total_docs;
+	float8			result = 0.0;
+	float4			doc_length;
 
 	if (!index_name)
 	{
@@ -388,24 +385,6 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("index \"%s\" not found", index_name)));
-	}
-
-	/* Reset warning flag for new statements */
-	current_statement_start = GetCurrentStatementStartTimestamp();
-	if (current_statement_start != last_statement_start)
-	{
-		last_statement_start  = current_statement_start;
-		warned_this_statement = false;
-	}
-
-	/* Debug message about standalone scoring - once per statement */
-	if (!warned_this_statement)
-	{
-		ereport(DEBUG1,
-				(errmsg("using row-at-a-time scoring which can be slow"),
-				 errhint("Consider ORDER BY with LIMIT but no explicit "
-						 "scoring in SELECT")));
-		warned_this_statement = true;
 	}
 
 	PG_TRY();
