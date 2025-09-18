@@ -692,129 +692,142 @@ tp_calculate_bm25_scores(
 		HTAB		 *doc_scores_hash)
 {
 	/* Single pass through all posting lists */
-	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
-		const char	   *term = query_terms[term_idx];
-		TpPostingList  *posting_list;
-		TpPostingEntry *entries;
-		float4			idf;
-
-		posting_list = tp_get_posting_list(index_state, term);
-
-		if (!posting_list || posting_list->doc_count == 0)
+		int term_idx;
+		for (term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
-			continue;
-		}
+			const char	   *term = query_terms[term_idx];
+			TpPostingList  *posting_list;
+			TpPostingEntry *entries;
+			float4			idf;
 
-		/* Calculate IDF using centralized function with epsilon flooring */
-		idf = tp_calculate_idf(
-				posting_list->doc_count,
-				total_docs,
-				index_state->stats.average_idf);
+			posting_list = tp_get_posting_list(index_state, term);
 
-		/* Process each document in this term's posting list */
-		/* Get DSA area and retrieve entries */
-		{
-			dsa_area *area =
-					tp_get_dsa_area_for_index(index_state, InvalidOid);
-
-			if (!area)
-				continue; /* Skip if can't get DSA area */
-			entries = tp_get_posting_entries(area, posting_list);
-			if (!entries)
-				continue; /* Skip if no entries stored yet */
-		}
-		for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
-		{
-			TpPostingEntry	   *entry = &entries[doc_idx];
-			float4				tf	  = entry->frequency;
-			float4				doc_len;
-			float4				term_score;
-			double				numerator_d, denominator_d;
-			DocumentScoreEntry *doc_entry;
-			bool				found;
-
-			/* Look up document length from hash table */
-			doc_len = (float4)
-					tp_get_document_length(index_state, &entry->ctid);
-
-			/* Validate TID */
-			if (!ItemPointerIsValid(&entry->ctid))
-				continue;
-
-			/* Calculate BM25 term score contribution */
-			numerator_d = (double)tf * ((double)k1 + 1.0);
-
-			/*
-			 * Avoid division by zero - if avg_doc_len is 0, use doc_len
-			 * directly
-			 */
-			if (avg_doc_len > 0.0f)
+			if (!posting_list || posting_list->doc_count == 0)
 			{
-				denominator_d = (double)tf +
+				continue;
+			}
+
+			/* Calculate IDF using centralized function with epsilon flooring
+			 */
+			idf = tp_calculate_idf(
+					posting_list->doc_count,
+					total_docs,
+					index_state->stats.average_idf);
+
+			/* Process each document in this term's posting list */
+			/* Get DSA area and retrieve entries */
+			{
+				dsa_area *area =
+						tp_get_dsa_area_for_index(index_state, InvalidOid);
+
+				if (!area)
+					continue; /* Skip if can't get DSA area */
+				entries = tp_get_posting_entries(area, posting_list);
+				if (!entries)
+					continue; /* Skip if no entries stored yet */
+			}
+			{
+				int doc_idx;
+				for (doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
+				{
+					TpPostingEntry	   *entry = &entries[doc_idx];
+					float4				tf	  = entry->frequency;
+					float4				doc_len;
+					float4				term_score;
+					double				numerator_d, denominator_d;
+					DocumentScoreEntry *doc_entry;
+					bool				found;
+
+					/* Look up document length from hash table */
+					doc_len = (float4)
+							tp_get_document_length(index_state, &entry->ctid);
+
+					/* Validate TID */
+					if (!ItemPointerIsValid(&entry->ctid))
+						continue;
+
+					/* Calculate BM25 term score contribution */
+					numerator_d = (double)tf * ((double)k1 + 1.0);
+
+					/*
+					 * Avoid division by zero - if avg_doc_len is 0, use
+					 * doc_len directly
+					 */
+					if (avg_doc_len > 0.0f)
+					{
+						denominator_d =
+								(double)tf +
 								(double)k1 *
 										(1.0 - (double)b +
 										 (double)b * ((double)doc_len /
 													  (double)avg_doc_len));
-			}
-			else
-			{
-				/*
-				 * When avg_doc_len is 0 (no corpus stats), fall back to
-				 * standard TF formula
-				 */
-				denominator_d = (double)tf + (double)k1;
-			}
+					}
+					else
+					{
+						/*
+						 * When avg_doc_len is 0 (no corpus stats), fall back
+						 * to standard TF formula
+						 */
+						denominator_d = (double)tf + (double)k1;
+					}
 
-			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-								  (double)query_frequencies[term_idx]);
+					term_score = (float4)((double)idf *
+										  (numerator_d / denominator_d) *
+										  (double)query_frequencies[term_idx]);
 
-			/* Debug logging for term score in index scan */
-			elog(DEBUG1,
-				 "  tp_calculate_bm25 term='%s': tf=%.0f, doc_len=%.0f, "
-				 "df=%d, idf=%.4f, score=%.6f",
-				 term,
-				 tf,
-				 doc_len,
-				 posting_list->doc_count,
-				 idf,
-				 term_score);
+					/* Debug logging for term score in index scan */
+					elog(DEBUG1,
+						 "  tp_calculate_bm25 term='%s': tf=%.0f, "
+						 "doc_len=%.0f, "
+						 "df=%d, idf=%.4f, score=%.6f",
+						 term,
+						 tf,
+						 doc_len,
+						 posting_list->doc_count,
+						 idf,
+						 term_score);
 
-			/* Debug NaN detection */
-			if (isnan(term_score))
-			{
-				elog(LOG,
-					 "NaN detected in term_score calculation: idf=%f, "
-					 "numerator_d=%f, "
-					 "denominator_d=%f, query_freq=%d, tf=%f, doc_len=%f, "
-					 "avg_doc_len=%f, k1=%f, "
-					 "b=%f",
-					 idf,
-					 numerator_d,
-					 denominator_d,
-					 query_frequencies[term_idx],
-					 tf,
-					 doc_len,
-					 avg_doc_len,
-					 k1,
-					 b);
-			}
+					/* Debug NaN detection */
+					if (isnan(term_score))
+					{
+						elog(LOG,
+							 "NaN detected in term_score calculation: idf=%f, "
+							 "numerator_d=%f, "
+							 "denominator_d=%f, query_freq=%d, tf=%f, "
+							 "doc_len=%f, "
+							 "avg_doc_len=%f, k1=%f, "
+							 "b=%f",
+							 idf,
+							 numerator_d,
+							 denominator_d,
+							 query_frequencies[term_idx],
+							 tf,
+							 doc_len,
+							 avg_doc_len,
+							 k1,
+							 b);
+					}
 
-			/* Find or create document entry in hash table */
-			doc_entry = (DocumentScoreEntry *)hash_search(
-					doc_scores_hash, &entry->ctid, HASH_ENTER, &found);
+					/* Find or create document entry in hash table */
+					doc_entry = (DocumentScoreEntry *)hash_search(
+							doc_scores_hash, &entry->ctid, HASH_ENTER, &found);
 
-			if (!found)
-			{
-				/* New document - initialize */
-				doc_entry->ctid		  = entry->ctid;
-				doc_entry->score	  = term_score; /* Positive BM25 score */
-				doc_entry->doc_length = doc_len;
-			}
-			else
-			{
-				/* Existing document - accumulate score */
-				doc_entry->score += term_score; /* Positive BM25 score */
+					if (!found)
+					{
+						/* New document - initialize */
+						doc_entry->ctid = entry->ctid;
+						doc_entry->score =
+								term_score; /* Positive BM25 score */
+						doc_entry->doc_length = doc_len;
+					}
+					else
+					{
+						/* Existing document - accumulate score */
+						doc_entry->score +=
+								term_score; /* Positive BM25 score */
+					}
+				}
 			}
 		}
 	}
