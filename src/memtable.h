@@ -13,9 +13,7 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
-#if PG_VERSION_NUM >= 160000
 #include <storage/dsm_registry.h>
-#endif
 #include <storage/itemptr.h>
 #include <storage/lwlock.h>
 #include <storage/spin.h>
