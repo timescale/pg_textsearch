@@ -14,9 +14,9 @@
 #include <storage/spin.h>
 #include <utils/hsearch.h>
 
+#include "index.h"
 #include "memtable.h"
 #include "stringtable.h"
-#include "index.h"
 
 /* Array growth multiplier */
 extern int tp_posting_list_growth_factor;
@@ -33,8 +33,8 @@ extern void tp_add_document_terms(
 extern TpPostingList *
 tp_get_posting_list(TpLocalIndexState *local_state, const char *term);
 
-extern TpPostingList *
-tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term);
+extern TpPostingList *tp_get_or_create_posting_list(
+		TpLocalIndexState *local_state, const char *term);
 
 extern void tp_add_document_to_posting_list(
 		TpLocalIndexState *local_state,
@@ -47,9 +47,8 @@ extern int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
 
 /* Index building operations */
-extern void tp_finalize_index_build(TpLocalIndexState *local_state);
-extern float4
-tp_calculate_idf(int32 doc_freq, int32 total_docs);
+extern void	  tp_finalize_index_build(TpLocalIndexState *local_state);
+extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
 
 /* Query operations */
 extern float4 bm25_score_document(

@@ -15,25 +15,25 @@
 #include <postgres.h>
 
 #include <access/genam.h>
-#include <storage/bufmgr.h>
-#include <utils/dsa.h>
-#include <utils/memutils.h>
-#include <utils/hsearch.h>
-#include <storage/dsm_registry.h>
-#include <storage/dsm.h>
-#include <miscadmin.h>
 #include <lib/dshash.h>
+#include <miscadmin.h>
+#include <storage/bufmgr.h>
+#include <storage/dsm.h>
+#include <storage/dsm_registry.h>
+#include <utils/dsa.h>
+#include <utils/hsearch.h>
+#include <utils/memutils.h>
 
-#include "state.h"
-#include "registry.h"
 #include "metapage.h"
+#include "registry.h"
+#include "state.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
 
 typedef struct LocalStateCacheEntry
 {
-	Oid index_oid;					/* Hash key */
+	Oid				   index_oid;	/* Hash key */
 	TpLocalIndexState *local_state; /* Cached local state */
 } LocalStateCacheEntry;
 
@@ -49,14 +49,15 @@ init_local_state_cache(void)
 		return;
 
 	memset(&ctl, 0, sizeof(ctl));
-	ctl.keysize = sizeof(Oid);
+	ctl.keysize	  = sizeof(Oid);
 	ctl.entrysize = sizeof(LocalStateCacheEntry);
-	ctl.hcxt = TopMemoryContext;
+	ctl.hcxt	  = TopMemoryContext;
 
-	local_state_cache = hash_create("Tapir Local State Cache",
-									8, /* initial size */
-									&ctl,
-									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	local_state_cache = hash_create(
+			"Tapir Local State Cache",
+			8, /* initial size */
+			&ctl,
+			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
 /*
@@ -72,14 +73,14 @@ TpLocalIndexState *
 tp_get_local_index_state(Oid index_oid)
 {
 	LocalStateCacheEntry *entry;
-	TpLocalIndexState *local_state;
-	TpSharedIndexState *shared_state;
-	bool found;
-	char *dsm_name;
-	void *dsm_seg;
-	void *dsa_space;
-	size_t total_size;
-	dsa_area *dsa;
+	TpLocalIndexState	 *local_state;
+	TpSharedIndexState	 *shared_state;
+	bool				  found;
+	char				 *dsm_name;
+	void				 *dsm_seg;
+	void				 *dsa_space;
+	size_t				  total_size;
+	dsa_area			 *dsa;
 
 	/* Initialize cache if needed */
 	init_local_state_cache();
@@ -88,7 +89,7 @@ tp_get_local_index_state(Oid index_oid)
 
 	/* Check cache first */
 	entry = (LocalStateCacheEntry *)
-		hash_search(local_state_cache, &index_oid, HASH_FIND, NULL);
+			hash_search(local_state_cache, &index_oid, HASH_FIND, NULL);
 	if (entry != NULL)
 		return entry->local_state;
 
@@ -98,30 +99,38 @@ tp_get_local_index_state(Oid index_oid)
 	if (shared_state == NULL)
 	{
 		/* Starting recovery path */
-		/* No registry entry - check if DSM segment exists for crash recovery */
-		dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+		/* No registry entry - check if DSM segment exists for crash recovery
+		 */
+		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 		total_size = sizeof(TpDsmSegmentHeader);
-		dsm_seg = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
+		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
 		/* DSM segment lookup completed */
 
 		if (found)
 		{
 			/* DSM segment exists - check if it has valid contents */
-			TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *) dsm_seg;
+			TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *)dsm_seg;
 
-			elog(NOTICE, "Recovery: DSM header check - handle: %u, shared_state_dp: %lu",
-				 dsm_header->dsm_handle, (unsigned long)dsm_header->shared_state_dp);
+			elog(NOTICE,
+				 "Recovery: DSM header check - handle: %u, shared_state_dp: "
+				 "%lu",
+				 dsm_header->dsm_handle,
+				 (unsigned long)dsm_header->shared_state_dp);
 
 			if (dsm_header->dsm_handle != DSM_HANDLE_INVALID &&
 				DsaPointerIsValid(dsm_header->shared_state_dp))
 			{
 				/* DSM segment has valid contents - try to attach */
-				elog(NOTICE, "Recovery: attempting to attach to DSA handle %u for index %u",
-					 dsm_header->dsm_handle, index_oid);
+				elog(NOTICE,
+					 "Recovery: attempting to attach to DSA handle %u for "
+					 "index %u",
+					 dsm_header->dsm_handle,
+					 index_oid);
 				dsa = dsa_attach(dsm_header->dsm_handle);
 				if (dsa == NULL)
 				{
-					elog(WARNING, "Recovery: dsa_attach failed, rebuilding from disk");
+					elog(WARNING,
+						 "Recovery: dsa_attach failed, rebuilding from disk");
 					/* Fall through to disk rebuilding */
 				}
 				else
@@ -131,24 +140,29 @@ tp_get_local_index_state(Oid index_oid)
 
 					/* Get the existing shared state */
 					shared_state = (TpSharedIndexState *)
-						dsa_get_address(dsa, dsm_header->shared_state_dp);
+							dsa_get_address(dsa, dsm_header->shared_state_dp);
 
 					/* Register the recovered state */
 					if (!tp_registry_register(index_oid, shared_state))
 					{
-						elog(WARNING, "Failed to register recovered index %u", index_oid);
+						elog(WARNING,
+							 "Failed to register recovered index %u",
+							 index_oid);
 						dsa_detach(dsa);
 						pfree(dsm_name);
 						return NULL;
 					}
 
-					elog(NOTICE, "Recovered index state for index %u", index_oid);
+					elog(NOTICE,
+						 "Recovered index state for index %u",
+						 index_oid);
 					/* Continue with normal local state creation below */
 				}
 			}
 		}
 
-		/* If we get here, either no DSM segment found or DSM contents invalid - rebuild from disk */
+		/* If we get here, either no DSM segment found or DSM contents invalid
+		 * - rebuild from disk */
 		if (shared_state == NULL)
 		{
 			/* Rebuilding from docid pages */
@@ -167,18 +181,19 @@ tp_get_local_index_state(Oid index_oid)
 		}
 	}
 
-	/* If we reach here with shared_state set, continue with normal local state creation */
+	/* If we reach here with shared_state set, continue with normal local state
+	 * creation */
 	if (shared_state != NULL)
 	{
 		/* Allocate local state */
-		local_state = (TpLocalIndexState *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
+		local_state = (TpLocalIndexState *)MemoryContextAlloc(
+				TopMemoryContext, sizeof(TpLocalIndexState));
 		local_state->shared = shared_state;
-		local_state->dsa = dsa;
+		local_state->dsa	= dsa;
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
-			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
+				hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
 		entry->local_state = local_state;
 
 		pfree(dsm_name);
@@ -205,8 +220,11 @@ tp_release_local_index_state(TpLocalIndexState *local_state)
 	/* Remove from cache */
 	if (local_state_cache != NULL)
 	{
-		hash_search(local_state_cache, &local_state->shared->index_oid,
-					HASH_REMOVE, &found);
+		hash_search(
+				local_state_cache,
+				&local_state->shared->index_oid,
+				HASH_REMOVE,
+				&found);
 	}
 
 	/* Detach from DSA */
@@ -226,52 +244,52 @@ tp_release_local_index_state(TpLocalIndexState *local_state)
 TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 {
-	TpSharedIndexState *shared_state;
-	TpLocalIndexState *local_state;
-	TpMemtable *memtable;
-	dsa_area *dsa;
-	dsa_pointer shared_dp;
-	dsa_pointer memtable_dp;
-	char *dsm_name;
-	void *dsm_seg;
-	TpDsmSegmentHeader *dsm_header;
+	TpSharedIndexState	 *shared_state;
+	TpLocalIndexState	 *local_state;
+	TpMemtable			 *memtable;
+	dsa_area			 *dsa;
+	dsa_pointer			  shared_dp;
+	dsa_pointer			  memtable_dp;
+	char				 *dsm_name;
+	void				 *dsm_seg;
+	TpDsmSegmentHeader	 *dsm_header;
 	LocalStateCacheEntry *entry;
-	dsm_segment *dsm_segment;
-	void *dsa_space;
-	size_t total_size;
-	bool found;
+	dsm_segment			 *dsm_segment;
+	void				 *dsa_space;
+	size_t				  total_size;
+	bool				  found;
 
 	/* Create DSA area name for this index */
 	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 
 	/* Use proven working DSA creation approach */
 	dsa = dsa_create(LWLockNewTrancheId());
-	dsa_pin(dsa);         /* Pin the DSA area itself for cross-backend persistence */
+	dsa_pin(dsa); /* Pin the DSA area itself for cross-backend persistence */
 	dsa_pin_mapping(dsa); /* Pin this backend's mapping */
 
 	/* Store DSA handle in small named DSM segment for recovery */
 	total_size = sizeof(TpDsmSegmentHeader);
-	dsm_seg = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
-	dsm_header = (TpDsmSegmentHeader *) dsm_seg;
+	dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
+	dsm_header = (TpDsmSegmentHeader *)dsm_seg;
 	dsm_header->dsm_handle = dsa_get_handle(dsa);
 
 	/* DSA handle stored for recovery */
 
 	/* Allocate shared state in DSA */
-	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
-	shared_state = (TpSharedIndexState *) dsa_get_address(dsa, shared_dp);
+	shared_dp	 = dsa_allocate(dsa, sizeof(TpSharedIndexState));
+	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid = index_oid;
-	shared_state->heap_oid = heap_oid;
+	shared_state->index_oid	 = index_oid;
+	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
-	shared_state->total_len = 0;
+	shared_state->total_len	 = 0;
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
-	memtable = (TpMemtable *) dsa_get_address(dsa, memtable_dp);
+	memtable	= (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_terms = 0;
+	memtable->total_terms		 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -290,14 +308,14 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
+			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
 	local_state->shared = shared_state;
-	local_state->dsa = dsa;
+	local_state->dsa	= dsa;
 
 	/* Cache the local state */
 	init_local_state_cache();
 	entry = (LocalStateCacheEntry *)
-		hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
+			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
 	entry->local_state = local_state;
 
 	pfree(dsm_name);
@@ -339,8 +357,8 @@ tp_destroy_shared_index_state(TpSharedIndexState *shared_state)
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
 {
-	Relation index_rel;
-	TpIndexMetaPage metap;
+	Relation		   index_rel;
+	TpIndexMetaPage	   metap;
 	TpLocalIndexState *local_state;
 
 	/* Open the index relation */
@@ -362,7 +380,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	/* Create fresh state first */
 	/* Creating fresh state for restart recovery */
-	local_state = tp_create_shared_index_state(index_oid, index_rel->rd_index->indrelid);
+	local_state = tp_create_shared_index_state(
+			index_oid, index_rel->rd_index->indrelid);
 
 	if (local_state != NULL)
 	{
@@ -378,4 +397,3 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	return local_state;
 }
-

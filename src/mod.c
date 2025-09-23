@@ -138,10 +138,10 @@ _PG_init(void)
 	 * Install shared memory hooks (needed for registry)
 	 */
 	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = tp_shmem_request;
+	shmem_request_hook		= tp_shmem_request;
 
 	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = tp_shmem_startup;
+	shmem_startup_hook		= tp_shmem_startup;
 
 	elog(NOTICE, "Tapir shared memory hooks installed");
 

@@ -34,10 +34,10 @@
 
 /* Forward declarations */
 static bool tp_search_posting_lists(
-		IndexScanDesc	scan,
-		TpLocalIndexState   *index_state,
-		TpVector	   *query_vector,
-		TpIndexMetaPage metap);
+		IndexScanDesc	   scan,
+		TpLocalIndexState *index_state,
+		TpVector		  *query_vector,
+		TpIndexMetaPage	   metap);
 
 /* Helper function to get memtable from local index state */
 static TpMemtable *
@@ -49,7 +49,8 @@ get_memtable(TpLocalIndexState *local_state)
 	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
 		return NULL;
 
-	return (TpMemtable *)dsa_get_address(local_state->dsa, local_state->shared->memtable_dp);
+	return (TpMemtable *)dsa_get_address(
+			local_state->dsa, local_state->shared->memtable_dp);
 }
 
 /*
@@ -155,14 +156,14 @@ tp_build_init_metapage(
 
 static void
 tp_build_finalize_and_update_stats(
-		Relation	  index,
+		Relation		   index,
 		TpLocalIndexState *index_state,
-		uint64		 *total_docs,
-		uint64		 *total_len)
+		uint64			  *total_docs,
+		uint64			  *total_len)
 {
-	Buffer				metabuf;
-	Page				metapage;
-	TpIndexMetaPage		metap;
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
 
 	/*
 	 * Finalize posting lists (convert to sorted arrays for query performance)
@@ -431,12 +432,12 @@ tp_setup_table_scan(
  */
 static bool
 tp_process_document(
-		TupleTableSlot *slot,
-		IndexInfo	   *indexInfo,
-		Oid				text_config_oid,
-		TpLocalIndexState   *index_state,
-		Relation		index,
-		uint64		   *total_docs)
+		TupleTableSlot	  *slot,
+		IndexInfo		  *indexInfo,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint64			  *total_docs)
 {
 	bool		isnull;
 	Datum		text_datum;
@@ -526,15 +527,15 @@ tp_process_document(
 IndexBuildResult *
 tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
-	IndexBuildResult *result;
-	char			 *text_config_name = NULL;
-	Oid				  text_config_oid  = InvalidOid;
-	double			  k1, b;
-	TableScanDesc	  scan;
-	TupleTableSlot	 *slot;
-	uint64			  total_docs = 0;
-	uint64			  total_len	 = 0;
-	TpLocalIndexState	 *index_state;
+	IndexBuildResult  *result;
+	char			  *text_config_name = NULL;
+	Oid				   text_config_oid	= InvalidOid;
+	double			   k1, b;
+	TableScanDesc	   scan;
+	TupleTableSlot	  *slot;
+	uint64			   total_docs = 0;
+	uint64			   total_len  = 0;
+	TpLocalIndexState *index_state;
 
 	/* Tapir index build started */
 	elog(NOTICE,
@@ -564,10 +565,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	{
 		/* Create new shared state and get local state in one call */
 		index_state = tp_create_shared_index_state(
-			RelationGetRelid(index), RelationGetRelid(heap));
+				RelationGetRelid(index), RelationGetRelid(heap));
 
 		if (index_state == NULL)
-			elog(ERROR, "Failed to create shared state for index %s",
+			elog(ERROR,
+				 "Failed to create shared state for index %s",
 				 RelationGetRelationName(index));
 	}
 
@@ -720,15 +722,15 @@ tp_insert(
 		bool			 indexUnchanged,
 		IndexInfo		*indexInfo)
 {
-	text		  *document_text;
-	Datum		   vector_datum;
-	TpVector	  *tpvec;
-	TpVectorEntry *vector_entry;
-	int32		  *frequencies;
-	int			   term_count;
-	int			   doc_length = 0;
-	int			   i;
-	TpLocalIndexState  *index_state;
+	text			  *document_text;
+	Datum			   vector_datum;
+	TpVector		  *tpvec;
+	TpVectorEntry	  *vector_entry;
+	int32			  *frequencies;
+	int				   term_count;
+	int				   doc_length = 0;
+	int				   i;
+	TpLocalIndexState *index_state;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -1056,11 +1058,11 @@ tp_endscan(IndexScanDesc scan)
 static bool
 tp_execute_scoring_query(IndexScanDesc scan)
 {
-	TpScanOpaque	so = (TpScanOpaque)scan->opaque;
-	TpIndexMetaPage metap;
-	bool			success		= false;
-	TpLocalIndexState   *index_state = NULL;
-	TpVector	   *query_vector;
+	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
+	TpIndexMetaPage	   metap;
+	bool			   success	   = false;
+	TpLocalIndexState *index_state = NULL;
+	TpVector		  *query_vector;
 
 	if (!so || !so->query_text)
 		return false;
@@ -1177,10 +1179,10 @@ tp_execute_scoring_query(IndexScanDesc scan)
  */
 static bool
 tp_search_posting_lists(
-		IndexScanDesc	scan,
-		TpLocalIndexState   *index_state,
-		TpVector	   *query_vector,
-		TpIndexMetaPage metap)
+		IndexScanDesc	   scan,
+		TpLocalIndexState *index_state,
+		TpVector		  *query_vector,
+		TpIndexMetaPage	   metap)
 {
 	TpScanOpaque so = (TpScanOpaque)scan->opaque;
 	int			 max_results;
@@ -1586,14 +1588,14 @@ PG_FUNCTION_INFO_V1(tp_debug_dump_index);
 Datum
 tp_debug_dump_index(PG_FUNCTION_ARGS)
 {
-	text		  *index_name_text = PG_GETARG_TEXT_PP(0);
-	char		  *index_name;
-	StringInfoData result;
-	Oid			   index_oid;
-	TpLocalIndexState  *index_state;
-	Relation	   index_rel = NULL;
-	TpIndexMetaPage metap = NULL;
-	TpMemtable	   *memtable;
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name;
+	StringInfoData	   result;
+	Oid				   index_oid;
+	TpLocalIndexState *index_state;
+	Relation		   index_rel = NULL;
+	TpIndexMetaPage	   metap	 = NULL;
+	TpMemtable		  *memtable;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
@@ -1642,7 +1644,8 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	}
 
 	appendStringInfo(&result, "BM25 Parameters:\n");
-	if (metap) {
+	if (metap)
+	{
 		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
 		appendStringInfo(&result, "  b: %.2f\n", metap->b);
 		pfree(metap);

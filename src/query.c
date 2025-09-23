@@ -203,7 +203,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	TSVector		   query_tsvector;
 	WordEntry		  *query_entries;
 	char			  *query_lexemes_start;
-	TpLocalIndexState	  *index_state;
+	TpLocalIndexState *index_state;
 	float4			   avg_doc_len;
 	int32			   total_docs;
 	float8			   result = 0.0;
@@ -256,9 +256,10 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		}
 
 		total_docs	= index_state->shared->total_docs;
-		avg_doc_len = total_docs > 0 ? (float4)(index_state->shared->total_len /
-												(double)total_docs)
-									 : 0.0f;
+		avg_doc_len = total_docs > 0
+							? (float4)(index_state->shared->total_len /
+									   (double)total_docs)
+							: 0.0f;
 
 		/* Tokenize the document text using the index's text configuration */
 		tsvector_datum = DirectFunctionCall2Coll(
@@ -341,9 +342,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			}
 
 			/* Calculate IDF */
-			idf = tp_calculate_idf(
-					posting_list->doc_count,
-					total_docs);
+			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
 
 			/* Calculate BM25 term score - using default k1=1.2, b=0.75 */
 			numerator_d = (double)tf * (1.2 + 1.0);

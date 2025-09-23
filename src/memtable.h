@@ -67,7 +67,6 @@ struct TpPostingList
 	dsa_pointer entries_dp; /* DSA pointer to TpPostingEntry array */
 };
 
-
 /* GUC variables */
 extern int tp_index_memory_limit; /* Currently not enforced */
 

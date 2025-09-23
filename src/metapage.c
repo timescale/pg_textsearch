@@ -26,8 +26,8 @@
 #include "constants.h"
 #include "memtable.h"
 #include "metapage.h"
-#include "state.h"
 #include "posting.h"
+#include "state.h"
 #include "vector.h"
 
 /* Maximum number of docids that fit in a page */
@@ -291,11 +291,11 @@ tp_recover_from_docid_pages(Relation index)
 
 		for (int i = 0; i < docid_header->num_docids; i++)
 		{
-			ItemPointer	  ctid = &docids[i];
-			Relation	  heap_rel;
-			HeapTuple	  tuple;
-			Buffer		  heap_buf;
-			bool		  valid;
+			ItemPointer		   ctid = &docids[i];
+			Relation		   heap_rel;
+			HeapTuple		   tuple;
+			Buffer			   heap_buf;
+			bool			   valid;
 			TpLocalIndexState *local_state;
 
 			/* Get local index state */

@@ -12,11 +12,11 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <math.h>
 #include <storage/itemptr.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
-#include <math.h>
 
 #include "constants.h"
 #include "memtable.h"
@@ -49,7 +49,8 @@ get_memtable(TpLocalIndexState *local_state)
 	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
 		return NULL;
 
-	return (TpMemtable *)dsa_get_address(local_state->dsa, local_state->shared->memtable_dp);
+	return (TpMemtable *)dsa_get_address(
+			local_state->dsa, local_state->shared->memtable_dp);
 }
 
 /*
@@ -59,11 +60,11 @@ get_memtable(TpLocalIndexState *local_state)
 void
 tp_add_document_terms(
 		TpLocalIndexState *local_state,
-		ItemPointer	  ctid,
-		char		**terms,
-		int32		 *frequencies,
-		int			  term_count,
-		int32		  doc_length)
+		ItemPointer		   ctid,
+		char			 **terms,
+		int32			  *frequencies,
+		int				   term_count,
+		int32			   doc_length)
 {
 	int i;
 
@@ -118,8 +119,8 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
 		return NULL;
 
-	string_table =
-			tp_hash_table_attach_dsa(local_state->dsa, memtable->string_hash_handle);
+	string_table = tp_hash_table_attach_dsa(
+			local_state->dsa, memtable->string_hash_handle);
 	if (!string_table)
 	{
 		elog(WARNING, "Failed to attach to string hash table");
@@ -128,11 +129,13 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 	term_len = strlen(term);
 
 	/* Look up the term in the string table (no locks needed) */
-	string_entry = tp_hash_lookup_dsa(local_state->dsa, string_table, term, term_len);
+	string_entry =
+			tp_hash_lookup_dsa(local_state->dsa, string_table, term, term_len);
 
 	if (string_entry && DsaPointerIsValid(string_entry->key.flag_field))
 	{
-		posting_list = dsa_get_address(local_state->dsa, string_entry->key.flag_field);
+		posting_list = dsa_get_address(
+				local_state->dsa, string_entry->key.flag_field);
 		tp_hash_table_detach_dsa(string_table);
 		return posting_list;
 	}
@@ -196,12 +199,14 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	}
 
 	/* Look up or insert the term in the string table */
-	string_entry = tp_hash_lookup_dsa(local_state->dsa, string_table, term, term_len);
+	string_entry =
+			tp_hash_lookup_dsa(local_state->dsa, string_table, term, term_len);
 
 	if (!string_entry)
 	{
 		/* Insert the term */
-		string_entry = tp_hash_insert_dsa(local_state->dsa, string_table, term, term_len);
+		string_entry = tp_hash_insert_dsa(
+				local_state->dsa, string_table, term, term_len);
 		if (!string_entry)
 		{
 			elog(ERROR, "Failed to insert term '%s' into string table", term);
@@ -212,13 +217,15 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	/* Check if posting list already exists for this term */
 	if (DsaPointerIsValid(string_entry->key.flag_field))
 	{
-		posting_list = dsa_get_address(local_state->dsa, string_entry->key.flag_field);
+		posting_list = dsa_get_address(
+				local_state->dsa, string_entry->key.flag_field);
 	}
 	else
 	{
 		/* Create new posting list */
-		posting_list_dp = dsa_allocate(local_state->dsa, sizeof(TpPostingList));
-		posting_list	= dsa_get_address(local_state->dsa, posting_list_dp);
+		posting_list_dp =
+				dsa_allocate(local_state->dsa, sizeof(TpPostingList));
+		posting_list = dsa_get_address(local_state->dsa, posting_list_dp);
 
 		/* Initialize posting list */
 		memset(posting_list, 0, sizeof(TpPostingList));
@@ -244,10 +251,10 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
  */
 void
 tp_add_document_to_posting_list(
-		TpLocalIndexState  *local_state,
-		TpPostingList *posting_list,
-		ItemPointer	   ctid,
-		int32		   frequency)
+		TpLocalIndexState *local_state,
+		TpPostingList	  *posting_list,
+		ItemPointer		   ctid,
+		int32			   frequency)
 {
 	TpPostingEntry *entries;
 	TpPostingEntry *new_entry;
@@ -260,32 +267,38 @@ tp_add_document_to_posting_list(
 	/* Expand array if needed */
 	if (posting_list->doc_count >= posting_list->capacity)
 	{
-		int32 new_capacity = posting_list->capacity == 0 ?
-			TP_INITIAL_POSTING_LIST_CAPACITY :
-			posting_list->capacity * tp_posting_list_growth_factor;
+		int32 new_capacity = posting_list->capacity == 0
+								   ? TP_INITIAL_POSTING_LIST_CAPACITY
+								   : posting_list->capacity *
+											 tp_posting_list_growth_factor;
 
 		/* Allocate new array */
-		new_entries_dp = dsa_allocate(local_state->dsa,
-									  new_capacity * sizeof(TpPostingEntry));
+		new_entries_dp = dsa_allocate(
+				local_state->dsa, new_capacity * sizeof(TpPostingEntry));
 
 		/* Copy existing entries if any */
-		if (posting_list->doc_count > 0 && DsaPointerIsValid(posting_list->entries_dp))
+		if (posting_list->doc_count > 0 &&
+			DsaPointerIsValid(posting_list->entries_dp))
 		{
-			TpPostingEntry *old_entries = tp_get_posting_entries(local_state->dsa, posting_list);
-			TpPostingEntry *new_entries = dsa_get_address(local_state->dsa, new_entries_dp);
-			memcpy(new_entries, old_entries, posting_list->doc_count * sizeof(TpPostingEntry));
+			TpPostingEntry *old_entries =
+					tp_get_posting_entries(local_state->dsa, posting_list);
+			TpPostingEntry *new_entries =
+					dsa_get_address(local_state->dsa, new_entries_dp);
+			memcpy(new_entries,
+				   old_entries,
+				   posting_list->doc_count * sizeof(TpPostingEntry));
 
 			/* Free old array */
 			dsa_free(local_state->dsa, posting_list->entries_dp);
 		}
 
 		posting_list->entries_dp = new_entries_dp;
-		posting_list->capacity = new_capacity;
+		posting_list->capacity	 = new_capacity;
 	}
 
 	/* Add new document entry */
-	entries = tp_get_posting_entries(local_state->dsa, posting_list);
-	new_entry = &entries[posting_list->doc_count];
+	entries			= tp_get_posting_entries(local_state->dsa, posting_list);
+	new_entry		= &entries[posting_list->doc_count];
 	new_entry->ctid = *ctid;
 	new_entry->frequency = frequency;
 
@@ -325,24 +338,24 @@ tp_finalize_index_build(TpLocalIndexState *local_state)
 int
 tp_score_documents(
 		TpLocalIndexState *local_state,
-		Relation	  index_relation,
-		char		**query_terms,
-		int32		 *query_frequencies,
-		int			  query_term_count,
-		float4		  k1,
-		float4		  b,
-		int			  max_results,
-		ItemPointer	  result_ctids,
-		float4		**result_scores)
+		Relation		   index_relation,
+		char			 **query_terms,
+		int32			  *query_frequencies,
+		int				   query_term_count,
+		float4			   k1,
+		float4			   b,
+		int				   max_results,
+		ItemPointer		   result_ctids,
+		float4			 **result_scores)
 {
-	TpMemtable *memtable;
+	TpMemtable		  *memtable;
 	TpStringHashTable *string_table;
-	float4 *scores;
-	int32 total_docs;
-	int64 total_len;
-	float4 avg_doc_len;
-	int result_count = 0;
-	int i, j;
+	float4			  *scores;
+	int32			   total_docs;
+	int64			   total_len;
+	float4			   avg_doc_len;
+	int				   result_count = 0;
+	int				   i, j;
 
 	Assert(local_state != NULL);
 	Assert(query_terms != NULL);
@@ -361,9 +374,10 @@ tp_score_documents(
 		return 0;
 	}
 
-	total_docs = local_state->shared->total_docs;
-	total_len = local_state->shared->total_len;
-	avg_doc_len = total_docs > 0 ? (float4)(total_len / (double)total_docs) : 0.0f;
+	total_docs	= local_state->shared->total_docs;
+	total_len	= local_state->shared->total_len;
+	avg_doc_len = total_docs > 0 ? (float4)(total_len / (double)total_docs)
+								 : 0.0f;
 
 	if (total_docs <= 0)
 		return 0;
@@ -372,20 +386,22 @@ tp_score_documents(
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
 		return 0;
 
-	string_table = tp_hash_table_attach_dsa(local_state->dsa, memtable->string_hash_handle);
+	string_table = tp_hash_table_attach_dsa(
+			local_state->dsa, memtable->string_hash_handle);
 	if (!string_table)
 		return 0;
 
 	/* Allocate scores array */
-	scores = (float4 *)palloc0(max_results * sizeof(float4));
+	scores		   = (float4 *)palloc0(max_results * sizeof(float4));
 	*result_scores = scores;
 
-	/* Simple implementation: score the first max_results documents in posting lists */
+	/* Simple implementation: score the first max_results documents in posting
+	 * lists */
 	for (i = 0; i < query_term_count && result_count < max_results; i++)
 	{
-		TpPostingList *posting_list;
+		TpPostingList  *posting_list;
 		TpPostingEntry *entries;
-		float4 idf;
+		float4			idf;
 
 		posting_list = tp_get_posting_list(local_state, query_terms[i]);
 		if (!posting_list || posting_list->doc_count <= 0)
@@ -400,21 +416,25 @@ tp_score_documents(
 			continue;
 
 		/* Score documents in this posting list */
-		for (j = 0; j < posting_list->doc_count && result_count < max_results; j++)
+		for (j = 0; j < posting_list->doc_count && result_count < max_results;
+			 j++)
 		{
-			float4 tf = (float4)entries[j].frequency;
+			float4 tf		  = (float4)entries[j].frequency;
 			float4 doc_length = 1.0f; /* TODO: Get actual document length */
 			float4 normalized_tf;
 			float4 bm25_score;
 
-			/* BM25 formula: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_length / avg_doc_len))) */
+			/* BM25 formula: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b *
+			 * (doc_length / avg_doc_len))) */
 			normalized_tf = (tf * (k1 + 1.0f)) /
-				(tf + k1 * (1.0f - b + b * (doc_length / avg_doc_len)));
+							(tf +
+							 k1 * (1.0f - b + b * (doc_length / avg_doc_len)));
 			bm25_score = idf * normalized_tf;
 
 			/* Store result */
 			result_ctids[result_count] = entries[j].ctid;
-			scores[result_count] = -bm25_score; /* Negative for PostgreSQL ASC ordering */
+			scores[result_count] =
+					-bm25_score; /* Negative for PostgreSQL ASC ordering */
 			result_count++;
 		}
 	}

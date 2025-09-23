@@ -16,15 +16,14 @@
 #include <postgres.h>
 
 #include <storage/ipc.h>
-#include <storage/shmem.h>
 #include <storage/lwlock.h>
+#include <storage/shmem.h>
 #include <utils/memutils.h>
 
 #include "registry.h"
 
 /* Global pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;
-
 
 /*
  * Initialize the registry during postmaster startup
@@ -50,9 +49,8 @@ tp_registry_shmem_startup(void)
 
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
-	tapir_registry = ShmemInitStruct("Tapir Index Registry",
-									 sizeof(TpGlobalRegistry),
-									 &found);
+	tapir_registry = ShmemInitStruct(
+			"Tapir Index Registry", sizeof(TpGlobalRegistry), &found);
 
 	if (!found)
 	{
@@ -60,13 +58,12 @@ tp_registry_shmem_startup(void)
 		memset(tapir_registry, 0, sizeof(TpGlobalRegistry));
 
 		/* Initialize the registry lock */
-		LWLockInitialize(&tapir_registry->lock,
-						LWLockNewTrancheId());
+		LWLockInitialize(&tapir_registry->lock, LWLockNewTrancheId());
 
 		/* Initialize all entries as not in use */
 		for (int i = 0; i < TP_MAX_INDEXES; i++)
 		{
-			tapir_registry->entries[i].index_oid = InvalidOid;
+			tapir_registry->entries[i].index_oid	= InvalidOid;
 			tapir_registry->entries[i].shared_state = NULL;
 		}
 
@@ -76,8 +73,7 @@ tp_registry_shmem_startup(void)
 	LWLockRelease(AddinShmemInitLock);
 
 	/* Register the lock tranche */
-	LWLockRegisterTranche(tapir_registry->lock.tranche,
-						 "tapir_registry");
+	LWLockRegisterTranche(tapir_registry->lock.tranche, "tapir_registry");
 }
 
 /*
@@ -92,7 +88,9 @@ tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
 		/* Registry not attached in this backend - initialize it */
 		tp_registry_shmem_startup();
 		if (!tapir_registry)
-			elog(ERROR, "Failed to initialize Tapir registry for index %u", index_oid);
+			elog(ERROR,
+				 "Failed to initialize Tapir registry for index %u",
+				 index_oid);
 	}
 
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
@@ -114,7 +112,7 @@ tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
 	{
 		if (tapir_registry->entries[i].index_oid == InvalidOid)
 		{
-			tapir_registry->entries[i].index_oid = index_oid;
+			tapir_registry->entries[i].index_oid	= index_oid;
 			tapir_registry->entries[i].shared_state = shared_state;
 			tapir_registry->num_entries++;
 			LWLockRelease(&tapir_registry->lock);
@@ -171,7 +169,9 @@ tp_registry_unregister(Oid index_oid)
 	if (!tapir_registry)
 	{
 		/* Registry not initialized - this can happen during testing */
-		elog(WARNING, "Cannot unregister index %u: registry not initialized", index_oid);
+		elog(WARNING,
+			 "Cannot unregister index %u: registry not initialized",
+			 index_oid);
 		return;
 	}
 
@@ -181,7 +181,7 @@ tp_registry_unregister(Oid index_oid)
 	{
 		if (tapir_registry->entries[i].index_oid == index_oid)
 		{
-			tapir_registry->entries[i].index_oid = InvalidOid;
+			tapir_registry->entries[i].index_oid	= InvalidOid;
 			tapir_registry->entries[i].shared_state = NULL;
 			tapir_registry->num_entries--;
 			break;
