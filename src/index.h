@@ -101,3 +101,11 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 
 /* Include state management structures */
 #include "state.h"
+
+/* Shared document processing function */
+extern bool tp_process_document_text(
+		text			  *document_text,
+		ItemPointer		   ctid,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		int32			  *doc_length_out);

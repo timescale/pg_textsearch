@@ -426,6 +426,76 @@ tp_setup_table_scan(
 }
 
 /*
+ * Core document processing: convert text to terms and add to posting lists
+ * This is shared between index building and docid recovery
+ */
+bool
+tp_process_document_text(
+		text			  *document_text,
+		ItemPointer		   ctid,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		int32			  *doc_length_out)
+{
+	char	   *document_str;
+	Datum		tsvector_datum;
+	TSVector	tsvector;
+	char	  **terms;
+	int32	   *frequencies;
+	int			term_count;
+	int			doc_length;
+
+	if (!document_text || !index_state)
+		return false;
+
+	document_str = text_to_cstring(document_text);
+
+	/* Validate the TID before processing */
+	if (!ItemPointerIsValid(ctid))
+	{
+		elog(WARNING,
+			 "Invalid TID during document processing, skipping document");
+		pfree(document_str);
+		return false;
+	}
+
+	/* Vectorize the document using text configuration */
+	tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid, /* collation */
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(document_text));
+
+	tsvector = DatumGetTSVector(tsvector_datum);
+
+	/* Extract lexemes and frequencies from TSVector */
+	doc_length = tp_extract_terms_from_tsvector(
+			tsvector, &terms, &frequencies, &term_count);
+
+	if (term_count > 0)
+	{
+		/* Add document terms to posting lists */
+		tp_add_document_terms(
+				index_state,
+				ctid,
+				terms,
+				frequencies,
+				term_count,
+				doc_length);
+
+		/* Free the terms array and individual lexemes */
+		tp_free_terms_array(terms, term_count);
+		pfree(frequencies);
+	}
+
+	if (doc_length_out)
+		*doc_length_out = doc_length;
+
+	pfree(document_str);
+	return true;
+}
+
+/*
  * Process a single document during index build
  *
  * Returns true if document was processed successfully, false to skip
@@ -442,14 +512,8 @@ tp_process_document(
 	bool		isnull;
 	Datum		text_datum;
 	text	   *document_text;
-	char	   *document_str;
 	ItemPointer ctid;
-	Datum		tsvector_datum;
-	TSVector	tsvector;
-	char	  **terms;
-	int32	   *frequencies;
-	int			term_count;
-	int			doc_length;
+	int32		doc_length;
 
 	/* Get the text column value (first indexed column) */
 	text_datum =
@@ -459,65 +523,19 @@ tp_process_document(
 		return false; /* Skip NULL documents */
 
 	document_text = DatumGetTextPP(text_datum);
-
-	document_str = text_to_cstring(document_text);
-
 	ctid = &slot->tts_tid;
 
-	/* Validate the TID before processing */
-	if (!ItemPointerIsValid(ctid))
+	/* Process the document text using shared helper */
+	if (!tp_process_document_text(
+				document_text, ctid, text_config_oid, index_state, &doc_length))
 	{
-		elog(WARNING,
-			 "Invalid TID in slot during index build, skipping document");
-		pfree(document_str);
 		return false;
 	}
 
-	/*
-	 * Vectorize the document using index metadata
-	 */
-
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid, /* collation */
-			ObjectIdGetDatum(text_config_oid),
-			PointerGetDatum(document_text));
-
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	/* Extract lexemes and frequencies from TSVector */
-	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
-
-	if (term_count > 0)
-	{
-		/*
-		 * Add document terms to posting lists (if shared memory available)
-		 */
-
-		if (index_state != NULL)
-		{
-			tp_add_document_terms(
-					index_state,
-					ctid,
-					terms,
-					frequencies,
-					term_count,
-					doc_length);
-		}
-
-		/* Free the terms array and individual lexemes */
-		tp_free_terms_array(terms, term_count);
-		pfree(frequencies);
-	}
-
-	/* Store the docid for crash recovery */
+	/* Store the docid for crash recovery (only during index build) */
 	tp_add_docid_to_pages(index, ctid);
 
 	(*total_docs)++;
-
-	pfree(document_str);
-
 	return true;
 }
 

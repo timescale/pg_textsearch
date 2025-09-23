@@ -15,15 +15,21 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/heapam.h>
+#include <access/relation.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
+#include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
+#include <utils/rel.h>
+#include <utils/snapmgr.h>
 
+#include "index.h"
 #include "metapage.h"
 #include "registry.h"
 #include "state.h"
@@ -385,9 +391,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	if (local_state != NULL)
 	{
-		/* Recovery would go here, but for now just return the fresh state */
-		/* Using fresh state (docid recovery not yet implemented) */
-		/* TODO: Implement proper docid page recovery after fixing recursion */
+		/* Rebuild posting lists from docid pages */
+		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 	}
 
 	/* Clean up */
@@ -396,4 +401,99 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	index_close(index_rel, AccessShareLock);
 
 	return local_state;
+}
+
+/*
+ * Rebuild posting lists from docid pages stored on disk
+ * This scans the docid pages, retrieves documents from heap, and rebuilds the posting lists
+ */
+void
+tp_rebuild_posting_lists_from_docids(Relation index_rel, TpLocalIndexState *local_state, TpIndexMetaPage metap)
+{
+	Buffer			   docid_buf;
+	Page			   docid_page;
+	TpDocidPageHeader *docid_header;
+	ItemPointer		   docids;
+	BlockNumber		   current_page;
+	int				   total_recovered = 0; /* Track recovery progress */
+	Relation		   heap_rel;
+
+	if (!metap || metap->first_docid_page == InvalidBlockNumber)
+	{
+		elog(NOTICE, "No docid pages to recover from");
+		return;
+	}
+
+	/* Open the heap relation to fetch document text */
+	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+
+	current_page = metap->first_docid_page;
+
+	/* Scan through all docid pages */
+	while (current_page != InvalidBlockNumber)
+	{
+		/* Read the docid page */
+		docid_buf = ReadBuffer(index_rel, current_page);
+		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+		docid_page = BufferGetPage(docid_buf);
+		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+		/* Get docids array */
+		docids = (ItemPointer)((char *)docid_header + sizeof(TpDocidPageHeader));
+
+		/* Process each docid on this page */
+		for (int i = 0; i < docid_header->num_docids; i++)
+		{
+			ItemPointer ctid = &docids[i];
+			HeapTupleData tuple_data;
+			HeapTuple tuple = &tuple_data;
+			Buffer heap_buf;
+			bool valid;
+			Datum text_datum;
+			bool isnull;
+			text *document_text;
+			int32 doc_length;
+
+			/* Initialize tuple for heap_fetch */
+			tuple->t_self = *ctid;
+
+			/* Fetch document from heap using the stored ctid */
+			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
+			if (!valid || !HeapTupleIsValid(tuple))
+			{
+				if (heap_buf != InvalidBuffer)
+					ReleaseBuffer(heap_buf);
+				continue; /* Skip invalid documents */
+			}
+
+			/* Extract text from the first indexed column */
+			text_datum = heap_getattr(tuple, 1, RelationGetDescr(heap_rel), &isnull);
+
+			if (!isnull)
+			{
+				document_text = DatumGetTextPP(text_datum);
+
+				/* Use shared helper to process document text and rebuild posting lists */
+				if (tp_process_document_text(document_text, ctid, metap->text_config_oid,
+											local_state, &doc_length))
+				{
+					total_recovered++;
+					/* Update corpus statistics */
+					local_state->shared->total_docs++;
+					local_state->shared->total_len += doc_length;
+				}
+			}
+
+			ReleaseBuffer(heap_buf);
+		}
+
+		/* Move to next page */
+		current_page = docid_header->next_page;
+
+		UnlockReleaseBuffer(docid_buf);
+	}
+
+	relation_close(heap_rel, AccessShareLock);
+
+	/* Completed docid recovery */
 }
