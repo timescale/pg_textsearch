@@ -4,11 +4,14 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
+#include <storage/ipc.h>
+#include <storage/shmem.h>
 #include <utils/guc.h>
 
 #include "constants.h"
 #include "memtable.h"
 #include "posting.h"
+#include "registry.h"
 
 PG_MODULE_MAGIC;
 
@@ -32,12 +35,27 @@ static void tp_object_access_hook(
 		int				 subId,
 		void			*arg);
 
+/* Previous shared memory startup hook */
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+
+/* Shared memory request hook */
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+
+/* Shared memory size calculation */
+static void tp_shmem_request(void);
+
+/* Shared memory startup hook */
+static void tp_shmem_startup(void);
+
 /*
  * Extension entry point - called when the extension is loaded
  */
 void
 _PG_init(void)
 {
+	/* Initialize on first use - don't require shared_preload_libraries */
+	elog(NOTICE, "Tapir extension _PG_init() starting GUC initialization");
+
 	/*
 	 * Define GUC parameters
 	 */
@@ -114,11 +132,24 @@ _PG_init(void)
 			1.0,
 			NoLock);
 
+	elog(NOTICE, "Tapir extension GUC variables defined successfully");
+
 	/*
-	 * Install object access hook for cleanup when indexes are dropped
+	 * Install shared memory hooks (needed for registry)
 	 */
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = tp_shmem_request;
+
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = tp_shmem_startup;
+
+	elog(NOTICE, "Tapir shared memory hooks installed");
+
+	/* Install object access hook for index lifecycle management */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access_hook;
+
+	elog(NOTICE, "Tapir extension _PG_init() completed successfully");
 }
 
 /*
@@ -139,6 +170,38 @@ tp_object_access_hook(
 
 	/* Handle index drop events */
 	if (access == OAT_DROP && classId == RelationRelationId)
-		/* Check if this is a Tapir index by looking up in our registry */
+	{
+		/* Unregister from global registry first */
+		tp_registry_unregister(objectId);
+		/* Then clean up index-specific shared memory */
 		tp_cleanup_index_shared_memory(objectId);
+	}
+}
+
+/*
+ * Shared memory request hook - calculate and request shared memory
+ */
+static void
+tp_shmem_request(void)
+{
+	/* Call previous hook first if it exists */
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	/* Request shared memory for registry */
+	tp_registry_init();
+}
+
+/*
+ * Shared memory startup hook - no-op since registry initializes lazily
+ */
+static void
+tp_shmem_startup(void)
+{
+	/* Call previous hook first if it exists */
+	if (prev_shmem_startup_hook)
+		prev_shmem_startup_hook();
+
+	/* Initialize the registry in shared memory */
+	tp_registry_shmem_startup();
 }

@@ -98,3 +98,6 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
 
 /* Query limit tracking - now in limits.h */
+
+/* Include state management structures */
+#include "state.h"

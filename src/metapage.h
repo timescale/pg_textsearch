@@ -24,6 +24,11 @@
 #include "constants.h"
 
 /*
+ * Forward declarations
+ */
+typedef struct TpLocalIndexState TpLocalIndexState;
+
+/*
  * Tapir Index Metapage Structure
  *
  * The metapage is stored on block 0 of every Tapir index and contains

@@ -2,6 +2,7 @@ EXTENSION = tapir
 DATA = sql/tapir--0.0.sql
 
 # Source files
+# Full build - debugging initialization crash
 OBJS = \
 	src/mod.o \
 	src/memtable.o \
@@ -11,7 +12,9 @@ OBJS = \
 	src/vector.o \
 	src/query.o \
 	src/stringtable.o \
-	src/limit.o
+	src/limit.o \
+	src/registry.o \
+	src/state.o
 
 # Shared library target
 MODULE_big = tapir

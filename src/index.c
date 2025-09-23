@@ -32,15 +32,25 @@
 #include "query.h"
 #include "vector.h"
 
-/* External GUC variable for score logging */
-extern bool tp_log_scores;
-
 /* Forward declarations */
 static bool tp_search_posting_lists(
 		IndexScanDesc	scan,
-		TpIndexState   *index_state,
+		TpLocalIndexState   *index_state,
 		TpVector	   *query_vector,
 		TpIndexMetaPage metap);
+
+/* Helper function to get memtable from local index state */
+static TpMemtable *
+get_memtable(TpLocalIndexState *local_state)
+{
+	if (!local_state || !local_state->shared || !local_state->dsa)
+		return NULL;
+
+	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
+		return NULL;
+
+	return (TpMemtable *)dsa_get_address(local_state->dsa, local_state->shared->memtable_dp);
+}
 
 /*
  * Tapir Index Access Method Implementation
@@ -146,11 +156,10 @@ tp_build_init_metapage(
 static void
 tp_build_finalize_and_update_stats(
 		Relation	  index,
-		TpIndexState *index_state,
+		TpLocalIndexState *index_state,
 		uint64		 *total_docs,
 		uint64		 *total_len)
 {
-	TpCorpusStatistics *stats;
 	Buffer				metabuf;
 	Page				metapage;
 	TpIndexMetaPage		metap;
@@ -162,10 +171,9 @@ tp_build_finalize_and_update_stats(
 	{
 		tp_finalize_index_build(index_state);
 
-		/* Get actual statistics from the posting list system */
-		stats		= tp_get_corpus_statistics(index_state);
-		*total_docs = stats->total_docs;
-		*total_len	= stats->total_len;
+		/* Get actual statistics from the shared state */
+		*total_docs = index_state->shared->total_docs;
+		*total_len	= index_state->shared->total_len;
 	}
 
 	/* Update metapage with computed statistics */
@@ -426,7 +434,7 @@ tp_process_document(
 		TupleTableSlot *slot,
 		IndexInfo	   *indexInfo,
 		Oid				text_config_oid,
-		TpIndexState   *index_state,
+		TpLocalIndexState   *index_state,
 		Relation		index,
 		uint64		   *total_docs)
 {
@@ -524,9 +532,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	double			  k1, b;
 	TableScanDesc	  scan;
 	TupleTableSlot	 *slot;
-	uint64			  total_docs  = 0;
-	uint64			  total_len	  = 0;
-	TpIndexState	 *index_state = NULL;
+	uint64			  total_docs = 0;
+	uint64			  total_len	 = 0;
+	TpLocalIndexState	 *index_state;
 
 	/* Tapir index build started */
 	elog(NOTICE,
@@ -547,22 +555,20 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		elog(NOTICE, "Using text search configuration: %s", text_config_name);
 	elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
 
-	/* Tapir indexes are not supported on temporary tables */
-	if (!RelationNeedsWAL(heap))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("Tapir indexes are not supported on temporary tables"),
-				 errhint("Use a regular table instead of a temporary table "
-						 "for Tapir full-text search.")));
-	}
-	else
-	{
-		/* Initialize metapage for persistent tables */
-		tp_build_init_metapage(index, text_config_oid, k1, b);
+	/* Initialize metapage */
+	tp_build_init_metapage(index, text_config_oid, k1, b);
 
-		/* Initialize shared memory index state for persistent tables */
-		index_state = tp_get_index_state(RelationGetRelid(index));
+	/* Initialize index state - create if needed during index build */
+	index_state = tp_get_local_index_state(RelationGetRelid(index));
+	if (index_state == NULL)
+	{
+		/* Create new shared state and get local state in one call */
+		index_state = tp_create_shared_index_state(
+			RelationGetRelid(index), RelationGetRelid(heap));
+
+		if (index_state == NULL)
+			elog(ERROR, "Failed to create shared state for index %s",
+				 RelationGetRelationName(index));
 	}
 
 	/* Report memtable building phase */
@@ -572,7 +578,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Setup table scanning */
 	tp_setup_table_scan(heap, &scan, &slot);
 
-	/* Normal processing for persistent tables */
+	/* Process each document in the heap */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
@@ -722,7 +728,7 @@ tp_insert(
 	int			   term_count;
 	int			   doc_length = 0;
 	int			   i;
-	TpIndexState  *index_state = NULL;
+	TpLocalIndexState  *index_state;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -734,7 +740,7 @@ tp_insert(
 		return true;
 
 	/* Get index state */
-	index_state = tp_get_index_state(RelationGetRelid(index));
+	index_state = tp_get_local_index_state(RelationGetRelid(index));
 	Assert(index_state != NULL);
 
 	/* Extract text from first column */
@@ -864,20 +870,9 @@ tp_rescan(
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
 		if (query_limit > 0)
-		{
 			so->limit = query_limit;
-			elog(DEBUG1,
-				 "tapir: LIMIT optimization active, limit=%d for index %s",
-				 query_limit,
-				 RelationGetRelationName(scan->indexRelation));
-		}
 		else
-		{
 			so->limit = -1; /* No limit */
-			elog(DEBUG1,
-				 "tapir: No LIMIT optimization, using default for index %s",
-				 RelationGetRelationName(scan->indexRelation));
-		}
 	}
 
 	/* Reset scan state */
@@ -934,91 +929,86 @@ tp_rescan(
 		if (!metap)
 			metap = tp_get_metapage(scan->indexRelation);
 
+		for (int i = 0; i < norderbys; i++)
 		{
-			int i;
-			for (i = 0; i < norderbys; i++)
+			ScanKey orderby = &orderbys[i];
+
+			/* Check for <@> operator strategy */
+			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 			{
-				ScanKey orderby = &orderbys[i];
+				Datum query_datum = orderby->sk_argument;
+				char *query_cstr;
 
-				/* Check for <@> operator strategy */
-				if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
+				/*
+				 * Handle tpquery type - text <@> tpquery operation
+				 * PostgreSQL's type system guarantees this is a tpquery
+				 */
+				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
+				char	*index_name;
+				char	*current_index_name;
+
+				/* Validate it's a proper tpquery by checking varlena header */
+				if (VARATT_IS_EXTENDED(query) ||
+					VARSIZE_ANY(query) <
+							VARHDRSZ + sizeof(int32) + sizeof(int32))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid tpquery data")));
+
+				index_name		   = get_tpquery_index_name(query);
+				current_index_name = RelationGetRelationName(
+						scan->indexRelation);
+
+				/* Validate index name if provided in query */
+				if (index_name)
 				{
-					Datum query_datum = orderby->sk_argument;
-					char *query_cstr;
-
-					/*
-					 * Handle tpquery type - text <@> tpquery operation
-					 * PostgreSQL's type system guarantees this is a tpquery
-					 */
-					TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
-					char	*index_name;
-					char	*current_index_name;
-
-					/* Validate it's a proper tpquery by checking varlena
-					 * header */
-					if (VARATT_IS_EXTENDED(query) ||
-						VARSIZE_ANY(query) <
-								VARHDRSZ + sizeof(int32) + sizeof(int32))
+					if (strcmp(index_name, current_index_name) != 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("invalid tpquery data")));
-
-					index_name		   = get_tpquery_index_name(query);
-					current_index_name = RelationGetRelationName(
-							scan->indexRelation);
-
-					/* Validate index name if provided in query */
-					if (index_name)
-					{
-						if (strcmp(index_name, current_index_name) != 0)
-							ereport(ERROR,
-									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-									 errmsg("tpquery index name mismatch"),
-									 errhint("Query specifies index "
-											 "\"%s\" but scan is on index "
-											 "\"%s\"",
-											 index_name,
-											 current_index_name)));
-					}
-
-					query_cstr = pstrdup(get_tpquery_text(query));
-
-					/* Clear query vector since we're using text directly */
-					if (so->query_vector)
-					{
-						pfree(so->query_vector);
-						so->query_vector = NULL;
-					}
-
-					/* Store query for processing during gettuple */
-					if (so->query_text)
-					{
-						/*
-						 * Free old query text if it was allocated in scan
-						 * context
-						 */
-						MemoryContext oldcontext = MemoryContextSwitchTo(
-								so->scan_context);
-
-						pfree(so->query_text);
-						MemoryContextSwitchTo(oldcontext);
-					}
-
-					/* Allocate new query text in scan context */
-					{
-						MemoryContext oldcontext = MemoryContextSwitchTo(
-								so->scan_context);
-
-						so->query_text = pstrdup(query_cstr);
-						MemoryContextSwitchTo(oldcontext);
-					}
-
-					/* Mark all docs as candidates for ORDER BY operation */
-					if (metap && metap->total_docs > 0)
-						so->result_count = metap->total_docs;
-
-					pfree(query_cstr);
+								 errmsg("tpquery index name mismatch"),
+								 errhint("Query specifies index "
+										 "\"%s\" but scan is on index "
+										 "\"%s\"",
+										 index_name,
+										 current_index_name)));
 				}
+
+				query_cstr = pstrdup(get_tpquery_text(query));
+
+				/* Clear query vector since we're using text directly */
+				if (so->query_vector)
+				{
+					pfree(so->query_vector);
+					so->query_vector = NULL;
+				}
+
+				/* Store query for processing during gettuple */
+				if (so->query_text)
+				{
+					/*
+					 * Free old query text if it was allocated in scan context
+					 */
+					MemoryContext oldcontext = MemoryContextSwitchTo(
+							so->scan_context);
+
+					pfree(so->query_text);
+					MemoryContextSwitchTo(oldcontext);
+				}
+
+				/* Allocate new query text in scan context */
+				{
+					MemoryContext oldcontext = MemoryContextSwitchTo(
+							so->scan_context);
+
+					so->query_text = pstrdup(query_cstr);
+					MemoryContextSwitchTo(oldcontext);
+				}
+
+				/* Mark all docs as candidates for ORDER BY operation */
+				if (metap && metap->total_docs > 0)
+					so->result_count = metap->total_docs;
+
+				pfree(query_cstr);
 			}
 		}
 
@@ -1069,7 +1059,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	TpScanOpaque	so = (TpScanOpaque)scan->opaque;
 	TpIndexMetaPage metap;
 	bool			success		= false;
-	TpIndexState   *index_state = NULL;
+	TpLocalIndexState   *index_state = NULL;
 	TpVector	   *query_vector;
 
 	if (!so || !so->query_text)
@@ -1124,7 +1114,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	PG_TRY();
 	{
 		/* Get the index state with posting lists */
-		index_state = tp_get_index_state(
+		index_state = tp_get_local_index_state(
 				RelationGetRelid(scan->indexRelation));
 
 		if (!index_state)
@@ -1188,7 +1178,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 static bool
 tp_search_posting_lists(
 		IndexScanDesc	scan,
-		TpIndexState   *index_state,
+		TpLocalIndexState   *index_state,
 		TpVector	   *query_vector,
 		TpIndexMetaPage metap)
 {
@@ -1208,17 +1198,9 @@ tp_search_posting_lists(
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so && so->limit > 0)
-	{
 		max_results = so->limit;
-		elog(DEBUG1, "tapir: Using query LIMIT=%d for search", so->limit);
-	}
 	else
-	{
 		max_results = tp_default_limit;
-		elog(DEBUG1,
-			 "tapir: Using default limit=%d for search (no query limit)",
-			 tp_default_limit);
-	}
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
@@ -1227,27 +1209,24 @@ tp_search_posting_lists(
 
 	/* Parse the query vector entries */
 	ptr = (char *)entries_ptr;
+	for (int i = 0; i < entry_count; i++)
 	{
-		int i;
-		for (i = 0; i < entry_count; i++)
-		{
-			TpVectorEntry *entry = (TpVectorEntry *)ptr;
-			char		  *term_str;
+		TpVectorEntry *entry = (TpVectorEntry *)ptr;
+		char		  *term_str;
 
-			/*
-			 * Always allocate on heap for query terms array since we need to
-			 * keep them
-			 */
-			term_str = palloc(entry->lexeme_len + 1);
-			memcpy(term_str, entry->lexeme, entry->lexeme_len);
-			term_str[entry->lexeme_len] = '\0';
+		/*
+		 * Always allocate on heap for query terms array since we need to keep
+		 * them
+		 */
+		term_str = palloc(entry->lexeme_len + 1);
+		memcpy(term_str, entry->lexeme, entry->lexeme_len);
+		term_str[entry->lexeme_len] = '\0';
 
-			/* Store the term string directly in query terms array */
-			query_terms[i]		 = term_str;
-			query_frequencies[i] = entry->frequency;
+		/* Store the term string directly in query terms array */
+		query_terms[i]		 = term_str;
+		query_frequencies[i] = entry->frequency;
 
-			ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
-		}
+		ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
 	}
 
 	/* Allocate result arrays in scan context */
@@ -1286,11 +1265,8 @@ tp_search_posting_lists(
 	so->current_pos	 = 0;
 
 	/* Free the query terms array and individual term strings */
-	{
-		int i;
-		for (i = 0; i < entry_count; i++)
-			pfree(query_terms[i]);
-	}
+	for (int i = 0; i < entry_count; i++)
+		pfree(query_terms[i]);
 
 	pfree(query_terms);
 	pfree(query_frequencies);
@@ -1380,15 +1356,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			bm25_score				 = -so->result_scores[so->current_pos];
 			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 			scan->xs_orderbynulls[0] = false;
-
-			/* Log score - NOTICE if GUC enabled, DEBUG1 otherwise */
-			elog(tp_log_scores ? NOTICE : DEBUG1,
-				 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
-				 "BM25_score=%.4f",
-				 so->current_pos,
-				 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
-				 scan->xs_heaptid.ip_posid,
-				 bm25_score);
 		}
 		else
 		{
@@ -1612,48 +1579,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
- * Helper function to safely access DSA pointers and format term entry
- */
-static bool
-tp_debug_format_term_entry(
-		dsa_area		  *area,
-		TpStringHashEntry *entry,
-		StringInfo		   result,
-		uint32			  *term_count)
-{
-	volatile bool  access_failed = false;
-	TpPostingList *posting_list	 = NULL;
-	char		  *stored_str	 = NULL;
-
-	PG_TRY();
-	{
-		posting_list = dsa_get_address(area, entry->key.flag_field);
-		stored_str	 = dsa_get_address(area, entry->key.string_or_ptr);
-	}
-	PG_CATCH();
-	{
-		access_failed = true;
-		FlushErrorState();
-	}
-	PG_END_TRY();
-
-	if (!access_failed && posting_list && stored_str)
-	{
-		appendStringInfo(
-				result,
-				"  '%s': doc_freq=%d\n",
-				stored_str,
-				posting_list->doc_count);
-	}
-	else
-	{
-		appendStringInfo(result, "  <invalid entry>: DSA pointer corrupted\n");
-	}
-	(*term_count)++;
-	return true;
-}
-
-/*
  * tp_debug_dump_index - Debug function to show internal index structure
  */
 PG_FUNCTION_INFO_V1(tp_debug_dump_index);
@@ -1665,7 +1590,10 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	char		  *index_name;
 	StringInfoData result;
 	Oid			   index_oid;
-	TpIndexState  *index_state = NULL;
+	TpLocalIndexState  *index_state;
+	Relation	   index_rel = NULL;
+	TpIndexMetaPage metap = NULL;
+	TpMemtable	   *memtable;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
@@ -1684,7 +1612,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	}
 
 	/* Get index state to inspect corpus statistics */
-	index_state = tp_get_index_state(index_oid);
+	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
 	{
 		appendStringInfo(
@@ -1697,14 +1625,14 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	/* Show corpus statistics */
 	appendStringInfo(&result, "Corpus Statistics:\n");
 	appendStringInfo(
-			&result, "  total_docs: %d\n", index_state->stats.total_docs);
+			&result, "  total_docs: %d\n", index_state->shared->total_docs);
 	appendStringInfo(
-			&result, "  total_len: %ld\n", index_state->stats.total_len);
+			&result, "  total_len: %ld\n", index_state->shared->total_len);
 
-	if (index_state->stats.total_docs > 0)
+	if (index_state->shared->total_docs > 0)
 	{
-		float avg_doc_len = (float)index_state->stats.total_len /
-							(float)index_state->stats.total_docs;
+		float avg_doc_len = (float)index_state->shared->total_len /
+							(float)index_state->shared->total_docs;
 
 		appendStringInfo(&result, "  avg_doc_len: %.4f\n", avg_doc_len);
 	}
@@ -1714,104 +1642,72 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	}
 
 	appendStringInfo(&result, "BM25 Parameters:\n");
-	appendStringInfo(&result, "  k1: %.2f\n", index_state->stats.k1);
-	appendStringInfo(&result, "  b: %.2f\n", index_state->stats.b);
+	if (metap) {
+		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
+		appendStringInfo(&result, "  b: %.2f\n", metap->b);
+		pfree(metap);
+	}
 
 	/* Show term dictionary and posting lists */
 	appendStringInfo(&result, "Term Dictionary:\n");
 
-	if (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
+	memtable = get_memtable(index_state);
+	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
-		dsa_area		  *area			= NULL;
-		TpStringHashTable *string_table = NULL;
-		uint32			   term_count	= 0;
+		dsa_area *area = index_state->dsa;
 
-		PG_TRY();
+		if (area)
 		{
-			area = tp_get_dsa_area_for_index(index_state, InvalidOid);
-			if (!area)
+			TpStringHashTable *string_table = tp_hash_table_attach_dsa(
+					area, memtable->string_hash_handle);
+
+			if (string_table)
 			{
-				appendStringInfo(
-						&result,
-						"  ERROR: Could not get DSA area for index (recovery "
-						"issue?)\n");
-				appendStringInfo(
-						&result,
-						"  HINT: Try rebuilding the index to restore "
-						"functionality\n");
+				uint32			   term_count = 0;
+				dshash_seq_status  status;
+				TpStringHashEntry *entry;
+
+				/* Iterate through all entries using dshash sequential scan */
+				dshash_seq_init(
+						&status,
+						string_table->dshash,
+						false); /* shared lock */
+
+				while ((entry = (TpStringHashEntry *)dshash_seq_next(
+								&status)) != NULL)
+				{
+					/* Show term info if it has a posting list */
+					if (DsaPointerIsValid(entry->key.flag_field))
+					{
+						TpPostingList *posting_list =
+								dsa_get_address(area, entry->key.flag_field);
+						char *stored_str = dsa_get_address(
+								area, entry->key.string_or_ptr);
+
+						appendStringInfo(
+								&result,
+								"  '%s': doc_freq=%d\n",
+								stored_str,
+								posting_list->doc_count);
+						term_count++;
+					}
+				}
+
+				dshash_seq_term(&status);
+				tp_hash_table_detach_dsa(string_table);
+
+				appendStringInfo(&result, "Total terms: %u\n", term_count);
 			}
 			else
 			{
-				string_table = tp_hash_table_attach_dsa(
-						area, index_state->string_hash_handle);
-				if (!string_table)
-				{
-					appendStringInfo(
-							&result,
-							"  ERROR: Could not attach to string hash table "
-							"(handle may be stale after recovery)\n");
-					appendStringInfo(
-							&result,
-							"  HINT: Try rebuilding the index to restore "
-							"functionality\n");
-				}
-				else
-				{
-					dshash_seq_status  status;
-					TpStringHashEntry *entry;
-
-					/* Iterate through all entries using dshash sequential scan
-					 */
-					dshash_seq_init(
-							&status,
-							string_table->dshash,
-							false); /* shared lock */
-
-					while ((entry = (TpStringHashEntry *)dshash_seq_next(
-									&status)) != NULL)
-					{
-						/* Show term info if it has a posting list */
-						if (DsaPointerIsValid(entry->key.flag_field))
-						{
-							tp_debug_format_term_entry(
-									area, entry, &result, &term_count);
-						}
-					}
-
-					dshash_seq_term(&status);
-					appendStringInfo(&result, "Total terms: %u\n", term_count);
-				}
+				appendStringInfo(
+						&result,
+						"  ERROR: Cannot attach to string hash table\n");
 			}
 		}
-		PG_CATCH();
+		else
 		{
-			/* Handle any DSA-related errors gracefully */
-			appendStringInfo(
-					&result,
-					"  ERROR: DSA area access failed (likely due to recovery "
-					"issues)\n");
-			appendStringInfo(
-					&result,
-					"  HINT: Try rebuilding the index to restore "
-					"functionality\n");
-			/* Clear error state to prevent crash */
-			FlushErrorState();
-		}
-		PG_END_TRY();
-
-		/* Clean up resources */
-		if (string_table)
-		{
-			PG_TRY();
-			{
-				tp_hash_table_detach_dsa(string_table);
-			}
-			PG_CATCH();
-			{
-				/* Ignore cleanup errors */
-				FlushErrorState();
-			}
-			PG_END_TRY();
+			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
 		}
 	}
 	else
@@ -1819,6 +1715,10 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(
 				&result, "  No terms (string hash table not initialized)\n");
 	}
+
+	/* Cleanup */
+	if (metap)
+		index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
