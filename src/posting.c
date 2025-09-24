@@ -322,16 +322,6 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 }
 
 /*
- * Finalize index building - simplified for new architecture
- */
-void
-tp_finalize_index_build(TpLocalIndexState *local_state)
-{
-	Assert(local_state != NULL);
-	/* No special finalization needed in the new architecture */
-}
-
-/*
  * Score documents using BM25 algorithm
  * Returns number of documents scored
  */

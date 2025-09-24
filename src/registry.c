@@ -168,10 +168,7 @@ tp_registry_unregister(Oid index_oid)
 {
 	if (!tapir_registry)
 	{
-		/* Registry not initialized - this can happen during testing */
-		elog(WARNING,
-			 "Cannot unregister index %u: registry not initialized",
-			 index_oid);
+		/* Registry not initialized - nothing to unregister */
 		return;
 	}
 

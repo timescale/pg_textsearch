@@ -47,7 +47,6 @@ extern int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
 
 /* Index building operations */
-extern void	  tp_finalize_index_build(TpLocalIndexState *local_state);
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
 
 /* Query operations */
@@ -62,7 +61,6 @@ extern float4 bm25_score_document(
 
 extern int tp_score_documents(
 		TpLocalIndexState *local_state,
-		Relation		   index_relation,
 		char			 **query_terms,
 		int32			  *query_frequencies,
 		int				   query_term_count,

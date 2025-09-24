@@ -165,17 +165,11 @@ tp_build_finalize_and_update_stats(
 	Page			metapage;
 	TpIndexMetaPage metap;
 
-	/*
-	 * Finalize posting lists (convert to sorted arrays for query performance)
-	 */
-	if (index_state != NULL)
-	{
-		tp_finalize_index_build(index_state);
+	Assert(index_state != NULL);
 
-		/* Get actual statistics from the shared state */
-		*total_docs = index_state->shared->total_docs;
-		*total_len	= index_state->shared->total_len;
-	}
+	/* Get actual statistics from the shared state */
+	*total_docs = index_state->shared->total_docs;
+	*total_len	= index_state->shared->total_len;
 
 	/* Update metapage with computed statistics */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -437,13 +431,13 @@ tp_process_document_text(
 		TpLocalIndexState *index_state,
 		int32			  *doc_length_out)
 {
-	char	   *document_str;
-	Datum		tsvector_datum;
-	TSVector	tsvector;
-	char	  **terms;
-	int32	   *frequencies;
-	int			term_count;
-	int			doc_length;
+	char	*document_str;
+	Datum	 tsvector_datum;
+	TSVector tsvector;
+	char   **terms;
+	int32	*frequencies;
+	int		 term_count;
+	int		 doc_length;
 
 	if (!document_text || !index_state)
 		return false;
@@ -476,12 +470,7 @@ tp_process_document_text(
 	{
 		/* Add document terms to posting lists */
 		tp_add_document_terms(
-				index_state,
-				ctid,
-				terms,
-				frequencies,
-				term_count,
-				doc_length);
+				index_state, ctid, terms, frequencies, term_count, doc_length);
 
 		/* Free the terms array and individual lexemes */
 		tp_free_terms_array(terms, term_count);
@@ -523,11 +512,15 @@ tp_process_document(
 		return false; /* Skip NULL documents */
 
 	document_text = DatumGetTextPP(text_datum);
-	ctid = &slot->tts_tid;
+	ctid		  = &slot->tts_tid;
 
 	/* Process the document text using shared helper */
 	if (!tp_process_document_text(
-				document_text, ctid, text_config_oid, index_state, &doc_length))
+				document_text,
+				ctid,
+				text_config_oid,
+				index_state,
+				&doc_length))
 	{
 		return false;
 	}
@@ -577,25 +570,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
-	/* Initialize index state - create if needed during index build */
-	index_state = tp_get_local_index_state(RelationGetRelid(index));
-	if (index_state == NULL)
-	{
-		/* Create new shared state and get local state in one call */
-		index_state = tp_create_shared_index_state(
-				RelationGetRelid(index), RelationGetRelid(heap));
-
-		if (index_state == NULL)
-			elog(ERROR,
-				 "Failed to create shared state for index %s",
-				 RelationGetRelationName(index));
-	}
+	/* Initialize index state */
+	index_state = tp_create_shared_index_state(
+			RelationGetRelid(index), RelationGetRelid(heap));
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
 
-	/* Setup table scanning */
+	/* Prepare to scan table */
 	tp_setup_table_scan(heap, &scan, &slot);
 
 	/* Process each document in the heap */
@@ -760,6 +743,7 @@ tp_insert(
 		return true;
 
 	/* Get index state */
+	/* TODO: cache local state pointer to avoid hash lookup */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
 	Assert(index_state != NULL);
 
@@ -885,7 +869,7 @@ tp_rescan(
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
-	/* Retrieve query limit for optimization */
+	/* Retrieve query LIMIT, if available */
 	{
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
@@ -1271,7 +1255,6 @@ tp_search_posting_lists(
 
 	result_count = tp_score_documents(
 			index_state,
-			scan->indexRelation,
 			query_terms,
 			query_frequencies,
 			entry_count,
@@ -1295,7 +1278,7 @@ tp_search_posting_lists(
 }
 
 /*
- * Get next tuple from scan (for index-only scans)
+ * Get next tuple from scan
  */
 bool
 tp_gettuple(IndexScanDesc scan, ScanDirection dir)
@@ -1306,10 +1289,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(scan != NULL);
 	Assert(so != NULL);
-
-	/* Check if we have a query to process */
-	if (!so->query_text)
-		return false;
+	Assert(so->query_text != NULL);
 
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && !so->eof_reached)
@@ -1348,44 +1328,26 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_recheck		= false;
 	scan->xs_recheckorderby = false;
 
-	/* Set ORDER BY distance value if this is an ORDER BY scan */
+	/* Set ORDER BY distance value */
 	if (scan->numberOfOrderBys > 0)
 	{
 		Assert(scan->numberOfOrderBys == 1);
+		Assert(scan->xs_orderbyvals != NULL);
+		Assert(scan->xs_orderbynulls != NULL);
+		Assert(so->result_scores != NULL);
 
-		/* Set the ORDER BY value (BM25 score) */
-		if (!scan->xs_orderbyvals || !scan->xs_orderbynulls)
-		{
-			/*
-			 * ORDER BY arrays not allocated by PostgreSQL - this can happen
-			 * when the query planner chooses index scan but ORDER BY arrays
-			 * aren't properly initialized. Log a warning and continue.
-			 */
-			elog(WARNING,
-				 "Tapir gettuple: ORDER BY arrays not allocated "
-				 "(numberOfOrderBys=%d), continuing "
-				 "without ORDER BY values",
-				 scan->numberOfOrderBys);
-		}
-		else if (so->result_scores)
-		{
-			/*
-			 * Convert BM25 score to Datum - PostgreSQL expects negative
-			 * values for ASC ordering
-			 */
-			bm25_score				 = -so->result_scores[so->current_pos];
-			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
-			scan->xs_orderbynulls[0] = false;
-		}
-		else
-		{
-			/* No scores available - use 0.0 as default */
-			elog(WARNING,
-				 "Tapir gettuple: result_scores is NULL, using 0.0 "
-				 "for ORDER BY");
-			scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
-			scan->xs_orderbynulls[0] = false;
-		}
+		/* Convert BM25 score to Datum (negated for ASC sort) */
+		bm25_score				 = -so->result_scores[so->current_pos];
+		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
+		scan->xs_orderbynulls[0] = false;
+
+		/* Log BM25 score if enabled */
+		elog(tp_log_scores ? NOTICE : DEBUG1,
+			 "Tapir index scan: doc_pos=%d, tid=(%u,%u), BM25_score=%.4f",
+			 so->current_pos,
+			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
+			 scan->xs_heaptid.ip_posid,
+			 so->result_scores[so->current_pos]);
 	}
 
 	/* Move to next position */
@@ -1474,9 +1436,7 @@ tp_costestimate(
 	}
 	else
 	{
-		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
-														   * selectivity for
-														   * text searches */
+		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY;
 	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
@@ -1526,20 +1486,17 @@ tp_validate(Oid opclassoid)
 	opclassform = (Form_pg_opclass)GETSTRUCT(tup);
 	opcintype	= opclassform->opcintype;
 
-	/* Check if the input type is compatible with text search */
 	switch (opcintype)
 	{
 	case TEXTOID:
 	case VARCHAROID:
 	case BPCHAROID: /* char(n) */
-		/* These are acceptable text types */
 		result = true;
 		break;
 	default:
 		elog(WARNING,
 			 "Tapir index can only be created on text, varchar, or char "
-			 "columns (got type OID "
-			 "%u)",
+			 "columns (got type OID %u)",
 			 opcintype);
 		result = false;
 		break;

@@ -84,14 +84,11 @@ tp_get_local_index_state(Oid index_oid)
 	bool				  found;
 	char				 *dsm_name;
 	void				 *dsm_seg;
-	void				 *dsa_space;
 	size_t				  total_size;
 	dsa_area			 *dsa;
 
 	/* Initialize cache if needed */
 	init_local_state_cache();
-
-	/* Debug logging removed for clean test output */
 
 	/* Check cache first */
 	entry = (LocalStateCacheEntry *)
@@ -101,16 +98,13 @@ tp_get_local_index_state(Oid index_oid)
 
 	/* Look up shared state in registry */
 	shared_state = tp_registry_lookup(index_oid);
-	/* Registry lookup debug logging removed */
+
 	if (shared_state == NULL)
 	{
-		/* Starting recovery path */
-		/* No registry entry - check if DSM segment exists for crash recovery
-		 */
+		/* No registry entry - check if DSM segment exists */
 		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 		total_size = sizeof(TpDsmSegmentHeader);
 		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
-		/* DSM segment lookup completed */
 
 		if (found)
 		{
@@ -260,8 +254,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	void				 *dsm_seg;
 	TpDsmSegmentHeader	 *dsm_header;
 	LocalStateCacheEntry *entry;
-	dsm_segment			 *dsm_segment;
-	void				 *dsa_space;
 	size_t				  total_size;
 	bool				  found;
 
@@ -322,6 +314,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	init_local_state_cache();
 	entry = (LocalStateCacheEntry *)
 			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
+	if (found)
+		elog(ERROR,
+			 "Local state cache entry already exists for index %u",
+			 index_oid);
+
 	entry->local_state = local_state;
 
 	pfree(dsm_name);
@@ -405,17 +402,20 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 /*
  * Rebuild posting lists from docid pages stored on disk
- * This scans the docid pages, retrieves documents from heap, and rebuilds the posting lists
+ * This scans the docid pages, retrieves documents from heap, and rebuilds the
+ * posting lists
  */
 void
-tp_rebuild_posting_lists_from_docids(Relation index_rel, TpLocalIndexState *local_state, TpIndexMetaPage metap)
+tp_rebuild_posting_lists_from_docids(
+		Relation		   index_rel,
+		TpLocalIndexState *local_state,
+		TpIndexMetaPage	   metap)
 {
 	Buffer			   docid_buf;
 	Page			   docid_page;
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
-	int				   total_recovered = 0; /* Track recovery progress */
 	Relation		   heap_rel;
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
@@ -435,24 +435,27 @@ tp_rebuild_posting_lists_from_docids(Relation index_rel, TpLocalIndexState *loca
 		/* Read the docid page */
 		docid_buf = ReadBuffer(index_rel, current_page);
 		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-		docid_page = BufferGetPage(docid_buf);
+		docid_page	 = BufferGetPage(docid_buf);
 		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
-		/* Get docids array */
-		docids = (ItemPointer)((char *)docid_header + sizeof(TpDocidPageHeader));
+		/* Get docids array with proper alignment */
+		docids = (ItemPointer)((char *)docid_header +
+							   MAXALIGN(sizeof(TpDocidPageHeader)));
 
 		/* Process each docid on this page */
-		for (int i = 0; i < docid_header->num_docids; i++)
+		for (unsigned int i = 0; i < docid_header->num_docids; i++)
 		{
-			ItemPointer ctid = &docids[i];
+			ItemPointer	  ctid = &docids[i];
 			HeapTupleData tuple_data;
-			HeapTuple tuple = &tuple_data;
-			Buffer heap_buf;
-			bool valid;
-			Datum text_datum;
-			bool isnull;
-			text *document_text;
-			int32 doc_length;
+			HeapTuple	  tuple = &tuple_data;
+			Buffer		  heap_buf;
+			bool		  valid;
+			Datum		  text_datum;
+			bool		  isnull;
+			text		 *document_text;
+			int32		  doc_length;
+
+			/* Note: ItemPointer validation will happen in heap_fetch */
 
 			/* Initialize tuple for heap_fetch */
 			tuple->t_self = *ctid;
@@ -467,17 +470,22 @@ tp_rebuild_posting_lists_from_docids(Relation index_rel, TpLocalIndexState *loca
 			}
 
 			/* Extract text from the first indexed column */
-			text_datum = heap_getattr(tuple, 1, RelationGetDescr(heap_rel), &isnull);
+			text_datum = heap_getattr(
+					tuple, 1, RelationGetDescr(heap_rel), &isnull);
 
 			if (!isnull)
 			{
 				document_text = DatumGetTextPP(text_datum);
 
-				/* Use shared helper to process document text and rebuild posting lists */
-				if (tp_process_document_text(document_text, ctid, metap->text_config_oid,
-											local_state, &doc_length))
+				/* Use shared helper to process document text and rebuild
+				 * posting lists */
+				if (tp_process_document_text(
+							document_text,
+							ctid,
+							metap->text_config_oid,
+							local_state,
+							&doc_length))
 				{
-					total_recovered++;
 					/* Update corpus statistics */
 					local_state->shared->total_docs++;
 					local_state->shared->total_len += doc_length;
@@ -494,6 +502,4 @@ tp_rebuild_posting_lists_from_docids(Relation index_rel, TpLocalIndexState *loca
 	}
 
 	relation_close(heap_rel, AccessShareLock);
-
-	/* Completed docid recovery */
 }

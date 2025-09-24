@@ -31,8 +31,9 @@
 #include "vector.h"
 
 /* Maximum number of docids that fit in a page */
-#define TP_DOCIDS_PER_PAGE                                           \
-	((BLCKSZ - sizeof(PageHeaderData) - sizeof(TpDocidPageHeader)) / \
+#define TP_DOCIDS_PER_PAGE                   \
+	((BLCKSZ - sizeof(PageHeaderData) -      \
+	  MAXALIGN(sizeof(TpDocidPageHeader))) / \
 	 sizeof(ItemPointerData))
 
 /*
@@ -229,7 +230,8 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	}
 
 	/* Add the docid to the current page */
-	docids = (ItemPointer)((char *)docid_header + sizeof(TpDocidPageHeader));
+	docids							 = (ItemPointer)((char *)docid_header +
+							 MAXALIGN(sizeof(TpDocidPageHeader)));
 	docids[docid_header->num_docids] = *ctid;
 	docid_header->num_docids++;
 

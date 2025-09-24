@@ -54,7 +54,7 @@ void
 _PG_init(void)
 {
 	/* Initialize on first use - don't require shared_preload_libraries */
-	elog(NOTICE, "Tapir extension _PG_init() starting GUC initialization");
+	elog(DEBUG1, "Tapir extension _PG_init() starting GUC initialization");
 
 	/*
 	 * Define GUC parameters
@@ -132,7 +132,7 @@ _PG_init(void)
 			1.0,
 			NoLock);
 
-	elog(NOTICE, "Tapir extension GUC variables defined successfully");
+	elog(DEBUG1, "Tapir extension GUC variables defined successfully");
 
 	/*
 	 * Install shared memory hooks (needed for registry)
@@ -143,13 +143,13 @@ _PG_init(void)
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= tp_shmem_startup;
 
-	elog(NOTICE, "Tapir shared memory hooks installed");
+	elog(DEBUG1, "Tapir shared memory hooks installed");
 
 	/* Install object access hook for index lifecycle management */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access_hook;
 
-	elog(NOTICE, "Tapir extension _PG_init() completed successfully");
+	elog(DEBUG1, "Tapir extension _PG_init() completed successfully");
 }
 
 /*
