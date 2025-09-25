@@ -27,7 +27,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic index limits manyterms mixed queries strings vector
+REGRESS = aerodocs basic index limits manyterms mixed queries scoring1 scoring2 scoring3 scoring4 scoring5 strings vector
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

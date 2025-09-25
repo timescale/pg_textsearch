@@ -8,30 +8,29 @@ CREATE TABLE goodbye_debug_docs (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
-
+-- Insert test documents
 INSERT INTO goodbye_debug_docs (content) VALUES ('hello world');
-INSERT 0 1
 INSERT INTO goodbye_debug_docs (content) VALUES ('goodbye cruel world');
-INSERT 0 1
 INSERT INTO goodbye_debug_docs (content) VALUES ('goodbye nerds');
-INSERT 0 1
 -- Create Tapir index
 CREATE INDEX goodbye_debug_idx ON goodbye_debug_docs USING tapir(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation goodbye_debug_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=XXX, text_config='english' (k1=1.20, b=0.75)
-
+NOTICE:  Tapir index build completed: 3 documents, avg_length=2.33, text_config='english' (k1=1.20, b=0.75)
 -- Test query 1: 'goodbye'
 SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'goodbye_debug_idx'))::numeric, 4) as score
 FROM goodbye_debug_docs
 ORDER BY content <@> to_tpquery('goodbye', 'goodbye_debug_idx'), id;
- id |        content        |  score  
-----+-----------------------+---------
-  3 | goodbye nerds         | -0.0271
-  2 | goodbye cruel world   | -0.0229
-  1 | hello world           |  0.0000
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1079
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0910
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=-0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  3 | goodbye nerds       | -0.1079
+  2 | goodbye cruel world | -0.0910
+  1 | hello world         |  0.0000
 (3 rows)
 
 -- Cleanup

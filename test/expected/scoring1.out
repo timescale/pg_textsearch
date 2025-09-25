@@ -1,0 +1,66 @@
+-- Test case: scoring1
+-- Generated BM25 test with 3 documents and 3 queries
+CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
+SET enable_seqscan = off;
+-- Create test table
+CREATE TABLE scoring1_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+-- Insert test documents
+INSERT INTO scoring1_docs (content) VALUES ('the quick brown fox');
+INSERT INTO scoring1_docs (content) VALUES ('jumped over the lazy dog');
+INSERT INTO scoring1_docs (content) VALUES ('the fox and the hound');
+-- Create Tapir index
+CREATE INDEX scoring1_idx ON scoring1_docs USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  Tapir index build started for relation scoring1_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+-- Test query 1: 'fox'
+SELECT id, content, ROUND((content <@> to_tpquery('fox', 'scoring1_idx'))::numeric, 4) as score
+FROM scoring1_docs
+ORDER BY content <@> to_tpquery('fox', 'scoring1_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1319
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1126
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-0.0000
+ id |         content          |  score  
+----+--------------------------+---------
+  3 | the fox and the hound    | -0.1319
+  1 | the quick brown fox      | -0.1126
+  2 | jumped over the lazy dog |  0.0000
+(3 rows)
+
+-- Test query 2: 'the fox'
+SELECT id, content, ROUND((content <@> to_tpquery('the fox', 'scoring1_idx'))::numeric, 4) as score
+FROM scoring1_docs
+ORDER BY content <@> to_tpquery('the fox', 'scoring1_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1319
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1126
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-0.0000
+ id |         content          |  score  
+----+--------------------------+---------
+  3 | the fox and the hound    | -0.1319
+  1 | the quick brown fox      | -0.1126
+  2 | jumped over the lazy dog |  0.0000
+(3 rows)
+
+-- Test query 3: 'quick brown'
+SELECT id, content, ROUND((content <@> to_tpquery('quick brown', 'scoring1_idx'))::numeric, 4) as score
+FROM scoring1_docs
+ORDER BY content <@> to_tpquery('quick brown', 'scoring1_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.9719
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
+ id |         content          |  score  
+----+--------------------------+---------
+  1 | the quick brown fox      | -0.9719
+  2 | jumped over the lazy dog |  0.0000
+  3 | the fox and the hound    |  0.0000
+(3 rows)
+
+-- Cleanup
+DROP TABLE scoring1_docs CASCADE;
+DROP EXTENSION tapir CASCADE;
