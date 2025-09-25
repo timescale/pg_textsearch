@@ -127,7 +127,14 @@ tp_get_local_index_state(Oid index_oid)
 					 "index %u",
 					 dsm_header->dsm_handle,
 					 index_oid);
-				dsa = dsa_attach(dsm_header->dsm_handle);
+				/* Attach to DSA area in TopMemoryContext for persistence */
+				{
+					MemoryContext oldcontext = MemoryContextSwitchTo(
+							TopMemoryContext);
+					dsa = dsa_attach(dsm_header->dsm_handle);
+					MemoryContextSwitchTo(oldcontext);
+				}
+
 				if (dsa == NULL)
 				{
 					elog(WARNING,
@@ -202,7 +209,14 @@ tp_get_local_index_state(Oid index_oid)
 		}
 
 		TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *)dsm_seg;
-		dsa							   = dsa_attach(dsm_header->dsm_handle);
+
+		/* Attach to DSA area in TopMemoryContext for persistence */
+		{
+			MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+			dsa						 = dsa_attach(dsm_header->dsm_handle);
+			MemoryContextSwitchTo(oldcontext);
+		}
+
 		if (dsa == NULL)
 		{
 			elog(ERROR, "Failed to attach to DSA for index %u", index_oid);
@@ -291,8 +305,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create DSA area name for this index */
 	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 
-	/* Use proven working DSA creation approach */
-	dsa = dsa_create(LWLockNewTrancheId());
+	/* Create DSA area in TopMemoryContext for persistence across queries */
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		dsa						 = dsa_create(LWLockNewTrancheId());
+		MemoryContextSwitchTo(oldcontext);
+	}
 	dsa_pin(dsa); /* Pin the DSA area itself for cross-backend persistence */
 	dsa_pin_mapping(dsa); /* Pin this backend's mapping */
 
