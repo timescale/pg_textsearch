@@ -87,17 +87,36 @@ tp_get_local_index_state(Oid index_oid)
 	size_t				  total_size;
 	dsa_area			 *dsa;
 
+	/* DEBUG: Log entry to function */
+	elog(NOTICE,
+		 "DEBUG: tp_get_local_index_state called for index_oid=%u",
+		 index_oid);
+
 	/* Initialize cache if needed */
 	init_local_state_cache();
+
+	/* DEBUG: After cache init */
+	elog(NOTICE, "DEBUG: After init_local_state_cache");
 
 	/* Check cache first */
 	entry = (LocalStateCacheEntry *)
 			hash_search(local_state_cache, &index_oid, HASH_FIND, NULL);
+
+	/* DEBUG: After cache lookup */
+	elog(NOTICE,
+		 "DEBUG: After cache lookup, entry=%s",
+		 entry ? "found" : "NULL");
+
 	if (entry != NULL)
 		return entry->local_state;
 
 	/* Look up shared state in registry */
 	shared_state = tp_registry_lookup(index_oid);
+
+	/* DEBUG: After registry lookup */
+	elog(NOTICE,
+		 "DEBUG: After registry lookup, shared_state=%s",
+		 shared_state ? "found" : "NULL");
 
 	if (shared_state == NULL)
 	{
@@ -181,10 +200,49 @@ tp_get_local_index_state(Oid index_oid)
 		}
 	}
 
-	/* If we reach here with shared_state set, continue with normal local state
-	 * creation */
+	/* If we reach here with shared_state set, it's actually a DSA pointer */
 	if (shared_state != NULL)
 	{
+		/* shared_state is actually a DSA pointer - need to attach to DSA and
+		 * convert to address */
+		dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)shared_state;
+
+		elog(NOTICE,
+			 "DEBUG: Registry returned DSA pointer %lu",
+			 (unsigned long)shared_dp);
+
+		/* Attach to the DSA area */
+		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+		total_size = sizeof(TpDsmSegmentHeader);
+		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
+
+		if (!found || dsm_seg == NULL)
+		{
+			elog(ERROR, "DSM segment not found for index %u", index_oid);
+			pfree(dsm_name);
+			return NULL;
+		}
+
+		TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *)dsm_seg;
+		dsa							   = dsa_attach(dsm_header->dsm_handle);
+		if (dsa == NULL)
+		{
+			elog(ERROR, "Failed to attach to DSA for index %u", index_oid);
+			pfree(dsm_name);
+			return NULL;
+		}
+
+		/* Pin the mapping for cross-backend persistence */
+		dsa_pin_mapping(dsa);
+
+		/* Convert DSA pointer to memory address in this backend */
+		shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+
+		elog(NOTICE,
+			 "DEBUG: Converted DSA pointer %lu to address %p",
+			 (unsigned long)shared_dp,
+			 shared_state);
+
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
@@ -295,12 +353,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Store shared state pointer in DSM header for recovery */
 	dsm_header->shared_state_dp = shared_dp;
 
-	/* Register in global registry - initialize registry if needed */
-	if (!tp_registry_register(index_oid, shared_state))
+	/* Register in global registry using DSA pointer, not memory address */
+	if (!tp_registry_register(index_oid, (TpSharedIndexState *)shared_dp))
 	{
 		/* If registration failed, try initializing the registry first */
 		tp_registry_shmem_startup();
-		if (!tp_registry_register(index_oid, shared_state))
+		if (!tp_registry_register(index_oid, (TpSharedIndexState *)shared_dp))
 			elog(ERROR, "Failed to register index %u", index_oid);
 	}
 
@@ -381,6 +439,12 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return NULL;
 	}
 
+	/* DEBUG: Log what metapage contains during recovery */
+	elog(NOTICE,
+		 "DEBUG: Recovery metapage: magic=0x%08X, first_docid_page=%u",
+		 metap->magic,
+		 metap->first_docid_page);
+
 	/* Create fresh state first */
 	/* Creating fresh state for restart recovery */
 	local_state = tp_create_shared_index_state(
@@ -429,6 +493,11 @@ tp_rebuild_posting_lists_from_docids(
 
 	current_page = metap->first_docid_page;
 
+	/* DEBUG: Log metapage docid chain starting point */
+	elog(NOTICE,
+		 "DEBUG: Recovery starting from metapage first_docid_page=%u",
+		 current_page);
+
 	/* Scan through all docid pages */
 	while (current_page != InvalidBlockNumber)
 	{
@@ -437,6 +506,14 @@ tp_rebuild_posting_lists_from_docids(
 		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
 		docid_page	 = BufferGetPage(docid_buf);
 		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+		/* DEBUG: Log what we're reading from this page */
+		elog(NOTICE,
+			 "DEBUG: Recovery reading docid page %u, magic=0x%08X, "
+			 "num_docids=%d",
+			 current_page,
+			 docid_header->magic,
+			 docid_header->num_docids);
 
 		/* Get docids array with proper alignment */
 		docids = (ItemPointer)((char *)docid_header +
@@ -447,13 +524,20 @@ tp_rebuild_posting_lists_from_docids(
 		{
 			ItemPointer	  ctid = &docids[i];
 			HeapTupleData tuple_data;
-			HeapTuple	  tuple = &tuple_data;
-			Buffer		  heap_buf;
-			bool		  valid;
-			Datum		  text_datum;
-			bool		  isnull;
-			text		 *document_text;
-			int32		  doc_length;
+
+			/* DEBUG: Log each CTID being processed */
+			elog(NOTICE,
+				 "DEBUG: Recovery processing docid[%u] = (%u,%u)",
+				 i,
+				 BlockIdGetBlockNumber(&ctid->ip_blkid),
+				 ctid->ip_posid);
+			HeapTuple tuple = &tuple_data;
+			Buffer	  heap_buf;
+			bool	  valid;
+			Datum	  text_datum;
+			bool	  isnull;
+			text	 *document_text;
+			int32	  doc_length;
 
 			/* Note: ItemPointer validation will happen in heap_fetch */
 

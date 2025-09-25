@@ -136,6 +136,13 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	BlockNumber		   current_page, new_page;
 	int				   page_capacity;
 
+	/* DEBUG: Log what CTID is being written */
+	elog(NOTICE,
+		 "DEBUG: tp_add_docid_to_pages writing CTID (%u,%u) for index %s",
+		 ctid ? BlockIdGetBlockNumber(&ctid->ip_blkid) : 0,
+		 ctid ? ctid->ip_posid : 0,
+		 RelationGetRelationName(index));
+
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
@@ -161,12 +168,30 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		docid_header->next_page	 = InvalidBlockNumber;
 		docid_header->reserved	 = 0;
 
+		/* CRITICAL: Mark docid page dirty immediately after initialization */
+		MarkBufferDirty(docid_buf);
+
 		/* Update metapage to point to this new page */
-		metap->first_docid_page = BufferGetBlockNumber(docid_buf);
+		BlockNumber new_docid_page = BufferGetBlockNumber(docid_buf);
+		metap->first_docid_page	   = new_docid_page;
+
+		/* DEBUG: Log metapage update */
+		elog(NOTICE,
+			 "DEBUG: Updating metapage first_docid_page from %u to %u",
+			 metap->first_docid_page == new_docid_page
+					 ? 0
+					 : metap->first_docid_page,
+			 new_docid_page);
+
 		MarkBufferDirty(metabuf);
 
 		/* Flush metapage to disk immediately to ensure crash recovery works */
 		FlushOneBuffer(metabuf);
+
+		/* DEBUG: Verify metapage was written correctly */
+		elog(NOTICE,
+			 "DEBUG: Metapage flushed, first_docid_page=%u",
+			 metap->first_docid_page);
 	}
 	else
 	{
@@ -218,9 +243,16 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		new_header->next_page  = InvalidBlockNumber;
 		new_header->reserved   = 0;
 
+		/* CRITICAL: Mark new page dirty immediately after initialization */
+		MarkBufferDirty(new_buf);
+
 		/* Link old page to new page */
 		docid_header->next_page = BufferGetBlockNumber(new_buf);
 		MarkBufferDirty(docid_buf);
+
+		/* CRITICAL: Flush old page to disk before releasing */
+		FlushOneBuffer(docid_buf);
+
 		UnlockReleaseBuffer(docid_buf);
 
 		/* Switch to new page */
@@ -230,16 +262,74 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	}
 
 	/* Add the docid to the current page */
-	docids							 = (ItemPointer)((char *)docid_header +
-							 MAXALIGN(sizeof(TpDocidPageHeader)));
+	docids = (ItemPointer)((char *)docid_header +
+						   MAXALIGN(sizeof(TpDocidPageHeader)));
+
+	/* DEBUG: Log detailed write operation */
+	elog(NOTICE,
+		 "DEBUG: Writing CTID (%u,%u) to slot %d on page %u, current "
+		 "num_docids=%d",
+		 BlockIdGetBlockNumber(&ctid->ip_blkid),
+		 ctid->ip_posid,
+		 docid_header->num_docids,
+		 BufferGetBlockNumber(docid_buf),
+		 docid_header->num_docids);
+
 	docids[docid_header->num_docids] = *ctid;
 	docid_header->num_docids++;
 
+	/* DEBUG: Verify what was actually written */
+	elog(NOTICE,
+		 "DEBUG: Wrote CTID (%u,%u) to slot %d, new num_docids=%d",
+		 BlockIdGetBlockNumber(&docids[docid_header->num_docids - 1].ip_blkid),
+		 docids[docid_header->num_docids - 1].ip_posid,
+		 docid_header->num_docids - 1,
+		 docid_header->num_docids);
+
 	/* Save the docid count before releasing the buffer */
+	BlockNumber written_page = BufferGetBlockNumber(docid_buf);
+	elog(NOTICE,
+		 "DEBUG: Marking docid buffer %u dirty and releasing",
+		 written_page);
 
 	MarkBufferDirty(docid_buf);
+
+	/* CRITICAL: Flush docid page to disk immediately for crash recovery */
+	FlushOneBuffer(docid_buf);
+
 	UnlockReleaseBuffer(docid_buf);
 	UnlockReleaseBuffer(metabuf);
+
+	/* DEBUG: Immediately read back the page to verify it was written correctly
+	 */
+	{
+		Buffer verify_buf = ReadBuffer(index, written_page);
+		LockBuffer(verify_buf, BUFFER_LOCK_SHARE);
+		Page			   verify_page	 = BufferGetPage(verify_buf);
+		TpDocidPageHeader *verify_header = (TpDocidPageHeader *)
+				PageGetContents(verify_page);
+		ItemPointer verify_docids = (ItemPointer)((char *)verify_header +
+												  MAXALIGN(sizeof(
+														  TpDocidPageHeader)));
+
+		elog(NOTICE,
+			 "DEBUG: Verify read-back page %u: magic=0x%08X, num_docids=%d",
+			 BufferGetBlockNumber(verify_buf),
+			 verify_header->magic,
+			 verify_header->num_docids);
+
+		if (verify_header->num_docids > 0)
+		{
+			ItemPointer last_ctid =
+					&verify_docids[verify_header->num_docids - 1];
+			elog(NOTICE,
+				 "DEBUG: Last CTID on page: (%u,%u)",
+				 BlockIdGetBlockNumber(&last_ctid->ip_blkid),
+				 last_ctid->ip_posid);
+		}
+
+		UnlockReleaseBuffer(verify_buf);
+	}
 }
 
 /*

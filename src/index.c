@@ -1579,6 +1579,26 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
 
+	/* Open the index relation to read metapage */
+	index_rel = index_open(index_oid, AccessShareLock);
+
+	/* Get the metapage */
+	metap = tp_get_metapage(index_rel);
+
+	/* DEBUG: Log metapage contents immediately after reading */
+	if (metap)
+	{
+		elog(NOTICE,
+			 "DEBUG: tp_debug_dump_index read metapage: magic=0x%08X, "
+			 "first_docid_page=%u",
+			 metap->magic,
+			 metap->first_docid_page);
+	}
+	else
+	{
+		elog(NOTICE, "DEBUG: tp_debug_dump_index: metap is NULL");
+	}
+
 	/* Get index state to inspect corpus statistics */
 	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
@@ -1587,6 +1607,10 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				&result,
 				"ERROR: Could not get index state for '%s'\n",
 				index_name);
+		if (metap)
+			pfree(metap);
+		if (index_rel)
+			index_close(index_rel, AccessShareLock);
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
 
@@ -1614,6 +1638,13 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	{
 		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
 		appendStringInfo(&result, "  b: %.2f\n", metap->b);
+
+		/* DEBUG: Add metapage docid information */
+		appendStringInfo(&result, "Metapage Recovery Info:\n");
+		appendStringInfo(&result, "  magic: 0x%08X\n", metap->magic);
+		appendStringInfo(
+				&result, "  first_docid_page: %u\n", metap->first_docid_page);
+
 		pfree(metap);
 	}
 
@@ -1683,8 +1714,125 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				&result, "  No terms (string hash table not initialized)\n");
 	}
 
+	/* DEBUG: Add docid pages information */
+	appendStringInfo(&result, "Docid Pages (for crash recovery):\n");
+	if (metap && metap->first_docid_page != InvalidBlockNumber)
+	{
+		Buffer			   docid_buf;
+		Page			   docid_page;
+		TpDocidPageHeader *docid_header;
+		ItemPointer		   docids;
+		BlockNumber		   current_page = metap->first_docid_page;
+		int				   page_count	= 0;
+
+		/* DEBUG: Log initial current_page value */
+		appendStringInfo(
+				&result,
+				"  Starting docid page scan with current_page=%u\n",
+				current_page);
+
+		while (current_page != InvalidBlockNumber &&
+			   page_count < 10) /* Limit to prevent infinite loops */
+		{
+			/* DEBUG: Validate block number before reading */
+			if (current_page >
+				1000000) /* Reasonable upper bound for testing */
+			{
+				appendStringInfo(
+						&result,
+						"  ERROR: Invalid block number %u detected, "
+						"stopping\n",
+						current_page);
+				break;
+			}
+
+			docid_buf = ReadBuffer(index_rel, current_page);
+			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+			docid_page	 = BufferGetPage(docid_buf);
+			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+			appendStringInfo(
+					&result,
+					"  Page %u: magic=0x%08X, num_docids=%u, next_page=%u, "
+					"reserved=%u\n",
+					current_page,
+					docid_header->magic,
+					docid_header->num_docids,
+					docid_header->next_page,
+					docid_header->reserved);
+
+			/* DEBUG: Also log raw memory around the header */
+			unsigned char *raw = (unsigned char *)docid_header;
+			appendStringInfo(
+					&result,
+					"    Raw header bytes: %02X %02X %02X %02X %02X %02X %02X "
+					"%02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+					raw[0],
+					raw[1],
+					raw[2],
+					raw[3],
+					raw[4],
+					raw[5],
+					raw[6],
+					raw[7],
+					raw[8],
+					raw[9],
+					raw[10],
+					raw[11],
+					raw[12],
+					raw[13],
+					raw[14],
+					raw[15]);
+
+			if (docid_header->magic == TP_DOCID_PAGE_MAGIC &&
+				docid_header->num_docids > 0)
+			{
+				docids = (ItemPointer)((char *)docid_header +
+									   MAXALIGN(sizeof(TpDocidPageHeader)));
+				for (unsigned int i = 0; i < docid_header->num_docids && i < 5;
+					 i++) /* Show first 5 CTIDs */
+				{
+					appendStringInfo(
+							&result,
+							"    docid[%u]: (%u,%u)\n",
+							i,
+							BlockIdGetBlockNumber(&docids[i].ip_blkid),
+							docids[i].ip_posid);
+				}
+				if (docid_header->num_docids > 5)
+				{
+					appendStringInfo(
+							&result,
+							"    ... (%u more docids)\n",
+							docid_header->num_docids - 5);
+				}
+			}
+
+			current_page = docid_header->next_page;
+			UnlockReleaseBuffer(docid_buf);
+			page_count++;
+		}
+
+		if (page_count >= 10)
+		{
+			appendStringInfo(
+					&result,
+					"  ... (stopped after 10 pages to prevent infinite "
+					"loop)\n");
+		}
+	}
+	else
+	{
+		appendStringInfo(
+				&result,
+				"  No docid pages (first_docid_page=%u)\n",
+				metap ? metap->first_docid_page : 0);
+	}
+
 	/* Cleanup */
 	if (metap)
+		pfree(metap);
+	if (index_rel)
 		index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
