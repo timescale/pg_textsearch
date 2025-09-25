@@ -65,11 +65,11 @@ ORDER BY score
 LIMIT 5;
  id |                           content                           |  score  
 ----+-------------------------------------------------------------+---------
-  8 | database concurrent processing improves performance         | -0.5052
-  7 | concurrent database operations need careful synchronization | -0.4648
-  6 | database systems require concurrent access control          | -0.4648
   5 | database indexing strategies                                | -0.3058
-  2 | concurrent programming patterns                             | -0.3058
+  1 | database query optimization techniques                      | -0.2766
+  8 | database concurrent processing improves performance         | -0.2526
+  6 | database systems require concurrent access control          | -0.2324
+  7 | concurrent database operations need careful synchronization | -0.2324
 (5 rows)
 
 -- Test 3: Multiple index creation (simulates concurrent index builds)
@@ -379,10 +379,10 @@ FROM multi_idx_test
 ORDER BY english_score;
  id |            content             | english_score 
 ----+--------------------------------+---------------
-  1 | hello world from the test      |       -0.2039
-  5 | hello database world           |       -0.2039
-  3 | hello from another document    |       -0.1019
-  4 | world of databases and indexes |       -0.1019
+  1 | hello world from the test      |       -0.2472
+  5 | hello database world           |       -0.2472
+  3 | hello from another document    |       -0.1236
+  4 | world of databases and indexes |       -0.1236
   2 | the quick brown fox jumps      |        0.0000
 (5 rows)
 
@@ -392,10 +392,10 @@ FROM multi_idx_test
 ORDER BY simple_score;
  id |            content             | simple_score 
 ----+--------------------------------+--------------
-  5 | hello database world           |      -0.1335
-  1 | hello world from the test      |      -0.1100
-  3 | hello from another document    |      -0.0603
-  4 | world of databases and indexes |      -0.0550
+  5 | hello database world           |      -0.2527
+  1 | hello world from the test      |      -0.2082
+  3 | hello from another document    |      -0.1142
+  4 | world of databases and indexes |      -0.1041
   2 | the quick brown fox jumps      |       0.0000
 (5 rows)
 

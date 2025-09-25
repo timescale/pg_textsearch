@@ -222,8 +222,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,15), BM25_score=-0.4006
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,11), BM25_score=-0.4006
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,11), BM25_score=-0.4006
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,7), BM25_score=-0.4006
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -254,8 +254,8 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 ) q3;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,18), BM25_score=-1.0761
 NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-1.0110
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,6), BM25_score=-1.0110
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,4), BM25_score=-1.0110
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=-1.0110
  query_name | results 
 ------------+---------
  Query 3    |       4

@@ -63,8 +63,10 @@ typedef struct TpSharedIndexState
 	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
 	/* Corpus statistics for BM25 scoring */
-	int32 total_docs; /* Total number of documents */
-	int64 total_len;  /* Total length of all documents */
+	int32  total_docs; /* Total number of documents */
+	int64  total_len;  /* Total length of all documents */
+	float8 idf_sum;	   /* Sum of all IDF values for average IDF calculation */
+	/* Note: num_unique_terms is available as memtable->total_terms */
 } TpSharedIndexState;
 
 /*

@@ -137,11 +137,11 @@ SELECT id, ROUND((content <@> to_tpquery('algorithm bm25', 'long_strings_idx')):
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('algorithm bm25', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-1.2419
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-1.0315
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=-0.4677
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=-0.3597
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,7), BM25_score=-0.3597
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-0.9242
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-0.7676
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,7), BM25_score=-0.0000
 NOTICE:  Tapir index scan: doc_pos=5, tid=(0,2), BM25_score=-0.0000
 NOTICE:  Tapir index scan: doc_pos=6, tid=(0,3), BM25_score=-0.0000
 NOTICE:  Tapir index scan: doc_pos=7, tid=(0,4), BM25_score=-0.0000
@@ -149,11 +149,11 @@ NOTICE:  Tapir index scan: doc_pos=8, tid=(0,5), BM25_score=-0.0000
 NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=-0.0000
  id |  score  
 ----+---------
-  8 | -1.2419
- 10 | -1.0315
-  1 | -0.4677
-  6 | -0.3597
-  7 | -0.3597
+  8 | -0.9242
+ 10 | -0.7676
+  1 |  0.0000
+  6 |  0.0000
+  7 |  0.0000
   2 |  0.0000
   3 |  0.0000
   4 |  0.0000

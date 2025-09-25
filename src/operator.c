@@ -15,19 +15,24 @@
 #include <postgres.h>
 
 #include <math.h>
+#include <storage/bufmgr.h>
+#include <storage/bufpage.h>
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
 #include "memtable.h"
+#include "metapage.h"
 #include "operator.h"
 #include "posting.h"
 #include "state.h"
 #include "stringtable.h"
 
 /*
- * Centralized IDF calculation
+ * Centralized IDF calculation (basic version)
  * Calculates IDF using the standard BM25 formula: log((N - df + 0.5) / (df +
  * 0.5))
+ * This version uses a simple epsilon for negative IDFs.
+ * Use tp_calculate_idf_with_epsilon when average_idf is available.
  */
 float4
 tp_calculate_idf(int32 doc_freq, int32 total_docs)
@@ -37,7 +42,41 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	double idf_ratio	   = idf_numerator / idf_denominator;
 	double raw_idf		   = log(idf_ratio);
 
-	/* Return raw IDF (can be negative for common terms) */
+	/*
+	 * For negative IDFs, use a simple epsilon value.
+	 * This is used during index building when average_idf isn't yet known.
+	 */
+	if (raw_idf < 0)
+	{
+		return 0.25; /* Simple epsilon */
+	}
+
+	return (float4)raw_idf;
+}
+
+/*
+ * IDF calculation with proper epsilon handling
+ * Uses epsilon * average_idf for negative IDFs to match Python rank_bm25
+ */
+float4
+tp_calculate_idf_with_epsilon(
+		int32 doc_freq, int32 total_docs, float8 average_idf)
+{
+	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
+	double idf_denominator = (double)(doc_freq + 0.5);
+	double idf_ratio	   = idf_numerator / idf_denominator;
+	double raw_idf		   = log(idf_ratio);
+
+	/*
+	 * Python rank_bm25 uses epsilon * average_idf for negative IDFs.
+	 * Default epsilon is 0.25 in BM25Okapi.
+	 */
+	if (raw_idf < 0)
+	{
+		const float8 epsilon = 0.25;
+		return (float4)(epsilon * average_idf);
+	}
+
 	return (float4)raw_idf;
 }
 
@@ -159,6 +198,88 @@ tp_extract_and_sort_documents(
 }
 
 /*
+ * Scan docid pages to find all documents in the index
+ * Returns an array of CTIDs and the count
+ */
+static ItemPointer
+tp_scan_docid_pages(Relation index_relation, int *total_ctids)
+{
+	Buffer			   metabuf, docid_buf;
+	Page			   metapage, docid_page;
+	TpIndexMetaPage	   metap;
+	TpDocidPageHeader *docid_header;
+	ItemPointer		   docids, all_ctids;
+	BlockNumber		   current_page;
+	int				   capacity = 100; /* Initial capacity */
+	int				   count	= 0;
+
+	/* Initialize output */
+	*total_ctids = 0;
+
+	/* Allocate initial array */
+	all_ctids = (ItemPointer)palloc(capacity * sizeof(ItemPointerData));
+
+	/* Get the metapage to find the first docid page */
+	metabuf = ReadBuffer(index_relation, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	current_page = metap->first_docid_page;
+	UnlockReleaseBuffer(metabuf);
+
+	if (current_page == InvalidBlockNumber)
+	{
+		pfree(all_ctids);
+		return NULL;
+	}
+
+	/* Iterate through all docid pages */
+	while (current_page != InvalidBlockNumber)
+	{
+		docid_buf = ReadBuffer(index_relation, current_page);
+		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+		docid_page	 = BufferGetPage(docid_buf);
+		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+		/* Validate page magic */
+		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
+		{
+			elog(WARNING,
+				 "Invalid docid page magic on block %u, stopping scan",
+				 current_page);
+			UnlockReleaseBuffer(docid_buf);
+			break;
+		}
+
+		/* Get docids from this page */
+		docids = (ItemPointer)((char *)docid_header +
+							   MAXALIGN(sizeof(TpDocidPageHeader)));
+
+		/* Expand array if needed */
+		if (count + docid_header->num_docids > capacity)
+		{
+			capacity  = count + docid_header->num_docids + 100;
+			all_ctids = (ItemPointer)
+					repalloc(all_ctids, capacity * sizeof(ItemPointerData));
+		}
+
+		/* Copy docids from this page */
+		for (int i = 0; i < docid_header->num_docids; i++)
+		{
+			all_ctids[count++] = docids[i];
+		}
+
+		/* Move to next page */
+		current_page = docid_header->next_page;
+		UnlockReleaseBuffer(docid_buf);
+	}
+
+	*total_ctids = count;
+	return all_ctids;
+}
+
+/*
  * Copy results to output arrays
  */
 static void
@@ -181,7 +302,8 @@ tp_copy_results_to_output(
 	for (i = 0; i < scored_count; i++)
 	{
 		result_ctids[i] = sorted_docs[i]->ctid;
-		scores[i]		= sorted_docs[i]->score; /* Positive BM25 score */
+		/* Store BM25 score as computed (should be positive) */
+		scores[i] = sorted_docs[i]->score;
 	}
 
 	/* Copy additional zero-scored documents */
@@ -217,6 +339,7 @@ tp_score_documents(
 	int32				 total_docs;
 	int					 scored_count	  = 0;
 	int					 additional_count = 0;
+	int					 total_results;
 	ItemPointer			 additional_ctids = NULL;
 	dshash_table		*string_table;
 	TpMemtable			*memtable;
@@ -294,8 +417,19 @@ tp_score_documents(
 		if (!posting_list || posting_list->doc_count == 0)
 			continue;
 
-		/* Calculate IDF using centralized function */
-		idf = tp_calculate_idf(posting_list->doc_count, total_docs);
+		/* Calculate IDF with epsilon handling if average IDF is available */
+		if (local_state->shared->idf_sum > 0 && memtable->total_terms > 0)
+		{
+			float8 avg_idf = local_state->shared->idf_sum /
+							 memtable->total_terms;
+			idf = tp_calculate_idf_with_epsilon(
+					posting_list->doc_count, total_docs, avg_idf);
+		}
+		else
+		{
+			/* Fallback to simple IDF calculation */
+			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
+		}
 
 		/* Get posting entries */
 		entries = tp_get_posting_entries(local_state->dsa, posting_list);
@@ -348,21 +482,76 @@ tp_score_documents(
 			if (!found)
 			{
 				/* New document - initialize */
-				doc_entry->ctid		  = entry->ctid;
-				doc_entry->score	  = term_score; /* Positive BM25 score */
+				doc_entry->ctid	 = entry->ctid;
+				doc_entry->score = term_score; /* BM25 score (can be positive
+												  or negative) */
 				doc_entry->doc_length = doc_len;
 			}
 			else
 			{
 				/* Existing document - accumulate score */
-				doc_entry->score += term_score; /* Positive BM25 score */
+				float4 old_score = doc_entry->score;
+				doc_entry->score += term_score; /* Accumulate BM25 score */
 			}
 		}
+	}
+
+	/* If we don't have enough scored results, find additional zero-scored
+	 * documents */
+	if (scored_count < max_results)
+	{
+		int			needed_additional = max_results - scored_count;
+		int			found_additional  = 0;
+		ItemPointer all_index_ctids;
+		int			total_index_ctids;
+
+		/* Allocate array for additional CTIDs */
+		additional_ctids = palloc(needed_additional * sizeof(ItemPointerData));
+
+		/* Scan docid pages to get all documents in the index */
+		all_index_ctids =
+				tp_scan_docid_pages(index_relation, &total_index_ctids);
+
+		if (all_index_ctids && total_index_ctids > 0)
+		{
+			/* Check each document to see if it was already scored */
+			for (int i = 0;
+				 i < total_index_ctids && found_additional < needed_additional;
+				 i++)
+			{
+				ItemPointer test_ctid = &all_index_ctids[i];
+
+				/* Check if this CTID was already scored */
+				DocumentScoreEntry *existing = (DocumentScoreEntry *)
+						hash_search(
+								doc_scores_hash, test_ctid, HASH_FIND, NULL);
+
+				if (!existing)
+				{
+					/* Not scored - add as zero-scored document */
+					additional_ctids[found_additional] = *test_ctid;
+					found_additional++;
+				}
+			}
+
+			pfree(all_index_ctids);
+		}
+
+		additional_count = found_additional;
 	}
 
 	/* Extract and sort documents by score */
 	sorted_docs = tp_extract_and_sort_documents(
 			doc_scores_hash, max_results, &scored_count);
+
+	/* Ensure we don't exceed max_results total documents */
+	total_results = scored_count + additional_count;
+	if (total_results > max_results)
+	{
+		additional_count = max_results - scored_count;
+		if (additional_count < 0)
+			additional_count = 0;
+	}
 
 	/* Copy results to output arrays */
 	tp_copy_results_to_output(

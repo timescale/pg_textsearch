@@ -141,6 +141,64 @@ tp_build_init_metapage(
 	UnlockReleaseBuffer(metabuf);
 }
 
+/*
+ * Calculate the sum of all IDF values for the index
+ */
+static void
+tp_calculate_idf_sum(TpLocalIndexState *index_state)
+{
+	TpMemtable		  *memtable;
+	dshash_table	  *string_table;
+	dshash_seq_status  status;
+	TpStringHashEntry *entry;
+	float8			   idf_sum = 0.0;
+	int32			   total_docs;
+	int32			   term_count = 0;
+
+	Assert(index_state != NULL);
+	Assert(index_state->shared != NULL);
+
+	total_docs = index_state->shared->total_docs;
+	if (total_docs == 0)
+		return; /* No documents, no IDF to calculate */
+
+	memtable = get_memtable(index_state);
+	if (!memtable || memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+		return;
+
+	/* Attach to the string hash table */
+	string_table = tp_string_table_attach(
+			index_state->dsa, memtable->string_hash_handle);
+
+	/* Iterate through all terms and calculate IDF for each */
+	dshash_seq_init(&status, string_table, false); /* shared lock */
+
+	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
+	{
+		if (DsaPointerIsValid(entry->key.posting_list))
+		{
+			TpPostingList *posting_list =
+					dsa_get_address(index_state->dsa, entry->key.posting_list);
+
+			/* Calculate IDF for this term */
+			float8 idf = tp_calculate_idf(posting_list->doc_count, total_docs);
+			idf_sum += idf;
+			term_count++;
+		}
+	}
+
+	dshash_seq_term(&status);
+	dshash_detach(string_table);
+
+	/* Store the IDF sum in shared state */
+	index_state->shared->idf_sum = idf_sum;
+
+	/* Update the term count in memtable */
+	memtable->total_terms = term_count;
+
+	elog(DEBUG1, "Calculated IDF sum: %.6f for %d terms", idf_sum, term_count);
+}
+
 static void
 tp_build_finalize_and_update_stats(
 		Relation		   index,
@@ -153,6 +211,9 @@ tp_build_finalize_and_update_stats(
 	TpIndexMetaPage metap;
 
 	Assert(index_state != NULL);
+
+	/* Calculate IDF sum for average IDF computation */
+	tp_calculate_idf_sum(index_state);
 
 	/* Get actual statistics from the shared state */
 	*total_docs = index_state->shared->total_docs;
@@ -598,6 +659,22 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	result				= (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
 	result->heap_tuples = total_docs;
 	result->index_tuples = total_docs;
+
+	/* Calculate and log average IDF if we have terms */
+	{
+		TpMemtable *memtable = get_memtable(index_state);
+		if (memtable && index_state->shared->idf_sum > 0 &&
+			memtable->total_terms > 0)
+		{
+			float8 avg_idf = index_state->shared->idf_sum /
+							 memtable->total_terms;
+			elog(DEBUG1,
+				 "Average IDF for index: %.6f (sum=%.6f, terms=%d)",
+				 avg_idf,
+				 index_state->shared->idf_sum,
+				 memtable->total_terms);
+		}
+	}
 
 	if (OidIsValid(text_config_oid))
 	{

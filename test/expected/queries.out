@@ -48,7 +48,7 @@ SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as s
 FROM articles
 ORDER BY content <@> 'database'::tpquery
 LIMIT 5;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-1.0060
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,10), BM25_score=-1.0060
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking

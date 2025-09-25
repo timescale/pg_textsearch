@@ -1,2 +1,0 @@
-# using postmaster on Unix socket, default port
-# diff command failed with status 512: diff  "/Users/tjg/tapir/expected/basic.out" "/Users/tjg/tapir/results/basic.out" > "/Users/tjg/tapir/results/basic.out.diff"Bail out!

@@ -67,18 +67,18 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0817
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0854
 NOTICE:  Tapir index scan: doc_pos=1, tid=(0,5), BM25_score=-1.5650
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.6878
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.6846
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=-0.6770
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.6943
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.6911
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=-0.6834
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      1 | experimental investigation of the aerodynamics of a wing in  | -2.0817
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.0854
       5 | one-dimensional transient heat conduction into a double-laye | -1.5650
-      3 | the boundary layer in simple shear flow past a flat plate .  | -0.6878
-      2 | simple shear flow past a flat plate in an incompressible flu | -0.6846
-      4 | approximate solutions of the incompressible laminar boundary | -0.6770
+      3 | the boundary layer in simple shear flow past a flat plate .  | -0.6943
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.6911
+      4 | approximate solutions of the incompressible laminar boundary | -0.6834
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -91,18 +91,18 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(1,3), BM25_score=-2.9094
-NOTICE:  Tapir index scan: doc_pos=1, tid=(1,1), BM25_score=-2.5597
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,4), BM25_score=-1.4829
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-1.3756
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-1.3143
+NOTICE:  Tapir index scan: doc_pos=0, tid=(1,3), BM25_score=-2.9211
+NOTICE:  Tapir index scan: doc_pos=1, tid=(1,1), BM25_score=-2.5709
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,4), BM25_score=-1.4970
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-1.3886
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-1.3268
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      9 | transition studies and skin friction measurements on an insu | -2.9094
-      7 | the effect of controlled three-dimensional roughness on boun | -2.5597
-      4 | approximate solutions of the incompressible laminar boundary | -1.4829
-      3 | the boundary layer in simple shear flow past a flat plate .  | -1.3756
-      2 | simple shear flow past a flat plate in an incompressible flu | -1.3143
+      9 | transition studies and skin friction measurements on an insu | -2.9211
+      7 | the effect of controlled three-dimensional roughness on boun | -2.5709
+      4 | approximate solutions of the incompressible laminar boundary | -1.4970
+      3 | the boundary layer in simple shear flow past a flat plate .  | -1.3886
+      2 | simple shear flow past a flat plate in an incompressible flu | -1.3268
 (5 rows)
 
 -- Test 3: Top-10 results for first query
@@ -125,26 +125,26 @@ JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE br.tapir_rank <= 10
 ORDER BY br.tapir_rank;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(1,4), BM25_score=-2.4331
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-2.0817
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-2.0854
 NOTICE:  Tapir index scan: doc_pos=2, tid=(0,5), BM25_score=-1.5650
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-0.6878
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.6846
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.6770
-NOTICE:  Tapir index scan: doc_pos=6, tid=(1,1), BM25_score=-0.5308
-NOTICE:  Tapir index scan: doc_pos=7, tid=(1,3), BM25_score=-0.4786
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,6), BM25_score=-0.4541
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-0.6943
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.6911
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.6834
+NOTICE:  Tapir index scan: doc_pos=6, tid=(1,1), BM25_score=-0.5358
+NOTICE:  Tapir index scan: doc_pos=7, tid=(1,3), BM25_score=-0.4831
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,6), BM25_score=-0.4584
 NOTICE:  Tapir index scan: doc_pos=9, tid=(1,2), BM25_score=-0.0000
  doc_id | tapir_rank |  score  |                   title_preview                    
 --------+------------+---------+----------------------------------------------------
      10 |          1 | -2.4331 | the theory of the impact tube at low pressure .
-      1 |          2 | -2.0817 | experimental investigation of the aerodynamics of 
+      1 |          2 | -2.0854 | experimental investigation of the aerodynamics of 
       5 |          3 | -1.5650 | one-dimensional transient heat conduction into a d
-      3 |          4 | -0.6878 | the boundary layer in simple shear flow past a fla
-      2 |          5 | -0.6846 | simple shear flow past a flat plate in an incompre
-      4 |          6 | -0.6770 | approximate solutions of the incompressible lamina
-      7 |          7 | -0.5308 | the effect of controlled three-dimensional roughne
-      9 |          8 | -0.4786 | transition studies and skin friction measurements 
-      6 |          9 | -0.4541 | one-dimensional transient heat flow in a multilaye
+      3 |          4 | -0.6943 | the boundary layer in simple shear flow past a fla
+      2 |          5 | -0.6911 | simple shear flow past a flat plate in an incompre
+      4 |          6 | -0.6834 | approximate solutions of the incompressible lamina
+      7 |          7 | -0.5358 | the effect of controlled three-dimensional roughne
+      9 |          8 | -0.4831 | transition studies and skin friction measurements 
+      6 |          9 | -0.4584 | one-dimensional transient heat flow in a multilaye
       8 |         10 |  0.0000 | measurements of the effect of two-dimensional and 
 (10 rows)
 
@@ -190,7 +190,7 @@ SET enable_seqscan = on;
 Cranfield tapir validation completed successfully.
 \echo 'All tests demonstrate proper tapir functionality with the <@> operator.'
 All tests demonstrate proper tapir functionality with the <@> operator.
--- Clean up
-DROP TABLE aerodocs_documents CASCADE;
-DROP TABLE cranfield_queries CASCADE;
-DROP EXTENSION tapir CASCADE;
+-- -- Clean up
+-- DROP TABLE aerodocs_documents CASCADE;
+-- DROP TABLE cranfield_queries CASCADE;
+-- DROP EXTENSION tapir CASCADE;

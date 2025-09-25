@@ -16,6 +16,7 @@
 #include "index.h"
 #include "memtable.h"
 #include "metapage.h"
+#include "operator.h"
 #include "posting.h"
 #include "query.h"
 #include "state.h"
@@ -349,8 +350,25 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				continue; /* Term not in index, skip */
 			}
 
-			/* Calculate IDF */
-			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
+			/* Calculate IDF with epsilon handling if average IDF is available
+			 */
+			{
+				TpMemtable *memtable = get_memtable(index_state);
+				if (index_state->shared->idf_sum > 0 && memtable &&
+					memtable->total_terms > 0)
+				{
+					float8 avg_idf = index_state->shared->idf_sum /
+									 memtable->total_terms;
+					idf = tp_calculate_idf_with_epsilon(
+							posting_list->doc_count, total_docs, avg_idf);
+				}
+				else
+				{
+					/* Fallback to simple IDF calculation */
+					idf = tp_calculate_idf(
+							posting_list->doc_count, total_docs);
+				}
+			}
 
 			/* Calculate BM25 term score - using default k1=1.2, b=0.75 */
 			numerator_d = (double)tf * (1.2 + 1.0);
