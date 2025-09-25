@@ -37,8 +37,8 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	double idf_ratio	   = idf_numerator / idf_denominator;
 	double raw_idf		   = log(idf_ratio);
 
-	/* Return raw IDF, ensuring it's at least 0 */
-	return (float4)fmax(raw_idf, 0.0);
+	/* Return raw IDF (can be negative for common terms) */
+	return (float4)raw_idf;
 }
 
 /*

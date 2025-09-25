@@ -1700,6 +1700,69 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				&result, "  No terms (string hash table not initialized)\n");
 	}
 
+	/* Show document length hash table */
+	appendStringInfo(&result, "Document Length Hash Table:\n");
+	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dsa_area *area = index_state->dsa;
+		if (area)
+		{
+			dshash_table *doclength_table = tp_doclength_table_attach(
+					area, memtable->doc_lengths_handle);
+			if (doclength_table)
+			{
+				dshash_seq_status status;
+				TpDocLengthEntry *entry;
+				int				  count = 0;
+
+				/* Iterate through document length entries */
+				dshash_seq_init(
+						&status, doclength_table, false); /* shared lock */
+
+				while ((entry = (TpDocLengthEntry *)dshash_seq_next(
+								&status)) != NULL &&
+					   count < 10)
+				{
+					appendStringInfo(
+							&result,
+							"  CTID (%u,%u): doc_length=%d\n",
+							BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
+							entry->ctid.ip_posid,
+							entry->doc_length);
+					count++;
+				}
+
+				if (count >= 10)
+					appendStringInfo(
+							&result, "  ... (showing first 10 entries)\n");
+
+				appendStringInfo(
+						&result, "Total document length entries: %d\n", count);
+
+				dshash_seq_term(&status);
+				dshash_detach(doclength_table);
+			}
+			else
+			{
+				appendStringInfo(
+						&result,
+						"  ERROR: Cannot attach to document length hash "
+						"table\n");
+			}
+		}
+		else
+		{
+			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
+		}
+	}
+	else
+	{
+		appendStringInfo(
+				&result,
+				"  No document length table (doc_lengths_handle not "
+				"initialized)\n");
+	}
+
 	/* DEBUG: Add docid pages information */
 	appendStringInfo(&result, "Docid Pages (for crash recovery):\n");
 	if (metap && metap->first_docid_page != InvalidBlockNumber)

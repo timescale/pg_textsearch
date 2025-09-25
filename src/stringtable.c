@@ -34,13 +34,17 @@ tp_string_hash_function(const void *key, size_t keysize, void *arg)
 	const TpStringKey *string_key = (const TpStringKey *)key;
 	dsa_area		  *area		  = (dsa_area *)arg;
 	const char		  *str;
+	dshash_hash		   hash_result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
 	str = tp_get_key_str(area, string_key);
 
 	/* Hash the null-terminated string content */
-	return (dshash_hash)hash_bytes((const unsigned char *)str, strlen(str));
+	hash_result = (dshash_hash)
+			hash_bytes((const unsigned char *)str, strlen(str));
+
+	return hash_result;
 }
 
 const char *
@@ -64,10 +68,13 @@ tp_string_compare_function(
 	dsa_area		  *area	 = (dsa_area *)arg;
 	const char		  *str_a = tp_get_key_str(area, key_a);
 	const char		  *str_b = tp_get_key_str(area, key_b);
+	int				   result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
-	return strcmp(str_a, str_b);
+	result = strcmp(str_a, str_b);
+
+	return result;
 }
 
 /*
@@ -170,7 +177,7 @@ tp_string_table_lookup(
 
 	/* Build lookup key */
 	lookup_key.term.str		= str;
-	lookup_key.posting_list = 0;
+	lookup_key.posting_list = InvalidDsaPointer;
 
 	/* Look up using the stack-allocated key */
 	entry = (TpStringHashEntry *)dshash_find(ht, &lookup_key, false);
@@ -361,6 +368,7 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 		elog(WARNING, "Failed to attach to string hash table");
 		return NULL;
 	}
+
 	term_len = strlen(term);
 
 	/* Look up the term in the string table */

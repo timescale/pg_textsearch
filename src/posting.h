@@ -42,6 +42,9 @@ extern void tp_store_document_length(
 extern int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
 
+extern dshash_table *
+tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle);
+
 /* Index building operations */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
 

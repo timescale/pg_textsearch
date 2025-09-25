@@ -213,7 +213,7 @@ tp_doclength_table_create(dsa_area *area)
 /*
  * Attach to existing document length hash table
  */
-static dshash_table *
+dshash_table *
 tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
 {
 	dshash_parameters params;

@@ -299,7 +299,16 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		/* Calculate BM25 score for each query term */
 		for (q_i = 0; q_i < query_term_count; q_i++)
 		{
-			char *query_lexeme = query_lexemes_start + query_entries[q_i].pos;
+			char *query_lexeme_raw = query_lexemes_start +
+									 query_entries[q_i].pos;
+			int	  lexeme_len = query_entries[q_i].len;
+			char *query_lexeme;
+
+			/* Create properly null-terminated string from tsvector lexeme */
+			query_lexeme = palloc(lexeme_len + 1);
+			memcpy(query_lexeme, query_lexeme_raw, lexeme_len);
+			query_lexeme[lexeme_len] = '\0';
+
 			TpPostingList *posting_list;
 			float4		   idf;
 			float4		   tf = 0.0f; /* term frequency in document */
@@ -363,6 +372,9 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 			/* Accumulate the score */
 			result += term_score;
+
+			/* Free the null-terminated string copy */
+			pfree(query_lexeme);
 		}
 
 		/* Clean up */
