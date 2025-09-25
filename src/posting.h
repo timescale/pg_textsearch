@@ -33,6 +33,9 @@ extern void tp_add_document_to_posting_list(
 		int32			   frequency);
 
 /* Document length hash table operations */
+extern void tp_store_document_length(
+		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length);
+
 extern int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
 

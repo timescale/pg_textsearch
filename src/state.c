@@ -87,36 +87,18 @@ tp_get_local_index_state(Oid index_oid)
 	size_t				  total_size;
 	dsa_area			 *dsa;
 
-	/* DEBUG: Log entry to function */
-	elog(NOTICE,
-		 "DEBUG: tp_get_local_index_state called for index_oid=%u",
-		 index_oid);
-
 	/* Initialize cache if needed */
 	init_local_state_cache();
-
-	/* DEBUG: After cache init */
-	elog(NOTICE, "DEBUG: After init_local_state_cache");
 
 	/* Check cache first */
 	entry = (LocalStateCacheEntry *)
 			hash_search(local_state_cache, &index_oid, HASH_FIND, NULL);
-
-	/* DEBUG: After cache lookup */
-	elog(NOTICE,
-		 "DEBUG: After cache lookup, entry=%s",
-		 entry ? "found" : "NULL");
 
 	if (entry != NULL)
 		return entry->local_state;
 
 	/* Look up shared state in registry */
 	shared_state = tp_registry_lookup(index_oid);
-
-	/* DEBUG: After registry lookup */
-	elog(NOTICE,
-		 "DEBUG: After registry lookup, shared_state=%s",
-		 shared_state ? "found" : "NULL");
 
 	if (shared_state == NULL)
 	{
@@ -207,10 +189,6 @@ tp_get_local_index_state(Oid index_oid)
 		 * convert to address */
 		dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)shared_state;
 
-		elog(NOTICE,
-			 "DEBUG: Registry returned DSA pointer %lu",
-			 (unsigned long)shared_dp);
-
 		/* Attach to the DSA area */
 		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
 		total_size = sizeof(TpDsmSegmentHeader);
@@ -237,11 +215,6 @@ tp_get_local_index_state(Oid index_oid)
 
 		/* Convert DSA pointer to memory address in this backend */
 		shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
-
-		elog(NOTICE,
-			 "DEBUG: Converted DSA pointer %lu to address %p",
-			 (unsigned long)shared_dp,
-			 shared_state);
 
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(

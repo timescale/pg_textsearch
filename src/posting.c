@@ -148,16 +148,40 @@ tp_add_document_to_posting_list(
 }
 
 /*
- * Get document length - simplified stub
+ * Store document length in the document length hash table
+ */
+void
+tp_store_document_length(
+		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length)
+{
+	/* TODO: Implement document length hash table storage */
+	/* For now, this is a no-op since we don't have the hash table implemented
+	 * yet */
+	(void)local_state;
+	(void)ctid;
+	(void)doc_length;
+}
+
+/*
+ * Get document length from the document length hash table
  */
 int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 {
-	(void)local_state;
-	(void)ctid;
+	/* TODO: Implement document length hash table retrieval */
+	/* For now, return the corpus average as an approximation */
 
-	/* Stub implementation - return default length */
-	return 1;
+	if (!local_state || !ctid)
+		return 0;
+
+	/* Use the corpus average document length as an approximation */
+	int32 total_docs = local_state->shared->total_docs;
+	int64 total_len	 = local_state->shared->total_len;
+
+	if (total_docs > 0)
+		return (int32)(total_len / total_docs);
+	else
+		return 1;
 }
 
 /*

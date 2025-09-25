@@ -502,6 +502,9 @@ tp_add_document_terms(
 				local_state, posting_list, ctid, frequency);
 	}
 
+	/* Store document length in the document length table */
+	tp_store_document_length(local_state, ctid, doc_length);
+
 	/* Update corpus statistics (no locks needed with new architecture) */
 	local_state->shared->total_docs++;
 	local_state->shared->total_len += doc_length;

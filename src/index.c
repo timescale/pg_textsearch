@@ -1585,20 +1585,6 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	/* Get the metapage */
 	metap = tp_get_metapage(index_rel);
 
-	/* DEBUG: Log metapage contents immediately after reading */
-	if (metap)
-	{
-		elog(NOTICE,
-			 "DEBUG: tp_debug_dump_index read metapage: magic=0x%08X, "
-			 "first_docid_page=%u",
-			 metap->magic,
-			 metap->first_docid_page);
-	}
-	else
-	{
-		elog(NOTICE, "DEBUG: tp_debug_dump_index: metap is NULL");
-	}
-
 	/* Get index state to inspect corpus statistics */
 	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
