@@ -18,6 +18,7 @@
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
 
+#include "common/hashfn.h"
 #include "constants.h"
 #include "memtable.h"
 #include "metapage.h"
@@ -148,18 +149,130 @@ tp_add_document_to_posting_list(
 }
 
 /*
+ * Hash function for document length entries (CTID-based)
+ */
+static dshash_hash
+tp_doclength_hash_function(const void *key, size_t keysize, void *arg)
+{
+	const ItemPointer ctid = (const ItemPointer)key;
+
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)arg;
+
+	/* Hash both block number and offset */
+	return hash_bytes((const unsigned char *)ctid, sizeof(ItemPointerData));
+}
+
+/*
+ * Compare function for document length entries (CTID comparison)
+ */
+static int
+tp_doclength_compare_function(
+		const void *a, const void *b, size_t keysize, void *arg)
+{
+	const ItemPointer ctid_a = (const ItemPointer)a;
+	const ItemPointer ctid_b = (const ItemPointer)b;
+
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)arg;
+
+	return ItemPointerCompare(ctid_a, ctid_b);
+}
+
+/*
+ * Copy function for document length entries (CTID copy)
+ */
+static void
+tp_doclength_copy_function(
+		void *dest, const void *src, size_t keysize, void *arg)
+{
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)arg;
+
+	*((ItemPointer)dest) = *((const ItemPointer)src);
+}
+
+/*
+ * Create document length hash table
+ */
+static dshash_table *
+tp_doclength_table_create(dsa_area *area)
+{
+	dshash_parameters params;
+
+	params.key_size			= sizeof(ItemPointerData);
+	params.entry_size		= sizeof(TpDocLengthEntry);
+	params.hash_function	= tp_doclength_hash_function;
+	params.compare_function = tp_doclength_compare_function;
+	params.copy_function	= tp_doclength_copy_function;
+	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+
+	return dshash_create(area, &params, area);
+}
+
+/*
+ * Attach to existing document length hash table
+ */
+static dshash_table *
+tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
+{
+	dshash_parameters params;
+
+	params.key_size			= sizeof(ItemPointerData);
+	params.entry_size		= sizeof(TpDocLengthEntry);
+	params.hash_function	= tp_doclength_hash_function;
+	params.compare_function = tp_doclength_compare_function;
+	params.copy_function	= tp_doclength_copy_function;
+	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+
+	return dshash_attach(area, &params, handle, area);
+}
+
+/*
  * Store document length in the document length hash table
  */
 void
 tp_store_document_length(
 		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length)
 {
-	/* TODO: Implement document length hash table storage */
-	/* For now, this is a no-op since we don't have the hash table implemented
-	 * yet */
-	(void)local_state;
-	(void)ctid;
-	(void)doc_length;
+	TpMemtable		 *memtable;
+	dshash_table	 *doclength_table;
+	TpDocLengthEntry *entry;
+	bool			  found;
+
+	if (!local_state || !ctid)
+		return;
+
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		return;
+
+	/* Initialize document length table if needed */
+	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+	{
+		doclength_table = tp_doclength_table_create(local_state->dsa);
+		if (!doclength_table)
+			return;
+
+		memtable->doc_lengths_handle = dshash_get_hash_table_handle(
+				doclength_table);
+	}
+	else
+	{
+		doclength_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+		if (!doclength_table)
+			return;
+	}
+
+	/* Insert or update the document length */
+	entry = (TpDocLengthEntry *)
+			dshash_find_or_insert(doclength_table, ctid, &found);
+	entry->ctid		  = *ctid;
+	entry->doc_length = doc_length;
+
+	dshash_release_lock(doclength_table, entry);
+	dshash_detach(doclength_table);
 }
 
 /*
@@ -168,20 +281,51 @@ tp_store_document_length(
 int32
 tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 {
-	/* TODO: Implement document length hash table retrieval */
-	/* For now, return the corpus average as an approximation */
+	TpMemtable		 *memtable;
+	dshash_table	 *doclength_table;
+	TpDocLengthEntry *entry;
 
 	if (!local_state || !ctid)
 		return 0;
 
-	/* Use the corpus average document length as an approximation */
-	int32 total_docs = local_state->shared->total_docs;
-	int64 total_len	 = local_state->shared->total_len;
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		return 0;
 
-	if (total_docs > 0)
-		return (int32)(total_len / total_docs);
-	else
+	/* Check if document length table exists */
+	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+	{
+		elog(ERROR,
+			 "Document length table not initialized for CTID (%u,%u)",
+			 BlockIdGetBlockNumber(&ctid->ip_blkid),
+			 ctid->ip_posid);
+		return 0;
+	}
+
+	/* Attach to document length table */
+	doclength_table = tp_doclength_table_attach(
+			local_state->dsa, memtable->doc_lengths_handle);
+	if (!doclength_table)
 		return 1;
+
+	/* Look up the document length */
+	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
+	if (entry)
+	{
+		int32 doc_length = entry->doc_length;
+		dshash_release_lock(doclength_table, entry);
+		dshash_detach(doclength_table);
+		return doc_length;
+	}
+	else
+	{
+		dshash_detach(doclength_table);
+		elog(ERROR,
+			 "Document length not found for CTID (%u,%u)",
+			 BlockIdGetBlockNumber(&ctid->ip_blkid),
+			 ctid->ip_posid);
+		return 0;
+	}
 }
 
 /*
