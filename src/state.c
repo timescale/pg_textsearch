@@ -503,3 +503,20 @@ tp_rebuild_posting_lists_from_docids(
 
 	relation_close(heap_rel, AccessShareLock);
 }
+
+/*
+ * Helper function to get memtable from local index state
+ * Canonical implementation used by all modules
+ */
+TpMemtable *
+get_memtable(TpLocalIndexState *local_state)
+{
+	if (!local_state || !local_state->shared || !local_state->dsa)
+		return NULL;
+
+	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
+		return NULL;
+
+	return (TpMemtable *)dsa_get_address(
+			local_state->dsa, local_state->shared->memtable_dp);
+}

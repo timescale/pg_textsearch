@@ -58,12 +58,10 @@ struct TpPostingEntry
  */
 struct TpPostingList
 {
-	int32 doc_count;	/* Number of documents containing term */
-	int32 capacity;		/* Allocated array capacity */
-	bool  is_finalized; /* True after final sort for queries */
-	int32 doc_freq;		/* Document frequency (for IDF calculation) */
-
-	/* Dynamic array - unsorted during building, sorted after finalization */
+	int32		doc_count;	/* Length of the entries array */
+	int32		capacity;	/* Allocated array capacity */
+	bool		is_sorted;	/* True after final sort for queries */
+	int32		doc_freq;	/* Document frequency (for IDF calculation) */
 	dsa_pointer entries_dp; /* DSA pointer to TpPostingEntry array */
 };
 
@@ -74,6 +72,12 @@ extern int tp_index_memory_limit; /* Currently not enforced */
 #define TP_DEFAULT_HASH_BUCKETS 1024
 
 /* Function declarations */
+
+/* Memtable-coordinated posting list access */
+extern TpPostingList *
+tp_get_posting_list(TpLocalIndexState *local_state, const char *term);
+extern TpPostingList *tp_get_or_create_posting_list(
+		TpLocalIndexState *local_state, const char *term);
 
 /* DSA-based per-index management */
 extern void tp_destroy_index_dsa(Oid index_oid);

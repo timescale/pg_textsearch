@@ -12,8 +12,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef TAPIR_REGISTRY_H
-#define TAPIR_REGISTRY_H
+#pragma once
 
 #include <postgres.h>
 
@@ -53,5 +52,3 @@ extern bool
 tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state);
 extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
 extern void				   tp_registry_unregister(Oid index_oid);
-
-#endif /* TAPIR_REGISTRY_H */

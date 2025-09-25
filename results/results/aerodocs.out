@@ -1,0 +1,2 @@
+psql: error: connection to server on socket "/tmp/.s.PGSQL.5432" failed: FATAL:  the database system is not yet accepting connections
+DETAIL:  Consistent recovery state has not been yet reached.

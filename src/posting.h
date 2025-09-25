@@ -21,20 +21,10 @@
 /* Array growth multiplier */
 extern int tp_posting_list_growth_factor;
 
-/* Document and term management */
-extern void tp_add_document_terms(
-		TpLocalIndexState *local_state,
-		ItemPointer		   ctid,
-		char			 **terms,
-		int32			  *frequencies,
-		int				   term_count,
-		int32			   doc_length);
-
-extern TpPostingList *
-tp_get_posting_list(TpLocalIndexState *local_state, const char *term);
-
-extern TpPostingList *tp_get_or_create_posting_list(
-		TpLocalIndexState *local_state, const char *term);
+/* Posting list memory management */
+extern void tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp);
+extern TpPostingEntry *
+tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list);
 
 extern void tp_add_document_to_posting_list(
 		TpLocalIndexState *local_state,
@@ -48,27 +38,6 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
 
 /* Index building operations */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
-
-/* Query operations */
-extern float4 bm25_score_document(
-		TpLocalIndexState *local_state,
-		ItemPointer		   ctid,
-		char			 **query_terms,
-		int32			  *query_frequencies,
-		int				   query_term_count,
-		float4			   k1,
-		float4			   b);
-
-extern int tp_score_documents(
-		TpLocalIndexState *local_state,
-		char			 **query_terms,
-		int32			  *query_frequencies,
-		int				   query_term_count,
-		float4			   k1,
-		float4			   b,
-		int				   max_results,
-		ItemPointer		   result_ctids,
-		float4			 **result_scores);
 
 /* Shared memory cleanup */
 extern void tp_cleanup_index_shared_memory(Oid index_oid);

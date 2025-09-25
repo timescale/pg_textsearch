@@ -28,6 +28,7 @@
 #include "limit.h"
 #include "memtable.h"
 #include "metapage.h"
+#include "operator.h"
 #include "posting.h"
 #include "query.h"
 #include "vector.h"
@@ -38,20 +39,6 @@ static bool tp_search_posting_lists(
 		TpLocalIndexState *index_state,
 		TpVector		  *query_vector,
 		TpIndexMetaPage	   metap);
-
-/* Helper function to get memtable from local index state */
-static TpMemtable *
-get_memtable(TpLocalIndexState *local_state)
-{
-	if (!local_state || !local_state->shared || !local_state->dsa)
-		return NULL;
-
-	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
-		return NULL;
-
-	return (TpMemtable *)dsa_get_address(
-			local_state->dsa, local_state->shared->memtable_dp);
-}
 
 /*
  * Tapir Index Access Method Implementation
@@ -512,7 +499,10 @@ tp_process_document(
 		return false; /* Skip NULL documents */
 
 	document_text = DatumGetTextPP(text_datum);
-	ctid		  = &slot->tts_tid;
+
+	/* Ensure the slot is materialized to get the TID */
+	slot_getallattrs(slot);
+	ctid = &slot->tts_tid;
 
 	/* Process the document text using shared helper */
 	if (!tp_process_document_text(
@@ -1255,6 +1245,7 @@ tp_search_posting_lists(
 
 	result_count = tp_score_documents(
 			index_state,
+			scan->indexRelation,
 			query_terms,
 			query_frequencies,
 			entry_count,
@@ -1347,7 +1338,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 so->current_pos,
 			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
 			 scan->xs_heaptid.ip_posid,
-			 so->result_scores[so->current_pos]);
+			 bm25_score);
 	}
 
 	/* Move to next position */
@@ -1636,8 +1627,8 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 		if (area)
 		{
-			TpStringHashTable *string_table = tp_hash_table_attach_dsa(
-					area, memtable->string_hash_handle);
+			dshash_table *string_table =
+					tp_string_table_attach(area, memtable->string_hash_handle);
 
 			if (string_table)
 			{
@@ -1647,20 +1638,18 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 				/* Iterate through all entries using dshash sequential scan */
 				dshash_seq_init(
-						&status,
-						string_table->dshash,
-						false); /* shared lock */
+						&status, string_table, false); /* shared lock */
 
 				while ((entry = (TpStringHashEntry *)dshash_seq_next(
 								&status)) != NULL)
 				{
 					/* Show term info if it has a posting list */
-					if (DsaPointerIsValid(entry->key.flag_field))
+					if (DsaPointerIsValid(entry->key.posting_list))
 					{
 						TpPostingList *posting_list =
-								dsa_get_address(area, entry->key.flag_field);
-						char *stored_str = dsa_get_address(
-								area, entry->key.string_or_ptr);
+								dsa_get_address(area, entry->key.posting_list);
+						const char *stored_str =
+								tp_get_key_str(area, &entry->key);
 
 						appendStringInfo(
 								&result,
@@ -1672,7 +1661,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				}
 
 				dshash_seq_term(&status);
-				tp_hash_table_detach_dsa(string_table);
+				dshash_detach(string_table);
 
 				appendStringInfo(&result, "Total terms: %u\n", term_count);
 			}

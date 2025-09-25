@@ -15,6 +15,39 @@ Review: Search Team \+ [Sven Klemm](mailto:sven@tigerdata.com)
 
 Borrows heavily from Lucene / Tantivy / other open-source IR projects (*mutatis mutandis*).  The basic template has been battle-tested and seems to be more or less standard these days.
 
+## Code Architecture
+
+### Component Dependencies
+**Respect these dependency relationships to avoid cycles:**
+
+```
+operator.c (top-level scoring coordination)
+├── index.c (access method implementation)
+├── memtable.c (DSA coordination)
+├── stringtable.c (string interning + posting list coordination)
+├── posting.c (pure posting list data structures)
+├── state.c (index state management)
+└── registry.c (global state registry)
+
+memtable.c (DSA area management)
+├── stringtable.c (string table management)
+├── posting.c (posting list structures)
+└── state.c (index state access)
+
+stringtable.c (string interning + posting coordination)
+└── posting.c (posting list allocation/management)
+
+posting.c (leaf node - no dependencies on other tapir modules)
+state.c (index state management)
+registry.c (global state registry)
+```
+
+**Architectural Rules:**
+- `posting.c` should NOT include `memtable.h` or `stringtable.h`
+- `stringtable.c` should NOT include `memtable.h`
+- Lower-level modules must not depend on higher-level modules
+- Each module has distinct responsibilities and clean interfaces
+
 ## Terminology
 
 * Document

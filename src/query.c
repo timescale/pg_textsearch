@@ -223,9 +223,6 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 						 "scoring")));
 	}
 
-	/* Extract text content */
-	text_str = text_to_cstring(text_arg);
-
 	/* Get the index OID from index name */
 	index_oid =
 			get_relname_relid(index_name, get_namespace_oid("public", false));
@@ -238,6 +235,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
+		/* Extract text content */
+		text_str = text_to_cstring(text_arg);
 		/* Open the index relation */
 		index_rel = index_open(index_oid, AccessShareLock);
 
@@ -368,7 +367,11 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 		/* Clean up */
 		pfree(metap);
+		metap = NULL;
 		index_close(index_rel, AccessShareLock);
+		index_rel = NULL;
+		/* TODO: Fix pfree issue - pfree(text_str); */
+		text_str = NULL;
 	}
 	PG_CATCH();
 	{
@@ -377,11 +380,10 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
+		/* TODO: Fix pfree issue - if (text_str) pfree(text_str); */
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	pfree(text_str);
 
 	/* Return negative score for PostgreSQL ASC ordering compatibility */
 	PG_RETURN_FLOAT8(-result);

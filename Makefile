@@ -12,6 +12,7 @@ OBJS = \
 	src/vector.o \
 	src/query.o \
 	src/stringtable.o \
+	src/operator.o \
 	src/limit.o \
 	src/registry.o \
 	src/state.o

@@ -11,8 +11,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#ifndef TAPIR_STATE_H
-#define TAPIR_STATE_H
+#pragma once
 
 #include <postgres.h>
 
@@ -21,10 +20,6 @@
 
 /* Forward declaration */
 struct TpMemtable;
-
-/* DSA area size - use a safe large size for memtable operations
- * Must be >= dsa_minimum_size() which is typically ~16KB */
-#define TAPIR_DSA_SIZE 0x100000 /* 1MB - should be more than sufficient */
 
 /*
  * Header of the DSM segment for each index
@@ -98,4 +93,5 @@ extern void				  tp_rebuild_posting_lists_from_docids(
 					  TpLocalIndexState *local_state,
 					  TpIndexMetaPage	 metap);
 
-#endif /* TAPIR_STATE_H */
+/* Helper function for accessing memtable from local state */
+extern TpMemtable *get_memtable(TpLocalIndexState *local_state);

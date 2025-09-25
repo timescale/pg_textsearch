@@ -1,0 +1,107 @@
+-- Basic functionality tests for tapir extension
+-- Test extension creation
+CREATE EXTENSION IF NOT EXISTS tapir;
+-- Enable score logging for testing
+SET tapir.log_scores = true;
+-- Test tpvector type exists
+SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
+ pg_typeof
+-----------
+ tpvector
+(1 row)
+
+-- Test tpvector input/output
+SELECT 'my_index:{database:2,system:1}'::tpvector;
+            tpvector
+--------------------------------
+ my_index:{database:2,system:1}
+(1 row)
+
+-- Test empty tpvector
+SELECT 'my_index:{}'::tpvector;
+  tpvector
+-------------
+ my_index:{}
+(1 row)
+
+-- Test tpquery type
+SELECT pg_typeof('search terms'::tpquery);
+ pg_typeof
+-----------
+ tpquery
+(1 row)
+
+-- Test tpquery input/output
+SELECT 'search terms'::tpquery;
+   tpquery
+--------------
+ search terms
+(1 row)
+
+-- Test to_tpquery functions
+SELECT to_tpquery('hello world');
+ to_tpquery
+-------------
+ hello world
+(1 row)
+
+SELECT to_tpquery('test query', 'my_index');
+      to_tpquery
+-----------------------
+ my_index:{test query}
+(1 row)
+
+-- Test tapir access method exists
+SELECT amname FROM pg_am WHERE amname = 'tapir';
+ amname
+--------
+ tapir
+(1 row)
+
+-- Test creating a tapir index with text_config
+CREATE TABLE test_docs (id SERIAL PRIMARY KEY, content TEXT);
+CREATE INDEX test_tapir_idx ON test_docs USING tapir(content) WITH (text_config='english');
+NOTICE:  Tapir index build started for relation test_tapir_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Verify index was created
+SELECT indexrelid::regclass FROM pg_index
+WHERE indrelid = 'test_docs'::regclass
+AND indexrelid::regclass::text LIKE '%tapir%';
+   indexrelid
+----------------
+ test_tapir_idx
+(1 row)
+
+-- Test tpquery with new operators
+INSERT INTO test_docs (content) VALUES
+    ('hello world example'),
+    ('database system design'),
+    ('the quick brown fox'),
+    ('jumped over lazy dog'),
+    ('sphinx of black quartz');
+-- Test text <@> tpquery operator (should work)
+SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
+FROM test_docs
+ORDER BY score
+LIMIT 1;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.5106
+       content       |        score
+---------------------+---------------------
+ hello world example | -1.0986123085021973
+(1 row)
+
+-- Test index name mismatch error in index scan context
+\set VERBOSITY terse
+\set ON_ERROR_STOP off
+SELECT content
+FROM test_docs
+ORDER BY content <@> to_tpquery('hello', 'wrong_index')
+LIMIT 1;
+ERROR:  tpquery index name mismatch
+\set ON_ERROR_STOP on
+\set VERBOSITY default
+-- Clean up
+DROP TABLE test_docs CASCADE;
+DROP EXTENSION tapir CASCADE;
