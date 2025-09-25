@@ -131,7 +131,7 @@ SET enable_seqscan = on;
 \echo 'Cranfield tapir validation completed successfully.'
 \echo 'All tests demonstrate proper tapir functionality with the <@> operator.'
 
--- -- Clean up
--- DROP TABLE aerodocs_documents CASCADE;
--- DROP TABLE cranfield_queries CASCADE;
--- DROP EXTENSION tapir CASCADE;
+-- Clean up
+DROP TABLE aerodocs_documents CASCADE;
+DROP TABLE cranfield_queries CASCADE;
+DROP EXTENSION tapir CASCADE;

@@ -1,7 +1,6 @@
 -- Basic functionality tests for tapir extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Test tpvector type exists
@@ -106,4 +105,3 @@ ERROR:  tpquery index name mismatch
 -- Clean up
 DROP TABLE test_docs CASCADE;
 DROP EXTENSION tapir CASCADE;
-NOTICE:  drop cascades to index cranfield_tapir_idx
