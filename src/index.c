@@ -144,7 +144,7 @@ tp_build_init_metapage(
 /*
  * Calculate the sum of all IDF values for the index
  */
-static void
+void
 tp_calculate_idf_sum(TpLocalIndexState *index_state)
 {
 	TpMemtable		  *memtable;

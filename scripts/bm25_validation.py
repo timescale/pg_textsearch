@@ -116,8 +116,59 @@ class BM25Validator:
             print(f"Fetched {len(self.corpus)} documents")
             print(f"Average document length: {np.mean([d['term_count'] for d in self.doc_info]):.2f} terms")
 
-            # Initialize BM25 with the corpus
+            # Initialize BM25 with the corpus (disable stemming since we already used PostgreSQL's to_tsvector)
             self.bm25 = BM25Okapi(self.corpus, k1=self.k1, b=self.b)
+            # Disable any additional preprocessing since corpus is already processed by PostgreSQL
+            self.bm25.tokenizer = lambda x: x  # Identity function - no additional tokenization
+
+            # Fix IDF values to use epsilon handling like Tapir
+            self._apply_epsilon_idf_handling()
+
+    def _apply_epsilon_idf_handling(self):
+        """
+        Apply epsilon handling to match Tapir's two-step approach:
+        1. Calculate IDF sum using simple epsilon (0.25) for negative IDFs (like index building)
+        2. Calculate average IDF from that sum
+        3. Use epsilon * average_idf for negative IDFs during scoring (like query time)
+        """
+        import math
+
+        # Step 1: Recalculate IDF sum using Tapir's index building logic
+        idf_sum = 0.0
+        term_count = 0
+
+        for term in self.bm25.idf.keys():
+            df = sum(1 for doc in self.corpus if term in doc)
+            N = len(self.corpus)
+            raw_idf = math.log((N - df + 0.5) / (df + 0.5))
+
+            # Use simple epsilon like Tapir's tp_calculate_idf() during index building
+            if raw_idf < 0:
+                idf = 0.25  # Simple epsilon
+            else:
+                idf = raw_idf
+
+            idf_sum += idf
+            term_count += 1
+
+        # Step 2: Calculate average IDF from the sum
+        if term_count > 0:
+            average_idf = idf_sum / term_count
+        else:
+            return
+
+        # Step 3: Apply epsilon * average_idf for negative IDFs (like query time)
+        epsilon = 0.25
+        for term in self.bm25.idf.keys():
+            df = sum(1 for doc in self.corpus if term in doc)
+            N = len(self.corpus)
+            raw_idf = math.log((N - df + 0.5) / (df + 0.5))
+
+            if raw_idf < 0:
+                # Use epsilon * average_idf like Tapir's tp_calculate_idf_with_epsilon()
+                self.bm25.idf[term] = epsilon * average_idf
+            else:
+                self.bm25.idf[term] = raw_idf
 
     def calculate_python_scores(self, query: str, text_config: str = 'english') -> Dict[int, float]:
         """
@@ -209,7 +260,8 @@ class BM25Validator:
         for doc_id in doc_ids:
             python_score = python_scores.get(doc_id, 0.0)
             tapir_score = tapir_scores.get(doc_id, 0.0)
-            diff = abs(python_score - tapir_score)
+            # Tapir returns negative BM25 scores for PostgreSQL ASC ordering
+            diff = abs(python_score - (-tapir_score))
 
             # Get document info
             doc_info = next((d for d in self.doc_info if d['doc_id'] == doc_id), {})

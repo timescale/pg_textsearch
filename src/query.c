@@ -361,6 +361,17 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 									 memtable->total_terms;
 					idf = tp_calculate_idf_with_epsilon(
 							posting_list->doc_count, total_docs, avg_idf);
+					elog(DEBUG1,
+						 "Query scoring: term='%s', doc_freq=%d, "
+						 "total_docs=%d, idf_sum=%.6f, total_terms=%d, "
+						 "avg_idf=%.6f, final_idf=%.6f",
+						 query_lexeme,
+						 posting_list->doc_count,
+						 total_docs,
+						 index_state->shared->idf_sum,
+						 memtable->total_terms,
+						 avg_idf,
+						 idf);
 				}
 				else
 				{

@@ -112,3 +112,6 @@ extern bool tp_process_document_text(
 
 /* GUC variable for logging BM25 scores */
 extern bool tp_log_scores;
+
+/* IDF sum calculation for average IDF */
+extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);

@@ -446,6 +446,12 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	{
 		/* Rebuild posting lists from docid pages */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
+
+		/* Recalculate IDF sum after recovery for proper BM25 scoring */
+		tp_calculate_idf_sum(local_state);
+		elog(DEBUG1,
+			 "Recalculated IDF sum after recovery: %.6f",
+			 local_state->shared->idf_sum);
 	}
 
 	/* Clean up */
