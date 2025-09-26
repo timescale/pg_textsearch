@@ -182,37 +182,14 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * BM25 scoring function for text <@> tpquery operations
+ * Helper: Validate query and get index
  */
-Datum
-text_tpquery_score(PG_FUNCTION_ARGS)
+static Relation
+validate_and_open_index(TpQuery *query, char **index_name_out)
 {
-	text			  *text_arg	  = PG_GETARG_TEXT_PP(0);
-	TpQuery			  *query	  = (TpQuery *)PG_GETARG_POINTER(1);
-	char			  *index_name = get_tpquery_index_name(query);
-	char			  *query_text = get_tpquery_text(query);
-	char			  *text_str;
-	Oid				   index_oid;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	Oid				   text_config_oid;
-	Datum			   tsvector_datum;
-	TSVector		   tsvector;
-	WordEntry		  *entries;
-	char			  *lexemes_start;
-	Datum			   query_tsvector_datum;
-	TSVector		   query_tsvector;
-	WordEntry		  *query_entries;
-	char			  *query_lexemes_start;
-	TpLocalIndexState *index_state;
-	float4			   avg_doc_len;
-	int32			   total_docs;
-	float8			   result = 0.0;
-	int				   i, q_i;
-	float4			   doc_length;
-	int				   doc_term_count;
-	int				   query_term_count;
-	int				   term_freq;
+	char	*index_name = get_tpquery_index_name(query);
+	Oid		 index_oid;
+	Relation index_rel;
 
 	if (!index_name)
 	{
@@ -234,13 +211,136 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				 errmsg("index \"%s\" not found", index_name)));
 	}
 
+	/* Open the index relation */
+	index_rel = index_open(index_oid, AccessShareLock);
+
+	if (index_name_out)
+		*index_name_out = index_name;
+
+	return index_rel;
+}
+
+/*
+ * Helper: Calculate document length from tsvector
+ */
+static float4
+calculate_doc_length(TSVector tsvector)
+{
+	WordEntry *entries		  = ARRPTR(tsvector);
+	int		   doc_term_count = tsvector->size;
+	float4	   doc_length	  = 0.0f;
+	int		   i;
+
+	for (i = 0; i < doc_term_count; i++)
+	{
+		int term_freq;
+		if (entries[i].haspos)
+			term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
+		else
+			term_freq = 1;
+		doc_length += term_freq;
+	}
+
+	return doc_length;
+}
+
+/*
+ * Helper: Find term frequency in document
+ */
+static float4
+find_term_frequency(
+		TSVector tsvector, WordEntry *query_entry, char *query_lexeme)
+{
+	WordEntry *entries		  = ARRPTR(tsvector);
+	char	  *lexemes_start  = STRPTR(tsvector);
+	int		   doc_term_count = tsvector->size;
+	int		   i;
+
+	for (i = 0; i < doc_term_count; i++)
+	{
+		char *doc_lexeme = lexemes_start + entries[i].pos;
+		if (entries[i].len == query_entry->len &&
+			memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
+		{
+			if (entries[i].haspos)
+				return (int32)POSDATALEN(tsvector, &entries[i]);
+			else
+				return 1;
+		}
+	}
+
+	return 0.0f; /* Term not found */
+}
+
+/*
+ * Helper: Calculate BM25 score for a single term
+ */
+static float4
+calculate_term_score(
+		float4 tf,
+		float4 idf,
+		float4 doc_length,
+		float4 avg_doc_len,
+		int	   query_freq)
+{
+	double numerator_d;
+	double denominator_d;
+	float4 term_score;
+
+	/* BM25 formula with default k1=1.2, b=0.75 */
+	numerator_d = (double)tf * (1.2 + 1.0);
+
+	if (avg_doc_len > 0.0f)
+	{
+		denominator_d = (double)tf + 1.2 * (1.0 - 0.75 +
+											0.75 * ((double)doc_length /
+													(double)avg_doc_len));
+	}
+	else
+	{
+		denominator_d = (double)tf + 1.2;
+	}
+
+	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
+						  (double)query_freq);
+
+	return term_score;
+}
+
+/*
+ * BM25 scoring function for text <@> tpquery operations
+ */
+Datum
+text_tpquery_score(PG_FUNCTION_ARGS)
+{
+	text			  *text_arg = PG_GETARG_TEXT_PP(0);
+	TpQuery			  *query	= (TpQuery *)PG_GETARG_POINTER(1);
+	char			  *index_name;
+	char			  *query_text = get_tpquery_text(query);
+	Oid				   index_oid;
+	Relation		   index_rel = NULL;
+	TpIndexMetaPage	   metap	 = NULL;
+	Oid				   text_config_oid;
+	Datum			   tsvector_datum;
+	TSVector		   tsvector;
+	Datum			   query_tsvector_datum;
+	TSVector		   query_tsvector;
+	WordEntry		  *query_entries;
+	char			  *query_lexemes_start;
+	TpLocalIndexState *index_state;
+	float4			   avg_doc_len;
+	int32			   total_docs;
+	float8			   result = 0.0;
+	int				   q_i;
+	float4			   doc_length;
+	int				   query_term_count;
+
+	/* Validate query and open index */
+	index_rel = validate_and_open_index(query, &index_name);
+	index_oid = RelationGetRelid(index_rel);
+
 	PG_TRY();
 	{
-		/* Extract text content */
-		text_str = text_to_cstring(text_arg);
-		/* Open the index relation */
-		index_rel = index_open(index_oid, AccessShareLock);
-
 		/* Get the metapage to extract text_config_oid */
 		metap			= tp_get_metapage(index_rel);
 		text_config_oid = metap->text_config_oid;
@@ -268,9 +368,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				ObjectIdGetDatum(text_config_oid),
 				PointerGetDatum(text_arg));
 
-		tsvector	  = DatumGetTSVector(tsvector_datum);
-		entries		  = ARRPTR(tsvector);
-		lexemes_start = STRPTR(tsvector);
+		tsvector = DatumGetTSVector(tsvector_datum);
 
 		/* Tokenize the query text to get query terms */
 		query_tsvector_datum = DirectFunctionCall2Coll(
@@ -284,38 +382,26 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		query_lexemes_start = STRPTR(query_tsvector);
 
 		/* Calculate document length and prepare term data */
-		doc_length		 = 0.0f;
-		doc_term_count	 = tsvector->size;
+		doc_length		 = calculate_doc_length(tsvector);
 		query_term_count = query_tsvector->size;
-
-		for (i = 0; i < doc_term_count; i++)
-		{
-			if (entries[i].haspos)
-				term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
-			else
-				term_freq = 1;
-			doc_length += term_freq;
-		}
 
 		/* Calculate BM25 score for each query term */
 		for (q_i = 0; q_i < query_term_count; q_i++)
 		{
 			char *query_lexeme_raw = query_lexemes_start +
 									 query_entries[q_i].pos;
-			int	  lexeme_len = query_entries[q_i].len;
-			char *query_lexeme;
+			int			   lexeme_len = query_entries[q_i].len;
+			char		  *query_lexeme;
+			TpPostingList *posting_list;
+			float4		   idf;
+			float4		   tf; /* term frequency in document */
+			float4		   term_score;
+			int			   query_freq;
 
 			/* Create properly null-terminated string from tsvector lexeme */
 			query_lexeme = palloc(lexeme_len + 1);
 			memcpy(query_lexeme, query_lexeme_raw, lexeme_len);
 			query_lexeme[lexeme_len] = '\0';
-
-			TpPostingList *posting_list;
-			float4		   idf;
-			float4		   tf = 0.0f; /* term frequency in document */
-			float4		   term_score;
-			double		   numerator_d, denominator_d;
-			int			   query_freq;
 
 			if (query_entries[q_i].haspos)
 				query_freq = (int32)
@@ -324,19 +410,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				query_freq = 1;
 
 			/* Find term frequency in the document */
-			for (i = 0; i < doc_term_count; i++)
-			{
-				char *doc_lexeme = lexemes_start + entries[i].pos;
-				if (entries[i].len == query_entries[q_i].len &&
-					memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
-				{
-					if (entries[i].haspos)
-						tf = (int32)POSDATALEN(tsvector, &entries[i]);
-					else
-						tf = 1;
-					break;
-				}
-			}
+			tf = find_term_frequency(
+					tsvector, &query_entries[q_i], query_lexeme);
 
 			if (tf == 0.0f)
 			{
@@ -350,53 +425,36 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				continue; /* Term not in index, skip */
 			}
 
-			/* Calculate IDF with epsilon handling if average IDF is available
-			 */
+			/* Calculate IDF with epsilon handling */
 			{
 				TpMemtable *memtable = get_memtable(index_state);
-				if (memtable && memtable->total_terms > 0)
-				{
-					float8 avg_idf = index_state->shared->idf_sum /
-									 memtable->total_terms;
-					idf = tp_calculate_idf_with_epsilon(
-							posting_list->doc_count, total_docs, avg_idf);
-					elog(DEBUG1,
-						 "Query scoring: term='%s', doc_freq=%d, "
-						 "total_docs=%d, idf_sum=%.6f, total_terms=%d, "
-						 "avg_idf=%.6f, final_idf=%.6f",
-						 query_lexeme,
-						 posting_list->doc_count,
-						 total_docs,
-						 index_state->shared->idf_sum,
-						 memtable->total_terms,
-						 avg_idf,
-						 idf);
-				}
-				else
-				{
-					/* Fallback to simple IDF calculation */
-					idf = tp_calculate_idf(
-							posting_list->doc_count, total_docs);
-				}
+				float8		avg_idf;
+
+				if (!memtable)
+					elog(ERROR, "Cannot get memtable - index state corrupted");
+
+				if (memtable->total_terms == 0)
+					elog(ERROR, "Invalid index state: total_terms is zero");
+
+				avg_idf = index_state->shared->idf_sum / memtable->total_terms;
+				idf		= tp_calculate_idf_with_epsilon(
+						posting_list->doc_count, total_docs, avg_idf);
+				elog(DEBUG1,
+					 "Query scoring: term='%s', doc_freq=%d, "
+					 "total_docs=%d, idf_sum=%.6f, total_terms=%d, "
+					 "avg_idf=%.6f, final_idf=%.6f",
+					 query_lexeme,
+					 posting_list->doc_count,
+					 total_docs,
+					 index_state->shared->idf_sum,
+					 memtable->total_terms,
+					 avg_idf,
+					 idf);
 			}
 
-			/* Calculate BM25 term score - using default k1=1.2, b=0.75 */
-			numerator_d = (double)tf * (1.2 + 1.0);
-
-			if (avg_doc_len > 0.0f)
-			{
-				denominator_d = (double)tf +
-								1.2 * (1.0 - 0.75 +
-									   0.75 * ((double)doc_length /
-											   (double)avg_doc_len));
-			}
-			else
-			{
-				denominator_d = (double)tf + 1.2;
-			}
-
-			term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-								  (double)query_freq);
+			/* Calculate BM25 term score */
+			term_score = calculate_term_score(
+					tf, idf, doc_length, avg_doc_len, query_freq);
 
 			/* Accumulate the score */
 			result += term_score;
@@ -410,8 +468,6 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		metap = NULL;
 		index_close(index_rel, AccessShareLock);
 		index_rel = NULL;
-		/* TODO: Fix pfree issue - pfree(text_str); */
-		text_str = NULL;
 	}
 	PG_CATCH();
 	{
@@ -420,7 +476,6 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
-		/* TODO: Fix pfree issue - if (text_str) pfree(text_str); */
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

@@ -22,20 +22,19 @@
 
 #include "registry.h"
 
-/* Global pointer to the registry in shared memory */
+/* Backend-local pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;
 
 /*
- * Initialize the registry during postmaster startup
- * This is called from _PG_init to request shared memory
+ * Request shared memory for the registry
+ * Only effective when loaded via shared_preload_libraries
+ * Without preloading, registry initializes lazily on first use
  */
 void
 tp_registry_init(void)
 {
 	/* Request shared memory for the registry */
 	RequestAddinShmemSpace(sizeof(TpGlobalRegistry));
-
-	/* Note: We'll allocate LWLocks dynamically using LWLockNewTrancheId() */
 }
 
 /*
