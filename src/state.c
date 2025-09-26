@@ -482,9 +482,12 @@ tp_rebuild_posting_lists_from_docids(
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
-		elog(NOTICE, "No docid pages to recover from");
+		elog(DEBUG1, "No docid pages to recover from");
 		return;
 	}
+
+	/* Inform user that recovery is starting */
+	elog(INFO, "Recovering tapir index %u from disk", index_rel->rd_id);
 
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
@@ -589,6 +592,15 @@ tp_rebuild_posting_lists_from_docids(
 	}
 
 	relation_close(heap_rel, AccessShareLock);
+
+	/* Log recovery completion */
+	if (local_state && local_state->shared)
+	{
+		elog(INFO,
+			 "Recovery complete for tapir index %u: %u documents restored",
+			 index_rel->rd_id,
+			 local_state->shared->total_docs);
+	}
 }
 
 /*
