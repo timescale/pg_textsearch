@@ -116,8 +116,12 @@ class BM25Validator:
             print(f"Fetched {len(self.corpus)} documents")
             print(f"Average document length: {np.mean([d['term_count'] for d in self.doc_info]):.2f} terms")
 
-            # Initialize BM25 with the corpus
+            # Initialize BM25 with the corpus (disable stemming since we already used PostgreSQL's to_tsvector)
             self.bm25 = BM25Okapi(self.corpus, k1=self.k1, b=self.b)
+            # Disable any additional preprocessing since corpus is already processed by PostgreSQL
+            self.bm25.tokenizer = lambda x: x  # Identity function - no additional tokenization
+
+            # Note: BM25Okapi already handles epsilon * average_idf for negative IDFs
 
     def calculate_python_scores(self, query: str, text_config: str = 'english') -> Dict[int, float]:
         """
@@ -209,7 +213,8 @@ class BM25Validator:
         for doc_id in doc_ids:
             python_score = python_scores.get(doc_id, 0.0)
             tapir_score = tapir_scores.get(doc_id, 0.0)
-            diff = abs(python_score - tapir_score)
+            # Tapir returns negative BM25 scores for PostgreSQL ASC ordering
+            diff = abs(python_score - (-tapir_score))
 
             # Get document info
             doc_info = next((d for d in self.doc_info if d['doc_id'] == doc_id), {})

@@ -45,10 +45,10 @@ FROM long_string_docs
 ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
 LIMIT 5;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0517
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
@@ -65,15 +65,15 @@ FROM long_string_docs
 ORDER BY content <@> to_tpquery('postgresql extension', 'long_strings_idx')
 LIMIT 10;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.1558
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,5), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,5), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
  id |  category  |  score  
 ----+------------+---------
   6 | config     | -3.1558
@@ -96,14 +96,14 @@ ORDER BY content <@> to_tpquery('file log error', 'long_strings_idx')
 LIMIT 10;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,5), BM25_score=-4.3436
 NOTICE:  Tapir index scan: doc_pos=1, tid=(0,4), BM25_score=-3.9159
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,6), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,6), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
   5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.3436
@@ -137,23 +137,23 @@ SELECT id, ROUND((content <@> to_tpquery('algorithm bm25', 'long_strings_idx')):
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('algorithm bm25', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-1.2419
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-1.0315
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=-0.4677
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=-0.3597
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,7), BM25_score=-0.3597
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,3), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,4), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,5), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-0.9242
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-0.7676
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,7), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,3), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,4), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,5), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
  id |  score  
 ----+---------
-  8 | -1.2419
- 10 | -1.0315
-  1 | -0.4677
-  6 | -0.3597
-  7 | -0.3597
+  8 | -0.9242
+ 10 | -0.7676
+  1 |  0.0000
+  6 |  0.0000
+  7 |  0.0000
   2 |  0.0000
   3 |  0.0000
   4 |  0.0000
@@ -172,13 +172,13 @@ LIMIT 10;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-4.8534
 NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-1.2456
 NOTICE:  Tapir index scan: doc_pos=2, tid=(0,8), BM25_score=-0.5756
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,3), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,4), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,5), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,7), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,3), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,4), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,5), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,7), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
  id |  category  | multi_term_score 
 ----+------------+------------------
   6 | config     |          -4.8534
@@ -217,13 +217,13 @@ LIMIT 10;
 NOTICE:  Tapir index scan: doc_pos=0, tid=(0,11), BM25_score=-4.8824
 NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-1.1305
 NOTICE:  Tapir index scan: doc_pos=2, tid=(0,7), BM25_score=-1.0905
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,8), BM25_score=-0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=-0.0000
+NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=8, tid=(0,8), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
  11 | This document contains a ridiculously long compoun... | -4.8824

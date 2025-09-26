@@ -2,6 +2,7 @@ EXTENSION = tapir
 DATA = sql/tapir--0.0.sql
 
 # Source files
+# Full build - debugging initialization crash
 OBJS = \
 	src/mod.o \
 	src/memtable.o \
@@ -11,7 +12,10 @@ OBJS = \
 	src/vector.o \
 	src/query.o \
 	src/stringtable.o \
-	src/limit.o
+	src/operator.o \
+	src/limit.o \
+	src/registry.o \
+	src/state.o
 
 # Shared library target
 MODULE_big = tapir
@@ -23,7 +27,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic index limits manyterms mixed queries strings vector
+REGRESS = aerodocs basic deletion dropped empty index limits manyterms mixed queries scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings vector
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

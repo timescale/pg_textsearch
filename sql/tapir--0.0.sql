@@ -150,6 +150,6 @@ DEFAULT FOR TYPE text USING tapir AS
     FUNCTION    8   tp_distance(text, tpquery);
 
 -- Debug function to dump index contents
-CREATE FUNCTION tp_debug_dump_index(text) RETURNS text
+CREATE FUNCTION tp_debug_dump_index(text, boolean DEFAULT false) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;

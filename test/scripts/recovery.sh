@@ -133,31 +133,54 @@ CREATE TABLE crash_test_docs (
 );
 
 INSERT INTO crash_test_docs (content, category) VALUES
-('database systems and query optimization', 'tech'),
-('full text search algorithms', 'tech'),
-('postgresql extension development', 'tech'),
-('crash recovery mechanisms', 'tech'),
-('bm25 ranking algorithm implementation', 'tech');
+('database systems and query optimization performance', 'tech'),
+('full text search algorithms implementation', 'tech'),
+('postgresql extension development guide', 'tech'),
+('crash recovery mechanisms testing', 'tech'),
+('bm25 ranking algorithm implementation details', 'tech'),
+('advanced database indexing structures', 'tech'),
+('search engine optimization techniques', 'tech'),
+('distributed systems architecture patterns', 'tech'),
+('machine learning algorithms overview', 'ai'),
+('natural language processing methods', 'ai'),
+('computer vision applications', 'ai'),
+('deep learning neural networks', 'ai'),
+('data mining and analytics', 'data'),
+('big data processing frameworks', 'data'),
+('real time streaming systems', 'data'),
+('cloud computing infrastructure', 'cloud'),
+('microservices architecture design', 'cloud'),
+('container orchestration platforms', 'cloud'),
+('security protocols and encryption', 'security'),
+('network security best practices', 'security');
 
 CREATE INDEX crash_idx ON crash_test_docs USING tapir(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 EOF
 
-    # Verify initial search works
+    # Verify initial search works and capture baseline results
     log "Verifying initial search functionality..."
-    INITIAL_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
 
-    # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
-    if [ -z "$INITIAL_COUNT" ]; then
-        INITIAL_COUNT=0
+    # Test 1: Search for 'database' - should return documents with database-related content
+    INITIAL_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+
+    # Count results and validate
+    INITIAL_COUNT=$(echo "$INITIAL_RESULTS" | wc -l | tr -d ' ')
+    if [ "$INITIAL_COUNT" -eq 0 ]; then
+        error "Initial search returned no results - this indicates a problem"
     fi
+
     log "Initial search test passed (found $INITIAL_COUNT documents)"
+    log "Sample results: $(echo "$INITIAL_RESULTS" | head -2 | tr '\n' '; ')..."
+
+    # Store expected results for comparison after recovery
+    echo "$INITIAL_RESULTS" > "${DATA_DIR}/expected_results.txt"
 
     # Phase 2: Simulate crash during operation
     log "Phase 2: Simulating crash..."
 
     # Add more data that will be in WAL but not necessarily flushed
-    run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('crash recovery test document', 'test');" &
+    run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('crash recovery test document with database terms', 'test');" &
     INSERT_PID=$!
 
     # Give the insert a moment to start
@@ -176,41 +199,73 @@ EOF
     # Verify data consistency after crash
     log "Verifying data consistency after recovery..."
 
-    # Check if index still works
-    RECOVERY_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    # Test same query as before crash
+    RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
-    # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
-    if [ -z "$RECOVERY_COUNT" ]; then
-        RECOVERY_COUNT=0
+    RECOVERY_COUNT=$(echo "$RECOVERY_RESULTS" | wc -l | tr -d ' ')
+    if [ "$RECOVERY_COUNT" -eq 0 ]; then
+        error "Recovery search returned no results - recovery failed!"
     fi
+
+    # Compare results with pre-crash baseline
+    if [ -f "${DATA_DIR}/expected_results.txt" ]; then
+        EXPECTED_RESULTS=$(cat "${DATA_DIR}/expected_results.txt")
+        if [ "$RECOVERY_RESULTS" != "$EXPECTED_RESULTS" ]; then
+            warn "Search results differ after recovery:"
+            warn "Expected: $(echo "$EXPECTED_RESULTS" | head -2 | tr '\n' '; ')..."
+            warn "Got: $(echo "$RECOVERY_RESULTS" | head -2 | tr '\n' '; ')..."
+            # Don't fail here as insert during crash might have succeeded
+        else
+            log "Search results match pre-crash baseline perfectly"
+        fi
+    fi
+
     log "Recovery search test passed (found $RECOVERY_COUNT documents)"
 
     # Test that we can still insert and search
     log "Testing post-recovery functionality..."
-    run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('post recovery test document', 'test');"
+    run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('post recovery test document with algorithms', 'test');"
 
-    POST_RECOVERY_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('test', 'crash_idx') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    # Test search for 'algorithms' which should find multiple documents
+    POST_RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('algorithms', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
-    # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
-    if [ -z "$POST_RECOVERY_COUNT" ]; then
-        POST_RECOVERY_COUNT=0
+    POST_RECOVERY_COUNT=$(echo "$POST_RECOVERY_RESULTS" | wc -l | tr -d ' ')
+    if [ "$POST_RECOVERY_COUNT" -eq 0 ]; then
+        error "Post-recovery search returned no results - functionality broken!"
     fi
-    log "Post-recovery insert test passed (found $POST_RECOVERY_COUNT documents)"
+
+    log "Post-recovery insert and search test passed (found $POST_RECOVERY_COUNT documents)"
+    log "Sample results: $(echo "$POST_RECOVERY_RESULTS" | head -2 | tr '\n' '; ')..."
+
+    # Test debug dump functionality after recovery - this exposes the bug
+    log "Phase 4: Testing debug dump functionality after recovery..."
+
+    # This is the critical test that should expose the recovery bug
+    DEBUG_RESULT=$(run_sql "SELECT tp_debug_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
+
+    if echo "$DEBUG_RESULT" | grep -q "FAILED\|ERROR\|connection.*lost"; then
+        error "Debug dump failed after recovery - this exposes the recovery bug!"
+    fi
+
+    log "Debug dump test passed - recovery working correctly"
 
     # Test index rebuild scenario
-    log "Phase 4: Testing index rebuild after crash..."
+    log "Phase 5: Testing index rebuild after crash..."
 
     # Drop and recreate index to test rebuild from heap
     run_sql "DROP INDEX crash_idx;"
     run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING tapir(content) WITH (text_config='english', k1=1.2, b=0.75);"
 
-    REBUILD_COUNT=$(run_sql "SELECT COUNT(*) FROM crash_test_docs WHERE content <@> to_tpvector('database', 'crash_idx_rebuilt') > 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    # Test rebuild with 'systems' query to verify full functionality
+    REBUILD_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('systems', 'crash_idx_rebuilt') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
-    # Note: Due to BM25 negative scoring, we expect 0 results for positive score filters
-    if [ -z "$REBUILD_COUNT" ]; then
-        REBUILD_COUNT=0
+    REBUILD_COUNT=$(echo "$REBUILD_RESULTS" | wc -l | tr -d ' ')
+    if [ "$REBUILD_COUNT" -eq 0 ]; then
+        error "Index rebuild search returned no results - rebuild failed!"
     fi
+
     log "Index rebuild test passed (found $REBUILD_COUNT documents)"
+    log "Sample results: $(echo "$REBUILD_RESULTS" | head -2 | tr '\n' '; ')..."
 }
 
 main() {

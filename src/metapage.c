@@ -27,11 +27,13 @@
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
+#include "state.h"
 #include "vector.h"
 
 /* Maximum number of docids that fit in a page */
-#define TP_DOCIDS_PER_PAGE                                           \
-	((BLCKSZ - sizeof(PageHeaderData) - sizeof(TpDocidPageHeader)) / \
+#define TP_DOCIDS_PER_PAGE                   \
+	((BLCKSZ - sizeof(PageHeaderData) -      \
+	  MAXALIGN(sizeof(TpDocidPageHeader))) / \
 	 sizeof(ItemPointerData))
 
 /*
@@ -159,8 +161,12 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		docid_header->next_page	 = InvalidBlockNumber;
 		docid_header->reserved	 = 0;
 
+		MarkBufferDirty(docid_buf);
+
 		/* Update metapage to point to this new page */
-		metap->first_docid_page = BufferGetBlockNumber(docid_buf);
+		BlockNumber new_docid_page = BufferGetBlockNumber(docid_buf);
+		metap->first_docid_page	   = new_docid_page;
+
 		MarkBufferDirty(metabuf);
 
 		/* Flush metapage to disk immediately to ensure crash recovery works */
@@ -199,7 +205,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	/* Check if current page has room for another docid */
 	page_capacity = TP_DOCIDS_PER_PAGE;
 
-	if ((int)docid_header->num_docids >= page_capacity)
+	if (docid_header->num_docids >= page_capacity)
 	{
 		/* Current page is full, create a new one */
 		Buffer			   new_buf = ReadBuffer(index, P_NEW);
@@ -216,9 +222,14 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		new_header->next_page  = InvalidBlockNumber;
 		new_header->reserved   = 0;
 
+		MarkBufferDirty(new_buf);
+
 		/* Link old page to new page */
 		docid_header->next_page = BufferGetBlockNumber(new_buf);
 		MarkBufferDirty(docid_buf);
+
+		FlushOneBuffer(docid_buf);
+
 		UnlockReleaseBuffer(docid_buf);
 
 		/* Switch to new page */
@@ -228,13 +239,16 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	}
 
 	/* Add the docid to the current page */
-	docids = (ItemPointer)((char *)docid_header + sizeof(TpDocidPageHeader));
+	docids = (ItemPointer)((char *)docid_header +
+						   MAXALIGN(sizeof(TpDocidPageHeader)));
+
 	docids[docid_header->num_docids] = *ctid;
 	docid_header->num_docids++;
 
-	/* Save the docid count before releasing the buffer */
-
 	MarkBufferDirty(docid_buf);
+
+	FlushOneBuffer(docid_buf);
+
 	UnlockReleaseBuffer(docid_buf);
 	UnlockReleaseBuffer(metabuf);
 }
@@ -252,6 +266,7 @@ tp_recover_from_docid_pages(Relation index)
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
+	int				   total_recovered = 0;
 
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -287,131 +302,125 @@ tp_recover_from_docid_pages(Relation index)
 		docids = (ItemPointer)((char *)docid_header +
 							   sizeof(TpDocidPageHeader));
 
+		for (int i = 0; i < docid_header->num_docids; i++)
 		{
-			int i;
-			for (i = 0; i < (int)docid_header->num_docids; i++)
+			ItemPointer		   ctid = &docids[i];
+			Relation		   heap_rel;
+			HeapTuple		   tuple;
+			Buffer			   heap_buf;
+			bool			   valid;
+			TpLocalIndexState *local_state;
+
+			/* Get local index state */
+			local_state = tp_get_local_index_state(RelationGetRelid(index));
+
+			/* Find the heap relation for this index */
+			heap_rel =
+					relation_open(index->rd_index->indrelid, AccessShareLock);
+
+			/* Initialize tuple for heap_fetch */
+			tuple		  = &((HeapTupleData){0});
+			tuple->t_self = *ctid;
+
+			/* Fetch the tuple from the heap */
+			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
+
+			if (valid && HeapTupleIsValid(tuple))
 			{
-				ItemPointer	  ctid = &docids[i];
-				Relation	  heap_rel;
-				HeapTuple	  tuple;
-				Buffer		  heap_buf;
-				bool		  valid;
-				TpIndexState *index_state;
+				/* Extract the indexed column */
+				Datum	   column_value;
+				bool	   is_null;
+				TupleDesc  tuple_desc = RelationGetDescr(heap_rel);
+				AttrNumber attnum	  = index->rd_index->indkey.values[0];
 
-				/* Get index state */
-				index_state = tp_get_index_state(RelationGetRelid(index));
+				/* Get the indexed column value */
+				column_value =
+						heap_getattr(tuple, attnum, tuple_desc, &is_null);
 
-				/* Find the heap relation for this index */
-				heap_rel = relation_open(
-						index->rd_index->indrelid, AccessShareLock);
-
-				/* Initialize tuple for heap_fetch */
-				tuple		  = &((HeapTupleData){0});
-				tuple->t_self = *ctid;
-
-				/* Fetch the tuple from the heap */
-				valid = heap_fetch(
-						heap_rel, SnapshotAny, tuple, &heap_buf, true);
-
-				if (valid && HeapTupleIsValid(tuple))
+				if (!is_null)
 				{
-					/* Extract the indexed column (assuming column 0) */
-					Datum	  column_value;
-					bool	  is_null;
-					TupleDesc tuple_desc = RelationGetDescr(heap_rel);
+					text		  *document_text;
+					Datum		   vector_datum;
+					TpVector	  *tpvec;
+					TpVectorEntry *vector_entry;
+					int			   term_count;
+					char		 **terms;
+					int32		  *frequencies;
+					int			   doc_length = 0;
+					char		  *ptr;
 
-					/* Get the indexed column value */
-					column_value =
-							heap_getattr(tuple, 1, tuple_desc, &is_null);
+					document_text = DatumGetTextPP(column_value);
 
-					if (!is_null)
+					/* Vectorize the document */
+					vector_datum = DirectFunctionCall2(
+							to_tpvector,
+							PointerGetDatum(document_text),
+							CStringGetTextDatum(
+									RelationGetRelationName(index)));
+					tpvec = (TpVector *)DatumGetPointer(vector_datum);
+
+					/* Extract term IDs and frequencies from tpvector */
+					term_count = tpvec->entry_count;
+					if (term_count > 0)
 					{
-						text		  *document_text;
-						Datum		   vector_datum;
-						TpVector	  *tpvec;
-						TpVectorEntry *vector_entry;
-						int			   term_count;
-						char		 **terms;
-						int32		  *frequencies;
-						int			   doc_length = 0;
-						char		  *ptr;
+						terms		= palloc(term_count * sizeof(char *));
+						frequencies = palloc(term_count * sizeof(int32));
 
-						document_text = DatumGetTextPP(column_value);
+						ptr = (char *)TPVECTOR_ENTRIES_PTR(tpvec);
 
-						/* Vectorize the document */
-						vector_datum = DirectFunctionCall2(
-								to_tpvector,
-								PointerGetDatum(document_text),
-								CStringGetTextDatum(
-										RelationGetRelationName(index)));
-						tpvec = (TpVector *)DatumGetPointer(vector_datum);
-
-						/* Extract term IDs and frequencies from tpvector */
-						term_count = tpvec->entry_count;
-						if (term_count > 0)
+						for (int j = 0; j < term_count; j++)
 						{
-							int j;
+							char *term_copy;
+							vector_entry = (TpVectorEntry *)ptr;
 
-							terms		= palloc(term_count * sizeof(char *));
-							frequencies = palloc(term_count * sizeof(int32));
+							/* Copy the lexeme string from vector entry */
+							term_copy = palloc(vector_entry->lexeme_len + 1);
+							memcpy(term_copy,
+								   vector_entry->lexeme,
+								   vector_entry->lexeme_len);
+							term_copy[vector_entry->lexeme_len] = '\0';
 
-							ptr = (char *)TPVECTOR_ENTRIES_PTR(tpvec);
+							/* Store the lexeme string directly in terms array
+							 */
+							terms[j]	   = term_copy;
+							frequencies[j] = vector_entry->frequency;
+							doc_length += vector_entry->frequency;
 
-							for (j = 0; j < term_count; j++)
-							{
-								char *term_copy;
-								vector_entry = (TpVectorEntry *)ptr;
-
-								/* Copy the lexeme string from vector entry */
-								term_copy = palloc(
-										vector_entry->lexeme_len + 1);
-								memcpy(term_copy,
-									   vector_entry->lexeme,
-									   vector_entry->lexeme_len);
-								term_copy[vector_entry->lexeme_len] = '\0';
-
-								/* Store the lexeme string directly in terms
-								 * array
-								 */
-								terms[j]	   = term_copy;
-								frequencies[j] = vector_entry->frequency;
-								doc_length += vector_entry->frequency;
-
-								/* Move to next entry */
-								ptr += sizeof(TpVectorEntry) +
-									   MAXALIGN(vector_entry->lexeme_len);
-							}
-
-							/* Add document terms to posting lists */
-							tp_add_document_terms(
-									index_state,
-									ctid,
-									terms,
-									frequencies,
-									term_count,
-									doc_length);
-
-							/* Clean up */
-							for (j = 0; j < term_count; j++)
-							{
-								pfree(terms[j]);
-							}
-							pfree(terms);
-							pfree(frequencies);
+							/* Move to next entry */
+							ptr += sizeof(TpVectorEntry) +
+								   MAXALIGN(vector_entry->lexeme_len);
 						}
 
-						/* Free the vector */
-						pfree(tpvec);
+						/* Add document terms to posting lists */
+						tp_add_document_terms(
+								local_state,
+								ctid,
+								terms,
+								frequencies,
+								term_count,
+								doc_length);
+
+						/* Clean up */
+						for (int j = 0; j < term_count; j++)
+						{
+							pfree(terms[j]);
+						}
+						pfree(terms);
+						pfree(frequencies);
+						total_recovered++;
 					}
 
-					/* Free the tuple */
-					heap_freetuple(tuple);
-					ReleaseBuffer(heap_buf);
+					/* Free the vector */
+					pfree(tpvec);
 				}
 
-				/* Close the heap relation */
-				relation_close(heap_rel, AccessShareLock);
+				/* Free the tuple */
+				heap_freetuple(tuple);
+				ReleaseBuffer(heap_buf);
 			}
+
+			/* Close the heap relation */
+			relation_close(heap_rel, AccessShareLock);
 		}
 
 		/* Move to next page */

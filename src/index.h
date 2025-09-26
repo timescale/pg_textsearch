@@ -40,7 +40,6 @@ typedef struct TpScanOpaqueData
 
 typedef TpScanOpaqueData *TpScanOpaque;
 
-/* Forward declarations */
 struct IndexInfo;
 struct PlannerInfo;
 struct IndexPath;
@@ -98,3 +97,20 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
 
 /* Query limit tracking - now in limits.h */
+
+/* Include state management structures */
+#include "state.h"
+
+/* Shared document processing function */
+extern bool tp_process_document_text(
+		text			  *document_text,
+		ItemPointer		   ctid,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		int32			  *doc_length_out);
+
+/* GUC variable for logging BM25 scores */
+extern bool tp_log_scores;
+
+/* IDF sum calculation for average IDF */
+extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);

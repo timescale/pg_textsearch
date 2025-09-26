@@ -23,6 +23,8 @@
 
 #include "constants.h"
 
+typedef struct TpLocalIndexState TpLocalIndexState;
+
 /*
  * Tapir Index Metapage Structure
  *

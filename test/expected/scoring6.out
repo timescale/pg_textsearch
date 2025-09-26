@@ -1,0 +1,112 @@
+-- Test case: scoring6
+-- Generated BM25 test with 2 documents and 3 queries
+-- Testing both bulk build and incremental build modes
+CREATE EXTENSION IF NOT EXISTS tapir;
+SET tapir.log_scores = true;
+SET enable_seqscan = off;
+-- MODE 1: Bulk build (insert data, then create index)
+CREATE TABLE scoring6_bulk (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+-- Insert test documents
+INSERT INTO scoring6_bulk (content) VALUES ('hello, world!');
+INSERT INTO scoring6_bulk (content) VALUES ('goodbye cruel world...');
+-- Create index after data insertion (bulk build)
+CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  Tapir index build started for relation scoring6_bulk_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
+-- Bulk mode query 1: 'hello'
+SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
+FROM scoring6_bulk
+ORDER BY content <@> to_tpquery('hello', 'scoring6_bulk_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
+-- Bulk mode query 2: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
+FROM scoring6_bulk
+ORDER BY content <@> to_tpquery('goodbye', 'scoring6_bulk_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
+-- Bulk mode query 3: 'world'
+SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring6_bulk_idx'))::numeric, 4) as score
+FROM scoring6_bulk
+ORDER BY content <@> to_tpquery('world', 'scoring6_bulk_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.0930
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1096
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.1096
+  2 | goodbye cruel world... | -0.0930
+(2 rows)
+
+-- MODE 2: Incremental build (create index, then insert data)
+CREATE TABLE scoring6_incr (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+-- Create index before data insertion (incremental build)
+CREATE INDEX scoring6_incr_idx ON scoring6_incr USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  Tapir index build started for relation scoring6_incr_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert test documents incrementally
+INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
+INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
+-- Incremental mode query 1: 'hello'
+SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring6_incr_idx'))::numeric, 4) as score
+FROM scoring6_incr
+ORDER BY content <@> to_tpquery('hello', 'scoring6_incr_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
+-- Incremental mode query 2: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
+FROM scoring6_incr
+ORDER BY content <@> to_tpquery('goodbye', 'scoring6_incr_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=0.0000
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
+-- Incremental mode query 3: 'world'
+SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring6_incr_idx'))::numeric, 4) as score
+FROM scoring6_incr
+ORDER BY content <@> to_tpquery('world', 'scoring6_incr_idx'), id;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.0930
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1096
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.1096
+  2 | goodbye cruel world... | -0.0930
+(2 rows)
+
+-- Cleanup
+DROP TABLE scoring6_bulk CASCADE;
+DROP TABLE scoring6_incr CASCADE;
+DROP EXTENSION tapir CASCADE;

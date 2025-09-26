@@ -332,3 +332,4 @@ brew install pre-commit && pre-commit install  # macOS
 5. Submit a pull request
 
 All pull requests are automatically tested against PostgreSQL 17.
+

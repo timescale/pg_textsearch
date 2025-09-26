@@ -10,6 +10,7 @@
 #include <catalog/pg_opclass.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
+#include <math.h>
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
@@ -28,19 +29,16 @@
 #include "limit.h"
 #include "memtable.h"
 #include "metapage.h"
+#include "operator.h"
 #include "posting.h"
 #include "query.h"
 #include "vector.h"
 
-/* External GUC variable for score logging */
-extern bool tp_log_scores;
-
-/* Forward declarations */
 static bool tp_search_posting_lists(
-		IndexScanDesc	scan,
-		TpIndexState   *index_state,
-		TpVector	   *query_vector,
-		TpIndexMetaPage metap);
+		IndexScanDesc	   scan,
+		TpLocalIndexState *index_state,
+		TpVector		  *query_vector,
+		TpIndexMetaPage	   metap);
 
 /*
  * Tapir Index Access Method Implementation
@@ -143,30 +141,89 @@ tp_build_init_metapage(
 	UnlockReleaseBuffer(metabuf);
 }
 
+/*
+ * Calculate the sum of all IDF values for the index
+ */
+void
+tp_calculate_idf_sum(TpLocalIndexState *index_state)
+{
+	TpMemtable		  *memtable;
+	dshash_table	  *string_table;
+	dshash_seq_status  status;
+	TpStringHashEntry *entry;
+	float8			   idf_sum = 0.0;
+	int32			   total_docs;
+	int32			   term_count = 0;
+
+	Assert(index_state != NULL);
+	Assert(index_state->shared != NULL);
+
+	total_docs = index_state->shared->total_docs;
+	if (total_docs == 0)
+		return; /* No documents, no IDF to calculate */
+
+	memtable = get_memtable(index_state);
+	if (!memtable || memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+		return;
+
+	/* Attach to the string hash table */
+	string_table = tp_string_table_attach(
+			index_state->dsa, memtable->string_hash_handle);
+
+	/* Iterate through all terms and calculate IDF for each */
+	dshash_seq_init(&status, string_table, false); /* shared lock */
+
+	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
+	{
+		if (DsaPointerIsValid(entry->key.posting_list))
+		{
+			TpPostingList *posting_list =
+					dsa_get_address(index_state->dsa, entry->key.posting_list);
+
+			/* Calculate RAW IDF for this term (no epsilon adjustment) */
+			double idf_numerator   = (double)(total_docs -
+											  posting_list->doc_count + 0.5);
+			double idf_denominator = (double)(posting_list->doc_count + 0.5);
+			double idf_ratio	   = idf_numerator / idf_denominator;
+			double raw_idf		   = log(idf_ratio);
+
+			/* Use raw IDF for sum calculation (including negative values) */
+			idf_sum += raw_idf;
+			term_count++;
+		}
+	}
+
+	dshash_seq_term(&status);
+	dshash_detach(string_table);
+
+	/* Store the IDF sum in shared state */
+	index_state->shared->idf_sum = idf_sum;
+
+	/* Update the term count in memtable */
+	memtable->total_terms = term_count;
+
+	elog(DEBUG1, "Calculated IDF sum: %.6f for %d terms", idf_sum, term_count);
+}
+
 static void
 tp_build_finalize_and_update_stats(
-		Relation	  index,
-		TpIndexState *index_state,
-		uint64		 *total_docs,
-		uint64		 *total_len)
+		Relation		   index,
+		TpLocalIndexState *index_state,
+		uint64			  *total_docs,
+		uint64			  *total_len)
 {
-	TpCorpusStatistics *stats;
-	Buffer				metabuf;
-	Page				metapage;
-	TpIndexMetaPage		metap;
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
 
-	/*
-	 * Finalize posting lists (convert to sorted arrays for query performance)
-	 */
-	if (index_state != NULL)
-	{
-		tp_finalize_index_build(index_state);
+	Assert(index_state != NULL);
 
-		/* Get actual statistics from the posting list system */
-		stats		= tp_get_corpus_statistics(index_state);
-		*total_docs = stats->total_docs;
-		*total_len	= stats->total_len;
-	}
+	/* Calculate IDF sum for average IDF computation */
+	tp_calculate_idf_sum(index_state);
+
+	/* Get actual statistics from the shared state */
+	*total_docs = index_state->shared->total_docs;
+	*total_len	= index_state->shared->total_len;
 
 	/* Update metapage with computed statistics */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -417,57 +474,40 @@ tp_setup_table_scan(
 }
 
 /*
- * Process a single document during index build
- *
- * Returns true if document was processed successfully, false to skip
+ * Core document processing: convert text to terms and add to posting lists
+ * This is shared between index building and docid recovery
  */
-static bool
-tp_process_document(
-		TupleTableSlot *slot,
-		IndexInfo	   *indexInfo,
-		Oid				text_config_oid,
-		TpIndexState   *index_state,
-		Relation		index,
-		uint64		   *total_docs)
+bool
+tp_process_document_text(
+		text			  *document_text,
+		ItemPointer		   ctid,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		int32			  *doc_length_out)
 {
-	bool		isnull;
-	Datum		text_datum;
-	text	   *document_text;
-	char	   *document_str;
-	ItemPointer ctid;
-	Datum		tsvector_datum;
-	TSVector	tsvector;
-	char	  **terms;
-	int32	   *frequencies;
-	int			term_count;
-	int			doc_length;
+	char	*document_str;
+	Datum	 tsvector_datum;
+	TSVector tsvector;
+	char   **terms;
+	int32	*frequencies;
+	int		 term_count;
+	int		 doc_length;
 
-	/* Get the text column value (first indexed column) */
-	text_datum =
-			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
-
-	if (isnull)
-		return false; /* Skip NULL documents */
-
-	document_text = DatumGetTextPP(text_datum);
+	if (!document_text || !index_state)
+		return false;
 
 	document_str = text_to_cstring(document_text);
-
-	ctid = &slot->tts_tid;
 
 	/* Validate the TID before processing */
 	if (!ItemPointerIsValid(ctid))
 	{
 		elog(WARNING,
-			 "Invalid TID in slot during index build, skipping document");
+			 "Invalid TID during document processing, skipping document");
 		pfree(document_str);
 		return false;
 	}
 
-	/*
-	 * Vectorize the document using index metadata
-	 */
-
+	/* Vectorize the document using text configuration */
 	tsvector_datum = DirectFunctionCall2Coll(
 			to_tsvector_byid,
 			InvalidOid, /* collation */
@@ -482,33 +522,70 @@ tp_process_document(
 
 	if (term_count > 0)
 	{
-		/*
-		 * Add document terms to posting lists (if shared memory available)
-		 */
-
-		if (index_state != NULL)
-		{
-			tp_add_document_terms(
-					index_state,
-					ctid,
-					terms,
-					frequencies,
-					term_count,
-					doc_length);
-		}
+		/* Add document terms to posting lists */
+		tp_add_document_terms(
+				index_state, ctid, terms, frequencies, term_count, doc_length);
 
 		/* Free the terms array and individual lexemes */
 		tp_free_terms_array(terms, term_count);
 		pfree(frequencies);
 	}
 
-	/* Store the docid for crash recovery */
+	if (doc_length_out)
+		*doc_length_out = doc_length;
+
+	pfree(document_str);
+	return true;
+}
+
+/*
+ * Process a single document during index build
+ *
+ * Returns true if document was processed successfully, false to skip
+ */
+static bool
+tp_process_document(
+		TupleTableSlot	  *slot,
+		IndexInfo		  *indexInfo,
+		Oid				   text_config_oid,
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint64			  *total_docs)
+{
+	bool		isnull;
+	Datum		text_datum;
+	text	   *document_text;
+	ItemPointer ctid;
+	int32		doc_length;
+
+	/* Get the text column value (first indexed column) */
+	text_datum =
+			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
+
+	if (isnull)
+		return false; /* Skip NULL documents */
+
+	document_text = DatumGetTextPP(text_datum);
+
+	/* Ensure the slot is materialized to get the TID */
+	slot_getallattrs(slot);
+	ctid = &slot->tts_tid;
+
+	/* Process the document text using shared helper */
+	if (!tp_process_document_text(
+				document_text,
+				ctid,
+				text_config_oid,
+				index_state,
+				&doc_length))
+	{
+		return false;
+	}
+
+	/* Store the docid for crash recovery (only during index build) */
 	tp_add_docid_to_pages(index, ctid);
 
 	(*total_docs)++;
-
-	pfree(document_str);
-
 	return true;
 }
 
@@ -518,15 +595,15 @@ tp_process_document(
 IndexBuildResult *
 tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
-	IndexBuildResult *result;
-	char			 *text_config_name = NULL;
-	Oid				  text_config_oid  = InvalidOid;
-	double			  k1, b;
-	TableScanDesc	  scan;
-	TupleTableSlot	 *slot;
-	uint64			  total_docs = 0;
-	uint64			  total_len	 = 0;
-	TpIndexState	 *index_state;
+	IndexBuildResult  *result;
+	char			  *text_config_name = NULL;
+	Oid				   text_config_oid	= InvalidOid;
+	double			   k1, b;
+	TableScanDesc	   scan;
+	TupleTableSlot	  *slot;
+	uint64			   total_docs = 0;
+	uint64			   total_len  = 0;
+	TpLocalIndexState *index_state;
 
 	/* Tapir index build started */
 	elog(NOTICE,
@@ -551,13 +628,14 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/* Initialize index state */
-	index_state = tp_get_index_state(RelationGetRelid(index));
+	index_state = tp_create_shared_index_state(
+			RelationGetRelid(index), RelationGetRelid(heap));
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
 
-	/* Setup table scanning */
+	/* Prepare to scan table */
 	tp_setup_table_scan(heap, &scan, &slot);
 
 	/* Process each document in the heap */
@@ -587,6 +665,22 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	result				= (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
 	result->heap_tuples = total_docs;
 	result->index_tuples = total_docs;
+
+	/* Calculate and log average IDF if we have terms */
+	{
+		TpMemtable *memtable = get_memtable(index_state);
+		if (memtable && index_state->shared->idf_sum > 0 &&
+			memtable->total_terms > 0)
+		{
+			float8 avg_idf = index_state->shared->idf_sum /
+							 memtable->total_terms;
+			elog(DEBUG1,
+				 "Average IDF for index: %.6f (sum=%.6f, terms=%d)",
+				 avg_idf,
+				 index_state->shared->idf_sum,
+				 memtable->total_terms);
+		}
+	}
 
 	if (OidIsValid(text_config_oid))
 	{
@@ -702,15 +796,15 @@ tp_insert(
 		bool			 indexUnchanged,
 		IndexInfo		*indexInfo)
 {
-	text		  *document_text;
-	Datum		   vector_datum;
-	TpVector	  *tpvec;
-	TpVectorEntry *vector_entry;
-	int32		  *frequencies;
-	int			   term_count;
-	int			   doc_length = 0;
-	int			   i;
-	TpIndexState  *index_state;
+	text			  *document_text;
+	Datum			   vector_datum;
+	TpVector		  *tpvec;
+	TpVectorEntry	  *vector_entry;
+	int32			  *frequencies;
+	int				   term_count;
+	int				   doc_length = 0;
+	int				   i;
+	TpLocalIndexState *index_state;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -722,7 +816,8 @@ tp_insert(
 		return true;
 
 	/* Get index state */
-	index_state = tp_get_index_state(RelationGetRelid(index));
+	/* TODO: cache local state pointer to avoid hash lookup */
+	index_state = tp_get_local_index_state(RelationGetRelid(index));
 	Assert(index_state != NULL);
 
 	/* Extract text from first column */
@@ -792,6 +887,9 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
+	/* Recalculate IDF sum after insert for proper BM25 scoring */
+	tp_calculate_idf_sum(index_state);
+
 	return true;
 }
 
@@ -847,25 +945,14 @@ tp_rescan(
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
-	/* Retrieve query limit for optimization */
+	/* Retrieve query LIMIT, if available */
 	{
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 
 		if (query_limit > 0)
-		{
 			so->limit = query_limit;
-			elog(DEBUG1,
-				 "tapir: LIMIT optimization active, limit=%d for index %s",
-				 query_limit,
-				 RelationGetRelationName(scan->indexRelation));
-		}
 		else
-		{
 			so->limit = -1; /* No limit */
-			elog(DEBUG1,
-				 "tapir: No LIMIT optimization, using default for index %s",
-				 RelationGetRelationName(scan->indexRelation));
-		}
 	}
 
 	/* Reset scan state */
@@ -922,91 +1009,86 @@ tp_rescan(
 		if (!metap)
 			metap = tp_get_metapage(scan->indexRelation);
 
+		for (int i = 0; i < norderbys; i++)
 		{
-			int i;
-			for (i = 0; i < norderbys; i++)
+			ScanKey orderby = &orderbys[i];
+
+			/* Check for <@> operator strategy */
+			if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 			{
-				ScanKey orderby = &orderbys[i];
+				Datum query_datum = orderby->sk_argument;
+				char *query_cstr;
 
-				/* Check for <@> operator strategy */
-				if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
+				/*
+				 * Handle tpquery type - text <@> tpquery operation
+				 * PostgreSQL's type system guarantees this is a tpquery
+				 */
+				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
+				char	*index_name;
+				char	*current_index_name;
+
+				/* Validate it's a proper tpquery by checking varlena header */
+				if (VARATT_IS_EXTENDED(query) ||
+					VARSIZE_ANY(query) <
+							VARHDRSZ + sizeof(int32) + sizeof(int32))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid tpquery data")));
+
+				index_name		   = get_tpquery_index_name(query);
+				current_index_name = RelationGetRelationName(
+						scan->indexRelation);
+
+				/* Validate index name if provided in query */
+				if (index_name)
 				{
-					Datum query_datum = orderby->sk_argument;
-					char *query_cstr;
-
-					/*
-					 * Handle tpquery type - text <@> tpquery operation
-					 * PostgreSQL's type system guarantees this is a tpquery
-					 */
-					TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
-					char	*index_name;
-					char	*current_index_name;
-
-					/* Validate it's a proper tpquery by checking varlena
-					 * header */
-					if (VARATT_IS_EXTENDED(query) ||
-						VARSIZE_ANY(query) <
-								VARHDRSZ + sizeof(int32) + sizeof(int32))
+					if (strcmp(index_name, current_index_name) != 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("invalid tpquery data")));
-
-					index_name		   = get_tpquery_index_name(query);
-					current_index_name = RelationGetRelationName(
-							scan->indexRelation);
-
-					/* Validate index name if provided in query */
-					if (index_name)
-					{
-						if (strcmp(index_name, current_index_name) != 0)
-							ereport(ERROR,
-									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-									 errmsg("tpquery index name mismatch"),
-									 errhint("Query specifies index "
-											 "\"%s\" but scan is on index "
-											 "\"%s\"",
-											 index_name,
-											 current_index_name)));
-					}
-
-					query_cstr = pstrdup(get_tpquery_text(query));
-
-					/* Clear query vector since we're using text directly */
-					if (so->query_vector)
-					{
-						pfree(so->query_vector);
-						so->query_vector = NULL;
-					}
-
-					/* Store query for processing during gettuple */
-					if (so->query_text)
-					{
-						/*
-						 * Free old query text if it was allocated in scan
-						 * context
-						 */
-						MemoryContext oldcontext = MemoryContextSwitchTo(
-								so->scan_context);
-
-						pfree(so->query_text);
-						MemoryContextSwitchTo(oldcontext);
-					}
-
-					/* Allocate new query text in scan context */
-					{
-						MemoryContext oldcontext = MemoryContextSwitchTo(
-								so->scan_context);
-
-						so->query_text = pstrdup(query_cstr);
-						MemoryContextSwitchTo(oldcontext);
-					}
-
-					/* Mark all docs as candidates for ORDER BY operation */
-					if (metap && metap->total_docs > 0)
-						so->result_count = metap->total_docs;
-
-					pfree(query_cstr);
+								 errmsg("tpquery index name mismatch"),
+								 errhint("Query specifies index "
+										 "\"%s\" but scan is on index "
+										 "\"%s\"",
+										 index_name,
+										 current_index_name)));
 				}
+
+				query_cstr = pstrdup(get_tpquery_text(query));
+
+				/* Clear query vector since we're using text directly */
+				if (so->query_vector)
+				{
+					pfree(so->query_vector);
+					so->query_vector = NULL;
+				}
+
+				/* Store query for processing during gettuple */
+				if (so->query_text)
+				{
+					/*
+					 * Free old query text if it was allocated in scan context
+					 */
+					MemoryContext oldcontext = MemoryContextSwitchTo(
+							so->scan_context);
+
+					pfree(so->query_text);
+					MemoryContextSwitchTo(oldcontext);
+				}
+
+				/* Allocate new query text in scan context */
+				{
+					MemoryContext oldcontext = MemoryContextSwitchTo(
+							so->scan_context);
+
+					so->query_text = pstrdup(query_cstr);
+					MemoryContextSwitchTo(oldcontext);
+				}
+
+				/* Mark all docs as candidates for ORDER BY operation */
+				if (metap && metap->total_docs > 0)
+					so->result_count = metap->total_docs;
+
+				pfree(query_cstr);
 			}
 		}
 
@@ -1054,11 +1136,11 @@ tp_endscan(IndexScanDesc scan)
 static bool
 tp_execute_scoring_query(IndexScanDesc scan)
 {
-	TpScanOpaque	so = (TpScanOpaque)scan->opaque;
-	TpIndexMetaPage metap;
-	bool			success		= false;
-	TpIndexState   *index_state = NULL;
-	TpVector	   *query_vector;
+	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
+	TpIndexMetaPage	   metap;
+	bool			   success	   = false;
+	TpLocalIndexState *index_state = NULL;
+	TpVector		  *query_vector;
 
 	if (!so || !so->query_text)
 		return false;
@@ -1112,7 +1194,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	PG_TRY();
 	{
 		/* Get the index state with posting lists */
-		index_state = tp_get_index_state(
+		index_state = tp_get_local_index_state(
 				RelationGetRelid(scan->indexRelation));
 
 		if (!index_state)
@@ -1175,10 +1257,10 @@ tp_execute_scoring_query(IndexScanDesc scan)
  */
 static bool
 tp_search_posting_lists(
-		IndexScanDesc	scan,
-		TpIndexState   *index_state,
-		TpVector	   *query_vector,
-		TpIndexMetaPage metap)
+		IndexScanDesc	   scan,
+		TpLocalIndexState *index_state,
+		TpVector		  *query_vector,
+		TpIndexMetaPage	   metap)
 {
 	TpScanOpaque so = (TpScanOpaque)scan->opaque;
 	int			 max_results;
@@ -1196,17 +1278,9 @@ tp_search_posting_lists(
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so && so->limit > 0)
-	{
 		max_results = so->limit;
-		elog(DEBUG1, "tapir: Using query LIMIT=%d for search", so->limit);
-	}
 	else
-	{
 		max_results = tp_default_limit;
-		elog(DEBUG1,
-			 "tapir: Using default limit=%d for search (no query limit)",
-			 tp_default_limit);
-	}
 
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
@@ -1215,27 +1289,24 @@ tp_search_posting_lists(
 
 	/* Parse the query vector entries */
 	ptr = (char *)entries_ptr;
+	for (int i = 0; i < entry_count; i++)
 	{
-		int i;
-		for (i = 0; i < entry_count; i++)
-		{
-			TpVectorEntry *entry = (TpVectorEntry *)ptr;
-			char		  *term_str;
+		TpVectorEntry *entry = (TpVectorEntry *)ptr;
+		char		  *term_str;
 
-			/*
-			 * Always allocate on heap for query terms array since we need to
-			 * keep them
-			 */
-			term_str = palloc(entry->lexeme_len + 1);
-			memcpy(term_str, entry->lexeme, entry->lexeme_len);
-			term_str[entry->lexeme_len] = '\0';
+		/*
+		 * Always allocate on heap for query terms array since we need to keep
+		 * them
+		 */
+		term_str = palloc(entry->lexeme_len + 1);
+		memcpy(term_str, entry->lexeme, entry->lexeme_len);
+		term_str[entry->lexeme_len] = '\0';
 
-			/* Store the term string directly in query terms array */
-			query_terms[i]		 = term_str;
-			query_frequencies[i] = entry->frequency;
+		/* Store the term string directly in query terms array */
+		query_terms[i]		 = term_str;
+		query_frequencies[i] = entry->frequency;
 
-			ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
-		}
+		ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
 	}
 
 	/* Allocate result arrays in scan context */
@@ -1245,11 +1316,8 @@ tp_search_posting_lists(
 	memset(so->result_ctids, 0, max_results * sizeof(ItemPointerData));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* Check pointers before using them */
-	if (!metap)
-		elog(ERROR, "metap is NULL before tp_score_documents");
-
-	/* Extract values from metap before the call to avoid any access issues */
+	/* Extract values from metap */
+	Assert(metap != NULL);
 	k1_value = metap->k1;
 	b_value	 = metap->b;
 
@@ -1274,11 +1342,8 @@ tp_search_posting_lists(
 	so->current_pos	 = 0;
 
 	/* Free the query terms array and individual term strings */
-	{
-		int i;
-		for (i = 0; i < entry_count; i++)
-			pfree(query_terms[i]);
-	}
+	for (int i = 0; i < entry_count; i++)
+		pfree(query_terms[i]);
 
 	pfree(query_terms);
 	pfree(query_frequencies);
@@ -1287,7 +1352,7 @@ tp_search_posting_lists(
 }
 
 /*
- * Get next tuple from scan (for index-only scans)
+ * Get next tuple from scan
  */
 bool
 tp_gettuple(IndexScanDesc scan, ScanDirection dir)
@@ -1298,10 +1363,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(scan != NULL);
 	Assert(so != NULL);
-
-	/* Check if we have a query to process */
-	if (!so->query_text)
-		return false;
+	Assert(so->query_text != NULL);
 
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && !so->eof_reached)
@@ -1340,53 +1402,27 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	scan->xs_recheck		= false;
 	scan->xs_recheckorderby = false;
 
-	/* Set ORDER BY distance value if this is an ORDER BY scan */
+	/* Set ORDER BY distance value */
 	if (scan->numberOfOrderBys > 0)
 	{
 		Assert(scan->numberOfOrderBys == 1);
+		Assert(scan->xs_orderbyvals != NULL);
+		Assert(scan->xs_orderbynulls != NULL);
+		Assert(so->result_scores != NULL);
 
-		/* Set the ORDER BY value (BM25 score) */
-		if (!scan->xs_orderbyvals || !scan->xs_orderbynulls)
-		{
-			/*
-			 * ORDER BY arrays not allocated by PostgreSQL - this can happen
-			 * when the query planner chooses index scan but ORDER BY arrays
-			 * aren't properly initialized. Log a warning and continue.
-			 */
-			elog(WARNING,
-				 "Tapir gettuple: ORDER BY arrays not allocated "
-				 "(numberOfOrderBys=%d), continuing "
-				 "without ORDER BY values",
-				 scan->numberOfOrderBys);
-		}
-		else if (so->result_scores)
-		{
-			/*
-			 * Convert BM25 score to Datum - PostgreSQL expects negative
-			 * values for ASC ordering
-			 */
-			bm25_score				 = -so->result_scores[so->current_pos];
-			scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
-			scan->xs_orderbynulls[0] = false;
+		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
+		float4 raw_score		 = so->result_scores[so->current_pos];
+		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
+		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
+		scan->xs_orderbynulls[0] = false;
 
-			/* Log score - NOTICE if GUC enabled, DEBUG1 otherwise */
-			elog(tp_log_scores ? NOTICE : DEBUG1,
-				 "Tapir index scan: doc_pos=%d, tid=(%u,%u), "
-				 "BM25_score=%.4f",
-				 so->current_pos,
-				 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
-				 scan->xs_heaptid.ip_posid,
-				 bm25_score);
-		}
-		else
-		{
-			/* No scores available - use 0.0 as default */
-			elog(WARNING,
-				 "Tapir gettuple: result_scores is NULL, using 0.0 "
-				 "for ORDER BY");
-			scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
-			scan->xs_orderbynulls[0] = false;
-		}
+		/* Log BM25 score if enabled */
+		elog(tp_log_scores ? NOTICE : DEBUG1,
+			 "Tapir index scan: doc_pos=%d, tid=(%u,%u), BM25_score=%.4f",
+			 so->current_pos,
+			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
+			 scan->xs_heaptid.ip_posid,
+			 bm25_score);
 	}
 
 	/* Move to next position */
@@ -1475,9 +1511,7 @@ tp_costestimate(
 	}
 	else
 	{
-		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY; /* Assume 10%
-														   * selectivity for
-														   * text searches */
+		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY;
 	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
@@ -1527,20 +1561,17 @@ tp_validate(Oid opclassoid)
 	opclassform = (Form_pg_opclass)GETSTRUCT(tup);
 	opcintype	= opclassform->opcintype;
 
-	/* Check if the input type is compatible with text search */
 	switch (opcintype)
 	{
 	case TEXTOID:
 	case VARCHAROID:
 	case BPCHAROID: /* char(n) */
-		/* These are acceptable text types */
 		result = true;
 		break;
 	default:
 		elog(WARNING,
 			 "Tapir index can only be created on text, varchar, or char "
-			 "columns (got type OID "
-			 "%u)",
+			 "columns (got type OID %u)",
 			 opcintype);
 		result = false;
 		break;
@@ -1607,11 +1638,14 @@ PG_FUNCTION_INFO_V1(tp_debug_dump_index);
 Datum
 tp_debug_dump_index(PG_FUNCTION_ARGS)
 {
-	text		  *index_name_text = PG_GETARG_TEXT_PP(0);
-	char		  *index_name;
-	StringInfoData result;
-	Oid			   index_oid;
-	TpIndexState  *index_state;
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name;
+	StringInfoData	   result;
+	Oid				   index_oid;
+	TpLocalIndexState *index_state;
+	Relation		   index_rel = NULL;
+	TpIndexMetaPage	   metap	 = NULL;
+	TpMemtable		  *memtable;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
@@ -1629,28 +1663,38 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
 
+	/* Open the index relation to read metapage */
+	index_rel = index_open(index_oid, AccessShareLock);
+
+	/* Get the metapage */
+	metap = tp_get_metapage(index_rel);
+
 	/* Get index state to inspect corpus statistics */
-	index_state = tp_get_index_state(index_oid);
+	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
 	{
 		appendStringInfo(
 				&result,
 				"ERROR: Could not get index state for '%s'\n",
 				index_name);
+		if (metap)
+			pfree(metap);
+		if (index_rel)
+			index_close(index_rel, AccessShareLock);
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
 
 	/* Show corpus statistics */
 	appendStringInfo(&result, "Corpus Statistics:\n");
 	appendStringInfo(
-			&result, "  total_docs: %d\n", index_state->stats.total_docs);
+			&result, "  total_docs: %d\n", index_state->shared->total_docs);
 	appendStringInfo(
-			&result, "  total_len: %ld\n", index_state->stats.total_len);
+			&result, "  total_len: %ld\n", index_state->shared->total_len);
 
-	if (index_state->stats.total_docs > 0)
+	if (index_state->shared->total_docs > 0)
 	{
-		float avg_doc_len = (float)index_state->stats.total_len /
-							(float)index_state->stats.total_docs;
+		float avg_doc_len = (float)index_state->shared->total_len /
+							(float)index_state->shared->total_docs;
 
 		appendStringInfo(&result, "  avg_doc_len: %.4f\n", avg_doc_len);
 	}
@@ -1659,21 +1703,44 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(&result, "  avg_doc_len: 0 (no documents)\n");
 	}
 
+	/* Add DSA memory consumption statistics */
+	if (index_state->dsa)
+	{
+		size_t dsa_total_size = dsa_get_total_size(index_state->dsa);
+		appendStringInfo(&result, "Memory Usage:\n");
+		appendStringInfo(
+				&result,
+				"  DSA total size: %zu bytes (%.2f MB)\n",
+				dsa_total_size,
+				(double)dsa_total_size / (1024.0 * 1024.0));
+	}
+
 	appendStringInfo(&result, "BM25 Parameters:\n");
-	appendStringInfo(&result, "  k1: %.2f\n", index_state->stats.k1);
-	appendStringInfo(&result, "  b: %.2f\n", index_state->stats.b);
+	if (metap)
+	{
+		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
+		appendStringInfo(&result, "  b: %.2f\n", metap->b);
+
+		appendStringInfo(&result, "Metapage Recovery Info:\n");
+		appendStringInfo(&result, "  magic: 0x%08X\n", metap->magic);
+		appendStringInfo(
+				&result, "  first_docid_page: %u\n", metap->first_docid_page);
+
+		pfree(metap);
+	}
 
 	/* Show term dictionary and posting lists */
 	appendStringInfo(&result, "Term Dictionary:\n");
 
-	if (index_state->string_hash_handle != DSHASH_HANDLE_INVALID)
+	memtable = get_memtable(index_state);
+	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
-		dsa_area *area = tp_get_dsa_area_for_index(index_state, InvalidOid);
+		dsa_area *area = index_state->dsa;
 
 		if (area)
 		{
-			TpStringHashTable *string_table = tp_hash_table_attach_dsa(
-					area, index_state->string_hash_handle);
+			dshash_table *string_table =
+					tp_string_table_attach(area, memtable->string_hash_handle);
 
 			if (string_table)
 			{
@@ -1683,20 +1750,18 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 				/* Iterate through all entries using dshash sequential scan */
 				dshash_seq_init(
-						&status,
-						string_table->dshash,
-						false); /* shared lock */
+						&status, string_table, false); /* shared lock */
 
 				while ((entry = (TpStringHashEntry *)dshash_seq_next(
 								&status)) != NULL)
 				{
 					/* Show term info if it has a posting list */
-					if (DsaPointerIsValid(entry->key.flag_field))
+					if (DsaPointerIsValid(entry->key.posting_list))
 					{
 						TpPostingList *posting_list =
-								dsa_get_address(area, entry->key.flag_field);
-						char *stored_str = dsa_get_address(
-								area, entry->key.string_or_ptr);
+								dsa_get_address(area, entry->key.posting_list);
+						const char *stored_str =
+								tp_get_key_str(area, &entry->key);
 
 						appendStringInfo(
 								&result,
@@ -1708,7 +1773,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				}
 
 				dshash_seq_term(&status);
-				tp_hash_table_detach_dsa(string_table);
+				dshash_detach(string_table);
 
 				appendStringInfo(&result, "Total terms: %u\n", term_count);
 			}
@@ -1729,6 +1794,124 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(
 				&result, "  No terms (string hash table not initialized)\n");
 	}
+
+	/* Show document length hash table */
+	appendStringInfo(&result, "Document Length Hash Table:\n");
+	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dsa_area *area = index_state->dsa;
+		if (area)
+		{
+			dshash_table *doclength_table = tp_doclength_table_attach(
+					area, memtable->doc_lengths_handle);
+			if (doclength_table)
+			{
+				dshash_seq_status status;
+				TpDocLengthEntry *entry;
+				int				  count = 0;
+
+				/* Iterate through document length entries */
+				dshash_seq_init(
+						&status, doclength_table, false); /* shared lock */
+
+				while ((entry = (TpDocLengthEntry *)dshash_seq_next(
+								&status)) != NULL &&
+					   count < 10)
+				{
+					appendStringInfo(
+							&result,
+							"  CTID (%u,%u): doc_length=%d\n",
+							BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
+							entry->ctid.ip_posid,
+							entry->doc_length);
+					count++;
+				}
+
+				if (count >= 10)
+					appendStringInfo(
+							&result, "  ... (showing first 10 entries)\n");
+
+				appendStringInfo(
+						&result, "Total document length entries: %d\n", count);
+
+				dshash_seq_term(&status);
+				dshash_detach(doclength_table);
+			}
+			else
+			{
+				appendStringInfo(
+						&result,
+						"  ERROR: Cannot attach to document length hash "
+						"table\n");
+			}
+		}
+		else
+		{
+			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
+		}
+	}
+	else
+	{
+		appendStringInfo(
+				&result,
+				"  No document length table (doc_lengths_handle not "
+				"initialized)\n");
+	}
+
+	/* Add crash recovery information */
+	appendStringInfo(&result, "Crash Recovery:\n");
+	if (metap && metap->first_docid_page != InvalidBlockNumber)
+	{
+		/* Count total pages and documents for recovery */
+		Buffer			   docid_buf;
+		Page			   docid_page;
+		TpDocidPageHeader *docid_header;
+		BlockNumber		   current_page = metap->first_docid_page;
+		int				   page_count	= 0;
+		int				   total_docids = 0;
+
+		while (current_page != InvalidBlockNumber)
+		{
+			docid_buf = ReadBuffer(index_rel, current_page);
+			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+			docid_page	 = BufferGetPage(docid_buf);
+			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
+			{
+				total_docids += docid_header->num_docids;
+				page_count++;
+				current_page = docid_header->next_page;
+			}
+			else
+			{
+				/* Stop if we hit an invalid page */
+				current_page = InvalidBlockNumber;
+			}
+
+			UnlockReleaseBuffer(docid_buf);
+
+			/* Safety limit */
+			if (page_count > 10000)
+				break;
+		}
+
+		appendStringInfo(
+				&result,
+				"  Pages: %d, Documents: %d\n",
+				page_count,
+				total_docids);
+	}
+	else
+	{
+		appendStringInfo(&result, "  No recovery pages\n");
+	}
+
+	/* Cleanup */
+	if (metap)
+		pfree(metap);
+	if (index_rel)
+		index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }

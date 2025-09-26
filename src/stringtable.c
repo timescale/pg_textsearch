@@ -21,11 +21,12 @@
 
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
+#include "posting.h"
+#include "state.h"
 #include "stringtable.h"
 
 /*
  * Hash function for variant string keys (char* or dsa_pointer)
- * Uses flag_field to distinguish: 0 = char*, non-0 = dsa_pointer
  */
 static dshash_hash
 tp_string_hash_function(const void *key, size_t keysize, void *arg)
@@ -33,28 +34,30 @@ tp_string_hash_function(const void *key, size_t keysize, void *arg)
 	const TpStringKey *string_key = (const TpStringKey *)key;
 	dsa_area		  *area		  = (dsa_area *)arg;
 	const char		  *str;
+	dshash_hash		   hash_result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
-	if (string_key->flag_field == 0)
-	{
-		/* Lookup key: string_or_ptr is a cast char* */
-		str = (const char *)(uintptr_t)string_key->string_or_ptr;
-	}
-	else
-	{
-		/* Table entry: string_or_ptr is a dsa_pointer */
-		Assert(DsaPointerIsValid(string_key->string_or_ptr));
-		str = (const char *)dsa_get_address(area, string_key->string_or_ptr);
-	}
+	str = tp_get_key_str(area, string_key);
 
 	/* Hash the null-terminated string content */
-	return (dshash_hash)hash_bytes((const unsigned char *)str, strlen(str));
+	hash_result = (dshash_hash)
+			hash_bytes((const unsigned char *)str, strlen(str));
+
+	return hash_result;
+}
+
+const char *
+tp_get_key_str(dsa_area *area, const TpStringKey *key)
+{
+	if (key->posting_list == InvalidDsaPointer)
+		return key->term.str;
+	else
+		return (const char *)dsa_get_address(area, key->term.dp);
 }
 
 /*
  * Compare function for variant string keys (char* or dsa_pointer)
- * Handles all combinations: char* vs char*, char* vs dsa_pointer, etc.
  */
 static int
 tp_string_compare_function(
@@ -63,43 +66,15 @@ tp_string_compare_function(
 	const TpStringKey *key_a = (const TpStringKey *)a;
 	const TpStringKey *key_b = (const TpStringKey *)b;
 	dsa_area		  *area	 = (dsa_area *)arg;
-	const char		  *str_a, *str_b;
+	const char		  *str_a = tp_get_key_str(area, key_a);
+	const char		  *str_b = tp_get_key_str(area, key_b);
+	int				   result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
-	/* Handle identical keys (same structure content) */
-	if (key_a->string_or_ptr == key_b->string_or_ptr &&
-		key_a->flag_field == key_b->flag_field)
-		return 0;
+	result = strcmp(str_a, str_b);
 
-	/* Get string A */
-	if (key_a->flag_field == 0)
-	{
-		/* Lookup key: string_or_ptr is a cast char* */
-		str_a = (const char *)(uintptr_t)key_a->string_or_ptr;
-	}
-	else
-	{
-		/* Table entry: string_or_ptr is a dsa_pointer */
-		Assert(DsaPointerIsValid(key_a->string_or_ptr));
-		str_a = (const char *)dsa_get_address(area, key_a->string_or_ptr);
-	}
-
-	/* Get string B */
-	if (key_b->flag_field == 0)
-	{
-		/* Lookup key: string_or_ptr is a cast char* */
-		str_b = (const char *)(uintptr_t)key_b->string_or_ptr;
-	}
-	else
-	{
-		/* Table entry: string_or_ptr is a dsa_pointer */
-		Assert(DsaPointerIsValid(key_b->string_or_ptr));
-		str_b = (const char *)dsa_get_address(area, key_b->string_or_ptr);
-	}
-
-	/* Compare null-terminated strings */
-	return strcmp(str_a, str_b);
+	return result;
 }
 
 /*
@@ -118,15 +93,14 @@ tp_string_copy_function(
 }
 
 /*
- * Create and initialize a new string hash table using dshash
+ * Create and initialize a new string hash table using dshash.  The hash table
+ * contents live in the DSA area, but the returned handle is allocated from
+ * backend memory using the current memory context.
  */
-TpStringHashTable *
-tp_hash_table_create_dsa(dsa_area *area)
+dshash_table *
+tp_string_table_create(dsa_area *area)
 {
-	TpStringHashTable *ht;
-	dshash_parameters  params;
-
-	Assert(area != NULL);
+	dshash_parameters params;
 
 	/* Set up dshash parameters */
 	params.key_size			= sizeof(TpStringKey);
@@ -135,31 +109,20 @@ tp_hash_table_create_dsa(dsa_area *area)
 	params.compare_function = tp_string_compare_function;
 	params.copy_function	= tp_string_copy_function;
 	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
-
-	/* Allocate wrapper structure */
-	ht = (TpStringHashTable *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(TpStringHashTable));
 
 	/* Create the dshash table */
-	ht->dshash		= dshash_create(area, &params, area);
-	ht->handle		= dshash_get_hash_table_handle(ht->dshash);
-	ht->entry_count = 0;
-	ht->max_entries = 0;
-
-	return ht;
+	return dshash_create(area, &params, area);
 }
 
 /*
- * Attach to an existing string hash table using its handle
+ * Attach to an existing string hash table using its handle.  Returns an object
+ * allocated from backend memory using the current memory context to can be
+ * used to access the hash table stored in the DSA area.
  */
-TpStringHashTable *
-tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
+dshash_table *
+tp_string_table_attach(dsa_area *area, dshash_table_handle handle)
 {
-	TpStringHashTable *ht;
-	dshash_parameters  params;
-
-	Assert(area != NULL);
-	Assert(handle != DSHASH_HANDLE_INVALID);
+	dshash_parameters params;
 
 	/* Set up dshash parameters */
 	params.key_size			= sizeof(TpStringKey);
@@ -169,53 +132,8 @@ tp_hash_table_attach_dsa(dsa_area *area, dshash_table_handle handle)
 	params.copy_function	= tp_string_copy_function;
 	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
 
-	/* Allocate wrapper structure */
-	ht = (TpStringHashTable *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(TpStringHashTable));
-
 	/* Attach to the dshash table */
-	ht->dshash		= dshash_attach(area, &params, handle, area);
-	ht->handle		= handle;
-	ht->entry_count = 0; /* We don't track this accurately */
-	ht->max_entries = 0;
-
-	return ht;
-}
-
-/*
- * Detach from a string hash table
- */
-void
-tp_hash_table_detach_dsa(TpStringHashTable *ht)
-{
-	Assert(ht != NULL);
-	Assert(ht->dshash != NULL);
-
-	dshash_detach(ht->dshash);
-	pfree(ht);
-}
-
-/*
- * Destroy a string hash table
- */
-void
-tp_hash_table_destroy_dsa(TpStringHashTable *ht)
-{
-	Assert(ht != NULL);
-	Assert(ht->dshash != NULL);
-
-	dshash_destroy(ht->dshash);
-	pfree(ht);
-}
-
-/*
- * Get the handle for sharing the table across processes
- */
-dshash_table_handle
-tp_hash_table_get_handle(TpStringHashTable *ht)
-{
-	Assert(ht != NULL);
-	return ht->handle;
+	return dshash_attach(area, &params, handle, area);
 }
 
 /*
@@ -242,13 +160,10 @@ tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
 /*
  * Look up a string in the hash table
  * Returns NULL if not found
- *
- * Uses zero-allocation approach: builds TpStringKey on stack with
- * char* cast as string_or_ptr and flag_field=0.
  */
 TpStringHashEntry *
-tp_hash_lookup_dsa(
-		dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
+tp_string_table_lookup(
+		dsa_area *area, dshash_table *ht, const char *str, size_t len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
@@ -260,17 +175,21 @@ tp_hash_lookup_dsa(
 	if (len == 0)
 		return NULL;
 
-	/* Build lookup key on stack - no allocations! */
-	lookup_key.string_or_ptr = (dsa_pointer)(uintptr_t)str;
-	lookup_key.flag_field = 0; /* Indicates this is a char*, not dsa_pointer */
+	/* Build lookup key */
+	lookup_key.term.str		= str;
+	lookup_key.posting_list = InvalidDsaPointer;
 
 	/* Look up using the stack-allocated key */
-	entry = (TpStringHashEntry *)dshash_find(ht->dshash, &lookup_key, false);
+	entry = (TpStringHashEntry *)dshash_find(ht, &lookup_key, false);
 
 	if (entry)
 	{
-		/* Release the lock acquired by dshash_find */
-		dshash_release_lock(ht->dshash, entry);
+		/* Release the lock acquired by dshash_find.
+		 *
+		 * SAFETY: index-wide lock held by caller prevents concurrent
+		 * destruction of the hash table.
+		 */
+		dshash_release_lock(ht, entry);
 	}
 
 	return entry;
@@ -279,13 +198,10 @@ tp_hash_lookup_dsa(
 /*
  * Insert a string into the hash table
  * Returns the entry (existing or new)
- *
- * Uses zero-allocation approach for lookup. Only allocates DSA string
- * if creating a new entry.
  */
 TpStringHashEntry *
-tp_hash_insert_dsa(
-		dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
+tp_string_table_insert(
+		dsa_area *area, dshash_table *ht, const char *str, size_t len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
@@ -296,31 +212,23 @@ tp_hash_insert_dsa(
 	Assert(str != NULL);
 	Assert(len > 0);
 
-	/* Build lookup key on stack - no allocations! */
-	lookup_key.string_or_ptr = (dsa_pointer)(uintptr_t)str;
-	lookup_key.flag_field = 0; /* Indicates this is a char*, not dsa_pointer */
+	/* Build lookup key */
+	lookup_key.term.str		= str;
+	lookup_key.posting_list = InvalidDsaPointer;
 
-	/* Try to find or insert using the stack-allocated key */
+	/* Try to find or insert the entry */
 	entry = (TpStringHashEntry *)
-			dshash_find_or_insert(ht->dshash, &lookup_key, &found);
+			dshash_find_or_insert(ht, &lookup_key, &found);
 
 	if (!found)
 	{
-		/* New entry - allocate DSA string and initialize */
-		dsa_pointer string_dp  = tp_alloc_string_dsa(area, str, len);
-		uint32		hash_value = hash_bytes((const unsigned char *)str, len);
-
-		entry->key.string_or_ptr = string_dp;
-		entry->key.flag_field =
-				InvalidDsaPointer; /* Will be updated with posting_list_dp */
-		entry->posting_list_len = 0;
-		entry->hash_value		= hash_value;
-
-		ht->entry_count++;
+		/* New entry */
+		entry->key.term.dp		= tp_alloc_string_dsa(area, str, len);
+		entry->key.posting_list = tp_alloc_posting_list(area);
 	}
 
 	/* Release the lock acquired by dshash_find_or_insert */
-	dshash_release_lock(ht->dshash, entry);
+	dshash_release_lock(ht, entry);
 
 	return entry;
 }
@@ -330,8 +238,8 @@ tp_hash_insert_dsa(
  * Returns true if found and deleted, false if not found
  */
 bool
-tp_hash_delete_dsa(
-		dsa_area *area, TpStringHashTable *ht, const char *str, size_t len)
+tp_string_table_delete(
+		dsa_area *area, dshash_table *ht, const char *str, size_t len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
@@ -343,23 +251,22 @@ tp_hash_delete_dsa(
 	if (len == 0)
 		return false;
 
-	/* Build lookup key on stack - no allocations! */
-	lookup_key.string_or_ptr = (dsa_pointer)(uintptr_t)str;
-	lookup_key.flag_field = 0; /* Indicates this is a char*, not dsa_pointer */
+	/* Build lookup key */
+	lookup_key.term.str		= str;
+	lookup_key.posting_list = InvalidDsaPointer;
 
-	/* Find the entry using stack-allocated key */
+	/* Find the entry */
 	entry = (TpStringHashEntry *)
-			dshash_find(ht->dshash, &lookup_key, true); /* exclusive lock */
+			dshash_find(ht, &lookup_key, true); /* exclusive lock */
 
 	if (entry)
 	{
-		/* Found the entry - free DSA string and delete */
-		dsa_free(
-				area, entry->key.string_or_ptr); /* Free the DSA string data */
-		dshash_delete_entry(
-				ht->dshash, entry); /* This releases the lock too */
+		/* Found the entry - free DSA string and posting list */
+		dsa_free(area, entry->key.term.dp); /* Free the DSA string data */
+		tp_free_posting_list(
+				area, entry->key.posting_list); /* Free posting list */
+		dshash_delete_entry(ht, entry); /* This releases the lock too */
 
-		ht->entry_count--;
 		return true;
 	}
 
@@ -371,7 +278,7 @@ tp_hash_delete_dsa(
  * Frees all DSA string allocations
  */
 void
-tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
+tp_string_table_clear(dsa_area *area, dshash_table *ht)
 {
 	dshash_seq_status  status;
 	TpStringHashEntry *entry;
@@ -380,18 +287,228 @@ tp_hash_table_clear_dsa(dsa_area *area, TpStringHashTable *ht)
 	Assert(ht != NULL);
 
 	/* Iterate through all entries and delete them */
-	dshash_seq_init(&status, ht->dshash, true); /* exclusive for deletion */
+	dshash_seq_init(&status, ht, true); /* exclusive for deletion */
 
 	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
 	{
-		/* Free the DSA string data */
-		dsa_free(area, entry->key.string_or_ptr);
+		/* Free the DSA string data and posting list */
+		dsa_free(area, entry->key.term.dp);
+		tp_free_posting_list(area, entry->key.posting_list);
 
 		/* Delete current entry */
 		dshash_delete_current(&status);
 	}
 
 	dshash_seq_term(&status);
+}
 
-	ht->entry_count = 0;
+/*
+ * Get posting list for a term via string table lookup
+ * Returns NULL if term not found
+ */
+TpPostingList *
+tp_string_table_get_posting_list(
+		dsa_area *area, dshash_table *ht, const char *term)
+{
+	TpStringHashEntry *entry;
+	size_t			   term_len;
+
+	Assert(area != NULL);
+	Assert(ht != NULL);
+	Assert(term != NULL);
+
+	term_len = strlen(term);
+	entry	 = tp_string_table_lookup(area, ht, term, term_len);
+
+	if (entry && DsaPointerIsValid(entry->key.posting_list))
+	{
+		return (TpPostingList *)dsa_get_address(area, entry->key.posting_list);
+	}
+
+	return NULL;
+}
+
+/*
+ * Get posting list for a specific term
+ * Returns NULL if term not found
+ */
+TpPostingList *
+tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
+{
+	TpMemtable		  *memtable;
+	dshash_table	  *string_table;
+	TpStringHashEntry *string_entry;
+	TpPostingList	  *posting_list;
+	size_t			   term_len;
+
+	Assert(local_state != NULL);
+	Assert(term != NULL);
+
+	/* Get memtable from local state */
+	memtable = get_memtable(local_state);
+	if (!memtable)
+	{
+		elog(ERROR, "Cannot get memtable - index state corrupted");
+		return NULL; /* Never reached */
+	}
+
+	/* Get the string hash table from the memtable */
+	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+		return NULL;
+
+	string_table = tp_string_table_attach(
+			local_state->dsa, memtable->string_hash_handle);
+	if (!string_table)
+	{
+		elog(WARNING, "Failed to attach to string hash table");
+		return NULL;
+	}
+
+	term_len = strlen(term);
+
+	/* Look up the term in the string table */
+	string_entry = tp_string_table_lookup(
+			local_state->dsa, string_table, term, term_len);
+
+	if (string_entry && DsaPointerIsValid(string_entry->key.posting_list))
+	{
+		posting_list = dsa_get_address(
+				local_state->dsa, string_entry->key.posting_list);
+		dshash_detach(string_table);
+		return posting_list;
+	}
+	else
+	{
+		dshash_detach(string_table);
+		return NULL;
+	}
+}
+
+/*
+ * Get or create a posting list for a term
+ * This function manages the coordination between string table and posting
+ * lists
+ */
+TpPostingList *
+tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
+{
+	TpMemtable		  *memtable;
+	dshash_table	  *string_table;
+	TpStringHashEntry *string_entry;
+	TpPostingList	  *posting_list;
+	dsa_pointer		   posting_list_dp;
+	size_t			   term_len;
+
+	Assert(local_state != NULL);
+	Assert(term != NULL);
+
+	term_len = strlen(term);
+
+	/* Get memtable from local state */
+	memtable = get_memtable(local_state);
+	if (!memtable)
+	{
+		elog(ERROR, "Cannot get memtable");
+		return NULL;
+	}
+
+	/* Initialize string hash table if needed */
+	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+	{
+		/* Create new dshash table */
+		string_table = tp_string_table_create(local_state->dsa);
+		if (!string_table)
+		{
+			elog(ERROR, "Failed to create string hash table");
+			return NULL;
+		}
+
+		/* Store the handle for other processes */
+		memtable->string_hash_handle = dshash_get_hash_table_handle(
+				string_table);
+	}
+	else
+	{
+		/* Attach to existing table */
+		string_table = tp_string_table_attach(
+				local_state->dsa, memtable->string_hash_handle);
+		if (!string_table)
+		{
+			elog(ERROR, "Failed to attach to string hash table");
+			return NULL;
+		}
+	}
+
+	/* Look up or insert the term in the string table */
+	string_entry = tp_string_table_lookup(
+			local_state->dsa, string_table, term, term_len);
+
+	if (!string_entry)
+	{
+		/* Insert the term */
+		string_entry = tp_string_table_insert(
+				local_state->dsa, string_table, term, term_len);
+		if (!string_entry)
+		{
+			elog(ERROR, "Failed to insert term '%s' into string table", term);
+			return NULL;
+		}
+	}
+
+	/* Check if posting list already exists for this term */
+	if (DsaPointerIsValid(string_entry->key.posting_list))
+	{
+		posting_list = dsa_get_address(
+				local_state->dsa, string_entry->key.posting_list);
+	}
+	else
+	{
+		/* Create new posting list */
+		posting_list_dp = tp_alloc_posting_list(local_state->dsa);
+		posting_list	= dsa_get_address(local_state->dsa, posting_list_dp);
+
+		/* Associate posting list with string entry */
+		string_entry->key.posting_list = posting_list_dp;
+	}
+
+	/* Detach from string table */
+	dshash_detach(string_table);
+
+	return posting_list;
+}
+
+/*
+ * Add terms from a document to the posting lists
+ * This coordinates between string table and posting list management
+ */
+void
+tp_add_document_terms(
+		TpLocalIndexState *local_state,
+		ItemPointer		   ctid,
+		char			 **terms,
+		int32			  *frequencies,
+		int				   term_count,
+		int32			   doc_length)
+{
+	int i;
+
+	for (i = 0; i < term_count; i++)
+	{
+		TpPostingList *posting_list;
+		int32		   frequency = frequencies[i];
+
+		/* Get or create posting list for this term */
+		posting_list = tp_get_or_create_posting_list(local_state, terms[i]);
+
+		/* Add document entry to posting list */
+		tp_add_document_to_posting_list(
+				local_state, posting_list, ctid, frequency);
+	}
+
+	/* Store document length in the document length table */
+	tp_store_document_length(local_state, ctid, doc_length);
+
+	/* Update corpus statistics (no locks needed with new architecture) */
+	local_state->shared->total_docs++;
+	local_state->shared->total_len += doc_length;
 }
