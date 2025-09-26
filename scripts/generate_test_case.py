@@ -52,53 +52,6 @@ def stem_text_postgresql(text: str, text_config: str = 'english', conn=None) -> 
         return terms
 
 
-def _apply_epsilon_idf_handling(bm25, processed_docs):
-    """
-    Apply epsilon handling to match Tapir's two-step approach:
-    1. Calculate IDF sum using simple epsilon (0.25) for negative IDFs (like index building)
-    2. Calculate average IDF from that sum
-    3. Use epsilon * average_idf for negative IDFs during scoring (like query time)
-    """
-    import math
-
-    # Step 1: Recalculate IDF sum using Tapir's index building logic
-    idf_sum = 0.0
-    term_count = 0
-
-    for term in bm25.idf.keys():
-        df = sum(1 for doc in processed_docs if term in doc)
-        N = len(processed_docs)
-        raw_idf = math.log((N - df + 0.5) / (df + 0.5))
-
-        # Use simple epsilon like Tapir's tp_calculate_idf() during index building
-        if raw_idf < 0:
-            idf = 0.25  # Simple epsilon
-        else:
-            idf = raw_idf
-
-        idf_sum += idf
-        term_count += 1
-
-    # Step 2: Calculate average IDF from the sum
-    if term_count > 0:
-        average_idf = idf_sum / term_count
-    else:
-        return
-
-    # Step 3: Apply epsilon * average_idf for negative IDFs (like query time)
-    epsilon = 0.25
-    for term in bm25.idf.keys():
-        df = sum(1 for doc in processed_docs if term in doc)
-        N = len(processed_docs)
-        raw_idf = math.log((N - df + 0.5) / (df + 0.5))
-
-        if raw_idf < 0:
-            # Use epsilon * average_idf like Tapir's tp_calculate_idf_with_epsilon()
-            bm25.idf[term] = epsilon * average_idf
-        else:
-            bm25.idf[term] = raw_idf
-
-
 def calculate_bm25_scores(documents: List[str], query: str, k1: float = 1.2, b: float = 0.75,
                          text_config: str = 'english', conn=None) -> List[float]:
     """Calculate BM25 scores for documents given a query using PostgreSQL stemming."""
@@ -115,21 +68,28 @@ def calculate_bm25_scores(documents: List[str], query: str, k1: float = 1.2, b: 
     bm25 = BM25Okapi(processed_docs, k1=k1, b=b)
     bm25.tokenizer = lambda x: x  # Disable additional tokenization
 
-    # Apply epsilon handling for negative IDF values like Tapir
-    _apply_epsilon_idf_handling(bm25, processed_docs)
+    # Note: BM25Okapi already handles epsilon * average_idf for negative IDFs
 
     # Calculate scores
     scores = bm25.get_scores(processed_query)
 
-    # Convert to negative scores (Tapir convention for PostgreSQL ASC ordering)
-    return [-score for score in scores]
+    # BM25 scores can be negative (when epsilon * average_idf is applied)
+    # Tapir uses negative scores for PostgreSQL ASC ordering
+    # So we need to handle both cases:
+    # - Positive BM25 scores -> negate them
+    # - Negative BM25 scores -> keep them negative (but may need to adjust sign)
+    # Actually, for consistency, we should always return the negative of the absolute value
+    # to ensure scores are negative for PostgreSQL ordering
+    return [-abs(score) if score > 0 else score for score in scores]
 
 
 def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
                      k1: float = 1.2, b: float = 0.75, text_config: str = 'english',
                      db_config: Dict[str, str] = None) -> Tuple[str, str]:
     """
-    Generate SQL test file and expected output.
+    Generate SQL test file and expected output with both index creation modes:
+    1. Mode 1: Create table, insert data, then create index (bulk build)
+    2. Mode 2: Create table, create index, then insert data (incremental build)
 
     Args:
         test_name: Name for the test case
@@ -153,87 +113,92 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
             print(f"Warning: Could not connect to database for stemming: {e}")
             print("Falling back to simplified stemming - results may not match exactly")
 
-    # Generate SQL content
-    sql_lines = [
+    sql_lines = []
+    expected_lines = []
+
+    # Header
+    header = [
         f"-- Test case: {test_name}",
         f"-- Generated BM25 test with {len(documents)} documents and {len(queries)} queries",
+        f"-- Testing both bulk build and incremental build modes",
         "CREATE EXTENSION IF NOT EXISTS tapir;",
         "SET tapir.log_scores = true;",
         "SET enable_seqscan = off;",
-        "",
-        f"-- Create test table",
-        f"CREATE TABLE {test_name}_docs (",
+        ""
+    ]
+    sql_lines.extend(header)
+    expected_lines.extend(header)
+
+    # ===== MODE 1: Bulk build (insert data then create index) =====
+    sql_lines.extend([
+        "-- MODE 1: Bulk build (insert data, then create index)",
+        f"CREATE TABLE {test_name}_bulk (",
         "    id SERIAL PRIMARY KEY,",
         "    content TEXT",
         ");",
         "",
         "-- Insert test documents"
-    ]
+    ])
 
+    expected_lines.extend([
+        "-- MODE 1: Bulk build (insert data, then create index)",
+        f"CREATE TABLE {test_name}_bulk (",
+        "    id SERIAL PRIMARY KEY,",
+        "    content TEXT",
+        ");",
+        "",
+        "-- Insert test documents"
+    ])
+
+    # Insert documents for bulk mode
     for i, doc in enumerate(documents, 1):
-        sql_lines.append(f"INSERT INTO {test_name}_docs (content) VALUES ('{doc.replace(chr(39), chr(39)+chr(39))}');")
+        escaped_doc = doc.replace("'", "''")
+        sql_lines.append(f"INSERT INTO {test_name}_bulk (content) VALUES ('{escaped_doc}');")
+        expected_lines.append(f"INSERT INTO {test_name}_bulk (content) VALUES ('{escaped_doc}');")
+        expected_lines.append(f"INSERT 0 1")
 
+    # Create index after data for bulk mode
     sql_lines.extend([
         "",
-        f"-- Create Tapir index",
-        f"CREATE INDEX {test_name}_idx ON {test_name}_docs USING tapir(content)",
+        f"-- Create index after data insertion (bulk build)",
+        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING tapir(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
         ""
     ])
 
-    # Generate expected output content
-    expected_lines = [
-        f"-- Test case: {test_name}",
-        f"-- Generated BM25 test with {len(documents)} documents and {len(queries)} queries",
-        "CREATE EXTENSION IF NOT EXISTS tapir;",
-        "SET tapir.log_scores = true;",
-        "SET enable_seqscan = off;",
-        f"-- Create test table",
-        f"CREATE TABLE {test_name}_docs (",
-        "    id SERIAL PRIMARY KEY,",
-        "    content TEXT",
-        ");",
-        ""
-    ]
-
-    # Add INSERT statements to expected output
-    for i, doc in enumerate(documents, 1):
-        expected_lines.append(f"INSERT INTO {test_name}_docs (content) VALUES ('{doc.replace(chr(39), chr(39)+chr(39))}');")
-        expected_lines.append(f"INSERT 0 1")
-
     expected_lines.extend([
-        f"-- Create Tapir index",
-        f"CREATE INDEX {test_name}_idx ON {test_name}_docs USING tapir(content)",
+        "",
+        f"-- Create index after data insertion (bulk build)",
+        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING tapir(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
-        f"NOTICE:  Tapir index build started for relation {test_name}_idx",
+        f"NOTICE:  Tapir index build started for relation {test_name}_bulk_idx",
         f"NOTICE:  Using text search configuration: {text_config}",
         f"NOTICE:  Using index options: k1={k1:.2f}, b={b:.2f}",
         f"NOTICE:  Tapir index build completed: {len(documents)} documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
         ""
     ])
 
-    # Add queries and expected results
+    # Run queries on bulk mode
     for query_idx, query in enumerate(queries):
         sql_lines.extend([
-            f"-- Test query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_idx'))::numeric, 4) as score",
-            f"FROM {test_name}_docs",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_idx'), id;",
+            f"-- Bulk mode query {query_idx + 1}: '{query}'",
+            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
+            f"FROM {test_name}_bulk",
+            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_bulk_idx'), id;",
             ""
         ])
 
         expected_lines.extend([
-            f"-- Test query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_idx'))::numeric, 4) as score",
-            f"FROM {test_name}_docs",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_idx'), id;"
+            f"-- Bulk mode query {query_idx + 1}: '{query}'",
+            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
+            f"FROM {test_name}_bulk",
+            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_bulk_idx'), id;"
         ])
 
         # Calculate expected scores
         if conn:
             scores = calculate_bm25_scores(documents, query, k1, b, text_config, conn)
         else:
-            # Fallback: use zero scores as placeholder
             scores = [0.0] * len(documents)
             print(f"Warning: No database connection, using zero scores for query '{query}'")
 
@@ -245,32 +210,128 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
         # Sort by score (ascending, since negative), then by ID
         results.sort(key=lambda x: (x[2], x[0]))
 
-        # Add result table header
+        # Add result table
         expected_lines.append(" id |        content        |  score  ")
         expected_lines.append("----+-----------------------+---------")
 
         # Add results
         for doc_id, content, score in results:
-            # Format score to 4 decimal places, handling -0.0000 case
+            # Format score to 4 decimal places
             if abs(score) < 0.0001:
                 score_str = "0.0000"
             else:
                 score_str = f"{score:.4f}"
-            expected_lines.append(f"  {doc_id} | {content:<21} | {score_str:>7}")
+            # Truncate content to fit column width
+            display_content = content[:21]
+            expected_lines.append(f"  {doc_id} | {display_content:<21} | {score_str:>7}")
 
         expected_lines.append(f"({len(results)} rows)")
         expected_lines.append("")
 
-    # Add cleanup
+    # ===== MODE 2: Incremental build (create index then insert data) =====
+    sql_lines.extend([
+        "-- MODE 2: Incremental build (create index, then insert data)",
+        f"CREATE TABLE {test_name}_incr (",
+        "    id SERIAL PRIMARY KEY,",
+        "    content TEXT",
+        ");",
+        "",
+        f"-- Create index before data insertion (incremental build)",
+        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING tapir(content)",
+        f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
+        "",
+        "-- Insert test documents incrementally"
+    ])
+
+    expected_lines.extend([
+        "-- MODE 2: Incremental build (create index, then insert data)",
+        f"CREATE TABLE {test_name}_incr (",
+        "    id SERIAL PRIMARY KEY,",
+        "    content TEXT",
+        ");",
+        "",
+        f"-- Create index before data insertion (incremental build)",
+        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING tapir(content)",
+        f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
+        f"NOTICE:  Tapir index build started for relation {test_name}_incr_idx",
+        f"NOTICE:  Using text search configuration: {text_config}",
+        f"NOTICE:  Using index options: k1={k1:.2f}, b={b:.2f}",
+        f"NOTICE:  Tapir index build completed: 0 documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
+        "",
+        "-- Insert test documents incrementally"
+    ])
+
+    # Insert documents for incremental mode
+    for i, doc in enumerate(documents, 1):
+        escaped_doc = doc.replace("'", "''")
+        sql_lines.append(f"INSERT INTO {test_name}_incr (content) VALUES ('{escaped_doc}');")
+        expected_lines.append(f"INSERT INTO {test_name}_incr (content) VALUES ('{escaped_doc}');")
+        expected_lines.append(f"INSERT 0 1")
+
+    sql_lines.append("")
+    expected_lines.append("")
+
+    # Run queries on incremental mode
+    for query_idx, query in enumerate(queries):
+        sql_lines.extend([
+            f"-- Incremental mode query {query_idx + 1}: '{query}'",
+            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
+            f"FROM {test_name}_incr",
+            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_incr_idx'), id;",
+            ""
+        ])
+
+        expected_lines.extend([
+            f"-- Incremental mode query {query_idx + 1}: '{query}'",
+            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
+            f"FROM {test_name}_incr",
+            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_incr_idx'), id;"
+        ])
+
+        # Calculate expected scores (same as bulk mode)
+        if conn:
+            scores = calculate_bm25_scores(documents, query, k1, b, text_config, conn)
+        else:
+            scores = [0.0] * len(documents)
+
+        # Create results with document IDs and sort by score, then by ID
+        results = []
+        for i, (doc, score) in enumerate(zip(documents, scores), 1):
+            results.append((i, doc, score))
+
+        # Sort by score (ascending, since negative), then by ID
+        results.sort(key=lambda x: (x[2], x[0]))
+
+        # Add result table
+        expected_lines.append(" id |        content        |  score  ")
+        expected_lines.append("----+-----------------------+---------")
+
+        # Add results
+        for doc_id, content, score in results:
+            # Format score to 4 decimal places
+            if abs(score) < 0.0001:
+                score_str = "0.0000"
+            else:
+                score_str = f"{score:.4f}"
+            # Truncate content to fit column width
+            display_content = content[:21]
+            expected_lines.append(f"  {doc_id} | {display_content:<21} | {score_str:>7}")
+
+        expected_lines.append(f"({len(results)} rows)")
+        expected_lines.append("")
+
+    # Cleanup
     sql_lines.extend([
         "-- Cleanup",
-        f"DROP TABLE {test_name}_docs CASCADE;",
+        f"DROP TABLE {test_name}_bulk CASCADE;",
+        f"DROP TABLE {test_name}_incr CASCADE;",
         "DROP EXTENSION tapir CASCADE;"
     ])
 
     expected_lines.extend([
         "-- Cleanup",
-        f"DROP TABLE {test_name}_docs CASCADE;",
+        f"DROP TABLE {test_name}_bulk CASCADE;",
+        f"DROP TABLE {test_name}_incr CASCADE;",
         "DROP EXTENSION tapir CASCADE;"
     ])
 
@@ -336,6 +397,7 @@ def main():
     print(f"  Documents: {len(args.documents)}")
     print(f"  Queries: {len(args.queries)}")
     print(f"  Parameters: k1={args.k1}, b={args.b}, text_config='{args.text_config}'")
+    print(f"  Modes: Bulk build and incremental build")
 
 
 if __name__ == '__main__':

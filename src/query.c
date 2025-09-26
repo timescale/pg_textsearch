@@ -354,8 +354,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			 */
 			{
 				TpMemtable *memtable = get_memtable(index_state);
-				if (index_state->shared->idf_sum > 0 && memtable &&
-					memtable->total_terms > 0)
+				if (memtable && memtable->total_terms > 0)
 				{
 					float8 avg_idf = index_state->shared->idf_sum /
 									 memtable->total_terms;
@@ -427,7 +426,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	PG_END_TRY();
 
 	/* Return negative score for PostgreSQL ASC ordering compatibility */
-	PG_RETURN_FLOAT8(-result);
+	PG_RETURN_FLOAT8((result > 0) ? -result : result);
 }
 
 /*

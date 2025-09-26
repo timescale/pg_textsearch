@@ -418,7 +418,7 @@ tp_score_documents(
 			continue;
 
 		/* Calculate IDF with epsilon handling if average IDF is available */
-		if (local_state->shared->idf_sum > 0 && memtable->total_terms > 0)
+		if (memtable && memtable->total_terms > 0)
 		{
 			float8 avg_idf = local_state->shared->idf_sum /
 							 memtable->total_terms;

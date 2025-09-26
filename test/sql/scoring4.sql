@@ -1,29 +1,49 @@
--- Test case: goodbye_debug
--- Generated BM25 test with 3 documents and 1 queries
+-- Test case: scoring4
+-- Generated BM25 test with 2 documents and 1 queries
+-- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS tapir;
 SET tapir.log_scores = true;
 SET enable_seqscan = off;
 
--- Create test table
-CREATE TABLE goodbye_debug_docs (
+-- MODE 1: Bulk build (insert data, then create index)
+CREATE TABLE scoring4_bulk (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
 
 -- Insert test documents
-INSERT INTO goodbye_debug_docs (content) VALUES ('hello world');
-INSERT INTO goodbye_debug_docs (content) VALUES ('goodbye cruel world');
-INSERT INTO goodbye_debug_docs (content) VALUES ('goodbye nerds');
+INSERT INTO scoring4_bulk (content) VALUES ('goodbye world');
+INSERT INTO scoring4_bulk (content) VALUES ('goodbyes are hard');
 
--- Create Tapir index
-CREATE INDEX goodbye_debug_idx ON goodbye_debug_docs USING tapir(content)
+-- Create index after data insertion (bulk build)
+CREATE INDEX scoring4_bulk_idx ON scoring4_bulk USING tapir(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
--- Test query 1: 'goodbye'
-SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'goodbye_debug_idx'))::numeric, 4) as score
-FROM goodbye_debug_docs
-ORDER BY content <@> to_tpquery('goodbye', 'goodbye_debug_idx'), id;
+-- Bulk mode query 1: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring4_bulk_idx'))::numeric, 4) as score
+FROM scoring4_bulk
+ORDER BY content <@> to_tpquery('goodbye', 'scoring4_bulk_idx'), id;
+
+-- MODE 2: Incremental build (create index, then insert data)
+CREATE TABLE scoring4_incr (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+-- Create index before data insertion (incremental build)
+CREATE INDEX scoring4_incr_idx ON scoring4_incr USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+
+-- Insert test documents incrementally
+INSERT INTO scoring4_incr (content) VALUES ('goodbye world');
+INSERT INTO scoring4_incr (content) VALUES ('goodbyes are hard');
+
+-- Incremental mode query 1: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring4_incr_idx'))::numeric, 4) as score
+FROM scoring4_incr
+ORDER BY content <@> to_tpquery('goodbye', 'scoring4_incr_idx'), id;
 
 -- Cleanup
-DROP TABLE goodbye_debug_docs CASCADE;
+DROP TABLE scoring4_bulk CASCADE;
+DROP TABLE scoring4_incr CASCADE;
 DROP EXTENSION tapir CASCADE;

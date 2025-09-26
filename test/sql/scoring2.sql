@@ -1,46 +1,85 @@
--- Test case: epsilon_handling
+-- Test case: scoring2
 -- Generated BM25 test with 5 documents and 4 queries
+-- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS tapir;
 SET tapir.log_scores = true;
 SET enable_seqscan = off;
 
--- Create test table
-CREATE TABLE epsilon_handling_docs (
+-- MODE 1: Bulk build (insert data, then create index)
+CREATE TABLE scoring2_bulk (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
 
 -- Insert test documents
-INSERT INTO epsilon_handling_docs (content) VALUES ('apple banana cherry');
-INSERT INTO epsilon_handling_docs (content) VALUES ('apple banana');
-INSERT INTO epsilon_handling_docs (content) VALUES ('cherry');
-INSERT INTO epsilon_handling_docs (content) VALUES ('banana');
-INSERT INTO epsilon_handling_docs (content) VALUES ('apple cherry banana');
+INSERT INTO scoring2_bulk (content) VALUES ('hello world');
+INSERT INTO scoring2_bulk (content) VALUES ('goodbye world');
+INSERT INTO scoring2_bulk (content) VALUES ('hello goodbye');
+INSERT INTO scoring2_bulk (content) VALUES ('world domination');
+INSERT INTO scoring2_bulk (content) VALUES ('hello');
 
--- Create Tapir index
-CREATE INDEX epsilon_handling_idx ON epsilon_handling_docs USING tapir(content)
+-- Create index after data insertion (bulk build)
+CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING tapir(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
--- Test query 1: 'apple'
-SELECT id, content, ROUND((content <@> to_tpquery('apple', 'epsilon_handling_idx'))::numeric, 4) as score
-FROM epsilon_handling_docs
-ORDER BY content <@> to_tpquery('apple', 'epsilon_handling_idx'), id;
+-- Bulk mode query 1: 'hello'
+SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
+FROM scoring2_bulk
+ORDER BY content <@> to_tpquery('hello', 'scoring2_bulk_idx'), id;
 
--- Test query 2: 'banana'
-SELECT id, content, ROUND((content <@> to_tpquery('banana', 'epsilon_handling_idx'))::numeric, 4) as score
-FROM epsilon_handling_docs
-ORDER BY content <@> to_tpquery('banana', 'epsilon_handling_idx'), id;
+-- Bulk mode query 2: 'world'
+SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring2_bulk_idx'))::numeric, 4) as score
+FROM scoring2_bulk
+ORDER BY content <@> to_tpquery('world', 'scoring2_bulk_idx'), id;
 
--- Test query 3: 'cherry'
-SELECT id, content, ROUND((content <@> to_tpquery('cherry', 'epsilon_handling_idx'))::numeric, 4) as score
-FROM epsilon_handling_docs
-ORDER BY content <@> to_tpquery('cherry', 'epsilon_handling_idx'), id;
+-- Bulk mode query 3: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring2_bulk_idx'))::numeric, 4) as score
+FROM scoring2_bulk
+ORDER BY content <@> to_tpquery('goodbye', 'scoring2_bulk_idx'), id;
 
--- Test query 4: 'apple banana cherry'
-SELECT id, content, ROUND((content <@> to_tpquery('apple banana cherry', 'epsilon_handling_idx'))::numeric, 4) as score
-FROM epsilon_handling_docs
-ORDER BY content <@> to_tpquery('apple banana cherry', 'epsilon_handling_idx'), id;
+-- Bulk mode query 4: 'domination'
+SELECT id, content, ROUND((content <@> to_tpquery('domination', 'scoring2_bulk_idx'))::numeric, 4) as score
+FROM scoring2_bulk
+ORDER BY content <@> to_tpquery('domination', 'scoring2_bulk_idx'), id;
+
+-- MODE 2: Incremental build (create index, then insert data)
+CREATE TABLE scoring2_incr (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+-- Create index before data insertion (incremental build)
+CREATE INDEX scoring2_incr_idx ON scoring2_incr USING tapir(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+
+-- Insert test documents incrementally
+INSERT INTO scoring2_incr (content) VALUES ('hello world');
+INSERT INTO scoring2_incr (content) VALUES ('goodbye world');
+INSERT INTO scoring2_incr (content) VALUES ('hello goodbye');
+INSERT INTO scoring2_incr (content) VALUES ('world domination');
+INSERT INTO scoring2_incr (content) VALUES ('hello');
+
+-- Incremental mode query 1: 'hello'
+SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring2_incr_idx'))::numeric, 4) as score
+FROM scoring2_incr
+ORDER BY content <@> to_tpquery('hello', 'scoring2_incr_idx'), id;
+
+-- Incremental mode query 2: 'world'
+SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring2_incr_idx'))::numeric, 4) as score
+FROM scoring2_incr
+ORDER BY content <@> to_tpquery('world', 'scoring2_incr_idx'), id;
+
+-- Incremental mode query 3: 'goodbye'
+SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring2_incr_idx'))::numeric, 4) as score
+FROM scoring2_incr
+ORDER BY content <@> to_tpquery('goodbye', 'scoring2_incr_idx'), id;
+
+-- Incremental mode query 4: 'domination'
+SELECT id, content, ROUND((content <@> to_tpquery('domination', 'scoring2_incr_idx'))::numeric, 4) as score
+FROM scoring2_incr
+ORDER BY content <@> to_tpquery('domination', 'scoring2_incr_idx'), id;
 
 -- Cleanup
-DROP TABLE epsilon_handling_docs CASCADE;
+DROP TABLE scoring2_bulk CASCADE;
+DROP TABLE scoring2_incr CASCADE;
 DROP EXTENSION tapir CASCADE;

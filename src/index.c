@@ -10,6 +10,7 @@
 #include <catalog/pg_opclass.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
+#include <math.h>
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
@@ -180,9 +181,15 @@ tp_calculate_idf_sum(TpLocalIndexState *index_state)
 			TpPostingList *posting_list =
 					dsa_get_address(index_state->dsa, entry->key.posting_list);
 
-			/* Calculate IDF for this term */
-			float8 idf = tp_calculate_idf(posting_list->doc_count, total_docs);
-			idf_sum += idf;
+			/* Calculate RAW IDF for this term (no epsilon adjustment) */
+			double idf_numerator   = (double)(total_docs -
+											  posting_list->doc_count + 0.5);
+			double idf_denominator = (double)(posting_list->doc_count + 0.5);
+			double idf_ratio	   = idf_numerator / idf_denominator;
+			double raw_idf		   = log(idf_ratio);
+
+			/* Use raw IDF for sum calculation (including negative values) */
+			idf_sum += raw_idf;
 			term_count++;
 		}
 	}
@@ -881,6 +888,9 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
+	/* Recalculate IDF sum after insert for proper BM25 scoring */
+	tp_calculate_idf_sum(index_state);
+
 	return true;
 }
 
@@ -1404,8 +1414,9 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		Assert(scan->xs_orderbynulls != NULL);
 		Assert(so->result_scores != NULL);
 
-		/* Convert BM25 score to Datum (negated for ASC sort) */
-		bm25_score				 = -so->result_scores[so->current_pos];
+		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
+		float4 raw_score		 = so->result_scores[so->current_pos];
+		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
 		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
