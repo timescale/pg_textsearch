@@ -45,3 +45,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE empty_docs;
+DROP EXTENSION tapir;

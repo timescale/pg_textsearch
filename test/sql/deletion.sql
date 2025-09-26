@@ -84,3 +84,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE deletion_test;
+DROP EXTENSION tapir;

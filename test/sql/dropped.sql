@@ -42,3 +42,4 @@ WHERE content <@> to_tpquery('test', 'totally_fake_index') < -0.001;
 
 -- Clean up
 DROP TABLE dropped_idx_test;
+DROP EXTENSION tapir;
