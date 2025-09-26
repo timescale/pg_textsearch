@@ -1,7 +1,10 @@
 -- Test tapir index access method functionality
 
 -- Load tapir extension
+-- Suppress NOTICE about extension already existing for test stability
+SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET client_min_messages = notice;
 
 -- Enable score logging for testing
 SET tapir.log_scores = true;

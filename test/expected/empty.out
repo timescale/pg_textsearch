@@ -1,6 +1,9 @@
 -- Test handling of empty and whitespace-only documents
 -- Ensure extension is loaded
+-- Suppress NOTICE about extension already existing for test stability
+SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET client_min_messages = notice;
 -- Create test table with various empty/whitespace content
 CREATE TABLE empty_docs (
     id SERIAL PRIMARY KEY,

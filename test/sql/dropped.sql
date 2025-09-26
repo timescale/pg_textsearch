@@ -1,7 +1,10 @@
 -- Test behavior when using a dropped index name in queries
 
 -- Ensure extension is loaded
+-- Suppress NOTICE about extension already existing for test stability
+SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS tapir;
+SET client_min_messages = notice;
 
 -- Create test table
 CREATE TABLE dropped_idx_test (
