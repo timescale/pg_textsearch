@@ -497,6 +497,67 @@ test_high_load_stress() {
     set -e
 }
 
+# Test 7: Concurrent index drop with cached state
+test_concurrent_index_drop() {
+    log "Test 7: Concurrent index drop with cached local state"
+
+    # Create a test table and index
+    run_sql "CREATE TABLE IF NOT EXISTS drop_test (id SERIAL PRIMARY KEY, content TEXT);"
+    run_sql "INSERT INTO drop_test (content) VALUES
+        ('first test document'),
+        ('second test document'),
+        ('third test document'),
+        ('fourth test document'),
+        ('fifth test document');"
+
+    run_sql "CREATE INDEX drop_test_idx ON drop_test USING tapir (content) WITH (text_config = 'english');"
+
+    # Session 1: Access the index to cache it locally, then hold connection
+    info "Session 1: Caching index state and holding connection..."
+    local session1_output="${TMP_DIR:-/tmp}/session_501.out"
+    {
+        echo "BEGIN;"
+        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"
+        echo "SELECT pg_sleep(2);"  # Hold connection while index is dropped
+        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"  # Try to use dropped index
+        echo "ROLLBACK;"
+    } | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$session1_output" 2>&1 &
+    local session1_pid=$!
+
+    # Give session 1 time to cache the index
+    sleep 1
+
+    # Session 2: Drop the index
+    info "Session 2: Dropping the index while session 1 has it cached..."
+    run_sql "DROP INDEX drop_test_idx;"
+
+    # Wait for session 1 to complete
+    wait $session1_pid 2>/dev/null || true
+
+    # Check if session 1 handled the drop gracefully
+    local session1_contents=$(cat "$session1_output" 2>/dev/null || echo "")
+
+    # Look for errors in the output
+    if echo "$session1_contents" | grep -q "ERROR"; then
+        # This is expected - the index was dropped
+        log "✅ Session 1 correctly reported error when using dropped index"
+        info "Error details: $(echo "$session1_contents" | grep ERROR | head -1)"
+    elif echo "$session1_contents" | grep -q "count"; then
+        # If we got results without error, check what happened
+        log "⚠️  Session 1 completed queries without error after index drop"
+        info "This indicates potential issue with cached state handling"
+        info "Query results: $(echo "$session1_contents" | grep -E "count|^\s*[0-9]")"
+    else
+        log "Unexpected output from Session 1"
+        info "Full output: $session1_contents"
+    fi
+
+    # Clean up
+    run_sql "DROP TABLE IF EXISTS drop_test CASCADE;"
+
+    log "✅ Concurrent index drop test completed"
+}
+
 run_concurrent_tests() {
     log "Starting comprehensive concurrent stress tests for Tapir extension"
 
@@ -506,6 +567,7 @@ run_concurrent_tests() {
     test_string_interning_consistency
     test_update_delete_concurrency
     test_high_load_stress
+    test_concurrent_index_drop
 
     # Final system state check
     log "Final system state verification:"
