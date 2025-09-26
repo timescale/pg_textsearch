@@ -40,7 +40,6 @@ typedef struct TpScanOpaqueData
 
 typedef TpScanOpaqueData *TpScanOpaque;
 
-/* Forward declarations */
 struct IndexInfo;
 struct PlannerInfo;
 struct IndexPath;

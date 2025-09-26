@@ -18,9 +18,6 @@
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
-/*
- * Forward declarations
- */
 typedef struct TpStringHashEntry TpStringHashEntry;
 typedef struct TpPostingList	 TpPostingList;
 typedef struct TpLocalIndexState TpLocalIndexState;

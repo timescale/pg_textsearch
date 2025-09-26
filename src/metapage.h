@@ -23,9 +23,6 @@
 
 #include "constants.h"
 
-/*
- * Forward declarations
- */
 typedef struct TpLocalIndexState TpLocalIndexState;
 
 /*

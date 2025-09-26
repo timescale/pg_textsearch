@@ -34,7 +34,6 @@
 #include "query.h"
 #include "vector.h"
 
-/* Forward declarations */
 static bool tp_search_posting_lists(
 		IndexScanDesc	   scan,
 		TpLocalIndexState *index_state,
@@ -1725,7 +1724,6 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
 		appendStringInfo(&result, "  b: %.2f\n", metap->b);
 
-		/* DEBUG: Add metapage docid information */
 		appendStringInfo(&result, "Metapage Recovery Info:\n");
 		appendStringInfo(&result, "  magic: 0x%08X\n", metap->magic);
 		appendStringInfo(

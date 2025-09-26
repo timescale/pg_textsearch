@@ -17,7 +17,6 @@
 
 #include <storage/itemptr.h>
 
-/* Forward declarations */
 typedef struct TpLocalIndexState TpLocalIndexState;
 
 extern int tp_score_documents(

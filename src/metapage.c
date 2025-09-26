@@ -161,7 +161,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		docid_header->next_page	 = InvalidBlockNumber;
 		docid_header->reserved	 = 0;
 
-		/* CRITICAL: Mark docid page dirty immediately after initialization */
 		MarkBufferDirty(docid_buf);
 
 		/* Update metapage to point to this new page */
@@ -223,14 +222,12 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		new_header->next_page  = InvalidBlockNumber;
 		new_header->reserved   = 0;
 
-		/* CRITICAL: Mark new page dirty immediately after initialization */
 		MarkBufferDirty(new_buf);
 
 		/* Link old page to new page */
 		docid_header->next_page = BufferGetBlockNumber(new_buf);
 		MarkBufferDirty(docid_buf);
 
-		/* CRITICAL: Flush old page to disk before releasing */
 		FlushOneBuffer(docid_buf);
 
 		UnlockReleaseBuffer(docid_buf);
@@ -250,7 +247,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 
 	MarkBufferDirty(docid_buf);
 
-	/* CRITICAL: Flush docid page to disk immediately for crash recovery */
 	FlushOneBuffer(docid_buf);
 
 	UnlockReleaseBuffer(docid_buf);
@@ -331,13 +327,15 @@ tp_recover_from_docid_pages(Relation index)
 
 			if (valid && HeapTupleIsValid(tuple))
 			{
-				/* Extract the indexed column (assuming column 0) */
-				Datum	  column_value;
-				bool	  is_null;
-				TupleDesc tuple_desc = RelationGetDescr(heap_rel);
+				/* Extract the indexed column */
+				Datum	   column_value;
+				bool	   is_null;
+				TupleDesc  tuple_desc = RelationGetDescr(heap_rel);
+				AttrNumber attnum	  = index->rd_index->indkey.values[0];
 
 				/* Get the indexed column value */
-				column_value = heap_getattr(tuple, 1, tuple_desc, &is_null);
+				column_value =
+						heap_getattr(tuple, attnum, tuple_desc, &is_null);
 
 				if (!is_null)
 				{
