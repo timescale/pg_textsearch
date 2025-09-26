@@ -1,7 +1,6 @@
 -- Test handling of empty and whitespace-only documents
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Create test table with various empty/whitespace content
 CREATE TABLE empty_docs (
     id SERIAL PRIMARY KEY,
