@@ -1863,119 +1863,53 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				"initialized)\n");
 	}
 
-	/* DEBUG: Add docid pages information */
-	appendStringInfo(&result, "Docid Pages (for crash recovery):\n");
+	/* Add crash recovery information */
+	appendStringInfo(&result, "Crash Recovery:\n");
 	if (metap && metap->first_docid_page != InvalidBlockNumber)
 	{
+		/* Count total pages and documents for recovery */
 		Buffer			   docid_buf;
 		Page			   docid_page;
 		TpDocidPageHeader *docid_header;
-		ItemPointer		   docids;
 		BlockNumber		   current_page = metap->first_docid_page;
 		int				   page_count	= 0;
+		int				   total_docids = 0;
 
-		/* DEBUG: Log initial current_page value */
-		appendStringInfo(
-				&result,
-				"  Starting docid page scan with current_page=%u\n",
-				current_page);
-
-		while (current_page != InvalidBlockNumber &&
-			   page_count < 10) /* Limit to prevent infinite loops */
+		while (current_page != InvalidBlockNumber)
 		{
-			/* DEBUG: Validate block number before reading */
-			if (current_page >
-				1000000) /* Reasonable upper bound for testing */
-			{
-				appendStringInfo(
-						&result,
-						"  ERROR: Invalid block number %u detected, "
-						"stopping\n",
-						current_page);
-				break;
-			}
-
 			docid_buf = ReadBuffer(index_rel, current_page);
 			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
 			docid_page	 = BufferGetPage(docid_buf);
 			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
-			appendStringInfo(
-					&result,
-					"  Page %u: magic=0x%08X, num_docids=%u, next_page=%u, "
-					"reserved=%u\n",
-					current_page,
-					docid_header->magic,
-					docid_header->num_docids,
-					docid_header->next_page,
-					docid_header->reserved);
-
-			/* DEBUG: Also log raw memory around the header */
-			unsigned char *raw = (unsigned char *)docid_header;
-			appendStringInfo(
-					&result,
-					"    Raw header bytes: %02X %02X %02X %02X %02X %02X %02X "
-					"%02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-					raw[0],
-					raw[1],
-					raw[2],
-					raw[3],
-					raw[4],
-					raw[5],
-					raw[6],
-					raw[7],
-					raw[8],
-					raw[9],
-					raw[10],
-					raw[11],
-					raw[12],
-					raw[13],
-					raw[14],
-					raw[15]);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC &&
-				docid_header->num_docids > 0)
+			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
 			{
-				docids = (ItemPointer)((char *)docid_header +
-									   MAXALIGN(sizeof(TpDocidPageHeader)));
-				for (unsigned int i = 0; i < docid_header->num_docids && i < 5;
-					 i++) /* Show first 5 CTIDs */
-				{
-					appendStringInfo(
-							&result,
-							"    docid[%u]: (%u,%u)\n",
-							i,
-							BlockIdGetBlockNumber(&docids[i].ip_blkid),
-							docids[i].ip_posid);
-				}
-				if (docid_header->num_docids > 5)
-				{
-					appendStringInfo(
-							&result,
-							"    ... (%u more docids)\n",
-							docid_header->num_docids - 5);
-				}
+				total_docids += docid_header->num_docids;
+				page_count++;
+				current_page = docid_header->next_page;
+			}
+			else
+			{
+				/* Stop if we hit an invalid page */
+				current_page = InvalidBlockNumber;
 			}
 
-			current_page = docid_header->next_page;
 			UnlockReleaseBuffer(docid_buf);
-			page_count++;
+
+			/* Safety limit */
+			if (page_count > 10000)
+				break;
 		}
 
-		if (page_count >= 10)
-		{
-			appendStringInfo(
-					&result,
-					"  ... (stopped after 10 pages to prevent infinite "
-					"loop)\n");
-		}
+		appendStringInfo(
+				&result,
+				"  Pages: %d, Documents: %d\n",
+				page_count,
+				total_docids);
 	}
 	else
 	{
-		appendStringInfo(
-				&result,
-				"  No docid pages (first_docid_page=%u)\n",
-				metap ? metap->first_docid_page : 0);
+		appendStringInfo(&result, "  No recovery pages\n");
 	}
 
 	/* Cleanup */

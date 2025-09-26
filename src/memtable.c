@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * memtable.c
- *	  Simplified memtable management without locks
+ *	  Tapir BM25 in-memory table implementation
  *
  * IDENTIFICATION
  *	  src/memtable.c
