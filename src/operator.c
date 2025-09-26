@@ -200,6 +200,10 @@ tp_extract_and_sort_documents(
 /*
  * Scan docid pages to find all documents in the index
  * Returns an array of CTIDs and the count
+ *
+ * TODO: Refactor to use a callback function instead of allocating
+ * and returning an array. This would avoid memory allocation and
+ * allow the caller to process CTIDs as they're discovered.
  */
 static ItemPointer
 tp_scan_docid_pages(Relation index_relation, int *total_ctids)
