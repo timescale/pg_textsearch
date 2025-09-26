@@ -395,14 +395,14 @@ tp_score_documents(
 		elog(ERROR, "Failed to create document scores hash table");
 	}
 
-	/* Calculate BM25 scores for matching documents - single pass through all
-	 * posting lists */
+	/* Calculate BM25 scores for matching documents */
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
 		const char	   *term = query_terms[term_idx];
 		TpPostingList  *posting_list;
 		TpPostingEntry *entries;
 		float4			idf;
+		float8			avg_idf;
 
 		posting_list = tp_string_table_get_posting_list(
 				local_state->dsa, string_table, term);
@@ -410,29 +410,22 @@ tp_score_documents(
 		if (!posting_list || posting_list->doc_count == 0)
 			continue;
 
-		/* Calculate IDF with epsilon handling if average IDF is available */
-		if (memtable && memtable->total_terms > 0)
-		{
-			float8 avg_idf = local_state->shared->idf_sum /
-							 memtable->total_terms;
-			idf = tp_calculate_idf_with_epsilon(
-					posting_list->doc_count, total_docs, avg_idf);
-			elog(DEBUG1,
-				 "Operator scoring: term='%s', doc_freq=%d, total_docs=%d, "
-				 "idf_sum=%.6f, total_terms=%d, avg_idf=%.6f, final_idf=%.6f",
-				 term,
-				 posting_list->doc_count,
-				 total_docs,
-				 local_state->shared->idf_sum,
-				 memtable->total_terms,
-				 avg_idf,
-				 idf);
-		}
-		else
-		{
-			/* Fallback to simple IDF calculation */
-			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
-		}
+		/* Calculate IDF with epsilon handling */
+		Assert(memtable->total_terms >
+			   0); /* Must have terms if we have docs */
+		avg_idf = local_state->shared->idf_sum / memtable->total_terms;
+		idf		= tp_calculate_idf_with_epsilon(
+				posting_list->doc_count, total_docs, avg_idf);
+		elog(DEBUG1,
+			 "Operator scoring: term='%s', doc_freq=%d, total_docs=%d, "
+			 "idf_sum=%.6f, total_terms=%d, avg_idf=%.6f, final_idf=%.6f",
+			 term,
+			 posting_list->doc_count,
+			 total_docs,
+			 local_state->shared->idf_sum,
+			 memtable->total_terms,
+			 avg_idf,
+			 idf);
 
 		/* Get posting entries */
 		entries = tp_get_posting_entries(local_state->dsa, posting_list);

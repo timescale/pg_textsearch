@@ -1,0 +1,20 @@
+psql:test/sql/empty_docs.sql:4: NOTICE:  extension "tapir" already exists, skipping
+CREATE EXTENSION
+CREATE TABLE
+INSERT 0 6
+psql:test/sql/empty_docs.sql:27: NOTICE:  Tapir index build started for relation empty_docs_idx
+psql:test/sql/empty_docs.sql:27: NOTICE:  Using text search configuration: english
+psql:test/sql/empty_docs.sql:27: NOTICE:  Using index options: k1=1.20, b=0.75
+psql:test/sql/empty_docs.sql:27: NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
+ id | content 
+----+---------
+(0 rows)
+
+INSERT 0 1
+ id |      content_preview       
+----+----------------------------
+  7 | test document with content
+(1 row)
+
+DROP TABLE
