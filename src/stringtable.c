@@ -342,12 +342,7 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 	size_t			   term_len;
 
 	Assert(local_state != NULL);
-
-	if (!term)
-	{
-		elog(ERROR, "tp_get_posting_list: term is NULL");
-		return NULL;
-	}
+	Assert(term != NULL);
 
 	/* Get memtable from local state */
 	memtable = get_memtable(local_state);

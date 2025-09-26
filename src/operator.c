@@ -348,17 +348,11 @@ tp_score_documents(
 	dshash_table		*string_table;
 	TpMemtable			*memtable;
 
-	/* Validate inputs */
-	if (!local_state)
-		elog(ERROR, "tp_score_documents: NULL local_state");
-	if (!query_terms)
-		elog(ERROR, "tp_score_documents: NULL query_terms");
-	if (!query_frequencies)
-		elog(ERROR, "tp_score_documents: NULL query_frequencies");
-	if (!result_ctids)
-		elog(ERROR, "tp_score_documents: NULL result_ctids");
-	if (!result_scores)
-		elog(ERROR, "tp_score_documents: NULL result_scores");
+	/* Basic sanity checks */
+	Assert(local_state != NULL);
+	Assert(query_terms != NULL);
+	Assert(result_ctids != NULL);
+	Assert(result_scores != NULL);
 
 	if (query_term_count <= 0 || max_results <= 0)
 		return 0;
@@ -379,15 +373,10 @@ tp_score_documents(
 	if (total_docs <= 0)
 		return 0;
 
-	/* Special case: if avg_doc_len is 0, all documents have zero length and
+	/* If avg_doc_len is 0, all documents have zero length and
 	 * would get zero BM25 scores */
 	if (avg_doc_len <= 0.0f)
-	{
-		elog(WARNING,
-			 "Average document length is zero - all documents would score "
-			 "zero");
 		return 0;
-	}
 
 	/* Get string hash table */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)

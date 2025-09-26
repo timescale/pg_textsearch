@@ -1316,11 +1316,8 @@ tp_search_posting_lists(
 	memset(so->result_ctids, 0, max_results * sizeof(ItemPointerData));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* Check pointers before using them */
-	if (!metap)
-		elog(ERROR, "metap is NULL before tp_score_documents");
-
-	/* Extract values from metap before the call to avoid any access issues */
+	/* Extract values from metap */
+	Assert(metap != NULL);
 	k1_value = metap->k1;
 	b_value	 = metap->b;
 
