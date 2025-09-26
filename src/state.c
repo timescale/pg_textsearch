@@ -432,8 +432,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/* DEBUG: Log what metapage contains during recovery */
-	elog(NOTICE,
-		 "DEBUG: Recovery metapage: magic=0x%08X, first_docid_page=%u",
+	elog(DEBUG1,
+		 "Recovery metapage: magic=0x%08X, first_docid_page=%u",
 		 metap->magic,
 		 metap->first_docid_page);
 
@@ -492,8 +492,8 @@ tp_rebuild_posting_lists_from_docids(
 	current_page = metap->first_docid_page;
 
 	/* DEBUG: Log metapage docid chain starting point */
-	elog(NOTICE,
-		 "DEBUG: Recovery starting from metapage first_docid_page=%u",
+	elog(DEBUG1,
+		 "Recovery starting from metapage first_docid_page=%u",
 		 current_page);
 
 	/* Scan through all docid pages */
@@ -506,8 +506,8 @@ tp_rebuild_posting_lists_from_docids(
 		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
 		/* DEBUG: Log what we're reading from this page */
-		elog(NOTICE,
-			 "DEBUG: Recovery reading docid page %u, magic=0x%08X, "
+		elog(DEBUG1,
+			 "Recovery reading docid page %u, magic=0x%08X, "
 			 "num_docids=%d",
 			 current_page,
 			 docid_header->magic,
@@ -524,8 +524,8 @@ tp_rebuild_posting_lists_from_docids(
 			HeapTupleData tuple_data;
 
 			/* DEBUG: Log each CTID being processed */
-			elog(NOTICE,
-				 "DEBUG: Recovery processing docid[%u] = (%u,%u)",
+			elog(DEBUG2,
+				 "Recovery processing docid[%u] = (%u,%u)",
 				 i,
 				 BlockIdGetBlockNumber(&ctid->ip_blkid),
 				 ctid->ip_posid);
@@ -551,9 +551,14 @@ tp_rebuild_posting_lists_from_docids(
 				continue; /* Skip invalid documents */
 			}
 
-			/* Extract text from the first indexed column */
-			text_datum = heap_getattr(
-					tuple, 1, RelationGetDescr(heap_rel), &isnull);
+			/* Extract text from the indexed column.
+			 * We need to get the actual column number from the index.
+			 * rd_index->indkey.values[0] contains the attribute number
+			 * of the first indexed column in the heap relation.
+			 */
+			AttrNumber attnum = index_rel->rd_index->indkey.values[0];
+			text_datum		  = heap_getattr(
+					   tuple, attnum, RelationGetDescr(heap_rel), &isnull);
 
 			if (!isnull)
 			{
