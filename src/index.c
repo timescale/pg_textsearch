@@ -1707,6 +1707,18 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(&result, "  avg_doc_len: 0 (no documents)\n");
 	}
 
+	/* Add DSA memory consumption statistics */
+	if (index_state->dsa)
+	{
+		size_t dsa_total_size = dsa_get_total_size(index_state->dsa);
+		appendStringInfo(&result, "Memory Usage:\n");
+		appendStringInfo(
+				&result,
+				"  DSA total size: %zu bytes (%.2f MB)\n",
+				dsa_total_size,
+				(double)dsa_total_size / (1024.0 * 1024.0));
+	}
+
 	appendStringInfo(&result, "BM25 Parameters:\n");
 	if (metap)
 	{
