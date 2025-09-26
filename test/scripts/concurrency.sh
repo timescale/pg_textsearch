@@ -516,11 +516,11 @@ test_concurrent_index_drop() {
     info "Session 1: Caching index state and holding connection..."
     local session1_output="${TMP_DIR:-/tmp}/session_501.out"
     {
-        echo "BEGIN;"
+        echo "-- First query to cache the index"
         echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"
-        echo "SELECT pg_sleep(2);"  # Hold connection while index is dropped
+        echo "SELECT pg_sleep(3);"  # Hold connection while index is dropped
+        echo "-- Second query after index should be dropped"
         echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"  # Try to use dropped index
-        echo "ROLLBACK;"
     } | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$session1_output" 2>&1 &
     local session1_pid=$!
 
@@ -543,10 +543,11 @@ test_concurrent_index_drop() {
         log "✅ Session 1 correctly reported error when using dropped index"
         info "Error details: $(echo "$session1_contents" | grep ERROR | head -1)"
     elif echo "$session1_contents" | grep -q "count"; then
-        # If we got results without error, check what happened
-        log "⚠️  Session 1 completed queries without error after index drop"
-        info "This indicates potential issue with cached state handling"
+        # This shouldn't happen - queries should error when index is dropped
+        log "❌ FAIL: Session 1 completed queries without error after index drop"
+        info "This is incorrect behavior - should error when index doesn't exist"
         info "Query results: $(echo "$session1_contents" | grep -E "count|^\s*[0-9]")"
+        error "Test failed - queries should error when using dropped index"
     else
         log "Unexpected output from Session 1"
         info "Full output: $session1_contents"
