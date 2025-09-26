@@ -145,7 +145,8 @@ tp_add_document_to_posting_list(
 	new_entry->frequency = frequency;
 
 	posting_list->doc_count++;
-	posting_list->doc_freq = posting_list->doc_count;
+	posting_list->doc_freq	= posting_list->doc_count;
+	posting_list->is_sorted = false; /* New entry may break sort order */
 }
 
 /*
