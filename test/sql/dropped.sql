@@ -31,7 +31,6 @@ WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;
 DROP INDEX dropped_idx;
 
 -- Query should ERROR when index doesn't exist
--- This currently returns results instead of erroring!
 SELECT COUNT(*) AS after_drop
 FROM dropped_idx_test
 WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;

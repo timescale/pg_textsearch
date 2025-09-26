@@ -1,7 +1,6 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS tapir;
-NOTICE:  extension "tapir" already exists, skipping
 -- Create test table
 CREATE TABLE dropped_idx_test (
     id SERIAL PRIMARY KEY,
@@ -34,7 +33,6 @@ WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;
 -- Drop the index
 DROP INDEX dropped_idx;
 -- Query should ERROR when index doesn't exist
--- This currently returns results instead of erroring!
 SELECT COUNT(*) AS after_drop
 FROM dropped_idx_test
 WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;
