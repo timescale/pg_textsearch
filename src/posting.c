@@ -241,20 +241,17 @@ tp_store_document_length(
 	TpDocLengthEntry *entry;
 	bool			  found;
 
-	if (!local_state || !ctid)
-		return;
+	Assert(local_state != NULL);
+	Assert(ctid != NULL);
 
 	memtable = get_memtable(local_state);
 	if (!memtable)
-		return;
+		elog(ERROR, "Cannot get memtable - index state corrupted");
 
 	/* Initialize document length table if needed */
 	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
 	{
 		doclength_table = tp_doclength_table_create(local_state->dsa);
-		if (!doclength_table)
-			return;
-
 		memtable->doc_lengths_handle = dshash_get_hash_table_handle(
 				doclength_table);
 	}
@@ -262,8 +259,6 @@ tp_store_document_length(
 	{
 		doclength_table = tp_doclength_table_attach(
 				local_state->dsa, memtable->doc_lengths_handle);
-		if (!doclength_table)
-			return;
 	}
 
 	/* Insert or update the document length */
@@ -286,28 +281,23 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 	dshash_table	 *doclength_table;
 	TpDocLengthEntry *entry;
 
-	if (!local_state || !ctid)
-		return 0;
+	Assert(local_state != NULL);
+	Assert(ctid != NULL);
 
 	memtable = get_memtable(local_state);
 	if (!memtable)
-		return 0;
+		elog(ERROR, "Cannot get memtable - index state corrupted");
 
 	/* Check if document length table exists */
 	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-	{
 		elog(ERROR,
 			 "Document length table not initialized for CTID (%u,%u)",
 			 BlockIdGetBlockNumber(&ctid->ip_blkid),
 			 ctid->ip_posid);
-		return 0;
-	}
 
 	/* Attach to document length table */
 	doclength_table = tp_doclength_table_attach(
 			local_state->dsa, memtable->doc_lengths_handle);
-	if (!doclength_table)
-		return 1;
 
 	/* Look up the document length */
 	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
