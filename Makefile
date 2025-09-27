@@ -1,5 +1,5 @@
 EXTENSION = tapir
-DATA = sql/tapir--0.0.sql
+DATA = sql/tapir--0.0.0a.sql
 
 # Source files
 # Full build - debugging initialization crash

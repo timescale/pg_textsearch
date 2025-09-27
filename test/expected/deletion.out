@@ -1,6 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS tapir;
+INFO:  Tapir v0.0.0a: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,

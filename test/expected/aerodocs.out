@@ -4,6 +4,7 @@
 -- Tests both dataset loading and tapir scoring functionality with the <@> operator
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+INFO:  Tapir v0.0.0a: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 \set ON_ERROR_STOP on

@@ -12,8 +12,9 @@ Open-source full-text search for Postgres.  Supports:
 - PostgreSQL text search configurations (english, french, german, etc.)
 - tpquery data type for scoring operations
 
-🚀 **Development Status**: Pre-alpha release.  Memtable-based implementation is
-in place and working.
+🚀 **Development Status**: v0.0.0a - Pre-alpha release.  Memtable-based
+implementation is in place and working. This is prerelease software and should
+not be used in production.
 
 ## Installation
 
@@ -332,4 +333,3 @@ brew install pre-commit && pre-commit install  # macOS
 5. Submit a pull request
 
 All pull requests are automatically tested against PostgreSQL 17.
-

@@ -2,6 +2,7 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 CREATE EXTENSION IF NOT EXISTS tapir;
+INFO:  Tapir v0.0.0a: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Create test table

@@ -1,4 +1,4 @@
--- Tapir extension version 0.0
+-- Tapir extension version 0.0.0a
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION tapir" to load this file. \quit
@@ -153,3 +153,10 @@ DEFAULT FOR TYPE text USING tapir AS
 CREATE FUNCTION tp_debug_dump_index(text, boolean DEFAULT false) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
+
+-- Display warning about prerelease status
+DO $$
+BEGIN
+    RAISE INFO 'Tapir v0.0.0a: This is prerelease software and should not be used in production.';
+END
+$$;

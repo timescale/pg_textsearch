@@ -1,6 +1,7 @@
 -- This test demonstrates top-k tapir query patterns for efficient text search
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
+INFO:  Tapir v0.0.0a: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Setup test data with realistic documents
