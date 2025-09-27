@@ -123,7 +123,7 @@ Composition of memtable:
 
 * Term dictionary
   * Maps a string token \-\> integer id, posting list
-  * **Current v0.0a**: String-based posting lists (term_ids are per-index, not global)
+  * **Current v0.0.0a**: String-based posting lists (term_ids are per-index, not global)
   * **Rationale**: Future disk segments require term_ids to be local to segment/memtable
   * Shared-memory hash table for string interning
 * Posting list
@@ -292,7 +292,7 @@ Details TBD.  Want to start running these (for both performance and correctness)
 
 No backwards compatibility guarantees until v0.1 (production launch).  Plan to start dogfooding with agents teams (hybrid search) as soon as possible – likely v0.0b.
 
-* v0.0a: memtable-only implementation ✅ **COMPLETED**
+* v0.0.0a: memtable-only implementation ✅ **COMPLETED**
   * Complete user surface in place ✅
   * Including crash recovery ✅ **FIXED: FlushOneBuffer() ensures metapage persistence**
   * Basic benchmarks passing validation ✅

@@ -22,7 +22,15 @@ mkdir -p "${BUILDDIR}/DEBIAN"
 mkdir -p "${DEBDIR}"
 
 # Get PostgreSQL directories
-PG_CONFIG="/usr/lib/postgresql/17/bin/pg_config"
+# Support both Docker (TimescaleDB) and regular PostgreSQL installations
+if [ -x "/usr/local/bin/pg_config" ]; then
+    PG_CONFIG="/usr/local/bin/pg_config"
+elif [ -x "/usr/lib/postgresql/17/bin/pg_config" ]; then
+    PG_CONFIG="/usr/lib/postgresql/17/bin/pg_config"
+else
+    echo "Error: pg_config not found in expected locations"
+    exit 1
+fi
 LIBDIR=$($PG_CONFIG --pkglibdir)
 SHAREDIR=$($PG_CONFIG --sharedir)
 
@@ -36,7 +44,7 @@ cp "${BASEDIR}/tapir.so" "${BUILDDIR}${LIBDIR}/" || \
    { echo "Error: Could not find tapir library"; exit 1; }
 
 cp "${BASEDIR}/tapir.control" "${BUILDDIR}${SHAREDIR}/extension/"
-cp "${BASEDIR}/sql/tapir--0.0.sql" "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}/sql/tapir--0.0.0a.sql" "${BUILDDIR}${SHAREDIR}/extension/"
 
 # Determine architecture
 if [ "$ARCH" = "arm64" ]; then

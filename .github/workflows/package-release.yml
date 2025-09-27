@@ -13,15 +13,15 @@ on:
 
 jobs:
   build-packages:
-    runs-on: ${{ matrix.platform.runs_on }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         platform:
           - type: amd64
-            runs_on: ubuntu-latest
+            docker_platform: linux/amd64
           - type: arm64
-            runs_on: ubuntu-latest  # Will use QEMU emulation for now
+            docker_platform: linux/arm64
 
     steps:
     - uses: actions/checkout@v4
@@ -37,41 +37,52 @@ jobs:
         fi
         echo "Building version: $VERSION"
 
-    - name: Install dependencies
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build extension in Docker
       run: |
-        sudo apt-get update
-        sudo apt-get install -y wget ca-certificates lsb-release
+        # Create a build script
+        cat > build.sh << 'BUILDSCRIPT'
+        #!/bin/bash
+        set -ex
 
-        # Add PostgreSQL APT repository for PostgreSQL 17
-        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        sudo apt-get update
+        # Install build dependencies
+        apt-get update
+        apt-get install -y build-essential
 
-        # Install build dependencies and PostgreSQL 17
-        sudo apt-get install -y \
-          build-essential \
-          debhelper \
-          dpkg-dev \
-          postgresql-17 \
-          postgresql-server-dev-17
-
-    - name: Setup ARM64 cross-compilation (if needed)
-      if: matrix.platform.type == 'arm64'
-      run: |
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-        echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-    - name: Build extension
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        export PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
+        # Build the extension
+        cd /build
+        export PG_CONFIG=/usr/local/bin/pg_config
         make clean
         CFLAGS="-O3 -DNDEBUG" make
 
-    - name: Build Debian package
+        # Package the extension
+        bash scripts/package-deb.sh "$1" "$PWD" "$2"
+        BUILDSCRIPT
+
+        chmod +x build.sh
+
+        # Run build in TimescaleDB container with proper architecture
+        docker run --rm \
+          --platform ${{ matrix.platform.docker_platform }} \
+          -v "$PWD:/build" \
+          -w /build \
+          timescale/timescaledb-ha:pg17.6-all-builder \
+          /build/build.sh "$VERSION" "${{ matrix.platform.type }}"
+
+    - name: Verify package architecture
       run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        bash scripts/package-deb.sh "$VERSION" "$PWD" "${{ matrix.platform.type }}"
+        # Extract and check the actual binary architecture
+        mkdir -p check-arch
+        dpkg-deb -x dist/*.deb check-arch/
+        file check-arch/usr/lib/postgresql/*/lib/tapir.so | grep -E "(x86-64|aarch64)" || true
+        rm -rf check-arch
 
     - name: Upload package artifacts
       uses: actions/upload-artifact@v4
