@@ -73,7 +73,7 @@ jobs:
           --platform ${{ matrix.platform.docker_platform }} \
           -v "$PWD:/build" \
           -w /build \
-          timescale/timescaledb-ha:pg17.6-all-builder \
+          timescale/timescaledb-ha:pg17-all \
           /build/build.sh "$VERSION" "${{ matrix.platform.type }}"
 
     - name: Verify package architecture
