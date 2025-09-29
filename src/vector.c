@@ -5,10 +5,13 @@
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
 #include <math.h>
+#include <nodes/pg_list.h>
+#include <nodes/value.h>
 #include <stdlib.h>
 #include <tsearch/ts_type.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
+#include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/syscache.h>
 #include <varatt.h>
@@ -576,24 +579,53 @@ to_tpvector(PG_FUNCTION_ARGS)
 	/* Extract index name */
 	index_name = text_to_cstring(index_name_text);
 
-	/* Look up index OID using direct catalog access */
-	/* Try current search path */
-	search_path = fetch_search_path(false);
-
-	foreach (lc, search_path)
+	/*
+	 * Look up index OID. First try to parse it as a potentially
+	 * schema-qualified name, then use the search path.
+	 */
+	if (strchr(index_name, '.') != NULL)
 	{
-		Oid namespace_oid = lfirst_oid(lc);
+		/* Contains a dot - try to parse as schema.relation */
+		List *namelist = stringToQualifiedNameList(index_name, NULL);
 
-		index_oid = GetSysCacheOid2(
-				RELNAMENSP,
-				Anum_pg_class_oid,
-				PointerGetDatum(index_name),
-				ObjectIdGetDatum(namespace_oid));
-		if (OidIsValid(index_oid))
-			break;
+		if (list_length(namelist) == 2)
+		{
+			char *schemaname	= strVal(linitial(namelist));
+			char *relname		= strVal(lsecond(namelist));
+			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
+
+			if (OidIsValid(namespace_oid))
+				index_oid = get_relname_relid(relname, namespace_oid);
+			else
+				index_oid = InvalidOid;
+		}
+		else
+		{
+			/* Invalid format */
+			index_oid = InvalidOid;
+		}
+		list_free_deep(namelist);
 	}
+	else
+	{
+		/* No schema specified - search using search_path */
+		search_path = fetch_search_path(false);
 
-	list_free(search_path);
+		foreach (lc, search_path)
+		{
+			Oid namespace_oid = lfirst_oid(lc);
+
+			index_oid = GetSysCacheOid2(
+					RELNAMENSP,
+					Anum_pg_class_oid,
+					PointerGetDatum(index_name),
+					ObjectIdGetDatum(namespace_oid));
+			if (OidIsValid(index_oid))
+				break;
+		}
+
+		list_free(search_path);
+	}
 
 	if (!OidIsValid(index_oid))
 	{

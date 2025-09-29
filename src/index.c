@@ -1039,10 +1039,47 @@ tp_rescan(
 				current_index_name = RelationGetRelationName(
 						scan->indexRelation);
 
-				/* Validate index name if provided in query */
+				/*
+				 * Validate index name if provided in query.
+				 * Handle both schema-qualified and unqualified names.
+				 */
 				if (index_name)
 				{
-					if (strcmp(index_name, current_index_name) != 0)
+					bool name_matches = false;
+
+					/* First try exact match (for unqualified names) */
+					if (strcmp(index_name, current_index_name) == 0)
+					{
+						name_matches = true;
+					}
+					else if (strchr(index_name, '.') != NULL)
+					{
+						/*
+						 * Query specifies schema-qualified name. Extract the
+						 * relation name part and compare that.
+						 */
+						char *dot = strrchr(index_name, '.');
+						if (dot != NULL &&
+							strcmp(dot + 1, current_index_name) == 0)
+						{
+							/*
+							 * Also verify the schema matches
+							 */
+							char *schema_name =
+									pnstrdup(index_name, dot - index_name);
+							Oid namespace_oid =
+									get_namespace_oid(schema_name, true);
+							if (OidIsValid(namespace_oid) &&
+								namespace_oid == RelationGetNamespace(
+														 scan->indexRelation))
+							{
+								name_matches = true;
+							}
+							pfree(schema_name);
+						}
+					}
+
+					if (!name_matches)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("tpquery index name mismatch"),
@@ -1210,8 +1247,30 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 		if (!query_vector && so->query_text)
 		{
-			/* We have a text query - convert it to a vector using the index */
-			char *index_name = RelationGetRelationName(scan->indexRelation);
+			/*
+			 * We have a text query - convert it to a vector using the index.
+			 * We need to use a qualified name if the index is not in the
+			 * search path.
+			 */
+			char *index_name;
+			Oid	  index_namespace = RelationGetNamespace(scan->indexRelation);
+
+			/*
+			 * If the index is not visible in the search path, use a qualified
+			 * name
+			 */
+			if (!RelationIsVisible(RelationGetRelid(scan->indexRelation)))
+			{
+				char *namespace_name = get_namespace_name(index_namespace);
+				char *relation_name	 = RelationGetRelationName(
+						 scan->indexRelation);
+				index_name = psprintf("%s.%s", namespace_name, relation_name);
+			}
+			else
+			{
+				index_name = RelationGetRelationName(scan->indexRelation);
+			}
+
 			text *index_name_text  = cstring_to_text(index_name);
 			text *query_text_datum = cstring_to_text(so->query_text);
 

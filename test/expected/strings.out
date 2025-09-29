@@ -1,7 +1,7 @@
 -- Test long string handling including URLs, paths, and long terms
 -- Load tapir extension
 CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.0a: This is prerelease software and should not be used in production.
+INFO:  Tapir v0.0.1
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 SET client_min_messages = NOTICE;

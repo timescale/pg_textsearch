@@ -1,4 +1,4 @@
--- Tapir extension version 0.0.0a
+-- Tapir extension version 0.0.1
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION tapir" to load this file. \quit
@@ -157,6 +157,6 @@ CREATE FUNCTION tp_debug_dump_index(text, boolean DEFAULT false) RETURNS text
 -- Display warning about prerelease status
 DO $$
 BEGIN
-    RAISE INFO 'Tapir v0.0.0a: This is prerelease software and should not be used in production.';
+    RAISE INFO 'Tapir v0.0.1';
 END
 $$;

@@ -5,9 +5,12 @@
 #include <catalog/namespace.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
+#include <nodes/pg_list.h>
+#include <nodes/value.h>
 #include <tsearch/ts_type.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
+#include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/syscache.h>
 #include <varatt.h>
@@ -201,9 +204,39 @@ validate_and_open_index(TpQuery *query, char **index_name_out)
 						 "scoring")));
 	}
 
-	/* Get the index OID from index name */
-	index_oid =
-			get_relname_relid(index_name, get_namespace_oid("public", false));
+	/*
+	 * Get the index OID from index name. First try to parse it as a
+	 * potentially schema-qualified name, then use the search path.
+	 */
+	if (strchr(index_name, '.') != NULL)
+	{
+		/* Contains a dot - try to parse as schema.relation */
+		List *namelist = stringToQualifiedNameList(index_name, NULL);
+
+		if (list_length(namelist) == 2)
+		{
+			char *schemaname	= strVal(linitial(namelist));
+			char *relname		= strVal(lsecond(namelist));
+			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
+
+			if (OidIsValid(namespace_oid))
+				index_oid = get_relname_relid(relname, namespace_oid);
+			else
+				index_oid = InvalidOid;
+		}
+		else
+		{
+			/* Invalid format */
+			index_oid = InvalidOid;
+		}
+		list_free_deep(namelist);
+	}
+	else
+	{
+		/* No schema specified - search using search_path */
+		index_oid = RelnameGetRelid(index_name);
+	}
+
 	if (!OidIsValid(index_oid))
 	{
 		ereport(ERROR,
