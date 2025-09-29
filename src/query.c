@@ -25,6 +25,9 @@
 #include "state.h"
 #include "vector.h"
 
+/* Local helper functions */
+static Oid tp_resolve_index_name(const char *index_name);
+
 PG_FUNCTION_INFO_V1(tpquery_in);
 PG_FUNCTION_INFO_V1(tpquery_out);
 PG_FUNCTION_INFO_V1(tpquery_recv);
@@ -185,29 +188,15 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * Helper: Validate query and get index
+ * Helper: Resolve an index name to an OID
+ * Handles both schema-qualified names (schema.index) and unqualified names
+ * using the search path.
  */
-static Relation
-validate_and_open_index(TpQuery *query, char **index_name_out)
+static Oid
+tp_resolve_index_name(const char *index_name)
 {
-	char	*index_name = get_tpquery_index_name(query);
-	Oid		 index_oid;
-	Relation index_rel;
+	Oid index_oid;
 
-	if (!index_name)
-	{
-		/* No index name - return ERROR as requested */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("text <@> tpquery operator requires index name"),
-				 errhint("Use to_tpquery(text, index_name) for standalone "
-						 "scoring")));
-	}
-
-	/*
-	 * Get the index OID from index name. First try to parse it as a
-	 * potentially schema-qualified name, then use the search path.
-	 */
 	if (strchr(index_name, '.') != NULL)
 	{
 		/* Contains a dot - try to parse as schema.relation */
@@ -236,6 +225,32 @@ validate_and_open_index(TpQuery *query, char **index_name_out)
 		/* No schema specified - search using search_path */
 		index_oid = RelnameGetRelid(index_name);
 	}
+
+	return index_oid;
+}
+
+/*
+ * Helper: Validate query and get index
+ */
+static Relation
+validate_and_open_index(TpQuery *query, char **index_name_out)
+{
+	char	*index_name = get_tpquery_index_name(query);
+	Oid		 index_oid;
+	Relation index_rel;
+
+	if (!index_name)
+	{
+		/* No index name - return ERROR as requested */
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("text <@> tpquery operator requires index name"),
+				 errhint("Use to_tpquery(text, index_name) for standalone "
+						 "scoring")));
+	}
+
+	/* Get the index OID from index name */
+	index_oid = tp_resolve_index_name(index_name);
 
 	if (!OidIsValid(index_oid))
 	{

@@ -34,11 +34,38 @@
 #include "query.h"
 #include "vector.h"
 
-static bool tp_search_posting_lists(
-		IndexScanDesc	   scan,
-		TpLocalIndexState *index_state,
-		TpVector		  *query_vector,
-		TpIndexMetaPage	   metap);
+/* Local helper functions */
+static char *tp_get_qualified_index_name(Relation indexRelation);
+static bool	 tp_search_posting_lists(
+		 IndexScanDesc		scan,
+		 TpLocalIndexState *index_state,
+		 TpVector		   *query_vector,
+		 TpIndexMetaPage	metap);
+
+/*
+ * Get the appropriate index name for the given index relation.
+ * Returns a qualified name (schema.index) if the index is not visible
+ * in the search path, otherwise returns just the index name.
+ */
+static char *
+tp_get_qualified_index_name(Relation indexRelation)
+{
+	Oid index_namespace = RelationGetNamespace(indexRelation);
+
+	/*
+	 * If the index is not visible in the search path, use a qualified name
+	 */
+	if (!RelationIsVisible(RelationGetRelid(indexRelation)))
+	{
+		char *namespace_name = get_namespace_name(index_namespace);
+		char *relation_name	 = RelationGetRelationName(indexRelation);
+		return psprintf("%s.%s", namespace_name, relation_name);
+	}
+	else
+	{
+		return RelationGetRelationName(indexRelation);
+	}
+}
 
 /*
  * Tapir Index Access Method Implementation
@@ -1252,24 +1279,8 @@ tp_execute_scoring_query(IndexScanDesc scan)
 			 * We need to use a qualified name if the index is not in the
 			 * search path.
 			 */
-			char *index_name;
-			Oid	  index_namespace = RelationGetNamespace(scan->indexRelation);
-
-			/*
-			 * If the index is not visible in the search path, use a qualified
-			 * name
-			 */
-			if (!RelationIsVisible(RelationGetRelid(scan->indexRelation)))
-			{
-				char *namespace_name = get_namespace_name(index_namespace);
-				char *relation_name	 = RelationGetRelationName(
-						 scan->indexRelation);
-				index_name = psprintf("%s.%s", namespace_name, relation_name);
-			}
-			else
-			{
-				index_name = RelationGetRelationName(scan->indexRelation);
-			}
+			char *index_name = tp_get_qualified_index_name(
+					scan->indexRelation);
 
 			text *index_name_text  = cstring_to_text(index_name);
 			text *query_text_datum = cstring_to_text(so->query_text);

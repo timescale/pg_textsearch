@@ -2,7 +2,7 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1
+INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET tapir.log_scores = true;
 -- Clean up from any previous tests

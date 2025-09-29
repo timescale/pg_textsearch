@@ -157,6 +157,6 @@ CREATE FUNCTION tp_debug_dump_index(text, boolean DEFAULT false) RETURNS text
 -- Display warning about prerelease status
 DO $$
 BEGIN
-    RAISE INFO 'Tapir v0.0.1';
+    RAISE INFO 'Tapir v0.0.1: This is prerelease software and should not be used in production.';
 END
 $$;

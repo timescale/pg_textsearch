@@ -1,7 +1,7 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
 CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1
+INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
 SET tapir.log_scores = true;
 SET enable_seqscan = off;
 -- Create a custom schema

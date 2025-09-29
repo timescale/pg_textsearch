@@ -23,6 +23,9 @@
 #include "posting.h"
 #include "vector.h"
 
+/* Local helper functions */
+static Oid tp_resolve_index_name_vector(const char *index_name);
+
 /* Helper structure for sorting lexemes */
 typedef struct
 {
@@ -551,38 +554,17 @@ get_tpvector_next_entry(TpVectorEntry *current)
 }
 
 /*
- * to_tpvector(text, index_name) - Create a tpvector from text using index's
- * config
+ * Helper: Resolve an index name to an OID
+ * Handles both schema-qualified names (schema.index) and unqualified names
+ * using the search path.
  */
-Datum
-to_tpvector(PG_FUNCTION_ARGS)
+static Oid
+tp_resolve_index_name_vector(const char *index_name)
 {
-	text		   *input_text		= PG_GETARG_TEXT_PP(0);
-	text		   *index_name_text = PG_GETARG_TEXT_PP(1);
-	char		   *index_name;
-	Oid				index_oid;
-	Oid				text_config_oid;
-	Relation		index_rel = NULL;
-	TpIndexMetaPage metap	  = NULL;
-	text		   *config_text;
-	Datum			tsvector_datum;
-	TSVector		tsvector;
-	WordEntry	   *we;
-	int				i;
-	char		  **lexemes;
-	int32		   *frequencies;
-	int				entry_count;
-	TpVector	   *result;
-	List		   *search_path;
-	ListCell	   *lc;
+	Oid		  index_oid;
+	List	 *search_path;
+	ListCell *lc;
 
-	/* Extract index name */
-	index_name = text_to_cstring(index_name_text);
-
-	/*
-	 * Look up index OID. First try to parse it as a potentially
-	 * schema-qualified name, then use the search path.
-	 */
 	if (strchr(index_name, '.') != NULL)
 	{
 		/* Contains a dot - try to parse as schema.relation */
@@ -611,6 +593,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 		/* No schema specified - search using search_path */
 		search_path = fetch_search_path(false);
 
+		index_oid = InvalidOid;
 		foreach (lc, search_path)
 		{
 			Oid namespace_oid = lfirst_oid(lc);
@@ -626,6 +609,41 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 		list_free(search_path);
 	}
+
+	return index_oid;
+}
+
+/*
+ * to_tpvector(text, index_name) - Create a tpvector from text using index's
+ * config
+ */
+Datum
+to_tpvector(PG_FUNCTION_ARGS)
+{
+	text		   *input_text		= PG_GETARG_TEXT_PP(0);
+	text		   *index_name_text = PG_GETARG_TEXT_PP(1);
+	char		   *index_name;
+	Oid				index_oid;
+	Oid				text_config_oid;
+	Relation		index_rel = NULL;
+	TpIndexMetaPage metap	  = NULL;
+	text		   *config_text;
+	Datum			tsvector_datum;
+	TSVector		tsvector;
+	WordEntry	   *we;
+	int				i;
+	char		  **lexemes;
+	int32		   *frequencies;
+	int				entry_count;
+	TpVector	   *result;
+	List		   *search_path;
+	ListCell	   *lc;
+
+	/* Extract index name */
+	index_name = text_to_cstring(index_name_text);
+
+	/* Look up index OID */
+	index_oid = tp_resolve_index_name_vector(index_name);
 
 	if (!OidIsValid(index_oid))
 	{
