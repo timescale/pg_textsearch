@@ -44,7 +44,7 @@ cp "${BASEDIR}/tapir.so" "${BUILDDIR}${LIBDIR}/" || \
    { echo "Error: Could not find tapir library"; exit 1; }
 
 cp "${BASEDIR}/tapir.control" "${BUILDDIR}${SHAREDIR}/extension/"
-cp "${BASEDIR}/sql/tapir--0.0.0a.sql" "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}/sql/tapir--0.0.1.sql" "${BUILDDIR}${SHAREDIR}/extension/"
 
 # Determine architecture
 if [ "$ARCH" = "arm64" ]; then
