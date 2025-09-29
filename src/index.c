@@ -269,14 +269,23 @@ tp_resolve_index_name_shared(const char *index_name)
 		List *namelist = stringToQualifiedNameList(index_name, NULL);
 		if (list_length(namelist) == 2)
 		{
-			char *schemaname	= strVal(linitial(namelist));
-			char *relname		= strVal(lsecond(namelist));
-			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
+			char *schemaname = strVal(linitial(namelist));
+			char *relname	 = strVal(lsecond(namelist));
 
-			if (OidIsValid(namespace_oid))
-				index_oid = get_relname_relid(relname, namespace_oid);
-			else
+			/* Validate that schema name is not empty */
+			if (schemaname == NULL || strlen(schemaname) == 0)
+			{
 				index_oid = InvalidOid;
+			}
+			else
+			{
+				Oid namespace_oid = get_namespace_oid(schemaname, true);
+
+				if (OidIsValid(namespace_oid))
+					index_oid = get_relname_relid(relname, namespace_oid);
+				else
+					index_oid = InvalidOid;
+			}
 		}
 		else
 		{

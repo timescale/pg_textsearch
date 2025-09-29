@@ -586,7 +586,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
-				 errmsg("index \"%s\" does not exist", index_name)));
+				 errmsg("index \"%s\" not found", index_name)));
 	}
 
 	/* Open the index relation to get metadata */
