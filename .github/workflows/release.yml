@@ -53,7 +53,11 @@ jobs:
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
         export PGHOST=$PWD/tmp_release_check
         export PGPORT=55433
-        make installcheck
+        # Use pg_regress directly to avoid make installcheck trying to reinstall
+        /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress \
+          --inputdir=test --outputdir=test --dbname=contrib_regression \
+          aerodocs basic deletion dropped empty index limits manyterms mixed queries \
+          schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings vector
         TEST_SIZE_MULTIPLIER=3.0 make test-concurrency
 
     - name: Package extension
