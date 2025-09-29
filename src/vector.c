@@ -24,7 +24,6 @@
 #include "vector.h"
 
 /* Local helper functions */
-static Oid tp_resolve_index_name_vector(const char *index_name);
 
 /* Helper structure for sorting lexemes */
 typedef struct
@@ -554,66 +553,6 @@ get_tpvector_next_entry(TpVectorEntry *current)
 }
 
 /*
- * Helper: Resolve an index name to an OID
- * Handles both schema-qualified names (schema.index) and unqualified names
- * using the search path.
- */
-static Oid
-tp_resolve_index_name_vector(const char *index_name)
-{
-	Oid		  index_oid;
-	List	 *search_path;
-	ListCell *lc;
-
-	if (strchr(index_name, '.') != NULL)
-	{
-		/* Contains a dot - try to parse as schema.relation */
-		List *namelist = stringToQualifiedNameList(index_name, NULL);
-
-		if (list_length(namelist) == 2)
-		{
-			char *schemaname	= strVal(linitial(namelist));
-			char *relname		= strVal(lsecond(namelist));
-			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
-
-			if (OidIsValid(namespace_oid))
-				index_oid = get_relname_relid(relname, namespace_oid);
-			else
-				index_oid = InvalidOid;
-		}
-		else
-		{
-			/* Invalid format */
-			index_oid = InvalidOid;
-		}
-		list_free_deep(namelist);
-	}
-	else
-	{
-		/* No schema specified - search using search_path */
-		search_path = fetch_search_path(false);
-
-		index_oid = InvalidOid;
-		foreach (lc, search_path)
-		{
-			Oid namespace_oid = lfirst_oid(lc);
-
-			index_oid = GetSysCacheOid2(
-					RELNAMENSP,
-					Anum_pg_class_oid,
-					PointerGetDatum(index_name),
-					ObjectIdGetDatum(namespace_oid));
-			if (OidIsValid(index_oid))
-				break;
-		}
-
-		list_free(search_path);
-	}
-
-	return index_oid;
-}
-
-/*
  * to_tpvector(text, index_name) - Create a tpvector from text using index's
  * config
  */
@@ -636,14 +575,12 @@ to_tpvector(PG_FUNCTION_ARGS)
 	int32		   *frequencies;
 	int				entry_count;
 	TpVector	   *result;
-	List		   *search_path;
-	ListCell	   *lc;
 
 	/* Extract index name */
 	index_name = text_to_cstring(index_name_text);
 
 	/* Look up index OID */
-	index_oid = tp_resolve_index_name_vector(index_name);
+	index_oid = tp_resolve_index_name_shared(index_name);
 
 	if (!OidIsValid(index_oid))
 	{

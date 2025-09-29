@@ -47,6 +47,9 @@ struct IndexVacuumInfo;
 struct IndexBulkDeleteResult;
 struct IndexBuildResult;
 
+/* Shared utility functions */
+Oid tp_resolve_index_name_shared(const char *index_name);
+
 /* Access method handler */
 Datum tp_handler(PG_FUNCTION_ARGS);
 

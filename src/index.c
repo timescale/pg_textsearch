@@ -12,6 +12,9 @@
 #include <commands/vacuum.h>
 #include <math.h>
 #include <nodes/execnodes.h>
+#include <nodes/pg_list.h>
+#include <nodes/value.h>
+#include <parser/scansup.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
@@ -19,6 +22,7 @@
 #include <utils/float.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
+#include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/selfuncs.h>
 #include <utils/snapmgr.h>
@@ -247,6 +251,46 @@ tp_rescan_process_orderby(
 			pfree(query_cstr);
 		}
 	}
+}
+
+/*
+ * Resolve index name to OID with schema support.
+ * Returns the OID of the index, or InvalidOid if not found.
+ * Handles both schema-qualified names (schema.index) and unqualified names.
+ */
+Oid
+tp_resolve_index_name_shared(const char *index_name)
+{
+	Oid index_oid;
+
+	if (strchr(index_name, '.') != NULL)
+	{
+		/* Contains a dot - try to parse as schema.relation */
+		List *namelist = stringToQualifiedNameList(index_name, NULL);
+		if (list_length(namelist) == 2)
+		{
+			char *schemaname	= strVal(linitial(namelist));
+			char *relname		= strVal(lsecond(namelist));
+			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
+
+			if (OidIsValid(namespace_oid))
+				index_oid = get_relname_relid(relname, namespace_oid);
+			else
+				index_oid = InvalidOid;
+		}
+		else
+		{
+			index_oid = InvalidOid;
+		}
+		list_free_deep(namelist);
+	}
+	else
+	{
+		/* No schema specified - use search path */
+		index_oid = RelnameGetRelid(index_name);
+	}
+
+	return index_oid;
 }
 
 /*

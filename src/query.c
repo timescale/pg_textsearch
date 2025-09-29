@@ -26,7 +26,6 @@
 #include "vector.h"
 
 /* Local helper functions */
-static Oid tp_resolve_index_name(const char *index_name);
 
 PG_FUNCTION_INFO_V1(tpquery_in);
 PG_FUNCTION_INFO_V1(tpquery_out);
@@ -188,48 +187,6 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * Helper: Resolve an index name to an OID
- * Handles both schema-qualified names (schema.index) and unqualified names
- * using the search path.
- */
-static Oid
-tp_resolve_index_name(const char *index_name)
-{
-	Oid index_oid;
-
-	if (strchr(index_name, '.') != NULL)
-	{
-		/* Contains a dot - try to parse as schema.relation */
-		List *namelist = stringToQualifiedNameList(index_name, NULL);
-
-		if (list_length(namelist) == 2)
-		{
-			char *schemaname	= strVal(linitial(namelist));
-			char *relname		= strVal(lsecond(namelist));
-			Oid	  namespace_oid = get_namespace_oid(schemaname, true);
-
-			if (OidIsValid(namespace_oid))
-				index_oid = get_relname_relid(relname, namespace_oid);
-			else
-				index_oid = InvalidOid;
-		}
-		else
-		{
-			/* Invalid format */
-			index_oid = InvalidOid;
-		}
-		list_free_deep(namelist);
-	}
-	else
-	{
-		/* No schema specified - search using search_path */
-		index_oid = RelnameGetRelid(index_name);
-	}
-
-	return index_oid;
-}
-
-/*
  * Helper: Validate query and get index
  */
 static Relation
@@ -250,7 +207,7 @@ validate_and_open_index(TpQuery *query, char **index_name_out)
 	}
 
 	/* Get the index OID from index name */
-	index_oid = tp_resolve_index_name(index_name);
+	index_oid = tp_resolve_index_name_shared(index_name);
 
 	if (!OidIsValid(index_oid))
 	{
