@@ -28,9 +28,17 @@ jobs:
 
     - name: Start PostgreSQL
       run: |
-        sudo systemctl start postgresql
-        sudo -u postgres createuser -s $USER
-        sudo -u postgres createdb $USER
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        # Create fresh PostgreSQL instance to avoid DSA segment accumulation
+        rm -rf tmp_release_check
+        mkdir -p tmp_release_check
+        initdb -D tmp_release_check/data --auth-local=trust --auth-host=trust
+        echo "port = 55433" >> tmp_release_check/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_release_check/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_release_check/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_release_check'" >> tmp_release_check/data/postgresql.conf
+        pg_ctl start -D tmp_release_check/data -l tmp_release_check/data/logfile -w
+        createdb -h $PWD/tmp_release_check -p 55433 contrib_regression
 
     - name: Build extension (optimized)
       run: |
@@ -43,6 +51,8 @@ jobs:
     - name: Run full test suite
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        export PGHOST=$PWD/tmp_release_check
+        export PGPORT=55433
         make installcheck
         TEST_SIZE_MULTIPLIER=3.0 make test-concurrency
 
