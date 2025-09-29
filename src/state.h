@@ -88,6 +88,7 @@ extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 extern void tp_release_local_index_state(TpLocalIndexState *local_state);
 extern TpLocalIndexState			 *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
+extern void tp_cleanup_index_dsa(Oid index_oid);
 extern void tp_destroy_shared_index_state(TpSharedIndexState *shared_state);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(

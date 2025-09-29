@@ -377,6 +377,81 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 }
 
 /*
+ * Clean up DSA resources for an index
+ *
+ * This is called when an index is dropped
+ */
+void
+tp_cleanup_index_dsa(Oid index_oid)
+{
+	char				 *dsm_name;
+	void				 *dsm_seg;
+	TpDsmSegmentHeader	 *dsm_header;
+	dsa_area			 *dsa = NULL;
+	size_t				  total_size;
+	bool				  found;
+	bool				  already_attached = false;
+	LocalStateCacheEntry *entry			   = NULL;
+
+	/* Unregister from global registry */
+	tp_registry_unregister(index_oid);
+
+	/* Check if we already have a local state for this index */
+	if (local_state_cache != NULL)
+	{
+		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+		if (found && entry != NULL && entry->local_state != NULL)
+		{
+			/* We're already attached to this DSA */
+			dsa				 = entry->local_state->dsa;
+			already_attached = true;
+		}
+	}
+
+	/* Get the DSM segment for this index to retrieve DSA handle */
+	dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+	total_size = sizeof(TpDsmSegmentHeader);
+	dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
+
+	if (found && dsm_seg != NULL)
+	{
+		dsm_header = (TpDsmSegmentHeader *)dsm_seg;
+
+		/* If not already attached, attach to the DSA area */
+		if (!already_attached)
+		{
+			dsa = dsa_attach(dsm_header->dsm_handle);
+		}
+
+		if (dsa != NULL)
+		{
+			/* Unpin the DSA area so it can be destroyed when last backend
+			 * detaches */
+			dsa_unpin(dsa);
+
+			/* If we attached just for cleanup, detach now */
+			if (!already_attached)
+			{
+				dsa_detach(dsa);
+			}
+			/* If we were already attached, release the local state which will
+			 * detach */
+			else if (entry != NULL && entry->local_state != NULL)
+			{
+				tp_release_local_index_state(entry->local_state);
+			}
+		}
+
+		/* Note: Named DSM segments persist until PostgreSQL restart.
+		 * There's no public API to remove them, but they're small (just
+		 * headers). The actual DSA memory will be freed when the last backend
+		 * detaches now that we've unpinned it. */
+	}
+
+	pfree(dsm_name);
+}
+
+/*
  * Destroy a shared index state
  *
  * This is called during DROP INDEX to clean up the shared state
@@ -384,23 +459,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 void
 tp_destroy_shared_index_state(TpSharedIndexState *shared_state)
 {
-	char *dsm_name;
-
 	if (shared_state == NULL)
 		return;
 
-	/* Unregister from global registry */
-	tp_registry_unregister(shared_state->index_oid);
-
-	/* Clean up the DSM segment for this index */
-	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, shared_state->index_oid);
-
-	/* Note: There's no CancelNamedDSMSegment() in PostgreSQL's public API.
-	 * Named DSM segments are automatically cleaned up when the database
-	 * process exits. For now, we rely on this automatic cleanup.
-	 * The DSA area will be freed when the last backend detaches. */
-
-	pfree(dsm_name);
+	/* Use the common cleanup function */
+	tp_cleanup_index_dsa(shared_state->index_oid);
 }
 
 /*
