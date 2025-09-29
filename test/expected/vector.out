@@ -84,7 +84,7 @@ SELECT to_tpvector('hello', 'docs_vector_idx') = to_tpvector('world', 'docs_vect
 \set VERBOSITY terse
 \set ON_ERROR_STOP off
 SELECT to_tpvector('test text', 'nonexistent_index');
-ERROR:  index "nonexistent_index" does not exist
+ERROR:  index "nonexistent_index" not found
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 -- Test tapir scoring using standalone text <@> tpquery operations
