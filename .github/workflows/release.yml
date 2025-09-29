@@ -68,7 +68,7 @@ jobs:
 
         # Copy extension files
         cp tapir.control dist/pg${{ matrix.pg_version }}/
-        cp sql/tapir--0.0.sql dist/pg${{ matrix.pg_version }}/
+        cp sql/tapir--0.0.1.sql dist/pg${{ matrix.pg_version }}/
 
         # Copy built library with version info
         PG_LIB_DIR=$(pg_config --pkglibdir)
@@ -86,7 +86,7 @@ jobs:
         Commit: ${{ github.sha }}
 
         Installation:
-        1. Copy tapir.control and tapir--0.0.sql to your PostgreSQL extension directory
+        1. Copy tapir.control and tapir--0.0.1.sql to your PostgreSQL extension directory
         2. Copy the library file to your PostgreSQL library directory
         3. Run: CREATE EXTENSION tapir;
 
