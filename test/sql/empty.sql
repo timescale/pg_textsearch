@@ -23,7 +23,7 @@ INSERT INTO empty_docs (content) VALUES
 
 -- Create index on content
 CREATE INDEX empty_docs_idx ON empty_docs
-USING tapir (content)
+USING pg_textsearch (content)
 WITH (text_config = 'english');
 
 -- Try searching - should return no results without warnings

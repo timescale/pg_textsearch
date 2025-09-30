@@ -19,7 +19,7 @@ INSERT INTO dropped_idx_test (content) VALUES
 
 -- Create index
 CREATE INDEX dropped_idx ON dropped_idx_test
-USING tapir (content)
+USING pg_textsearch (content)
 WITH (text_config = 'english');
 
 -- Query should work with index

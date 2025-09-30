@@ -19,7 +19,7 @@ INSERT INTO deletion_test (content) VALUES
 
 -- Create index
 CREATE INDEX deletion_idx ON deletion_test
-USING tapir (content)
+USING pg_textsearch (content)
 WITH (text_config = 'english');
 
 -- Initial search - should find documents with "test"

@@ -303,7 +303,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	bool				  found;
 
 	/* Create DSA area name for this index */
-	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+	dsm_name = psprintf("pg_textsearch.%u.%u", MyDatabaseId, index_oid);
 
 	/* Create DSA area in TopMemoryContext for persistence across queries */
 	{
@@ -409,7 +409,7 @@ tp_cleanup_index_dsa(Oid index_oid)
 	}
 
 	/* Get the DSM segment for this index to retrieve DSA handle */
-	dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+	dsm_name   = psprintf("pg_textsearch.%u.%u", MyDatabaseId, index_oid);
 	total_size = sizeof(TpDsmSegmentHeader);
 	dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
 

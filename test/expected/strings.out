@@ -170,9 +170,9 @@ SELECT
 FROM long_string_docs
 ORDER BY content <@> to_tpquery('postgresql pg_textsearch extension search', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-4.8534
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-1.2456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,8), BM25_score=-0.5756
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.8073
+NOTICE:  Tapir index scan: doc_pos=1, tid=(0,8), BM25_score=-0.5756
+NOTICE:  Tapir index scan: doc_pos=2, tid=(0,10), BM25_score=-0.4780
 NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=0.0000
 NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=0.0000
 NOTICE:  Tapir index scan: doc_pos=5, tid=(0,3), BM25_score=0.0000
@@ -182,9 +182,9 @@ NOTICE:  Tapir index scan: doc_pos=8, tid=(0,7), BM25_score=0.0000
 NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
  id |  category  | multi_term_score 
 ----+------------+------------------
-  6 | config     |          -4.8534
- 10 | json       |          -1.2456
+  6 | config     |          -3.8073
   8 | mixed      |          -0.5756
+ 10 | json       |          -0.4780
   1 | web        |           0.0000
   2 | api        |           0.0000
   3 | docs       |           0.0000

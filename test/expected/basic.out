@@ -54,9 +54,9 @@ SELECT to_tpquery('test query', 'my_index');
 
 -- Test pg_textsearch access method exists
 SELECT amname FROM pg_am WHERE amname = 'pg_textsearch';
- amname 
---------
- tapir
+    amname     
+---------------
+ pg_textsearch
 (1 row)
 
 -- Test creating a pg_textsearch index with text_config
