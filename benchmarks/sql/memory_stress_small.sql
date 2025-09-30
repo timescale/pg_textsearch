@@ -69,7 +69,7 @@ FROM stress_docs_small;
 
 CREATE INDEX stress_content_small_idx
 ON stress_docs_small
-USING tapir(content)
+USING pg_textsearch(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 \echo 'Index creation completed! Running performance queries...'

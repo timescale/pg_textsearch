@@ -79,7 +79,7 @@ FROM stress_docs;
 
 CREATE INDEX stress_content_idx
 ON stress_docs
-USING tapir(content)
+USING pg_textsearch(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 -- If we get here, let's try some queries to stress the system further

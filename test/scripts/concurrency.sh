@@ -182,7 +182,7 @@ EOF
 
     # Create test database and extension
     createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
-    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION tapir;" >/dev/null
+    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 
     # Create base test table
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "
@@ -271,7 +271,7 @@ concurrent_index_worker() {
     local k1=$(awk "BEGIN {printf \"%.2f\", 1.0 + $session_id * 0.1}")
     local b=$(awk "BEGIN {printf \"%.2f\", 0.7 + $session_id * 0.02}")
 
-    run_sql_quiet "CREATE INDEX stress_idx_${table_suffix} ON stress_docs USING tapir(content)
+    run_sql_quiet "CREATE INDEX stress_idx_${table_suffix} ON stress_docs USING pg_textsearch(content)
                    WITH (text_config='english', k1=$k1, b=$b);"
 
     info "Session $session_id: Index creation completed"
@@ -310,7 +310,7 @@ test_concurrent_index_creation() {
     log "Test 2: Concurrent index creation"
 
     # Create the main index
-    run_sql_quiet "CREATE INDEX stress_main_idx ON stress_docs USING tapir(content)
+    run_sql_quiet "CREATE INDEX stress_main_idx ON stress_docs USING pg_textsearch(content)
                    WITH (text_config='english', k1=1.2, b=0.75);"
 
     log "✅ Main index created successfully"
@@ -510,7 +510,7 @@ test_concurrent_index_drop() {
         ('fourth test document'),
         ('fifth test document');"
 
-    run_sql "CREATE INDEX drop_test_idx ON drop_test USING tapir (content) WITH (text_config = 'english');"
+    run_sql "CREATE INDEX drop_test_idx ON drop_test USING pg_textsearch (content) WITH (text_config = 'english');"
 
     # Session 1: Access the index to cache it locally, then hold connection
     info "Session 1: Caching index state and holding connection..."

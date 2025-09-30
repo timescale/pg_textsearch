@@ -72,7 +72,7 @@ EOF
     createdb -p "${TEST_PORT}" "${TEST_DB}"
 
     # Install extension
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION tapir;" >/dev/null
+    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 run_sql() {
@@ -154,7 +154,7 @@ INSERT INTO crash_test_docs (content, category) VALUES
 ('security protocols and encryption', 'security'),
 ('network security best practices', 'security');
 
-CREATE INDEX crash_idx ON crash_test_docs USING tapir(content)
+CREATE INDEX crash_idx ON crash_test_docs USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 EOF
 
@@ -254,7 +254,7 @@ EOF
 
     # Drop and recreate index to test rebuild from heap
     run_sql "DROP INDEX crash_idx;"
-    run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING tapir(content) WITH (text_config='english', k1=1.2, b=0.75);"
+    run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING pg_textsearch(content) WITH (text_config='english', k1=1.2, b=0.75);"
 
     # Test rebuild with 'systems' query to verify full functionality
     REBUILD_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('systems', 'crash_idx_rebuilt') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
