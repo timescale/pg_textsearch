@@ -1,6 +1,6 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS tapir;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 NOTICE:  extension "tapir" already exists, skipping
 -- Create test table
 CREATE TABLE dropped_idx_test (

@@ -1,9 +1,9 @@
 -- Test tpvector type and operators functionality
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 -- Cleanup any existing state first
@@ -20,8 +20,8 @@ INSERT INTO test_docs (content) VALUES
     ('sphinx of black quartz'),
     ('hello world example'),
     ('postgresql full text search');
--- Create tapir index
-CREATE INDEX docs_vector_idx ON test_docs USING tapir(content) WITH (text_config='english');
+-- Create pg_textsearch index
+CREATE INDEX docs_vector_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation docs_vector_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -87,7 +87,7 @@ SELECT to_tpvector('test text', 'nonexistent_index');
 ERROR:  index "nonexistent_index" not found
 \set ON_ERROR_STOP on
 \set VERBOSITY default
--- Test tapir scoring using standalone text <@> tpquery operations
+-- Test pg_textsearch scoring using standalone text <@> tpquery operations
 SELECT
     content,
     ROUND((content <@> to_tpquery('hello world', 'docs_vector_idx'))::numeric, 4) as score
@@ -180,7 +180,7 @@ NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
 (3 rows)
 
 -- Test with another index using simple config
-CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple');
+CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (text_config='simple');
 NOTICE:  Tapir index build started for relation docs_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -236,4 +236,4 @@ NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
 DROP INDEX docs_vector_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

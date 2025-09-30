@@ -1,10 +1,10 @@
--- Basic functionality tests for tapir extension
+-- Basic functionality tests for pg_textsearch extension
 
 -- Test extension creation
-CREATE EXTENSION IF NOT EXISTS tapir;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Test tpvector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
@@ -25,12 +25,12 @@ SELECT 'search terms'::tpquery;
 SELECT to_tpquery('hello world');
 SELECT to_tpquery('test query', 'my_index');
 
--- Test tapir access method exists
-SELECT amname FROM pg_am WHERE amname = 'tapir';
+-- Test pg_textsearch access method exists
+SELECT amname FROM pg_am WHERE amname = 'pg_textsearch';
 
--- Test creating a tapir index with text_config
+-- Test creating a pg_textsearch index with text_config
 CREATE TABLE test_docs (id SERIAL PRIMARY KEY, content TEXT);
-CREATE INDEX test_tapir_idx ON test_docs USING tapir(content) WITH (text_config='english');
+CREATE INDEX test_tapir_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
 
 -- Verify index was created
 SELECT indexrelid::regclass FROM pg_index
@@ -63,4 +63,4 @@ LIMIT 1;
 
 -- Clean up
 DROP TABLE test_docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

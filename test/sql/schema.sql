@@ -1,7 +1,7 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
-CREATE EXTENSION IF NOT EXISTS tapir;
-SET tapir.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- Create a custom schema
@@ -19,7 +19,7 @@ INSERT INTO docs.articles (content) VALUES ('goodbye cruel world');
 INSERT INTO docs.articles (content) VALUES ('hello cruel goodbye');
 
 -- Create index on schema-qualified table
-CREATE INDEX articles_idx ON docs.articles USING tapir(content)
+CREATE INDEX articles_idx ON docs.articles USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Test 1: Unqualified index name (not in search path - should fail)
@@ -50,7 +50,7 @@ CREATE TABLE public_articles (
 INSERT INTO public_articles (content) VALUES ('hello world');
 INSERT INTO public_articles (content) VALUES ('goodbye cruel world');
 
-CREATE INDEX public_articles_idx ON public_articles USING tapir(content)
+CREATE INDEX public_articles_idx ON public_articles USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Unqualified index name works for public schema tables
@@ -62,4 +62,4 @@ ORDER BY content <@> to_tpquery('hello', 'public_articles_idx'), id;
 DROP TABLE docs.articles CASCADE;
 DROP TABLE public_articles CASCADE;
 DROP SCHEMA docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

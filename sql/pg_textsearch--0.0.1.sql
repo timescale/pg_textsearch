@@ -1,7 +1,7 @@
--- Tapir extension version 0.0.1
+-- pg_textsearch extension version 0.0.1
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
-\echo Use "CREATE EXTENSION tapir" to load this file. \quit
+\echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
 
 -- Access method
 
@@ -10,7 +10,7 @@ RETURNS index_am_handler
 AS 'MODULE_PATHNAME', 'tp_handler'
 LANGUAGE C;
 
-CREATE ACCESS METHOD tapir TYPE INDEX HANDLER tp_handler;
+CREATE ACCESS METHOD pg_textsearch TYPE INDEX HANDLER tp_handler;
 
 -- tpvector type
 
@@ -143,9 +143,9 @@ CREATE FUNCTION tp_distance(text, tpquery) RETURNS float8
     AS 'MODULE_PATHNAME', 'tp_distance'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Tapir operator class for text columns
-CREATE OPERATOR CLASS text_tp_ops
-DEFAULT FOR TYPE text USING tapir AS
+-- pg_textsearch operator class for text columns
+CREATE OPERATOR CLASS text_pgts_ops
+DEFAULT FOR TYPE text USING pg_textsearch AS
     OPERATOR    1   <@> (text, tpquery) FOR ORDER BY float_ops,
     FUNCTION    8   tp_distance(text, tpquery);
 
@@ -157,6 +157,6 @@ CREATE FUNCTION tp_debug_dump_index(text, boolean DEFAULT false) RETURNS text
 -- Display warning about prerelease status
 DO $$
 BEGIN
-    RAISE INFO 'Tapir v0.0.1: This is prerelease software and should not be used in production.';
+    RAISE INFO 'pg_textsearch v0.0.1: This is prerelease software and should not be used in production.';
 END
 $$;

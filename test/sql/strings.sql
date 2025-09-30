@@ -1,9 +1,9 @@
 -- Test long string handling including URLs, paths, and long terms
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 
@@ -39,8 +39,8 @@ INSERT INTO long_string_docs (content, category) VALUES
     -- Long JSON-like structured content
     ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
 
--- Create tapir index on long strings
-CREATE INDEX long_strings_idx ON long_string_docs USING tapir(content)
+-- Create pg_textsearch index on long strings
+CREATE INDEX long_strings_idx ON long_string_docs USING pg_textsearch(content)
     WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Test 1: Search for URL components
@@ -80,9 +80,9 @@ LIMIT 10;
 SELECT
     id,
     category,
-    ROUND((content <@> to_tpquery('postgresql tapir extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+    ROUND((content <@> to_tpquery('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('postgresql tapir extension search', 'long_strings_idx')
+ORDER BY content <@> to_tpquery('postgresql pg_textsearch extension search', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 8: Test URL tokenization specifics
@@ -154,4 +154,4 @@ WHERE category = 'extreme'
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

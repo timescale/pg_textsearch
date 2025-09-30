@@ -1,11 +1,11 @@
--- Test concurrent operations on Tapir indexes
+-- Test concurrent operations on pg_textsearch indexes
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 
-CREATE EXTENSION IF NOT EXISTS tapir;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
@@ -36,7 +36,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database indexing strategies', 'tech');
 
 -- Create index after initial data
-CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING tapir(content)
+CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify basic search works
@@ -70,7 +70,7 @@ INSERT INTO concurrent_test_docs2 (content, priority) VALUES
 ('database performance optimization', 3),
 ('concurrent system design patterns', 2);
 
-CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING tapir(content)
+CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING pg_textsearch(content)
   WITH (text_config='english', k1=1.5, b=0.8);
 
 -- Verify both indexes work independently
@@ -181,10 +181,10 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello from another document');
 
 -- Create two indexes with different text configurations
-CREATE INDEX multi_idx_english ON multi_idx_test USING tapir(content)
+CREATE INDEX multi_idx_english ON multi_idx_test USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
-CREATE INDEX multi_idx_simple ON multi_idx_test USING tapir(content)
+CREATE INDEX multi_idx_simple ON multi_idx_test USING pg_textsearch(content)
   WITH (text_config='simple', k1=1.5, b=0.8);
 
 -- Insert more data after index creation
@@ -232,4 +232,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

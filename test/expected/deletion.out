@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,
@@ -102,4 +102,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE deletion_test;
-DROP EXTENSION tapir;
+DROP EXTENSION pg_textsearch;

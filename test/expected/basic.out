@@ -1,9 +1,9 @@
--- Basic functionality tests for tapir extension
+-- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Test tpvector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
  pg_typeof 
@@ -52,16 +52,16 @@ SELECT to_tpquery('test query', 'my_index');
  my_index:{test query}
 (1 row)
 
--- Test tapir access method exists
-SELECT amname FROM pg_am WHERE amname = 'tapir';
+-- Test pg_textsearch access method exists
+SELECT amname FROM pg_am WHERE amname = 'pg_textsearch';
  amname 
 --------
  tapir
 (1 row)
 
--- Test creating a tapir index with text_config
+-- Test creating a pg_textsearch index with text_config
 CREATE TABLE test_docs (id SERIAL PRIMARY KEY, content TEXT);
-CREATE INDEX test_tapir_idx ON test_docs USING tapir(content) WITH (text_config='english');
+CREATE INDEX test_tapir_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation test_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -105,4 +105,4 @@ ERROR:  tpquery index name mismatch
 \set VERBOSITY default
 -- Clean up
 DROP TABLE test_docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

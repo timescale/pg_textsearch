@@ -1,9 +1,9 @@
--- Test tapir index access method functionality
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+-- Test pg_textsearch index access method functionality
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Setup test table
 CREATE TABLE test_docs (
     id SERIAL PRIMARY KEY,
@@ -16,12 +16,12 @@ INSERT INTO test_docs (content) VALUES
     ('hello world example'),
     ('postgresql full text search');
 -- Test index creation with different text_config options
-CREATE INDEX docs_english_idx ON test_docs USING tapir(content) WITH (text_config='english');
+CREATE INDEX docs_english_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation docs_english_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  Tapir index build completed: 5 documents, avg_length=3.20, text_config='english' (k1=1.20, b=0.75)
-CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple', k1=1.5, b=0.8);
+CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (text_config='simple', k1=1.5, b=0.8);
 NOTICE:  Tapir index build started for relation docs_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.50, b=0.80
@@ -90,4 +90,4 @@ SELECT
 DROP INDEX docs_english_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

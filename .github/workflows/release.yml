@@ -67,44 +67,44 @@ jobs:
         mkdir -p dist/pg${{ matrix.pg_version }}
 
         # Copy extension files
-        cp tapir.control dist/pg${{ matrix.pg_version }}/
-        cp sql/tapir--0.0.1.sql dist/pg${{ matrix.pg_version }}/
+        cp pg_textsearch.control dist/pg${{ matrix.pg_version }}/
+        cp sql/pg_textsearch--0.0.1.sql dist/pg${{ matrix.pg_version }}/
 
         # Copy built library with version info
         PG_LIB_DIR=$(pg_config --pkglibdir)
-        if [ -f "$PG_LIB_DIR/tapir.so" ]; then
-          cp "$PG_LIB_DIR/tapir.so" dist/pg${{ matrix.pg_version }}/
-        elif [ -f "tapir.dylib" ]; then
-          cp tapir.dylib dist/pg${{ matrix.pg_version }}/
+        if [ -f "$PG_LIB_DIR/pg_textsearch.so" ]; then
+          cp "$PG_LIB_DIR/pg_textsearch.so" dist/pg${{ matrix.pg_version }}/
+        elif [ -f "pg_textsearch.dylib" ]; then
+          cp pg_textsearch.dylib dist/pg${{ matrix.pg_version }}/
         fi
 
         # Create README for this version
         cat > dist/pg${{ matrix.pg_version }}/README.txt << 'READMEEOF'
-        Tapir PostgreSQL Extension
+        pg_textsearch PostgreSQL Extension
         PostgreSQL Version: ${{ matrix.pg_version }}
         Built: $(date)
         Commit: ${{ github.sha }}
 
         Installation:
-        1. Copy tapir.control and tapir--0.0.1.sql to your PostgreSQL extension directory
+        1. Copy pg_textsearch.control and pg_textsearch--0.0.1.sql to your PostgreSQL extension directory
         2. Copy the library file to your PostgreSQL library directory
-        3. Run: CREATE EXTENSION tapir;
+        3. Run: CREATE EXTENSION pg_textsearch;
 
         For detailed documentation, see: https://github.com/timescale/tapir
         READMEEOF
 
         # Create tarball
         cd dist
-        tar -czf ../tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz pg${{ matrix.pg_version }}/
+        tar -czf ../pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz pg${{ matrix.pg_version }}/
         cd ..
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}
+        name: pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}
         path: |
           dist/pg${{ matrix.pg_version }}/
-          tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+          pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
         retention-days: 30
 
     - name: Upload release assets
@@ -114,6 +114,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
-        asset_name: tapir-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        asset_path: ./pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        asset_name: pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
         asset_content_type: application/gzip

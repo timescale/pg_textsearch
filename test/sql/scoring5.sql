@@ -1,8 +1,8 @@
 -- Test case: scoring5
 -- Generated BM25 test with 3 documents and 4 queries
 -- Testing both bulk build and incremental build modes
-CREATE EXTENSION IF NOT EXISTS tapir;
-SET tapir.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- MODE 1: Bulk build (insert data, then create index)
@@ -17,7 +17,7 @@ INSERT INTO scoring5_bulk (content) VALUES ('goodbye cruel world');
 INSERT INTO scoring5_bulk (content) VALUES ('goodbye nerds');
 
 -- Create index after data insertion (bulk build)
-CREATE INDEX scoring5_bulk_idx ON scoring5_bulk USING tapir(content)
+CREATE INDEX scoring5_bulk_idx ON scoring5_bulk USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Bulk mode query 1: 'hello'
@@ -47,7 +47,7 @@ CREATE TABLE scoring5_incr (
 );
 
 -- Create index before data insertion (incremental build)
-CREATE INDEX scoring5_incr_idx ON scoring5_incr USING tapir(content)
+CREATE INDEX scoring5_incr_idx ON scoring5_incr USING pg_textsearch(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Insert test documents incrementally
@@ -78,4 +78,4 @@ ORDER BY content <@> to_tpquery('goodbye', 'scoring5_incr_idx'), id;
 -- Cleanup
 DROP TABLE scoring5_bulk CASCADE;
 DROP TABLE scoring5_incr CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

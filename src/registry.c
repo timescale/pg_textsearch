@@ -121,7 +121,9 @@ tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
 
 	/* Registry is full - this is an error condition */
 	LWLockRelease(&tapir_registry->lock);
-	elog(ERROR, "Tapir registry full, cannot register index %u", index_oid);
+	elog(ERROR,
+		 "pg_textsearch registry full, cannot register index %u",
+		 index_oid);
 	/* Not reached, but keeps compiler happy */
 	return false;
 }
@@ -140,7 +142,8 @@ tp_registry_lookup(Oid index_oid)
 		/* Registry not attached in this backend - initialize it */
 		tp_registry_shmem_startup();
 		if (!tapir_registry)
-			elog(ERROR, "Failed to initialize Tapir registry for lookup");
+			elog(ERROR,
+				 "Failed to initialize pg_textsearch registry for lookup");
 	}
 
 	LWLockAcquire(&tapir_registry->lock, LW_SHARED);

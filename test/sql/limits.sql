@@ -3,11 +3,11 @@
 -- Disable duration logging to avoid timing differences in sanitizer tests
 SET log_duration = off;
 
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 
@@ -41,8 +41,8 @@ INSERT INTO limit_test (title, content) VALUES
     ('System Performance', 'system performance tuning and resource optimization strategies'),
     ('Database Security', 'database security measures and access control mechanisms');
 
--- Create tapir index
-CREATE INDEX limit_test_idx ON limit_test USING tapir(content) WITH (text_config='english');
+-- Create pg_textsearch index
+CREATE INDEX limit_test_idx ON limit_test USING pg_textsearch(content) WITH (text_config='english');
 
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
@@ -146,7 +146,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 -- Test 10: LIMIT pushdown safety verification
 -- These tests verify that LIMIT pushdown is only used when safe
 
--- Safe case: Simple ORDER BY with tapir score, no WHERE clause
+-- Safe case: Simple ORDER BY with pg_textsearch score, no WHERE clause
 -- This SHOULD allow LIMIT pushdown
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> to_tpquery('simple', 'limit_test_idx') as score
@@ -201,4 +201,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

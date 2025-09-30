@@ -54,17 +54,17 @@ void
 _PG_init(void)
 {
 	/* Initialize on first use - don't require shared_preload_libraries */
-	elog(DEBUG1, "Tapir extension _PG_init() starting GUC initialization");
+	elog(DEBUG1,
+		 "pg_textsearch extension _PG_init() starting GUC initialization");
 
 	/*
 	 * Define GUC parameters
 	 */
 	DefineCustomIntVariable(
-			"tapir.index_memory_limit",
+			"pg_textsearch.index_memory_limit",
 			"Per-index memory limit in MB (currently not enforced)",
-			"Reserved for future use: controls the maximum memory each Tapir "
-			"index "
-			"can use",
+			"Reserved for future use: controls the maximum memory each "
+			"pg_textsearch index can use",
 			&tp_index_memory_limit,
 			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
 			1,							   /* min 1MB */
@@ -76,11 +76,10 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"tapir.default_limit",
+			"pg_textsearch.default_limit",
 			"Default limit for BM25 queries when no LIMIT is detected",
 			"Controls the maximum number of documents to process when no "
-			"LIMIT "
-			"clause is present",
+			"LIMIT clause is present",
 			&tp_default_limit,
 			TP_DEFAULT_QUERY_LIMIT, /* default 1000 */
 			1,						/* min 1 */
@@ -92,7 +91,7 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomBoolVariable(
-			"tapir.log_scores",
+			"pg_textsearch.log_scores",
 			"Log BM25 scores during index scans",
 			"When enabled, logs the BM25 score for each document returned "
 			"during index scans. Useful for debugging score calculation.",
@@ -132,7 +131,7 @@ _PG_init(void)
 			1.0,
 			NoLock);
 
-	elog(DEBUG1, "Tapir extension GUC variables defined successfully");
+	elog(DEBUG1, "pg_textsearch extension GUC variables defined successfully");
 
 	/*
 	 * Install shared memory hooks (needed for registry)
@@ -143,13 +142,13 @@ _PG_init(void)
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= tp_shmem_startup;
 
-	elog(DEBUG1, "Tapir shared memory hooks installed");
+	elog(DEBUG1, "pg_textsearch shared memory hooks installed");
 
 	/* Install object access hook for index lifecycle management */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access_hook;
 
-	elog(DEBUG1, "Tapir extension _PG_init() completed successfully");
+	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
 
 /*

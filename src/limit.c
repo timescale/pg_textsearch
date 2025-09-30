@@ -155,7 +155,7 @@ void
 tp_limits_init(void)
 {
 	DefineCustomIntVariable(
-			"tapir.default_limit",
+			"pg_textsearch.default_limit",
 			"Default limit for BM25 queries when no LIMIT is detected",
 			"Controls the maximum number of documents to process when no "
 			"LIMIT "

@@ -1,16 +1,16 @@
--- Aerodynamics Documents tapir Test - Real Cranfield Dataset
--- This test validates tapir implementation using a substantial subset of the Cranfield collection
+-- Aerodynamics Documents pg_textsearch Test - Real Cranfield Dataset
+-- This test validates pg_textsearch implementation using a substantial subset of the Cranfield collection
 -- Contains real aerodynamics documents from the Cranfield dataset for realistic testing
--- Tests both dataset loading and tapir scoring functionality with the <@> operator
+-- Tests both dataset loading and pg_textsearch scoring functionality with the <@> operator
 
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 \set ON_ERROR_STOP on
-\echo 'Testing tapir with sample aerodynamics documents...'
+\echo 'Testing pg_textsearch with sample aerodynamics documents...'
 
 -- Create tables for aerodynamics documents
 CREATE TABLE aerodocs_documents (
@@ -55,11 +55,11 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 
 -- Expected rankings are now captured in the test's expected output file
 
--- Create tapir index for Cranfield documents with text_config
-CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING tapir(full_text)
+-- Create pg_textsearch index for Cranfield documents with text_config
+CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING pg_textsearch(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
 
-\echo 'tapir index created. Running validation tests...'
+\echo 'pg_textsearch index created. Running validation tests...'
 
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
@@ -86,22 +86,22 @@ LIMIT 5;
 
 -- Test 3: Top-10 results for first query
 \echo 'Test 3: Top-10 results for first query'
-WITH tapir_results AS (
+WITH pgts_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as tapir_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as tapir_rank
+        ROUND((full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as pgts_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as pgts_rank
     FROM aerodocs_documents
 )
 SELECT
     br.doc_id,
-    br.tapir_rank,
-    br.tapir_score as score,
+    br.pgts_rank,
+    br.pgts_score as score,
     LEFT(d.title, 50) as title_preview
-FROM tapir_results br
+FROM pgts_results br
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
-WHERE br.tapir_rank <= 10
-ORDER BY br.tapir_rank;
+WHERE br.pgts_rank <= 10
+ORDER BY br.pgts_rank;
 
 -- Test 4: Performance test with multiple queries
 \echo 'Test 4: Performance test with top-k search'
@@ -128,10 +128,10 @@ LIMIT 10;
 -- Reset settings
 SET enable_seqscan = on;
 
-\echo 'Cranfield tapir validation completed successfully.'
-\echo 'All tests demonstrate proper tapir functionality with the <@> operator.'
+\echo 'Cranfield pg_textsearch validation completed successfully.'
+\echo 'All tests demonstrate proper pg_textsearch functionality with the <@> operator.'
 
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
 DROP TABLE cranfield_queries CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

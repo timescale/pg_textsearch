@@ -1,10 +1,10 @@
 -- Test tpvector type and operators functionality
 
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 
@@ -24,8 +24,8 @@ INSERT INTO test_docs (content) VALUES
     ('hello world example'),
     ('postgresql full text search');
 
--- Create tapir index
-CREATE INDEX docs_vector_idx ON test_docs USING tapir(content) WITH (text_config='english');
+-- Create pg_textsearch index
+CREATE INDEX docs_vector_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
 
 -- Test tpvector I/O functions
 -- Test input/output with index name format
@@ -53,7 +53,7 @@ SELECT to_tpvector('test text', 'nonexistent_index');
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 
--- Test tapir scoring using standalone text <@> tpquery operations
+-- Test pg_textsearch scoring using standalone text <@> tpquery operations
 SELECT
     content,
     ROUND((content <@> to_tpquery('hello world', 'docs_vector_idx'))::numeric, 4) as score
@@ -95,7 +95,7 @@ ORDER BY content <@> to_tpquery('quick fox', 'docs_vector_idx')  -- BM25 scoring
 LIMIT 3;
 
 -- Test with another index using simple config
-CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple');
+CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (text_config='simple');
 
 -- Compare stemmed vs non-stemmed
 SELECT
@@ -134,4 +134,4 @@ ORDER BY o.id;
 DROP INDEX docs_vector_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

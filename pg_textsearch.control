@@ -1,5 +1,5 @@
-# tapir extension
+# pg_textsearch extension
 comment = 'Full-text search with BM25 ranking'
 default_version = '0.0.1'
-module_pathname = '$libdir/tapir'
+module_pathname = '$libdir/pg_textsearch'
 relocatable = true

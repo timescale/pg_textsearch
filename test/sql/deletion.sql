@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS tapir;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Create test table
 CREATE TABLE deletion_test (
@@ -84,4 +84,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE deletion_test;
-DROP EXTENSION tapir;
+DROP EXTENSION pg_textsearch;

@@ -2,16 +2,16 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 
-CREATE EXTENSION IF NOT EXISTS tapir;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 
 -- Create index to initialize hash table with small initial size
-CREATE INDEX manyterms_idx ON manyterms_test USING tapir(content) WITH (text_config='english');
+CREATE INDEX manyterms_idx ON manyterms_test USING pg_textsearch(content) WITH (text_config='english');
 
 -- Add enough unique terms to exceed initial hash table capacity
 -- With 64 buckets at 0.75 load factor, >48 unique terms should trigger automatic resize
@@ -44,4 +44,4 @@ LIMIT 1;
 -- Clean up
 DROP INDEX manyterms_idx;
 DROP TABLE manyterms_test;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

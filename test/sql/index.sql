@@ -1,10 +1,10 @@
--- Test tapir index access method functionality
+-- Test pg_textsearch index access method functionality
 
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Setup test table
 CREATE TABLE test_docs (
@@ -20,8 +20,8 @@ INSERT INTO test_docs (content) VALUES
     ('postgresql full text search');
 
 -- Test index creation with different text_config options
-CREATE INDEX docs_english_idx ON test_docs USING tapir(content) WITH (text_config='english');
-CREATE INDEX docs_simple_idx ON test_docs USING tapir(content) WITH (text_config='simple', k1=1.5, b=0.8);
+CREATE INDEX docs_english_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (text_config='simple', k1=1.5, b=0.8);
 
 -- Verify indexes were created
 \d+ test_docs
@@ -57,4 +57,4 @@ SELECT
 DROP INDEX docs_english_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

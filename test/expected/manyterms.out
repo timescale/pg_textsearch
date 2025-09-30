@@ -1,14 +1,14 @@
 -- Test hash table automatic resizing with many terms
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
-CREATE INDEX manyterms_idx ON manyterms_test USING tapir(content) WITH (text_config='english');
+CREATE INDEX manyterms_idx ON manyterms_test USING pg_textsearch(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation manyterms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -60,4 +60,4 @@ LIMIT 1;
 -- Clean up
 DROP INDEX manyterms_idx;
 DROP TABLE manyterms_test;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

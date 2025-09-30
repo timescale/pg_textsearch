@@ -1,7 +1,7 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE dropped_idx_test (
     id SERIAL PRIMARY KEY,
@@ -45,4 +45,4 @@ WHERE content <@> to_tpquery('test', 'totally_fake_index') < -0.001;
 ERROR:  index "totally_fake_index" not found
 -- Clean up
 DROP TABLE dropped_idx_test;
-DROP EXTENSION tapir;
+DROP EXTENSION pg_textsearch;

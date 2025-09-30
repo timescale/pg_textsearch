@@ -1,9 +1,9 @@
--- This test demonstrates top-k tapir query patterns for efficient text search
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+-- This test demonstrates top-k pg_textsearch query patterns for efficient text search
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,
@@ -24,8 +24,8 @@ INSERT INTO articles (title, content, category) VALUES
     ('Data Mining Techniques', 'data mining algorithms for pattern discovery and knowledge extraction from large databases', 'technology'),
     ('Web Search Evolution', 'evolution of web search from simple keyword matching to semantic understanding', 'history'),
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
--- Create tapir index with text_config
-CREATE INDEX articles_tapir_idx ON articles USING tapir(content) WITH (text_config='english');
+-- Create pg_textsearch index with text_config
+CREATE INDEX articles_tapir_idx ON articles USING pg_textsearch(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation articles_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -196,4 +196,4 @@ NOTICE:  Tapir index scan: doc_pos=1, tid=(0,7), BM25_score=-2.8917
 
 -- Cleanup
 DROP TABLE articles CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

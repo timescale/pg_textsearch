@@ -1,10 +1,10 @@
--- This test demonstrates top-k tapir query patterns for efficient text search
+-- This test demonstrates top-k pg_textsearch query patterns for efficient text search
 
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Setup test data with realistic documents
 CREATE TABLE articles (
@@ -28,8 +28,8 @@ INSERT INTO articles (title, content, category) VALUES
     ('Web Search Evolution', 'evolution of web search from simple keyword matching to semantic understanding', 'history'),
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
 
--- Create tapir index with text_config
-CREATE INDEX articles_tapir_idx ON articles USING tapir(content) WITH (text_config='english');
+-- Create pg_textsearch index with text_config
+CREATE INDEX articles_tapir_idx ON articles USING pg_textsearch(content) WITH (text_config='english');
 
 -- Disable sequential scans to force index usage
 SET enable_seqscan = off;
@@ -138,4 +138,4 @@ ORDER BY o.id;
 
 -- Cleanup
 DROP TABLE articles CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

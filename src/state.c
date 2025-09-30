@@ -103,7 +103,7 @@ tp_get_local_index_state(Oid index_oid)
 	if (shared_state == NULL)
 	{
 		/* No registry entry - check if DSM segment exists */
-		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+		dsm_name   = psprintf("pg_textsearch.%u.%u", MyDatabaseId, index_oid);
 		total_size = sizeof(TpDsmSegmentHeader);
 		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
 
@@ -197,7 +197,7 @@ tp_get_local_index_state(Oid index_oid)
 		dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)shared_state;
 
 		/* Attach to the DSA area */
-		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
+		dsm_name   = psprintf("pg_textsearch.%u.%u", MyDatabaseId, index_oid);
 		total_size = sizeof(TpDsmSegmentHeader);
 		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
 
@@ -549,7 +549,9 @@ tp_rebuild_posting_lists_from_docids(
 	}
 
 	/* Inform user that recovery is starting */
-	elog(INFO, "Recovering tapir index %u from disk", index_rel->rd_id);
+	elog(INFO,
+		 "Recovering pg_textsearch index %u from disk",
+		 index_rel->rd_id);
 
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
