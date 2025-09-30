@@ -75,6 +75,22 @@ WHERE content <@> to_tpquery('database system', 'docs_idx') < -1.0;
 Supported operations:
 - `text <@> tpquery` - Score text against a query
 
+### Verifying Index Usage
+
+Check query plan with EXPLAIN:
+```sql
+EXPLAIN SELECT * FROM documents
+ORDER BY content <@> to_tpquery('database system', 'docs_idx')
+LIMIT 5;
+```
+
+For small datasets, PostgreSQL may prefer sequential scans. Force index usage:
+```sql
+SET enable_seqscan = off;
+```
+
+Note: Even if EXPLAIN shows a sequential scan, `<@>` and `to_tpquery` always use the index for corpus statistics (document counts, average length) required for BM25 scoring.
+
 ## Indexing
 
 Create a BM25 index on your text columns:
