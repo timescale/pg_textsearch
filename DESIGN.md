@@ -1,6 +1,8 @@
-# \[WIP\] Tapir – Technical Design Document
+# \[WIP\] pg_textsearch – Technical Design Document
 
 [Todd Green (TJ)](mailto:tj@tigerdata.com) / Aug 27, 2025
+
+*Internal code name: Tapir (**T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval)*
 
 # Background
 
@@ -70,7 +72,7 @@ registry.c (global state registry)
 
 ```sql
 -- Enable the extension
-CREATE EXTENSION tapir;
+CREATE EXTENSION pg_textsearch;
 
 -- Create a table with text content
 CREATE TABLE documents (id bigserial PRIMARY KEY, content text);
@@ -80,7 +82,7 @@ INSERT INTO documents (content) VALUES
     ('Full text search with custom scoring');
 
 -- Create a BM25 index on the text column
-CREATE INDEX docs_tapir_idx ON documents USING tapir(content) WITH (ts_config='english');-- Query the indexSELECT id, content, content <@> to_tpvector('docs_tapir_idx', 'database system') AS score
+CREATE INDEX docs_idx ON documents USING pg_textsearch(content) WITH (text_config='english');-- Query the indexSELECT id, content, content <@> to_tpquery('database system', 'docs_idx') AS score
 FROM documents
 ORDER BY score
 LIMIT 10;
@@ -88,24 +90,26 @@ LIMIT 10;
 
 ### Types
 
-* `tpvector` encapsulates a document or query string along with an index name.  (We need the index’s tokenizer and statistics in order to compute BM25 scores).
+* `tpvector` - Stores term frequencies with index context for BM25 scoring (legacy, still supported)
+* `tpquery` - Represents queries for BM25 scoring with optional index context (primary interface)
 
 ### Operators
 
-* `tpvector <@> tpvector` \- Core BM25 similarity scoring
-* `text <@> tpvector` \- Mixed text-vector similarity scoring
+* `text <@> tpquery` \- Primary BM25 scoring operator (works in index scans and standalone)
+* `text <@> tpvector` \- Legacy BM25 scoring operator
+* `tpvector <@> tpvector` \- Legacy vector-to-vector scoring
 
 ### Built-ins
 
-* `to_tpvector`
-* `tpvector_eq`
-* `text_tpvector_score`
-* `tpvector_score`
+* `to_tpquery(text)` - Create tpquery without index name (for ORDER BY only)
+* `to_tpquery(text, text)` - Create tpquery with query text and index name
+* `to_tpvector(text, text)` - Create tpvector (legacy)
+* `tpvector_eq` - Equality comparison for tpvector
 
 ### Access Methods
 
-* `tapir`
-  * Parameters: `ts_config` (required); `k1`, `b` (optional)
+* `pg_textsearch`
+  * Parameters: `text_config` (required); `k1`, `b` (optional)
   * Bindings to `<@>` operator for BM25 ranked matches
   * Post-GA: bindings to `@@` operator and `tsvector` for Boolean matches
 
@@ -117,36 +121,40 @@ LIMIT 10;
 
 ### Memtable
 
-Top-level inverted index stored in main memory.  Makes updates efficient while supporting fast reads too.  Capped at X MB.  Flush to disk (segment) when full.  For durability, also append to a document list stored in DB pages.  Protected by shared memory lock.
+Top-level inverted index stored in shared memory using PostgreSQL Dynamic Shared Areas (DSA).  Makes updates efficient while supporting fast reads too.  Memory budget enforced via `pg_textsearch.index_memory_limit` GUC (default 64MB per index).  Future versions will flush to disk (segment) when full.  For durability, document IDs are stored in index metapages.  Protected by shared memory locks.
 
 Composition of memtable:
 
 * Term dictionary
-  * Maps a string token \-\> integer id, posting list
-  * **Current v0.0.0a**: String-based posting lists (term_ids are per-index, not global)
-  * **Rationale**: Future disk segments require term_ids to be local to segment/memtable
-  * Shared-memory hash table for string interning
+  * Maps a string token → posting list (DSA pointer)
+  * **Current v0.0.0a**: String-based architecture using dshash for string interning
+  * **Implementation**: Each term string is interned once, posting lists allocated via DSA
+  * **Rationale**: Avoids global term_id namespace, compatible with future disk segments
 * Posting list
-  * Shared-memory vector of (docid, term frequency) pairs
-  * Append on write, sort if needed on read
-    * Needs to support fast intersection operation
-  * Or: shared-memory search tree
-    * If we want worst-case guarantees.
-    * Didn’t see one in postgres sources, but easy exercise to build one
-* Tombstones
-  * Shared-memory hash table of docids
+  * DSA-allocated vector of (ItemPointerData, term frequency) pairs
+  * Append on write, sort by TID on read for efficient intersection
+  * **Implementation**: Dynamic arrays in shared memory, grown via dsa_allocate_extended()
+  * Thread-safe via per-posting-list spinlocks
 * Document lengths
-  * List of (docid, length) – the only part stored on disk, for crash recovery
+  * **Implementation**: dshash table mapping ItemPointerData → document length
+  * **Persistence**: Document IDs stored in index metapages for crash recovery
+  * Enables proper BM25 length normalization
+* Corpus statistics
+  * total_docs, avg_doc_length stored in shared index state
+  * Updated incrementally during index builds and inserts
+  * Used for IDF and BM25 calculations
 
 No compression in the memtable.
 
-#### Memtable and transction abort
+#### Memtable and transaction abort
 
-**Insertions**   Pretty sure that docs inserted as part of aborted transaction are more or less harmless (will be filtered out of any query results by Postgres executor).  But they will take up space in the index forever if we don’t clean them up.
+**Current v0.0.0a status**: Tombstones not yet implemented. Transaction abort handling deferred to future versions.
 
-**Deletions**   Tombstones really do need to get cleaned up after a transaction abort or there will be a correctness issue when they clobber their index items during compaction.
+**Insertions**   Docs inserted as part of aborted transaction are filtered out by PostgreSQL executor.  They take up space in the index until segments are implemented with compaction.
 
-So long as we are punting on tombstones during early versions of this project we can safely ignore transaction aborts.  Once we implement tombstones we will need a little commit protocol inside the memtable, with a flag on each docid to say committed vs not.  Use
+**Deletions**   Tombstones will be needed for proper DELETE support. Need cleanup after transaction abort or there will be correctness issues during compaction.
+
+**Future implementation**:  Will need a commit protocol inside the memtable with a flag on each docid for committed vs uncommitted.  Use
 
 ```c
 RegisterXactCallback(XactCallback callback, void *arg);
@@ -197,7 +205,9 @@ Composition of a segment:
 
 ### Boolean queries
 
-Will just describe the simplest case (AND queries) as a warmup to ranked queries.  This implementation and the extension to OR, NOT queries are all left for followup post-GA work.
+**Status**: Not implemented in v0.0.0a. Future work post-GA.
+
+Will describe the simplest case (AND queries) as a warmup to ranked queries.  Extension to OR, NOT queries are all left for followup post-GA work.
 
 Algorithm:
 
@@ -207,22 +217,25 @@ Algorithm:
 
 ### BM25 queries
 
+**v0.0.0a implementation**: Uses naive algorithm with memtable-only evaluation. Query limit detection via SPI to avoid exhaustive scans.
+
 Score of a document D for query Q \= q1…qn:
 
 BM25(D,Q) \= Σ IDF(qᵢ) × (tf(qᵢ,D) × (k₁ \+ 1)) / (tf(qᵢ,D) \+ k₁ × (1 \- b \+ b × |D|/avgdl))
 
-Naive algorithm:
+Naive algorithm (current v0.0.0a implementation):
 
 * For each query term
-  * Look up the term in the inverted index
-  * Retrieve the posting list containing (docID, term frequency) pairs.
-  * Access freq values for each term
+  * Look up the term in the string interning hash table
+  * Retrieve the posting list containing (ItemPointerData, term frequency) pairs
+  * Sort posting lists by TID if needed
 * For each document containing at least one query term:
   * Calculate the BM25 contribution for each query term present in the document
-  * Sum the contributions across all query terms
-* Sort documents by their BM25 scores in descending order
+  * Sum the contributions across all query terms to get document score
+  * Store in hash table of document → score mappings
+* Sort documents by their BM25 scores in descending order (via index scan or standalone)
 
-Optimized algorithm (from Tantivy):
+Optimized algorithm (future work - inspired by Tantivy):
 
 * Block-Max WAND (BMW) Algorithm (src/query/boolean\_query/block\_wand.rs)
   * This is the primary optimization for top-k ranked queries
