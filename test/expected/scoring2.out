@@ -17,96 +17,44 @@ INSERT INTO scoring2_bulk (content) VALUES ('hello goodbye');
 INSERT INTO scoring2_bulk (content) VALUES ('world domination');
 INSERT INTO scoring2_bulk (content) VALUES ('hello');
 -- Create index after data insertion (bulk build)
-CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING pg_textsearch(content)
+CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation scoring2_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=1.80, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Bulk mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
-ORDER BY content <@> to_tpquery('hello', 'scoring2_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,5), BM25_score=-0.0582
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  5 | hello            | -0.0582
-  1 | hello world      | -0.0456
-  3 | hello goodbye    | -0.0456
-  2 | goodbye world    |  0.0000
-  4 | world domination |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('hello', 'scoring2_bulk_idx'), id;
+ERROR:  index "scoring2_bulk_idx" not found
 -- Bulk mode query 2: 'world'
-SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring2_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
-ORDER BY content <@> to_tpquery('world', 'scoring2_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,4), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  1 | hello world      | -0.0456
-  2 | goodbye world    | -0.0456
-  4 | world domination | -0.0456
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('world', 'scoring2_bulk_idx'), id;
+ERROR:  index "scoring2_bulk_idx" not found
 -- Bulk mode query 3: 'goodbye'
-SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring2_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
-ORDER BY content <@> to_tpquery('goodbye', 'scoring2_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.3218
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-0.3218
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  2 | goodbye world    | -0.3218
-  3 | hello goodbye    | -0.3218
-  1 | hello world      |  0.0000
-  4 | world domination |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('goodbye', 'scoring2_bulk_idx'), id;
+ERROR:  index "scoring2_bulk_idx" not found
 -- Bulk mode query 4: 'domination'
-SELECT id, content, ROUND((content <@> to_tpquery('domination', 'scoring2_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
-ORDER BY content <@> to_tpquery('domination', 'scoring2_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,4), BM25_score=-1.0508
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  4 | world domination | -1.0508
-  1 | hello world      |  0.0000
-  2 | goodbye world    |  0.0000
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('domination', 'scoring2_bulk_idx'), id;
+ERROR:  index "scoring2_bulk_idx" not found
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring2_incr (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
 -- Create index before data insertion (incremental build)
-CREATE INDEX scoring2_incr_idx ON scoring2_incr USING pg_textsearch(content)
+CREATE INDEX scoring2_incr_idx ON scoring2_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation scoring2_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Insert test documents incrementally
 INSERT INTO scoring2_incr (content) VALUES ('hello world');
 INSERT INTO scoring2_incr (content) VALUES ('goodbye world');
@@ -114,78 +62,28 @@ INSERT INTO scoring2_incr (content) VALUES ('hello goodbye');
 INSERT INTO scoring2_incr (content) VALUES ('world domination');
 INSERT INTO scoring2_incr (content) VALUES ('hello');
 -- Incremental mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring2_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
-ORDER BY content <@> to_tpquery('hello', 'scoring2_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,5), BM25_score=-0.0582
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  5 | hello            | -0.0582
-  1 | hello world      | -0.0456
-  3 | hello goodbye    | -0.0456
-  2 | goodbye world    |  0.0000
-  4 | world domination |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('hello', 'scoring2_incr_idx'), id;
+ERROR:  index "scoring2_incr_idx" not found
 -- Incremental mode query 2: 'world'
-SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring2_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
-ORDER BY content <@> to_tpquery('world', 'scoring2_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,4), BM25_score=-0.0456
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  1 | hello world      | -0.0456
-  2 | goodbye world    | -0.0456
-  4 | world domination | -0.0456
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('world', 'scoring2_incr_idx'), id;
+ERROR:  index "scoring2_incr_idx" not found
 -- Incremental mode query 3: 'goodbye'
-SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring2_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
-ORDER BY content <@> to_tpquery('goodbye', 'scoring2_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.3218
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-0.3218
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  2 | goodbye world    | -0.3218
-  3 | hello goodbye    | -0.3218
-  1 | hello world      |  0.0000
-  4 | world domination |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('goodbye', 'scoring2_incr_idx'), id;
+ERROR:  index "scoring2_incr_idx" not found
 -- Incremental mode query 4: 'domination'
-SELECT id, content, ROUND((content <@> to_tpquery('domination', 'scoring2_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
-ORDER BY content <@> to_tpquery('domination', 'scoring2_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,4), BM25_score=-1.0508
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  4 | world domination | -1.0508
-  1 | hello world      |  0.0000
-  2 | goodbye world    |  0.0000
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
-
+ORDER BY content <@> to_bm25query('domination', 'scoring2_incr_idx'), id;
+ERROR:  index "scoring2_incr_idx" not found
 -- Cleanup
 DROP TABLE scoring2_bulk CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP TABLE scoring2_incr CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pg_textsearch CASCADE;

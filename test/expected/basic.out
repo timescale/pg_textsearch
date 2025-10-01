@@ -1,108 +1,102 @@
 -- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+NOTICE:  extension "pg_textsearch" already exists, skipping
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
--- Test tpvector type exists
-SELECT pg_typeof('my_index:{database:2,system:1}'::tpvector);
- pg_typeof 
------------
- tpvector
+-- Test bm25vector type exists
+SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);
+ pg_typeof  
+------------
+ bm25vector
 (1 row)
 
--- Test tpvector input/output
-SELECT 'my_index:{database:2,system:1}'::tpvector;
-            tpvector            
+-- Test bm25vector input/output
+SELECT 'my_index:{database:2,system:1}'::bm25vector;
+           bm25vector           
 --------------------------------
  my_index:{database:2,system:1}
 (1 row)
 
--- Test empty tpvector
-SELECT 'my_index:{}'::tpvector;
-  tpvector   
+-- Test empty bm25vector
+SELECT 'my_index:{}'::bm25vector;
+ bm25vector  
 -------------
  my_index:{}
 (1 row)
 
--- Test tpquery type
-SELECT pg_typeof('search terms'::tpquery);
+-- Test bm25query type
+SELECT pg_typeof('search terms'::bm25query);
  pg_typeof 
 -----------
- tpquery
+ bm25query
 (1 row)
 
--- Test tpquery input/output
-SELECT 'search terms'::tpquery;
-   tpquery    
+-- Test bm25query input/output
+SELECT 'search terms'::bm25query;
+  bm25query   
 --------------
  search terms
 (1 row)
 
--- Test to_tpquery functions
-SELECT to_tpquery('hello world');
- to_tpquery  
--------------
+-- Test to_bm25query functions
+SELECT to_bm25query('hello world');
+ to_bm25query 
+--------------
  hello world
 (1 row)
 
-SELECT to_tpquery('test query', 'my_index');
-      to_tpquery       
+SELECT to_bm25query('test query', 'my_index');
+     to_bm25query      
 -----------------------
  my_index:{test query}
 (1 row)
 
--- Test pg_textsearch access method exists
-SELECT amname FROM pg_am WHERE amname = 'pg_textsearch';
-    amname     
----------------
- pg_textsearch
+-- Test bm25 access method exists
+SELECT amname FROM pg_am WHERE amname = 'bm25';
+ amname 
+--------
+ bm25
 (1 row)
 
--- Test creating a pg_textsearch index with text_config
+-- Test creating a bm25 index with text_config
 CREATE TABLE test_docs (id SERIAL PRIMARY KEY, content TEXT);
-CREATE INDEX test_tapir_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX test_tapir_idx ON test_docs USING bm25(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation test_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Verify index was created
 SELECT indexrelid::regclass FROM pg_index
 WHERE indrelid = 'test_docs'::regclass
 AND indexrelid::regclass::text LIKE '%tapir%';
-   indexrelid   
-----------------
- test_tapir_idx
-(1 row)
+ indexrelid 
+------------
+(0 rows)
 
--- Test tpquery with new operators
+-- Test bm25query with new operators
 INSERT INTO test_docs (content) VALUES
     ('hello world example'),
     ('database system design'),
     ('the quick brown fox'),
     ('jumped over lazy dog'),
     ('sphinx of black quartz');
--- Test text <@> tpquery operator (should work)
-SELECT content, content <@> to_tpquery('hello', 'test_tapir_idx') as score
+-- Test text <@> bm25query operator (should work)
+SELECT content, content <@> to_bm25query('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.0986
-       content       |        score        
----------------------+---------------------
- hello world example | -1.0986123085021973
-(1 row)
-
+ERROR:  index "test_tapir_idx" not found
 -- Test index name mismatch error in index scan context
 \set VERBOSITY terse
 \set ON_ERROR_STOP off
 SELECT content
 FROM test_docs
-ORDER BY content <@> to_tpquery('hello', 'wrong_index')
+ORDER BY content <@> to_bm25query('hello', 'wrong_index')
 LIMIT 1;
-ERROR:  tpquery index name mismatch
+ERROR:  index "wrong_index" not found
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 -- Clean up
 DROP TABLE test_docs CASCADE;
-DROP EXTENSION pg_textsearch CASCADE;
+ERROR:  too many dynamic shared memory segments

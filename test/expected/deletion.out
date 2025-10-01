@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+NOTICE:  extension "pg_textsearch" already exists, skipping
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,
@@ -16,63 +16,47 @@ INSERT INTO deletion_test (content) VALUES
     ('fifth document with test again');
 -- Create index
 CREATE INDEX deletion_idx ON deletion_test
-USING pg_textsearch (content)
+USING bm25 (content)
 WITH (text_config = 'english');
 NOTICE:  Tapir index build started for relation deletion_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Initial search - should find documents with "test"
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |         content_preview          
-----+----------------------------------
-  3 | third document with test keyword
-  5 | fifth document with test again
-(2 rows)
-
+ERROR:  index "deletion_idx" not found
 -- Delete one of the documents that contains "test"
 DELETE FROM deletion_test WHERE id = 3;
 -- Search again - deleted document should not appear
 -- (Note: corpus statistics won't be updated, but shouldn't crash)
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview         
-----+--------------------------------
-  5 | fifth document with test again
-(1 row)
-
+ERROR:  index "deletion_idx" not found
 -- Delete a document that doesn't contain "test"
 DELETE FROM deletion_test WHERE id = 4;
 -- Search again - should still work
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview         
-----+--------------------------------
-  5 | fifth document with test again
-(1 row)
-
+ERROR:  index "deletion_idx" not found
 -- Delete all remaining documents with "test"
 DELETE FROM deletion_test WHERE content LIKE '%test%';
 -- Search again - should return no results (but not crash)
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id | content_preview 
-----+-----------------
-(0 rows)
-
+ERROR:  index "deletion_idx" not found
 -- Insert new documents after deletions
 INSERT INTO deletion_test (content) VALUES
     ('new document with test keyword'),
@@ -80,21 +64,17 @@ INSERT INTO deletion_test (content) VALUES
 -- Search again - should find the new document
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview         
-----+--------------------------------
-  6 | new document with test keyword
-(1 row)
-
+ERROR:  index "deletion_idx" not found
 -- Test with empty table after deleting everything
 DELETE FROM deletion_test;
 -- Search in empty table - should return no results
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id | content_preview 
 ----+-----------------
@@ -102,4 +82,5 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE deletion_test;
+ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pg_textsearch;

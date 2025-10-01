@@ -20,8 +20,8 @@ INSERT INTO test_docs (content) VALUES
     ('postgresql full text search');
 
 -- Test index creation with different text_config options
-CREATE INDEX docs_english_idx ON test_docs USING pg_textsearch(content) WITH (text_config='english');
-CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (text_config='simple', k1=1.5, b=0.8);
+CREATE INDEX docs_english_idx ON test_docs USING bm25(content) WITH (text_config='english');
+CREATE INDEX docs_simple_idx ON test_docs USING bm25(content) WITH (text_config='simple', k1=1.5, b=0.8);
 
 -- Verify indexes were created
 \d+ test_docs
@@ -29,9 +29,9 @@ CREATE INDEX docs_simple_idx ON test_docs USING pg_textsearch(content) WITH (tex
 -- Test basic index operations
 INSERT INTO test_docs (content) VALUES ('new document for testing');
 
--- Test that to_tpvector works with our indexes
-SELECT to_tpvector('test document content', 'docs_english_idx');
-SELECT to_tpvector('test document content', 'docs_simple_idx');
+-- Test that to_bm25vector works with our indexes
+SELECT to_bm25vector('test document content', 'docs_english_idx');
+SELECT to_bm25vector('test document content', 'docs_simple_idx');
 
 -- Test that index options are correctly stored and retrievable
 SELECT
@@ -47,11 +47,11 @@ ORDER BY i.relname;
 -- Test vectorization with both indexes
 SELECT
     'docs_english_idx' as index_name,
-    to_tpvector('postgresql database system', 'docs_english_idx') as vector;
+    to_bm25vector('postgresql database system', 'docs_english_idx') as vector;
 
 SELECT
     'docs_simple_idx' as index_name,
-    to_tpvector('postgresql database system', 'docs_simple_idx') as vector;
+    to_bm25vector('postgresql database system', 'docs_simple_idx') as vector;
 
 -- Cleanup
 DROP INDEX docs_english_idx;

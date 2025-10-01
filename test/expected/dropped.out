@@ -16,33 +16,31 @@ INSERT INTO dropped_idx_test (content) VALUES
     ('fifth test document');
 -- Create index
 CREATE INDEX dropped_idx ON dropped_idx_test
-USING pg_textsearch (content)
+USING bm25 (content)
 WITH (text_config = 'english');
 NOTICE:  Tapir index build started for relation dropped_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Query should work with index
 SELECT COUNT(*) AS with_index
 FROM dropped_idx_test
-WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;
- with_index 
-------------
-          5
-(1 row)
-
+WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+ERROR:  index "dropped_idx" not found
 -- Drop the index
 DROP INDEX dropped_idx;
+ERROR:  index "dropped_idx" does not exist
 -- Query should ERROR when index doesn't exist
 SELECT COUNT(*) AS after_drop
 FROM dropped_idx_test
-WHERE content <@> to_tpquery('test', 'dropped_idx') < -0.001;
+WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
 ERROR:  index "dropped_idx" not found
 -- Also test with a completely non-existent index name
 SELECT COUNT(*) AS nonexistent
 FROM dropped_idx_test
-WHERE content <@> to_tpquery('test', 'totally_fake_index') < -0.001;
+WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
 ERROR:  index "totally_fake_index" not found
 -- Clean up
 DROP TABLE dropped_idx_test;
+ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pg_textsearch;

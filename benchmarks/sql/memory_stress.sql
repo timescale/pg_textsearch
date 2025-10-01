@@ -79,7 +79,7 @@ FROM stress_docs;
 
 CREATE INDEX stress_content_idx
 ON stress_docs
-USING pg_textsearch(content)
+USING bm25(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 -- If we get here, let's try some queries to stress the system further
@@ -90,7 +90,7 @@ SELECT 'Query 1: Common terms' as test_name;
 SELECT COUNT(*) FROM (
     SELECT 1
     FROM stress_docs
-    ORDER BY content <@> to_tpquery('algorithm optimization performance', 'stress_content_idx')
+    ORDER BY content <@> to_bm25query('algorithm optimization performance', 'stress_content_idx')
     LIMIT 100
 ) subq;
 
@@ -98,7 +98,7 @@ SELECT 'Query 2: Technical terms' as test_name;
 SELECT COUNT(*) FROM (
     SELECT 1
     FROM stress_docs
-    ORDER BY content <@> to_tpquery('machine learning artificial intelligence', 'stress_content_idx')
+    ORDER BY content <@> to_bm25query('machine learning artificial intelligence', 'stress_content_idx')
     LIMIT 100
 ) subq;
 
@@ -106,7 +106,7 @@ SELECT 'Query 3: Specific terms' as test_name;
 SELECT COUNT(*) FROM (
     SELECT 1
     FROM stress_docs
-    ORDER BY content <@> to_tpquery('postgresql database indexing search', 'stress_content_idx')
+    ORDER BY content <@> to_bm25query('postgresql database indexing search', 'stress_content_idx')
     LIMIT 100
 ) subq;
 
@@ -114,7 +114,7 @@ SELECT COUNT(*) FROM (
 SELECT COUNT(*) FROM (
     SELECT 1
     FROM stress_docs
-    ORDER BY content <@> to_tpquery('the and of to in', 'stress_content_idx')
+    ORDER BY content <@> to_bm25query('the and of to in', 'stress_content_idx')
     LIMIT 10000
 ) subq;
 

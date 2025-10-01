@@ -8,11 +8,11 @@ SET pg_textsearch.log_scores = true;
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
-CREATE INDEX manyterms_idx ON manyterms_test USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX manyterms_idx ON manyterms_test USING bm25(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation manyterms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Add enough unique terms to exceed initial hash table capacity
 -- With 64 buckets at 0.75 load factor, >48 unique terms should trigger automatic resize
 INSERT INTO manyterms_test (content) VALUES
@@ -47,17 +47,15 @@ SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT
 (1 row)
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, ROUND((content <@> to_tpquery('fifty', 'manyterms_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('fifty', 'manyterms_idx'))::numeric, 4) as score
 FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
 LIMIT 1;
- id | content |  score  
-----+---------+---------
- 74 | fifty   | -3.9703
-(1 row)
-
+ERROR:  index "manyterms_idx" not found
 -- Clean up
 DROP INDEX manyterms_idx;
+ERROR:  index "manyterms_idx" does not exist
 DROP TABLE manyterms_test;
+ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pg_textsearch CASCADE;

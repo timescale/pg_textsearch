@@ -15,85 +15,51 @@ INSERT INTO scoring3_bulk (content) VALUES ('the quick brown fox jumps over the 
 INSERT INTO scoring3_bulk (content) VALUES ('a short sentence');
 INSERT INTO scoring3_bulk (content) VALUES ('this is a medium length sentence that contains several words');
 -- Create index after data insertion (bulk build)
-CREATE INDEX scoring3_bulk_idx ON scoring3_bulk USING pg_textsearch(content)
+CREATE INDEX scoring3_bulk_idx ON scoring3_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation scoring3_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=4.67, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Bulk mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_tpquery('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_tpquery('quick', 'scoring3_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.4574
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
- id |                           content                            |  score  
-----+--------------------------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog                  | -0.4574
-  2 | a short sentence                                             |  0.0000
-  3 | this is a medium length sentence that contains several words |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
+ERROR:  index "scoring3_bulk_idx" not found
 -- Bulk mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_tpquery('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_tpquery('sentence', 'scoring3_bulk_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.1410
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-0.0968
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
- id |                           content                            |  score  
-----+--------------------------------------------------------------+---------
-  2 | a short sentence                                             | -0.1410
-  3 | this is a medium length sentence that contains several words | -0.0968
-  1 | the quick brown fox jumps over the lazy dog                  |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
+ERROR:  index "scoring3_bulk_idx" not found
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring3_incr (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
 -- Create index before data insertion (incremental build)
-CREATE INDEX scoring3_incr_idx ON scoring3_incr USING pg_textsearch(content)
+CREATE INDEX scoring3_incr_idx ON scoring3_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation scoring3_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Insert test documents incrementally
 INSERT INTO scoring3_incr (content) VALUES ('the quick brown fox jumps over the lazy dog');
 INSERT INTO scoring3_incr (content) VALUES ('a short sentence');
 INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence that contains several words');
 -- Incremental mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_tpquery('quick', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_tpquery('quick', 'scoring3_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-0.4574
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
- id |                           content                            |  score  
-----+--------------------------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog                  | -0.4574
-  2 | a short sentence                                             |  0.0000
-  3 | this is a medium length sentence that contains several words |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
+ERROR:  index "scoring3_incr_idx" not found
 -- Incremental mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_tpquery('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_tpquery('sentence', 'scoring3_incr_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-0.1410
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-0.0968
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
- id |                           content                            |  score  
-----+--------------------------------------------------------------+---------
-  2 | a short sentence                                             | -0.1410
-  3 | this is a medium length sentence that contains several words | -0.0968
-  1 | the quick brown fox jumps over the lazy dog                  |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
+ERROR:  index "scoring3_incr_idx" not found
 -- Cleanup
 DROP TABLE scoring3_bulk CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP TABLE scoring3_incr CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pg_textsearch CASCADE;

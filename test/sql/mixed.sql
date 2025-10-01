@@ -36,11 +36,11 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database indexing strategies', 'tech');
 
 -- Create index after initial data
-CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING pg_textsearch(content)
+CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify basic search works
-SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
 
@@ -54,7 +54,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database concurrent processing improves performance', 'tech');
 
 -- Search to verify posting lists updated correctly
-SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
@@ -70,7 +70,7 @@ INSERT INTO concurrent_test_docs2 (content, priority) VALUES
 ('database performance optimization', 3),
 ('concurrent system design patterns', 2);
 
-CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING pg_textsearch(content)
+CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING bm25(content)
   WITH (text_config='english', k1=1.5, b=0.8);
 
 -- Verify both indexes work independently
@@ -97,7 +97,7 @@ FROM concurrent_test_docs;
 
 -- Test top results still make sense
 SELECT id, substring(content, 1, 50) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 8;
@@ -111,14 +111,14 @@ BEGIN;
     ('new concurrent database research paper', 'research');
 
     -- Search within same transaction
-    SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+    SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
 COMMIT;
 
 -- Verify the insert is visible after commit
-SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
@@ -132,7 +132,7 @@ SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 
 -- Verify search finds updated documents
-SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
 
@@ -161,7 +161,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('testing consistency with exact same terms', 'test');
 
 -- Search should find all variants
-SELECT id, content, ROUND((content <@> to_tpquery('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score, id;
 
@@ -181,10 +181,10 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello from another document');
 
 -- Create two indexes with different text configurations
-CREATE INDEX multi_idx_english ON multi_idx_test USING pg_textsearch(content)
+CREATE INDEX multi_idx_english ON multi_idx_test USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
-CREATE INDEX multi_idx_simple ON multi_idx_test USING pg_textsearch(content)
+CREATE INDEX multi_idx_simple ON multi_idx_test USING bm25(content)
   WITH (text_config='simple', k1=1.5, b=0.8);
 
 -- Insert more data after index creation
@@ -193,12 +193,12 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello database world');
 
 -- Query using the English index
-SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score;
 
 -- Query using the Simple index
-SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score;
 

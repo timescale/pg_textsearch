@@ -29,67 +29,67 @@ INSERT INTO articles (title, content, category) VALUES
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
 
 -- Create pg_textsearch index with text_config
-CREATE INDEX articles_tapir_idx ON articles USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_config='english');
 
 -- Disable sequential scans to force index usage
 SET enable_seqscan = off;
 
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database'::tpquery as score
+SELECT title, content, content <@> 'database'::bm25query as score
 FROM articles
-ORDER BY content <@> 'database'::tpquery
+ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database'::tpquery
+ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning'::tpquery as score
+SELECT title, content, content <@> 'machine learning'::bm25query as score
 FROM articles
-ORDER BY content <@> 'machine learning'::tpquery
+ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
 
-SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'machine learning'::tpquery
+ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
 
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms'::tpquery as score
+SELECT title, content, content <@> 'search algorithms'::bm25query as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::tpquery
+ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'search algorithms'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'search algorithms'::bm25query)::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::tpquery
+ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
-SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
+SELECT a2.title, a2.content, ROUND((a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
-ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
+ORDER BY a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx')
 LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization'::tpquery as score
+SELECT title, content, content <@> 'database optimization'::bm25query as score
 FROM articles
-ORDER BY content <@> 'database optimization'::tpquery
+ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database optimization'::tpquery
+ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
 
 -- Test 6: Batch search with different queries (no index)
@@ -97,31 +97,31 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> to_tpquery(s.term) as score
+SELECT s.term, a.title, a.content <@> to_bm25query(s.term) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpquery(s.term);
+ORDER BY s.term, a.content <@> to_bm25query(s.term);
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> to_tpquery(s.term))::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpquery(s.term);
+ORDER BY s.term, a.content <@> to_bm25query(s.term);
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
 WITH order_by_results AS (
     SELECT id, title,
-           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
+           ROUND((content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
     FROM articles
-    ORDER BY content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx')
+    ORDER BY content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx')
     LIMIT 2
 ),
 standalone_results AS (
     SELECT id, title,
-           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
+           ROUND((content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
     FROM articles
     WHERE id IN (SELECT id FROM order_by_results)
 )

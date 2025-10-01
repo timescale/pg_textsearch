@@ -242,7 +242,7 @@ concurrent_search_worker() {
     for i in $(seq 1 $num_searches); do
         local term=${search_terms[$((RANDOM % ${#search_terms[@]}))]}
 
-        local query_result=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('$term', '$index_name')) < -0.01;" 2>&1)
+        local query_result=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('$term', '$index_name')) < -0.01;" 2>&1)
         local count=$(echo "$query_result" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
         if [ -z "$count" ]; then
             warn "Search query failed for term '$term': $(echo "$query_result" | head -3 | tr '\n' '; ')"
@@ -271,7 +271,7 @@ concurrent_index_worker() {
     local k1=$(awk "BEGIN {printf \"%.2f\", 1.0 + $session_id * 0.1}")
     local b=$(awk "BEGIN {printf \"%.2f\", 0.7 + $session_id * 0.02}")
 
-    run_sql_quiet "CREATE INDEX stress_idx_${table_suffix} ON stress_docs USING pg_textsearch(content)
+    run_sql_quiet "CREATE INDEX stress_idx_${table_suffix} ON stress_docs USING bm25(content)
                    WITH (text_config='english', k1=$k1, b=$b);"
 
     info "Session $session_id: Index creation completed"
@@ -310,13 +310,13 @@ test_concurrent_index_creation() {
     log "Test 2: Concurrent index creation"
 
     # Create the main index
-    run_sql_quiet "CREATE INDEX stress_main_idx ON stress_docs USING pg_textsearch(content)
+    run_sql_quiet "CREATE INDEX stress_main_idx ON stress_docs USING bm25(content)
                    WITH (text_config='english', k1=1.2, b=0.75);"
 
     log "✅ Main index created successfully"
 
     # Test that concurrent operations work with existing index
-    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
     log "✅ Initial search found $search_count results"
 }
 
@@ -375,7 +375,7 @@ test_string_interning_consistency() {
     done
 
     # Verify search finds all documents
-    local identical_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('identical database search', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local identical_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('identical database search', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
     log "✅ String interning test: found $identical_count documents with identical terms"
 }
 
@@ -406,7 +406,7 @@ test_update_delete_concurrency() {
 
     # Verify index integrity
     local remaining_count=$(run_sql "SELECT COUNT(*) FROM stress_docs;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('updated concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search_count=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('updated concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
 
     log "✅ Update/Delete test: $remaining_count documents remaining, $search_count match updated terms"
 }
@@ -510,17 +510,17 @@ test_concurrent_index_drop() {
         ('fourth test document'),
         ('fifth test document');"
 
-    run_sql "CREATE INDEX drop_test_idx ON drop_test USING pg_textsearch (content) WITH (text_config = 'english');"
+    run_sql "CREATE INDEX drop_test_idx ON drop_test USING bm25 (content) WITH (text_config = 'english');"
 
     # Session 1: Access the index to cache it locally, then hold connection
     info "Session 1: Caching index state and holding connection..."
     local session1_output="${TMP_DIR:-/tmp}/session_501.out"
     {
         echo "-- First query to cache the index"
-        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"
+        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_bm25query('test', 'drop_test_idx') < -0.01;"
         echo "SELECT pg_sleep(3);"  # Hold connection while index is dropped
         echo "-- Second query after index should be dropped"
-        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_tpquery('test', 'drop_test_idx') < -0.01;"  # Try to use dropped index
+        echo "SELECT COUNT(*) FROM drop_test WHERE content <@> to_bm25query('test', 'drop_test_idx') < -0.01;"  # Try to use dropped index
     } | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$session1_output" 2>&1 &
     local session1_pid=$!
 
@@ -579,9 +579,9 @@ run_concurrent_tests() {
     info "Unique sessions: $unique_sessions"
 
     # Test a few searches to make sure index is still functional
-    local search1=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search2=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
-    local search3=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_tpquery('performance stress', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search1=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('database', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search2=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('concurrent', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
+    local search3=$(run_sql "SELECT COUNT(*) FROM stress_docs WHERE (content <@> to_bm25query('performance stress', 'stress_main_idx')) < -0.01;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ' || echo "0")
 
     info "Final search verification:"
     info "  'database': $search1 results"

@@ -10,7 +10,7 @@ Supports:
 
 - BM25 ranking with configurable parameters (k1, b)
 - PostgreSQL text search configurations (english, french, german, etc.)
-- tpquery data type for scoring operations
+- bm25query data type for scoring operations
 
 🚀 **Development Status**: v0.0.0a - Pre-alpha release.  Memtable-based
 implementation is in place and working. This is prerelease software and should
@@ -51,7 +51,7 @@ INSERT INTO documents (content) VALUES
 Create a pg_textsearch index on the text column
 
 ```sql
-CREATE INDEX docs_idx ON documents USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
 ```
 
 ## Querying
@@ -60,27 +60,27 @@ Get the most relevant documents using the `<@>` operator
 
 ```sql
 SELECT * FROM documents
-ORDER BY content <@> to_tpquery('database system', 'docs_idx')
+ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
 Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` order index scans on operators. Lower scores indicate better matches.
 
-For WHERE clause queries, use tpquery with index name:
+For WHERE clause queries, use bm25query with index name:
 ```sql
 SELECT * FROM documents
-WHERE content <@> to_tpquery('database system', 'docs_idx') < -1.0;
+WHERE content <@> to_bm25query('database system', 'docs_idx') < -1.0;
 ```
 
 Supported operations:
-- `text <@> tpquery` - Score text against a query
+- `text <@> bm25query` - Score text against a query
 
 ### Verifying Index Usage
 
 Check query plan with EXPLAIN:
 ```sql
 EXPLAIN SELECT * FROM documents
-ORDER BY content <@> to_tpquery('database system', 'docs_idx')
+ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
@@ -89,14 +89,14 @@ For small datasets, PostgreSQL may prefer sequential scans. Force index usage:
 SET enable_seqscan = off;
 ```
 
-Note: Even if EXPLAIN shows a sequential scan, `<@>` and `to_tpquery` always use the index for corpus statistics (document counts, average length) required for BM25 scoring.
+Note: Even if EXPLAIN shows a sequential scan, `<@>` and `to_bm25query` always use the index for corpus statistics (document counts, average length) required for BM25 scoring.
 
 ## Indexing
 
 Create a BM25 index on your text columns:
 
 ```sql
-CREATE INDEX ON documents USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 ```
 
 ### Index Options
@@ -106,47 +106,47 @@ CREATE INDEX ON documents USING pg_textsearch(content) WITH (text_config='englis
 - `b` - length normalization parameter (0.75 by default)
 
 ```sql
-CREATE INDEX ON documents USING pg_textsearch(content) WITH (text_config='english', k1=1.5, b=0.8);
+CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
 ```
 
 Also supports different text search configurations:
 
 ```sql
 -- English documents with stemming
-CREATE INDEX docs_en_idx ON documents USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX docs_en_idx ON documents USING bm25(content) WITH (text_config='english');
 
 -- Simple text processing without stemming
-CREATE INDEX docs_simple_idx ON documents USING pg_textsearch(content) WITH (text_config='simple');
+CREATE INDEX docs_simple_idx ON documents USING bm25(content) WITH (text_config='simple');
 
 -- Language-specific configurations
-CREATE INDEX docs_fr_idx ON french_docs USING pg_textsearch(content) WITH (text_config='french');
-CREATE INDEX docs_de_idx ON german_docs USING pg_textsearch(content) WITH (text_config='german');
+CREATE INDEX docs_fr_idx ON french_docs USING bm25(content) WITH (text_config='french');
+CREATE INDEX docs_de_idx ON german_docs USING bm25(content) WITH (text_config='german');
 ```
 
 ## Data Types
 
-### tpquery
+### bm25query
 
-The `tpquery` type represents queries for BM25 scoring with optional index context:
+The `bm25query` type represents queries for BM25 scoring with optional index context:
 
 ```sql
--- Create a tpquery with index name (required for WHERE clause and standalone scoring)
-SELECT to_tpquery('search query text', 'docs_idx');
+-- Create a bm25query with index name (required for WHERE clause and standalone scoring)
+SELECT to_bm25query('search query text', 'docs_idx');
 -- Returns: docs_idx:{search query text}
 
--- Create a tpquery without index name (only works in ORDER BY with index scan)
-SELECT to_tpquery('search query text');
+-- Create a bm25query without index name (only works in ORDER BY with index scan)
+SELECT to_bm25query('search query text');
 -- Returns: {search query text}
 ```
 
-#### tpquery Functions
+#### bm25query Functions
 
 Function | Description
 --- | ---
-to_tpquery(text) → tpquery | Create tpquery without index name (for ORDER BY only)
-to_tpquery(text, text) → tpquery | Create tpquery with query text and index name
-text <@> tpquery → double precision | BM25 scoring operator (returns negative scores)
-tpquery = tpquery → boolean | Equality comparison
+to_bm25query(text) → bm25query | Create bm25query without index name (for ORDER BY only)
+to_bm25query(text, text) → bm25query | Create bm25query with query text and index name
+text <@> bm25query → double precision | BM25 scoring operator (returns negative scores)
+bm25query = bm25query → boolean | Equality comparison
 
 ## Performance
 
@@ -157,7 +157,7 @@ pg_textsearch indexes use a memtable architecture for efficient writes. Like oth
 INSERT INTO documents (content) VALUES (...);
 
 -- Then create index
-CREATE INDEX docs_idx ON documents USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
 ```
 
 ## Monitoring
@@ -169,7 +169,7 @@ FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 
 -- Debug index internal structure (shows term dictionary and posting lists)
-SELECT tp_debug_dump_index('index_name');
+SELECT bm25_debug_dump_index('index_name');
 ```
 
 ### Configuration
@@ -190,7 +190,7 @@ pg_textsearch.default_limit = 1000           # default 1000
 
 ```sql
 CREATE TABLE articles (id serial PRIMARY KEY, title text, content text);
-CREATE INDEX articles_idx ON articles USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX articles_idx ON articles USING bm25(content) WITH (text_config='english');
 
 INSERT INTO articles (title, content) VALUES
     ('Database Systems', 'PostgreSQL is a powerful relational database system'),
@@ -198,20 +198,20 @@ INSERT INTO articles (title, content) VALUES
     ('Information Retrieval', 'BM25 is a ranking function used in search engines');
 
 -- Find relevant documents
-SELECT title, content <@> to_tpquery('database search', 'articles_idx') as score
+SELECT title, content <@> to_bm25query('database search', 'articles_idx') as score
 FROM articles
-ORDER BY content <@> to_tpquery('database search', 'articles_idx');
+ORDER BY content <@> to_bm25query('database search', 'articles_idx');
 ```
 
 Also supports different languages and custom parameters:
 
 ```sql
 -- Different languages
-CREATE INDEX fr_idx ON french_articles USING pg_textsearch(content) WITH (text_config='french');
-CREATE INDEX de_idx ON german_articles USING pg_textsearch(content) WITH (text_config='german');
+CREATE INDEX fr_idx ON french_articles USING bm25(content) WITH (text_config='french');
+CREATE INDEX de_idx ON german_articles USING bm25(content) WITH (text_config='german');
 
 -- Custom parameters
-CREATE INDEX custom_idx ON documents USING pg_textsearch(content)
+CREATE INDEX custom_idx ON documents USING bm25(content)
     WITH (text_config='english', k1=2.0, b=0.9);
 ```
 
@@ -223,7 +223,7 @@ CREATE INDEX custom_idx ON documents USING pg_textsearch(content)
 SELECT cfgname FROM pg_ts_config;
 
 -- List BM25 indexes
-SELECT indexname FROM pg_indexes WHERE indexdef LIKE '%USING pg_textsearch%';
+SELECT indexname FROM pg_indexes WHERE indexdef LIKE '%USING bm25%';
 ```
 
 

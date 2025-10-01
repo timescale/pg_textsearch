@@ -56,7 +56,7 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 -- Expected rankings are now captured in the test's expected output file
 
 -- Create pg_textsearch index for Cranfield documents with text_config
-CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING pg_textsearch(full_text)
+CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
 
 \echo 'pg_textsearch index created. Running validation tests...'
@@ -69,9 +69,9 @@ SET enable_seqscan = off;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
+    ROUND((full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_tpquery('aerodynamic flow', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
 
 -- Test 2: Multi-term search
@@ -79,9 +79,9 @@ LIMIT 5;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score
+    ROUND((full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_tpquery('boundary layer turbulent', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
 
 -- Test 3: Top-10 results for first query
@@ -89,8 +89,8 @@ LIMIT 5;
 WITH pgts_results AS (
     SELECT
         doc_id,
-        ROUND((full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as pgts_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_tpquery('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as pgts_rank
+        ROUND((full_text <@> to_bm25query('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as pgts_score,
+        ROW_NUMBER() OVER (ORDER BY full_text <@> to_bm25query('aerodynamic flow analysis', 'cranfield_tapir_idx') ASC) as pgts_rank
     FROM aerodocs_documents
 )
 SELECT
@@ -109,7 +109,7 @@ SELECT
     q.query_id,
     LEFT(q.query_text, 40) || '...' as query_preview,
     COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> to_tpquery(q.query_text, 'cranfield_tapir_idx') < 0 THEN 1 END) as matching_docs
+    COUNT(CASE WHEN d.full_text <@> to_bm25query(q.query_text, 'cranfield_tapir_idx') < 0 THEN 1 END) as matching_docs
 FROM cranfield_queries q
 CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
@@ -120,9 +120,9 @@ ORDER BY q.query_id;
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
 EXPLAIN (COSTS OFF)
-SELECT doc_id, ROUND((full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
+SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_tpquery('supersonic aircraft design', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC
 LIMIT 10;
 
 -- Reset settings

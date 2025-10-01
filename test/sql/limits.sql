@@ -42,36 +42,36 @@ INSERT INTO limit_test (title, content) VALUES
     ('Database Security', 'database security measures and access control mechanisms');
 
 -- Create pg_textsearch index
-CREATE INDEX limit_test_idx ON limit_test USING pg_textsearch(content) WITH (text_config='english');
+CREATE INDEX limit_test_idx ON limit_test USING bm25(content) WITH (text_config='english');
 
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> to_tpquery('database', 'limit_test_idx') as score
+SELECT title, content, content <@> to_bm25query('database', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> to_tpquery('database', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
 
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
-SELECT title, ROUND((content <@> to_tpquery('search', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('search', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
 
 -- Test LIMIT 3
-SELECT title, ROUND((content <@> to_tpquery('optimization', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('optimization', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
 
 -- Test LIMIT 10
-SELECT title, ROUND((content <@> to_tpquery('algorithm', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('algorithm', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
@@ -79,13 +79,13 @@ LIMIT 10;
 -- Test 3: LIMIT with WHERE clause (should prevent pushdown for safety)
 -- This should NOT use LIMIT pushdown due to additional WHERE clause
 EXPLAIN (COSTS OFF)
-SELECT title, ROUND((content <@> to_tpquery('database system', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
 
-SELECT title, ROUND((content <@> to_tpquery('database system', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
@@ -95,13 +95,13 @@ LIMIT 7;
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
 
 -- Test 5: LIMIT with OFFSET
-SELECT title, ROUND((content <@> to_tpquery('performance', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('performance', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
 
 -- Test 6: Very small LIMIT (edge case)
-SELECT title, ROUND((content <@> to_tpquery('text', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> to_bm25query('text', 'limit_test_idx'))::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
@@ -109,7 +109,7 @@ LIMIT 1;
 -- Test 7: Large LIMIT (should still use index optimization)
 SELECT COUNT(*) > 0 as has_results
 FROM (
-    SELECT title, content <@> to_tpquery('xyzabc123', 'limit_test_idx') as score
+    SELECT title, content <@> to_bm25query('xyzabc123', 'limit_test_idx') as score
     FROM limit_test
     -- Test for non-matching terms (should return no results)
     ORDER BY 2
@@ -118,7 +118,7 @@ FROM (
 
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
-    SELECT title, ROUND((content <@> to_tpquery('mining', 'limit_test_idx'))::numeric, 4) as score
+    SELECT title, ROUND((content <@> to_bm25query('mining', 'limit_test_idx'))::numeric, 4) as score
     FROM limit_test
     ORDER BY 2
     LIMIT 3
@@ -127,19 +127,19 @@ SELECT * FROM (
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_tpquery('database', 'limit_test_idx')
+    ORDER BY content <@> to_bm25query('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
 
 SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_tpquery('search', 'limit_test_idx')
+    ORDER BY content <@> to_bm25query('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_tpquery('algorithm', 'limit_test_idx')
+    ORDER BY content <@> to_bm25query('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
 
@@ -149,7 +149,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 -- Safe case: Simple ORDER BY with pg_textsearch score, no WHERE clause
 -- This SHOULD allow LIMIT pushdown
 EXPLAIN (COSTS OFF)
-SELECT title, content <@> to_tpquery('simple', 'limit_test_idx') as score
+SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
@@ -166,7 +166,7 @@ LIMIT 3;
 -- Test with safe pushdown case
 SELECT COUNT(*) as pushdown_safe_count
 FROM (
-    SELECT title, content <@> to_tpquery('pushdown_safe', 'limit_test_idx') as score
+    SELECT title, content <@> to_bm25query('pushdown_safe', 'limit_test_idx') as score
     FROM limit_test
     ORDER BY 2
     LIMIT 2
@@ -175,7 +175,7 @@ FROM (
 -- Test with unsafe pushdown case (has WHERE clause)
 SELECT COUNT(*) as pushdown_unsafe_count
 FROM (
-    SELECT title, content <@> to_tpquery('pushdown_unsafe', 'limit_test_idx') as score
+    SELECT title, content <@> to_bm25query('pushdown_unsafe', 'limit_test_idx') as score
     FROM limit_test
     WHERE id % 2 = 0
     ORDER BY 2
@@ -186,7 +186,7 @@ FROM (
 -- Very large LIMIT (should still use index optimization efficiently)
 SELECT COUNT(*) > 0 as large_limit_has_results
 FROM (
-    SELECT title, content <@> to_tpquery('qwertyuiop999', 'limit_test_idx') as score
+    SELECT title, content <@> to_bm25query('qwertyuiop999', 'limit_test_idx') as score
     FROM limit_test
     -- Test with non-matching nonsense term
     ORDER BY 2
@@ -194,7 +194,7 @@ FROM (
 ) subq;
 
 -- LIMIT 0 edge case
-SELECT title, content <@> to_tpquery('zero_limit', 'limit_test_idx') as score
+SELECT title, content <@> to_bm25query('zero_limit', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;

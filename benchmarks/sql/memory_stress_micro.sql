@@ -60,7 +60,7 @@ FROM stress_docs_micro;
 
 CREATE INDEX stress_micro_idx
 ON stress_docs_micro
-USING pg_textsearch(content)
+USING bm25(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 \echo 'Index created successfully! Running performance tests...'
@@ -72,33 +72,33 @@ WITH (text_config='english', k1=1.2, b=0.75);
 \echo 'Test 1: Technical terms search'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('algorithm optimization', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('algorithm optimization', 'stress_micro_idx')
 LIMIT 100;
 
 \echo 'Test 2: AI/ML search'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('machine learning artificial intelligence', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('machine learning artificial intelligence', 'stress_micro_idx')
 LIMIT 100;
 
 \echo 'Test 3: Database search'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('database postgresql mysql', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('database postgresql mysql', 'stress_micro_idx')
 LIMIT 100;
 
 \echo 'Test 4: Top results with scores'
 SELECT title,
-       round((content <@> to_tpquery('software development', 'stress_micro_idx'))::numeric, 4) as score
+       round((content <@> to_bm25query('software development', 'stress_micro_idx'))::numeric, 4) as score
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('software development', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('software development', 'stress_micro_idx')
 LIMIT 3;
 
 \echo 'Test 5: Category-based analysis'
 SELECT
     category,
     COUNT(*) as total_docs,
-    COUNT(*) as total_docs, AVG((content <@> to_tpquery('programming software', 'stress_micro_idx'))::numeric) as avg_score
+    COUNT(*) as total_docs, AVG((content <@> to_bm25query('programming software', 'stress_micro_idx'))::numeric) as avg_score
 FROM stress_docs_micro
 GROUP BY category
 ORDER BY category;
@@ -110,19 +110,19 @@ ORDER BY category;
 \echo 'Test 6: Common terms (should find many matches)'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('data system', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('data system', 'stress_micro_idx')
 LIMIT 50;
 
 \echo 'Test 7: Specific terms (should find fewer matches)'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('kubernetes docker containerization', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('kubernetes docker containerization', 'stress_micro_idx')
 LIMIT 50;
 
 \echo 'Test 8: Complex multi-term query'
 SELECT COUNT(*) as matches
 FROM stress_docs_micro
-ORDER BY content <@> to_tpquery('web development frontend javascript react', 'stress_micro_idx')
+ORDER BY content <@> to_bm25query('web development frontend javascript react', 'stress_micro_idx')
 LIMIT 50;
 
 -- Performance summary

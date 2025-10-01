@@ -40,55 +40,55 @@ INSERT INTO long_string_docs (content, category) VALUES
     ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
 
 -- Create pg_textsearch index on long strings
-CREATE INDEX long_strings_idx ON long_string_docs USING pg_textsearch(content)
+CREATE INDEX long_strings_idx ON long_string_docs USING bm25(content)
     WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Test 1: Search for URL components
 SELECT id, LEFT(content, 80) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('https website', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('https website', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('https website', 'long_strings_idx')
 LIMIT 5;
 
 -- Test 2: Search for technical terms
 SELECT id, category,
-       ROUND((content <@> to_tpquery('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('postgresql extension', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('postgresql extension', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 3: Search for long path components
 SELECT id, LEFT(content, 60) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('file log error', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('file log error', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('file log error', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('file log error', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 4: Test vectorization of very long URLs
-SELECT to_tpvector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
+SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
 
 -- Test 5: Test extremely long single term handling
-SELECT to_tpvector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
+SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
 
 -- Test 6: Test mixed long and short terms
-SELECT id, ROUND((content <@> to_tpquery('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
+SELECT id, ROUND((content <@> to_bm25query('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('algorithm bm25', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('algorithm bm25', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 7: Performance test with multiple long term queries
 SELECT
     id,
     category,
-    ROUND((content <@> to_tpquery('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+    ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('postgresql pg_textsearch extension search', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 8: Test URL tokenization specifics
 SELECT
     'URL components' as test_type,
-    to_tpvector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
+    to_bm25vector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
 
 -- Test 9: Test that very long terms don't cause memory issues
 INSERT INTO long_string_docs (content, category) VALUES
@@ -99,9 +99,9 @@ INSERT INTO long_string_docs (content, category) VALUES
 
 -- Verify the stress test document was indexed
 SELECT id, LEFT(content, 50) || '...' as preview,
-       ROUND((content <@> to_tpquery('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('document ridiculously long', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('document ridiculously long', 'long_strings_idx')
 LIMIT 10;
 
 -- Test 10: Memory usage statistics after indexing long strings
@@ -133,10 +133,10 @@ SELECT
         WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
         ELSE 'Heap allocation likely'
     END as allocation_type,
-    ROUND((content <@> to_tpquery('term allocation', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> to_bm25query('term allocation', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
-    AND content <@> to_tpquery('term allocation', 'long_strings_idx') < 0
+    AND content <@> to_bm25query('term allocation', 'long_strings_idx') < 0
 ORDER BY content_length;
 
 -- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
@@ -147,10 +147,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 SELECT
     'Extreme length test' as test_name,
     LENGTH(content) as total_length,
-    ROUND((content <@> to_tpquery('extreme testing', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> to_bm25query('extreme testing', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category = 'extreme'
-    AND content <@> to_tpquery('extreme testing', 'long_strings_idx') < 0;
+    AND content <@> to_bm25query('extreme testing', 'long_strings_idx') < 0;
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;

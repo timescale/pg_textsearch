@@ -16,23 +16,23 @@ INSERT INTO scoring6_bulk (content) VALUES ('hello, world!');
 INSERT INTO scoring6_bulk (content) VALUES ('goodbye cruel world...');
 
 -- Create index after data insertion (bulk build)
-CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING pg_textsearch(content)
+CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Bulk mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_tpquery('hello', 'scoring6_bulk_idx'), id;
+ORDER BY content <@> to_bm25query('hello', 'scoring6_bulk_idx'), id;
 
 -- Bulk mode query 2: 'goodbye'
-SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_tpquery('goodbye', 'scoring6_bulk_idx'), id;
+ORDER BY content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'), id;
 
 -- Bulk mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_tpquery('world', 'scoring6_bulk_idx'), id;
+ORDER BY content <@> to_bm25query('world', 'scoring6_bulk_idx'), id;
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring6_incr (
@@ -41,7 +41,7 @@ CREATE TABLE scoring6_incr (
 );
 
 -- Create index before data insertion (incremental build)
-CREATE INDEX scoring6_incr_idx ON scoring6_incr USING pg_textsearch(content)
+CREATE INDEX scoring6_incr_idx ON scoring6_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Insert test documents incrementally
@@ -49,19 +49,19 @@ INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
 INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
 
 -- Incremental mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_tpquery('hello', 'scoring6_incr_idx'), id;
+ORDER BY content <@> to_bm25query('hello', 'scoring6_incr_idx'), id;
 
 -- Incremental mode query 2: 'goodbye'
-SELECT id, content, ROUND((content <@> to_tpquery('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_tpquery('goodbye', 'scoring6_incr_idx'), id;
+ORDER BY content <@> to_bm25query('goodbye', 'scoring6_incr_idx'), id;
 
 -- Incremental mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_tpquery('world', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_tpquery('world', 'scoring6_incr_idx'), id;
+ORDER BY content <@> to_bm25query('world', 'scoring6_incr_idx'), id;
 
 -- Cleanup
 DROP TABLE scoring6_bulk CASCADE;

@@ -82,7 +82,7 @@ INSERT INTO documents (content) VALUES
     ('Full text search with custom scoring');
 
 -- Create a BM25 index on the text column
-CREATE INDEX docs_idx ON documents USING pg_textsearch(content) WITH (text_config='english');-- Query the indexSELECT id, content, content <@> to_tpquery('database system', 'docs_idx') AS score
+CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');-- Query the indexSELECT id, content, content <@> to_bm25query('database system', 'docs_idx') AS score
 FROM documents
 ORDER BY score
 LIMIT 10;
@@ -90,25 +90,25 @@ LIMIT 10;
 
 ### Types
 
-* `tpvector` - Stores term frequencies with index context for BM25 scoring (legacy, still supported)
-* `tpquery` - Represents queries for BM25 scoring with optional index context (primary interface)
+* `bm25vector` - Stores term frequencies with index context for BM25 scoring (legacy, still supported)
+* `bm25query` - Represents queries for BM25 scoring with optional index context (primary interface)
 
 ### Operators
 
-* `text <@> tpquery` \- Primary BM25 scoring operator (works in index scans and standalone)
-* `text <@> tpvector` \- Legacy BM25 scoring operator
-* `tpvector <@> tpvector` \- Legacy vector-to-vector scoring
+* `text <@> bm25query` \- Primary BM25 scoring operator (works in index scans and standalone)
+* `text <@> bm25vector` \- Legacy BM25 scoring operator
+* `bm25vector <@> bm25vector` \- Legacy vector-to-vector scoring
 
 ### Built-ins
 
-* `to_tpquery(text)` - Create tpquery without index name (for ORDER BY only)
-* `to_tpquery(text, text)` - Create tpquery with query text and index name
-* `to_tpvector(text, text)` - Create tpvector (legacy)
-* `tpvector_eq` - Equality comparison for tpvector
+* `to_bm25query(text)` - Create bm25query without index name (for ORDER BY only)
+* `to_bm25query(text, text)` - Create bm25query with query text and index name
+* `to_bm25vector(text, text)` - Create bm25vector (legacy)
+* `tpvector_eq` - Equality comparison for bm25vector
 
 ### Access Methods
 
-* `pg_textsearch`
+* `bm25`
   * Parameters: `text_config` (required); `k1`, `b` (optional)
   * Bindings to `<@>` operator for BM25 ranked matches
   * Post-GA: bindings to `@@` operator and `tsvector` for Boolean matches

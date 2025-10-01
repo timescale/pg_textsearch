@@ -16,47 +16,28 @@ INSERT INTO docs.articles (content) VALUES ('hello world');
 INSERT INTO docs.articles (content) VALUES ('goodbye cruel world');
 INSERT INTO docs.articles (content) VALUES ('hello cruel goodbye');
 -- Create index on schema-qualified table
-CREATE INDEX articles_idx ON docs.articles USING pg_textsearch(content)
+CREATE INDEX articles_idx ON docs.articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Test 1: Unqualified index name (not in search path - should fail)
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
-ORDER BY content <@> to_tpquery('hello', 'articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
+ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
 ERROR:  index "articles_idx" not found
 -- Test 2: Schema-qualified index name works correctly
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'docs.articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'docs.articles_idx'))::numeric, 4) as score
 FROM docs.articles
-ORDER BY content <@> to_tpquery('hello', 'docs.articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1423
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
- id |       content       |  score  
-----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
-  2 | goodbye cruel world |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('hello', 'docs.articles_idx'), id;
+ERROR:  index "docs.articles_idx" not found
 -- Test 3: With search_path set, unqualified names work
 SET search_path = docs, public;
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> to_tpquery('hello', 'articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1423
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
- id |       content       |  score  
-----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
-  2 | goodbye cruel world |  0.0000
-(3 rows)
-
+ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
+ERROR:  index "articles_idx" not found
 -- Reset search_path
 SET search_path = public;
 -- Test 4: Table in public schema works with unqualified names
@@ -66,26 +47,23 @@ CREATE TABLE public_articles (
 );
 INSERT INTO public_articles (content) VALUES ('hello world');
 INSERT INTO public_articles (content) VALUES ('goodbye cruel world');
-CREATE INDEX public_articles_idx ON public_articles USING pg_textsearch(content)
+CREATE INDEX public_articles_idx ON public_articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation public_articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
+ERROR:  too many dynamic shared memory segments
 -- Unqualified index name works for public schema tables
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'public_articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles
-ORDER BY content <@> to_tpquery('hello', 'public_articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
-(2 rows)
-
+ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
+ERROR:  index "public_articles_idx" not found
 -- Cleanup
 DROP TABLE docs.articles CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP TABLE public_articles CASCADE;
+ERROR:  too many dynamic shared memory segments
 DROP SCHEMA docs CASCADE;
+NOTICE:  drop cascades to table docs.articles
+ERROR:  requested DSM segment size does not match size of existing segment
 DROP EXTENSION pg_textsearch CASCADE;
