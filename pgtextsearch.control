@@ -1,5 +1,5 @@
-# pg_textsearch extension
+# pgtextsearch extension
 comment = 'Full-text search with BM25 ranking'
 default_version = '0.0.1'
-module_pathname = '$libdir/pg_textsearch'
+module_pathname = '$libdir/pgtextsearch'
 relocatable = true

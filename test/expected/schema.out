@@ -1,8 +1,8 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
-SET pg_textsearch.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
+SET pgtextsearch.log_scores = true;
 SET enable_seqscan = off;
 -- Create a custom schema
 CREATE SCHEMA docs;
@@ -66,4 +66,4 @@ ERROR:  too many dynamic shared memory segments
 DROP SCHEMA docs CASCADE;
 NOTICE:  drop cascades to table docs.articles
 ERROR:  requested DSM segment size does not match size of existing segment
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

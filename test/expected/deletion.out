@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-NOTICE:  extension "pg_textsearch" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+NOTICE:  extension "pgtextsearch" already exists, skipping
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,
@@ -83,4 +83,4 @@ LIMIT 5;
 -- Clean up
 DROP TABLE deletion_test;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch;
+DROP EXTENSION pgtextsearch;

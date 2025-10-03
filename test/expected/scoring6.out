@@ -1,9 +1,9 @@
 -- Test case: scoring6
 -- Generated BM25 test with 2 documents and 3 queries
 -- Testing both bulk build and incremental build modes
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
-SET pg_textsearch.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
+SET pgtextsearch.log_scores = true;
 SET enable_seqscan = off;
 -- MODE 1: Bulk build (insert data, then create index)
 CREATE TABLE scoring6_bulk (
@@ -70,4 +70,4 @@ DROP TABLE scoring6_bulk CASCADE;
 ERROR:  too many dynamic shared memory segments
 DROP TABLE scoring6_incr CASCADE;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

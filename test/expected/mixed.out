@@ -1,10 +1,10 @@
--- Test concurrent operations on pg_textsearch indexes
+-- Test concurrent operations on pgtextsearch indexes
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
 NOTICE:  table "concurrent_test_docs" does not exist, skipping
@@ -269,4 +269,4 @@ DROP TABLE concurrent_test_docs CASCADE;
 ERROR:  too many dynamic shared memory segments
 DROP TABLE concurrent_test_docs2 CASCADE;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

@@ -1,9 +1,9 @@
--- Test pg_textsearch index access method functionality
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+-- Test pgtextsearch index access method functionality
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 -- Setup test table
 CREATE TABLE test_docs (
     id SERIAL PRIMARY KEY,
@@ -74,4 +74,4 @@ DROP INDEX docs_simple_idx;
 ERROR:  index "docs_simple_idx" does not exist
 DROP TABLE test_docs;
 ERROR:  requested DSM segment size does not match size of existing segment
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

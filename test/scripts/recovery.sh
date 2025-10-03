@@ -72,7 +72,7 @@ EOF
     createdb -p "${TEST_PORT}" "${TEST_DB}"
 
     # Install extension
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pgtextsearch;" >/dev/null
 }
 
 run_sql() {

@@ -15,9 +15,9 @@ export PGHOST=${PGHOST:-localhost}
 export PGUSER=${PGUSER:-$(whoami)}
 export PGDATABASE=${PGDATABASE:-postgres}
 
-# Check if pg_textsearch extension is available
+# Check if pgtextsearch extension is available
 echo "Checking Tapir extension availability..."
-psql -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch;" || {
+psql -c "CREATE EXTENSION IF NOT EXISTS pgtextsearch;" || {
     echo "ERROR: Tapir extension not available. Please install it first with 'make install'"
     exit 1
 }

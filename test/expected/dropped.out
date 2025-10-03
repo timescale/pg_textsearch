@@ -1,7 +1,7 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE dropped_idx_test (
     id SERIAL PRIMARY KEY,
@@ -43,4 +43,4 @@ ERROR:  index "totally_fake_index" not found
 -- Clean up
 DROP TABLE dropped_idx_test;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch;
+DROP EXTENSION pgtextsearch;

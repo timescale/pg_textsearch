@@ -3,11 +3,11 @@
 -- Disable duration logging to avoid timing differences in sanitizer tests
 SET log_duration = off;
 
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
 
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 
@@ -41,7 +41,7 @@ INSERT INTO limit_test (title, content) VALUES
     ('System Performance', 'system performance tuning and resource optimization strategies'),
     ('Database Security', 'database security measures and access control mechanisms');
 
--- Create pg_textsearch index
+-- Create pgtextsearch index
 CREATE INDEX limit_test_idx ON limit_test USING bm25(content) WITH (text_config='english');
 
 -- Test 1: Basic LIMIT functionality
@@ -146,7 +146,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 -- Test 10: LIMIT pushdown safety verification
 -- These tests verify that LIMIT pushdown is only used when safe
 
--- Safe case: Simple ORDER BY with pg_textsearch score, no WHERE clause
+-- Safe case: Simple ORDER BY with pgtextsearch score, no WHERE clause
 -- This SHOULD allow LIMIT pushdown
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
@@ -201,4 +201,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

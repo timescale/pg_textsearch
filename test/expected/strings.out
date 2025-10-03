@@ -1,9 +1,9 @@
 -- Test long string handling including URLs, paths, and long terms
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 -- Setup test table for long strings
@@ -32,7 +32,7 @@ INSERT INTO long_string_docs (content, category) VALUES
     ('The antidisestablishmentarianism movement was characterized by pneumonoultramicroscopicsilicovolcanoconiosispneumonoultramicroscopicsilicovolcanoconiosis research', 'scientific'),
     -- Long JSON-like structured content
     ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
--- Create pg_textsearch index on long strings
+-- Create pgtextsearch index on long strings
 CREATE INDEX long_strings_idx ON long_string_docs USING bm25(content)
     WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation long_strings_idx
@@ -76,9 +76,9 @@ ERROR:  index "long_strings_idx" not found
 SELECT
     id,
     category,
-    ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+    ROUND((content <@> to_bm25query('postgresql pgtextsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
 FROM long_string_docs
-ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('postgresql pgtextsearch extension search', 'long_strings_idx')
 LIMIT 10;
 ERROR:  index "long_strings_idx" not found
 -- Test 8: Test URL tokenization specifics
@@ -152,4 +152,4 @@ ERROR:  index "long_strings_idx" not found
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

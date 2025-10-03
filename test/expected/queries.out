@@ -1,9 +1,9 @@
--- This test demonstrates top-k pg_textsearch query patterns for efficient text search
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+-- This test demonstrates top-k pgtextsearch query patterns for efficient text search
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,
@@ -24,7 +24,7 @@ INSERT INTO articles (title, content, category) VALUES
     ('Data Mining Techniques', 'data mining algorithms for pattern discovery and knowledge extraction from large databases', 'technology'),
     ('Web Search Evolution', 'evolution of web search from simple keyword matching to semantic understanding', 'history'),
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
--- Create pg_textsearch index with text_config
+-- Create pgtextsearch index with text_config
 CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation articles_tapir_idx
 NOTICE:  Using text search configuration: english
@@ -182,4 +182,4 @@ ERROR:  index "articles_tapir_idx" not found
 -- Cleanup
 DROP TABLE articles CASCADE;
 ERROR:  too many dynamic shared memory segments
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

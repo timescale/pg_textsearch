@@ -1,9 +1,9 @@
 -- Test bm25vector type and operators functionality
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 -- Cleanup any existing state first
@@ -21,7 +21,7 @@ INSERT INTO test_docs (content) VALUES
     ('sphinx of black quartz'),
     ('hello world example'),
     ('postgresql full text search');
--- Create pg_textsearch index
+-- Create pgtextsearch index
 CREATE INDEX docs_vector_idx ON test_docs USING bm25(content) WITH (text_config='english');
 NOTICE:  Tapir index build started for relation docs_vector_idx
 NOTICE:  Using text search configuration: english
@@ -64,7 +64,7 @@ SELECT to_bm25vector('test text', 'nonexistent_index');
 ERROR:  index "nonexistent_index" not found
 \set ON_ERROR_STOP on
 \set VERBOSITY default
--- Test pg_textsearch scoring using standalone text <@> bm25query operations
+-- Test pgtextsearch scoring using standalone text <@> bm25query operations
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score

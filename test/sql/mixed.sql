@@ -1,11 +1,11 @@
--- Test concurrent operations on pg_textsearch indexes
+-- Test concurrent operations on pgtextsearch indexes
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
 
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
@@ -232,4 +232,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
-DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION pgtextsearch CASCADE;

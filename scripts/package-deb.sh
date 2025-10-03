@@ -39,12 +39,12 @@ mkdir -p "${BUILDDIR}${LIBDIR}"
 mkdir -p "${BUILDDIR}${SHAREDIR}/extension"
 
 # Copy extension files
-cp "${BASEDIR}/pg_textsearch.so" "${BUILDDIR}${LIBDIR}/" || \
-   cp "${BASEDIR}/pg_textsearch.dylib" "${BUILDDIR}${LIBDIR}/" || \
-   { echo "Error: Could not find pg_textsearch library"; exit 1; }
+cp "${BASEDIR}/pgtextsearch.so" "${BUILDDIR}${LIBDIR}/" || \
+   cp "${BASEDIR}/pgtextsearch.dylib" "${BUILDDIR}${LIBDIR}/" || \
+   { echo "Error: Could not find pgtextsearch library"; exit 1; }
 
-cp "${BASEDIR}/pg_textsearch.control" "${BUILDDIR}${SHAREDIR}/extension/"
-cp "${BASEDIR}/sql/pg_textsearch--0.0.1.sql" "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}/pgtextsearch.control" "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}/sql/pgtextsearch--0.0.1.sql" "${BUILDDIR}${SHAREDIR}/extension/"
 
 # Determine architecture
 if [ "$ARCH" = "arm64" ]; then
@@ -63,8 +63,8 @@ Depends: timescaledb-2-postgresql-17 | postgresql-17
 Section: database
 Priority: optional
 Homepage: https://github.com/timescale/tapir
-Description: pg_textsearch - PostgreSQL extension for full-text search with BM25
- pg_textsearch provides full-text search capabilities with BM25 ranking for
+Description: pgtextsearch - PostgreSQL extension for full-text search with BM25
+ pgtextsearch provides full-text search capabilities with BM25 ranking for
  PostgreSQL. It implements a memtable-based architecture similar to
  LSM trees, with in-memory structures that spill to disk segments
  for scalability.
@@ -76,7 +76,7 @@ cat > "${BUILDDIR}/DEBIAN/postinst" << 'EOF'
 set -e
 
 if [ "$1" = "configure" ]; then
-    echo "pg_textsearch extension installed. Use 'CREATE EXTENSION pg_textsearch;' in PostgreSQL to enable."
+    echo "pgtextsearch extension installed. Use 'CREATE EXTENSION pgtextsearch;' in PostgreSQL to enable."
 fi
 
 exit 0
@@ -89,7 +89,7 @@ cat > "${BUILDDIR}/DEBIAN/prerm" << 'EOF'
 set -e
 
 if [ "$1" = "remove" ]; then
-    echo "Removing pg_textsearch extension. Please DROP EXTENSION pg_textsearch in all databases first."
+    echo "Removing pgtextsearch extension. Please DROP EXTENSION pgtextsearch in all databases first."
 fi
 
 exit 0

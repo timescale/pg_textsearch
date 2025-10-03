@@ -1,15 +1,15 @@
--- Aerodynamics Documents pg_textsearch Test - Real Cranfield Dataset
--- This test validates pg_textsearch implementation using a substantial subset of the Cranfield collection
+-- Aerodynamics Documents pgtextsearch Test - Real Cranfield Dataset
+-- This test validates pgtextsearch implementation using a substantial subset of the Cranfield collection
 -- Contains real aerodynamics documents from the Cranfield dataset for realistic testing
--- Tests both dataset loading and pg_textsearch scoring functionality with the <@> operator
--- Load pg_textsearch extension
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+-- Tests both dataset loading and pgtextsearch scoring functionality with the <@> operator
+-- Load pgtextsearch extension
+CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
+SET pgtextsearch.log_scores = true;
 \set ON_ERROR_STOP on
-\echo 'Testing pg_textsearch with sample aerodynamics documents...'
-Testing pg_textsearch with sample aerodynamics documents...
+\echo 'Testing pgtextsearch with sample aerodynamics documents...'
+Testing pgtextsearch with sample aerodynamics documents...
 -- Create tables for aerodynamics documents
 CREATE TABLE aerodocs_documents (
     doc_id INTEGER PRIMARY KEY,
@@ -47,7 +47,7 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 (2, 'boundary layer turbulent'),
 (3, 'wing design optimization');
 -- Expected rankings are now captured in the test's expected output file
--- Create pg_textsearch index for Cranfield documents with text_config
+-- Create pgtextsearch index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
 NOTICE:  Tapir index build started for relation cranfield_tapir_idx
