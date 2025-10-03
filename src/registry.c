@@ -162,6 +162,36 @@ tp_registry_lookup(Oid index_oid)
 }
 
 /*
+ * Check if an index is registered
+ * Returns true if the index is in the registry, false otherwise
+ */
+bool
+tp_registry_is_registered(Oid index_oid)
+{
+	bool result = false;
+
+	if (!tapir_registry)
+	{
+		/* Registry not initialized - can't be registered */
+		return false;
+	}
+
+	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+
+	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	{
+		if (tapir_registry->entries[i].index_oid == index_oid)
+		{
+			result = true;
+			break;
+		}
+	}
+
+	LWLockRelease(&tapir_registry->lock);
+	return result;
+}
+
+/*
  * Unregister an index from the registry
  * Called when an index is dropped
  */

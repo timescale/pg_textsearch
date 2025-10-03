@@ -1,12 +1,13 @@
 #include <postgres.h>
 
+#include <access/relation.h>
 #include <access/reloptions.h>
-#include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <utils/guc.h>
+#include <utils/inval.h>
 
 #include "constants.h"
 #include "memtable.h"
@@ -24,16 +25,8 @@ extern int tp_default_limit;
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
-/* Previous object access hook */
-static object_access_hook_type prev_object_access_hook = NULL;
-
-/* Object access hook function for cleaning up shared memory */
-static void tp_object_access_hook(
-		ObjectAccessType access,
-		Oid				 classId,
-		Oid				 objectId,
-		int				 subId,
-		void			*arg);
+/* Relcache invalidation callback for cleaning up shared memory */
+static void tp_relcache_callback(Datum arg, Oid relid);
 
 /* Previous shared memory startup hook */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -144,37 +137,73 @@ _PG_init(void)
 
 	elog(DEBUG1, "pg_textsearch shared memory hooks installed");
 
-	/* Install object access hook for index lifecycle management */
-	prev_object_access_hook = object_access_hook;
-	object_access_hook		= tp_object_access_hook;
+	/* Register relcache invalidation callback for index cleanup */
+	CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
 
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
 
 /*
- * Object access hook function for cleaning up shared memory when indexes are
- * dropped
+ * Relcache invalidation callback for cleaning up shared memory
+ *
+ * This is called whenever a relation's cache entry is invalidated, including
+ * when indexes are dropped. We use this to clean up our DSA areas and shared
+ * memory structures.
+ *
+ * Important notes:
+ * - Relcache invalidations happen for many reasons (DDL, drops, etc.), not
+ *   just drops. We must check if the relation still exists before cleaning
+ *   up.
+ * - We can do catalog lookups here if we're in a transaction context.
+ * - This callback is invoked in EVERY backend process that receives the
+ *   shared invalidation message, not just the backend that dropped the index.
+ * - Our cleanup code must be idempotent and handle concurrent execution
+ *   safely. The registry lookup with lock ensures only one backend actually
+ *   performs the cleanup.
  */
 static void
-tp_object_access_hook(
-		ObjectAccessType access,
-		Oid				 classId,
-		Oid				 objectId,
-		int				 subId,
-		void			*arg)
+tp_relcache_callback(Datum arg, Oid relid)
 {
-	/* Call previous hook first if it exists */
-	if (prev_object_access_hook)
-		prev_object_access_hook(access, classId, objectId, subId, arg);
+	Relation rel;
 
-	/* Handle index drop events */
-	if (access == OAT_DROP && classId == RelationRelationId)
+	(void)arg; /* unused */
+
+	/*
+	 * Check if this relation is in our registry (meaning it's a tapir
+	 * index). If not, we can ignore this invalidation.
+	 */
+	if (!tp_registry_is_registered(relid))
+		return;
+
+	/*
+	 * Try to open the relation to see if it still exists. If it doesn't,
+	 * this is a DROP and we should clean up. We use try_relation_open which
+	 * returns NULL if the relation doesn't exist, rather than throwing an
+	 * error.
+	 */
+	rel = try_relation_open(relid, NoLock);
+	if (rel != NULL)
 	{
-		/* Unregister from global registry first */
-		tp_registry_unregister(objectId);
-		/* Then clean up index-specific shared memory */
-		tp_cleanup_index_shared_memory(objectId);
+		/* Relation still exists, just a normal invalidation */
+		relation_close(rel, NoLock);
+		return;
 	}
+
+	/* Relation doesn't exist - it was dropped, proceed with cleanup */
+
+	/*
+	 * Unregister from global registry first. This removes the entry
+	 * atomically, so other backends seeing the same invalidation will not
+	 * find it registered anymore.
+	 */
+	tp_registry_unregister(relid);
+
+	/*
+	 * Clean up index-specific shared memory (DSA areas, dshash tables, etc.)
+	 * This is safe to call even if another backend already did the cleanup,
+	 * as it handles missing entries gracefully.
+	 */
+	tp_cleanup_index_shared_memory(relid);
 }
 
 /*

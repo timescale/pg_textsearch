@@ -51,4 +51,5 @@ extern void tp_registry_shmem_startup(void);
 extern bool
 tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state);
 extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
+extern bool				   tp_registry_is_registered(Oid index_oid);
 extern void				   tp_registry_unregister(Oid index_oid);

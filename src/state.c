@@ -31,8 +31,10 @@
 
 #include "index.h"
 #include "metapage.h"
+#include "posting.h"
 #include "registry.h"
 #include "state.h"
+#include "stringtable.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
@@ -312,7 +314,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 		MemoryContextSwitchTo(oldcontext);
 	}
 	dsa_pin(dsa); /* Pin the DSA area itself for cross-backend persistence */
-	dsa_pin_mapping(dsa); /* Pin this backend's mapping */
 
 	/* Store DSA handle in small named DSM segment for recovery */
 	total_size = sizeof(TpDsmSegmentHeader);
@@ -344,6 +345,13 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Store shared state pointer in DSM header for recovery */
 	dsm_header->shared_state_dp = shared_dp;
+
+	/*
+	 * Pin all DSM segments after allocations complete.
+	 * DSA creates multiple segments internally, and we must pin after all
+	 * initial allocations so that every segment gets pinned.
+	 */
+	dsa_pin_mapping(dsa);
 
 	/* Register in global registry using DSA pointer, not memory address */
 	if (!tp_registry_register(index_oid, (TpSharedIndexState *)shared_dp))
@@ -425,6 +433,36 @@ tp_cleanup_index_dsa(Oid index_oid)
 
 		if (dsa != NULL)
 		{
+			TpSharedIndexState *shared_state;
+			TpMemtable		   *memtable;
+
+			/* Get shared state to access memtable */
+			shared_state = (TpSharedIndexState *)
+					dsa_get_address(dsa, dsm_header->shared_state_dp);
+			memtable = (TpMemtable *)
+					dsa_get_address(dsa, shared_state->memtable_dp);
+
+			/* Destroy dshash tables to free their internal DSA areas */
+			if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+			{
+				dshash_table *string_hash;
+
+				string_hash = tp_string_table_attach(
+						dsa, memtable->string_hash_handle);
+				if (string_hash != NULL)
+					dshash_destroy(string_hash);
+			}
+
+			if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+			{
+				dshash_table *doc_lengths_hash;
+
+				doc_lengths_hash = tp_doclength_table_attach(
+						dsa, memtable->doc_lengths_handle);
+				if (doc_lengths_hash != NULL)
+					dshash_destroy(doc_lengths_hash);
+			}
+
 			/* Unpin the DSA area so it can be destroyed when last backend
 			 * detaches */
 			dsa_unpin(dsa);
