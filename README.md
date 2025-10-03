@@ -4,17 +4,20 @@
 
 [![CI](https://github.com/timescale/tapir/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/tapir/actions/workflows/ci.yml)
 
-Open-source full-text search for Postgres. (Internal name: Tapir - **T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval)
-
+Open-source full-text search for Postgres.
 Supports:
 
 - BM25 ranking with configurable parameters (k1, b)
 - PostgreSQL text search configurations (english, french, german, etc.)
-- bm25query data type for scoring operations
+- bm25 index and bm25query data type for fast ranked searches
 
-🚀 **Development Status**: v0.0.0a - Pre-alpha release.  Memtable-based
-implementation is in place and working. This is prerelease software and should
-not be used in production.
+🚀 **Development Status**: v0.0.1 - alpha release.  Memtable-based
+implementation is in place and working. This is prerelease software and should not be used in production.
+
+## Historical note
+
+The original name of the project was Tapir - **T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval.  We still use the tapir as our
+mascot and the name occurs in various places in the source code.
 
 ## Installation
 

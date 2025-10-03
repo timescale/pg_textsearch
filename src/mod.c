@@ -2,6 +2,7 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/xact.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
@@ -174,6 +175,23 @@ tp_relcache_callback(Datum arg, Oid relid)
 	 */
 	if (!tp_registry_is_registered(relid))
 		return;
+
+	/*
+	 * We need to check if the relation still exists to distinguish between
+	 * a DROP (relation gone) and a normal invalidation (relation still
+	 * exists). However, try_relation_open() requires a transaction context. If
+	 * we're not in a transaction, we can't safely check, so defer cleanup to
+	 * when we are in a transaction (next time we're called in a transaction).
+	 */
+	if (!IsTransactionState())
+	{
+		/*
+		 * Not in a transaction - we can't call try_relation_open().
+		 * If the index was dropped, we'll get called again when in a
+		 * transaction and can clean up then.
+		 */
+		return;
+	}
 
 	/*
 	 * Try to open the relation to see if it still exists. If it doesn't,
