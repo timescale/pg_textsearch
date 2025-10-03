@@ -19,22 +19,37 @@ CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING bm25(content)
 NOTICE:  Tapir index build started for relation scoring6_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  too many dynamic shared memory segments
+NOTICE:  Tapir index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring6_bulk_idx'), id;
-ERROR:  index "scoring6_bulk_idx" not found
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
 -- Bulk mode query 2: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'), id;
-ERROR:  index "scoring6_bulk_idx" not found
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
 -- Bulk mode query 3: 'world'
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('world', 'scoring6_bulk_idx'), id;
-ERROR:  index "scoring6_bulk_idx" not found
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.1096
+  2 | goodbye cruel world... | -0.0930
+(2 rows)
+
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring6_incr (
     id SERIAL PRIMARY KEY,
@@ -46,7 +61,7 @@ CREATE INDEX scoring6_incr_idx ON scoring6_incr USING bm25(content)
 NOTICE:  Tapir index build started for relation scoring6_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  too many dynamic shared memory segments
+NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Insert test documents incrementally
 INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
 INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
@@ -54,20 +69,33 @@ INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring6_incr_idx'), id;
-ERROR:  index "scoring6_incr_idx" not found
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
 -- Incremental mode query 2: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring6_incr_idx'), id;
-ERROR:  index "scoring6_incr_idx" not found
+ id |        content         | score  
+----+------------------------+--------
+  1 | hello, world!          | 0.0000
+  2 | goodbye cruel world... | 0.0000
+(2 rows)
+
 -- Incremental mode query 3: 'world'
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('world', 'scoring6_incr_idx'), id;
-ERROR:  index "scoring6_incr_idx" not found
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.1096
+  2 | goodbye cruel world... | -0.0930
+(2 rows)
+
 -- Cleanup
 DROP TABLE scoring6_bulk CASCADE;
-ERROR:  too many dynamic shared memory segments
 DROP TABLE scoring6_incr CASCADE;
-ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pgtextsearch CASCADE;

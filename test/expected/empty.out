@@ -25,14 +25,17 @@ WITH (text_config = 'english');
 NOTICE:  Tapir index build started for relation empty_docs_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  too many dynamic shared memory segments
+NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Try searching - should return no results without warnings
 SELECT id, content
 FROM empty_docs
 WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'empty_docs_idx') DESC
 LIMIT 5;
-ERROR:  index "empty_docs_idx" not found
+ id | content 
+----+---------
+(0 rows)
+
 -- Add a document with actual content
 INSERT INTO empty_docs (content) VALUES ('test document with content');
 -- Search again - should find only the document with content
@@ -41,8 +44,11 @@ FROM empty_docs
 WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'empty_docs_idx') DESC
 LIMIT 5;
-ERROR:  index "empty_docs_idx" not found
+ id |      content_preview       
+----+----------------------------
+  7 | test document with content
+(1 row)
+
 -- Clean up
 DROP TABLE empty_docs;
-ERROR:  too many dynamic shared memory segments
 DROP EXTENSION pgtextsearch;
