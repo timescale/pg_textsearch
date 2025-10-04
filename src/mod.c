@@ -54,6 +54,9 @@ static void tp_object_access(
 /* Relcache invalidation callback for cleaning up local state */
 static void tp_relcache_callback(Datum arg, Oid relid);
 
+/* Process exit callback for DSA cleanup */
+static void tp_proc_exit(int code, Datum arg);
+
 /*
  * Extension entry point - called when the extension is loaded
  */
@@ -157,6 +160,9 @@ _PG_init(void)
 
 	/* Register relcache invalidation callback for local state cleanup */
 	CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
+
+	/* Register process exit callback for DSA cleanup */
+	on_proc_exit(tp_proc_exit, 0);
 
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
@@ -264,4 +270,14 @@ tp_shmem_startup(void)
 
 	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
+}
+
+/*
+ * Process exit callback - detach from DSA to prevent segment leaks
+ */
+static void
+tp_proc_exit(int code, Datum arg)
+{
+	/* Detach from the DSA if this backend attached to it */
+	tp_registry_detach_dsa();
 }

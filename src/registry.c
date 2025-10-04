@@ -135,7 +135,7 @@ tp_registry_get_dsa(void)
 			elog(ERROR, "Failed to attach to Tapir shared DSA");
 		}
 
-		/* Pin the mapping for this backend */
+		/* Pin the mapping for this backend (only once per backend) */
 		dsa_pin_mapping(tapir_dsa);
 	}
 
@@ -350,4 +350,20 @@ tp_registry_unregister(Oid index_oid)
 	}
 
 	LWLockRelease(&tapir_registry->lock);
+}
+
+/*
+ * Detach from the shared DSA area
+ *
+ * This is called during backend exit to properly clean up DSA segments
+ * and prevent "too many dynamic shared memory segments" errors.
+ */
+void
+tp_registry_detach_dsa(void)
+{
+	if (tapir_dsa != NULL)
+	{
+		dsa_detach(tapir_dsa);
+		tapir_dsa = NULL;
+	}
 }
