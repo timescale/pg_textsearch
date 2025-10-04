@@ -24,9 +24,6 @@ extern int tp_default_limit;
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
-/* Relcache invalidation callback for cleaning up shared memory */
-static void tp_relcache_callback(Datum arg, Oid relid);
-
 /* Previous shared memory startup hook */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
@@ -136,64 +133,7 @@ _PG_init(void)
 
 	elog(DEBUG1, "pg_textsearch shared memory hooks installed");
 
-	/* Register relcache invalidation callback for index cleanup */
-	CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
-
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
-}
-
-/*
- * Relcache invalidation callback for cleaning up shared memory
- *
- * This is called whenever a relation's cache entry is invalidated, including
- * when indexes are dropped. We use this to clean up our DSA areas and shared
- * memory structures.
- *
- * Important notes:
- * - Relcache invalidations happen for many reasons (DDL, drops, etc.), not
- *   just drops. We must check if the relation still exists before cleaning
- *   up.
- * - We can do catalog lookups here if we're in a transaction context.
- * - This callback is invoked in EVERY backend process that receives the
- *   shared invalidation message, not just the backend that dropped the index.
- * - Our cleanup code must be idempotent and handle concurrent execution
- *   safely. The registry lookup with lock ensures only one backend actually
- *   performs the cleanup.
- */
-static void
-tp_relcache_callback(Datum arg, Oid relid)
-{
-	(void)arg; /* unused */
-
-	/*
-	 * Check if this relation is in our registry (meaning it's a tapir
-	 * index). If not, we can ignore this invalidation.
-	 */
-	if (!tp_registry_is_registered(relid))
-		return;
-
-	/*
-	 * Clean up on any invalidation for our registered indexes.
-	 * This handles both DROP INDEX and normal cache invalidations.
-	 * In the case of a normal invalidation (not a drop), we'll simply
-	 * rebuild the memtable on next access, which is acceptable overhead.
-	 * This approach avoids needing to distinguish between drop and
-	 * invalidation, which would require catalog access in a transaction.
-	 */
-
-	/*
-	 * Unregister from global registry first. This removes the entry
-	 * atomically, so other backends seeing the same invalidation will not
-	 * find it registered anymore.
-	 */
-	tp_registry_unregister(relid);
-
-	/*
-	 * Clean up index-specific shared memory (DSA areas, dshash tables, etc.)
-	 * This is safe to call even if another backend already did the cleanup,
-	 * as it handles missing entries gracefully.
-	 */
-	tp_cleanup_index_shared_memory(relid);
 }
 
 /*
