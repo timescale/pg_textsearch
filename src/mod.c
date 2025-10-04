@@ -1,6 +1,8 @@
 #include <postgres.h>
 
 #include <access/reloptions.h>
+#include <catalog/dependency.h>
+#include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
@@ -24,6 +26,9 @@ extern int tp_default_limit;
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
+/* Previous object access hook */
+static object_access_hook_type prev_object_access_hook = NULL;
+
 /* Previous shared memory startup hook */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
@@ -35,6 +40,14 @@ static void tp_shmem_request(void);
 
 /* Shared memory startup hook */
 static void tp_shmem_startup(void);
+
+/* Object access hook for DROP INDEX detection */
+static void tp_object_access(
+		ObjectAccessType access,
+		Oid				 classId,
+		Oid				 objectId,
+		int				 subId,
+		void			*arg);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -133,7 +146,45 @@ _PG_init(void)
 
 	elog(DEBUG1, "pg_textsearch shared memory hooks installed");
 
+	/* Install object access hook for DROP INDEX detection */
+	prev_object_access_hook = object_access_hook;
+	object_access_hook		= tp_object_access;
+
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
+}
+
+/*
+ * Object access hook - handle DROP INDEX
+ */
+static void
+tp_object_access(
+		ObjectAccessType access,
+		Oid				 classId,
+		Oid				 objectId,
+		int				 subId,
+		void			*arg)
+{
+	/* Call previous hook if exists */
+	if (prev_object_access_hook)
+		prev_object_access_hook(access, classId, objectId, subId, arg);
+
+	/* We only care about DROP events on relations (indexes are relations) */
+	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
+	{
+		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *)arg;
+
+		/* Skip internal drops */
+		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
+			return;
+
+		/* Check if this is one of our indexes */
+		if (!tp_registry_is_registered(objectId))
+			return;
+
+		/* Unregister and cleanup shared memory */
+		tp_registry_unregister(objectId);
+		tp_cleanup_index_shared_memory(objectId);
+	}
 }
 
 /*
