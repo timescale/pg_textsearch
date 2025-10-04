@@ -1,5 +1,6 @@
 #include <postgres.h>
 
+#include <access/relation.h>
 #include <access/reloptions.h>
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
@@ -14,6 +15,7 @@
 #include "memtable.h"
 #include "posting.h"
 #include "registry.h"
+#include "state.h"
 
 PG_MODULE_MAGIC;
 
@@ -48,6 +50,9 @@ static void tp_object_access(
 		Oid				 objectId,
 		int				 subId,
 		void			*arg);
+
+/* Relcache invalidation callback for cleaning up local state */
+static void tp_relcache_callback(Datum arg, Oid relid);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -150,6 +155,9 @@ _PG_init(void)
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
 
+	/* Register relcache invalidation callback for local state cleanup */
+	CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
+
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
 
@@ -181,10 +189,53 @@ tp_object_access(
 		if (!tp_registry_is_registered(objectId))
 			return;
 
-		/* Unregister and cleanup shared memory */
-		tp_registry_unregister(objectId);
+		/* Cleanup shared memory BEFORE unregistering */
 		tp_cleanup_index_shared_memory(objectId);
+		/* tp_cleanup_index_shared_memory handles unregistering */
 	}
+}
+
+/*
+ * Relcache invalidation callback - clean up local state for invalidated
+ * indexes This is called in all backends when an index is dropped or
+ * invalidated, allowing us to clean up local DSA attachments
+ */
+static void
+tp_relcache_callback(Datum arg, Oid relid)
+{
+	TpLocalIndexState *local_state;
+	Relation		   rel;
+
+	/* Check if we have any local state cached for this relation
+	 * If not, we have nothing to clean up */
+	local_state = tp_get_local_index_state_if_cached(relid);
+	if (local_state == NULL)
+		return;
+
+	elog(DEBUG1, "Relcache callback for index %u - have local state", relid);
+
+	/* Try to open the relation to check if it still exists */
+	rel = try_relation_open(relid, NoLock);
+	if (rel != NULL)
+	{
+		/* Index still exists - this is just a cache invalidation, not a drop
+		 */
+		elog(DEBUG1,
+			 "Relcache callback for index %u - relation exists, skipping "
+			 "cleanup",
+			 relid);
+		relation_close(rel, NoLock);
+		return;
+	}
+
+	elog(DEBUG1,
+		 "Relcache callback for index %u - relation gone, cleaning up local "
+		 "state",
+		 relid);
+
+	/* Index no longer exists - clean up our local state
+	 * This detaches from DSA and frees the local_state structure */
+	tp_release_local_index_state(local_state);
 }
 
 /*
@@ -197,7 +248,7 @@ tp_shmem_request(void)
 	if (prev_shmem_request_hook)
 		prev_shmem_request_hook();
 
-	/* Request shared memory for registry */
+	/* Request shared memory for registry (includes DSA control) */
 	tp_registry_init();
 }
 
@@ -211,6 +262,6 @@ tp_shmem_startup(void)
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
 
-	/* Initialize the registry in shared memory */
+	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
 }

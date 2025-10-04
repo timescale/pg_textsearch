@@ -18,12 +18,16 @@
 #include <storage/ipc.h>
 #include <storage/lwlock.h>
 #include <storage/shmem.h>
+#include <utils/dsa.h>
 #include <utils/memutils.h>
 
 #include "registry.h"
 
 /* Backend-local pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;
+
+/* Backend-local DSA area pointer */
+static dsa_area *tapir_dsa = NULL;
 
 /*
  * Request shared memory for the registry
@@ -59,6 +63,9 @@ tp_registry_shmem_startup(void)
 		/* Initialize the registry lock */
 		LWLockInitialize(&tapir_registry->lock, LWLockNewTrancheId());
 
+		/* Initialize DSA handle as invalid */
+		tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
+
 		/* Initialize all entries as not in use */
 		for (int i = 0; i < TP_MAX_INDEXES; i++)
 		{
@@ -76,11 +83,74 @@ tp_registry_shmem_startup(void)
 }
 
 /*
+ * Get or create the shared DSA area
+ *
+ * This function is called by any backend that needs access to the DSA.
+ * The first backend creates it, others attach to it.
+ */
+dsa_area *
+tp_registry_get_dsa(void)
+{
+	/* Quick check if already attached in this backend */
+	if (tapir_dsa != NULL)
+		return tapir_dsa;
+
+	/* Ensure registry is initialized */
+	if (!tapir_registry)
+	{
+		tp_registry_shmem_startup();
+		if (!tapir_registry)
+			elog(ERROR, "Failed to initialize Tapir registry");
+	}
+
+	/* Check if DSA exists, create if needed */
+	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
+
+	if (tapir_registry->dsa_handle == DSA_HANDLE_INVALID)
+	{
+		/* First backend - create the DSA */
+		MemoryContext oldcontext;
+
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		tapir_dsa  = dsa_create(LWLockNewTrancheId());
+		MemoryContextSwitchTo(oldcontext);
+
+		/* Pin the DSA to keep it alive across backends */
+		dsa_pin(tapir_dsa);
+
+		/* Pin the mapping for this backend */
+		dsa_pin_mapping(tapir_dsa);
+
+		/* Store handle for other backends */
+		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
+	}
+	else
+	{
+		/* DSA exists - attach to it */
+		tapir_dsa = dsa_attach(tapir_registry->dsa_handle);
+
+		if (tapir_dsa == NULL)
+		{
+			LWLockRelease(&tapir_registry->lock);
+			elog(ERROR, "Failed to attach to Tapir shared DSA");
+		}
+
+		/* Pin the mapping for this backend */
+		dsa_pin_mapping(tapir_dsa);
+	}
+
+	LWLockRelease(&tapir_registry->lock);
+
+	return tapir_dsa;
+}
+
+/*
  * Register an index in the global registry
  * Returns true on success, false if registry is full
  */
 bool
-tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
+tp_registry_register(
+		Oid index_oid, TpSharedIndexState *shared_state, dsa_pointer shared_dp)
 {
 	if (!tapir_registry)
 	{
@@ -100,7 +170,8 @@ tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
 		if (tapir_registry->entries[i].index_oid == index_oid)
 		{
 			/* Update the shared state and return */
-			tapir_registry->entries[i].shared_state = shared_state;
+			tapir_registry->entries[i].shared_state	   = shared_state;
+			tapir_registry->entries[i].shared_state_dp = shared_dp;
 			LWLockRelease(&tapir_registry->lock);
 			return true;
 		}
@@ -111,8 +182,9 @@ tp_registry_register(Oid index_oid, TpSharedIndexState *shared_state)
 	{
 		if (tapir_registry->entries[i].index_oid == InvalidOid)
 		{
-			tapir_registry->entries[i].index_oid	= index_oid;
-			tapir_registry->entries[i].shared_state = shared_state;
+			tapir_registry->entries[i].index_oid	   = index_oid;
+			tapir_registry->entries[i].shared_state	   = shared_state;
+			tapir_registry->entries[i].shared_state_dp = shared_dp;
 			tapir_registry->num_entries++;
 			LWLockRelease(&tapir_registry->lock);
 			return true;
@@ -153,6 +225,66 @@ tp_registry_lookup(Oid index_oid)
 		if (tapir_registry->entries[i].index_oid == index_oid)
 		{
 			result = tapir_registry->entries[i].shared_state;
+			break;
+		}
+	}
+
+	LWLockRelease(&tapir_registry->lock);
+	return result;
+}
+
+/*
+ * Look up an index's DSA pointer in the registry
+ * Returns the DSA pointer if found, InvalidDsaPointer otherwise
+ */
+dsa_pointer
+tp_registry_lookup_dsa(Oid index_oid)
+{
+	dsa_pointer result = InvalidDsaPointer;
+
+	if (!tapir_registry)
+	{
+		/* Registry not attached in this backend - initialize it */
+		tp_registry_shmem_startup();
+		if (!tapir_registry)
+			elog(ERROR,
+				 "Failed to initialize pg_textsearch registry for lookup");
+	}
+
+	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+
+	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	{
+		if (tapir_registry->entries[i].index_oid == index_oid)
+		{
+			result = tapir_registry->entries[i].shared_state_dp;
+			break;
+		}
+	}
+
+	LWLockRelease(&tapir_registry->lock);
+	return result;
+}
+
+/*
+ * Get DSA pointer to shared state from the registry
+ * Returns the DSA pointer or InvalidDsaPointer if not found
+ */
+dsa_pointer
+tp_registry_get_shared_dp(Oid index_oid)
+{
+	dsa_pointer result = InvalidDsaPointer;
+
+	if (!tapir_registry)
+		return InvalidDsaPointer;
+
+	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+
+	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	{
+		if (tapir_registry->entries[i].index_oid == index_oid)
+		{
+			result = tapir_registry->entries[i].shared_state_dp;
 			break;
 		}
 	}

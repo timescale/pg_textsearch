@@ -867,9 +867,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
 
-	/* Tapir index build started */
+	elog(DEBUG1, "tp_build called for index %u", RelationGetRelid(index));
+
+	/* BM25 index build started */
 	elog(NOTICE,
-		 "Tapir index build started for relation %s",
+		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
 	/* Report initialization phase */
@@ -892,6 +894,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Initialize index state */
 	index_state = tp_create_shared_index_state(
 			RelationGetRelid(index), RelationGetRelid(heap));
+
+	elog(NOTICE,
+		 "Created shared index state for index %u, state=%p",
+		 RelationGetRelid(index),
+		 index_state);
 
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
@@ -947,7 +954,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (OidIsValid(text_config_oid))
 	{
 		elog(NOTICE,
-			 "Tapir index build completed: %lu documents, avg_length=%.2f, "
+			 "BM25 index build completed: %lu documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -958,7 +965,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	else
 	{
 		elog(NOTICE,
-			 "Tapir index build completed: %lu documents, avg_length=%.2f "
+			 "BM25 index build completed: %lu documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1080,7 +1087,14 @@ tp_insert(
 	/* Get index state */
 	/* TODO: cache local state pointer to avoid hash lookup */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
-	Assert(index_state != NULL);
+	if (index_state == NULL)
+	{
+		elog(ERROR,
+			 "Failed to get index state for index %u during tp_insert. "
+			 "This should not happen - index should be registered during "
+			 "build!",
+			 RelationGetRelid(index));
+	}
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);

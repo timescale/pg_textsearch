@@ -322,9 +322,3 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 /*
  * Shared memory cleanup - simplified stub
  */
-void
-tp_cleanup_index_shared_memory(Oid index_oid)
-{
-	/* Forward to state.c which has access to DSA functions */
-	tp_cleanup_index_dsa(index_oid);
-}
