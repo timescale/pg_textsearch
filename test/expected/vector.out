@@ -219,7 +219,15 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
-server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-connection to server was lost
+ id | order_by_score | standalone_score | score_consistency
+----+----------------+------------------+-------------------
+  1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
+  2 |      -0.996679 |        -0.996679 | ✓ SCORES MATCH
+  3 |       0.000000 |         0.000000 | ✓ SCORES MATCH
+(3 rows)
+
+-- Cleanup
+DROP INDEX docs_vector_idx;
+DROP INDEX docs_simple_idx;
+DROP TABLE test_docs;
+DROP EXTENSION pgtextsearch CASCADE;
