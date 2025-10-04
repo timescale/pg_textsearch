@@ -57,6 +57,9 @@ static void tp_relcache_callback(Datum arg, Oid relid);
 /* Process exit callback for DSA cleanup */
 static void tp_proc_exit(int code, Datum arg);
 
+/* Flag to track if we've already registered callbacks */
+static bool callbacks_registered = false;
+
 /*
  * Extension entry point - called when the extension is loaded
  */
@@ -158,11 +161,18 @@ _PG_init(void)
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
 
-	/* Register relcache invalidation callback for local state cleanup */
-	CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
+	/* Register callbacks only once per backend */
+	if (!callbacks_registered)
+	{
+		/* Register relcache invalidation callback for local state cleanup */
+		CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
 
-	/* Register process exit callback for DSA cleanup */
-	on_proc_exit(tp_proc_exit, 0);
+		/* Register process exit callback for DSA cleanup */
+		on_proc_exit(tp_proc_exit, 0);
+
+		callbacks_registered = true;
+		elog(DEBUG1, "pg_textsearch callbacks registered");
+	}
 
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
