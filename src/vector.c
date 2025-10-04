@@ -1,6 +1,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/relation.h>
 #include <catalog/namespace.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
@@ -590,7 +591,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 	}
 
 	/* Open the index relation to get metadata */
-	index_rel = RelationIdGetRelation(index_oid);
+	index_rel = index_open(index_oid, AccessShareLock);
 	if (!RelationIsValid(index_rel))
 	{
 		ereport(ERROR,
@@ -622,7 +623,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 	/* Clean up index relation and metapage */
 	pfree(metap);
-	RelationClose(index_rel);
+	index_close(index_rel, AccessShareLock);
 
 	/* Use to_tsvector to process the text */
 
