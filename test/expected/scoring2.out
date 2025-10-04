@@ -19,10 +19,10 @@ INSERT INTO scoring2_bulk (content) VALUES ('hello');
 -- Create index after data insertion (bulk build)
 CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation scoring2_bulk_idx
+NOTICE:  BM25 index build started for relation scoring2_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=1.80, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 5 documents, avg_length=1.80, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
@@ -83,10 +83,10 @@ CREATE TABLE scoring2_incr (
 -- Create index before data insertion (incremental build)
 CREATE INDEX scoring2_incr_idx ON scoring2_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation scoring2_incr_idx
+NOTICE:  BM25 index build started for relation scoring2_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Insert test documents incrementally
 INSERT INTO scoring2_incr (content) VALUES ('hello world');
 INSERT INTO scoring2_incr (content) VALUES ('goodbye world');

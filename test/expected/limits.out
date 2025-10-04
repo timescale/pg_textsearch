@@ -38,10 +38,10 @@ INSERT INTO limit_test (title, content) VALUES
     ('Database Security', 'database security measures and access control mechanisms');
 -- Create pgtextsearch index
 CREATE INDEX limit_test_idx ON limit_test USING bm25(content) WITH (text_config='english');
-NOTICE:  Tapir index build started for relation limit_test_idx
+NOTICE:  BM25 index build started for relation limit_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 20 documents, avg_length=6.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 20 documents, avg_length=6.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
 EXPLAIN (COSTS OFF)

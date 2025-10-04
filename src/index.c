@@ -895,11 +895,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	index_state = tp_create_shared_index_state(
 			RelationGetRelid(index), RelationGetRelid(heap));
 
-	elog(NOTICE,
-		 "Created shared index state for index %u, state=%p",
-		 RelationGetRelid(index),
-		 index_state);
-
 	/* Report memtable building phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);

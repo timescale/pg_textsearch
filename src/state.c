@@ -99,11 +99,6 @@ tp_get_local_index_state(Oid index_oid)
 	/* Look up shared state in registry */
 	shared_state = tp_registry_lookup(index_oid);
 
-	elog(DEBUG1,
-		 "tp_get_local_index_state: index_oid=%u, shared_state=%p",
-		 index_oid,
-		 shared_state);
-
 	if (shared_state == NULL)
 	{
 		/*
@@ -168,8 +163,6 @@ tp_get_local_index_state(Oid index_oid)
 		/* Index not found in registry and we're not in recovery mode */
 		return NULL;
 	}
-
-	elog(DEBUG1, "Found registry entry for index %u", index_oid);
 
 	/* If we reach here with shared_state set, it's actually a DSA pointer */
 	if (shared_state != NULL)
@@ -253,11 +246,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	LocalStateCacheEntry *entry;
 	bool				  found;
 
-	elog(DEBUG1,
-		 "tp_create_shared_index_state entering: index_oid=%u, heap_oid=%u",
-		 index_oid,
-		 heap_oid);
-
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
 
@@ -299,10 +287,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 		}
 	}
 
-	elog(DEBUG1,
-		 "Successfully registered index %u in global registry",
-		 index_oid);
-
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
@@ -341,59 +325,32 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	LocalStateCacheEntry *entry = NULL;
 	bool				  found;
 
-	elog(DEBUG1,
-		 "tp_cleanup_index_shared_memory called for index %u",
-		 index_oid);
 	/* Look up the DSA pointer in registry */
 	shared_dp = tp_registry_lookup_dsa(index_oid);
-	elog(DEBUG1,
-		 "Cleanup: registry lookup returned dp = %llu",
-		 (unsigned long long)shared_dp);
-
-	/* Unregister from global registry AFTER cleanup to avoid races */
-	/* tp_registry_unregister(index_oid); -- moved below */
 
 	if (!DsaPointerIsValid(shared_dp))
 	{
-		elog(DEBUG1,
-			 "Cleanup: no shared state found, unregistering and returning");
 		/* Still unregister even if no shared state found */
 		tp_registry_unregister(index_oid);
 		return; /* Nothing to clean up */
 	}
 
-	elog(DEBUG1, "Cleanup: shared_dp = %llu", (unsigned long long)shared_dp);
-
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
-	elog(DEBUG1, "Cleanup: got DSA area = %p", dsa);
 
 	/* Get shared state to access memtable */
-	elog(DEBUG1, "Cleanup: getting shared state from DSA");
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
-	elog(DEBUG1, "Cleanup: got shared state = %p", shared_state);
-	elog(DEBUG1,
-		 "Cleanup: memtable_dp = %llu",
-		 (unsigned long long)shared_state->memtable_dp);
 	memtable = (TpMemtable *)dsa_get_address(dsa, shared_state->memtable_dp);
-	elog(DEBUG1, "Cleanup: got memtable = %p", memtable);
 
 	/* Destroy the string hash table if it exists */
 	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
 		dshash_table *string_hash;
 
-		elog(DEBUG1,
-			 "Cleanup: attaching to string hash handle %u",
-			 memtable->string_hash_handle);
 		string_hash =
 				tp_string_table_attach(dsa, memtable->string_hash_handle);
 		if (string_hash != NULL)
-		{
-			elog(DEBUG1, "Cleanup: destroying string hash table");
 			dshash_destroy(string_hash);
-			elog(DEBUG1, "Cleanup: destroyed string hash table");
-		}
 	}
 
 	/* Destroy the document lengths hash table if it exists */
@@ -401,28 +358,14 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	{
 		dshash_table *doc_lengths_hash;
 
-		elog(DEBUG1,
-			 "Cleanup: attaching to doc lengths hash handle %u",
-			 memtable->doc_lengths_handle);
 		doc_lengths_hash =
 				tp_doclength_table_attach(dsa, memtable->doc_lengths_handle);
 		if (doc_lengths_hash != NULL)
-		{
-			elog(DEBUG1, "Cleanup: destroying doc lengths hash table");
 			dshash_destroy(doc_lengths_hash);
-			elog(DEBUG1, "Cleanup: destroyed doc lengths hash table");
-		}
 	}
 
 	/* Free shared state structures from DSA */
-	elog(DEBUG1,
-		 "Cleanup: freeing memtable at dp %llu",
-		 (unsigned long long)shared_state->memtable_dp);
 	dsa_free(dsa, shared_state->memtable_dp);
-
-	elog(DEBUG1,
-		 "Cleanup: freeing shared state at dp %llu",
-		 (unsigned long long)shared_dp);
 	dsa_free(dsa, shared_dp);
 
 	/* Clean up local state if we have it cached */
@@ -431,13 +374,8 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
 		if (found && entry != NULL && entry->local_state != NULL)
 		{
-			elog(DEBUG1,
-				 "Cleanup: found local state cache entry for index %u",
-				 index_oid);
-
 			/* Remove from cache first, before detaching DSA */
 			hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
-			elog(DEBUG1, "Cleanup: removed from local state cache");
 
 			/* Don't detach DSA - it's shared and still in use by registry */
 			/* Just nullify the reference */
@@ -446,7 +384,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 			/* Free the local state */
 			pfree(entry->local_state);
-			elog(DEBUG1, "Cleanup: freed local state");
 		}
 	}
 

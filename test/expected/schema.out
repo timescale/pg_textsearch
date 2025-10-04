@@ -18,10 +18,10 @@ INSERT INTO docs.articles (content) VALUES ('hello cruel goodbye');
 -- Create index on schema-qualified table
 CREATE INDEX articles_idx ON docs.articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation articles_idx
+NOTICE:  BM25 index build started for relation articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Unqualified index name (not in search path - should fail)
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
@@ -61,10 +61,10 @@ INSERT INTO public_articles (content) VALUES ('hello world');
 INSERT INTO public_articles (content) VALUES ('goodbye cruel world');
 CREATE INDEX public_articles_idx ON public_articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation public_articles_idx
+NOTICE:  BM25 index build started for relation public_articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
 -- Unqualified index name works for public schema tables
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles

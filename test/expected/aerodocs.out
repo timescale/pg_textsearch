@@ -50,10 +50,10 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 -- Create pgtextsearch index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation cranfield_tapir_idx
+NOTICE:  BM25 index build started for relation cranfield_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 10 documents, avg_length=87.80, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 10 documents, avg_length=87.80, text_config='english' (k1=1.20, b=0.75)
 \echo 'pgtextsearch index created. Running validation tests...'
 pgtextsearch index created. Running validation tests...
 -- Disable sequential scans to ensure index usage
