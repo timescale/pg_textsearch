@@ -1,8 +1,6 @@
 #include <postgres.h>
 
-#include <access/relation.h>
 #include <access/reloptions.h>
-#include <access/xact.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
@@ -165,8 +163,6 @@ _PG_init(void)
 static void
 tp_relcache_callback(Datum arg, Oid relid)
 {
-	Relation rel;
-
 	(void)arg; /* unused */
 
 	/*
@@ -177,37 +173,13 @@ tp_relcache_callback(Datum arg, Oid relid)
 		return;
 
 	/*
-	 * We need to check if the relation still exists to distinguish between
-	 * a DROP (relation gone) and a normal invalidation (relation still
-	 * exists). However, try_relation_open() requires a transaction context. If
-	 * we're not in a transaction, we can't safely check, so defer cleanup to
-	 * when we are in a transaction (next time we're called in a transaction).
+	 * Clean up on any invalidation for our registered indexes.
+	 * This handles both DROP INDEX and normal cache invalidations.
+	 * In the case of a normal invalidation (not a drop), we'll simply
+	 * rebuild the memtable on next access, which is acceptable overhead.
+	 * This approach avoids needing to distinguish between drop and
+	 * invalidation, which would require catalog access in a transaction.
 	 */
-	if (!IsTransactionState())
-	{
-		/*
-		 * Not in a transaction - we can't call try_relation_open().
-		 * If the index was dropped, we'll get called again when in a
-		 * transaction and can clean up then.
-		 */
-		return;
-	}
-
-	/*
-	 * Try to open the relation to see if it still exists. If it doesn't,
-	 * this is a DROP and we should clean up. We use try_relation_open which
-	 * returns NULL if the relation doesn't exist, rather than throwing an
-	 * error.
-	 */
-	rel = try_relation_open(relid, NoLock);
-	if (rel != NULL)
-	{
-		/* Relation still exists, just a normal invalidation */
-		relation_close(rel, NoLock);
-		return;
-	}
-
-	/* Relation doesn't exist - it was dropped, proceed with cleanup */
 
 	/*
 	 * Unregister from global registry first. This removes the entry
