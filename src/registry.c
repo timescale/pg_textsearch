@@ -30,6 +30,9 @@ static TpGlobalRegistry *tapir_registry = NULL;
 /* Backend-local DSA area pointer */
 static dsa_area *tapir_dsa = NULL;
 
+/* Track whether we've already pinned the DSA mapping in this backend */
+static bool tapir_dsa_mapped = false;
+
 /*
  * Request shared memory for the registry
  * Only effective when loaded via shared_preload_libraries
@@ -122,8 +125,12 @@ tp_registry_get_dsa(void)
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
 
-		/* Pin the mapping for this backend */
-		dsa_pin_mapping(tapir_dsa);
+		/* Pin the mapping for this backend (only once per backend) */
+		if (!tapir_dsa_mapped)
+		{
+			dsa_pin_mapping(tapir_dsa);
+			tapir_dsa_mapped = true;
+		}
 
 		/* Store handle for other backends */
 		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
@@ -140,7 +147,11 @@ tp_registry_get_dsa(void)
 		}
 
 		/* Pin the mapping for this backend (only once per backend) */
-		dsa_pin_mapping(tapir_dsa);
+		if (!tapir_dsa_mapped)
+		{
+			dsa_pin_mapping(tapir_dsa);
+			tapir_dsa_mapped = true;
+		}
 	}
 
 	LWLockRelease(&tapir_registry->lock);
