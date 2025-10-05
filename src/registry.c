@@ -197,9 +197,7 @@ tp_registry_register(
 
 	/* Registry is full - this is an error condition */
 	LWLockRelease(&tapir_registry->lock);
-	elog(ERROR,
-		 "pg_textsearch registry full, cannot register index %u",
-		 index_oid);
+	elog(ERROR, "Tapir registry full, cannot register index %u", index_oid);
 	/* Not reached, but keeps compiler happy */
 	return false;
 }
@@ -218,8 +216,7 @@ tp_registry_lookup(Oid index_oid)
 		/* Registry not attached in this backend - initialize it */
 		tp_registry_shmem_startup();
 		if (!tapir_registry)
-			elog(ERROR,
-				 "Failed to initialize pg_textsearch registry for lookup");
+			elog(ERROR, "Failed to initialize Tapir registry for lookup");
 	}
 
 	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
@@ -255,8 +252,7 @@ tp_registry_lookup_dsa(Oid index_oid)
 		/* Registry not attached in this backend - initialize it */
 		tp_registry_shmem_startup();
 		if (!tapir_registry)
-			elog(ERROR,
-				 "Failed to initialize pg_textsearch registry for lookup");
+			elog(ERROR, "Failed to initialize Tapir registry for lookup");
 	}
 
 	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
@@ -371,6 +367,10 @@ tp_registry_unregister(Oid index_oid)
 
 		/* Set our local pointer to NULL to prevent use */
 		tapir_dsa = NULL;
+
+		/* Clear all cached local states since their DSA pointers are now
+		 * invalid */
+		tp_clear_all_local_states();
 	}
 
 	LWLockRelease(&tapir_registry->lock);
@@ -403,6 +403,10 @@ tp_registry_reset_dsa(void)
 	tapir_registry->num_entries = 0;
 
 	LWLockRelease(&tapir_registry->lock);
+
+	/* Clear all cached local states since their DSA pointers are now invalid
+	 */
+	tp_clear_all_local_states();
 }
 
 /*
