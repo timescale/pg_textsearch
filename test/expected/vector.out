@@ -219,7 +219,7 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
- id | order_by_score | standalone_score | score_consistency
+ id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
   1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
   2 |      -0.996679 |        -0.996679 | ✓ SCORES MATCH

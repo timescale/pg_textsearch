@@ -370,11 +370,29 @@ tp_registry_unregister(Oid index_oid)
 	{
 		if (tapir_registry->entries[i].index_oid == index_oid)
 		{
-			tapir_registry->entries[i].index_oid	= InvalidOid;
-			tapir_registry->entries[i].shared_state = NULL;
+			tapir_registry->entries[i].index_oid	   = InvalidOid;
+			tapir_registry->entries[i].shared_state	   = NULL;
+			tapir_registry->entries[i].shared_state_dp = InvalidDsaPointer;
 			tapir_registry->num_entries--;
 			break;
 		}
+	}
+
+	/* If this was the last index, reset the DSA handle in the registry */
+	if (tapir_registry->num_entries == 0)
+	{
+		elog(DEBUG1, "DSA: Last index dropped, marking DSA handle as invalid");
+
+		/* Reset the handle in the registry so next CREATE EXTENSION creates a
+		 * fresh DSA We don't detach from the DSA here because:
+		 * 1. Other backends might still be using it
+		 * 2. Each backend will detach when it exits
+		 * 3. The DSA will be cleaned up when the last backend detaches
+		 */
+		tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
+
+		/* Set our local pointer to NULL to prevent use */
+		tapir_dsa = NULL;
 	}
 
 	LWLockRelease(&tapir_registry->lock);
