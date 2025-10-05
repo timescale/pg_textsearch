@@ -228,7 +228,11 @@ tp_registry_lookup(Oid index_oid)
 	{
 		if (tapir_registry->entries[i].index_oid == index_oid)
 		{
-			result = tapir_registry->entries[i].shared_state;
+			/* Return the DSA pointer cast as a TpSharedIndexState pointer
+			 * The caller will convert it back to a DSA pointer */
+			result = (TpSharedIndexState *)(uintptr_t)tapir_registry
+							 ->entries[i]
+							 .shared_state_dp;
 			break;
 		}
 	}
