@@ -55,7 +55,8 @@ static void tp_object_access(
 static void tp_relcache_callback(Datum arg, Oid relid);
 
 /* Process exit callback for DSA cleanup */
-static void tp_proc_exit(int code, Datum arg);
+/* static void tp_proc_exit(int code, Datum arg); -- unused, see comment below
+ */
 
 /* Flag to track if we've already registered callbacks */
 static bool callbacks_registered = false;
@@ -167,8 +168,15 @@ _PG_init(void)
 		/* Register relcache invalidation callback for local state cleanup */
 		CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
 
-		/* Register process exit callback for DSA cleanup */
-		on_proc_exit(tp_proc_exit, 0);
+		/*
+		 * Note: We don't register a process exit callback to detach from DSA
+		 * because:
+		 * 1. The OS cleans up all process resources on exit anyway
+		 * 2. DROP EXTENSION might have already destroyed the DSA
+		 * 3. Trying to detach from a destroyed DSA causes crashes
+		 * 4. The DSA system has its own cleanup mechanisms
+		 */
+		/* on_proc_exit(tp_proc_exit, 0); -- disabled to prevent crashes */
 
 		callbacks_registered = true;
 		elog(DEBUG1, "pg_textsearch callbacks registered");
@@ -176,6 +184,14 @@ _PG_init(void)
 
 	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
+
+/*
+ * Note: We intentionally do not implement _PG_fini because:
+ * 1. It's called when any backend exits (not just on DROP EXTENSION)
+ * 2. DSA cleanup happens automatically via process exit callbacks
+ * 3. Local memory is freed automatically when the backend exits
+ * 4. Shared memory structures remain valid for other backends
+ */
 
 /*
  * Object access hook - handle DROP INDEX
@@ -283,11 +299,20 @@ tp_shmem_startup(void)
 }
 
 /*
- * Process exit callback - detach from DSA to prevent segment leaks
+ * Process exit callback - DISABLED to prevent crashes
+ *
+ * We originally tried to detach from DSA on process exit, but this caused
+ * crashes when DROP EXTENSION destroyed the DSA before process exit.
+ * Since the OS cleans up all resources on process exit anyway, and the
+ * DSA system has its own cleanup mechanisms, we no longer need this.
+ *
+ * Keeping the code commented out for documentation purposes.
  */
+#if 0
 static void
 tp_proc_exit(int code, Datum arg)
 {
 	/* Detach from the DSA if this backend attached to it */
 	tp_registry_detach_dsa();
 }
+#endif

@@ -69,6 +69,38 @@ init_local_state_cache(void)
 }
 
 /*
+ * Clear all cached local states
+ * This is called when the DSA is being detached to prevent stale pointers
+ */
+void
+tp_clear_all_local_states(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	if (local_state_cache == NULL)
+		return;
+
+	/* Iterate through all cached entries */
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
+	{
+		TpLocalIndexState *local_state = entry->local_state;
+		if (local_state != NULL)
+		{
+			/* Note: We don't detach from DSA here since it's already being
+			 * detached globally */
+			local_state->dsa = NULL;
+			pfree(local_state);
+		}
+	}
+
+	/* Clear the entire cache */
+	hash_destroy(local_state_cache);
+	local_state_cache = NULL;
+}
+
+/*
  * Get or create a local index state for the given index OID
  *
  * This function:
@@ -256,6 +288,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 		elog(ERROR, "Failed to allocate DSA memory for shared state");
 	}
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+	elog(DEBUG1,
+		 "DSA: Allocated shared state for index %u (size %zu, pointer %lu)",
+		 index_oid,
+		 sizeof(TpSharedIndexState),
+		 (unsigned long)shared_dp);
 
 	/* Initialize shared state */
 	shared_state->index_oid	 = index_oid;
@@ -266,7 +303,13 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
-	memtable	= (TpMemtable *)dsa_get_address(dsa, memtable_dp);
+	elog(DEBUG1,
+		 "DSA: Allocated memtable for index %u (size %zu, pointer %lu)",
+		 index_oid,
+		 sizeof(TpMemtable),
+		 (unsigned long)memtable_dp);
+
+	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_terms		 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
@@ -325,6 +368,11 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	LocalStateCacheEntry *entry = NULL;
 	bool				  found;
 
+	elog(DEBUG1,
+		 "DSA: Cleanup called for index %u (backend PID %d)",
+		 index_oid,
+		 MyProcPid);
+
 	/* Look up the DSA pointer in registry */
 	shared_dp = tp_registry_lookup_dsa(index_oid);
 
@@ -365,7 +413,16 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	}
 
 	/* Free shared state structures from DSA */
+	elog(DEBUG1,
+		 "DSA: Freeing memtable for index %u (pointer %lu)",
+		 index_oid,
+		 (unsigned long)shared_state->memtable_dp);
 	dsa_free(dsa, shared_state->memtable_dp);
+
+	elog(DEBUG1,
+		 "DSA: Freeing shared state for index %u (pointer %lu)",
+		 index_oid,
+		 (unsigned long)shared_dp);
 	dsa_free(dsa, shared_dp);
 
 	/* Clean up local state if we have it cached */

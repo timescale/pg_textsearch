@@ -17,6 +17,7 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <miscadmin.h>
 #include <utils/memutils.h>
 
 #include "common/hashfn.h"
@@ -147,7 +148,12 @@ tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
 	char	   *string_data;
 
 	/* Allocate space for string + null terminator */
-	string_dp	= dsa_allocate(area, len + 1);
+	string_dp = dsa_allocate(area, len + 1);
+	elog(DEBUG1,
+		 "DSA: Allocated string (size %zu, pointer %lu, backend PID %d)",
+		 len + 1,
+		 (unsigned long)string_dp,
+		 MyProcPid);
 	string_data = (char *)dsa_get_address(area, string_dp);
 
 	/* Copy string data and null terminate */
