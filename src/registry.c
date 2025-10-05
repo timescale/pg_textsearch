@@ -354,24 +354,18 @@ tp_registry_unregister(Oid index_oid)
 		}
 	}
 
-	/* If this was the last index, reset the DSA handle in the registry */
-	if (tapir_registry->num_entries == 0)
-	{
-		/* Reset the handle in the registry so next CREATE EXTENSION creates a
-		 * fresh DSA We don't detach from the DSA here because:
-		 * 1. Other backends might still be using it
-		 * 2. Each backend will detach when it exits
-		 * 3. The DSA will be cleaned up when the last backend detaches
-		 */
-		tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
-
-		/* Set our local pointer to NULL to prevent use */
-		tapir_dsa = NULL;
-
-		/* Clear all cached local states since their DSA pointers are now
-		 * invalid */
-		tp_clear_all_local_states();
-	}
+	/*
+	 * DO NOT invalidate the DSA even if this was the last index.
+	 * The DSA should persist for the lifetime of the PostgreSQL instance.
+	 * Other backends may still have references to it, and invalidating it
+	 * causes heap-use-after-free errors.
+	 *
+	 * The DSA will be cleaned up when PostgreSQL shuts down and all
+	 * backends detach from it.
+	 *
+	 * We also do not clear local states, as they contain valid DSA references
+	 * that remain usable even after all indexes are dropped.
+	 */
 
 	LWLockRelease(&tapir_registry->lock);
 }
@@ -379,8 +373,9 @@ tp_registry_unregister(Oid index_oid)
 /*
  * Reset the DSA handle in the registry
  *
- * This is called when the extension is dropped to prevent
- * subsequent backends from trying to attach to a freed DSA.
+ * This is called when the extension is dropped to clear all index entries.
+ * However, we DO NOT invalidate the DSA handle itself, as other backends
+ * may still have references to it.
  */
 void
 tp_registry_reset_dsa(void)
@@ -390,8 +385,11 @@ tp_registry_reset_dsa(void)
 
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
 
-	/* Mark DSA as invalid */
-	tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
+	/*
+	 * DO NOT invalidate the DSA handle.
+	 * The DSA should persist for the lifetime of the PostgreSQL instance.
+	 * Only clear the index entries.
+	 */
 
 	/* Clear all index entries */
 	for (int i = 0; i < TP_MAX_INDEXES; i++)
@@ -403,10 +401,6 @@ tp_registry_reset_dsa(void)
 	tapir_registry->num_entries = 0;
 
 	LWLockRelease(&tapir_registry->lock);
-
-	/* Clear all cached local states since their DSA pointers are now invalid
-	 */
-	tp_clear_all_local_states();
 }
 
 /*

@@ -715,23 +715,6 @@ get_memtable(TpLocalIndexState *local_state)
 	if (!DsaPointerIsValid(local_state->shared->memtable_dp))
 		return NULL;
 
-	/*
-	 * Verify that the DSA is still valid. The DSA might have been
-	 * invalidated if all indexes were dropped and recreated.
-	 * Check if we can still safely access the DSA.
-	 */
-	dsa_area *current_dsa = tp_registry_get_dsa();
-	if (current_dsa != local_state->dsa)
-	{
-		/*
-		 * The DSA has changed - our cached local state is stale.
-		 * Clear the cache and return NULL. The caller will need to
-		 * re-fetch the local state.
-		 */
-		tp_clear_all_local_states();
-		return NULL;
-	}
-
 	return (TpMemtable *)dsa_get_address(
 			local_state->dsa, local_state->shared->memtable_dp);
 }
