@@ -69,8 +69,6 @@ void
 _PG_init(void)
 {
 	/* Initialize on first use - don't require shared_preload_libraries */
-	elog(DEBUG1,
-		 "pg_textsearch extension _PG_init() starting GUC initialization");
 
 	/*
 	 * Define GUC parameters
@@ -146,8 +144,6 @@ _PG_init(void)
 			1.0,
 			NoLock);
 
-	elog(DEBUG1, "pg_textsearch extension GUC variables defined successfully");
-
 	/*
 	 * Install shared memory hooks (needed for registry)
 	 */
@@ -156,8 +152,6 @@ _PG_init(void)
 
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= tp_shmem_startup;
-
-	elog(DEBUG1, "pg_textsearch shared memory hooks installed");
 
 	/* Install object access hook for DROP INDEX detection */
 	prev_object_access_hook = object_access_hook;
@@ -177,22 +171,10 @@ _PG_init(void)
 		 * 3. Trying to detach from a destroyed DSA causes crashes
 		 * 4. The DSA system has its own cleanup mechanisms
 		 */
-		/* on_proc_exit(tp_proc_exit, 0); -- disabled to prevent crashes */
 
 		callbacks_registered = true;
-		elog(DEBUG1, "pg_textsearch callbacks registered");
 	}
-
-	elog(DEBUG1, "pg_textsearch extension _PG_init() completed successfully");
 }
-
-/*
- * Note: We intentionally do not implement _PG_fini because:
- * 1. It's called when any backend exits (not just on DROP EXTENSION)
- * 2. DSA cleanup happens automatically via process exit callbacks
- * 3. Local memory is freed automatically when the backend exits
- * 4. Shared memory structures remain valid for other backends
- */
 
 /*
  * Object access hook - handle DROP INDEX
@@ -224,7 +206,6 @@ tp_object_access(
 
 		/* Cleanup shared memory BEFORE unregistering */
 		tp_cleanup_index_shared_memory(objectId);
-		/* tp_cleanup_index_shared_memory handles unregistering */
 	}
 }
 
@@ -245,8 +226,6 @@ tp_relcache_callback(Datum arg, Oid relid)
 	if (local_state == NULL)
 		return;
 
-	elog(DEBUG1, "Relcache callback for index %u - have local state", relid);
-
 	/* We can only check if the relation still exists when we're in a
 	 * transaction. Invalidation callbacks can be called outside of
 	 * transactions (e.g., when idle between commands), and trying to
@@ -254,10 +233,6 @@ tp_relcache_callback(Datum arg, Oid relid)
 	 */
 	if (!IsTransactionState())
 	{
-		elog(DEBUG1,
-			 "Relcache callback for index %u - not in transaction, "
-			 "deferring cleanup check",
-			 relid);
 		return;
 	}
 
@@ -267,18 +242,9 @@ tp_relcache_callback(Datum arg, Oid relid)
 	{
 		/* Index still exists - this is just a cache invalidation, not a drop
 		 */
-		elog(DEBUG1,
-			 "Relcache callback for index %u - relation exists, skipping "
-			 "cleanup",
-			 relid);
 		relation_close(rel, NoLock);
 		return;
 	}
-
-	elog(DEBUG1,
-		 "Relcache callback for index %u - relation gone, cleaning up local "
-		 "state",
-		 relid);
 
 	/* Index no longer exists - clean up our local state
 	 * This detaches from DSA and frees the local_state structure */
@@ -312,22 +278,3 @@ tp_shmem_startup(void)
 	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
 }
-
-/*
- * Process exit callback - DISABLED to prevent crashes
- *
- * We originally tried to detach from DSA on process exit, but this caused
- * crashes when DROP EXTENSION destroyed the DSA before process exit.
- * Since the OS cleans up all resources on process exit anyway, and the
- * DSA system has its own cleanup mechanisms, we no longer need this.
- *
- * Keeping the code commented out for documentation purposes.
- */
-#if 0
-static void
-tp_proc_exit(int code, Datum arg)
-{
-	/* Detach from the DSA if this backend attached to it */
-	tp_registry_detach_dsa();
-}
-#endif

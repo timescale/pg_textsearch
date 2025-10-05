@@ -1,5 +1,5 @@
-EXTENSION = pgtextsearch
-DATA = sql/pgtextsearch--0.0.1.sql
+EXTENSION = pg_textsearch
+DATA = sql/pg_textsearch--0.0.1.sql
 
 # Source files
 # Full build - debugging initialization crash
@@ -18,7 +18,7 @@ OBJS = \
 	src/state.o
 
 # Shared library target
-MODULE_big = pgtextsearch
+MODULE_big = pg_textsearch
 
 # Include directories, debug flags, and warning flags for unused code
 PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable

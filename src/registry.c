@@ -95,7 +95,6 @@ tp_registry_get_dsa(void)
 	/* Quick check if already attached in this backend */
 	if (tapir_dsa != NULL)
 	{
-		elog(DEBUG1, "DSA: Already attached in backend (PID %d)", MyProcPid);
 		return tapir_dsa;
 	}
 
@@ -116,37 +115,22 @@ tp_registry_get_dsa(void)
 		MemoryContext oldcontext;
 		int			  tranche_id = LWLockNewTrancheId();
 
-		elog(DEBUG1,
-			 "DSA: Creating new DSA (backend PID %d, tranche %d)",
-			 MyProcPid,
-			 tranche_id);
-
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		tapir_dsa  = dsa_create(tranche_id);
 		MemoryContextSwitchTo(oldcontext);
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
-		elog(DEBUG1, "DSA: Pinned DSA area");
 
 		/* Pin the mapping for this backend */
 		dsa_pin_mapping(tapir_dsa);
-		elog(DEBUG1, "DSA: Pinned DSA mapping for backend PID %d", MyProcPid);
 
 		/* Store handle for other backends */
 		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
-		elog(DEBUG1,
-			 "DSA: Created with handle %lu",
-			 (unsigned long)tapir_registry->dsa_handle);
 	}
 	else
 	{
 		/* DSA exists - attach to it */
-		elog(DEBUG1,
-			 "DSA: Attaching to existing DSA handle %lu (backend PID %d)",
-			 (unsigned long)tapir_registry->dsa_handle,
-			 MyProcPid);
-
 		tapir_dsa = dsa_attach(tapir_registry->dsa_handle);
 
 		if (tapir_dsa == NULL)
@@ -157,9 +141,6 @@ tp_registry_get_dsa(void)
 
 		/* Pin the mapping for this backend (only once per backend) */
 		dsa_pin_mapping(tapir_dsa);
-		elog(DEBUG1,
-			 "DSA: Attached and pinned mapping (backend PID %d)",
-			 MyProcPid);
 	}
 
 	LWLockRelease(&tapir_registry->lock);
@@ -175,11 +156,6 @@ bool
 tp_registry_register(
 		Oid index_oid, TpSharedIndexState *shared_state, dsa_pointer shared_dp)
 {
-	elog(DEBUG1,
-		 "Registry: Registering index %u (backend PID %d)",
-		 index_oid,
-		 MyProcPid);
-
 	if (!tapir_registry)
 	{
 		/* Registry not attached in this backend - initialize it */
@@ -381,8 +357,6 @@ tp_registry_unregister(Oid index_oid)
 	/* If this was the last index, reset the DSA handle in the registry */
 	if (tapir_registry->num_entries == 0)
 	{
-		elog(DEBUG1, "DSA: Last index dropped, marking DSA handle as invalid");
-
 		/* Reset the handle in the registry so next CREATE EXTENSION creates a
 		 * fresh DSA We don't detach from the DSA here because:
 		 * 1. Other backends might still be using it
@@ -425,8 +399,6 @@ tp_registry_reset_dsa(void)
 	tapir_registry->num_entries = 0;
 
 	LWLockRelease(&tapir_registry->lock);
-
-	elog(DEBUG1, "DSA: Reset registry DSA handle (backend PID %d)", MyProcPid);
 }
 
 /*
@@ -440,8 +412,6 @@ tp_registry_detach_dsa(void)
 {
 	if (tapir_dsa != NULL)
 	{
-		elog(DEBUG1, "DSA: Detaching from DSA (backend PID %d)", MyProcPid);
-
 		/*
 		 * Note: This function is currently not called during normal operation
 		 * since we disabled the process exit callback to prevent crashes.
@@ -449,10 +419,5 @@ tp_registry_detach_dsa(void)
 		 */
 		dsa_detach(tapir_dsa);
 		tapir_dsa = NULL;
-		elog(DEBUG1, "DSA: Detached successfully (backend PID %d)", MyProcPid);
-	}
-	else
-	{
-		elog(DEBUG1, "DSA: No DSA to detach (backend PID %d)", MyProcPid);
 	}
 }
