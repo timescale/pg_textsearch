@@ -1,4 +1,4 @@
-# pgtextsearch
+# pg_textsearch
 
 ![Tapir and Friends](images/tapir_and_friends.png)
 
@@ -38,7 +38,7 @@ make install # may need sudo
 Enable the extension (do this once in each database where you want to use it)
 
 ```sql
-CREATE EXTENSION pgtextsearch;
+CREATE EXTENSION pg_textsearch;
 ```
 
 Create a table with text content
@@ -51,7 +51,7 @@ INSERT INTO documents (content) VALUES
     ('Full text search with custom scoring');
 ```
 
-Create a pgtextsearch index on the text column
+Create a pg_textsearch index on the text column
 
 ```sql
 CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
@@ -153,7 +153,7 @@ bm25query = bm25query → boolean | Equality comparison
 
 ## Performance
 
-pgtextsearch indexes use a memtable architecture for efficient writes. Like other index types, it's faster to create an index after loading your data.
+pg_textsearch indexes use a memtable architecture for efficient writes. Like other index types, it's faster to create an index after loading your data.
 
 ```sql
 -- Load data first
@@ -169,7 +169,7 @@ CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='englis
 -- Check index usage
 SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
 FROM pg_stat_user_indexes
-WHERE indexrelid::regclass::text ~ 'pgtextsearch';
+WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 
 -- Debug index internal structure (shows term dictionary and posting lists)
 SELECT bm25_debug_dump_index('index_name');
@@ -181,10 +181,10 @@ Optional settings in `postgresql.conf`:
 
 ```bash
 # Per-index memory limit (can be changed without restart)
-pgtextsearch.index_memory_limit = 64MB      # Memory limit per index, default 64MB
+pg_textsearch.index_memory_limit = 64MB      # Memory limit per index, default 64MB
 
 # Query limit when no LIMIT clause detected
-pgtextsearch.default_limit = 1000           # default 1000
+pg_textsearch.default_limit = 1000           # default 1000
 ```
 
 ## Examples

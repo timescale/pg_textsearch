@@ -2,10 +2,10 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
@@ -44,4 +44,4 @@ LIMIT 1;
 -- Clean up
 DROP INDEX manyterms_idx;
 DROP TABLE manyterms_test;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

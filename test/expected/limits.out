@@ -1,11 +1,11 @@
 -- Test file for LIMIT detection and optimization in Tapir
 -- Disable duration logging to avoid timing differences in sanitizer tests
 SET log_duration = off;
--- Load pgtextsearch extension
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
-INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 -- Create test table with sufficient data for meaningful LIMIT testing
@@ -36,7 +36,7 @@ INSERT INTO limit_test (title, content) VALUES
     ('Algorithm Design', 'algorithm design principles for optimal computational performance'),
     ('System Performance', 'system performance tuning and resource optimization strategies'),
     ('Database Security', 'database security measures and access control mechanisms');
--- Create pgtextsearch index
+-- Create pg_textsearch index
 CREATE INDEX limit_test_idx ON limit_test USING bm25(content) WITH (text_config='english');
 NOTICE:  BM25 index build started for relation limit_test_idx
 NOTICE:  Using text search configuration: english
@@ -230,7 +230,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 
 -- Test 10: LIMIT pushdown safety verification
 -- These tests verify that LIMIT pushdown is only used when safe
--- Safe case: Simple ORDER BY with pgtextsearch score, no WHERE clause
+-- Safe case: Simple ORDER BY with pg_textsearch score, no WHERE clause
 -- This SHOULD allow LIMIT pushdown
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
@@ -304,4 +304,4 @@ LIMIT 0;
 
 -- Cleanup
 DROP TABLE limit_test CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

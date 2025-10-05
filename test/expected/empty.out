@@ -1,7 +1,7 @@
 -- Test handling of empty and whitespace-only documents
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
-INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Create test table with various empty/whitespace content
 CREATE TABLE empty_docs (
     id SERIAL PRIMARY KEY,
@@ -51,4 +51,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE empty_docs;
-DROP EXTENSION pgtextsearch;
+DROP EXTENSION pg_textsearch;

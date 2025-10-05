@@ -1,10 +1,10 @@
 -- Test bm25vector type and operators functionality
 
--- Load pgtextsearch extension
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 
@@ -24,7 +24,7 @@ INSERT INTO test_docs (content) VALUES
     ('hello world example'),
     ('postgresql full text search');
 
--- Create pgtextsearch index
+-- Create pg_textsearch index
 CREATE INDEX docs_vector_idx ON test_docs USING bm25(content) WITH (text_config='english');
 
 -- Test bm25vector I/O functions
@@ -53,7 +53,7 @@ SELECT to_bm25vector('test text', 'nonexistent_index');
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 
--- Test pgtextsearch scoring using standalone text <@> bm25query operations
+-- Test pg_textsearch scoring using standalone text <@> bm25query operations
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
@@ -134,4 +134,4 @@ ORDER BY o.id;
 DROP INDEX docs_vector_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

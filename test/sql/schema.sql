@@ -1,7 +1,7 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
-SET pgtextsearch.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- Create a custom schema
@@ -62,4 +62,4 @@ ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
 DROP TABLE docs.articles CASCADE;
 DROP TABLE public_articles CASCADE;
 DROP SCHEMA docs CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

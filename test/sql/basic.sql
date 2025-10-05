@@ -1,10 +1,10 @@
--- Basic functionality tests for pgtextsearch extension
+-- Basic functionality tests for pg_textsearch extension
 
 -- Test extension creation
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Test bm25vector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);
@@ -63,4 +63,4 @@ LIMIT 1;
 
 -- Clean up
 DROP TABLE test_docs CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

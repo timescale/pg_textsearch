@@ -1,16 +1,16 @@
--- Aerodynamics Documents pgtextsearch Test - Real Cranfield Dataset
--- This test validates pgtextsearch implementation using a substantial subset of the Cranfield collection
+-- Aerodynamics Documents pg_textsearch Test - Real Cranfield Dataset
+-- This test validates pg_textsearch implementation using a substantial subset of the Cranfield collection
 -- Contains real aerodynamics documents from the Cranfield dataset for realistic testing
--- Tests both dataset loading and pgtextsearch scoring functionality with the <@> operator
+-- Tests both dataset loading and pg_textsearch scoring functionality with the <@> operator
 
--- Load pgtextsearch extension
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 \set ON_ERROR_STOP on
-\echo 'Testing pgtextsearch with sample aerodynamics documents...'
+\echo 'Testing pg_textsearch with sample aerodynamics documents...'
 
 -- Create tables for aerodynamics documents
 CREATE TABLE aerodocs_documents (
@@ -55,11 +55,11 @@ INSERT INTO cranfield_queries (query_id, query_text) VALUES
 
 -- Expected rankings are now captured in the test's expected output file
 
--- Create pgtextsearch index for Cranfield documents with text_config
+-- Create pg_textsearch index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
 
-\echo 'pgtextsearch index created. Running validation tests...'
+\echo 'pg_textsearch index created. Running validation tests...'
 
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
@@ -128,10 +128,10 @@ LIMIT 10;
 -- Reset settings
 SET enable_seqscan = on;
 
-\echo 'Cranfield pgtextsearch validation completed successfully.'
-\echo 'All tests demonstrate proper pgtextsearch functionality with the <@> operator.'
+\echo 'Cranfield pg_textsearch validation completed successfully.'
+\echo 'All tests demonstrate proper pg_textsearch functionality with the <@> operator.'
 
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
 DROP TABLE cranfield_queries CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

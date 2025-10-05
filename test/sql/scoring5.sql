@@ -1,8 +1,8 @@
 -- Test case: scoring5
 -- Generated BM25 test with 3 documents and 4 queries
 -- Testing both bulk build and incremental build modes
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
-SET pgtextsearch.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- MODE 1: Bulk build (insert data, then create index)
@@ -78,4 +78,4 @@ ORDER BY content <@> to_bm25query('goodbye', 'scoring5_incr_idx'), id;
 -- Cleanup
 DROP TABLE scoring5_bulk CASCADE;
 DROP TABLE scoring5_incr CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

@@ -1,9 +1,9 @@
--- Basic functionality tests for pgtextsearch extension
+-- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
-INFO:  pgtextsearch v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Test bm25vector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);
  pg_typeof  
@@ -87,6 +87,7 @@ SELECT content, content <@> to_bm25query('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
+NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.0986
        content       |        score        
 ---------------------+---------------------
  hello world example | -1.0986123085021973
@@ -104,4 +105,4 @@ ERROR:  tpquery index name mismatch
 \set VERBOSITY default
 -- Clean up
 DROP TABLE test_docs CASCADE;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

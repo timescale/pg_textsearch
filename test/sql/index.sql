@@ -1,10 +1,10 @@
--- Test pgtextsearch index access method functionality
+-- Test pg_textsearch index access method functionality
 
--- Load pgtextsearch extension
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pgtextsearch.log_scores = true;
+SET pg_textsearch.log_scores = true;
 
 -- Setup test table
 CREATE TABLE test_docs (
@@ -57,4 +57,4 @@ SELECT
 DROP INDEX docs_english_idx;
 DROP INDEX docs_simple_idx;
 DROP TABLE test_docs;
-DROP EXTENSION pgtextsearch CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

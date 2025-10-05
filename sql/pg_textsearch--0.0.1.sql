@@ -157,6 +157,6 @@ CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
 -- Display warning about prerelease status
 DO $$
 BEGIN
-    RAISE INFO 'pgtextsearch v0.0.1: This is prerelease software and should not be used in production.';
+    RAISE INFO 'pg_textsearch v0.0.1: This is prerelease software and should not be used in production.';
 END
 $$;

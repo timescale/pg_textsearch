@@ -47,8 +47,8 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
         # Verify extension is installed
-        echo "Checking if pgtextsearch.so is installed..."
-        ls -la /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgtextsearch.so
+        echo "Checking if pg_textsearch.so is installed..."
+        ls -la /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pg_textsearch.so
 
         # Run the test setup manually since extension is already installed
         rm -rf tmp_check_shared

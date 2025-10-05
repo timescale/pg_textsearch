@@ -182,7 +182,7 @@ EOF
 
     # Create test database and extension
     createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
-    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pgtextsearch;" >/dev/null
+    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 
     # Create base test table
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "

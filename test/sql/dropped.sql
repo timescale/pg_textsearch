@@ -1,7 +1,7 @@
 -- Test behavior when using a dropped index name in queries
 
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS pgtextsearch;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Create test table
 CREATE TABLE dropped_idx_test (
@@ -42,4 +42,4 @@ WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
 
 -- Clean up
 DROP TABLE dropped_idx_test;
-DROP EXTENSION pgtextsearch;
+DROP EXTENSION pg_textsearch;
