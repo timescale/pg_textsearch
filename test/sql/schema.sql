@@ -1,7 +1,6 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- Create a custom schema

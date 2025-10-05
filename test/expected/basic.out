@@ -3,7 +3,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
 -- Test bm25vector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);
  pg_typeof  
@@ -87,7 +86,6 @@ SELECT content, content <@> to_bm25query('hello', 'test_tapir_idx') as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-1.0986
        content       |        score        
 ---------------------+---------------------
  hello world example | -1.0986123085021973

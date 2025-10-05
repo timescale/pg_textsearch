@@ -2,7 +2,6 @@
 -- Generated BM25 test with 2 documents and 3 queries
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
 -- MODE 1: Bulk build (insert data, then create index)

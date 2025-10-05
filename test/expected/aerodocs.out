@@ -6,7 +6,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
 \set ON_ERROR_STOP on
 \echo 'Testing pg_textsearch with sample aerodynamics documents...'
 Testing pg_textsearch with sample aerodynamics documents...

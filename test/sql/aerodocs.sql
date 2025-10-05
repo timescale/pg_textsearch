@@ -7,7 +7,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
 
 \set ON_ERROR_STOP on
 \echo 'Testing pg_textsearch with sample aerodynamics documents...'

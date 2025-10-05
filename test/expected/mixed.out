@@ -4,7 +4,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
 NOTICE:  table "concurrent_test_docs" does not exist, skipping

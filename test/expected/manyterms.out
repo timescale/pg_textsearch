@@ -4,7 +4,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET pg_textsearch.log_scores = true;
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
