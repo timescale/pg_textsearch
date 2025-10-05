@@ -2,6 +2,7 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/xact.h>
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
@@ -245,6 +246,20 @@ tp_relcache_callback(Datum arg, Oid relid)
 		return;
 
 	elog(DEBUG1, "Relcache callback for index %u - have local state", relid);
+
+	/* We can only check if the relation still exists when we're in a
+	 * transaction. Invalidation callbacks can be called outside of
+	 * transactions (e.g., when idle between commands), and trying to
+	 * access the catalog then will cause an assertion failure.
+	 */
+	if (!IsTransactionState())
+	{
+		elog(DEBUG1,
+			 "Relcache callback for index %u - not in transaction, "
+			 "deferring cleanup check",
+			 relid);
+		return;
+	}
 
 	/* Try to open the relation to check if it still exists */
 	rel = try_relation_open(relid, NoLock);
