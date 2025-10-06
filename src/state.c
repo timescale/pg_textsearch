@@ -461,6 +461,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	Relation		   index_rel;
 	TpIndexMetaPage	   metap;
 	TpLocalIndexState *local_state;
+	Relation		   heap_rel;
+	BlockNumber		   heap_blocks;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -504,19 +506,18 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * - Data corruption occurred
 	 * Without this check, we could attempt to scan non-existent heap tuples.
 	 */
-	Relation heap_rel =
-			relation_open(index_rel->rd_index->indrelid, AccessShareLock);
-	BlockNumber heap_blocks = RelationGetNumberOfBlocks(heap_rel);
+	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
 	relation_close(heap_rel, AccessShareLock);
 
 	if (heap_blocks == 0 && metap->total_docs > 0)
 	{
 		/* Heap is empty but metapage shows documents - stale data */
 		elog(WARNING,
-			 "Index %u metapage shows %u documents but heap is empty - "
+			 "Index %u metapage shows %lu documents but heap is empty - "
 			 "ignoring stale data",
 			 index_oid,
-			 metap->total_docs);
+			 (unsigned long)metap->total_docs);
 		index_close(index_rel, AccessShareLock);
 		pfree(metap);
 
@@ -604,42 +605,17 @@ tp_rebuild_posting_lists_from_docids(
 
 		/*
 		 * Validate this is actually a docid page and not stale data.
-		 * This magic number check is essential because:
-		 * - It prevents processing random/corrupt data as valid docids
-		 * - It detects when we've reached the end of valid pages
-		 * - It ensures recovery stops cleanly on stale/uninitialized pages
-		 * Without this, we could crash trying to process invalid memory.
 		 */
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
 			UnlockReleaseBuffer(docid_buf);
-			elog(WARNING,
+			elog(ERROR,
 				 "Invalid docid page magic at block %u: expected 0x%08X, "
 				 "found 0x%08X - stopping recovery",
 				 current_page,
 				 TP_DOCID_PAGE_MAGIC,
 				 docid_header->magic);
 			break; /* Stop recovery - we've hit invalid/stale data */
-		}
-
-		/*
-		 * Validate num_docids is reasonable. We use a conservative upper bound
-		 * since we don't have access to the exact TP_DOCIDS_PER_PAGE
-		 * calculation here. The actual max is around (BLCKSZ - headers) /
-		 * sizeof(ItemPointerData) which is approximately 1300 for 8KB pages,
-		 * so 1000 is a safe limit.
-		 */
-#define TP_MAX_DOCIDS_PER_PAGE_RECOVERY 1000
-		if (docid_header->num_docids > TP_MAX_DOCIDS_PER_PAGE_RECOVERY)
-		{
-			UnlockReleaseBuffer(docid_buf);
-			elog(WARNING,
-				 "Invalid docid count at block %u: %d (max %d) - stopping "
-				 "recovery",
-				 current_page,
-				 docid_header->num_docids,
-				 TP_MAX_DOCIDS_PER_PAGE_RECOVERY);
-			break; /* Stop recovery - corrupted header */
 		}
 
 		/* Get docids array with proper alignment */
@@ -658,23 +634,13 @@ tp_rebuild_posting_lists_from_docids(
 			bool		  isnull;
 			text		 *document_text;
 			int32		  doc_length;
+			BlockNumber	  heap_blkno;
+			AttrNumber	  attnum;
 
 			/* Validate the ItemPointer before attempting fetch */
 			if (!ItemPointerIsValid(ctid))
 			{
 				elog(WARNING, "Invalid ItemPointer in docid page - skipping");
-				continue;
-			}
-
-			/* Additional sanity check on the pointer values */
-			if (ItemPointerGetBlockNumber(ctid) == InvalidBlockNumber ||
-				ItemPointerGetOffsetNumber(ctid) == 0 ||
-				ItemPointerGetOffsetNumber(ctid) > MaxHeapTuplesPerPage)
-			{
-				elog(WARNING,
-					 "Suspicious ItemPointer (%u,%u) in docid page - skipping",
-					 ItemPointerGetBlockNumber(ctid),
-					 ItemPointerGetOffsetNumber(ctid));
 				continue;
 			}
 
@@ -689,7 +655,7 @@ tp_rebuild_posting_lists_from_docids(
 			 *
 			 * First check if the block exists in the heap relation.
 			 */
-			BlockNumber heap_blkno = ItemPointerGetBlockNumber(ctid);
+			heap_blkno = ItemPointerGetBlockNumber(ctid);
 			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
 			{
 				/*
@@ -718,9 +684,9 @@ tp_rebuild_posting_lists_from_docids(
 			 * rd_index->indkey.values[0] contains the attribute number
 			 * of the first indexed column in the heap relation.
 			 */
-			AttrNumber attnum = index_rel->rd_index->indkey.values[0];
-			text_datum		  = heap_getattr(
-					   tuple, attnum, RelationGetDescr(heap_rel), &isnull);
+			attnum	   = index_rel->rd_index->indkey.values[0];
+			text_datum = heap_getattr(
+					tuple, attnum, RelationGetDescr(heap_rel), &isnull);
 
 			if (!isnull)
 			{
