@@ -257,9 +257,14 @@ tp_release_local_index_state(TpLocalIndexState *local_state)
 		hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
 	}
 
-	/* Detach from DSA */
-	if (local_state->dsa != NULL)
-		dsa_detach(local_state->dsa);
+	/*
+	 * DO NOT detach from DSA - it's the shared DSA used by all indexes!
+	 * The DSA is managed by the registry and should persist for the
+	 * lifetime of the PostgreSQL instance. Detaching here would break
+	 * other indexes that are using the same shared DSA.
+	 */
+	/* if (local_state->dsa != NULL)
+		dsa_detach(local_state->dsa); */
 
 	/* Free the local state */
 	pfree(local_state);
