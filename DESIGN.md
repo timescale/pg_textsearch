@@ -127,7 +127,7 @@ Composition of memtable:
 
 * Term dictionary
   * Maps a string token → posting list (DSA pointer)
-  * **Current v0.0.0a**: String-based architecture using dshash for string interning
+  * **Current v0.0.1**: String-based architecture using dshash for string interning
   * **Implementation**: Each term string is interned once, posting lists allocated via DSA
   * **Rationale**: Avoids global term_id namespace, compatible with future disk segments
 * Posting list
@@ -148,7 +148,7 @@ No compression in the memtable.
 
 #### Memtable and transaction abort
 
-**Current v0.0.0a status**: Tombstones not yet implemented. Transaction abort handling deferred to future versions.
+**Current v0.0.1 status**: Tombstones not yet implemented. Transaction abort handling deferred to future versions.
 
 **Insertions**   Docs inserted as part of aborted transaction are filtered out by PostgreSQL executor.  They take up space in the index until segments are implemented with compaction.
 
@@ -205,7 +205,7 @@ Composition of a segment:
 
 ### Boolean queries
 
-**Status**: Not implemented in v0.0.0a. Future work post-GA.
+**Status**: Not implemented in v0.0.1. Future work post-GA.
 
 Will describe the simplest case (AND queries) as a warmup to ranked queries.  Extension to OR, NOT queries are all left for followup post-GA work.
 
@@ -217,13 +217,13 @@ Algorithm:
 
 ### BM25 queries
 
-**v0.0.0a implementation**: Uses naive algorithm with memtable-only evaluation. Query limit detection via SPI to avoid exhaustive scans.
+**v0.0.1 implementation**: Uses naive algorithm with memtable-only evaluation. Query limit detection via SPI to avoid exhaustive scans.
 
 Score of a document D for query Q \= q1…qn:
 
 BM25(D,Q) \= Σ IDF(qᵢ) × (tf(qᵢ,D) × (k₁ \+ 1)) / (tf(qᵢ,D) \+ k₁ × (1 \- b \+ b × |D|/avgdl))
 
-Naive algorithm (current v0.0.0a implementation):
+Naive algorithm (current v0.0.1 implementation):
 
 * For each query term
   * Look up the term in the string interning hash table
@@ -303,29 +303,29 @@ Details TBD.  Want to start running these (for both performance and correctness)
 
 # Schedule and Milestones
 
-No backwards compatibility guarantees until v0.1 (production launch).  Plan to start dogfooding with agents teams (hybrid search) as soon as possible – likely v0.0b.
+No backwards compatibility guarantees until v0.1 (production launch).  Plan to start dogfooding with agents teams (hybrid search) as soon as possible – likely v0.0.2.
 
-* v0.0.0a: memtable-only implementation ✅ **COMPLETED**
+* v0.0.1: memtable-only implementation ✅ **COMPLETED**
   * Complete user surface in place ✅
   * Including crash recovery ✅ **FIXED: FlushOneBuffer() ensures metapage persistence**
   * Basic benchmarks passing validation ✅
   * String-based architecture for future disk segments ✅
   * All concurrency and recovery tests passing ✅
   * Target: Sep 5, 2025 → **Completed Sep 3, 2025**
-* v0.0b: naive segment implementation
+* v0.0.2: naive segment implementation
   * Scalable beyond main memory
   * No compression or optimizations
   * No background worker
     * Spill / compaction done on update thread
   * No tombstones
   * Target: Sep 19, 2025
-* v0.0c: optimized segment implementation
+* v0.0.3: optimized segment implementation
   * Compression
   * Skip lists
   * Tombstones
   * Still no background worker
   * Target: Oct 17, 2025
-* v0.0d: background worker
+* v0.0.4: background worker
   * GUCs, observability, the works
   * Target: Nov 7, 2025
 * v0.1
