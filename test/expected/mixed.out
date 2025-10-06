@@ -1,10 +1,10 @@
--- Test concurrent operations on Tapir indexes
+-- Test concurrent operations on pg_textsearch indexes
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
 NOTICE:  table "concurrent_test_docs" does not exist, skipping
@@ -32,14 +32,14 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('lock-free data structures', 'tech'),
 ('database indexing strategies', 'tech');
 -- Create index after initial data
-CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING tapir(content)
+CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation concurrent_idx1
+NOTICE:  BM25 index build started for relation concurrent_idx1
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
 -- Verify basic search works
-SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
  id |                content                 |  score  
@@ -60,7 +60,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('concurrent database operations need careful synchronization', 'tech'),
 ('database concurrent processing improves performance', 'tech');
 -- Search to verify posting lists updated correctly
-SELECT id, content, ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
@@ -83,12 +83,12 @@ INSERT INTO concurrent_test_docs2 (content, priority) VALUES
 ('shared memory data structures', 1),
 ('database performance optimization', 3),
 ('concurrent system design patterns', 2);
-CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING tapir(content)
+CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING bm25(content)
   WITH (text_config='english', k1=1.5, b=0.8);
-NOTICE:  Tapir index build started for relation concurrent_idx2
+NOTICE:  BM25 index build started for relation concurrent_idx2
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.80
-NOTICE:  Tapir index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.50, b=0.80)
+NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.50, b=0.80)
 -- Verify both indexes work independently
 SELECT 'Table 1' as source, id, content
 FROM concurrent_test_docs
@@ -132,7 +132,7 @@ FROM concurrent_test_docs;
 
 -- Test top results still make sense
 SELECT id, substring(content, 1, 50) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 8;
@@ -156,7 +156,7 @@ BEGIN;
     INSERT INTO concurrent_test_docs (content, category) VALUES
     ('new concurrent database research paper', 'research');
     -- Search within same transaction
-    SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+    SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
@@ -169,7 +169,7 @@ BEGIN;
 
 COMMIT;
 -- Verify the insert is visible after commit
-SELECT id, content, ROUND((content <@> to_tpquery('research database', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
@@ -188,7 +188,7 @@ UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 -- Verify search finds updated documents
-SELECT id, content, ROUND((content <@> to_tpquery('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
  id |                            content                             |  score  
@@ -285,7 +285,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('exact same terms for testing consistency', 'test'),
 ('testing consistency with exact same terms', 'test');
 -- Search should find all variants
-SELECT id, content, ROUND((content <@> to_tpquery('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score, id;
  id |                            content                             |  score  
@@ -358,24 +358,24 @@ INSERT INTO multi_idx_test (content) VALUES
 ('the quick brown fox jumps'),
 ('hello from another document');
 -- Create two indexes with different text configurations
-CREATE INDEX multi_idx_english ON multi_idx_test USING tapir(content)
+CREATE INDEX multi_idx_english ON multi_idx_test USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation multi_idx_english
+NOTICE:  BM25 index build started for relation multi_idx_english
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=3.33, text_config='english' (k1=1.20, b=0.75)
-CREATE INDEX multi_idx_simple ON multi_idx_test USING tapir(content)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX multi_idx_simple ON multi_idx_test USING bm25(content)
   WITH (text_config='simple', k1=1.5, b=0.8);
-NOTICE:  Tapir index build started for relation multi_idx_simple
+NOTICE:  BM25 index build started for relation multi_idx_simple
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.50, b=0.80
-NOTICE:  Tapir index build completed: 3 documents, avg_length=4.67, text_config='simple' (k1=1.50, b=0.80)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='simple' (k1=1.50, b=0.80)
 -- Insert more data after index creation
 INSERT INTO multi_idx_test (content) VALUES
 ('world of databases and indexes'),
 ('hello database world');
 -- Query using the English index
-SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score;
  id |            content             | english_score 
@@ -388,7 +388,7 @@ ORDER BY english_score;
 (5 rows)
 
 -- Query using the Simple index
-SELECT id, content, ROUND((content <@> to_tpquery('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score;
  id |            content             | simple_score 
@@ -440,4 +440,4 @@ FROM concurrent_test_docs2;
 -- Clean up
 DROP TABLE concurrent_test_docs CASCADE;
 DROP TABLE concurrent_test_docs2 CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

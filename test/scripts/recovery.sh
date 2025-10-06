@@ -72,7 +72,7 @@ EOF
     createdb -p "${TEST_PORT}" "${TEST_DB}"
 
     # Install extension
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION tapir;" >/dev/null
+    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 run_sql() {
@@ -154,7 +154,7 @@ INSERT INTO crash_test_docs (content, category) VALUES
 ('security protocols and encryption', 'security'),
 ('network security best practices', 'security');
 
-CREATE INDEX crash_idx ON crash_test_docs USING tapir(content)
+CREATE INDEX crash_idx ON crash_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 EOF
 
@@ -162,7 +162,7 @@ EOF
     log "Verifying initial search functionality..."
 
     # Test 1: Search for 'database' - should return documents with database-related content
-    INITIAL_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    INITIAL_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     # Count results and validate
     INITIAL_COUNT=$(echo "$INITIAL_RESULTS" | wc -l | tr -d ' ')
@@ -200,7 +200,7 @@ EOF
     log "Verifying data consistency after recovery..."
 
     # Test same query as before crash
-    RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     RECOVERY_COUNT=$(echo "$RECOVERY_RESULTS" | wc -l | tr -d ' ')
     if [ "$RECOVERY_COUNT" -eq 0 ]; then
@@ -227,7 +227,7 @@ EOF
     run_sql "INSERT INTO crash_test_docs (content, category) VALUES ('post recovery test document with algorithms', 'test');"
 
     # Test search for 'algorithms' which should find multiple documents
-    POST_RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('algorithms', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    POST_RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('algorithms', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     POST_RECOVERY_COUNT=$(echo "$POST_RECOVERY_RESULTS" | wc -l | tr -d ' ')
     if [ "$POST_RECOVERY_COUNT" -eq 0 ]; then
@@ -241,7 +241,7 @@ EOF
     log "Phase 4: Testing debug dump functionality after recovery..."
 
     # This is the critical test that should expose the recovery bug
-    DEBUG_RESULT=$(run_sql "SELECT tp_debug_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
+    DEBUG_RESULT=$(run_sql "SELECT bm25_debug_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
 
     if echo "$DEBUG_RESULT" | grep -q "FAILED\|ERROR\|connection.*lost"; then
         error "Debug dump failed after recovery - this exposes the recovery bug!"
@@ -254,10 +254,10 @@ EOF
 
     # Drop and recreate index to test rebuild from heap
     run_sql "DROP INDEX crash_idx;"
-    run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING tapir(content) WITH (text_config='english', k1=1.2, b=0.75);"
+    run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING bm25(content) WITH (text_config='english', k1=1.2, b=0.75);"
 
     # Test rebuild with 'systems' query to verify full functionality
-    REBUILD_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_tpquery('systems', 'crash_idx_rebuilt') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    REBUILD_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('systems', 'crash_idx_rebuilt') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     REBUILD_COUNT=$(echo "$REBUILD_RESULTS" | wc -l | tr -d ' ')
     if [ "$REBUILD_COUNT" -eq 0 ]; then

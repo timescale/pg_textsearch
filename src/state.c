@@ -31,8 +31,10 @@
 
 #include "index.h"
 #include "metapage.h"
+#include "posting.h"
 #include "registry.h"
 #include "state.h"
+#include "stringtable.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
@@ -72,7 +74,7 @@ init_local_state_cache(void)
  * This function:
  * 1. Checks if we already have a cached local state
  * 2. If not, looks up the shared state in the registry
- * 3. Creates a DSA area if needed and attaches to it
+ * 3. Attaches to the shared DSA if needed
  * 4. Creates and caches the local state
  */
 TpLocalIndexState *
@@ -82,9 +84,6 @@ tp_get_local_index_state(Oid index_oid)
 	TpLocalIndexState	 *local_state;
 	TpSharedIndexState	 *shared_state;
 	bool				  found;
-	char				 *dsm_name;
-	void				 *dsm_seg;
-	size_t				  total_size;
 	dsa_area			 *dsa;
 
 	/* Initialize cache if needed */
@@ -102,91 +101,80 @@ tp_get_local_index_state(Oid index_oid)
 
 	if (shared_state == NULL)
 	{
-		/* No registry entry - check if DSM segment exists */
-		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
-		total_size = sizeof(TpDsmSegmentHeader);
-		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
+		/*
+		 * No registry entry found. This could mean:
+		 * 1. The index was just dropped
+		 * 2. We're in crash recovery after a restart
+		 * 3. The index doesn't exist
+		 * 4. The index is being built right now
+		 *
+		 * IMPORTANT: We should NEVER attempt to rebuild from disk during
+		 * normal CREATE INDEX operations. The registry entry should be
+		 * created BEFORE tp_insert is called during index build.
+		 *
+		 * Only attempt recovery during actual PostgreSQL crash recovery.
+		 */
 
-		if (found)
+		/*
+		 * Detect crash recovery mode by excluding normal and bootstrap
+		 * processing modes. This condition is used because there is no direct
+		 * InRecovery() function available in the context we're operating in.
+		 * We're in recovery if we're neither in normal processing nor
+		 * bootstrap mode.
+		 */
+		if (!IsNormalProcessingMode() && !IsBootstrapProcessingMode())
 		{
-			/* DSM segment exists - check if it has valid contents */
-			TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *)dsm_seg;
+			/* We might be in recovery - check if index exists */
+			Relation index_rel;
+			bool	 index_exists = false;
 
-			elog(NOTICE,
-				 "Recovery: DSM header check - handle: %u, shared_state_dp: "
-				 "%lu",
-				 dsm_header->dsm_handle,
-				 (unsigned long)dsm_header->shared_state_dp);
-
-			if (dsm_header->dsm_handle != DSM_HANDLE_INVALID &&
-				DsaPointerIsValid(dsm_header->shared_state_dp))
+			PG_TRY();
 			{
-				/* DSM segment has valid contents - try to attach */
-				elog(NOTICE,
-					 "Recovery: attempting to attach to DSA handle %u for "
-					 "index %u",
-					 dsm_header->dsm_handle,
+				index_rel = index_open(index_oid, AccessShareLock);
+				if (index_rel != NULL)
+				{
+					index_exists = true;
+					index_close(index_rel, AccessShareLock);
+				}
+			}
+			PG_CATCH();
+			{
+				/* Index doesn't exist - that's fine */
+				FlushErrorState();
+			}
+			PG_END_TRY();
+
+			if (index_exists)
+			{
+				/*
+				 * Index exists on disk but not in the registry. This can
+				 * occur after:
+				 * 1. PostgreSQL crash/restart (shared memory was cleared)
+				 * 2. Extension reload after DROP/CREATE EXTENSION
+				 * 3. Backend startup when other backends created the index
+				 *
+				 * We rebuild the index state from the on-disk metapage to
+				 * recover the memtable and posting lists.
+				 */
+				elog(DEBUG1,
+					 "Index %u exists on disk but not in registry - "
+					 "attempting recovery",
 					 index_oid);
-				/* Attach to DSA area in TopMemoryContext for persistence */
+
+				/* Only attempt recovery if we can safely validate the metapage
+				 */
+				local_state = tp_rebuild_index_from_disk(index_oid);
+				if (local_state != NULL)
 				{
-					MemoryContext oldcontext = MemoryContextSwitchTo(
-							TopMemoryContext);
-					dsa = dsa_attach(dsm_header->dsm_handle);
-					MemoryContextSwitchTo(oldcontext);
+					return local_state;
 				}
 
-				if (dsa == NULL)
-				{
-					elog(WARNING,
-						 "Recovery: dsa_attach failed, rebuilding from disk");
-					/* Fall through to disk rebuilding */
-				}
-				else
-				{
-					dsa_pin_mapping(dsa); /* Pin this backend's mapping */
-					elog(NOTICE, "Recovery: DSA attachment successful");
-
-					/* Get the existing shared state */
-					shared_state = (TpSharedIndexState *)
-							dsa_get_address(dsa, dsm_header->shared_state_dp);
-
-					/* Register the recovered state */
-					if (!tp_registry_register(index_oid, shared_state))
-					{
-						elog(WARNING,
-							 "Failed to register recovered index %u",
-							 index_oid);
-						dsa_detach(dsa);
-						pfree(dsm_name);
-						return NULL;
-					}
-
-					elog(NOTICE,
-						 "Recovered index state for index %u",
-						 index_oid);
-					/* Continue with normal local state creation below */
-				}
+				/* Recovery failed - index might be corrupted or stale */
 			}
 		}
 
-		/* If we get here, either no DSM segment found or DSM contents invalid
-		 * - rebuild from disk */
-		if (shared_state == NULL)
-		{
-			/* Rebuilding from docid pages */
-
-			/* Recover index state from metapage and docid pages */
-			local_state = tp_rebuild_index_from_disk(index_oid);
-			if (local_state != NULL)
-			{
-				/* Index state successfully rebuilt */
-				pfree(dsm_name);
-				return local_state;
-			}
-
-			pfree(dsm_name);
-			return NULL; /* Recovery failed */
-		}
+		/* Index not found in registry and we're not in recovery mode */
+		return NULL;
 	}
 
 	/* If we reach here with shared_state set, it's actually a DSA pointer */
@@ -196,36 +184,8 @@ tp_get_local_index_state(Oid index_oid)
 		 * convert to address */
 		dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)shared_state;
 
-		/* Attach to the DSA area */
-		dsm_name   = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
-		total_size = sizeof(TpDsmSegmentHeader);
-		dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
-
-		if (!found || dsm_seg == NULL)
-		{
-			elog(ERROR, "DSM segment not found for index %u", index_oid);
-			pfree(dsm_name);
-			return NULL;
-		}
-
-		TpDsmSegmentHeader *dsm_header = (TpDsmSegmentHeader *)dsm_seg;
-
-		/* Attach to DSA area in TopMemoryContext for persistence */
-		{
-			MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-			dsa						 = dsa_attach(dsm_header->dsm_handle);
-			MemoryContextSwitchTo(oldcontext);
-		}
-
-		if (dsa == NULL)
-		{
-			elog(ERROR, "Failed to attach to DSA for index %u", index_oid);
-			pfree(dsm_name);
-			return NULL;
-		}
-
-		/* Pin the mapping for cross-backend persistence */
-		dsa_pin_mapping(dsa);
+		/* Get the shared DSA area */
+		dsa = tp_registry_get_dsa();
 
 		/* Convert DSA pointer to memory address in this backend */
 		shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
@@ -241,11 +201,9 @@ tp_get_local_index_state(Oid index_oid)
 				hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
 		entry->local_state = local_state;
 
-		pfree(dsm_name);
 		return local_state;
 	}
 
-	pfree(dsm_name);
 	return NULL;
 }
 
@@ -258,23 +216,31 @@ void
 tp_release_local_index_state(TpLocalIndexState *local_state)
 {
 	bool found;
+	Oid	 index_oid;
 
 	if (local_state == NULL)
 		return;
 
+	/* Save index OID before accessing shared state */
+	if (local_state->shared != NULL)
+		index_oid = local_state->shared->index_oid;
+	else
+		index_oid = InvalidOid;
+
 	/* Remove from cache */
-	if (local_state_cache != NULL)
+	if (local_state_cache != NULL && OidIsValid(index_oid))
 	{
-		hash_search(
-				local_state_cache,
-				&local_state->shared->index_oid,
-				HASH_REMOVE,
-				&found);
+		hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
 	}
 
-	/* Detach from DSA */
-	if (local_state->dsa != NULL)
-		dsa_detach(local_state->dsa);
+	/*
+	 * DO NOT detach from DSA - it's the shared DSA used by all indexes!
+	 * The DSA is managed by the registry and should persist for the
+	 * lifetime of the PostgreSQL instance. Detaching here would break
+	 * other indexes that are using the same shared DSA.
+	 */
+	/* if (local_state->dsa != NULL)
+		dsa_detach(local_state->dsa); */
 
 	/* Free the local state */
 	pfree(local_state);
@@ -295,35 +261,22 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	dsa_area			 *dsa;
 	dsa_pointer			  shared_dp;
 	dsa_pointer			  memtable_dp;
-	char				 *dsm_name;
-	void				 *dsm_seg;
-	TpDsmSegmentHeader	 *dsm_header;
 	LocalStateCacheEntry *entry;
-	size_t				  total_size;
 	bool				  found;
 
-	/* Create DSA area name for this index */
-	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, index_oid);
-
-	/* Create DSA area in TopMemoryContext for persistence across queries */
-	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		dsa						 = dsa_create(LWLockNewTrancheId());
-		MemoryContextSwitchTo(oldcontext);
-	}
-	dsa_pin(dsa); /* Pin the DSA area itself for cross-backend persistence */
-	dsa_pin_mapping(dsa); /* Pin this backend's mapping */
-
-	/* Store DSA handle in small named DSM segment for recovery */
-	total_size = sizeof(TpDsmSegmentHeader);
-	dsm_seg	   = GetNamedDSMSegment(dsm_name, total_size, NULL, &found);
-	dsm_header = (TpDsmSegmentHeader *)dsm_seg;
-	dsm_header->dsm_handle = dsa_get_handle(dsa);
-
-	/* DSA handle stored for recovery */
+	/* Get the shared DSA area */
+	dsa = tp_registry_get_dsa();
 
 	/* Allocate shared state in DSA */
-	shared_dp	 = dsa_allocate(dsa, sizeof(TpSharedIndexState));
+	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
+	if (shared_dp == InvalidDsaPointer)
+	{
+		elog(ERROR,
+			 "Failed to allocate DSA memory for shared state (index OID: %u, "
+			 "size: %zu)",
+			 index_oid,
+			 sizeof(TpSharedIndexState));
+	}
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
@@ -335,23 +288,26 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
-	memtable	= (TpMemtable *)dsa_get_address(dsa, memtable_dp);
+
+	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_terms		 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
 
-	/* Store shared state pointer in DSM header for recovery */
-	dsm_header->shared_state_dp = shared_dp;
-
-	/* Register in global registry using DSA pointer, not memory address */
-	if (!tp_registry_register(index_oid, (TpSharedIndexState *)shared_dp))
+	/* Register in global registry */
+	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
 		/* If registration failed, try initializing the registry first */
 		tp_registry_shmem_startup();
-		if (!tp_registry_register(index_oid, (TpSharedIndexState *)shared_dp))
+		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		{
+			/* Clean up allocations on failure */
+			dsa_free(dsa, memtable_dp);
+			dsa_free(dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
+		}
 	}
 
 	/* Create local state for the creating backend */
@@ -371,9 +327,113 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	entry->local_state = local_state;
 
-	pfree(dsm_name);
-
 	return local_state;
+}
+
+/*
+ * Clean up shared memory allocations for an index
+ *
+ * This is called when an index is dropped. We free the DSA allocations
+ * but keep the DSA area itself since it's shared by all indices.
+ */
+void
+tp_cleanup_index_shared_memory(Oid index_oid)
+{
+	dsa_area			 *dsa;
+	dsa_pointer			  shared_dp;
+	TpSharedIndexState	 *shared_state;
+	TpMemtable			 *memtable;
+	LocalStateCacheEntry *entry = NULL;
+	bool				  found;
+
+	/* Look up the DSA pointer in registry */
+	shared_dp = tp_registry_lookup_dsa(index_oid);
+
+	if (!DsaPointerIsValid(shared_dp))
+	{
+		/* Still unregister even if no shared state found */
+		tp_registry_unregister(index_oid);
+		return; /* Nothing to clean up */
+	}
+
+	/* Get the shared DSA area */
+	dsa = tp_registry_get_dsa();
+
+	/* Get shared state to access memtable */
+	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+	memtable = (TpMemtable *)dsa_get_address(dsa, shared_state->memtable_dp);
+
+	/* Destroy the string hash table if it exists */
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_table *string_hash;
+
+		string_hash =
+				tp_string_table_attach(dsa, memtable->string_hash_handle);
+		if (string_hash != NULL)
+			dshash_destroy(string_hash);
+	}
+
+	/* Destroy the document lengths hash table if it exists */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_table *doc_lengths_hash;
+
+		doc_lengths_hash =
+				tp_doclength_table_attach(dsa, memtable->doc_lengths_handle);
+		if (doc_lengths_hash != NULL)
+			dshash_destroy(doc_lengths_hash);
+	}
+
+	/* Free shared state structures from DSA */
+	dsa_free(dsa, shared_state->memtable_dp);
+	dsa_free(dsa, shared_dp);
+
+	/* Clean up local state if we have it cached */
+	if (local_state_cache != NULL)
+	{
+		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+		if (found && entry != NULL && entry->local_state != NULL)
+		{
+			/* Remove from cache first, before detaching DSA */
+			hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
+
+			/* Don't detach DSA - it's shared and still in use by registry */
+			/* Just nullify the reference */
+			entry->local_state->dsa	   = NULL;
+			entry->local_state->shared = NULL;
+
+			/* Free the local state */
+			pfree(entry->local_state);
+		}
+	}
+
+	/* Unregister from global registry AFTER cleanup */
+	tp_registry_unregister(index_oid);
+}
+
+/*
+ * Get local index state from cache without creating it if not found
+ * Returns NULL if the index is not in the local cache
+ */
+TpLocalIndexState *
+tp_get_local_index_state_if_cached(Oid index_oid)
+{
+	LocalStateCacheEntry *entry;
+	bool				  found;
+
+	/* Ensure the cache is initialized */
+	if (local_state_cache == NULL)
+		return NULL;
+
+	/* Look up in local cache */
+	entry = (LocalStateCacheEntry *)
+			hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+
+	if (!found)
+		return NULL;
+
+	return entry->local_state;
 }
 
 /*
@@ -384,23 +444,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 void
 tp_destroy_shared_index_state(TpSharedIndexState *shared_state)
 {
-	char *dsm_name;
-
 	if (shared_state == NULL)
 		return;
 
-	/* Unregister from global registry */
-	tp_registry_unregister(shared_state->index_oid);
-
-	/* Clean up the DSM segment for this index */
-	dsm_name = psprintf("tapir.%u.%u", MyDatabaseId, shared_state->index_oid);
-
-	/* Note: There's no CancelNamedDSMSegment() in PostgreSQL's public API.
-	 * Named DSM segments are automatically cleaned up when the database
-	 * process exits. For now, we rely on this automatic cleanup.
-	 * The DSA area will be freed when the last backend detaches. */
-
-	pfree(dsm_name);
+	/* Use the common cleanup function */
+	tp_cleanup_index_shared_memory(shared_state->index_oid);
 }
 
 /*
@@ -413,6 +461,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	Relation		   index_rel;
 	TpIndexMetaPage	   metap;
 	TpLocalIndexState *local_state;
+	Relation		   heap_rel;
+	BlockNumber		   heap_blocks;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -431,10 +481,63 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return NULL;
 	}
 
-	elog(DEBUG1,
-		 "Recovery metapage: magic=0x%08X, first_docid_page=%u",
-		 metap->magic,
-		 metap->first_docid_page);
+	/* Validate that this is actually our metapage and not stale data */
+	if (metap->magic != TP_MAGIC)
+	{
+		index_close(index_rel, AccessShareLock);
+		pfree(metap);
+		elog(WARNING,
+			 "Invalid magic number in metapage for index %u: expected 0x%08X, "
+			 "found 0x%08X",
+			 index_oid,
+			 TP_MAGIC,
+			 metap->magic);
+		return NULL;
+	}
+
+	/*
+	 * Additional validation: Check if the heap relation has been truncated
+	 * or recreated since the index was built. If the heap is empty but the
+	 * metapage shows documents, this is stale data.
+	 *
+	 * This check is necessary to handle cases where:
+	 * - The table was TRUNCATEd but the index wasn't properly cleaned
+	 * - The index is out of sync due to an incomplete operation
+	 * - Data corruption occurred
+	 * Without this check, we could attempt to scan non-existent heap tuples.
+	 */
+	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
+	relation_close(heap_rel, AccessShareLock);
+
+	if (heap_blocks == 0 && metap->total_docs > 0)
+	{
+		/* Heap is empty but metapage shows documents - stale data */
+		elog(WARNING,
+			 "Index %u metapage shows %lu documents but heap is empty - "
+			 "ignoring stale data",
+			 index_oid,
+			 (unsigned long)metap->total_docs);
+		index_close(index_rel, AccessShareLock);
+		pfree(metap);
+
+		/* Create fresh shared state for the index */
+		return tp_create_shared_index_state(
+				index_oid, index_rel->rd_index->indrelid);
+	}
+
+	/* Check if there's actually anything to recover */
+	if (metap->total_docs == 0 &&
+		metap->first_docid_page == InvalidBlockNumber)
+	{
+		/* Empty index - nothing to recover */
+		index_close(index_rel, AccessShareLock);
+		pfree(metap);
+
+		/* Still create the shared state for the empty index */
+		return tp_create_shared_index_state(
+				index_oid, index_rel->rd_index->indrelid);
+	}
 
 	/* Create fresh state first */
 	/* Creating fresh state for restart recovery */
@@ -448,9 +551,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 		/* Recalculate IDF sum after recovery for proper BM25 scoring */
 		tp_calculate_idf_sum(local_state);
-		elog(DEBUG1,
-			 "Recalculated IDF sum after recovery: %.6f",
-			 local_state->shared->idf_sum);
 	}
 
 	/* Clean up */
@@ -481,21 +581,18 @@ tp_rebuild_posting_lists_from_docids(
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
-		elog(DEBUG1, "No docid pages to recover from");
 		return;
 	}
 
 	/* Inform user that recovery is starting */
-	elog(INFO, "Recovering tapir index %u from disk", index_rel->rd_id);
+	elog(INFO,
+		 "Recovering pg_textsearch index %u from disk",
+		 index_rel->rd_id);
 
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
 
 	current_page = metap->first_docid_page;
-
-	elog(DEBUG1,
-		 "Recovery starting from metapage first_docid_page=%u",
-		 current_page);
 
 	/* Scan through all docid pages */
 	while (current_page != InvalidBlockNumber)
@@ -506,12 +603,20 @@ tp_rebuild_posting_lists_from_docids(
 		docid_page	 = BufferGetPage(docid_buf);
 		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
-		elog(DEBUG1,
-			 "Recovery reading docid page %u, magic=0x%08X, "
-			 "num_docids=%d",
-			 current_page,
-			 docid_header->magic,
-			 docid_header->num_docids);
+		/*
+		 * Validate this is actually a docid page and not stale data.
+		 */
+		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
+		{
+			UnlockReleaseBuffer(docid_buf);
+			elog(ERROR,
+				 "Invalid docid page magic at block %u: expected 0x%08X, "
+				 "found 0x%08X - stopping recovery",
+				 current_page,
+				 TP_DOCID_PAGE_MAGIC,
+				 docid_header->magic);
+			break; /* Stop recovery - we've hit invalid/stale data */
+		}
 
 		/* Get docids array with proper alignment */
 		docids = (ItemPointer)((char *)docid_header +
@@ -522,24 +627,48 @@ tp_rebuild_posting_lists_from_docids(
 		{
 			ItemPointer	  ctid = &docids[i];
 			HeapTupleData tuple_data;
+			HeapTuple	  tuple = &tuple_data;
+			Buffer		  heap_buf;
+			bool		  valid;
+			Datum		  text_datum;
+			bool		  isnull;
+			text		 *document_text;
+			int32		  doc_length;
+			BlockNumber	  heap_blkno;
+			AttrNumber	  attnum;
 
-			elog(DEBUG2,
-				 "Recovery processing docid[%u] = (%u,%u)",
-				 i,
-				 BlockIdGetBlockNumber(&ctid->ip_blkid),
-				 ctid->ip_posid);
-			HeapTuple tuple = &tuple_data;
-			Buffer	  heap_buf;
-			bool	  valid;
-			Datum	  text_datum;
-			bool	  isnull;
-			text	 *document_text;
-			int32	  doc_length;
-
-			/* Note: ItemPointer validation will happen in heap_fetch */
+			/* Validate the ItemPointer before attempting fetch */
+			if (!ItemPointerIsValid(ctid))
+			{
+				elog(WARNING, "Invalid ItemPointer in docid page - skipping");
+				continue;
+			}
 
 			/* Initialize tuple for heap_fetch */
 			tuple->t_self = *ctid;
+
+			/*
+			 * Try to fetch the document from heap using the stored ctid.
+			 * We use heap_fetch with SnapshotAny to see all tuples,
+			 * but we need to be careful because the tuple might not exist
+			 * if this is stale data from a previous index incarnation.
+			 *
+			 * First check if the block exists in the heap relation.
+			 */
+			heap_blkno = ItemPointerGetBlockNumber(ctid);
+			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
+			{
+				/*
+				 * Block doesn't exist in heap - this is stale data.
+				 * This can occur when:
+				 * - The heap was VACUUMed and pages were truncated
+				 * - The table was TRUNCATEd after index was built
+				 * - Crash occurred between index update and heap update
+				 * - Data corruption resulted in invalid ctids
+				 * We skip these entries rather than failing recovery.
+				 */
+				continue;
+			}
 
 			/* Fetch document from heap using the stored ctid */
 			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
@@ -555,9 +684,9 @@ tp_rebuild_posting_lists_from_docids(
 			 * rd_index->indkey.values[0] contains the attribute number
 			 * of the first indexed column in the heap relation.
 			 */
-			AttrNumber attnum = index_rel->rd_index->indkey.values[0];
-			text_datum		  = heap_getattr(
-					   tuple, attnum, RelationGetDescr(heap_rel), &isnull);
+			attnum	   = index_rel->rd_index->indkey.values[0];
+			text_datum = heap_getattr(
+					tuple, attnum, RelationGetDescr(heap_rel), &isnull);
 
 			if (!isnull)
 			{

@@ -1,8 +1,8 @@
 -- Test case: schema
 -- Tests index operations with schema-qualified tables
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
-SET tapir.log_scores = true;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
+SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 -- Create a custom schema
 CREATE SCHEMA docs;
@@ -16,25 +16,25 @@ INSERT INTO docs.articles (content) VALUES ('hello world');
 INSERT INTO docs.articles (content) VALUES ('goodbye cruel world');
 INSERT INTO docs.articles (content) VALUES ('hello cruel goodbye');
 -- Create index on schema-qualified table
-CREATE INDEX articles_idx ON docs.articles USING tapir(content)
+CREATE INDEX articles_idx ON docs.articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation articles_idx
+NOTICE:  BM25 index build started for relation articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Unqualified index name (not in search path - should fail)
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
-ORDER BY content <@> to_tpquery('hello', 'articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
+ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
 ERROR:  index "articles_idx" not found
 -- Test 2: Schema-qualified index name works correctly
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'docs.articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'docs.articles_idx'))::numeric, 4) as score
 FROM docs.articles
-ORDER BY content <@> to_tpquery('hello', 'docs.articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1423
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
+ORDER BY content <@> to_bm25query('hello', 'docs.articles_idx'), id;
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.1423
@@ -44,12 +44,12 @@ NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
 
 -- Test 3: With search_path set, unqualified names work
 SET search_path = docs, public;
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> to_tpquery('hello', 'articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,3), BM25_score=-0.1215
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=-0.1423
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
+ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.1423
@@ -66,18 +66,18 @@ CREATE TABLE public_articles (
 );
 INSERT INTO public_articles (content) VALUES ('hello world');
 INSERT INTO public_articles (content) VALUES ('goodbye cruel world');
-CREATE INDEX public_articles_idx ON public_articles USING tapir(content)
+CREATE INDEX public_articles_idx ON public_articles USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation public_articles_idx
+NOTICE:  BM25 index build started for relation public_articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
 -- Unqualified index name works for public schema tables
-SELECT id, content, ROUND((content <@> to_tpquery('hello', 'public_articles_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles
-ORDER BY content <@> to_tpquery('hello', 'public_articles_idx'), id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
+ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       | score  
 ----+---------------------+--------
   1 | hello world         | 0.0000
@@ -88,4 +88,4 @@ NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
 DROP TABLE docs.articles CASCADE;
 DROP TABLE public_articles CASCADE;
 DROP SCHEMA docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

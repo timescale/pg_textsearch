@@ -13,6 +13,7 @@
 
 #include <lib/dshash.h>
 #include <math.h>
+#include <miscadmin.h>
 #include <storage/itemptr.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
@@ -44,7 +45,9 @@ tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
 
 	/* Free entries array if it exists */
 	if (DsaPointerIsValid(posting_list->entries_dp))
+	{
 		dsa_free(area, posting_list->entries_dp);
+	}
 
 	/* Free the posting list structure itself */
 	dsa_free(area, posting_list_dp);
@@ -322,9 +325,3 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 /*
  * Shared memory cleanup - simplified stub
  */
-void
-tp_cleanup_index_shared_memory(Oid index_oid)
-{
-	(void)index_oid;
-	/* Cleanup is handled by tp_destroy_shared_index_state */
-}

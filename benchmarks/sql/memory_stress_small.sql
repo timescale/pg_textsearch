@@ -69,7 +69,7 @@ FROM stress_docs_small;
 
 CREATE INDEX stress_content_small_idx
 ON stress_docs_small
-USING tapir(content)
+USING bm25(content)
 WITH (text_config='english', k1=1.2, b=0.75);
 
 \echo 'Index creation completed! Running performance queries...'
@@ -81,26 +81,26 @@ WITH (text_config='english', k1=1.2, b=0.75);
 \echo 'Query 1: Common technical terms'
 SELECT COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('algorithm optimization performance', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('algorithm optimization performance', 'stress_content_small_idx')
 LIMIT 100;
 
 \echo 'Query 2: AI/ML terms'
 SELECT COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('machine learning artificial intelligence', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('machine learning artificial intelligence', 'stress_content_small_idx')
 LIMIT 100;
 
 \echo 'Query 3: Database terms'
 SELECT COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('database postgresql indexing search', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('database postgresql indexing search', 'stress_content_small_idx')
 LIMIT 100;
 
 \echo 'Query 4: Top scoring results'
 SELECT title,
-       content <@> to_tpquery('software development programming', 'stress_content_small_idx') as score
+       content <@> to_bm25query('software development programming', 'stress_content_small_idx') as score
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('software development programming', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('software development programming', 'stress_content_small_idx')
 LIMIT 5;
 
 \echo 'Query 5: Multiple different searches'
@@ -108,7 +108,7 @@ SELECT
     'AI/ML' as search_type,
     COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('artificial intelligence machine learning', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('artificial intelligence machine learning', 'stress_content_small_idx')
 LIMIT 100
 
 UNION ALL
@@ -117,7 +117,7 @@ SELECT
     'Security' as search_type,
     COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('security encryption authentication', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('security encryption authentication', 'stress_content_small_idx')
 LIMIT 100
 
 UNION ALL
@@ -126,7 +126,7 @@ SELECT
     'Development' as search_type,
     COUNT(*) as matches
 FROM stress_docs_small
-ORDER BY content <@> to_tpquery('programming development software', 'stress_content_small_idx')
+ORDER BY content <@> to_bm25query('programming development software', 'stress_content_small_idx')
 LIMIT 100;
 
 -- Index statistics

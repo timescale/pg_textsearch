@@ -17,6 +17,7 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <miscadmin.h>
 #include <utils/memutils.h>
 
 #include "common/hashfn.h"

@@ -1,17 +1,22 @@
 #include <postgres.h>
 
+#include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/xact.h>
+#include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <utils/guc.h>
+#include <utils/inval.h>
 
 #include "constants.h"
 #include "memtable.h"
 #include "posting.h"
 #include "registry.h"
+#include "state.h"
 
 PG_MODULE_MAGIC;
 
@@ -27,14 +32,6 @@ bool tp_log_scores = false;
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
-/* Object access hook function for cleaning up shared memory */
-static void tp_object_access_hook(
-		ObjectAccessType access,
-		Oid				 classId,
-		Oid				 objectId,
-		int				 subId,
-		void			*arg);
-
 /* Previous shared memory startup hook */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
@@ -47,6 +44,14 @@ static void tp_shmem_request(void);
 /* Shared memory startup hook */
 static void tp_shmem_startup(void);
 
+/* Object access hook for DROP INDEX detection */
+static void tp_object_access(
+		ObjectAccessType access,
+		Oid				 classId,
+		Oid				 objectId,
+		int				 subId,
+		void			*arg);
+
 /*
  * Extension entry point - called when the extension is loaded
  */
@@ -54,17 +59,15 @@ void
 _PG_init(void)
 {
 	/* Initialize on first use - don't require shared_preload_libraries */
-	elog(DEBUG1, "Tapir extension _PG_init() starting GUC initialization");
 
 	/*
 	 * Define GUC parameters
 	 */
 	DefineCustomIntVariable(
-			"tapir.index_memory_limit",
+			"pg_textsearch.index_memory_limit",
 			"Per-index memory limit in MB (currently not enforced)",
-			"Reserved for future use: controls the maximum memory each Tapir "
-			"index "
-			"can use",
+			"Reserved for future use: controls the maximum memory each "
+			"pg_textsearch index can use",
 			&tp_index_memory_limit,
 			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
 			1,							   /* min 1MB */
@@ -76,11 +79,10 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"tapir.default_limit",
+			"pg_textsearch.default_limit",
 			"Default limit for BM25 queries when no LIMIT is detected",
 			"Controls the maximum number of documents to process when no "
-			"LIMIT "
-			"clause is present",
+			"LIMIT clause is present",
 			&tp_default_limit,
 			TP_DEFAULT_QUERY_LIMIT, /* default 1000 */
 			1,						/* min 1 */
@@ -92,7 +94,7 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomBoolVariable(
-			"tapir.log_scores",
+			"pg_textsearch.log_scores",
 			"Log BM25 scores during index scans",
 			"When enabled, logs the BM25 score for each document returned "
 			"during index scans. Useful for debugging score calculation.",
@@ -132,8 +134,6 @@ _PG_init(void)
 			1.0,
 			NoLock);
 
-	elog(DEBUG1, "Tapir extension GUC variables defined successfully");
-
 	/*
 	 * Install shared memory hooks (needed for registry)
 	 */
@@ -143,37 +143,40 @@ _PG_init(void)
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= tp_shmem_startup;
 
-	elog(DEBUG1, "Tapir shared memory hooks installed");
-
-	/* Install object access hook for index lifecycle management */
+	/* Install object access hook for DROP INDEX detection */
 	prev_object_access_hook = object_access_hook;
-	object_access_hook		= tp_object_access_hook;
-
-	elog(DEBUG1, "Tapir extension _PG_init() completed successfully");
+	object_access_hook		= tp_object_access;
 }
 
 /*
- * Object access hook function for cleaning up shared memory when indexes are
- * dropped
+ * Object access hook - handle DROP INDEX
  */
 static void
-tp_object_access_hook(
+tp_object_access(
 		ObjectAccessType access,
 		Oid				 classId,
 		Oid				 objectId,
 		int				 subId,
 		void			*arg)
 {
-	/* Call previous hook first if it exists */
+	/* Call previous hook if exists */
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 
-	/* Handle index drop events */
-	if (access == OAT_DROP && classId == RelationRelationId)
+	/* We only care about DROP events on relations (indexes are relations) */
+	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
-		/* Unregister from global registry first */
-		tp_registry_unregister(objectId);
-		/* Then clean up index-specific shared memory */
+		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *)arg;
+
+		/* Skip internal drops */
+		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
+			return;
+
+		/* Check if this is one of our indexes */
+		if (!tp_registry_is_registered(objectId))
+			return;
+
+		/* Cleanup shared memory BEFORE unregistering */
 		tp_cleanup_index_shared_memory(objectId);
 	}
 }
@@ -188,7 +191,7 @@ tp_shmem_request(void)
 	if (prev_shmem_request_hook)
 		prev_shmem_request_hook();
 
-	/* Request shared memory for registry */
+	/* Request shared memory for registry (includes DSA control) */
 	tp_registry_init();
 }
 
@@ -202,6 +205,6 @@ tp_shmem_startup(void)
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
 
-	/* Initialize the registry in shared memory */
+	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
 }

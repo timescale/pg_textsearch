@@ -49,7 +49,7 @@ CREATE TABLE cranfield_full_expected_rankings (
 
 -- Create BM25 index for Cranfield documents
 \echo 'Building BM25 index (this may take time)...'
-CREATE INDEX cranfield_full_tapir_idx ON cranfield_full_documents USING tapir(full_text)
+CREATE INDEX cranfield_full_tapir_idx ON cranfield_full_documents USING bm25(full_text)
     WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify data loading

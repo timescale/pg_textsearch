@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,
@@ -16,17 +16,17 @@ INSERT INTO deletion_test (content) VALUES
     ('fifth document with test again');
 -- Create index
 CREATE INDEX deletion_idx ON deletion_test
-USING tapir (content)
+USING bm25 (content)
 WITH (text_config = 'english');
-NOTICE:  Tapir index build started for relation deletion_idx
+NOTICE:  BM25 index build started for relation deletion_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.20, b=0.75)
 -- Initial search - should find documents with "test"
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id |         content_preview          
 ----+----------------------------------
@@ -40,8 +40,8 @@ DELETE FROM deletion_test WHERE id = 3;
 -- (Note: corpus statistics won't be updated, but shouldn't crash)
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id |        content_preview         
 ----+--------------------------------
@@ -53,8 +53,8 @@ DELETE FROM deletion_test WHERE id = 4;
 -- Search again - should still work
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id |        content_preview         
 ----+--------------------------------
@@ -66,8 +66,8 @@ DELETE FROM deletion_test WHERE content LIKE '%test%';
 -- Search again - should return no results (but not crash)
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id | content_preview 
 ----+-----------------
@@ -80,8 +80,8 @@ INSERT INTO deletion_test (content) VALUES
 -- Search again - should find the new document
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id |        content_preview         
 ----+--------------------------------
@@ -93,8 +93,8 @@ DELETE FROM deletion_test;
 -- Search in empty table - should return no results
 SELECT id, substring(content, 1, 40) as content_preview
 FROM deletion_test
-WHERE content <@> to_tpquery('test', 'deletion_idx') < -0.001
-ORDER BY content <@> to_tpquery('test', 'deletion_idx') DESC
+WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
  id | content_preview 
 ----+-----------------
@@ -102,4 +102,4 @@ LIMIT 5;
 
 -- Clean up
 DROP TABLE deletion_test;
-DROP EXTENSION tapir;
+DROP EXTENSION pg_textsearch;

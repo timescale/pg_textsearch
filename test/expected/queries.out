@@ -1,9 +1,9 @@
--- This test demonstrates top-k tapir query patterns for efficient text search
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+-- This test demonstrates top-k pg_textsearch query patterns for efficient text search
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,
@@ -24,83 +24,83 @@ INSERT INTO articles (title, content, category) VALUES
     ('Data Mining Techniques', 'data mining algorithms for pattern discovery and knowledge extraction from large databases', 'technology'),
     ('Web Search Evolution', 'evolution of web search from simple keyword matching to semantic understanding', 'history'),
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
--- Create tapir index with text_config
-CREATE INDEX articles_tapir_idx ON articles USING tapir(content) WITH (text_config='english');
-NOTICE:  Tapir index build started for relation articles_tapir_idx
+-- Create pg_textsearch index with text_config
+CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation articles_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 12 documents, avg_length=9.17, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 12 documents, avg_length=9.17, text_config='english' (k1=1.20, b=0.75)
 -- Disable sequential scans to force index usage
 SET enable_seqscan = off;
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database'::tpquery as score
+SELECT title, content, content <@> 'database'::bm25query as score
 FROM articles
-ORDER BY content <@> 'database'::tpquery
+ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
                       QUERY PLAN                       
 -------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database'::tpquery)
+         Order By: (content <@> 'database'::bm25query)
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'database'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database'::tpquery
+ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,10), BM25_score=-1.0060
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.0060
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning'::tpquery as score
+SELECT title, content, content <@> 'machine learning'::bm25query as score
 FROM articles
-ORDER BY content <@> 'machine learning'::tpquery
+ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
-                         QUERY PLAN                          
--------------------------------------------------------------
+                          QUERY PLAN                           
+---------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'machine learning'::tpquery)
+         Order By: (content <@> 'machine learning'::bm25query)
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'machine learning'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'machine learning'::tpquery
+ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-2.8917
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-2.8917
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms'::tpquery as score
+SELECT title, content, content <@> 'search algorithms'::bm25query as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::tpquery
+ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
-                          QUERY PLAN                          
---------------------------------------------------------------
+                           QUERY PLAN                           
+----------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'search algorithms'::tpquery)
+         Order By: (content <@> 'search algorithms'::bm25query)
          Filter: (category = 'technology'::text)
 (4 rows)
 
-SELECT title, content, ROUND((content <@> 'search algorithms'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'search algorithms'::bm25query)::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::tpquery
+ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-1.6468
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.6468
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
-SELECT a2.title, a2.content, ROUND((a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
+SELECT a2.title, a2.content, ROUND((a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
-ORDER BY a2.content <@> to_tpquery(a1.content, 'articles_tapir_idx')
+ORDER BY a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx')
 LIMIT 5;
            title           |                                               content                                               |  score  
 ---------------------------+-----------------------------------------------------------------------------------------------------+---------
@@ -113,22 +113,22 @@ LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization'::tpquery as score
+SELECT title, content, content <@> 'database optimization'::bm25query as score
 FROM articles
-ORDER BY content <@> 'database optimization'::tpquery
+ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database optimization'::tpquery)
+         Order By: (content <@> 'database optimization'::bm25query)
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'database optimization'::tpquery)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database optimization'::tpquery
+ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.0582
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.0582
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 6: Batch search with different queries (no index)
@@ -136,14 +136,14 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> to_tpquery(s.term) as score
+SELECT s.term, a.title, a.content <@> to_bm25query(s.term) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpquery(s.term);
-                                                                                                     QUERY PLAN                                                                                                     
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ORDER BY s.term, a.content <@> to_bm25query(s.term);
+                                                                                                      QUERY PLAN                                                                                                      
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Sort
-   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_tpquery((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])))))
+   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])))))
    ->  Nested Loop
          ->  ProjectSet
                ->  Result
@@ -154,10 +154,10 @@ ORDER BY s.term, a.content <@> to_tpquery(s.term);
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> to_tpquery(s.term))::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_tpquery(s.term);
+ORDER BY s.term, a.content <@> to_bm25query(s.term);
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test scoring consistency for multi-term query
@@ -165,14 +165,14 @@ HINT:  Use to_tpquery(text, index_name) for standalone scoring
 Testing ORDER BY vs standalone scoring for multi-term queries
 WITH order_by_results AS (
     SELECT id, title,
-           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
+           ROUND((content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as order_by_score
     FROM articles
-    ORDER BY content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx')
+    ORDER BY content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx')
     LIMIT 2
 ),
 standalone_results AS (
     SELECT id, title,
-           ROUND((content <@> to_tpquery('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
+           ROUND((content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
     FROM articles
     WHERE id IN (SELECT id FROM order_by_results)
 )
@@ -186,8 +186,8 @@ SELECT o.id, o.title,
 FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,2), BM25_score=-3.8977
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,7), BM25_score=-2.8917
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-3.8977
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-2.8917
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -3.897689 |        -3.897689 | ✓ CONSISTENT
@@ -196,4 +196,4 @@ NOTICE:  Tapir index scan: doc_pos=1, tid=(0,7), BM25_score=-2.8917
 
 -- Cleanup
 DROP TABLE articles CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

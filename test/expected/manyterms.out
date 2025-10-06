@@ -1,18 +1,18 @@
 -- Test hash table automatic resizing with many terms
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
-CREATE INDEX manyterms_idx ON manyterms_test USING tapir(content) WITH (text_config='english');
-NOTICE:  Tapir index build started for relation manyterms_idx
+CREATE INDEX manyterms_idx ON manyterms_test USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation manyterms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Add enough unique terms to exceed initial hash table capacity
 -- With 64 buckets at 0.75 load factor, >48 unique terms should trigger automatic resize
 INSERT INTO manyterms_test (content) VALUES
@@ -47,7 +47,7 @@ SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT
 (1 row)
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, ROUND((content <@> to_tpquery('fifty', 'manyterms_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('fifty', 'manyterms_idx'))::numeric, 4) as score
 FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
@@ -60,4 +60,4 @@ LIMIT 1;
 -- Clean up
 DROP INDEX manyterms_idx;
 DROP TABLE manyterms_test;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

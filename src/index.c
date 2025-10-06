@@ -463,8 +463,6 @@ tp_calculate_idf_sum(TpLocalIndexState *index_state)
 
 	/* Update the term count in memtable */
 	memtable->total_terms = term_count;
-
-	elog(DEBUG1, "Calculated IDF sum: %.6f for %d terms", idf_sum, term_count);
 }
 
 static void
@@ -867,9 +865,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
 
-	/* Tapir index build started */
+	/* BM25 index build started */
 	elog(NOTICE,
-		 "Tapir index build started for relation %s",
+		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
 	/* Report initialization phase */
@@ -929,25 +927,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	result->index_tuples = total_docs;
 
 	/* Calculate and log average IDF if we have terms */
-	{
-		TpMemtable *memtable = get_memtable(index_state);
-		if (memtable && index_state->shared->idf_sum > 0 &&
-			memtable->total_terms > 0)
-		{
-			float8 avg_idf = index_state->shared->idf_sum /
-							 memtable->total_terms;
-			elog(DEBUG1,
-				 "Average IDF for index: %.6f (sum=%.6f, terms=%d)",
-				 avg_idf,
-				 index_state->shared->idf_sum,
-				 memtable->total_terms);
-		}
-	}
+	/* IDF sum has been calculated and stored in shared state */
 
 	if (OidIsValid(text_config_oid))
 	{
 		elog(NOTICE,
-			 "Tapir index build completed: %lu documents, avg_length=%.2f, "
+			 "BM25 index build completed: %lu documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -958,7 +943,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	else
 	{
 		elog(NOTICE,
-			 "Tapir index build completed: %lu documents, avg_length=%.2f "
+			 "BM25 index build completed: %lu documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1078,9 +1063,7 @@ tp_insert(
 		return true;
 
 	/* Get index state */
-	/* TODO: cache local state pointer to avoid hash lookup */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
-	Assert(index_state != NULL);
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);
@@ -1567,8 +1550,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 		/* Log BM25 score if enabled */
 		elog(tp_log_scores ? NOTICE : DEBUG1,
-			 "Tapir index scan: doc_pos=%d, tid=(%u,%u), BM25_score=%.4f",
-			 so->current_pos,
+			 "BM25 index scan: tid=(%u,%u), BM25_score=%.4f",
 			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
 			 scan->xs_heaptid.ip_posid,
 			 bm25_score);
@@ -1601,10 +1583,6 @@ tp_costestimate(
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
-		elog(DEBUG1,
-			 "Tapir costestimate: path->indexorderbys is %s (len=%d)",
-			 path->indexorderbys ? "non-null" : "NULL",
-			 path->indexorderbys ? list_length(path->indexorderbys) : -1);
 		*indexStartupCost = get_float8_infinity();
 		*indexTotalCost	  = get_float8_infinity();
 		return;

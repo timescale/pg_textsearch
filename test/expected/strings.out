@@ -1,9 +1,9 @@
 -- Test long string handling including URLs, paths, and long terms
--- Load tapir extension
-CREATE EXTENSION IF NOT EXISTS tapir;
-INFO:  Tapir v0.0.1: This is prerelease software and should not be used in production.
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
-SET tapir.log_scores = true;
+SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 -- Setup test table for long strings
@@ -32,24 +32,24 @@ INSERT INTO long_string_docs (content, category) VALUES
     ('The antidisestablishmentarianism movement was characterized by pneumonoultramicroscopicsilicovolcanoconiosispneumonoultramicroscopicsilicovolcanoconiosis research', 'scientific'),
     -- Long JSON-like structured content
     ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
--- Create tapir index on long strings
-CREATE INDEX long_strings_idx ON long_string_docs USING tapir(content)
+-- Create pg_textsearch index on long strings
+CREATE INDEX long_strings_idx ON long_string_docs USING bm25(content)
     WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  Tapir index build started for relation long_strings_idx
+NOTICE:  BM25 index build started for relation long_strings_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Tapir index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 10 documents, avg_length=10.60, text_config='english' (k1=1.20, b=0.75)
 -- Test 1: Search for URL components
 SELECT id, LEFT(content, 80) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('https website', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('https website', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('https website', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('https website', 'long_strings_idx')
 LIMIT 5;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,1), BM25_score=-2.0517
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0517
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
@@ -61,20 +61,20 @@ NOTICE:  Tapir index scan: doc_pos=4, tid=(0,5), BM25_score=0.0000
 
 -- Test 2: Search for technical terms
 SELECT id, category,
-       ROUND((content <@> to_tpquery('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('postgresql extension', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('postgresql extension', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-3.1558
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,5), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.1558
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
  id |  category  |  score  
 ----+------------+---------
   6 | config     | -3.1558
@@ -91,20 +91,20 @@ NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
 
 -- Test 3: Search for long path components
 SELECT id, LEFT(content, 60) || '...' as content_preview,
-       ROUND((content <@> to_tpquery('file log error', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('file log error', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('file log error', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('file log error', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,5), BM25_score=-4.3436
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,4), BM25_score=-3.9159
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,6), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,7), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,8), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,9), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-4.3436
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-3.9159
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
   5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.3436
@@ -120,34 +120,34 @@ NOTICE:  Tapir index scan: doc_pos=9, tid=(0,10), BM25_score=0.0000
 (10 rows)
 
 -- Test 4: Test vectorization of very long URLs
-SELECT to_tpvector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
-                                                                                                                                                                           to_tpvector                                                                                                                                                                           
+SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
+                                                                                                                                                                          to_bm25vector                                                                                                                                                                          
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  long_strings_idx:{/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1,www.very-long-domain-name-for-testing-url-tokenization.example.com:1,www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1}
 (1 row)
 
 -- Test 5: Test extremely long single term handling
-SELECT to_tpvector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
-                                                          to_tpvector                                                          
+SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
+                                                         to_bm25vector                                                         
 -------------------------------------------------------------------------------------------------------------------------------
  long_strings_idx:{supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarian:1}
 (1 row)
 
 -- Test 6: Test mixed long and short terms
-SELECT id, ROUND((content <@> to_tpquery('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
+SELECT id, ROUND((content <@> to_bm25query('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('algorithm bm25', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('algorithm bm25', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,8), BM25_score=-0.9242
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-0.7676
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,6), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,7), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,5), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.9242
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.7676
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |  score  
 ----+---------
   8 | -0.9242
@@ -166,25 +166,25 @@ NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
 SELECT
     id,
     category,
-    ROUND((content <@> to_tpquery('postgresql tapir extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+    ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('postgresql tapir extension search', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,6), BM25_score=-4.8534
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,10), BM25_score=-1.2456
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,8), BM25_score=-0.5756
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,3), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,5), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,7), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.8073
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.5756
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.4780
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |  category  | multi_term_score 
 ----+------------+------------------
-  6 | config     |          -4.8534
- 10 | json       |          -1.2456
+  6 | config     |          -3.8073
   8 | mixed      |          -0.5756
+ 10 | json       |          -0.4780
   1 | web        |           0.0000
   2 | api        |           0.0000
   3 | docs       |           0.0000
@@ -197,7 +197,7 @@ NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
 -- Test 8: Test URL tokenization specifics
 SELECT
     'URL components' as test_type,
-    to_tpvector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
+    to_bm25vector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
    test_type    |                                     url_vector                                      
 ----------------+-------------------------------------------------------------------------------------
  URL components | long_strings_idx:{/path?param=value:1,example.com:1,example.com/path?param=value:1}
@@ -211,20 +211,20 @@ INSERT INTO long_string_docs (content, category) VALUES
      ' and should still be indexed correctly', 'stress_test');
 -- Verify the stress test document was indexed
 SELECT id, LEFT(content, 50) || '...' as preview,
-       ROUND((content <@> to_tpquery('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> to_bm25query('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_tpquery('document ridiculously long', 'long_strings_idx')
+ORDER BY content <@> to_bm25query('document ridiculously long', 'long_strings_idx')
 LIMIT 10;
-NOTICE:  Tapir index scan: doc_pos=0, tid=(0,11), BM25_score=-4.8824
-NOTICE:  Tapir index scan: doc_pos=1, tid=(0,3), BM25_score=-1.1305
-NOTICE:  Tapir index scan: doc_pos=2, tid=(0,7), BM25_score=-1.0905
-NOTICE:  Tapir index scan: doc_pos=3, tid=(0,1), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=4, tid=(0,2), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=5, tid=(0,4), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=6, tid=(0,5), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=7, tid=(0,6), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=8, tid=(0,8), BM25_score=0.0000
-NOTICE:  Tapir index scan: doc_pos=9, tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-4.8824
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.1305
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.0905
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
  11 | This document contains a ridiculously long compoun... | -4.8824
@@ -271,10 +271,10 @@ SELECT
         WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
         ELSE 'Heap allocation likely'
     END as allocation_type,
-    ROUND((content <@> to_tpquery('term allocation', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> to_bm25query('term allocation', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
-    AND content <@> to_tpquery('term allocation', 'long_strings_idx') < 0
+    AND content <@> to_bm25query('term allocation', 'long_strings_idx') < 0
 ORDER BY content_length;
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
@@ -290,10 +290,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 SELECT
     'Extreme length test' as test_name,
     LENGTH(content) as total_length,
-    ROUND((content <@> to_tpquery('extreme testing', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> to_bm25query('extreme testing', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category = 'extreme'
-    AND content <@> to_tpquery('extreme testing', 'long_strings_idx') < 0;
+    AND content <@> to_bm25query('extreme testing', 'long_strings_idx') < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
  Extreme length test |        23614 | -3.8411
@@ -301,4 +301,4 @@ WHERE category = 'extreme'
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
-DROP EXTENSION tapir CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

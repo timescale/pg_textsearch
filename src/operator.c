@@ -416,16 +416,6 @@ tp_score_documents(
 		avg_idf = local_state->shared->idf_sum / memtable->total_terms;
 		idf		= tp_calculate_idf_with_epsilon(
 				posting_list->doc_count, total_docs, avg_idf);
-		elog(DEBUG1,
-			 "Operator scoring: term='%s', doc_freq=%d, total_docs=%d, "
-			 "idf_sum=%.6f, total_terms=%d, avg_idf=%.6f, final_idf=%.6f",
-			 term,
-			 posting_list->doc_count,
-			 total_docs,
-			 local_state->shared->idf_sum,
-			 memtable->total_terms,
-			 avg_idf,
-			 idf);
 
 		/* Get posting entries */
 		entries = tp_get_posting_entries(local_state->dsa, posting_list);
