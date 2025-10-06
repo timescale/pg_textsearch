@@ -55,10 +55,6 @@ static void tp_object_access(
 /* Relcache invalidation callback for cleaning up local state */
 static void tp_relcache_callback(Datum arg, Oid relid);
 
-/* Process exit callback for DSA cleanup */
-/* static void tp_proc_exit(int code, Datum arg); -- unused, see comment below
- */
-
 /* Flag to track if we've already registered callbacks */
 static bool callbacks_registered = false;
 

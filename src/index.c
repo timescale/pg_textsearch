@@ -1063,7 +1063,6 @@ tp_insert(
 		return true;
 
 	/* Get index state */
-	/* TODO: cache local state pointer to avoid hash lookup */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
 	if (index_state == NULL)
 	{
