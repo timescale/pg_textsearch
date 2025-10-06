@@ -25,6 +25,9 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.4574
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   1 | the quick brown fox jumps over the lazy dog                  | -0.4574
@@ -36,6 +39,9 @@ ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.1410
+NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.0968
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   2 | a short sentence                                             | -0.1410
@@ -63,6 +69,9 @@ INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence th
 SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.4574
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   1 | the quick brown fox jumps over the lazy dog                  | -0.4574
@@ -74,6 +83,9 @@ ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.1410
+NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.0968
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   2 | a short sentence                                             | -0.1410

@@ -24,6 +24,8 @@ NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring1_bulk_idx'))::numeric, 4) as score
 FROM scoring1_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring1_bulk_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
  id |       content       | score  
 ----+---------------------+--------
   1 | hello world         | 0.0000
@@ -34,6 +36,8 @@ ORDER BY content <@> to_bm25query('hello', 'scoring1_bulk_idx'), id;
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_bulk_idx'))::numeric, 4) as score
 FROM scoring1_bulk
 ORDER BY content <@> to_bm25query('cruel', 'scoring1_bulk_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
  id |       content       | score  
 ----+---------------------+--------
   1 | hello world         | 0.0000
@@ -59,6 +63,8 @@ INSERT INTO scoring1_incr (content) VALUES ('goodbye cruel world');
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring1_incr_idx'))::numeric, 4) as score
 FROM scoring1_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring1_incr_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
  id |       content       | score  
 ----+---------------------+--------
   1 | hello world         | 0.0000
@@ -69,6 +75,8 @@ ORDER BY content <@> to_bm25query('hello', 'scoring1_incr_idx'), id;
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_incr_idx'))::numeric, 4) as score
 FROM scoring1_incr
 ORDER BY content <@> to_bm25query('cruel', 'scoring1_incr_idx'), id;
+NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
  id |       content       | score  
 ----+---------------------+--------
   1 | hello world         | 0.0000
