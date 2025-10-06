@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Real concurrency stress test for Tapir extension
+# Real concurrency stress test for pg_textsearch extension
 # Tests actual concurrent operations from multiple PostgreSQL sessions
 #
 
@@ -12,7 +12,7 @@ TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-2.0}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PORT=55434
-TEST_DB=tapir_concurrency_test
+TEST_DB=pg_textsearch_concurrency_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_concurrent_test"
 LOGFILE="${DATA_DIR}/postgres.log"
 
@@ -87,25 +87,25 @@ setup_test_db() {
     log "Initializing test database cluster..."
     initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
 
-    # Now check if tapir extension is available and can be loaded
+    # Now check if pg_textsearch extension is available and can be loaded
     local pg_config_path=$(which pg_config 2>/dev/null || echo "")
     if [ -n "$pg_config_path" ]; then
         local lib_dir=$($pg_config_path --pkglibdir 2>/dev/null || echo "")
-        if [ -n "$lib_dir" ] && [ -f "$lib_dir/tapir.so" ]; then
-            log "Found tapir extension at $lib_dir/tapir.so"
+        if [ -n "$lib_dir" ] && [ -f "$lib_dir/pg_textsearch.so" ]; then
+            log "Found pg_textsearch extension at $lib_dir/pg_textsearch.so"
 
             # Check library dependencies
-            log "Checking tapir library dependencies:"
-            ldd "$lib_dir/tapir.so" 2>/dev/null | head -10 || log "ldd not available or failed"
+            log "Checking pg_textsearch library dependencies:"
+            ldd "$lib_dir/pg_textsearch.so" 2>/dev/null | head -10 || log "ldd not available or failed"
 
             # Check if library is readable and has correct permissions
-            ls -la "$lib_dir/tapir.so"
+            ls -la "$lib_dir/pg_textsearch.so"
 
             # Test basic library loading with a minimal postgres process (now that DATA_DIR exists)
-            log "Testing tapir library loading..."
-            echo "LOAD 'tapir';" | timeout 10 postgres --single -D "${DATA_DIR}" template1 2>&1 | head -10 || warn "Tapir library loading test had issues"
+            log "Testing pg_textsearch library loading..."
+            echo "LOAD 'pg_textsearch';" | timeout 10 postgres --single -D "${DATA_DIR}" template1 2>&1 | head -10 || warn "pg_textsearch library loading test had issues"
         else
-            warn "tapir extension not found at expected location: $lib_dir/tapir.so"
+            warn "pg_textsearch extension not found at expected location: $lib_dir/pg_textsearch.so"
             if [ -n "$lib_dir" ]; then
                 log "Available extensions:"
                 ls -la "$lib_dir"/*.so 2>/dev/null || log "No .so files found in $lib_dir"
@@ -128,7 +128,7 @@ listen_addresses = 'localhost'
 log_min_messages = info
 log_line_prefix = '[%p] %t %u@%d: '
 
-# Load tapir extension
+# Load pg_textsearch extension
 EOF
 
     # Start PostgreSQL
@@ -560,7 +560,7 @@ test_concurrent_index_drop() {
 }
 
 run_concurrent_tests() {
-    log "Starting comprehensive concurrent stress tests for Tapir extension"
+    log "Starting comprehensive concurrent stress tests for pg_textsearch extension"
 
     test_concurrent_inserts
     test_concurrent_index_creation
@@ -590,7 +590,7 @@ run_concurrent_tests() {
 }
 
 main() {
-    log "Starting Tapir concurrent stress testing..."
+    log "Starting pg_textsearch concurrent stress testing..."
 
     # Check prerequisites
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found in PATH"
@@ -600,7 +600,7 @@ main() {
     run_concurrent_tests
 
     log "🎉 All concurrent stress tests completed successfully!"
-    log "The Tapir extension handled concurrent operations correctly."
+    log "The pg_textsearch extension handled concurrent operations correctly."
     exit 0
 }
 
