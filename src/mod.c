@@ -52,12 +52,6 @@ static void tp_object_access(
 		int				 subId,
 		void			*arg);
 
-/* Relcache invalidation callback for cleaning up local state */
-static void tp_relcache_callback(Datum arg, Oid relid);
-
-/* Flag to track if we've already registered callbacks */
-static bool callbacks_registered = false;
-
 /*
  * Extension entry point - called when the extension is loaded
  */
@@ -152,24 +146,6 @@ _PG_init(void)
 	/* Install object access hook for DROP INDEX detection */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
-
-	/* Register callbacks only once per backend */
-	if (!callbacks_registered)
-	{
-		/* Register relcache invalidation callback for local state cleanup */
-		CacheRegisterRelcacheCallback(tp_relcache_callback, (Datum)0);
-
-		/*
-		 * Note: We don't register a process exit callback to detach from DSA
-		 * because:
-		 * 1. The OS cleans up all process resources on exit anyway
-		 * 2. DROP EXTENSION might have already destroyed the DSA
-		 * 3. Trying to detach from a destroyed DSA causes crashes
-		 * 4. The DSA system has its own cleanup mechanisms
-		 */
-
-		callbacks_registered = true;
-	}
 }
 
 /*
@@ -203,48 +179,6 @@ tp_object_access(
 		/* Cleanup shared memory BEFORE unregistering */
 		tp_cleanup_index_shared_memory(objectId);
 	}
-}
-
-/*
- * Relcache invalidation callback - clean up local state for invalidated
- * indexes This is called in all backends when an index is dropped or
- * invalidated, allowing us to clean up local DSA attachments
- */
-static void
-tp_relcache_callback(Datum arg, Oid relid)
-{
-	TpLocalIndexState *local_state;
-	Relation		   rel;
-
-	/* Check if we have any local state cached for this relation
-	 * If not, we have nothing to clean up */
-	local_state = tp_get_local_index_state_if_cached(relid);
-	if (local_state == NULL)
-		return;
-
-	/* We can only check if the relation still exists when we're in a
-	 * transaction. Invalidation callbacks can be called outside of
-	 * transactions (e.g., when idle between commands), and trying to
-	 * access the catalog then will cause an assertion failure.
-	 */
-	if (!IsTransactionState())
-	{
-		return;
-	}
-
-	/* Try to open the relation to check if it still exists */
-	rel = try_relation_open(relid, NoLock);
-	if (rel != NULL)
-	{
-		/* Index still exists - this is just a cache invalidation, not a drop
-		 */
-		relation_close(rel, NoLock);
-		return;
-	}
-
-	/* Index no longer exists - clean up our local state
-	 * This detaches from DSA and frees the local_state structure */
-	tp_release_local_index_state(local_state);
 }
 
 /*
