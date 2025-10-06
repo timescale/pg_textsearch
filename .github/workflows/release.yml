@@ -66,7 +66,7 @@ jobs:
         fi
 
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
+        if ! sudo env "PATH=$PATH" make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
           echo "Tests failed. Showing regression diffs:"
           if [ -f test/regression.diffs ]; then
             cat test/regression.diffs
