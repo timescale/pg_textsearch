@@ -80,13 +80,13 @@ jobs:
         # Extract and check the actual binary architecture
         mkdir -p check-arch
         dpkg-deb -x dist/*.deb check-arch/
-        file check-arch/usr/lib/postgresql/*/lib/tapir.so | grep -E "(x86-64|aarch64)" || true
+        file check-arch/usr/lib/postgresql/*/lib/pg_textsearch.so | grep -E "(x86-64|aarch64)" || true
         rm -rf check-arch
 
     - name: Upload package artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tapir-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}
+        name: pg-textsearch-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}
         path: dist/*.deb
         retention-days: 30
 
@@ -112,25 +112,25 @@ jobs:
         CLEAN_VERSION=${VERSION#v}
 
         # Create directory with version
-        mkdir -p tapir-${CLEAN_VERSION}
+        mkdir -p pg_textsearch-${CLEAN_VERSION}
 
         # Copy source files
-        cp -r src sql test benchmarks Makefile tapir.control README.md LICENSE tapir-${CLEAN_VERSION}/
+        cp -r src sql test benchmarks Makefile pg_textsearch.control README.md LICENSE pg_textsearch-${CLEAN_VERSION}/
 
         # Create tarball
-        tar -czf tapir-${CLEAN_VERSION}.tar.gz tapir-${CLEAN_VERSION}/
+        tar -czf pg_textsearch-${CLEAN_VERSION}.tar.gz pg_textsearch-${CLEAN_VERSION}/
 
         # Also create a .tar.bz2
-        tar -cjf tapir-${CLEAN_VERSION}.tar.bz2 tapir-${CLEAN_VERSION}/
+        tar -cjf pg_textsearch-${CLEAN_VERSION}.tar.bz2 pg_textsearch-${CLEAN_VERSION}/
 
         mkdir -p dist
-        mv tapir-${CLEAN_VERSION}.tar.* dist/
+        mv pg_textsearch-${CLEAN_VERSION}.tar.* dist/
 
     - name: Upload source artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tapir-source-${{ env.VERSION }}
-        path: dist/tapir-*.tar.*
+        name: pg-textsearch-source-${{ env.VERSION }}
+        path: dist/pg_textsearch-*.tar.*
         retention-days: 30
 
   release:
