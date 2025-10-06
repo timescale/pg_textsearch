@@ -30,9 +30,6 @@ static TpGlobalRegistry *tapir_registry = NULL;
 /* Backend-local DSA area pointer */
 static dsa_area *tapir_dsa = NULL;
 
-/* Track whether we've already pinned the DSA mapping in this backend */
-static bool tapir_dsa_mapped = false;
-
 /*
  * Request shared memory for the registry
  * Only effective when loaded via shared_preload_libraries
@@ -97,9 +94,7 @@ tp_registry_get_dsa(void)
 {
 	/* Quick check if already attached in this backend */
 	if (tapir_dsa != NULL)
-	{
 		return tapir_dsa;
-	}
 
 	/* Ensure registry is initialized */
 	if (!tapir_registry)
@@ -125,12 +120,8 @@ tp_registry_get_dsa(void)
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
 
-		/* Pin the mapping for this backend (only once per backend) */
-		if (!tapir_dsa_mapped)
-		{
-			dsa_pin_mapping(tapir_dsa);
-			tapir_dsa_mapped = true;
-		}
+		/* Pin the mapping for this backend */
+		dsa_pin_mapping(tapir_dsa);
 
 		/* Store handle for other backends */
 		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
@@ -140,7 +131,7 @@ tp_registry_get_dsa(void)
 		/* DSA exists - attach to it */
 		MemoryContext oldcontext;
 
-		/* CRITICAL: Attach in TopMemoryContext so the dsa_area structure
+		/* Attach in TopMemoryContext so the dsa_area structure
 		 * doesn't get freed when query memory contexts are cleaned up.
 		 * This prevents heap-use-after-free errors when accessing the DSA
 		 * in subsequent queries. */
@@ -154,12 +145,8 @@ tp_registry_get_dsa(void)
 			elog(ERROR, "Failed to attach to Tapir shared DSA");
 		}
 
-		/* Pin the mapping for this backend (only once per backend) */
-		if (!tapir_dsa_mapped)
-		{
-			dsa_pin_mapping(tapir_dsa);
-			tapir_dsa_mapped = true;
-		}
+		/* Pin the mapping for this backend */
+		dsa_pin_mapping(tapir_dsa);
 	}
 
 	LWLockRelease(&tapir_registry->lock);
@@ -373,19 +360,6 @@ tp_registry_unregister(Oid index_oid)
 		}
 	}
 
-	/*
-	 * DO NOT invalidate the DSA even if this was the last index.
-	 * The DSA should persist for the lifetime of the PostgreSQL instance.
-	 * Other backends may still have references to it, and invalidating it
-	 * causes heap-use-after-free errors.
-	 *
-	 * The DSA will be cleaned up when PostgreSQL shuts down and all
-	 * backends detach from it.
-	 *
-	 * We also do not clear local states, as they contain valid DSA references
-	 * that remain usable even after all indexes are dropped.
-	 */
-
 	LWLockRelease(&tapir_registry->lock);
 }
 
@@ -404,12 +378,6 @@ tp_registry_reset_dsa(void)
 
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
 
-	/*
-	 * DO NOT invalidate the DSA handle.
-	 * The DSA should persist for the lifetime of the PostgreSQL instance.
-	 * Only clear the index entries.
-	 */
-
 	/* Clear all index entries */
 	for (int i = 0; i < TP_MAX_INDEXES; i++)
 	{
@@ -420,25 +388,4 @@ tp_registry_reset_dsa(void)
 	tapir_registry->num_entries = 0;
 
 	LWLockRelease(&tapir_registry->lock);
-}
-
-/*
- * Detach from the shared DSA area
- *
- * This is called during backend exit to properly clean up DSA segments
- * and prevent "too many dynamic shared memory segments" errors.
- */
-void
-tp_registry_detach_dsa(void)
-{
-	if (tapir_dsa != NULL)
-	{
-		/*
-		 * Note: This function is currently not called during normal operation
-		 * since we disabled the process exit callback to prevent crashes.
-		 * Keeping it for potential future use or manual cleanup scenarios.
-		 */
-		dsa_detach(tapir_dsa);
-		tapir_dsa = NULL;
-	}
 }

@@ -1064,14 +1064,6 @@ tp_insert(
 
 	/* Get index state */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
-	if (index_state == NULL)
-	{
-		elog(ERROR,
-			 "Failed to get index state for index %u during tp_insert. "
-			 "This should not happen - index should be registered during "
-			 "build!",
-			 RelationGetRelid(index));
-	}
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);
