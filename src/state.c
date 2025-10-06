@@ -147,7 +147,13 @@ tp_get_local_index_state(Oid index_oid)
 		 * Only attempt recovery during actual PostgreSQL crash recovery.
 		 */
 
-		/* Check if we're in actual crash recovery mode */
+		/*
+		 * Detect crash recovery mode by excluding normal and bootstrap
+		 * processing modes. This condition is used because there is no direct
+		 * InRecovery() function available in the context we're operating in.
+		 * We're in recovery if we're neither in normal processing nor
+		 * bootstrap mode.
+		 */
 		if (!IsNormalProcessingMode() && !IsBootstrapProcessingMode())
 		{
 			/* We might be in recovery - check if index exists */
@@ -284,7 +290,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
 	if (shared_dp == InvalidDsaPointer)
 	{
-		elog(ERROR, "Failed to allocate DSA memory for shared state");
+		elog(ERROR,
+			 "Failed to allocate DSA memory for shared state (index OID: %u, "
+			 "size: %zu)",
+			 index_oid,
+			 sizeof(TpSharedIndexState));
 	}
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
@@ -618,16 +628,23 @@ tp_rebuild_posting_lists_from_docids(
 			break; /* Stop recovery - we've hit invalid/stale data */
 		}
 
-		/* Validate num_docids is reasonable - use a hardcoded max since we
-		 * don't have TP_DOCIDS_PER_PAGE available here */
-		if (docid_header->num_docids > 1000) /* Conservative upper bound */
+		/*
+		 * Validate num_docids is reasonable. We use a conservative upper bound
+		 * since we don't have access to the exact TP_DOCIDS_PER_PAGE
+		 * calculation here. The actual max is around (BLCKSZ - headers) /
+		 * sizeof(ItemPointerData) which is approximately 1300 for 8KB pages,
+		 * so 1000 is a safe limit.
+		 */
+#define TP_MAX_DOCIDS_PER_PAGE_RECOVERY 1000
+		if (docid_header->num_docids > TP_MAX_DOCIDS_PER_PAGE_RECOVERY)
 		{
 			UnlockReleaseBuffer(docid_buf);
 			elog(WARNING,
-				 "Invalid docid count at block %u: %d (max 1000) - stopping "
+				 "Invalid docid count at block %u: %d (max %d) - stopping "
 				 "recovery",
 				 current_page,
-				 docid_header->num_docids);
+				 docid_header->num_docids,
+				 TP_MAX_DOCIDS_PER_PAGE_RECOVERY);
 			break; /* Stop recovery - corrupted header */
 		}
 
