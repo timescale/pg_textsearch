@@ -25,9 +25,9 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=2.33, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring5_bulk_idx'))::numeric, 4) as score
 FROM scoring5_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring5_bulk_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.5425
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5425
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.5425
@@ -39,9 +39,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring5_bulk_idx'))::numeric, 4) as score
 FROM scoring5_bulk
 ORDER BY content <@> to_bm25query('cruel', 'scoring5_bulk_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.4574
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4574
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   2 | goodbye cruel world | -0.4574
@@ -53,9 +53,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring5_bulk_idx'))::numeric, 4) as score
 FROM scoring5_bulk
 ORDER BY content <@> to_bm25query('world', 'scoring5_bulk_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.0271
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.0229
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0271
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0229
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.0271
@@ -67,9 +67,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring5_bulk_idx'))::numeric, 4) as score
 FROM scoring5_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring5_bulk_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.0271
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.0229
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0271
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0229
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   3 | goodbye nerds       | -0.0271
@@ -97,9 +97,9 @@ INSERT INTO scoring5_incr (content) VALUES ('goodbye nerds');
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring5_incr_idx'))::numeric, 4) as score
 FROM scoring5_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring5_incr_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.5425
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5425
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.5425
@@ -111,9 +111,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring5_incr_idx'))::numeric, 4) as score
 FROM scoring5_incr
 ORDER BY content <@> to_bm25query('cruel', 'scoring5_incr_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.4574
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4574
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   2 | goodbye cruel world | -0.4574
@@ -125,9 +125,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring5_incr_idx'))::numeric, 4) as score
 FROM scoring5_incr
 ORDER BY content <@> to_bm25query('world', 'scoring5_incr_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.0271
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.0229
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0271
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0229
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   1 | hello world         | -0.0271
@@ -139,9 +139,9 @@ NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring5_incr_idx'))::numeric, 4) as score
 FROM scoring5_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring5_incr_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.0271
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.0229
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0271
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0229
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
   3 | goodbye nerds       | -0.0271

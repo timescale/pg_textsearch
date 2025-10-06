@@ -169,9 +169,9 @@ SELECT
 FROM test_docs
 ORDER BY content <@> to_bm25query('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-2.2549
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.2549
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |         content          | relevance 
 ----+--------------------------+-----------
   1 | the quick brown fox      |   -2.2549
@@ -222,9 +222,9 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-1.0986
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.9967
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0986
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.9967
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
   1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH

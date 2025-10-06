@@ -68,11 +68,11 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-2.0817
-NOTICE:  pg_textsearch index scan: tid=(0,5), BM25_score=-1.5650
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.6878
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.6846
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=-0.6770
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0817
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.5650
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6878
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6846
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6770
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       1 | experimental investigation of the aerodynamics of a wing in  | -2.0817
@@ -92,11 +92,11 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  pg_textsearch index scan: tid=(1,3), BM25_score=-2.9094
-NOTICE:  pg_textsearch index scan: tid=(1,1), BM25_score=-2.5597
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=-1.4829
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-1.3756
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-1.3143
+NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-2.9094
+NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-2.5597
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.4829
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.3756
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.3143
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       9 | transition studies and skin friction measurements on an insu | -2.9094
@@ -125,16 +125,16 @@ FROM pgts_results br
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE br.pgts_rank <= 10
 ORDER BY br.pgts_rank;
-NOTICE:  pg_textsearch index scan: tid=(1,4), BM25_score=-2.4331
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-2.0817
-NOTICE:  pg_textsearch index scan: tid=(0,5), BM25_score=-1.5650
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=-0.6878
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.6846
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=-0.6770
-NOTICE:  pg_textsearch index scan: tid=(1,1), BM25_score=-0.5308
-NOTICE:  pg_textsearch index scan: tid=(1,3), BM25_score=-0.4786
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=-0.4541
-NOTICE:  pg_textsearch index scan: tid=(1,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(1,4), BM25_score=-2.4331
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0817
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.5650
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6878
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6846
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6770
+NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-0.5308
+NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-0.4786
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.4541
+NOTICE:  BM25 index scan: tid=(1,2), BM25_score=0.0000
  doc_id | pgts_rank |  score  |                   title_preview                    
 --------+-----------+---------+----------------------------------------------------
      10 |         1 | -2.4331 | the theory of the impact tube at low pressure .

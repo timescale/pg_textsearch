@@ -24,8 +24,8 @@ NOTICE:  BM25 index build completed: 2 documents, avg_length=2.00, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'))::numeric, 4) as score
 FROM scoring4_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.1341
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.1341
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1341
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1341
  id |      content      |  score  
 ----+-------------------+---------
   1 | goodbye world     | -0.1341
@@ -51,8 +51,8 @@ INSERT INTO scoring4_incr (content) VALUES ('goodbyes are hard');
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_incr_idx'))::numeric, 4) as score
 FROM scoring4_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_incr_idx'), id;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-0.1341
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=-0.1341
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1341
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1341
  id |      content      |  score  
 ----+-------------------+---------
   1 | goodbye world     | -0.1341

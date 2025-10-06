@@ -179,26 +179,26 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,7), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,8), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,9), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,10), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,11), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,12), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,13), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,14), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,15), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,16), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,17), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,18), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,19), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,20), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,13), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,14), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,16), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
  has_results 
 -------------
  t
@@ -223,8 +223,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_bm25query('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-NOTICE:  pg_textsearch index scan: tid=(0,11), BM25_score=-0.4006
-NOTICE:  pg_textsearch index scan: tid=(0,7), BM25_score=-0.4006
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.4006
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.4006
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -235,14 +235,14 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_bm25query('search', 'limit_test_idx')
     LIMIT 8
 ) q2;
-NOTICE:  pg_textsearch index scan: tid=(0,16), BM25_score=-1.6716
-NOTICE:  pg_textsearch index scan: tid=(0,8), BM25_score=-1.5705
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-1.4809
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-1.6716
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.5705
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.4809
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
  query_name | results 
 ------------+---------
  Query 2    |       8
@@ -253,10 +253,10 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_bm25query('algorithm', 'limit_test_idx')
     LIMIT 4
 ) q3;
-NOTICE:  pg_textsearch index scan: tid=(0,18), BM25_score=-1.0761
-NOTICE:  pg_textsearch index scan: tid=(0,8), BM25_score=-1.0110
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=-1.0110
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=-1.0110
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.0761
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.0110
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.0110
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.0110
  query_name | results 
 ------------+---------
  Query 3    |       4
@@ -293,8 +293,8 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  pushdown_safe_count 
 ---------------------
                    2
@@ -309,8 +309,8 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  pushdown_unsafe_count 
 -----------------------
                      1
@@ -326,26 +326,26 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-NOTICE:  pg_textsearch index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,7), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,8), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,9), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,10), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,11), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,12), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,13), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,14), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,15), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,16), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,17), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,18), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,19), BM25_score=0.0000
-NOTICE:  pg_textsearch index scan: tid=(0,20), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,13), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,14), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,16), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
  large_limit_has_results 
 -------------------------
  t

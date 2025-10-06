@@ -49,7 +49,7 @@ SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as
 FROM articles
 ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
-NOTICE:  pg_textsearch index scan: tid=(0,10), BM25_score=-1.0060
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.0060
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 2: Multi-term search with ranking
@@ -69,7 +69,7 @@ SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeri
 FROM articles
 ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-2.8917
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-2.8917
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 3: Category-filtered search
@@ -92,7 +92,7 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
-NOTICE:  pg_textsearch index scan: tid=(0,8), BM25_score=-1.6468
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.6468
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -128,7 +128,7 @@ SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::n
 FROM articles
 ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
-NOTICE:  pg_textsearch index scan: tid=(0,6), BM25_score=-3.0582
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.0582
 ERROR:  text <@> tpquery operator requires index name
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 -- Test 6: Batch search with different queries (no index)
@@ -186,8 +186,8 @@ SELECT o.id, o.title,
 FROM order_by_results o
 JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
-NOTICE:  pg_textsearch index scan: tid=(0,2), BM25_score=-3.8977
-NOTICE:  pg_textsearch index scan: tid=(0,7), BM25_score=-2.8917
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-3.8977
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-2.8917
  id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -3.897689 |        -3.897689 | ✓ CONSISTENT
