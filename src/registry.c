@@ -138,7 +138,15 @@ tp_registry_get_dsa(void)
 	else
 	{
 		/* DSA exists - attach to it */
-		tapir_dsa = dsa_attach(tapir_registry->dsa_handle);
+		MemoryContext oldcontext;
+
+		/* CRITICAL: Attach in TopMemoryContext so the dsa_area structure
+		 * doesn't get freed when query memory contexts are cleaned up.
+		 * This prevents heap-use-after-free errors when accessing the DSA
+		 * in subsequent queries. */
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		tapir_dsa  = dsa_attach(tapir_registry->dsa_handle);
+		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)
 		{
