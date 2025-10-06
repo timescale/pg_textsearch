@@ -69,38 +69,6 @@ init_local_state_cache(void)
 }
 
 /*
- * Clear all cached local states
- * This is called when the DSA is being detached to prevent stale pointers
- */
-void
-tp_clear_all_local_states(void)
-{
-	HASH_SEQ_STATUS		  status;
-	LocalStateCacheEntry *entry;
-
-	if (local_state_cache == NULL)
-		return;
-
-	/* Iterate through all cached entries */
-	hash_seq_init(&status, local_state_cache);
-	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
-	{
-		TpLocalIndexState *local_state = entry->local_state;
-		if (local_state != NULL)
-		{
-			/* Note: We don't detach from DSA here since it's already being
-			 * detached globally */
-			local_state->dsa = NULL;
-			pfree(local_state);
-		}
-	}
-
-	/* Clear the entire cache */
-	hash_destroy(local_state_cache);
-	local_state_cache = NULL;
-}
-
-/*
  * Get or create a local index state for the given index OID
  *
  * This function:
@@ -178,9 +146,17 @@ tp_get_local_index_state(Oid index_oid)
 
 			if (index_exists)
 			{
-				/* We're in recovery mode - carefully try to rebuild from disk
+				/*
+				 * Index exists on disk but not in the registry. This can
+				 * occur after:
+				 * 1. PostgreSQL crash/restart (shared memory was cleared)
+				 * 2. Extension reload after DROP/CREATE EXTENSION
+				 * 3. Backend startup when other backends created the index
+				 *
+				 * We rebuild the index state from the on-disk metapage to
+				 * recover the memtable and posting lists.
 				 */
-				elog(INFO,
+				elog(DEBUG1,
 					 "Index %u exists on disk but not in registry - "
 					 "attempting recovery",
 					 index_oid);
@@ -521,6 +497,12 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * Additional validation: Check if the heap relation has been truncated
 	 * or recreated since the index was built. If the heap is empty but the
 	 * metapage shows documents, this is stale data.
+	 *
+	 * This check is necessary to handle cases where:
+	 * - The table was TRUNCATEd but the index wasn't properly cleaned
+	 * - The index is out of sync due to an incomplete operation
+	 * - Data corruption occurred
+	 * Without this check, we could attempt to scan non-existent heap tuples.
 	 */
 	Relation heap_rel =
 			relation_open(index_rel->rd_index->indrelid, AccessShareLock);
@@ -620,7 +602,14 @@ tp_rebuild_posting_lists_from_docids(
 		docid_page	 = BufferGetPage(docid_buf);
 		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
-		/* Validate this is actually a docid page and not stale data */
+		/*
+		 * Validate this is actually a docid page and not stale data.
+		 * This magic number check is essential because:
+		 * - It prevents processing random/corrupt data as valid docids
+		 * - It detects when we've reached the end of valid pages
+		 * - It ensures recovery stops cleanly on stale/uninitialized pages
+		 * Without this, we could crash trying to process invalid memory.
+		 */
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
 			UnlockReleaseBuffer(docid_buf);
@@ -703,7 +692,15 @@ tp_rebuild_posting_lists_from_docids(
 			BlockNumber heap_blkno = ItemPointerGetBlockNumber(ctid);
 			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
 			{
-				/* Block doesn't exist in heap - this is stale data */
+				/*
+				 * Block doesn't exist in heap - this is stale data.
+				 * This can occur when:
+				 * - The heap was VACUUMed and pages were truncated
+				 * - The table was TRUNCATEd after index was built
+				 * - Crash occurred between index update and heap update
+				 * - Data corruption resulted in invalid ctids
+				 * We skip these entries rather than failing recovery.
+				 */
 				continue;
 			}
 

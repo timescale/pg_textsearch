@@ -87,7 +87,6 @@ typedef struct TpLocalIndexState
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 extern TpLocalIndexState *tp_get_local_index_state_if_cached(Oid index_oid);
 extern void tp_release_local_index_state(TpLocalIndexState *local_state);
-extern void tp_clear_all_local_states(void);
 extern TpLocalIndexState			 *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
