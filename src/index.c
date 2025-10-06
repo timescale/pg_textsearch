@@ -463,8 +463,6 @@ tp_calculate_idf_sum(TpLocalIndexState *index_state)
 
 	/* Update the term count in memtable */
 	memtable->total_terms = term_count;
-
-	elog(DEBUG1, "Calculated IDF sum: %.6f for %d terms", idf_sum, term_count);
 }
 
 static void
@@ -867,8 +865,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
 
-	elog(DEBUG1, "tp_build called for index %u", RelationGetRelid(index));
-
 	/* BM25 index build started */
 	elog(NOTICE,
 		 "BM25 index build started for relation %s",
@@ -931,20 +927,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	result->index_tuples = total_docs;
 
 	/* Calculate and log average IDF if we have terms */
-	{
-		TpMemtable *memtable = get_memtable(index_state);
-		if (memtable && index_state->shared->idf_sum > 0 &&
-			memtable->total_terms > 0)
-		{
-			float8 avg_idf = index_state->shared->idf_sum /
-							 memtable->total_terms;
-			elog(DEBUG1,
-				 "Average IDF for index: %.6f (sum=%.6f, terms=%d)",
-				 avg_idf,
-				 index_state->shared->idf_sum,
-				 memtable->total_terms);
-		}
-	}
+	/* IDF sum has been calculated and stored in shared state */
 
 	if (OidIsValid(text_config_oid))
 	{
@@ -1610,10 +1593,6 @@ tp_costestimate(
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
 	{
-		elog(DEBUG1,
-			 "Tapir costestimate: path->indexorderbys is %s (len=%d)",
-			 path->indexorderbys ? "non-null" : "NULL",
-			 path->indexorderbys ? list_length(path->indexorderbys) : -1);
 		*indexStartupCost = get_float8_infinity();
 		*indexTotalCost	  = get_float8_infinity();
 		return;

@@ -682,13 +682,6 @@ tp_rebuild_posting_lists_from_docids(
 			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
 			{
 				/* Block doesn't exist in heap - this is stale data */
-				elog(DEBUG1,
-					 "Skipping stale docid (%u,%u) - block %u doesn't exist "
-					 "(heap has %u blocks)",
-					 heap_blkno,
-					 ItemPointerGetOffsetNumber(ctid),
-					 heap_blkno,
-					 RelationGetNumberOfBlocks(heap_rel));
 				continue;
 			}
 

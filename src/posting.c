@@ -46,18 +46,10 @@ tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
 	/* Free entries array if it exists */
 	if (DsaPointerIsValid(posting_list->entries_dp))
 	{
-		elog(DEBUG1,
-			 "DSA: Freeing posting entries (pointer %lu, backend PID %d)",
-			 (unsigned long)posting_list->entries_dp,
-			 MyProcPid);
 		dsa_free(area, posting_list->entries_dp);
 	}
 
 	/* Free the posting list structure itself */
-	elog(DEBUG1,
-		 "DSA: Freeing posting list (pointer %lu, backend PID %d)",
-		 (unsigned long)posting_list_dp,
-		 MyProcPid);
 	dsa_free(area, posting_list_dp);
 }
 
@@ -86,12 +78,7 @@ tp_alloc_posting_list(dsa_area *area)
 
 	/* Allocate posting list structure */
 	posting_list_dp = dsa_allocate(area, sizeof(TpPostingList));
-	elog(DEBUG1,
-		 "DSA: Allocated posting list (size %zu, pointer %lu, backend PID %d)",
-		 sizeof(TpPostingList),
-		 (unsigned long)posting_list_dp,
-		 MyProcPid);
-	posting_list = dsa_get_address(area, posting_list_dp);
+	posting_list	= dsa_get_address(area, posting_list_dp);
 
 	/* Initialize posting list */
 	memset(posting_list, 0, sizeof(TpPostingList));
@@ -133,12 +120,6 @@ tp_add_document_to_posting_list(
 		/* Allocate new array */
 		new_entries_dp = dsa_allocate(
 				local_state->dsa, new_capacity * sizeof(TpPostingEntry));
-		elog(DEBUG1,
-			 "DSA: Allocated posting entries (size %zu, pointer %lu, backend "
-			 "PID %d)",
-			 new_capacity * sizeof(TpPostingEntry),
-			 (unsigned long)new_entries_dp,
-			 MyProcPid);
 
 		/* Copy existing entries if any */
 		if (posting_list->doc_count > 0 &&
@@ -153,11 +134,6 @@ tp_add_document_to_posting_list(
 				   posting_list->doc_count * sizeof(TpPostingEntry));
 
 			/* Free old array */
-			elog(DEBUG1,
-				 "DSA: Freeing old posting entries (pointer %lu, backend PID "
-				 "%d)",
-				 (unsigned long)posting_list->entries_dp,
-				 MyProcPid);
 			dsa_free(local_state->dsa, posting_list->entries_dp);
 		}
 
