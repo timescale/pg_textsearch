@@ -1558,7 +1558,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 		/* Log BM25 score if enabled */
 		elog(tp_log_scores ? NOTICE : DEBUG1,
-			 "Tapir index scan: doc_pos=%d, tid=(%u,%u), BM25_score=%.4f",
+			 "pg_textsearch index scan: doc_pos=%d, tid=(%u,%u), "
+			 "BM25_score=%.4f",
 			 so->current_pos,
 			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
 			 scan->xs_heaptid.ip_posid,
