@@ -502,6 +502,32 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return NULL;
 	}
 
+	/*
+	 * Additional validation: Check if the heap relation has been truncated
+	 * or recreated since the index was built. If the heap is empty but the
+	 * metapage shows documents, this is stale data.
+	 */
+	Relation heap_rel =
+			relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+	BlockNumber heap_blocks = RelationGetNumberOfBlocks(heap_rel);
+	relation_close(heap_rel, AccessShareLock);
+
+	if (heap_blocks == 0 && metap->total_docs > 0)
+	{
+		/* Heap is empty but metapage shows documents - stale data */
+		elog(WARNING,
+			 "Index %u metapage shows %u documents but heap is empty - "
+			 "ignoring stale data",
+			 index_oid,
+			 metap->total_docs);
+		index_close(index_rel, AccessShareLock);
+		pfree(metap);
+
+		/* Create fresh shared state for the index */
+		return tp_create_shared_index_state(
+				index_oid, index_rel->rd_index->indrelid);
+	}
+
 	/* Check if there's actually anything to recover */
 	if (metap->total_docs == 0 &&
 		metap->first_docid_page == InvalidBlockNumber)
@@ -643,6 +669,28 @@ tp_rebuild_posting_lists_from_docids(
 
 			/* Initialize tuple for heap_fetch */
 			tuple->t_self = *ctid;
+
+			/*
+			 * Try to fetch the document from heap using the stored ctid.
+			 * We use heap_fetch with SnapshotAny to see all tuples,
+			 * but we need to be careful because the tuple might not exist
+			 * if this is stale data from a previous index incarnation.
+			 *
+			 * First check if the block exists in the heap relation.
+			 */
+			BlockNumber heap_blkno = ItemPointerGetBlockNumber(ctid);
+			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
+			{
+				/* Block doesn't exist in heap - this is stale data */
+				elog(DEBUG1,
+					 "Skipping stale docid (%u,%u) - block %u doesn't exist "
+					 "(heap has %u blocks)",
+					 heap_blkno,
+					 ItemPointerGetOffsetNumber(ctid),
+					 heap_blkno,
+					 RelationGetNumberOfBlocks(heap_rel));
+				continue;
+			}
 
 			/* Fetch document from heap using the stored ctid */
 			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
