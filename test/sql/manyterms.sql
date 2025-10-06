@@ -5,6 +5,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
+SET pg_textsearch.log_scores = true;
 
 -- Create test table
 CREATE TABLE manyterms_test (id serial, content text);

@@ -3,6 +3,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
+SET pg_textsearch.log_scores = true;
 -- Setup test data with realistic documents
 CREATE TABLE articles (
     id SERIAL PRIMARY KEY,

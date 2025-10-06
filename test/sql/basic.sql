@@ -4,6 +4,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
+SET pg_textsearch.log_scores = true;
 
 -- Test bm25vector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);

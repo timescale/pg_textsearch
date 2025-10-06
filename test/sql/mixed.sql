@@ -5,6 +5,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Enable score logging for testing
+SET pg_textsearch.log_scores = true;
 
 -- Clean up from any previous tests
 DROP TABLE IF EXISTS concurrent_test_docs CASCADE;
