@@ -157,19 +157,17 @@ LIMIT 5;
 (0 rows)
 
 -- Test VACUUM FULL (more aggressive cleanup)
--- Note: VACUUM FULL rebuilds indexes, which causes a known issue with our
--- current memtable-only implementation ("Local state cache entry already exists").
--- This is expected until we implement proper index rebuilding support.
+-- VACUUM FULL rebuilds indexes, which now works correctly after fixing
+-- the index rebuild handling in our shared memory management.
 DELETE FROM deletion_test WHERE content NOT LIKE '%test%';
--- VACUUM FULL will fail with our current implementation
--- The error is expected and documented
+-- VACUUM FULL now works correctly with our index rebuild fix
 -- We use \set VERBOSITY terse to avoid OID-specific error messages
 \set VERBOSITY terse
 VACUUM FULL deletion_test;
 NOTICE:  BM25 index build started for relation deletion_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  Local state cache entry already exists for index 1766863
+NOTICE:  BM25 index build completed: 1 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
 \set VERBOSITY default
 -- Check statistics after VACUUM FULL attempt
 SELECT split_part(
@@ -178,7 +176,7 @@ SELECT split_part(
 ) AS total_docs_after_vacuum_full;
  total_docs_after_vacuum_full 
 ------------------------------
- 12
+ 1
 (1 row)
 
 -- Verify search still works
@@ -186,9 +184,10 @@ SELECT id, substring(content, 1, 30) as content_preview
 FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx');
- id | content_preview 
-----+-----------------
-(0 rows)
+ id |    content_preview     
+----+------------------------
+ 12 | document five has test
+(1 row)
 
 -- Clean up
 DROP TABLE deletion_test;

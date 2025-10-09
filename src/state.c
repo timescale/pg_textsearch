@@ -296,6 +296,14 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	shared_state->memtable_dp = memtable_dp;
 
+	/* Check if index is already registered (rebuild case) */
+	if (tp_registry_lookup(index_oid) != NULL)
+	{
+		/* This is a rebuild (e.g., VACUUM FULL) - unregister old index first
+		 */
+		tp_registry_unregister(index_oid);
+	}
+
 	/* Register in global registry */
 	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
@@ -321,9 +329,15 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	entry = (LocalStateCacheEntry *)
 			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
 	if (found)
-		elog(ERROR,
-			 "Local state cache entry already exists for index %u",
-			 index_oid);
+	{
+		/* This happens during index rebuild (e.g., VACUUM FULL)
+		 * Clean up the old local state before registering the new one */
+		if (entry->local_state != NULL)
+		{
+			/* Don't detach DSA as it's shared */
+			pfree(entry->local_state);
+		}
+	}
 
 	entry->local_state = local_state;
 

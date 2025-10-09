@@ -127,13 +127,11 @@ ORDER BY content <@> to_bm25query('test', 'deletion_idx')
 LIMIT 5;
 
 -- Test VACUUM FULL (more aggressive cleanup)
--- Note: VACUUM FULL rebuilds indexes, which causes a known issue with our
--- current memtable-only implementation ("Local state cache entry already exists").
--- This is expected until we implement proper index rebuilding support.
+-- VACUUM FULL rebuilds indexes, which now works correctly after fixing
+-- the index rebuild handling in our shared memory management.
 DELETE FROM deletion_test WHERE content NOT LIKE '%test%';
 
--- VACUUM FULL will fail with our current implementation
--- The error is expected and documented
+-- VACUUM FULL now works correctly with our index rebuild fix
 -- We use \set VERBOSITY terse to avoid OID-specific error messages
 \set VERBOSITY terse
 VACUUM FULL deletion_test;
