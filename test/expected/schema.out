@@ -123,6 +123,35 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  really           |  0.0000
 (3 rows)
 
+-- Test BM25 edge case: With only 2 documents where a term appears in exactly
+-- 50% of them (1 out of 2), the IDF becomes log(1) = 0, making the entire
+-- BM25 score 0 regardless of term frequency. This is mathematically correct
+-- behavior, not a bug.
+CREATE SCHEMA edge_case;
+CREATE TABLE edge_case.demo(content TEXT NOT NULL);
+CREATE INDEX ON edge_case.demo USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation demo_content_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert exactly 2 documents, one with "testing"
+INSERT INTO edge_case.demo VALUES('really');
+INSERT INTO edge_case.demo VALUES('testing schemas');
+-- With 2 docs and "testing" in 1 (50%), IDF = log((2-1+0.5)/(1+0.5)) = log(1) = 0
+SELECT content, ROUND((content <@> to_bm25query('testing',
+  'edge_case.demo_content_idx'))::numeric, 4) as score
+FROM edge_case.demo
+ORDER BY content <@> to_bm25query('testing', 'edge_case.demo_content_idx'), content;
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+     content     | score  
+-----------------+--------
+ really          | 0.0000
+ testing schemas | 0.0000
+(2 rows)
+
+DROP TABLE edge_case.demo CASCADE;
+DROP SCHEMA edge_case CASCADE;
 -- Test 6: bm25_debug_dump_index with schema-qualified indexes
 -- Test that the debug function properly handles schema resolution
 -- Test debug with public schema index (should work)

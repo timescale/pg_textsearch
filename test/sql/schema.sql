@@ -81,6 +81,27 @@ SELECT content, ROUND((content <@> to_bm25query('testing',
 FROM bar.baz
 ORDER BY content <@> to_bm25query('testing', 'bar.baz_content_idx'), content;
 
+-- Test BM25 edge case: With only 2 documents where a term appears in exactly
+-- 50% of them (1 out of 2), the IDF becomes log(1) = 0, making the entire
+-- BM25 score 0 regardless of term frequency. This is mathematically correct
+-- behavior, not a bug.
+CREATE SCHEMA edge_case;
+CREATE TABLE edge_case.demo(content TEXT NOT NULL);
+CREATE INDEX ON edge_case.demo USING bm25(content) WITH (text_config='english');
+
+-- Insert exactly 2 documents, one with "testing"
+INSERT INTO edge_case.demo VALUES('really');
+INSERT INTO edge_case.demo VALUES('testing schemas');
+
+-- With 2 docs and "testing" in 1 (50%), IDF = log((2-1+0.5)/(1+0.5)) = log(1) = 0
+SELECT content, ROUND((content <@> to_bm25query('testing',
+  'edge_case.demo_content_idx'))::numeric, 4) as score
+FROM edge_case.demo
+ORDER BY content <@> to_bm25query('testing', 'edge_case.demo_content_idx'), content;
+
+DROP TABLE edge_case.demo CASCADE;
+DROP SCHEMA edge_case CASCADE;
+
 -- Test 6: bm25_debug_dump_index with schema-qualified indexes
 -- Test that the debug function properly handles schema resolution
 
