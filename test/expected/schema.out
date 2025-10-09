@@ -84,7 +84,84 @@ NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
   2 | goodbye cruel world | 0.0000
 (2 rows)
 
+-- Test 5: INSERT operations with schema-qualified tables and implicit index
+-- names (reproduces the reported bug)
+CREATE SCHEMA bar;
+CREATE TABLE bar.baz(content TEXT NOT NULL);
+-- Create index with implicit name (PostgreSQL will name it baz_content_idx)
+CREATE INDEX ON bar.baz USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation baz_content_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- This INSERT should work but currently fails with "index not found"
+INSERT INTO bar.baz VALUES('really');
+INSERT INTO bar.baz VALUES('testing schemas');
+-- Verify data was inserted correctly
+SELECT * FROM bar.baz ORDER BY content;
+     content     
+-----------------
+ really
+ testing schemas
+(2 rows)
+
+-- Test search functionality
+SELECT content, ROUND((content <@> to_bm25query('testing',
+  'bar.baz_content_idx'))::numeric, 4) as score
+FROM bar.baz
+ORDER BY content <@> to_bm25query('testing', 'bar.baz_content_idx'), content;
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+     content     | score  
+-----------------+--------
+ really          | 0.0000
+ testing schemas | 0.0000
+(2 rows)
+
+-- Test 6: bm25_debug_dump_index with schema-qualified indexes
+-- Test that the debug function properly handles schema resolution
+-- Test debug with public schema index (should work)
+SELECT bm25_debug_dump_index('public_articles_idx')::text ~ 'Tapir Index Debug: public_articles_idx' AS debug_public_works;
+ debug_public_works 
+--------------------
+ t
+(1 row)
+
+-- Test debug with schema-qualified index name (should work)
+SELECT bm25_debug_dump_index('bar.baz_content_idx')::text ~ 'Tapir Index Debug: bar.baz_content_idx' AS debug_schema_qualified;
+ debug_schema_qualified 
+------------------------
+ t
+(1 row)
+
+-- Test debug with unqualified name for schema index (should fail when not in search path)
+SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'ERROR: Index ''baz_content_idx'' not found' AS debug_unqualified_fails;
+ debug_unqualified_fails 
+-------------------------
+ t
+(1 row)
+
+-- Test debug with search_path set
+SET search_path = bar, public;
+SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'Tapir Index Debug: baz_content_idx' AS debug_with_search_path;
+ debug_with_search_path 
+------------------------
+ t
+(1 row)
+
+-- Reset search_path
+SET search_path = public;
+-- Test debug with non-existent index
+SELECT bm25_debug_dump_index('nonexistent_idx')::text ~ 'ERROR: Index ''nonexistent_idx'' not found' AS debug_nonexistent;
+ debug_nonexistent 
+-------------------
+ t
+(1 row)
+
 -- Cleanup
+DROP TABLE bar.baz CASCADE;
+DROP SCHEMA bar CASCADE;
 DROP TABLE docs.articles CASCADE;
 DROP TABLE public_articles CASCADE;
 DROP SCHEMA docs CASCADE;

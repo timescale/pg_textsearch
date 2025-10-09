@@ -1069,10 +1069,22 @@ tp_insert(
 	document_text = DatumGetTextPP(values[0]);
 
 	/* Vectorize the document */
-	vector_datum = DirectFunctionCall2(
-			to_tpvector,
-			PointerGetDatum(document_text),
-			CStringGetTextDatum(RelationGetRelationName(index)));
+	{
+		char *index_name;
+		char *schema_name;
+		Oid	  namespace_oid = RelationGetNamespace(index);
+
+		schema_name = get_namespace_name(namespace_oid);
+		index_name =
+				psprintf("%s.%s", schema_name, RelationGetRelationName(index));
+
+		vector_datum = DirectFunctionCall2(
+				to_tpvector,
+				PointerGetDatum(document_text),
+				CStringGetTextDatum(index_name));
+
+		pfree(index_name);
+	}
 	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
 	/* Extract term IDs and frequencies from tpvector */
@@ -1781,9 +1793,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 	appendStringInfo(&result, "Tapir Index Debug: %s\n", index_name);
 
-	/* Get the index relation */
-	index_oid =
-			get_relname_relid(index_name, get_namespace_oid("public", false));
+	index_oid = tp_resolve_index_name_shared(index_name);
 	if (!OidIsValid(index_oid))
 	{
 		appendStringInfo(&result, "ERROR: Index '%s' not found\n", index_name);

@@ -58,7 +58,53 @@ SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_id
 FROM public_articles
 ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
 
+-- Test 5: INSERT operations with schema-qualified tables and implicit index
+-- names (reproduces the reported bug)
+CREATE SCHEMA bar;
+CREATE TABLE bar.baz(content TEXT NOT NULL);
+
+-- Create index with implicit name (PostgreSQL will name it baz_content_idx)
+CREATE INDEX ON bar.baz USING bm25(content)
+  WITH (text_config='english');
+
+-- This INSERT should work but currently fails with "index not found"
+INSERT INTO bar.baz VALUES('really');
+INSERT INTO bar.baz VALUES('testing schemas');
+
+-- Verify data was inserted correctly
+SELECT * FROM bar.baz ORDER BY content;
+
+-- Test search functionality
+SELECT content, ROUND((content <@> to_bm25query('testing',
+  'bar.baz_content_idx'))::numeric, 4) as score
+FROM bar.baz
+ORDER BY content <@> to_bm25query('testing', 'bar.baz_content_idx'), content;
+
+-- Test 6: bm25_debug_dump_index with schema-qualified indexes
+-- Test that the debug function properly handles schema resolution
+
+-- Test debug with public schema index (should work)
+SELECT bm25_debug_dump_index('public_articles_idx')::text ~ 'Tapir Index Debug: public_articles_idx' AS debug_public_works;
+
+-- Test debug with schema-qualified index name (should work)
+SELECT bm25_debug_dump_index('bar.baz_content_idx')::text ~ 'Tapir Index Debug: bar.baz_content_idx' AS debug_schema_qualified;
+
+-- Test debug with unqualified name for schema index (should fail when not in search path)
+SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'ERROR: Index ''baz_content_idx'' not found' AS debug_unqualified_fails;
+
+-- Test debug with search_path set
+SET search_path = bar, public;
+SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'Tapir Index Debug: baz_content_idx' AS debug_with_search_path;
+
+-- Reset search_path
+SET search_path = public;
+
+-- Test debug with non-existent index
+SELECT bm25_debug_dump_index('nonexistent_idx')::text ~ 'ERROR: Index ''nonexistent_idx'' not found' AS debug_nonexistent;
+
 -- Cleanup
+DROP TABLE bar.baz CASCADE;
+DROP SCHEMA bar CASCADE;
 DROP TABLE docs.articles CASCADE;
 DROP TABLE public_articles CASCADE;
 DROP SCHEMA docs CASCADE;
