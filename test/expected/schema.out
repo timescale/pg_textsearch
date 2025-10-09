@@ -98,26 +98,30 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='
 -- This INSERT should work but currently fails with "index not found"
 INSERT INTO bar.baz VALUES('really');
 INSERT INTO bar.baz VALUES('testing schemas');
+INSERT INTO bar.baz VALUES('another document');
 -- Verify data was inserted correctly
 SELECT * FROM bar.baz ORDER BY content;
-     content     
------------------
+     content      
+------------------
+ another document
  really
  testing schemas
-(2 rows)
+(3 rows)
 
 -- Test search functionality
 SELECT content, ROUND((content <@> to_bm25query('testing',
   'bar.baz_content_idx'))::numeric, 4) as score
 FROM bar.baz
 ORDER BY content <@> to_bm25query('testing', 'bar.baz_content_idx'), content;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4722
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-     content     | score  
------------------+--------
- really          | 0.0000
- testing schemas | 0.0000
-(2 rows)
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+     content      |  score  
+------------------+---------
+ testing schemas  | -0.4722
+ another document |  0.0000
+ really           |  0.0000
+(3 rows)
 
 -- Test 6: bm25_debug_dump_index with schema-qualified indexes
 -- Test that the debug function properly handles schema resolution

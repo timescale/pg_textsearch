@@ -70,6 +70,7 @@ CREATE INDEX ON bar.baz USING bm25(content)
 -- This INSERT should work but currently fails with "index not found"
 INSERT INTO bar.baz VALUES('really');
 INSERT INTO bar.baz VALUES('testing schemas');
+INSERT INTO bar.baz VALUES('another document');
 
 -- Verify data was inserted correctly
 SELECT * FROM bar.baz ORDER BY content;
