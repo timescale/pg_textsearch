@@ -601,8 +601,6 @@ tp_bulkdelete(
 		/* Track that deletion was requested */
 		stats->tuples_removed = 0;
 		stats->pages_deleted  = 0;
-
-		pfree(metap);
 	}
 	else
 	{
@@ -1749,8 +1747,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 			stats->pages_free = 0; /* No free pages in memtable
 									* implementation */
 		}
-
-		pfree(metap);
 	}
 	else
 	{
@@ -1814,8 +1810,6 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 				&result,
 				"ERROR: Could not get index state for '%s'\n",
 				index_name);
-		if (metap)
-			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
@@ -2045,8 +2039,6 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 	}
 
 	/* Cleanup */
-	if (metap)
-		pfree(metap);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
 
