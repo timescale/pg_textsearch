@@ -127,11 +127,8 @@ ORDER BY content <@> to_bm25query('test', 'deletion_idx')
 LIMIT 5;
 
 -- Test VACUUM FULL (more aggressive cleanup)
--- VACUUM FULL rebuilds indexes, which now works correctly after fixing
--- the index rebuild handling in our shared memory management.
+-- VACUUM FULL rebuilds indexes
 DELETE FROM deletion_test WHERE content NOT LIKE '%test%';
-
--- VACUUM FULL now works correctly with our index rebuild fix
 -- We use \set VERBOSITY terse to avoid OID-specific error messages
 \set VERBOSITY terse
 VACUUM FULL deletion_test;
