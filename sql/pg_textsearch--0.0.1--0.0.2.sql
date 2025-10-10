@@ -1,0 +1,2 @@
+-- pg_textsearch 0.0.1 to 0.0.2 upgrade
+-- No schema changes in this release
