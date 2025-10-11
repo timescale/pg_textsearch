@@ -83,9 +83,138 @@ The Postgres ecosystem is seeing renewed interest in bringing these capabilities
 
 We chose a different path for pg_textsearch: build a focused implementation targeting specifically BM25 ranked search.
 
-# How pg_textsearch Works
+# How pg_textsearch Works: Quick Start
 
-pg_textsearch brings BM25 ranking to Postgres by implementing the memtable layer of a modern search index. For the preview release, we focus on in-memory performance—the foundation for the hierarchical architecture described above.
+Let's walk through using pg_textsearch on TigerCloud, starting from the basics.
+
+## Enable the Extension
+
+First, enable pg_textsearch in your database:
+
+```sql
+CREATE EXTENSION pg_textsearch;
+```
+
+That's it—no configuration files, no external services. The extension is ready to use.
+
+## Create Your First Index
+
+Let's say you have a table of articles:
+
+```sql
+CREATE TABLE articles (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    content TEXT,
+    published_date DATE
+);
+
+-- Insert some sample data
+INSERT INTO articles (title, content, published_date) VALUES
+    ('Getting Started with Postgres',
+     'Postgres is a powerful relational database system known for its reliability and feature set...',
+     '2024-01-15'),
+    ('Understanding Indexes',
+     'Database indexes are data structures that improve query performance by enabling fast lookups...',
+     '2024-02-20'),
+    ('Advanced Query Optimization',
+     'Query optimization involves choosing the most efficient execution plan for a given query...',
+     '2024-03-10');
+```
+
+Create a BM25 index on the content column:
+
+```sql
+CREATE INDEX articles_content_idx ON articles
+USING pg_textsearch(content)
+WITH (text_config='english');
+```
+
+The `text_config` parameter specifies which Postgres text search configuration to use for tokenization and stemming. Common options include 'english', 'simple' (no stemming), 'french', 'german', and [29 others built into Postgres](https://www.postgresql.org/docs/current/textsearch-configuration.html).
+
+## Run Your First Query
+
+Search for articles about "database performance":
+
+```sql
+SELECT id, title,
+       content <@> to_tpquery('database performance', 'articles_content_idx') AS score
+FROM articles
+ORDER BY score
+LIMIT 5;
+```
+
+Key points:
+- The `<@>` operator calculates BM25 scores between text and a query
+- `to_tpquery()` creates a query object with the index name for proper IDF calculation
+- Scores are negative (better matches are more negative) to work naturally with Postgres's ASC ordering
+- The index provides corpus statistics even when Postgres chooses a sequential scan
+
+## Combine with SQL Features
+
+pg_textsearch integrates seamlessly with standard SQL:
+
+```sql
+-- Filter by date and relevance threshold
+SELECT title, published_date
+FROM articles
+WHERE published_date > '2024-01-01'
+  AND content <@> to_tpquery('query optimization', 'articles_content_idx') < -1.5
+ORDER BY content <@> to_tpquery('query optimization', 'articles_content_idx');
+
+-- Group results by month
+SELECT DATE_TRUNC('month', published_date) AS month,
+       COUNT(*) AS matching_articles,
+       AVG(content <@> to_tpquery('indexes', 'articles_content_idx')) AS avg_score
+FROM articles
+WHERE content <@> to_tpquery('indexes', 'articles_content_idx') < -0.5
+GROUP BY month
+ORDER BY month DESC;
+
+-- Join with other tables
+SELECT a.title, u.name AS author,
+       a.content <@> to_tpquery('postgres tips', 'articles_content_idx') AS score
+FROM articles a
+JOIN users u ON a.author_id = u.id
+ORDER BY score
+LIMIT 10;
+```
+
+## Tune BM25 Parameters
+
+The default BM25 parameters (k1=1.2, b=0.75) work well for most use cases, but you can adjust them:
+
+```sql
+-- Less length normalization (b=0.5) and higher term frequency saturation (k1=1.8)
+CREATE INDEX articles_custom_idx ON articles
+USING pg_textsearch(content)
+WITH (text_config='english', k1=1.8, b=0.5);
+```
+
+- **k1** controls term frequency saturation (higher = more weight to repeated terms)
+- **b** controls document length normalization (0 = no normalization, 1 = full normalization)
+
+## Monitor Your Indexes
+
+Check index memory usage and statistics:
+
+```sql
+-- Debug view of index internals (terms, posting lists, documents)
+SELECT tp_debug_dump_index('articles_content_idx');
+
+-- Check how often your indexes are used
+SELECT indexrelid::regclass AS index_name,
+       idx_scan,
+       idx_tup_read
+FROM pg_stat_user_indexes
+WHERE indexrelid::regclass::text LIKE '%pg_textsearch%';
+```
+
+# Implementation Details
+
+pg_textsearch brings BM25 ranking to Postgres by implementing the memtable layer of a modern search index. The preview release focuses on this in-memory component—fast, simple, and sufficient for many workloads. The full hierarchical architecture with disk segments will be released in stages over the coming months.
+
+## Current Architecture (Preview Release)
 
 The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inverted index in shared memory. This allows all backend processes to share a single index structure, avoiding duplication and enabling efficient memory use. The index consists of three core components:
 
@@ -95,7 +224,7 @@ The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inv
 
 **Document metadata** tracking each document's length and state. The length enables BM25's document normalization. The state supports crash recovery—on restart, the index rebuilds by rescanning documents marked as indexed. Corpus-wide statistics (document count, average length) live here too, updated incrementally as documents are added or removed.
 
-Here's the memtable structure:
+## Memtable Structure
 
 \[replace the following ASCII diagram w/ one made by the design team\]
 
@@ -135,7 +264,19 @@ Here's the memtable structure:
 └─────────────────────────────────────────────────┘
 ```
 
-### Query Processing
+## Roadmap to Full Architecture
+
+The preview release implements just the memtable layer—the top of the hierarchical structure described earlier. This is intentional: we're releasing in stages to get working software into users' hands quickly while building toward the complete system.
+
+**Coming in v0.1.0 (Q1 2025):** Naive disk segments. When the memtable fills, it flushes to an immutable on-disk segment. Queries merge results from the memtable and all segments. This removes the memory limitation while keeping the implementation straightforward.
+
+**Coming in v0.2.0 (Q2 2025):** Optimized segments with compression. Delta encoding for posting lists, skip lists for faster intersection, and basic query optimization. This brings significant performance improvements for larger indexes.
+
+**Coming in v1.0.0 (Q3 2025):** Background compaction and advanced query algorithms. A background worker merges small segments into larger ones, maintaining optimal query performance. Block-Max WAND enables efficient top-k retrieval without scoring all documents.
+
+Each release maintains backward compatibility—indexes created with earlier versions continue working as you upgrade.
+
+## Query Processing
 
 When you execute a BM25 query:
 
@@ -149,24 +290,13 @@ The extension evaluates it in several steps. First, it looks up each query term 
 
 The `<@>` operator returns negative BM25 scores—a deliberate design choice. Postgres sorts NULL values last in ascending order, and treats positive infinity as larger than any finite value. By returning negative scores (better matches are more negative), we enable efficient index scans in ascending order without special NULL handling.
 
-### Integration with Postgres
+## Integration Philosophy
 
 pg_textsearch deliberately builds on Postgres foundations rather than reimplementing them. Text processing uses Postgres's `to_tsvector` for tokenization, stemming, and stop-word removal. This provides immediate support for 29 languages without additional code—when you specify `text_config='french'`, you get French stemming and stop words automatically.
 
-The extension integrates cleanly with SQL. You can combine BM25 scoring with filters, joins, and aggregations:
+The extension works within Postgres's transaction system. Index updates happen transactionally with data modifications. MVCC semantics are preserved—each transaction sees a consistent view of the index. Crash recovery rebuilds the memtable from the documents marked as indexed, ensuring durability despite being memory-based.
 
-```sql
-SELECT category, COUNT(*) as article_count
-FROM articles
-WHERE content <@> to_tpquery('machine learning', 'idx_articles') < -2.0
-  AND published_date > '2024-01-01'
-GROUP BY category
-ORDER BY article_count DESC;
-```
-
-This finds articles about machine learning published this year with strong relevance (score < -2.0), grouped by category. The BM25 condition works alongside other SQL features—no special query language or separate system needed.
-
-### Design Trade-offs
+## Design Trade-offs
 
 The preview release makes deliberate trade-offs to deliver a working system quickly while laying groundwork for future enhancements.
 
@@ -176,7 +306,7 @@ The preview release makes deliberate trade-offs to deliver a working system quic
 
 **Simple query evaluation** processes all matching documents rather than using advanced algorithms like Block-Max WAND. For in-memory indexes this is actually fine—scanning a posting list in RAM is fast enough that the overhead of maintaining skip lists might not pay off. As we add disk segments and indexes grow larger, query optimization becomes critical. The current implementation establishes correctness; performance optimizations come next.
 
-### Alternative Approaches We Considered
+## Alternative Approaches We Considered
 
 **Building on GIN indexes** seems natural—they already power Postgres full-text search. But GIN indexes are optimized for Boolean matching, not ranking. They lack the corpus statistics (document count, average length) and per-document metadata (length, term frequencies) that BM25 requires. We'd need separate structures for scoring anyway, negating the benefit of reusing GIN.
 
@@ -184,11 +314,11 @@ The preview release makes deliberate trade-offs to deliver a working system quic
 
 **Using RUM indexes** could support ranking, but RUM isn't part of core Postgres and has its own complexity. We wanted pg_textsearch to work with standard Postgres installations without additional dependencies.
 
-## **Early Performance Results**
+# Early Performance Results
 
 The preview release prioritizes getting the complete user interface functional over exhaustive optimization. That said, performance on moderate-sized datasets is already quite good.
 
-For the Timescale documentation corpus—roughly 10MB of indexed data after processing—indexing completes in a few seconds on a development laptop. Queries return in single-digit milliseconds. These tests ran on a MacBook with debug builds of both pg\_textsearch and PostgreSQL 17, configured using timescaledb-tune. Production builds on properly provisioned hardware should perform better.
+For the Timescale documentation corpus—roughly 10MB of indexed data after processing—indexing completes in a few seconds on a development laptop. Queries return in single-digit milliseconds. These tests ran on a MacBook with debug builds of both pg_textsearch and Postgres 17, configured using timescaledb-tune. Production builds on properly provisioned hardware should perform better.
 
 **Memory Usage**
 
