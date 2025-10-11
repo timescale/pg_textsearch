@@ -65,19 +65,35 @@ The appeal of keeping everything in Postgres is clear. The success of pgvector d
 
 This is where pg_textsearch comes in. It implements modern BM25 ranking directly in Postgres, delivering the search quality of dedicated engines without the operational overhead. Combined with extensions like pgvector, you can build sophisticated hybrid search systems—mixing semantic vector search with keyword matching—entirely within your existing Postgres deployment.
 
-## **How pg\_textsearch Works**
+# How Modern BM25 Indexes Work
 
-pg\_textsearch implements BM25 ranking using a memtable architecture. The core idea is simple: store an inverted index in Postgres shared memory, where terms map to lists of documents containing those terms.
+Before diving into pg_textsearch's implementation, it helps to understand how modern search engines achieve both quality and performance at scale.
 
-The implementation uses Postgres Dynamic Shared Areas (DSA) to manage the in-memory index. When you create a pg\_textsearch index on a text column, the extension builds an inverted index structure with three main components:
+**The BM25 ranking formula** improves on basic TF-IDF by addressing its key weaknesses. It calculates inverse document frequency (IDF) to identify discriminating terms—rare words get higher weight than common ones. It applies term frequency saturation through a parameter k1 (typically 1.2) to prevent documents from gaming the system through repetition. And it normalizes scores by document length relative to the corpus average, controlled by parameter b (typically 0.75), ensuring long documents don't automatically dominate results.
 
-A term dictionary using dshash for string interning. Each unique term appears once, with a pointer to its posting list.
+**Hierarchical index architecture** enables fast writes while maintaining query performance. Modern search engines organize indexes in layers, similar to LSM (Log-Structured Merge) trees. New documents write to an in-memory structure (often called a memtable or buffer), providing microsecond-latency insertions. When memory fills, the system flushes data to immutable disk segments. Background processes merge smaller segments into larger ones, maintaining query efficiency. This design decouples write performance from index size—writes always hit memory first, while reads can leverage both memory and disk structures.
 
-Posting lists stored as DSA-allocated vectors of (ItemPointerData, term frequency) pairs. These lists grow dynamically as documents are added and are sorted by tuple ID when needed for efficient lookups.
+**Advanced query algorithms** make it possible to find top results without scoring every document. Block-Max WAND (Weak AND) divides posting lists into blocks, each tagged with its maximum possible score. During query execution, the algorithm can skip entire blocks that can't possibly make it into the top-k results. This transforms what would be an O(n) operation into something much faster in practice, often examining only a small fraction of matching documents.
 
-A document length table mapping each document to its length, enabling proper BM25 normalization.
+**Compression techniques** reduce I/O and improve cache efficiency. Posting lists use delta encoding—storing differences between document IDs rather than absolute values. Frequencies are compressed with variable-byte or bit-packing schemes. These techniques can reduce index size by 70-90% while maintaining fast decompression. Less I/O means faster queries, especially when indexes exceed available memory.
 
-The extension also maintains corpus statistics—total document count and average document length—in shared index state. These statistics are critical for computing inverse document frequency (IDF) and length normalization in the BM25 formula.
+Search engines like Lucene (powering Elasticsearch and Solr) and Tantivy (powering Meilisearch and Quickwit) implement these techniques and many more. They've evolved far beyond core BM25 ranking to include faceted search, geo-spatial queries, and complex aggregations. The algorithms and data structures are well-understood at this point—anyone can study the open source implementations to see exactly how high-performance text search works.
+
+The Postgres ecosystem is seeing renewed interest in bringing these capabilities native to the database. ParadeDB has done impressive engineering work integrating Tantivy directly with Postgres at the transactional and page level, demonstrating both the demand for ranked search in Postgres and the technical feasibility of the integration. Their system offers the full breadth of Lucene-like features. However, it's licensed under AGPL and not widely available through managed Postgres providers.
+
+We chose a different path for pg_textsearch: build a focused implementation targeting specifically BM25 ranked search.
+
+# How pg_textsearch Works
+
+pg_textsearch brings BM25 ranking to Postgres by implementing the memtable layer of a modern search index. For the preview release, we focus on in-memory performance—the foundation for the hierarchical architecture described above.
+
+The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inverted index in shared memory. This allows all backend processes to share a single index structure, avoiding duplication and enabling efficient memory use. The index consists of three core components:
+
+**A term dictionary** implemented as a DSA hash table with string interning. Each unique term maps to its posting list pointer and document frequency for IDF calculation. String interning ensures each term appears exactly once in memory, regardless of how many documents contain it.
+
+**Posting lists** stored as dynamically-growing vectors in DSA memory. Each entry contains a document identifier (Postgres TID) and term frequency. Lists remain unsorted during insertion for write performance, then sort on-demand for query processing. This design optimizes for the common case of sequential writes followed by read queries.
+
+**Document metadata** tracking each document's length and state. The length enables BM25's document normalization. The state supports crash recovery—on restart, the index rebuilds by rescanning documents marked as indexed. Corpus-wide statistics (document count, average length) live here too, updated incrementally as documents are added or removed.
 
 Here's the memtable structure:
 
@@ -119,11 +135,9 @@ Here's the memtable structure:
 └─────────────────────────────────────────────────┘
 ```
 
-**Query Evaluation**
+### Query Processing
 
-When you run a query like:
-
-sql
+When you execute a BM25 query:
 
 ```sql
 SELECT * FROM documents
@@ -131,47 +145,44 @@ ORDER BY content <@> to_tpquery('database performance', 'docs_idx')
 LIMIT 10;
 ```
 
-The extension processes it as follows:
+The extension evaluates it in several steps. First, it looks up each query term in the dictionary to retrieve posting lists and IDF values. Then, for documents appearing in any posting list, it computes the BM25 score by summing each term's contribution: IDF × normalized term frequency × length normalization. The normalization factors come from the k1 and b parameters, using the corpus statistics maintained in the index.
 
-For each query term, look up the term in the string dictionary and retrieve its posting list. For each document that contains at least one query term, calculate the BM25 contribution for each term present. The BM25 formula uses term frequency, document length, and corpus statistics to compute a relevance score. Sum the contributions across all query terms to get the final document score.
+The `<@>` operator returns negative BM25 scores—a deliberate design choice. Postgres sorts NULL values last in ascending order, and treats positive infinity as larger than any finite value. By returning negative scores (better matches are more negative), we enable efficient index scans in ascending order without special NULL handling.
 
-The `<@>` operator returns negative BM25 scores. This design choice allows Postgres to use ascending index scans efficiently—lower (more negative) scores indicate better matches.
+### Integration with Postgres
 
-**Staying Close to Postgres**
+pg_textsearch deliberately builds on Postgres foundations rather than reimplementing them. Text processing uses Postgres's `to_tsvector` for tokenization, stemming, and stop-word removal. This provides immediate support for 29 languages without additional code—when you specify `text_config='french'`, you get French stemming and stop words automatically.
 
-One of the design principles behind pg\_textsearch is to reuse Postgres infrastructure whenever it makes sense. The extension doesn't reinvent text processing—it uses Postgres's `to_tsvector` under the hood for tokenization, stemming, and stop-word elimination. This means you get all the language support that Postgres already provides (English, French, German, and dozens more) without additional work.
-
-The extension also integrates naturally with SQL. You can combine full-text search with standard WHERE clauses, JOINs, and aggregations. For example:
-
-sql
+The extension integrates cleanly with SQL. You can combine BM25 scoring with filters, joins, and aggregations:
 
 ```sql
-SELECT category, COUNT(*)
+SELECT category, COUNT(*) as article_count
 FROM articles
-WHERE content <@> to_tpquery('machine learning', 'idx_articles') > -2.0
+WHERE content <@> to_tpquery('machine learning', 'idx_articles') < -2.0
   AND published_date > '2024-01-01'
-GROUP BY category;
+GROUP BY category
+ORDER BY article_count DESC;
 ```
 
-This query finds articles about machine learning published since the start of 2024, grouped by category. The full-text search condition works alongside temporal filtering without needing to move data to a separate system.
+This finds articles about machine learning published this year with strong relevance (score < -2.0), grouped by category. The BM25 condition works alongside other SQL features—no special query language or separate system needed.
 
-**Technical Decisions and Trade-offs**
+### Design Trade-offs
 
-The memtable approach optimizes for write performance. Insertions are fast—just append to posting lists in shared memory. There's no complex disk I/O or log-structured merge operations during writes. The trade-off is a memory constraint: each index is limited by the `pg_textsearch.index_memory_limit` GUC (default 64MB, configurable up to available shared memory).
+The preview release makes deliberate trade-offs to deliver a working system quickly while laying groundwork for future enhancements.
 
-For the preview release, this constraint is acceptable. The entire user interface is functional, allowing developers to test the extension and integrate it into their applications immediately. For workloads like TigerData's internal documentation search (powering the eon Slackbot that answers questions about our products), main memory is sufficient.
+**Memory-only storage** provides fast writes and predictable performance. Documents insert in microseconds since they only update in-memory posting lists. No write-ahead logging, no disk flushes, no compaction stalls. The trade-off: each index is constrained by available shared memory (default 64MB, configurable via `pg_textsearch.index_memory_limit`). This suffices for many workloads—documentation, knowledge bases, product catalogs—where the corpus fits comfortably in RAM.
 
-Future releases will add disk-based segments to scale beyond memory limits. The string-based architecture in the current implementation was specifically chosen to be compatible with these future disk segments—no global term ID namespace to manage, making it straightforward to merge in-memory and on-disk posting lists.
+**String-based term storage** avoids a global term ID namespace. Each term is stored as a string rather than mapped to an integer ID. This uses more memory but simplifies the architecture significantly. When disk segments arrive in future releases, we can merge posting lists without ID translation or coordination between memory and disk structures.
 
-The preview implementation uses a straightforward query evaluation algorithm. Future versions will incorporate state-of-the-art optimizations like Block-Max WAND for efficient top-k retrieval. For now, the relatively small size of the memtable makes a simpler approach both practical and preferable—we're optimizing for fast writes, and relying on in-memory speed to handle queries efficiently enough for typical use cases.
+**Simple query evaluation** processes all matching documents rather than using advanced algorithms like Block-Max WAND. For in-memory indexes this is actually fine—scanning a posting list in RAM is fast enough that the overhead of maintaining skip lists might not pay off. As we add disk segments and indexes grow larger, query optimization becomes critical. The current implementation establishes correctness; performance optimizations come next.
 
-**Why Not Just Use...?**
+### Alternative Approaches We Considered
 
-You might wonder why not build on top of GIN indexes or embed an existing search library like Tantivy (as pg\_search does).
+**Building on GIN indexes** seems natural—they already power Postgres full-text search. But GIN indexes are optimized for Boolean matching, not ranking. They lack the corpus statistics (document count, average length) and per-document metadata (length, term frequencies) that BM25 requires. We'd need separate structures for scoring anyway, negating the benefit of reusing GIN.
 
-GIN indexes aren't designed for BM25 ranking. They excel at matching but lack the corpus statistics and scoring infrastructure needed for relevance ranking. Adding BM25 on top would require maintaining separate data structures anyway.
+**Embedding Tantivy** (as pg_search does) would provide a mature search engine immediately. But Tantivy is designed as a standalone system with its own storage format, memory management, and query language. Wrapping it for Postgres requires complex translation layers and limits integration with Postgres features. We chose to build native Postgres code that directly leverages shared memory, DSA allocation, and the query executor.
 
-Embedding Tantivy would provide a full-featured search engine but at the cost of complexity. pg\_textsearch aims for something simpler and more focused: strong BM25 ranking without the bells and whistles of a complete search platform. The result is easier to understand, easier to maintain, and easier to integrate with Postgres's query planner and execution engine.
+**Using RUM indexes** could support ranking, but RUM isn't part of core Postgres and has its own complexity. We wanted pg_textsearch to work with standard Postgres installations without additional dependencies.
 
 ## **Early Performance Results**
 
