@@ -61,9 +61,11 @@ The cost comes in operational complexity. You now maintain two data stores with 
 
 Full-text search has renewed significance in modern application architectures, particularly with the rise of agentic systems. Chat agents need to store and retrieve conversation history to maintain context across interactions. Customer support bots search knowledge bases using natural language queries. RAG (Retrieval-Augmented Generation) systems require fast, accurate keyword search to find relevant documents before generating responses.
 
+Modern search increasingly relies on hybrid approaches—combining semantic vector search with keyword matching for better results. Vector embeddings capture conceptual similarity but can miss exact terms that matter. Keyword search provides precision but lacks semantic understanding. The best systems use both, typically through reciprocal rank fusion or learned reranking models.
+
 The appeal of keeping everything in Postgres is clear. The success of pgvector demonstrates that developers prefer extending Postgres over running separate infrastructure. You can store transactional data, time-series data, and vector embeddings in one database. Adding another external system just for text search feels like a step backward.
 
-This is where pg_textsearch comes in. It implements modern BM25 ranking directly in Postgres, delivering the search quality of dedicated engines without the operational overhead. Combined with extensions like pgvector, you can build sophisticated hybrid search systems—mixing semantic vector search with keyword matching—entirely within your existing Postgres deployment.
+This is where pg_textsearch comes in. It implements modern BM25 ranking directly in Postgres, delivering the search quality of dedicated engines without the operational overhead. Combined with pgvector, you can build complete hybrid search systems—getting both semantic understanding and keyword precision from a single database query.
 
 # How Modern BM25 Indexes Work
 
@@ -210,6 +212,116 @@ FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text LIKE '%pg_textsearch%';
 ```
 
+## Hybrid Search: Combining Vectors and Keywords
+
+Modern search systems often combine semantic vector search with keyword matching for optimal results. Vector embeddings capture conceptual similarity but can miss exact terms. Keyword search provides precision but lacks semantic understanding. Together, they deliver both.
+
+Here's how to build hybrid search with pgvector and pg_textsearch:
+
+```sql
+-- Create a table with both text content and vector embeddings
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    content TEXT,
+    embedding vector(1536)  -- OpenAI ada-002 dimension
+);
+
+-- Create both indexes
+CREATE INDEX documents_embedding_idx ON documents
+USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX documents_content_idx ON documents
+USING pg_textsearch(content)
+WITH (text_config='english');
+
+-- Insert sample data (embeddings would come from your embedding model)
+INSERT INTO documents (title, content, embedding) VALUES
+    ('Database Performance',
+     'Optimizing query performance in Postgres requires understanding indexes...',
+     '[0.1, 0.2, ...]'::vector),
+    ('Machine Learning Systems',
+     'Building scalable ML systems requires careful attention to data pipelines...',
+     '[0.3, 0.4, ...]'::vector);
+```
+
+### Reciprocal Rank Fusion (RRF)
+
+Combine results from both search methods using RRF:
+
+```sql
+WITH vector_search AS (
+    SELECT id,
+           ROW_NUMBER() OVER (ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector) AS rank
+    FROM documents
+    ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector
+    LIMIT 20
+),
+keyword_search AS (
+    SELECT id,
+           ROW_NUMBER() OVER (ORDER BY content <@> to_tpquery('query performance', 'documents_content_idx')) AS rank
+    FROM documents
+    ORDER BY content <@> to_tpquery('query performance', 'documents_content_idx')
+    LIMIT 20
+)
+SELECT
+    d.id,
+    d.title,
+    COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + k.rank), 0.0) AS combined_score
+FROM documents d
+LEFT JOIN vector_search v ON d.id = v.id
+LEFT JOIN keyword_search k ON d.id = k.id
+WHERE v.id IS NOT NULL OR k.id IS NOT NULL
+ORDER BY combined_score DESC
+LIMIT 10;
+```
+
+This query:
+1. Retrieves top-20 results from vector search
+2. Retrieves top-20 results from keyword search
+3. Combines them using RRF with k=60 (a common default)
+4. Returns the top-10 documents by combined score
+
+The RRF formula `1 / (k + rank)` rewards documents that appear high in both result sets while still including documents that excel in just one.
+
+### Weighted Hybrid Search
+
+Adjust the relative importance of vector vs keyword search:
+
+```sql
+SELECT
+    d.id,
+    d.title,
+    0.7 * COALESCE(1.0 / (60 + v.rank), 0.0) +  -- 70% weight to vectors
+    0.3 * COALESCE(1.0 / (60 + k.rank), 0.0)    -- 30% weight to keywords
+    AS combined_score
+FROM documents d
+LEFT JOIN vector_search v ON d.id = v.id
+LEFT JOIN keyword_search k ON d.id = k.id
+WHERE v.id IS NOT NULL OR k.id IS NOT NULL
+ORDER BY combined_score DESC
+LIMIT 10;
+```
+
+### Advanced Reranking
+
+As TurboPuffer notes, RRF in SQL is just one option [Hybrid Search](https://turbopuffer.com/docs/hybrid). For production systems, consider:
+- **Learned rerankers** like Cohere's rerank API or cross-encoder models
+- **Custom scoring functions** in application code
+- **Query-dependent weights** that adjust based on query characteristics
+
+Hybrid search particularly excels for RAG systems and agentic applications where you need both semantic understanding and precise term matching—all within a single Postgres query.
+
+## Current Limitations
+
+The preview release focuses on core BM25 functionality. The following features are not supported and are not currently planned:
+
+- **Phrase queries** - searching for exact multi-word phrases
+- **Multi-column indexing** - you can index only one column per index
+- **Fuzzy matching** - typo tolerance and approximate matching
+
+The syntax may evolve slightly before GA, but the core functionality will remain stable.
+
 # Implementation Details
 
 pg_textsearch brings BM25 ranking to Postgres by implementing the memtable layer of a modern search index. The preview release focuses on this in-memory component—fast, simple, and sufficient for many workloads. The full hierarchical architecture with disk segments will be released in stages over the coming months.
@@ -240,7 +352,7 @@ The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inv
 │  │  "query"    → [stats, ptr]           │      │
 │  └──────────┬───────────────────────────┘      │
 │             │                                   │
-│             ├─→ Posting List (vector)           │
+│             ├─→ Posting List (vector)          │
 │             │   [(page1,off3, tf=2),           │
 │             │    (page2,off7, tf=1),           │
 │             │    (page5,off2, tf=3)]           │
@@ -260,7 +372,7 @@ The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inv
 ┌─────────────────────────────────────────────────┐
 │         Index Metapages (on disk)               │
 │         List of document IDs                    │
-│    (memtable rebuilt on restart from this)     │
+│    (memtable rebuilt on restart from this)      │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -332,332 +444,13 @@ Index builds are fast because writes simply append to in-memory posting lists. Q
 
 Later releases will include systematic benchmark evaluations against standard datasets and comparisons with other approaches. For now, the preview demonstrates that BM25 ranking in Postgres can be both practical and performant for workloads that fit in memory.
 
-## **Getting Started on Tiger Cloud**
+# Try It Today
 
-pg\_textsearch is available to all Tiger Cloud customers, including those on the free plan. For new services, simply enable the extension:
-
-sql
-
-```sql
-CREATE EXTENSION pg_textsearch;
-```
-
-For existing services, the extension may not be available until after your next scheduled maintenance window. You can also manually pause and restart your service to pick up the update immediately.
-
-**Important**: This is a preview release. We recommend experimenting with pg\_textsearch on development or staging environments, not production instances.
-
-## **A Complete Example: Product Search**
-
-Let's build a simple product catalog with searchable descriptions:
-
-sql
-
-```sql
-CREATE TABLE products (
-    id serial PRIMARY KEY,
-    name text,
-    description text,
-    category text,
-    price numeric
-);
-
-INSERT INTO products (name, description, category, price) VALUES
-    ('Mechanical Keyboard', 'Durable mechanical switches with RGB backlighting for gaming and productivity', 'Electronics', 149.99),
-    ('Ergonomic Mouse', 'Wireless mouse with ergonomic design to reduce wrist strain during long work sessions', 'Electronics', 79.99),
-    ('Standing Desk', 'Adjustable height desk for better posture and productivity throughout the workday', 'Furniture', 599.99),
-    ('Noise Cancelling Headphones', 'Premium wireless headphones with active noise cancellation for focused work', 'Electronics', 299.99),
-    ('Office Chair', 'Ergonomic office chair with lumbar support and adjustable armrests for all-day comfort', 'Furniture', 449.99);
-```
-
-Create a BM25 index on the description column:
-
-sql
-
-```sql
-CREATE INDEX products_search_idx ON products
-USING pg_textsearch(description)
-WITH (text_config='english');
-```
-
-Now search for products related to ergonomics and work:
-
-sql
-
-```sql
-SELECT name, description,
-       description <@> to_tpquery('ergonomic work', 'products_search_idx') as score
-FROM products
-ORDER BY description <@> to_tpquery('ergonomic work', 'products_search_idx')
-LIMIT 3;
-```
-
-Results:
-
-```
-           name            |                                  description                                   |  score
----------------------------+--------------------------------------------------------------------------------+-----------
- Ergonomic Mouse           | Wireless mouse with ergonomic design to reduce wrist strain during long work... | -4.234567
- Office Chair              | Ergonomic office chair with lumbar support and adjustable armrests for all-... | -3.891234
- Standing Desk             | Adjustable height desk for better posture and productivity throughout the w... | -1.456789
-```
-
-Note that `<@>` returns negative BM25 scores—lower (more negative) values indicate better matches. This design allows Postgres to use ascending index scans efficiently.
-
-**Filtering by Score Threshold**
-
-You can use score thresholds in WHERE clauses to filter results:
-
-sql
-
-```sql
-SELECT name, description <@> to_tpquery('wireless', 'products_search_idx') as score
-FROM products
-WHERE description <@> to_tpquery('wireless', 'products_search_idx') < -2.0;
-```
-
-This returns only documents that score better than \-2.0 for the query "wireless". Keep in mind that absolute score values are not particularly meaningful—what matters is the relative ranking. Use thresholds mainly to exclude low-relevance results.
-
-**Combining with Standard SQL**
-
-Full-text search works naturally with other SQL operations:
-
-sql
-
-```sql
-SELECT category, name,
-       description <@> to_tpquery('ergonomic', 'products_search_idx') as score
-FROM products
-WHERE price < 500
-  AND description <@> to_tpquery('ergonomic', 'products_search_idx') < -1.0
-ORDER BY description <@> to_tpquery('ergonomic', 'products_search_idx')
-LIMIT 5;
-```
-
-This query finds ergonomic products under $500, combining full-text search with price filtering.
-
-**Verifying Index Usage**
-
-Check that your queries are using the index with EXPLAIN:
-
-sql
-
-```sql
-EXPLAIN SELECT * FROM products
-ORDER BY description <@> to_tpquery('wireless keyboard', 'products_search_idx')
-LIMIT 5;
-```
-
-For small datasets, PostgreSQL may prefer sequential scans. You can force index usage for testing:
-
-sql
-
-```sql
-SET enable_seqscan = off;
-```
-
-Important: Even if EXPLAIN shows a sequential scan, the `<@>` operator always uses the index for corpus statistics (document counts, average length) required for BM25 scoring. The index is consulted regardless of the scan method chosen by the planner.
-
-**Language Support**
-
-pg\_textsearch leverages Postgres's text search configurations for language-specific processing:
-
-sql
-
-```sql
--- French product descriptions
-CREATE INDEX products_fr_idx ON products_fr
-USING pg_textsearch(description)
-WITH (text_config='french');
-
--- German product descriptions
-CREATE INDEX products_de_idx ON products_de
-USING pg_textsearch(description)
-WITH (text_config='german');
-
--- Simple tokenization without stemming
-CREATE INDEX products_simple_idx ON products
-USING pg_textsearch(description)
-WITH (text_config='simple');
-```
-
-To see available text search configurations:
-
-sql
-
-```sql
-SELECT cfgname FROM pg_ts_config;
-```
-
-Postgres ships with 29 language configurations. Additional languages are available through extensions like zhparser for Chinese.
-
-**Tuning BM25 Parameters**
-
-The default BM25 parameters (k1=1.2, b=0.75) work well for most use cases, but you can adjust them:
-
-sql
-
-```sql
-CREATE INDEX products_custom_idx ON products
-USING pg_textsearch(description)
-WITH (text_config='english', k1=1.5, b=0.8);
-```
-
-The `k1` parameter controls term frequency saturation (higher values give more weight to repeated terms). The `b` parameter controls length normalization (higher values penalize longer documents more).
-
-**Monitoring Index Usage**
-
-Check how often your index is being used:
-
-sql
-
-```sql
-SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read
-FROM pg_stat_user_indexes
-WHERE indexrelid::regclass::text ~ 'pg_textsearch';
-```
-
-For detailed information about the index structure:
-
-sql
-
-```sql
-SELECT tp_debug_dump_index('products_search_idx');
-```
-
-This shows the term dictionary and posting lists, useful for understanding memory usage and debugging.
-
-## **Hybrid Search with Semantic and Keyword Search**
-
-One of the most powerful applications of pg\_textsearch is building hybrid search systems that combine semantic vector search with keyword BM25 search. TurboPuffer describes this approach well: use initial retrieval to narrow millions of results to dozens, then apply rank fusion and reranking [Hybrid Search](https://turbopuffer.com/docs/hybrid). This approach leverages the strengths of both methods: vectors capture semantic meaning while keywords provide precise term matching.
-
-Here's a complete example using pgvector alongside pg\_textsearch:
-
-sql
-
-```sql
--- Create a table with both text content and vector embeddings
-CREATE TABLE articles (
-    id serial PRIMARY KEY,
-    title text,
-    content text,
-    embedding vector(1536)  -- OpenAI ada-002 embedding dimension
-);
-
--- Create a vector index for semantic search
-CREATE INDEX articles_embedding_idx ON articles
-USING hnsw (embedding vector_cosine_ops);
-
--- Create a keyword index for BM25 search
-CREATE INDEX articles_content_idx ON articles
-USING pg_textsearch(content)
-WITH (text_config='english');
-
--- Insert some sample articles (embeddings would come from your embedding model)
-INSERT INTO articles (title, content, embedding) VALUES
-    ('Database Performance',
-     'Optimizing query performance in PostgreSQL requires understanding indexes and query planning',
-     '[0.1, 0.2, ...]'::vector),
-    ('Machine Learning Systems',
-     'Building scalable ML systems requires careful attention to data pipelines and model serving',
-     '[0.3, 0.4, ...]'::vector),
-    ('Search Engine Architecture',
-     'Modern search engines combine relevance ranking with distributed query processing',
-     '[0.5, 0.6, ...]'::vector);
-```
-
-Now perform hybrid search using Reciprocal Rank Fusion (RRF) to combine results:
-
-sql
-
-```sql
-WITH vector_search AS (
-    SELECT id,
-           ROW_NUMBER() OVER (ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector) AS rank
-    FROM articles
-    ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector
-    LIMIT 20
-),
-keyword_search AS (
-    SELECT id,
-           ROW_NUMBER() OVER (ORDER BY content <@> to_tpquery('query performance', 'articles_content_idx')) AS rank
-    FROM articles
-    ORDER BY content <@> to_tpquery('query performance', 'articles_content_idx')
-    LIMIT 20
-)
-SELECT
-    a.id,
-    a.title,
-    COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + k.rank), 0.0) AS combined_score
-FROM articles a
-LEFT JOIN vector_search v ON a.id = v.id
-LEFT JOIN keyword_search k ON a.id = k.id
-WHERE v.id IS NOT NULL OR k.id IS NOT NULL
-ORDER BY combined_score DESC
-LIMIT 10;
-```
-
-This query:
-
-1. Performs semantic search using vector similarity (top 20 results)
-2. Performs keyword search using BM25 ranking (top 20 results)
-3. Combines results using RRF with k=60 (a common default)
-4. Returns the top 10 documents by combined score
-
-The RRF formula `1 / (k + rank)` gives higher scores to documents that rank well in both searches. Documents appearing in only one result set still contribute to the final ranking.
-
-You can adjust the relative weight of vector vs keyword search by multiplying each component:
-
-sql
-
-```sql
-SELECT
-    a.id,
-    a.title,
-    0.7 * COALESCE(1.0 / (60 + v.rank), 0.0) +  -- 70% weight to vectors
-    0.3 * COALESCE(1.0 / (60 + k.rank), 0.0)    -- 30% weight to keywords
-    AS combined_score
-FROM articles a
-LEFT JOIN vector_search v ON a.id = v.id
-LEFT JOIN keyword_search k ON a.id = k.id
-WHERE v.id IS NOT NULL OR k.id IS NOT NULL
-ORDER BY combined_score DESC
-LIMIT 10;
-```
-
-As TurboPuffer recommends, we suggest leaving reranking details up to the application builder [Hybrid Search](https://turbopuffer.com/docs/hybrid). RRF in SQL is just one simple option. You might also consider using a dedicated reranking model like Cohere's reranker, or implementing custom scoring logic in your application code.
-
-This hybrid approach works particularly well for RAG systems and agentic applications where you need both semantic understanding and precise keyword matching.
-
-**Current Limitations**
-
-The preview release focuses on BM25 ranked queries. Not yet supported:
-
-* Phrase queries (searching for exact multi-word phrases)
-* Multi-column indexing (you can only index one column per index)
-
-These features are planned for future releases. The syntax may change slightly before the GA release, but the core functionality you see in the preview will remain stable.
-
-## **What's Next for pg\_textsearch**
-
-This preview release (v0.0.1) delivers the complete user interface for BM25 ranked search in Postgres. The next few months will bring enhancements that remove current limitations and improve performance at scale.
-
-**Disk-based segments** will arrive in upcoming releases, enabling the index to scale beyond memory constraints. The current string-based architecture was specifically designed to make this transition straightforward. When the memtable fills, it will spill to immutable on-disk segments organized in an LSM-like hierarchy. This approach combines fast in-memory writes with efficient disk-based storage for large datasets.
-
-**Advanced compression techniques** will reduce storage requirements and improve query performance. Posting lists will use delta encoding and bitpacking to minimize space usage. Skip lists will enable fast intersection operations for queries with multiple terms.
-
-**Query optimization** will incorporate state-of-the-art algorithms like Block-Max WAND for efficient top-k retrieval. These optimizations make it possible to avoid scoring every matching document, dramatically improving performance for large result sets.
-
-The roadmap prioritizes production readiness: stability, observability, and performance at scale. By the GA release, pg\_textsearch will handle workloads from thousands to millions of documents with consistent performance.
-
-## **Try It Today**
-
-pg\_textsearch is available now on Tiger Cloud for all customers, including the free tier.
+pg_textsearch is available now on Tiger Cloud for all customers, including the free tier.
 
 **\[PLACEHOLDER: Link to Tiger Cloud free tier signup\]**
 
 To get started, create a Tiger Cloud service (or use an existing one after the next maintenance window) and enable the extension:
-
-sql
 
 ```sql
 CREATE EXTENSION pg_textsearch;
@@ -665,7 +458,7 @@ CREATE EXTENSION pg_textsearch;
 
 This blog post serves as the primary documentation for the preview release. As the extension evolves, we'll publish additional tutorials and guides.
 
-## **Share Your Feedback**
+# Share Your Feedback
 
 This is a preview release, and your feedback will shape the final product.
 
@@ -677,9 +470,9 @@ Tell us about your use cases, report bugs, and request features. We're particula
 * Hybrid search combining semantic and keyword search
 * Applications that need full-text search at scale in Postgres
 
-## **Learn More**
+# Learn More
 
-* **pgvector**: [https://github.com/pgvector/pgvector](https://github.com/pgvector/pgvector) \- Vector similarity search for Postgres
-* **pgvectorscale**: [https://github.com/timescale/pgvectorscale](https://github.com/timescale/pgvectorscale) \- High-performance vector search built on pgvector
-* **Postgres text search**: [https://www.postgresql.org/docs/current/textsearch.html](https://www.postgresql.org/docs/current/textsearch.html) \- Official documentation for Postgres full-text search
-* **Hybrid search explained**: TurboPuffer's guide to combining vector and BM25 search for improved retrieval [Hybrid Search](https://turbopuffer.com/docs/hybrid) \- [https://turbopuffer.com/docs/hybrid](https://turbopuffer.com/docs/hybrid)
+* **pgvector**: [https://github.com/pgvector/pgvector](https://github.com/pgvector/pgvector) - Vector similarity search for Postgres
+* **pgvectorscale**: [https://github.com/timescale/pgvectorscale](https://github.com/timescale/pgvectorscale) - High-performance vector search built on pgvector
+* **Postgres text search**: [https://www.postgresql.org/docs/current/textsearch.html](https://www.postgresql.org/docs/current/textsearch.html) - Official documentation for Postgres full-text search
+* **Hybrid search explained**: [TurboPuffer's guide](https://turbopuffer.com/docs/hybrid) to combining vector and BM25 search for improved retrieval
