@@ -345,26 +345,26 @@ The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inv
 │              Memtable (Shared Memory)           │
 ├─────────────────────────────────────────────────┤
 │                                                 │
-│  ┌──────────────────────────────────────┐      │
-│  │  Term Dictionary (dshash)            │      │
-│  │  "database" → [stats, ptr]           │      │
-│  │  "search"   → [stats, ptr]           │      │
-│  │  "query"    → [stats, ptr]           │      │
-│  └──────────┬───────────────────────────┘      │
+│  ┌──────────────────────────────────────┐       │
+│  │  Term Dictionary (dshash)            │       │
+│  │  "database" → [stats, ptr]           │       │
+│  │  "search"   → [stats, ptr]           │       │
+│  │  "query"    → [stats, ptr]           │       │
+│  └──────────┬───────────────────────────┘       │
 │             │                                   │
-│             ├─→ Posting List (vector)          │
-│             │   [(page1,off3, tf=2),           │
-│             │    (page2,off7, tf=1),           │
-│             │    (page5,off2, tf=3)]           │
+│             ├─→ Posting List (vector)           │
+│             │   [(page1,off3, tf=2),            │
+│             │    (page2,off7, tf=1),            │
+│             │    (page5,off2, tf=3)]            │
 │             │                                   │
-│  ┌──────────────────────────────────────┐      │
-│  │  Document Lengths (dshash)           │      │
-│  │  (page1,off3) → 245                  │      │
-│  │  (page2,off7) → 189                  │      │
-│  │  (page5,off2) → 412                  │      │
-│  └──────────────────────────────────────┘      │
+│  ┌──────────────────────────────────────┐       │
+│  │  Document Lengths (dshash)           │       │
+│  │  (page1,off3) → 245                  │       │
+│  │  (page2,off7) → 189                  │       │
+│  │  (page5,off2) → 412                  │       │
+│  └──────────────────────────────────────┘       │
 │                                                 │
-│  Corpus Stats: total_docs, avg_doc_length      │
+│  Corpus Stats: total_docs, avg_doc_length       │
 └─────────────────────────────────────────────────┘
                     │
                     │ (crash recovery)
@@ -380,11 +380,11 @@ The implementation leverages Postgres Dynamic Shared Areas (DSA) to build an inv
 
 The preview release implements just the memtable layer—the top of the hierarchical structure described earlier. This is intentional: we're releasing in stages to get working software into users' hands quickly while building toward the complete system.
 
-**Coming in v0.1.0 (Q1 2025):** Naive disk segments. When the memtable fills, it flushes to an immutable on-disk segment. Queries merge results from the memtable and all segments. This removes the memory limitation while keeping the implementation straightforward.
+**Next milestone:** Naive disk segments. When the memtable fills, it flushes to an immutable on-disk segment. Queries merge results from the memtable and all segments. This removes the memory limitation while keeping the implementation straightforward.
 
-**Coming in v0.2.0 (Q2 2025):** Optimized segments with compression. Delta encoding for posting lists, skip lists for faster intersection, and basic query optimization. This brings significant performance improvements for larger indexes.
+**Following milestone:** Optimized segments with compression. Delta encoding for posting lists, skip lists for faster intersection, and basic query optimization. This brings significant performance improvements for larger indexes.
 
-**Coming in v1.0.0 (Q3 2025):** Background compaction and advanced query algorithms. A background worker merges small segments into larger ones, maintaining optimal query performance. Block-Max WAND enables efficient top-k retrieval without scoring all documents.
+**Future milestone:** Background compaction and advanced query algorithms. A background worker merges small segments into larger ones, maintaining optimal query performance. Block-Max WAND enables efficient top-k retrieval without scoring all documents.
 
 Each release maintains backward compatibility—indexes created with earlier versions continue working as you upgrade.
 
