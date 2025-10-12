@@ -2,28 +2,15 @@
 
 Author: [Todd Green (TJ)](mailto:tj@tigerdata.com)
 Date: Oct 2, 2025
-Editors: [Matty Stratton](mailto:matty@tigerdata.com)[Jacky Liang](mailto:jacky@tigerdata.com)
-
-Resources:
-
-1. [Claude conversation](https://claude.ai/share/2fa9b023-ea49-444c-80d5-48be85b4f849)
-
-TODO
-
-- [ ] [Thumbnail for blog](https://app.asana.com/1/341543771842144/project/1210975649412537/task/1211538760184192?focus=true)
-- [ ] Nice to have: interactive diagrams that showcase some technical examples (use Claude Code to generate [three.js](http://three.js) embeddables)
+Editors: [Matty Stratton](mailto:matty@tigerdata.com), [Jacky Liang](mailto:jacky@tigerdata.com)
 
 ---
 
-*Preview Release (v0.0.2)*
+*Preview Release*
 
-\[ blog thumbnail goes here \]
+Postgres ships with full-text search capabilities built into every instance—no plugins to install, no external services to configure. The `tsvector` and `tsquery` types, combined with GIN and GiST indexes, provide a complete text search solution that works out of the box. For many applications, especially those getting started or operating at modest scale, Postgres native full-text search provides fast keyword matching with basic relevance ranking across dozens of supported languages.
 
-# Postgres Full-Text Search: A Strong Foundation
-
-Postgres ships with full-text search capabilities built into every instance—no plugins to install, no external services to configure. The `tsvector` and `tsquery` types, combined with GIN and GiST indexes, provide a complete text search solution that works out of the box. For many applications, especially those getting started or operating at modest scale, Postgres native full-text search delivers exactly what's needed: fast keyword matching with basic relevance ranking across dozens of supported languages.
-
-The implementation is mature and battle-tested. Text processing handles stemming, stop words, and language-specific rules correctly. The query syntax supports Boolean operators, phrase matching, and proximity searches. GIN indexes make searches fast for datasets that fit the use case. For workloads like searching documentation, blog posts, or product catalogs with thousands to hundreds of thousands of entries, Postgres built-in search often performs admirably with minimal configuration.
+The implementation is mature and battle-tested. Text processing handles stemming, stop words, and language-specific rules correctly. The query syntax supports Boolean operators, phrase matching, and proximity searches. GIN indexes make searches fast for datasets that fit the use case. For workloads like searching documentation, blog posts, or product catalogs with thousands to hundreds of thousands of entries, Postgres built-in search often performs well with minimal configuration.
 
 ## When Scale Meets Ranking
 
@@ -49,7 +36,7 @@ When Postgres native full-text search hits its limits, engineering teams face a 
 
 Many teams choose to stay with Postgres built-in capabilities and engineer around the limitations. This means accepting that `ts_rank` lacks modern relevance signals like IDF and term saturation that BM25 provides [Full-text search engine with PostgreSQL (part 2): Postgres ...](https://xata.io/blog/postgres-full-text-search-postgres-vs-elasticsearch). It means living with queries that take seconds instead of milliseconds when sorting millions of rows by relevance—Postgres must score every matching document with no way to efficiently retrieve just the top results [Comparing Native Postgres, ElasticSearch, and pg_search for Full-Text Search - Neon](https://neon.com/blog/postgres-full-text-search-vs-elasticsearch).
 
-For write-heavy workloads, the situation gets worse. Each update triggers multiple index writes through Postgres MVCC system, and GIN indexes accumulate pending entries that cause unpredictable latency spikes [Lessons Learned From 5 Years of Scaling PostgreSQL](https://onesignal.com/blog/lessons-learned-from-5-years-of-scaling-postgresql/). Teams implement workarounds: caching layers, pre-computed rankings, query result limits, and careful index maintenance schedules.
+For write-heavy workloads, the situation gets worse. Each update triggers multiple index writes through Postgres MVCC system, and GIN indexes accumulate pending entries that cause unpredictable latency spikes [Lessons Learned From 5 Years of Scaling Postgres](https://onesignal.com/blog/lessons-learned-from-5-years-of-scaling-postgresql/). Teams implement workarounds: caching layers, pre-computed rankings, query result limits, and careful index maintenance schedules.
 
 **Option 2: Add dedicated search infrastructure**
 
@@ -79,11 +66,11 @@ Before diving into pg_textsearch's implementation, it helps to understand how mo
 
 **Compression techniques** reduce I/O and improve cache efficiency. Posting lists use delta encoding—storing differences between document IDs rather than absolute values. Frequencies are compressed with variable-byte or bit-packing schemes. These techniques can reduce index size by 70-90% while maintaining fast decompression. Less I/O means faster queries, especially when indexes exceed available memory.
 
-Search engines like Lucene (powering Elasticsearch and Solr) and Tantivy (powering Meilisearch and Quickwit) implement these techniques and many more. They've evolved far beyond core BM25 ranking to include faceted search, geo-spatial queries, and complex aggregations. The algorithms and data structures are well-understood at this point—anyone can study the open source implementations to see exactly how high-performance text search works.
+Search libraries like Lucene (powering Elasticsearch and Solr) and Tantivy (powering Meilisearch and Quickwit) implement these techniques and many more. They've evolved far beyond core BM25 ranking to include faceted search, geo-spatial queries, and complex aggregations. The algorithms and data structures are well-understood at this point—anyone can study the open source implementations to see exactly how high-performance text search works.
 
 The Postgres ecosystem is seeing renewed interest in bringing these capabilities native to the database. ParadeDB has done impressive engineering work integrating Tantivy directly with Postgres at the transactional and page level, demonstrating both the demand for ranked search in Postgres and the technical feasibility of the integration. Their system offers the full breadth of Lucene-like features. However, it's licensed under AGPL and not widely available through managed Postgres providers.
 
-We chose a different path for pg_textsearch: build a focused implementation targeting specifically BM25 ranked search.
+pg_textsearch takes a focused approach: implementing the proven BM25 ranking algorithm natively in Postgres, applying decades of information retrieval research to make high-quality text search available on TigerCloud and other managed Postgres providers.
 
 # How pg_textsearch Works: Quick Start
 
@@ -142,7 +129,7 @@ Search for articles about "database performance":
 
 ```sql
 SELECT id, title,
-       content <@> to_tpquery('database performance', 'articles_content_idx') AS score
+       content <@> to_bm25query('database performance', 'articles_content_idx') AS score
 FROM articles
 ORDER BY score
 LIMIT 5;
@@ -150,9 +137,10 @@ LIMIT 5;
 
 Key points:
 - The `<@>` operator calculates BM25 scores between text and a query
-- `to_tpquery()` creates a query object with the index name for proper IDF calculation
+- `to_bm25query()` creates a query object with the index name for proper IDF calculation
 - Scores are negative (better matches are more negative) to work naturally with Postgres's ASC ordering
 - The index provides corpus statistics even when Postgres chooses a sequential scan
+- Internally, pg_textsearch uses a `bm25vector` type to store term frequencies with index context
 
 ## Combine with SQL Features
 
@@ -163,21 +151,21 @@ pg_textsearch integrates seamlessly with standard SQL:
 SELECT title, published_date
 FROM articles
 WHERE published_date > '2024-01-01'
-  AND content <@> to_tpquery('query optimization', 'articles_content_idx') < -1.5
-ORDER BY content <@> to_tpquery('query optimization', 'articles_content_idx');
+  AND content <@> to_bm25query('query optimization', 'articles_content_idx') < -1.5
+ORDER BY content <@> to_bm25query('query optimization', 'articles_content_idx');
 
 -- Group results by month
 SELECT DATE_TRUNC('month', published_date) AS month,
        COUNT(*) AS matching_articles,
-       AVG(content <@> to_tpquery('indexes', 'articles_content_idx')) AS avg_score
+       AVG(content <@> to_bm25query('indexes', 'articles_content_idx')) AS avg_score
 FROM articles
-WHERE content <@> to_tpquery('indexes', 'articles_content_idx') < -0.5
+WHERE content <@> to_bm25query('indexes', 'articles_content_idx') < -0.5
 GROUP BY month
 ORDER BY month DESC;
 
 -- Join with other tables
 SELECT a.title, u.name AS author,
-       a.content <@> to_tpquery('postgres tips', 'articles_content_idx') AS score
+       a.content <@> to_bm25query('postgres tips', 'articles_content_idx') AS score
 FROM articles a
 JOIN users u ON a.author_id = u.id
 ORDER BY score
@@ -198,13 +186,43 @@ WITH (text_config='english', k1=1.8, b=0.5);
 - **k1** controls term frequency saturation (higher = more weight to repeated terms)
 - **b** controls document length normalization (0 = no normalization, 1 = full normalization)
 
+## Handle Updates and Deletes
+
+pg_textsearch automatically maintains the index when you update or delete rows:
+
+```sql
+-- Update document - index automatically updates
+UPDATE articles
+SET content = 'New content about database optimization...'
+WHERE id = 1;
+
+-- Delete document - index automatically removes it
+DELETE FROM articles WHERE id = 2;
+```
+
+## Manage Your Indexes
+
+Drop an index when no longer needed:
+
+```sql
+DROP INDEX articles_content_idx;
+```
+
+List all pg_textsearch indexes in your database:
+
+```sql
+SELECT schemaname, tablename, indexname
+FROM pg_indexes
+WHERE indexdef LIKE '%USING pg_textsearch%';
+```
+
 ## Monitor Your Indexes
 
 Check index memory usage and statistics:
 
 ```sql
 -- Debug view of index internals (terms, posting lists, documents)
-SELECT tp_debug_dump_index('articles_content_idx');
+SELECT bm25_debug_dump_index('articles_content_idx');
 
 -- Check how often your indexes are used
 SELECT indexrelid::regclass AS index_name,
@@ -261,9 +279,9 @@ WITH vector_search AS (
 ),
 keyword_search AS (
     SELECT id,
-           ROW_NUMBER() OVER (ORDER BY content <@> to_tpquery('query performance', 'documents_content_idx')) AS rank
+           ROW_NUMBER() OVER (ORDER BY content <@> to_bm25query('query performance', 'documents_content_idx')) AS rank
     FROM documents
-    ORDER BY content <@> to_tpquery('query performance', 'documents_content_idx')
+    ORDER BY content <@> to_bm25query('query performance', 'documents_content_idx')
     LIMIT 20
 )
 SELECT
@@ -390,21 +408,19 @@ When you execute a BM25 query:
 
 ```sql
 SELECT * FROM documents
-ORDER BY content <@> to_tpquery('database performance', 'docs_idx')
+ORDER BY content <@> to_bm25query('database performance', 'docs_idx')
 LIMIT 10;
 ```
 
 The extension evaluates it in several steps. First, it looks up each query term in the dictionary to retrieve posting lists and IDF values. Then, for documents appearing in any posting list, it computes the BM25 score by summing each term's contribution: IDF × normalized term frequency × length normalization. The normalization factors come from the k1 and b parameters, using the corpus statistics maintained in the index.
 
-The `<@>` operator returns negative BM25 scores—a deliberate design choice. Postgres sorts NULL values last in ascending order, and treats positive infinity as larger than any finite value. By returning negative scores (better matches are more negative), we enable efficient index scans in ascending order without special NULL handling.
-
 # Try It Today
 
-pg_textsearch is available now on Tiger Cloud for all customers, including the free tier.
+pg_textsearch is available now on TigerCloud for all customers, including the free tier.
 
-**\[PLACEHOLDER: Link to Tiger Cloud free tier signup\]**
+**\[PLACEHOLDER: Link to TigerCloud free tier signup\]**
 
-To get started, create a Tiger Cloud service (or use an existing one after the next maintenance window) and enable the extension:
+To get started, create a TigerCloud service (or use an existing one) and enable the extension:
 
 ```sql
 CREATE EXTENSION pg_textsearch;
