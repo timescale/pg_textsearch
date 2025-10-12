@@ -216,7 +216,7 @@ WHERE indexrelid::regclass::text LIKE '%pg_textsearch%';
 
 ## Hybrid Search: Combining Vectors and Keywords
 
-Modern search systems increasingly combine semantic vector search with keyword matching for optimal results. This hybrid approach leverages the strengths of both methods: vector embeddings capture conceptual similarity while keyword search provides precision for exact terms. The technique has proven effective across major search platforms including Elasticsearch, OpenSearch, and Azure AI Search. For an entry point to the academic literature on hybrid search, see [this paper by Bruch, Gai, and Ingber](https://arxiv.org/pdf/2210.11934).
+Modern search systems increasingly combine semantic vector search with keyword matching for optimal results. This hybrid approach leverages the strengths of both methods: vector embeddings capture conceptual similarity while keyword search provides precision for exact terms. The technique has proven effective across major search platforms including Elasticsearch, OpenSearch, and Azure AI Search.
 
 Here's how to build hybrid search with pgvector and pg_textsearch:
 
@@ -305,16 +305,18 @@ ORDER BY combined_score DESC
 LIMIT 10;
 ```
 
-### Advanced Reranking
+### Beyond Simple Fusion
 
-The SQL examples above demonstrate RRF as a simple illustration, but there are many ways to implement hybrid search. TurboPuffer's [hybrid search guide](https://turbopuffer.com/docs/hybrid) makes a good point: the specific reranking approach should be left to the application builder. We concur—consider these alternatives:
+The SQL examples above implement RRF for illustration, but production systems often require more sophisticated approaches. The [paper by Bruch, Gai, and Ingber](https://arxiv.org/pdf/2210.11934) provides a good overview of fusion methods and their trade-offs. Common approaches include:
 
-- **Learned rerankers** like Cohere's rerank API or cross-encoder models
-- **Custom scoring functions** in application code that can incorporate domain-specific logic
-- **Query-dependent weights** that adjust based on query characteristics
-- **Client-side RRF** that merges results after retrieving them separately
+- **Linear combination** of scores with tuned weights (simpler than RRF but requires parameter tuning)
+- **Learning-to-rank models** that train on relevance judgments to optimize result ordering
+- **Cross-encoder reranking** where a transformer model scores query-document pairs jointly
+- **Cascade architectures** that apply increasingly expensive rankers to progressively smaller result sets
 
-Hybrid search particularly excels for RAG systems and agentic applications where you need both semantic understanding and precise term matching—all achievable with pg_textsearch and pgvector in a single Postgres query.
+The choice depends on your latency requirements, result quality needs, and available computational resources. Simple score fusion like RRF works well for many applications, while systems requiring maximum relevance might justify the computational cost of neural rerankers.
+
+Regardless of the fusion method, hybrid search with pg_textsearch and pgvector gives you both keyword precision and semantic understanding from a single Postgres instance—particularly valuable for RAG systems and other AI applications.
 
 # Implementation Details
 
@@ -428,4 +430,3 @@ Tell us about your use cases, report bugs, and request features. We're particula
 * **pgvectorscale**: [https://github.com/timescale/pgvectorscale](https://github.com/timescale/pgvectorscale) - High-performance vector search built on pgvector
 * **Postgres text search**: [https://www.postgresql.org/docs/current/textsearch.html](https://www.postgresql.org/docs/current/textsearch.html) - Official documentation for Postgres full-text search
 * **Reciprocal Rank Fusion**: Cormack et al., "Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods" (SIGIR 2009) - The original RRF paper
-* **Hybrid search guide**: [TurboPuffer's practical guide](https://turbopuffer.com/docs/hybrid) to combining vector and BM25 search
