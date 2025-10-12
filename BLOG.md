@@ -216,7 +216,7 @@ WHERE indexrelid::regclass::text LIKE '%pg_textsearch%';
 
 ## Hybrid Search: Combining Vectors and Keywords
 
-Modern search systems increasingly combine semantic vector search with keyword matching for optimal results. This hybrid approach leverages the strengths of both methods: vector embeddings capture conceptual similarity while keyword search provides precision for exact terms. The technique has proven effective across major search platforms including Elasticsearch, OpenSearch, and Azure AI Search.
+Modern search systems increasingly combine semantic vector search with keyword matching for optimal results. This hybrid approach leverages the strengths of both methods: vector embeddings capture conceptual similarity while keyword search provides precision for exact terms. The technique has proven effective across major search platforms including Elasticsearch, OpenSearch, and Azure AI Search. For an entry point to the academic literature on hybrid search, see [this paper by Bruch, Gai, and Ingber](https://arxiv.org/pdf/2210.11934).
 
 Here's how to build hybrid search with pgvector and pg_textsearch:
 
