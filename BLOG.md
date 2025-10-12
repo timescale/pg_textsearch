@@ -163,7 +163,10 @@ WHERE content <@> to_bm25query('indexes', 'articles_content_idx') < -0.5
 GROUP BY month
 ORDER BY month DESC;
 
--- Join with other tables
+-- Join with other tables (example assumes you have a users table)
+-- First create the users table and add author_id to articles:
+-- ALTER TABLE articles ADD COLUMN author_id INTEGER;
+-- CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 SELECT a.title, u.name AS author,
        a.content <@> to_bm25query('postgres tips', 'articles_content_idx') AS score
 FROM articles a
@@ -255,14 +258,16 @@ CREATE INDEX documents_content_idx ON documents
 USING pg_textsearch(content)
 WITH (text_config='english');
 
--- Insert sample data (embeddings would come from your embedding model)
+-- Insert sample data
+-- Note: In practice, embeddings come from your embedding model (e.g., OpenAI API)
+-- Here we use a placeholder array of 1536 zeros for illustration
 INSERT INTO documents (title, content, embedding) VALUES
     ('Database Performance',
      'Optimizing query performance in Postgres requires understanding indexes...',
-     '[0.1, 0.2, ...]'::vector),
+     ARRAY_FILL(0.0, ARRAY[1536])::vector),
     ('Machine Learning Systems',
      'Building scalable ML systems requires careful attention to data pipelines...',
-     '[0.3, 0.4, ...]'::vector);
+     ARRAY_FILL(0.0, ARRAY[1536])::vector);
 ```
 
 ### Reciprocal Rank Fusion (RRF)
@@ -270,11 +275,13 @@ INSERT INTO documents (title, content, embedding) VALUES
 One popular method for combining results is Reciprocal Rank Fusion, introduced by Cormack et al. at SIGIR 2009. RRF provides a simple, parameter-free way to merge rankings from multiple sources. While you can implement RRF directly in SQL as shown below, it's equally valid—and sometimes preferable—to handle this logic in your application code:
 
 ```sql
+-- Hybrid search combining vector and keyword results
+-- Note: Replace $1 with your actual query embedding from your embedding model
 WITH vector_search AS (
     SELECT id,
-           ROW_NUMBER() OVER (ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector) AS rank
+           ROW_NUMBER() OVER (ORDER BY embedding <=> $1::vector) AS rank
     FROM documents
-    ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector
+    ORDER BY embedding <=> $1::vector
     LIMIT 20
 ),
 keyword_search AS (
@@ -309,6 +316,9 @@ The RRF formula `1 / (k + rank)` rewards documents that appear high in both resu
 Adjust the relative importance of vector vs keyword search:
 
 ```sql
+-- Using the same CTEs from above, adjust the weights in the final SELECT:
+WITH vector_search AS ( ... ),  -- same as above
+     keyword_search AS ( ... )  -- same as above
 SELECT
     d.id,
     d.title,
