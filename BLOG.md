@@ -216,7 +216,7 @@ WHERE indexrelid::regclass::text LIKE '%pg_textsearch%';
 
 ## Hybrid Search: Combining Vectors and Keywords
 
-Modern search systems often combine semantic vector search with keyword matching for optimal results. Vector embeddings capture conceptual similarity but can miss exact terms. Keyword search provides precision but lacks semantic understanding. Together, they deliver both.
+Modern search systems increasingly combine semantic vector search with keyword matching for optimal results. This hybrid approach leverages the strengths of both methods: vector embeddings capture conceptual similarity while keyword search provides precision for exact terms. The technique has proven effective across major search platforms including Elasticsearch, OpenSearch, and Azure AI Search.
 
 Here's how to build hybrid search with pgvector and pg_textsearch:
 
@@ -249,7 +249,7 @@ INSERT INTO documents (title, content, embedding) VALUES
 
 ### Reciprocal Rank Fusion (RRF)
 
-Combine results from both search methods using RRF:
+One popular method for combining results is Reciprocal Rank Fusion, introduced by Cormack et al. at SIGIR 2009. RRF provides a simple, parameter-free way to merge rankings from multiple sources. While you can implement RRF directly in SQL as shown below, it's equally valid—and sometimes preferable—to handle this logic in your application code:
 
 ```sql
 WITH vector_search AS (
@@ -307,12 +307,14 @@ LIMIT 10;
 
 ### Advanced Reranking
 
-RRF in SQL is just one option for reranking.  [Hybrid Search](https://turbopuffer.com/docs/hybrid). For production systems, consider:
-- **Learned rerankers** like Cohere's rerank API or cross-encoder models
-- **Custom scoring functions** in application code
-- **Query-dependent weights** that adjust based on query characteristics
+The SQL examples above demonstrate RRF as a simple illustration, but there are many ways to implement hybrid search. TurboPuffer's [hybrid search guide](https://turbopuffer.com/docs/hybrid) makes a good point: the specific reranking approach should be left to the application builder. We concur—consider these alternatives:
 
-Hybrid search particularly excels for RAG systems and agentic applications where you need both semantic understanding and precise term matching—all within a single Postgres query.
+- **Learned rerankers** like Cohere's rerank API or cross-encoder models
+- **Custom scoring functions** in application code that can incorporate domain-specific logic
+- **Query-dependent weights** that adjust based on query characteristics
+- **Client-side RRF** that merges results after retrieving them separately
+
+Hybrid search particularly excels for RAG systems and agentic applications where you need both semantic understanding and precise term matching—all achievable with pg_textsearch and pgvector in a single Postgres query.
 
 # Implementation Details
 
@@ -425,4 +427,5 @@ Tell us about your use cases, report bugs, and request features. We're particula
 * **pgvector**: [https://github.com/pgvector/pgvector](https://github.com/pgvector/pgvector) - Vector similarity search for Postgres
 * **pgvectorscale**: [https://github.com/timescale/pgvectorscale](https://github.com/timescale/pgvectorscale) - High-performance vector search built on pgvector
 * **Postgres text search**: [https://www.postgresql.org/docs/current/textsearch.html](https://www.postgresql.org/docs/current/textsearch.html) - Official documentation for Postgres full-text search
-* **Hybrid search explained**: [TurboPuffer's guide](https://turbopuffer.com/docs/hybrid) to combining vector and BM25 search for improved retrieval
+* **Reciprocal Rank Fusion**: Cormack et al., "Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods" (SIGIR 2009) - The original RRF paper
+* **Hybrid search guide**: [TurboPuffer's practical guide](https://turbopuffer.com/docs/hybrid) to combining vector and BM25 search
