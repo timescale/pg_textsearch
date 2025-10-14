@@ -2,7 +2,7 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.2: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.1: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Clean up from any previous tests

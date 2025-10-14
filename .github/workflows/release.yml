@@ -7,6 +7,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write  # Needed to upload assets to releases
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -108,12 +111,24 @@ jobs:
         retention-days: 30
 
     - name: Upload release assets
-      if: github.event_name == 'release'
-      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
-        asset_name: pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
-        asset_content_type: application/gzip
+      run: |
+        # For tag pushes, create a release first if it doesn't exist
+        if [ "${{ github.event_name }}" = "push" ]; then
+          # Check if release exists
+          if ! gh release view "${{ github.ref_name }}" &>/dev/null; then
+            echo "Creating release for tag ${{ github.ref_name }}"
+            gh release create "${{ github.ref_name }}" \
+              --title "Release ${{ github.ref_name }}" \
+              --notes "Release ${{ github.ref_name }}" \
+              --draft
+          fi
+        fi
+
+        # Upload the asset
+        echo "Uploading pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz to release ${{ github.ref_name }}"
+        gh release upload "${{ github.ref_name }}" \
+          "./pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz" \
+          --clobber
