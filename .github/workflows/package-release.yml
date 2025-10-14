@@ -86,11 +86,20 @@ jobs:
         file check-arch/usr/lib/postgresql/*/lib/pg_textsearch.so | grep -E "(x86-64|aarch64)" || true
         rm -rf check-arch
 
+    - name: Create zip archive
+      run: |
+        cd dist
+        # Create zip with the expected naming convention for timescaledb-docker-cloud
+        zip pg-textsearch-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}.zip *.deb
+        cd ..
+
     - name: Upload package artifacts
       uses: actions/upload-artifact@v4
       with:
         name: pg-textsearch-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}
-        path: dist/*.deb
+        path: |
+          dist/*.deb
+          dist/*.zip
         retention-days: 30
 
   build-source:
@@ -164,8 +173,8 @@ jobs:
             --draft
         fi
 
-        # Upload all .deb and source packages
-        for file in artifacts/*/*.deb artifacts/*/*.tar.*; do
+        # Upload all .deb, .zip, and source packages
+        for file in artifacts/*/*.deb artifacts/*/*.zip artifacts/*/*.tar.*; do
           if [ -f "$file" ]; then
             echo "Uploading $(basename "$file") to release $TAG_NAME"
             gh release upload "$TAG_NAME" "$file" --clobber
