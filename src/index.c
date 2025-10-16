@@ -10,6 +10,7 @@
 #include <access/tableam.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
 #include <catalog/pg_trigger.h>
 #include <commands/progress.h>
@@ -58,7 +59,7 @@ static void tp_rescan_process_orderby(
 		ScanKey			orderbys,
 		int				norderbys,
 		TpIndexMetaPage metap);
-static bool tp_is_timescaledb_hypertable(Relation heap);
+static bool tp_has_child_tables(Relation heap);
 
 /*
  * Get the appropriate index name for the given index relation.
@@ -309,22 +310,65 @@ tp_resolve_index_name_shared(const char *index_name)
 }
 
 /*
- * Check if a relation is a TimescaleDB hypertable
+ * Check if a relation has child tables (via inheritance)
  *
- * TimescaleDB hypertables have a specific trigger that redirects inserts
- * to chunks. We check for this trigger to identify hypertables.
+ * This detects:
+ * 1. PostgreSQL partitioned tables (relkind = 'p')
+ * 2. Tables with inheritance children
+ * 3. TimescaleDB hypertables (via ts_insert_blocker trigger)
+ *
+ * BM25 indexes don't work correctly on parent tables that have no data
+ * of their own.
  */
 static bool
-tp_is_timescaledb_hypertable(Relation heap)
+tp_has_child_tables(Relation heap)
 {
-	bool		is_hypertable = false;
+	bool		has_children = false;
 	ScanKeyData skey[1];
 	SysScanDesc scan;
 	HeapTuple	tuple;
+	Relation	inhrel;
 	Relation	trigrel;
 	Oid			heapOid = RelationGetRelid(heap);
 
-	/* Open pg_trigger catalog */
+	/* First, check if this is a partitioned table (relkind = 'p') */
+	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		return true;
+
+	/* Next, check pg_inherits for child tables */
+	inhrel = table_open(InheritsRelationId, AccessShareLock);
+
+	/* Set up scan key to find children of this relation */
+	ScanKeyInit(
+			&skey[0],
+			Anum_pg_inherits_inhparent,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(heapOid));
+
+	/* Start system table scan using the parent index */
+	scan = systable_beginscan(
+			inhrel, InheritsParentIndexId, true, NULL, 1, skey);
+
+	/* If we find any child tables, the parent has children */
+	if ((tuple = systable_getnext(scan)) != NULL)
+	{
+		has_children = true;
+	}
+
+	/* Clean up pg_inherits scan */
+	systable_endscan(scan);
+	table_close(inhrel, AccessShareLock);
+
+	/* If we found children, we're done */
+	if (has_children)
+		return true;
+
+	/*
+	 * No children found via inheritance. Check for TimescaleDB's
+	 * ts_insert_blocker trigger as a fallback. This catches empty
+	 * hypertables that don't have chunks yet.
+	 */
 	trigrel = table_open(TriggerRelationId, AccessShareLock);
 
 	/* Set up scan key to find triggers for this relation */
@@ -343,24 +387,21 @@ tp_is_timescaledb_hypertable(Relation heap)
 	while ((tuple = systable_getnext(scan)) != NULL)
 	{
 		Form_pg_trigger trigrec = (Form_pg_trigger)GETSTRUCT(tuple);
-		char		   *tgname;
-
-		/* Get trigger name */
-		tgname = NameStr(trigrec->tgname);
+		char		   *tgname	= NameStr(trigrec->tgname);
 
 		/* Check if this is the TimescaleDB insert blocker trigger */
 		if (strcmp(tgname, "ts_insert_blocker") == 0)
 		{
-			is_hypertable = true;
+			has_children = true; /* Treat it like it has children */
 			break;
 		}
 	}
 
-	/* Clean up */
+	/* Clean up trigger scan */
 	systable_endscan(scan);
 	table_close(trigrel, AccessShareLock);
 
-	return is_hypertable;
+	return has_children;
 }
 
 /*
@@ -931,15 +972,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
-	/* Check if the heap is a TimescaleDB hypertable */
-	if (tp_is_timescaledb_hypertable(heap))
+	/* Check if the heap has child tables (hypertable or partitioned table) */
+	if (tp_has_child_tables(heap))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on TimescaleDB "
-						"hypertables"),
-				 errhint("Consider creating the BM25 index on a regular "
-						 "table instead")));
+				 errmsg("BM25 indexes are not supported on partitioned tables "
+						"or TimescaleDB hypertables"),
+				 errhint("BM25 indexes can only be created on regular tables "
+						 "that contain data directly, not on parent tables "
+						 "with child partitions or chunks")));
 	}
 
 	/* Report initialization phase */
@@ -1044,16 +1086,17 @@ tp_buildempty(Relation index)
 	/* Get the heap relation to check if it's a hypertable */
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
-	/* Check if the heap is a TimescaleDB hypertable */
-	if (tp_is_timescaledb_hypertable(heap))
+	/* Check if the heap has child tables (hypertable or partitioned table) */
+	if (tp_has_child_tables(heap))
 	{
 		table_close(heap, AccessShareLock);
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on TimescaleDB "
-						"hypertables"),
-				 errhint("Consider creating the BM25 index on a regular "
-						 "table instead")));
+				 errmsg("BM25 indexes are not supported on partitioned tables "
+						"or TimescaleDB hypertables"),
+				 errhint("BM25 indexes can only be created on regular tables "
+						 "that contain data directly, not on parent tables "
+						 "with child partitions or chunks")));
 	}
 
 	table_close(heap, AccessShareLock);
