@@ -5,9 +5,13 @@
 #include <access/reloptions.h>
 #include <access/relscan.h>
 #include <access/sdir.h>
+#include <access/sysattr.h>
+#include <access/table.h>
 #include <access/tableam.h>
+#include <catalog/indexing.h>
 #include <catalog/namespace.h>
 #include <catalog/pg_opclass.h>
+#include <catalog/pg_trigger.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
 #include <math.h>
@@ -20,6 +24,7 @@
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/float.h>
+#include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/regproc.h>
@@ -53,6 +58,7 @@ static void tp_rescan_process_orderby(
 		ScanKey			orderbys,
 		int				norderbys,
 		TpIndexMetaPage metap);
+static bool tp_is_timescaledb_hypertable(Relation heap);
 
 /*
  * Get the appropriate index name for the given index relation.
@@ -300,6 +306,61 @@ tp_resolve_index_name_shared(const char *index_name)
 	}
 
 	return index_oid;
+}
+
+/*
+ * Check if a relation is a TimescaleDB hypertable
+ *
+ * TimescaleDB hypertables have a specific trigger that redirects inserts
+ * to chunks. We check for this trigger to identify hypertables.
+ */
+static bool
+tp_is_timescaledb_hypertable(Relation heap)
+{
+	bool		is_hypertable = false;
+	ScanKeyData skey[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Relation	trigrel;
+	Oid			heapOid = RelationGetRelid(heap);
+
+	/* Open pg_trigger catalog */
+	trigrel = table_open(TriggerRelationId, AccessShareLock);
+
+	/* Set up scan key to find triggers for this relation */
+	ScanKeyInit(
+			&skey[0],
+			Anum_pg_trigger_tgrelid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(heapOid));
+
+	/* Start system table scan */
+	scan = systable_beginscan(
+			trigrel, TriggerRelidNameIndexId, true, NULL, 1, skey);
+
+	/* Look for TimescaleDB's ts_insert_blocker trigger */
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_trigger trigrec = (Form_pg_trigger)GETSTRUCT(tuple);
+		char		   *tgname;
+
+		/* Get trigger name */
+		tgname = NameStr(trigrec->tgname);
+
+		/* Check if this is the TimescaleDB insert blocker trigger */
+		if (strcmp(tgname, "ts_insert_blocker") == 0)
+		{
+			is_hypertable = true;
+			break;
+		}
+	}
+
+	/* Clean up */
+	systable_endscan(scan);
+	table_close(trigrel, AccessShareLock);
+
+	return is_hypertable;
 }
 
 /*
@@ -870,6 +931,17 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
+	/* Check if the heap is a TimescaleDB hypertable */
+	if (tp_is_timescaledb_hypertable(heap))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BM25 indexes are not supported on TimescaleDB "
+						"hypertables"),
+				 errhint("Consider creating the BM25 index on a regular "
+						 "table instead")));
+	}
+
 	/* Report initialization phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE,
@@ -967,6 +1039,24 @@ tp_buildempty(Relation index)
 	TpIndexMetaPage metap;
 	char		   *text_config_name = NULL;
 	Oid				text_config_oid	 = InvalidOid;
+	Relation		heap;
+
+	/* Get the heap relation to check if it's a hypertable */
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+
+	/* Check if the heap is a TimescaleDB hypertable */
+	if (tp_is_timescaledb_hypertable(heap))
+	{
+		table_close(heap, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BM25 indexes are not supported on TimescaleDB "
+						"hypertables"),
+				 errhint("Consider creating the BM25 index on a regular "
+						 "table instead")));
+	}
+
+	table_close(heap, AccessShareLock);
 
 	/* Extract options from index */
 	options = (TpOptions *)index->rd_options;
