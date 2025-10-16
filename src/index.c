@@ -57,7 +57,7 @@ static void tp_rescan_process_orderby(
 		ScanKey			orderbys,
 		int				norderbys,
 		TpIndexMetaPage metap);
-static bool tp_is_timescaledb_hypertable(Relation heap);
+static bool tp_has_child_tables(Relation heap);
 
 /*
  * Get the appropriate index name for the given index relation.
@@ -308,60 +308,77 @@ tp_resolve_index_name_shared(const char *index_name)
 }
 
 /*
- * Check if a relation is a TimescaleDB hypertable
+ * Check if a relation has child tables (uses table inheritance)
  *
- * This directly queries the _timescaledb_catalog.hypertable table.
- * If TimescaleDB isn't installed or the table doesn't exist, the
- * query will fail and we'll catch it, returning false.
+ * This checks both:
+ * 1. Regular PostgreSQL table inheritance (pg_inherits)
+ * 2. Partitioned tables (relkind = 'p')
+ *
+ * BM25 indexes don't work correctly with inheritance because they only
+ * index rows directly in the table, not rows inherited from child tables.
  */
 static bool
-tp_is_timescaledb_hypertable(Relation heap)
+tp_has_child_tables(Relation heap)
 {
-	bool  is_hypertable = false;
-	char *heap_schema;
-	char *heap_name;
+	bool		  has_children = false;
+	Oid			  heap_oid	   = RelationGetRelid(heap);
+	int			  spi_result;
+	SPIPlanPtr	  plan = NULL;
+	Datum		  values[1];
+	char		 *nulls			= " "; /* No nulls */
+	volatile bool spi_connected = false;
 
-	/* Get the schema and table name of the heap relation */
-	heap_schema = get_namespace_name(RelationGetNamespace(heap));
-	heap_name	= RelationGetRelationName(heap);
+	/* First check if it's a partitioned table (quick check) */
+	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		return true;
 
-	/* Query the hypertable catalog */
+	/* Check for table inheritance using pg_inherits */
 	PG_TRY();
 	{
-		StringInfoData query;
-		int			   ret;
-		Oid			   argtypes[2] = {TEXTOID, TEXTOID};
-		Datum		   values[2];
-		char		  *nulls = NULL;
+		spi_result	  = SPI_connect();
+		spi_connected = (spi_result == SPI_OK_CONNECT);
 
-		initStringInfo(&query);
-		appendStringInfo(
-				&query,
-				"SELECT 1 FROM _timescaledb_catalog.hypertable "
-				"WHERE schema_name = $1 AND table_name = $2");
+		if (!spi_connected)
+			elog(ERROR, "SPI_connect failed");
 
-		values[0] = CStringGetTextDatum(heap_schema);
-		values[1] = CStringGetTextDatum(heap_name);
+		/* Query to check if this table has any children */
+		const char *query = "SELECT 1 FROM pg_catalog.pg_inherits "
+							"WHERE inhparent = $1 LIMIT 1";
 
-		/* Execute the query using SPI */
-		SPI_connect();
-		ret = SPI_execute_with_args(
-				query.data, 2, argtypes, values, nulls, true, 1);
+		/* Prepare the plan */
+		Oid argtypes[1] = {OIDOID};
+		plan			= SPI_prepare(query, 1, argtypes);
 
-		if (ret == SPI_OK_SELECT && SPI_processed > 0)
-			is_hypertable = true;
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare failed");
 
+		values[0] = ObjectIdGetDatum(heap_oid);
+
+		/* Execute the query */
+		spi_result = SPI_execute_plan(plan, values, nulls, true, 1);
+
+		if (spi_result == SPI_OK_SELECT && SPI_processed > 0)
+			has_children = true;
+
+		/* Clean up SPI */
+		if (plan)
+			SPI_freeplan(plan);
 		SPI_finish();
+		spi_connected = false;
 	}
 	PG_CATCH();
 	{
-		/* If query fails (e.g., TimescaleDB not installed), not a hypertable
-		 */
-		is_hypertable = false;
+		/* Make sure to finish SPI connection if it was established */
+		if (spi_connected)
+		{
+			SPI_finish();
+		}
+		/* Re-throw the error */
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	return is_hypertable;
+	return has_children;
 }
 
 /*
@@ -932,16 +949,17 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
-	/* Check if the heap is a TimescaleDB hypertable */
-	if (tp_is_timescaledb_hypertable(heap))
+	/* Check if the heap uses table inheritance */
+	if (tp_has_child_tables(heap))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on TimescaleDB "
-						"hypertables"),
+				 errmsg("BM25 indexes are not supported on tables with "
+						"inheritance"),
 				 errhint("BM25 indexes can only be created on regular tables "
-						 "that contain data directly. TimescaleDB hypertables "
-						 "store data in chunks, not in the parent table")));
+						 "that contain data directly. Parent tables with "
+						 "inheritance store data in child tables, not in the "
+						 "parent table itself")));
 	}
 
 	/* Report initialization phase */
@@ -1043,20 +1061,21 @@ tp_buildempty(Relation index)
 	Oid				text_config_oid	 = InvalidOid;
 	Relation		heap;
 
-	/* Get the heap relation to check if it's a hypertable */
+	/* Get the heap relation to check if it uses inheritance */
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
-	/* Check if the heap is a TimescaleDB hypertable */
-	if (tp_is_timescaledb_hypertable(heap))
+	/* Check if the heap uses table inheritance */
+	if (tp_has_child_tables(heap))
 	{
 		table_close(heap, AccessShareLock);
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on TimescaleDB "
-						"hypertables"),
+				 errmsg("BM25 indexes are not supported on tables with "
+						"inheritance"),
 				 errhint("BM25 indexes can only be created on regular tables "
-						 "that contain data directly. TimescaleDB hypertables "
-						 "store data in chunks, not in the parent table")));
+						 "that contain data directly. Parent tables with "
+						 "inheritance store data in child tables, not in the "
+						 "parent table itself")));
 	}
 
 	table_close(heap, AccessShareLock);
