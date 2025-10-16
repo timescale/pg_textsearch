@@ -12,9 +12,9 @@
 #include <catalog/namespace.h>
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
-#include <catalog/pg_trigger.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
+#include <executor/spi.h>
 #include <math.h>
 #include <nodes/execnodes.h>
 #include <nodes/pg_list.h>
@@ -59,6 +59,7 @@ static void tp_rescan_process_orderby(
 		ScanKey			orderbys,
 		int				norderbys,
 		TpIndexMetaPage metap);
+static bool tp_is_timescaledb_hypertable(Relation heap);
 static bool tp_has_child_tables(Relation heap);
 
 /*
@@ -310,12 +311,80 @@ tp_resolve_index_name_shared(const char *index_name)
 }
 
 /*
- * Check if a relation has child tables (via inheritance)
+ * Check if a relation is a TimescaleDB hypertable
+ *
+ * This directly queries the timescaledb_catalog.hypertable table
+ * if it exists, which is simpler and more reliable than checking
+ * triggers or inheritance.
+ */
+static bool
+tp_is_timescaledb_hypertable(Relation heap)
+{
+	bool  is_hypertable = false;
+	Oid	  catalog_schema_oid;
+	Oid	  hypertable_oid;
+	char *heap_schema;
+	char *heap_name;
+
+	/* Check if _timescaledb_catalog schema exists (note the underscore) */
+	catalog_schema_oid = get_namespace_oid("_timescaledb_catalog", true);
+	if (!OidIsValid(catalog_schema_oid))
+		return false; /* TimescaleDB not installed */
+
+	/* Check if hypertable table exists */
+	hypertable_oid = get_relname_relid("hypertable", catalog_schema_oid);
+	if (!OidIsValid(hypertable_oid))
+		return false; /* TimescaleDB catalog not initialized */
+
+	/* Get the schema and table name of the heap relation */
+	heap_schema = get_namespace_name(RelationGetNamespace(heap));
+	heap_name	= RelationGetRelationName(heap);
+
+	/* Query the hypertable catalog */
+	PG_TRY();
+	{
+		StringInfoData query;
+		int			   ret;
+		Oid			   argtypes[2] = {TEXTOID, TEXTOID};
+		Datum		   values[2];
+		char		  *nulls = NULL;
+
+		initStringInfo(&query);
+		appendStringInfo(
+				&query,
+				"SELECT 1 FROM _timescaledb_catalog.hypertable "
+				"WHERE schema_name = $1 AND table_name = $2");
+
+		values[0] = CStringGetTextDatum(heap_schema);
+		values[1] = CStringGetTextDatum(heap_name);
+
+		/* Execute the query using SPI */
+		SPI_connect();
+		ret = SPI_execute_with_args(
+				query.data, 2, argtypes, values, nulls, true, 1);
+
+		if (ret == SPI_OK_SELECT && SPI_processed > 0)
+			is_hypertable = true;
+
+		SPI_finish();
+	}
+	PG_CATCH();
+	{
+		/* If query fails, assume it's not a hypertable */
+		is_hypertable = false;
+	}
+	PG_END_TRY();
+
+	return is_hypertable;
+}
+
+/*
+ * Check if a relation has child tables (via inheritance or partitioning)
  *
  * This detects:
  * 1. PostgreSQL partitioned tables (relkind = 'p')
  * 2. Tables with inheritance children
- * 3. TimescaleDB hypertables (via ts_insert_blocker trigger)
+ * 3. TimescaleDB hypertables (via catalog check)
  *
  * BM25 indexes don't work correctly on parent tables that have no data
  * of their own.
@@ -328,14 +397,17 @@ tp_has_child_tables(Relation heap)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 	Relation	inhrel;
-	Relation	trigrel;
 	Oid			heapOid = RelationGetRelid(heap);
 
 	/* First, check if this is a partitioned table (relkind = 'p') */
 	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		return true;
 
-	/* Next, check pg_inherits for child tables */
+	/* Check if it's a TimescaleDB hypertable */
+	if (tp_is_timescaledb_hypertable(heap))
+		return true;
+
+	/* Finally, check pg_inherits for other inheritance children */
 	inhrel = table_open(InheritsRelationId, AccessShareLock);
 
 	/* Set up scan key to find children of this relation */
@@ -359,47 +431,6 @@ tp_has_child_tables(Relation heap)
 	/* Clean up pg_inherits scan */
 	systable_endscan(scan);
 	table_close(inhrel, AccessShareLock);
-
-	/* If we found children, we're done */
-	if (has_children)
-		return true;
-
-	/*
-	 * No children found via inheritance. Check for TimescaleDB's
-	 * ts_insert_blocker trigger as a fallback. This catches empty
-	 * hypertables that don't have chunks yet.
-	 */
-	trigrel = table_open(TriggerRelationId, AccessShareLock);
-
-	/* Set up scan key to find triggers for this relation */
-	ScanKeyInit(
-			&skey[0],
-			Anum_pg_trigger_tgrelid,
-			BTEqualStrategyNumber,
-			F_OIDEQ,
-			ObjectIdGetDatum(heapOid));
-
-	/* Start system table scan */
-	scan = systable_beginscan(
-			trigrel, TriggerRelidNameIndexId, true, NULL, 1, skey);
-
-	/* Look for TimescaleDB's ts_insert_blocker trigger */
-	while ((tuple = systable_getnext(scan)) != NULL)
-	{
-		Form_pg_trigger trigrec = (Form_pg_trigger)GETSTRUCT(tuple);
-		char		   *tgname	= NameStr(trigrec->tgname);
-
-		/* Check if this is the TimescaleDB insert blocker trigger */
-		if (strcmp(tgname, "ts_insert_blocker") == 0)
-		{
-			has_children = true; /* Treat it like it has children */
-			break;
-		}
-	}
-
-	/* Clean up trigger scan */
-	systable_endscan(scan);
-	table_close(trigrel, AccessShareLock);
 
 	return has_children;
 }
