@@ -173,7 +173,7 @@ jobs:
             --draft
         fi
 
-        # Upload only .zip and source packages (not individual .deb files)
+        # Upload .zip and source packages
         for file in artifacts/*/*.zip artifacts/*/*.tar.*; do
           if [ -f "$file" ]; then
             echo "Uploading $(basename "$file") to release $TAG_NAME"
