@@ -80,6 +80,9 @@ jobs:
 
     - name: Verify package architecture
       run: |
+        # Fix permissions after Docker build (Docker runs as root)
+        sudo chown -R $USER:$USER dist/
+
         # Extract and check the actual binary architecture
         mkdir -p check-arch
         dpkg-deb -x dist/*.deb check-arch/
