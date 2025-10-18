@@ -955,11 +955,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("BM25 indexes are not supported on tables with "
-						"inheritance"),
-				 errhint("BM25 indexes can only be created on regular tables "
-						 "that contain data directly. Parent tables with "
-						 "inheritance store data in child tables, not in the "
-						 "parent table itself")));
+						"inheritance, including TimescaleDB hypertables"),
+				 errhint("BM25 indexes can only be created on regular "
+						 "tables")));
 	}
 
 	/* Report initialization phase */
@@ -1071,11 +1069,9 @@ tp_buildempty(Relation index)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("BM25 indexes are not supported on tables with "
-						"inheritance"),
-				 errhint("BM25 indexes can only be created on regular tables "
-						 "that contain data directly. Parent tables with "
-						 "inheritance store data in child tables, not in the "
-						 "parent table itself")));
+						"inheritance, including TimescaleDB hypertables"),
+				 errhint("BM25 indexes can only be created on regular "
+						 "tables")));
 	}
 
 	table_close(heap, AccessShareLock);

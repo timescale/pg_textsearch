@@ -38,7 +38,7 @@ SELECT COUNT(*) as parent_only_count FROM ONLY parent_docs;
 \set VERBOSITY terse
 CREATE INDEX parent_bm25_idx ON parent_docs USING bm25(content) WITH (text_config='english');
 NOTICE:  BM25 index build started for relation parent_bm25_idx
-ERROR:  BM25 indexes are not supported on tables with inheritance
+ERROR:  BM25 indexes are not supported on tables with inheritance, including TimescaleDB hypertables
 \set VERBOSITY default
 -- BM25 index on child table should work
 CREATE INDEX child1_bm25_idx ON child_docs1 USING bm25(content) WITH (text_config='english');
