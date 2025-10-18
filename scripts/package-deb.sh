@@ -44,7 +44,7 @@ cp "${BASEDIR}/pg_textsearch.so" "${BUILDDIR}${LIBDIR}/" || \
    { echo "Error: Could not find pg_textsearch library"; exit 1; }
 
 cp "${BASEDIR}/pg_textsearch.control" "${BUILDDIR}${SHAREDIR}/extension/"
-cp "${BASEDIR}/sql/pg_textsearch--0.0.1.sql" "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}/sql/pg_textsearch--0.0.2.sql" "${BUILDDIR}${SHAREDIR}/extension/"
 
 # Determine architecture
 if [ "$ARCH" = "arm64" ]; then

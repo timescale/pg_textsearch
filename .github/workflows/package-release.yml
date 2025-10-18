@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag/Version (e.g. v0.0.1)'
+        description: 'Tag/Version (e.g. v0.0.2)'
         required: true
         type: string
   push:
@@ -173,8 +173,8 @@ jobs:
             --draft
         fi
 
-        # Upload all .deb, .zip, and source packages
-        for file in artifacts/*/*.deb artifacts/*/*.zip artifacts/*/*.tar.*; do
+        # Upload .zip and source packages
+        for file in artifacts/*/*.zip artifacts/*/*.tar.*; do
           if [ -f "$file" ]; then
             echo "Uploading $(basename "$file") to release $TAG_NAME"
             gh release upload "$TAG_NAME" "$file" --clobber
