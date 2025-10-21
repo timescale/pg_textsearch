@@ -2,7 +2,7 @@
 
 ![Tapir and Friends](images/tapir_and_friends.png)
 
-[![CI](https://github.com/timescale/tapir/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/tapir/actions/workflows/ci.yml)
+[![CI](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml)
 
 Open-source full-text search for Postgres.
 Supports:
@@ -27,8 +27,8 @@ Compile and install the extension (requires PostgreSQL 17)
 
 ```sh
 cd /tmp
-git clone https://github.com/timescale/tapir
-cd tapir
+git clone https://github.com/timescale/pg_textsearch
+cd pg_textsearch
 make
 make install # may need sudo
 ```
@@ -328,9 +328,9 @@ brew install pre-commit && pre-commit install  # macOS
 
 ## Bug Reports & Feature Requests
 
-- **Bug Reports**: [Create an issue](https://github.com/timescale/tapir/issues/new?labels=bug&template=bug_report.md)
-- **Feature Requests**: [Request a feature](https://github.com/timescale/tapir/issues/new?labels=enhancement&template=feature_request.md)
-- **General Discussion**: [Start a discussion](https://github.com/timescale/tapir/discussions)
+- **Bug Reports**: [Create an issue](https://github.com/timescale/pg_textsearch/issues/new?labels=bug&template=bug_report.md)
+- **Feature Requests**: [Request a feature](https://github.com/timescale/pg_textsearch/issues/new?labels=enhancement&template=feature_request.md)
+- **General Discussion**: [Start a discussion](https://github.com/timescale/pg_textsearch/discussions)
 
 ## Contributing
 

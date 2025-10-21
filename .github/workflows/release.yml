@@ -93,7 +93,7 @@ jobs:
         2. Copy the library file to your PostgreSQL library directory
         3. Run: CREATE EXTENSION pg_textsearch;
 
-        For detailed documentation, see: https://github.com/timescale/tapir
+        For detailed documentation, see: https://github.com/timescale/pg_textsearch
         READMEEOF
 
         # Create tarball
