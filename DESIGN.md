@@ -127,7 +127,7 @@ Composition of memtable:
 
 * Term dictionary
   * Maps a string token → posting list (DSA pointer)
-  * **Current v0.0.2**: String-based architecture using dshash for string interning
+  * **Current v0.0.3-dev**: String-based architecture using dshash for string interning
   * **Implementation**: Each term string is interned once, posting lists allocated via DSA
   * **Rationale**: Avoids global term_id namespace, compatible with future disk segments
 * Posting list
@@ -148,7 +148,7 @@ No compression in the memtable.
 
 #### Memtable and transaction abort
 
-**Current v0.0.2 status**: Tombstones not yet implemented. Transaction abort handling deferred to future versions.
+**Current v0.0.3-dev status**: Tombstones not yet implemented. Transaction abort handling deferred to future versions.
 
 **Insertions**   Docs inserted as part of aborted transaction are filtered out by PostgreSQL executor.  They take up space in the index until segments are implemented with compaction.
 
@@ -205,7 +205,7 @@ Composition of a segment:
 
 ### Boolean queries
 
-**Status**: Not implemented in v0.0.2. Future work post-GA.
+**Status**: Not implemented in v0.0.3-dev. Future work post-GA.
 
 Will describe the simplest case (AND queries) as a warmup to ranked queries.  Extension to OR, NOT queries are all left for followup post-GA work.
 
@@ -217,13 +217,13 @@ Algorithm:
 
 ### BM25 queries
 
-**v0.0.2 implementation**: Uses naive algorithm with memtable-only evaluation. Query limit detection via SPI to avoid exhaustive scans.
+**v0.0.3-dev implementation**: Uses naive algorithm with memtable-only evaluation. Query limit detection via SPI to avoid exhaustive scans.
 
 Score of a document D for query Q \= q1…qn:
 
 BM25(D,Q) \= Σ IDF(qᵢ) × (tf(qᵢ,D) × (k₁ \+ 1)) / (tf(qᵢ,D) \+ k₁ × (1 \- b \+ b × |D|/avgdl))
 
-Naive algorithm (current v0.0.2 implementation):
+Naive algorithm (current v0.0.3-dev implementation):
 
 * For each query term
   * Look up the term in the string interning hash table
