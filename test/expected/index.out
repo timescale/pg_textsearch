@@ -1,7 +1,7 @@
 -- Test pg_textsearch index access method functionality
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.2: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.3-dev: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Setup test table

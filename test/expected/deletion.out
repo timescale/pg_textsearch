@@ -1,7 +1,7 @@
 -- Test handling of row deletions in indexed tables
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.2: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.3-dev: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE deletion_test (
     id SERIAL PRIMARY KEY,
