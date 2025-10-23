@@ -71,7 +71,7 @@ _PG_init(void)
 			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
 			1,							   /* min 1MB */
 			TP_MAX_INDEX_MEMORY_LIMIT,	   /* max 512MB */
-			PGC_SUSET,					   /* Superuser can change */
+			PGC_SIGHUP,					   /* Can be changed without restart */
 			0,
 			NULL,
 			NULL,

@@ -155,17 +155,7 @@ tp_alloc_string_dsa(
 	/* Allocate space for string + null terminator with tracking */
 	string_dp = tp_dsa_allocate(area, memory_usage, len + 1);
 	if (!DsaPointerIsValid(string_dp))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-				 errmsg("pg_textsearch index memory limit exceeded"),
-				 errdetail(
-						 "Current usage: %zu bytes, limit: %zu bytes",
-						 tp_get_memory_usage(memory_usage),
-						 tp_get_memory_limit()),
-				 errhint("Increase pg_textsearch.index_memory_limit or "
-						 "reduce the amount of data being indexed.")));
-	}
+		tp_report_memory_limit_exceeded(memory_usage);
 
 	string_data = (char *)dsa_get_address(area, string_dp);
 
@@ -539,18 +529,7 @@ tp_add_document_terms(
 	if (tp_get_memory_usage(&local_state->shared->memory_usage) +
 				estimated_memory >
 		tp_get_memory_limit())
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-				 errmsg("pg_textsearch index memory limit exceeded"),
-				 errdetail(
-						 "Current usage: %zu bytes, limit: %zu bytes",
-						 tp_get_memory_usage(
-								 &local_state->shared->memory_usage),
-						 tp_get_memory_limit()),
-				 errhint("Increase pg_textsearch.index_memory_limit or "
-						 "reduce the amount of data being indexed.")));
-	}
+		tp_report_memory_limit_exceeded(&local_state->shared->memory_usage);
 
 	for (i = 0; i < term_count; i++)
 	{

@@ -56,3 +56,7 @@ tp_check_memory_limit(TpMemoryUsage *memory_usage, Size additional_bytes);
 
 /* Get configured memory limit in bytes */
 extern Size tp_get_memory_limit(void);
+
+/* Report memory limit exceeded error */
+extern void tp_report_memory_limit_exceeded(TpMemoryUsage *memory_usage)
+		pg_attribute_noreturn();

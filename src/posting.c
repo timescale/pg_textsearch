@@ -82,17 +82,7 @@ tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage)
 	posting_list_dp =
 			tp_dsa_allocate(dsa, memory_usage, sizeof(TpPostingList));
 	if (!DsaPointerIsValid(posting_list_dp))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-				 errmsg("pg_textsearch index memory limit exceeded"),
-				 errdetail(
-						 "Current usage: %zu bytes, limit: %zu bytes",
-						 tp_get_memory_usage(memory_usage),
-						 tp_get_memory_limit()),
-				 errhint("Increase pg_textsearch.index_memory_limit or "
-						 "reduce the amount of data being indexed.")));
-	}
+		tp_report_memory_limit_exceeded(memory_usage);
 
 	posting_list = dsa_get_address(dsa, posting_list_dp);
 
@@ -141,18 +131,8 @@ tp_add_document_to_posting_list(
 				&local_state->shared->memory_usage,
 				new_size);
 		if (!DsaPointerIsValid(new_entries_dp))
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-					 errmsg("pg_textsearch index memory limit exceeded"),
-					 errdetail(
-							 "Current usage: %zu bytes, limit: %zu bytes",
-							 tp_get_memory_usage(
-									 &local_state->shared->memory_usage),
-							 tp_get_memory_limit()),
-					 errhint("Increase pg_textsearch.index_memory_limit or "
-							 "reduce the amount of data being indexed.")));
-		}
+			tp_report_memory_limit_exceeded(
+					&local_state->shared->memory_usage);
 
 		/* Copy existing entries if any */
 		if (posting_list->doc_count > 0 &&

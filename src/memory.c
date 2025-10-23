@@ -110,3 +110,24 @@ tp_get_memory_limit(void)
 	/* Convert megabytes to bytes */
 	return (Size)tp_index_memory_limit * 1024 * 1024;
 }
+
+/*
+ * Report memory limit exceeded error
+ *
+ * Centralized error reporting for memory limit violations.
+ */
+void
+tp_report_memory_limit_exceeded(TpMemoryUsage *memory_usage)
+{
+	Assert(memory_usage != NULL);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+			 errmsg("pg_textsearch index memory limit exceeded"),
+			 errdetail(
+					 "Current usage: %zu bytes, limit: %zu bytes",
+					 tp_get_memory_usage(memory_usage),
+					 tp_get_memory_limit()),
+			 errhint("Increase pg_textsearch.index_memory_limit or "
+					 "reduce the amount of data being indexed.")));
+}
