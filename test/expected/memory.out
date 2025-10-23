@@ -42,7 +42,7 @@ BEGIN
     END LOOP;
 END $$;
 ERROR:  pg_textsearch index memory limit exceeded
-DETAIL:  Current usage: 1038758 bytes, limit: 1048576 bytes
+DETAIL:  Current usage: 1825474 bytes, limit: 1048576 bytes
 HINT:  Increase pg_textsearch.index_memory_limit or reduce the amount of data being indexed.
 CONTEXT:  SQL statement "INSERT INTO memory_test (content) VALUES (doc)"
 PL/pgSQL function inline_code_block line 14 at SQL statement
