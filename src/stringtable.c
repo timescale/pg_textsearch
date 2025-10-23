@@ -280,8 +280,13 @@ tp_string_table_delete(
 
 	if (entry)
 	{
+		const char *str;
+
+		/* Get the string from DSA to determine its length */
+		str		= tp_get_key_str(area, &entry->key);
+		str_len = strlen(str);
+
 		/* Free the string */
-		str_len = strlen(entry->key.term.str);
 		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
 
 		/* Free posting list */
@@ -317,8 +322,13 @@ tp_string_table_clear(
 
 	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
 	{
+		const char *str;
+
+		/* Get the string from DSA to determine its length */
+		str		= tp_get_key_str(area, &entry->key);
+		str_len = strlen(str);
+
 		/* Free the string */
-		str_len = strlen(entry->key.term.str);
 		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
 
 		/* Free posting list */
