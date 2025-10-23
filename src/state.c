@@ -391,7 +391,7 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 	memtable = (TpMemtable *)dsa_get_address(dsa, shared_state->memtable_dp);
 
-	/* Destroy the string hash table if it exists */
+	/* Clear and destroy the string hash table if it exists */
 	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
 		dshash_table *string_hash;
@@ -399,7 +399,12 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		string_hash =
 				tp_string_table_attach(dsa, memtable->string_hash_handle);
 		if (string_hash != NULL)
+		{
+			/* Free all strings and posting lists */
+			tp_string_table_clear(
+					dsa, &shared_state->memory_usage, string_hash);
 			dshash_destroy(string_hash);
+		}
 	}
 
 	/* Destroy the document lengths hash table if it exists */
