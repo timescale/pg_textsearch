@@ -82,7 +82,7 @@ tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage)
 	posting_list_dp =
 			tp_dsa_allocate(dsa, memory_usage, sizeof(TpPostingList));
 	if (!DsaPointerIsValid(posting_list_dp))
-		tp_report_memory_limit_exceeded(memory_usage);
+		elog(ERROR, "Failed to allocate posting list in DSA");
 
 	posting_list = dsa_get_address(dsa, posting_list_dp);
 
@@ -131,8 +131,7 @@ tp_add_document_to_posting_list(
 				&local_state->shared->memory_usage,
 				new_size);
 		if (!DsaPointerIsValid(new_entries_dp))
-			tp_report_memory_limit_exceeded(
-					&local_state->shared->memory_usage);
+			elog(ERROR, "Failed to allocate posting entries in DSA");
 
 		/* Copy existing entries if any */
 		if (posting_list->doc_count > 0 &&

@@ -155,7 +155,7 @@ tp_alloc_string_dsa(
 	/* Allocate space for string + null terminator with tracking */
 	string_dp = tp_dsa_allocate(area, memory_usage, len + 1);
 	if (!DsaPointerIsValid(string_dp))
-		tp_report_memory_limit_exceeded(memory_usage);
+		elog(ERROR, "Failed to allocate string in DSA");
 
 	string_data = (char *)dsa_get_address(area, string_dp);
 
@@ -509,27 +509,7 @@ tp_add_document_terms(
 		int				   term_count,
 		int32			   doc_length)
 {
-	int	 i;
-	Size estimated_memory = 0;
-
-	/*
-	 * Estimate memory needed for this document:
-	 * - Each new term needs string storage + hash entry
-	 * - Each posting list entry needs sizeof(TpPostingEntry)
-	 * - Document length entry
-	 */
-	for (i = 0; i < term_count; i++)
-	{
-		size_t term_len = strlen(terms[i]);
-		/* Estimate: term string + posting entry + overhead */
-		estimated_memory += term_len + 1 + sizeof(TpPostingEntry) + 64;
-	}
-
-	/* Check if we have enough memory */
-	if (tp_get_memory_usage(&local_state->shared->memory_usage) +
-				estimated_memory >
-		tp_get_memory_limit())
-		tp_report_memory_limit_exceeded(&local_state->shared->memory_usage);
+	int i;
 
 	for (i = 0; i < term_count; i++)
 	{
