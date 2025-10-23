@@ -69,8 +69,13 @@ extern TpStringHashEntry *tp_string_table_insert(
 		const char	  *str,
 		size_t		   len);
 extern bool tp_string_table_delete(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len);
-extern void tp_string_table_clear(dsa_area *area, dshash_table *ht);
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		dshash_table  *ht,
+		const char	  *str,
+		size_t		   len);
+extern void tp_string_table_clear(
+		dsa_area *area, TpMemoryUsage *memory_usage, dshash_table *ht);
 
 /* Document term management functions */
 extern void tp_add_document_terms(

@@ -50,10 +50,6 @@ extern void tp_dsa_free(
 /* Get current memory usage */
 extern Size tp_get_memory_usage(TpMemoryUsage *memory_usage);
 
-/* Check if allocation would exceed limit */
-extern bool
-tp_check_memory_limit(TpMemoryUsage *memory_usage, Size additional_bytes);
-
 /* Get configured memory limit in bytes */
 extern Size tp_get_memory_limit(void);
 

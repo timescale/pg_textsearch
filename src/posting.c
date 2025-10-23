@@ -35,9 +35,13 @@ int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;
  * Free a posting list and its entries array
  */
 void
-tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
+tp_free_posting_list(
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		dsa_pointer	   posting_list_dp)
 {
 	TpPostingList *posting_list;
+	Size		   entries_size;
 
 	if (!DsaPointerIsValid(posting_list_dp))
 		return;
@@ -47,11 +51,13 @@ tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
 	/* Free entries array if it exists */
 	if (DsaPointerIsValid(posting_list->entries_dp))
 	{
-		dsa_free(area, posting_list->entries_dp);
+		entries_size = posting_list->capacity * sizeof(TpPostingEntry);
+		tp_dsa_free(
+				area, memory_usage, posting_list->entries_dp, entries_size);
 	}
 
 	/* Free the posting list structure itself */
-	dsa_free(area, posting_list_dp);
+	tp_dsa_free(area, memory_usage, posting_list_dp, sizeof(TpPostingList));
 }
 
 /* Helper function to get entries array from posting list */
@@ -78,7 +84,6 @@ tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage)
 	Assert(dsa != NULL);
 	Assert(memory_usage != NULL);
 
-	/* Allocate posting list structure with tracking */
 	posting_list_dp =
 			tp_dsa_allocate(dsa, memory_usage, sizeof(TpPostingList));
 	if (!DsaPointerIsValid(posting_list_dp))
@@ -125,7 +130,6 @@ tp_add_document_to_posting_list(
 		Size  old_size	   = posting_list->capacity * sizeof(TpPostingEntry);
 		Size  new_size	   = new_capacity * sizeof(TpPostingEntry);
 
-		/* Allocate new array with memory tracking */
 		new_entries_dp = tp_dsa_allocate(
 				local_state->dsa,
 				&local_state->shared->memory_usage,
@@ -145,7 +149,6 @@ tp_add_document_to_posting_list(
 				   old_entries,
 				   posting_list->doc_count * sizeof(TpPostingEntry));
 
-			/* Free old array with memory tracking */
 			tp_dsa_free(
 					local_state->dsa,
 					&local_state->shared->memory_usage,

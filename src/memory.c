@@ -20,11 +20,8 @@
 extern int tp_index_memory_limit;
 
 /*
- * Allocate memory with tracking
- *
  * Allocates memory from DSA and updates the memory usage counter.
- * Does not enforce limits - checking happens at document boundaries.
- * Returns InvalidDsaPointer only if DSA allocation fails.
+ * Returns InvalidDsaPointer if DSA allocation fails.
  */
 dsa_pointer
 tp_dsa_allocate(dsa_area *dsa, TpMemoryUsage *memory_usage, Size size)
@@ -46,8 +43,6 @@ tp_dsa_allocate(dsa_area *dsa, TpMemoryUsage *memory_usage, Size size)
 }
 
 /*
- * Free memory with tracking
- *
  * Frees memory in DSA and updates the memory usage counter.
  * The size parameter must match the original allocation size.
  */
@@ -78,18 +73,6 @@ tp_get_memory_usage(TpMemoryUsage *memory_usage)
 	Assert(memory_usage != NULL);
 
 	return memory_usage->memory_used;
-}
-
-/*
- * Check if allocation would exceed limit
- */
-bool
-tp_check_memory_limit(TpMemoryUsage *memory_usage, Size additional_bytes)
-{
-	Assert(memory_usage != NULL);
-
-	return (memory_usage->memory_used + additional_bytes <=
-			tp_get_memory_limit());
 }
 
 /*

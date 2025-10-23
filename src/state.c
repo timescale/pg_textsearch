@@ -267,7 +267,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
 
-	/* Allocate shared state in DSA */
+	/*
+	 * Allocate shared state in DSA.
+	 * Use dsa_allocate directly (not tp_dsa_allocate) because shared_state
+	 * contains the memory_usage tracker itself. This allocation is not
+	 * counted against the index memory limit.
+	 */
 	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
 	if (shared_dp == InvalidDsaPointer)
 	{
@@ -288,7 +293,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->memory_usage.memory_used = 0;
 
 	/* Allocate and initialize memtable */
-	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
+	memtable_dp = tp_dsa_allocate(
+			dsa, &shared_state->memory_usage, sizeof(TpMemtable));
+	if (!DsaPointerIsValid(memtable_dp))
+		elog(ERROR, "Failed to allocate memtable in DSA");
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
@@ -313,7 +321,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
 			/* Clean up allocations on failure */
-			dsa_free(dsa, memtable_dp);
+			tp_dsa_free(
+					dsa,
+					&shared_state->memory_usage,
+					memtable_dp,
+					sizeof(TpMemtable));
+			/* Free shared_state directly (not tracked) */
 			dsa_free(dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
@@ -401,7 +414,12 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	}
 
 	/* Free shared state structures from DSA */
-	dsa_free(dsa, shared_state->memtable_dp);
+	tp_dsa_free(
+			dsa,
+			&shared_state->memory_usage,
+			shared_state->memtable_dp,
+			sizeof(TpMemtable));
+	/* Free shared_state directly (not tracked) */
 	dsa_free(dsa, shared_dp);
 
 	/* Clean up local state if we have it cached */

@@ -152,7 +152,6 @@ tp_alloc_string_dsa(
 	dsa_pointer string_dp;
 	char	   *string_data;
 
-	/* Allocate space for string + null terminator with tracking */
 	string_dp = tp_dsa_allocate(area, memory_usage, len + 1);
 	if (!DsaPointerIsValid(string_dp))
 		elog(ERROR, "Failed to allocate string in DSA");
@@ -253,12 +252,18 @@ tp_string_table_insert(
  */
 bool
 tp_string_table_delete(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len)
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		dshash_table  *ht,
+		const char	  *str,
+		size_t		   len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
+	size_t			   str_len;
 
 	Assert(area != NULL);
+	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
 
@@ -275,11 +280,15 @@ tp_string_table_delete(
 
 	if (entry)
 	{
-		/* Found the entry - free DSA string and posting list */
-		dsa_free(area, entry->key.term.dp); /* Free the DSA string data */
-		tp_free_posting_list(
-				area, entry->key.posting_list); /* Free posting list */
-		dshash_delete_entry(ht, entry); /* This releases the lock too */
+		/* Free the string */
+		str_len = strlen(entry->key.term.str);
+		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
+
+		/* Free posting list */
+		tp_free_posting_list(area, memory_usage, entry->key.posting_list);
+
+		/* Delete entry (releases lock) */
+		dshash_delete_entry(ht, entry);
 
 		return true;
 	}
@@ -292,12 +301,15 @@ tp_string_table_delete(
  * Frees all DSA string allocations
  */
 void
-tp_string_table_clear(dsa_area *area, dshash_table *ht)
+tp_string_table_clear(
+		dsa_area *area, TpMemoryUsage *memory_usage, dshash_table *ht)
 {
 	dshash_seq_status  status;
 	TpStringHashEntry *entry;
+	size_t			   str_len;
 
 	Assert(area != NULL);
+	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 
 	/* Iterate through all entries and delete them */
@@ -305,9 +317,12 @@ tp_string_table_clear(dsa_area *area, dshash_table *ht)
 
 	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
 	{
-		/* Free the DSA string data and posting list */
-		dsa_free(area, entry->key.term.dp);
-		tp_free_posting_list(area, entry->key.posting_list);
+		/* Free the string */
+		str_len = strlen(entry->key.term.str);
+		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
+
+		/* Free posting list */
+		tp_free_posting_list(area, memory_usage, entry->key.posting_list);
 
 		/* Delete current entry */
 		dshash_delete_current(&status);
