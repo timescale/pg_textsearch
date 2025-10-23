@@ -419,6 +419,10 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 			&shared_state->memory_usage,
 			shared_state->memtable_dp,
 			sizeof(TpMemtable));
+
+	/* Verify all tracked memory has been freed */
+	Assert(shared_state->memory_usage.memory_used == 0);
+
 	/* Free shared_state directly (not tracked) */
 	dsa_free(dsa, shared_dp);
 
