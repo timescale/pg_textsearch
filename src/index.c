@@ -871,18 +871,14 @@ tp_process_document_text(
 		 * document size), but check at document boundaries to decide if
 		 * spill is needed before the next document.
 		 *
-		 * TODO: When segment spilling is implemented, trigger spill here
-		 * if memory_used > memory_limit.
+		 * TODO: Replace this error with spill when segment support is added.
+		 * For now, error to enforce limits. Future: tp_spill_memtable_to_disk
 		 */
 		if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 			tp_get_memory_limit())
 		{
-			elog(DEBUG1,
-				 "pg_textsearch memory over limit after document: %zu bytes "
-				 "(limit %zu bytes)",
-				 tp_get_memory_usage(&index_state->shared->memory_usage),
-				 tp_get_memory_limit());
-			/* Future: tp_spill_memtable_to_disk(index_state); */
+			tp_report_memory_limit_exceeded(
+					&index_state->shared->memory_usage);
 		}
 
 		/* Free the terms array and individual lexemes */
@@ -1262,19 +1258,15 @@ tp_insert(
 
 				/*
 				 * Check memory after document completion.
-				 * TODO: When segment spilling is implemented, trigger spill
-				 * here if memory_used > memory_limit.
+				 * TODO: Replace this error with spill when segment support is
+				 * added. For now, error to enforce limits.
+				 * Future: tp_spill_memtable_to_disk
 				 */
 				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 					tp_get_memory_limit())
 				{
-					elog(DEBUG1,
-						 "pg_textsearch memory over limit after insert: "
-						 "%zu bytes (limit %zu bytes)",
-						 tp_get_memory_usage(
-								 &index_state->shared->memory_usage),
-						 tp_get_memory_limit());
-					/* Future: tp_spill_memtable_to_disk(index_state); */
+					tp_report_memory_limit_exceeded(
+							&index_state->shared->memory_usage);
 				}
 			}
 		}
