@@ -6,6 +6,7 @@ DATA = sql/pg_textsearch--0.0.3-dev.sql
 OBJS = \
 	src/mod.o \
 	src/memtable.o \
+	src/memory.o \
 	src/metapage.o \
 	src/posting.o \
 	src/index.o \
@@ -27,7 +28,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic deletion vacuum dropped empty index inheritance limits manyterms mixed queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings vector
+REGRESS = aerodocs basic deletion vacuum dropped empty index inheritance limits manyterms memory mixed queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings vector
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

@@ -280,11 +280,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid	 = index_oid;
-	shared_state->heap_oid	 = heap_oid;
-	shared_state->total_docs = 0;
-	shared_state->total_len	 = 0;
-	shared_state->idf_sum	 = 0.0;
+	shared_state->index_oid				   = index_oid;
+	shared_state->heap_oid				   = heap_oid;
+	shared_state->total_docs			   = 0;
+	shared_state->total_len				   = 0;
+	shared_state->idf_sum				   = 0.0;
+	shared_state->memory_usage.memory_used = 0;
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));

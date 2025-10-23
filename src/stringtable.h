@@ -63,7 +63,11 @@ tp_string_table_attach(dsa_area *area, dshash_table_handle handle);
 extern TpStringHashEntry *tp_string_table_lookup(
 		dsa_area *area, dshash_table *ht, const char *str, size_t len);
 extern TpStringHashEntry *tp_string_table_insert(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len);
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		dshash_table  *ht,
+		const char	  *str,
+		size_t		   len);
 extern bool tp_string_table_delete(
 		dsa_area *area, dshash_table *ht, const char *str, size_t len);
 extern void tp_string_table_clear(dsa_area *area, dshash_table *ht);
@@ -86,7 +90,8 @@ extern TpPostingList *tp_string_table_get_posting_list(
 		dsa_area *area, dshash_table *ht, const char *term);
 
 /* Posting list management in DSA */
-extern dsa_pointer tp_alloc_posting_list(dsa_area *area);
+extern dsa_pointer
+tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage);
 extern TpPostingEntry *
 tp_alloc_posting_entries_dsa(dsa_area *area, uint32 capacity);
 extern TpPostingEntry *tp_realloc_posting_entries_dsa(

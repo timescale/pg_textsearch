@@ -22,6 +22,7 @@
 
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
+#include "memory.h"
 #include "posting.h"
 #include "state.h"
 #include "stringtable.h"
@@ -142,13 +143,30 @@ tp_string_table_attach(dsa_area *area, dshash_table_handle handle)
  * Returns the dsa_pointer to the allocated string
  */
 static dsa_pointer
-tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
+tp_alloc_string_dsa(
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		const char	  *str,
+		size_t		   len)
 {
 	dsa_pointer string_dp;
 	char	   *string_data;
 
-	/* Allocate space for string + null terminator */
-	string_dp	= dsa_allocate(area, len + 1);
+	/* Allocate space for string + null terminator with tracking */
+	string_dp = tp_dsa_allocate(area, memory_usage, len + 1);
+	if (!DsaPointerIsValid(string_dp))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("pg_textsearch index memory limit exceeded"),
+				 errdetail(
+						 "Current usage: %zu bytes, limit: %zu bytes",
+						 tp_get_memory_usage(memory_usage),
+						 tp_get_memory_limit()),
+				 errhint("Increase pg_textsearch.index_memory_limit or "
+						 "reduce the amount of data being indexed.")));
+	}
+
 	string_data = (char *)dsa_get_address(area, string_dp);
 
 	/* Copy string data and null terminate */
@@ -202,13 +220,18 @@ tp_string_table_lookup(
  */
 TpStringHashEntry *
 tp_string_table_insert(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len)
+		dsa_area	  *area,
+		TpMemoryUsage *memory_usage,
+		dshash_table  *ht,
+		const char	  *str,
+		size_t		   len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
 	bool			   found;
 
 	Assert(area != NULL);
+	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
 	Assert(len > 0);
@@ -224,8 +247,8 @@ tp_string_table_insert(
 	if (!found)
 	{
 		/* New entry */
-		entry->key.term.dp		= tp_alloc_string_dsa(area, str, len);
-		entry->key.posting_list = tp_alloc_posting_list(area);
+		entry->key.term.dp = tp_alloc_string_dsa(area, memory_usage, str, len);
+		entry->key.posting_list = tp_alloc_posting_list(area, memory_usage);
 	}
 
 	/* Release the lock acquired by dshash_find_or_insert */
@@ -448,7 +471,11 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	{
 		/* Insert the term */
 		string_entry = tp_string_table_insert(
-				local_state->dsa, string_table, term, term_len);
+				local_state->dsa,
+				&local_state->shared->memory_usage,
+				string_table,
+				term,
+				term_len);
 		if (!string_entry)
 		{
 			elog(ERROR, "Failed to insert term '%s' into string table", term);
@@ -465,8 +492,9 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	else
 	{
 		/* Create new posting list */
-		posting_list_dp = tp_alloc_posting_list(local_state->dsa);
-		posting_list	= dsa_get_address(local_state->dsa, posting_list_dp);
+		posting_list_dp = tp_alloc_posting_list(
+				local_state->dsa, &local_state->shared->memory_usage);
+		posting_list = dsa_get_address(local_state->dsa, posting_list_dp);
 
 		/* Associate posting list with string entry */
 		string_entry->key.posting_list = posting_list_dp;
@@ -491,7 +519,38 @@ tp_add_document_terms(
 		int				   term_count,
 		int32			   doc_length)
 {
-	int i;
+	int	 i;
+	Size estimated_memory = 0;
+
+	/*
+	 * Estimate memory needed for this document:
+	 * - Each new term needs string storage + hash entry
+	 * - Each posting list entry needs sizeof(TpPostingEntry)
+	 * - Document length entry
+	 */
+	for (i = 0; i < term_count; i++)
+	{
+		size_t term_len = strlen(terms[i]);
+		/* Estimate: term string + posting entry + overhead */
+		estimated_memory += term_len + 1 + sizeof(TpPostingEntry) + 64;
+	}
+
+	/* Check if we have enough memory */
+	if (tp_get_memory_usage(&local_state->shared->memory_usage) +
+				estimated_memory >
+		tp_get_memory_limit())
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("pg_textsearch index memory limit exceeded"),
+				 errdetail(
+						 "Current usage: %zu bytes, limit: %zu bytes",
+						 tp_get_memory_usage(
+								 &local_state->shared->memory_usage),
+						 tp_get_memory_limit()),
+				 errhint("Increase pg_textsearch.index_memory_limit or "
+						 "reduce the amount of data being indexed.")));
+	}
 
 	for (i = 0; i < term_count; i++)
 	{

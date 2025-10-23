@@ -21,6 +21,7 @@
 
 #include "common/hashfn.h"
 #include "constants.h"
+#include "memory.h"
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
@@ -69,16 +70,31 @@ tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
  * Returns the DSA pointer to the allocated posting list
  */
 dsa_pointer
-tp_alloc_posting_list(dsa_area *area)
+tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage)
 {
 	dsa_pointer	   posting_list_dp;
 	TpPostingList *posting_list;
 
-	Assert(area != NULL);
+	Assert(dsa != NULL);
+	Assert(memory_usage != NULL);
 
-	/* Allocate posting list structure */
-	posting_list_dp = dsa_allocate(area, sizeof(TpPostingList));
-	posting_list	= dsa_get_address(area, posting_list_dp);
+	/* Allocate posting list structure with tracking */
+	posting_list_dp =
+			tp_dsa_allocate(dsa, memory_usage, sizeof(TpPostingList));
+	if (!DsaPointerIsValid(posting_list_dp))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("pg_textsearch index memory limit exceeded"),
+				 errdetail(
+						 "Current usage: %zu bytes, limit: %zu bytes",
+						 tp_get_memory_usage(memory_usage),
+						 tp_get_memory_limit()),
+				 errhint("Increase pg_textsearch.index_memory_limit or "
+						 "reduce the amount of data being indexed.")));
+	}
+
+	posting_list = dsa_get_address(dsa, posting_list_dp);
 
 	/* Initialize posting list */
 	memset(posting_list, 0, sizeof(TpPostingList));
@@ -116,10 +132,27 @@ tp_add_document_to_posting_list(
 								   ? TP_INITIAL_POSTING_LIST_CAPACITY
 								   : posting_list->capacity *
 											 tp_posting_list_growth_factor;
+		Size  old_size	   = posting_list->capacity * sizeof(TpPostingEntry);
+		Size  new_size	   = new_capacity * sizeof(TpPostingEntry);
 
-		/* Allocate new array */
-		new_entries_dp = dsa_allocate(
-				local_state->dsa, new_capacity * sizeof(TpPostingEntry));
+		/* Allocate new array with memory tracking */
+		new_entries_dp = tp_dsa_allocate(
+				local_state->dsa,
+				&local_state->shared->memory_usage,
+				new_size);
+		if (!DsaPointerIsValid(new_entries_dp))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+					 errmsg("pg_textsearch index memory limit exceeded"),
+					 errdetail(
+							 "Current usage: %zu bytes, limit: %zu bytes",
+							 tp_get_memory_usage(
+									 &local_state->shared->memory_usage),
+							 tp_get_memory_limit()),
+					 errhint("Increase pg_textsearch.index_memory_limit or "
+							 "reduce the amount of data being indexed.")));
+		}
 
 		/* Copy existing entries if any */
 		if (posting_list->doc_count > 0 &&
@@ -133,8 +166,12 @@ tp_add_document_to_posting_list(
 				   old_entries,
 				   posting_list->doc_count * sizeof(TpPostingEntry));
 
-			/* Free old array */
-			dsa_free(local_state->dsa, posting_list->entries_dp);
+			/* Free old array with memory tracking */
+			tp_dsa_free(
+					local_state->dsa,
+					&local_state->shared->memory_usage,
+					posting_list->entries_dp,
+					old_size);
 		}
 
 		posting_list->entries_dp = new_entries_dp;

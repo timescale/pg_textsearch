@@ -65,14 +65,13 @@ _PG_init(void)
 	 */
 	DefineCustomIntVariable(
 			"pg_textsearch.index_memory_limit",
-			"Per-index memory limit in MB (currently not enforced)",
-			"Reserved for future use: controls the maximum memory each "
-			"pg_textsearch index can use",
+			"Per-index memory limit in MB",
+			"Controls the maximum memory each pg_textsearch index can use",
 			&tp_index_memory_limit,
 			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
 			1,							   /* min 1MB */
 			TP_MAX_INDEX_MEMORY_LIMIT,	   /* max 512MB */
-			PGC_SIGHUP,					   /* Can be changed without restart */
+			PGC_SUSET,					   /* Superuser can change */
 			0,
 			NULL,
 			NULL,

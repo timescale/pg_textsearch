@@ -18,6 +18,8 @@
 #include <lib/dshash.h>
 #include <utils/dsa.h>
 
+#include "memory.h"
+
 /* Forward declaration */
 struct TpMemtable;
 
@@ -67,6 +69,9 @@ typedef struct TpSharedIndexState
 	int64  total_len;  /* Total length of all documents */
 	float8 idf_sum;	   /* Sum of all IDF values for average IDF calculation */
 	/* Note: num_unique_terms is available as memtable->total_terms */
+
+	/* Memory accounting */
+	TpMemoryUsage memory_usage; /* Memory usage tracking */
 } TpSharedIndexState;
 
 /*
