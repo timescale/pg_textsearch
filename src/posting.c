@@ -64,11 +64,37 @@ tp_free_posting_list(
 TpPostingEntry *
 tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
 {
+	TpPostingEntry *entries;
+
 	if (!posting_list || !DsaPointerIsValid(posting_list->entries_dp))
 		return NULL;
 	if (!area)
 		return NULL;
-	return dsa_get_address(area, posting_list->entries_dp);
+
+	entries = dsa_get_address(area, posting_list->entries_dp);
+
+#ifdef USE_ASSERT_CHECKING
+	/*
+	 * In debug builds, check if we're accessing freed memory.
+	 * If memory was freed by tp_dsa_free, it will be filled with
+	 * 0xDD sentinel pattern. Detecting this indicates use-after-free.
+	 */
+	if (entries && posting_list->doc_count > 0)
+	{
+		unsigned char *check = (unsigned char *)entries;
+		bool		   looks_freed =
+				(check[0] == 0xDD && check[1] == 0xDD && check[2] == 0xDD &&
+				 check[3] == 0xDD);
+
+		Assert(!looks_freed);
+		if (looks_freed)
+			elog(ERROR,
+				 "use-after-free detected: accessing freed posting "
+				 "list entries");
+	}
+#endif
+
+	return entries;
 }
 
 /*

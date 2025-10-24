@@ -56,6 +56,18 @@ tp_dsa_free(
 	if (!DsaPointerIsValid(ptr))
 		return;
 
+#ifdef USE_ASSERT_CHECKING
+	/*
+	 * In debug builds, fill freed memory with sentinel pattern (0xDD)
+	 * to help catch use-after-free bugs. This makes the bug visible
+	 * locally without needing sanitizers.
+	 */
+	{
+		void *addr = dsa_get_address(dsa, ptr);
+		memset(addr, 0xDD, size);
+	}
+#endif
+
 	/* Free memory in DSA */
 	dsa_free(dsa, ptr);
 
