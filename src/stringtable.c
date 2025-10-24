@@ -194,8 +194,8 @@ tp_string_table_lookup(
 	{
 		/* Release the lock acquired by dshash_find.
 		 *
-		 * SAFETY: index-wide lock held by caller prevents concurrent
-		 * destruction of the hash table.
+		 * SAFETY: The per-index LWLock ensures exclusive access during writes
+		 * and prevents concurrent destruction of the hash table.
 		 */
 		dshash_release_lock(ht, entry);
 	}
@@ -552,7 +552,12 @@ tp_add_document_terms(
 	/* Store document length in the document length table */
 	tp_store_document_length(local_state, ctid, doc_length);
 
-	/* Update corpus statistics (no locks needed with new architecture) */
+	/*
+	 * Update corpus statistics.
+	 * Protected by the per-index LWLock acquired at transaction level.
+	 * The lock's memory barriers ensure these updates are visible to other
+	 * backends on NUMA systems.
+	 */
 	local_state->shared->total_docs++;
 	local_state->shared->total_len += doc_length;
 }

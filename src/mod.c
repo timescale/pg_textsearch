@@ -52,6 +52,9 @@ static void tp_object_access(
 		int				 subId,
 		void			*arg);
 
+/* Transaction callback to release index locks */
+static void tp_xact_callback(XactEvent event, void *arg);
+
 /*
  * Extension entry point - called when the extension is loaded
  */
@@ -145,6 +148,10 @@ _PG_init(void)
 	/* Install object access hook for DROP INDEX detection */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
+
+	/* Register transaction callback to release index locks at transaction end
+	 */
+	RegisterXactCallback(tp_xact_callback, NULL);
 }
 
 /*
@@ -206,4 +213,30 @@ tp_shmem_startup(void)
 
 	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
+}
+
+/*
+ * Transaction callback - release index locks at transaction end
+ */
+static void
+tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
+{
+	/* We only care about transaction commit and abort */
+	switch (event)
+	{
+	case XACT_EVENT_COMMIT:
+	case XACT_EVENT_ABORT:
+	case XACT_EVENT_PARALLEL_COMMIT:
+	case XACT_EVENT_PARALLEL_ABORT:
+		/* Release all index locks held by this backend */
+		tp_release_all_index_locks();
+		break;
+
+	case XACT_EVENT_PRE_COMMIT:
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
+	case XACT_EVENT_PRE_PREPARE:
+	case XACT_EVENT_PREPARE:
+		/* Nothing to do for these events */
+		break;
+	}
 }

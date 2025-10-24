@@ -193,8 +193,10 @@ tp_get_local_index_state(Oid index_oid)
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
-		local_state->shared = shared_state;
-		local_state->dsa	= dsa;
+		local_state->shared	   = shared_state;
+		local_state->dsa	   = dsa;
+		local_state->lock_held = false;
+		local_state->lock_mode = 0;
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -292,6 +294,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->idf_sum				   = 0.0;
 	shared_state->memory_usage.memory_used = 0;
 
+	/* Initialize the per-index LWLock */
+	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
+
 	/* Allocate and initialize memtable */
 	memtable_dp = tp_dsa_allocate(
 			dsa, &shared_state->memory_usage, sizeof(TpMemtable));
@@ -335,8 +340,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared = shared_state;
-	local_state->dsa	= dsa;
+	local_state->shared	   = shared_state;
+	local_state->dsa	   = dsa;
+	local_state->lock_held = false;
+	local_state->lock_mode = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -785,4 +792,114 @@ get_memtable(TpLocalIndexState *local_state)
 
 	return (TpMemtable *)dsa_get_address(
 			local_state->dsa, local_state->shared->memtable_dp);
+}
+
+/*
+ * Acquire the per-index lock if not already held in this transaction.
+ * This provides transaction-level serialization and ensures memory
+ * consistency on NUMA systems through LWLock's built-in memory barriers.
+ */
+void
+tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
+{
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
+
+	/* If we already hold the lock, check mode compatibility */
+	if (local_state->lock_held)
+	{
+		/*
+		 * If we hold exclusive lock, we're good regardless of requested mode.
+		 * If we hold shared lock and request shared, we're also good.
+		 * But if we hold shared and need exclusive, we must upgrade.
+		 */
+		if (local_state->lock_mode == LW_EXCLUSIVE ||
+			(local_state->lock_mode == LW_SHARED && mode == LW_SHARED))
+		{
+			return; /* Already have sufficient lock */
+		}
+
+		/*
+		 * Need to upgrade from shared to exclusive.
+		 * This is tricky and can deadlock, so we'll release and re-acquire.
+		 * In practice, this shouldn't happen as writers should request
+		 * exclusive from the start.
+		 */
+		elog(WARNING,
+			 "Upgrading index lock from shared to exclusive for index %u - "
+			 "potential deadlock risk",
+			 local_state->shared->index_oid);
+
+		LWLockRelease(&local_state->shared->lock);
+		local_state->lock_held = false;
+	}
+
+	/* Acquire the lock */
+	LWLockAcquire(&local_state->shared->lock, mode);
+	local_state->lock_held = true;
+	local_state->lock_mode = mode;
+
+	/*
+	 * The LWLockAcquire provides acquire semantics (memory barrier),
+	 * ensuring we see all writes from the previous lock holder.
+	 */
+}
+
+/*
+ * Release the per-index lock if held
+ */
+void
+tp_release_index_lock(TpLocalIndexState *local_state)
+{
+	if (!local_state || !local_state->lock_held)
+		return;
+
+	Assert(local_state->shared != NULL);
+
+	/*
+	 * Double-check that PostgreSQL thinks we hold the lock.
+	 * This can prevent crashes if our lock tracking gets out of sync
+	 * (e.g., during error recovery).
+	 */
+	if (!LWLockHeldByMe(&local_state->shared->lock))
+	{
+		/* Our tracking was wrong - fix it and return */
+		local_state->lock_held = false;
+		local_state->lock_mode = 0;
+		return;
+	}
+
+	/*
+	 * The LWLockRelease provides release semantics (memory barrier),
+	 * ensuring our writes are visible to the next lock acquirer.
+	 */
+	LWLockRelease(&local_state->shared->lock);
+	local_state->lock_held = false;
+	local_state->lock_mode = 0;
+}
+
+/*
+ * Release all index locks held by this backend.
+ * This is called at transaction end via the transaction callback.
+ */
+void
+tp_release_all_index_locks(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	/* Nothing to do if cache not initialized */
+	if (local_state_cache == NULL)
+		return;
+
+	/* Iterate through all cached local states */
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
+	{
+		if (entry->local_state && entry->local_state->lock_held)
+		{
+			tp_release_index_lock(entry->local_state);
+		}
+	}
 }

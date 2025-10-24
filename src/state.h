@@ -16,12 +16,15 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <storage/lwlock.h>
 #include <utils/dsa.h>
 
 #include "memory.h"
 
-/* Forward declaration */
+/* Forward declarations */
 struct TpMemtable;
+typedef struct TpIndexMetaPageData *TpIndexMetaPage;
+typedef struct RelationData		   *Relation;
 
 /*
  * Header of the DSM segment for each index
@@ -72,6 +75,15 @@ typedef struct TpSharedIndexState
 
 	/* Memory accounting */
 	TpMemoryUsage memory_usage; /* Memory usage tracking */
+
+	/*
+	 * Per-index LWLock for transaction-level serialization.
+	 * Writers acquire this in exclusive mode once per transaction.
+	 * Readers acquire this in shared mode once per transaction.
+	 * This ensures memory consistency on NUMA systems and proper
+	 * transaction isolation.
+	 */
+	LWLock lock; /* Transaction-level lock for this index */
 } TpSharedIndexState;
 
 /*
@@ -86,6 +98,10 @@ typedef struct TpLocalIndexState
 
 	/* DSA attachment for this backend */
 	dsa_area *dsa; /* Attached DSA area for this index */
+
+	/* Transaction-level lock tracking */
+	bool	   lock_held; /* True if we hold the lock in this transaction */
+	LWLockMode lock_mode; /* Mode we're holding (LW_SHARED or LW_EXCLUSIVE) */
 } TpLocalIndexState;
 
 /* Function declarations for index state management */
@@ -104,3 +120,9 @@ extern void				  tp_rebuild_posting_lists_from_docids(
 
 /* Helper function for accessing memtable from local state */
 extern TpMemtable *get_memtable(TpLocalIndexState *local_state);
+
+/* Transaction-level lock management */
+extern void
+tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
+extern void tp_release_index_lock(TpLocalIndexState *local_state);
+extern void tp_release_all_index_locks(void);

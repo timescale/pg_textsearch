@@ -861,6 +861,12 @@ tp_process_document_text(
 
 	if (term_count > 0)
 	{
+		/*
+		 * Acquire exclusive lock for this transaction if not already held.
+		 * During index build, we acquire once and hold for the entire build.
+		 */
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
 		/* Add document terms to posting lists */
 		tp_add_document_terms(
 				index_state, ctid, terms, frequencies, term_count, doc_length);
@@ -1188,6 +1194,16 @@ tp_insert(
 
 	/* Get index state */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
+
+	/*
+	 * Acquire exclusive lock for this transaction if not already held.
+	 * This ensures memory consistency on NUMA systems and serializes
+	 * write transactions with respect to reads.
+	 */
+	if (index_state != NULL)
+	{
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	}
 
 	/* Extract text from first column */
 	document_text = DatumGetTextPP(values[0]);
