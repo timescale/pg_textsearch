@@ -668,14 +668,15 @@ test_long_transaction_reallocation_race() {
 	sleep 0.2
 
 	# Now start 3 concurrent readers that repeatedly query "chicken"
-	# These readers will be accessing the posting list while it's being reallocated
+	# CRITICAL: Use ORDER BY to trigger index scan which accesses posting list entries!
+	# WHERE clause only accesses doc_count, but ORDER BY actually reads entries_dp array
 	local reader_pids=()
 	declare -a reader_pids
 	for reader_id in 1 2 3; do
 		local reader_output="${TMP_DIR:-/tmp}/chicken_reader_${reader_id}.out"
 		{
 			for query_num in $(seq 1 200); do
-				echo "SELECT COUNT(*) FROM chicken_race WHERE content <@> to_bm25query('chicken', 'chicken_idx') < -0.01;"
+				echo "SELECT id FROM chicken_race ORDER BY content <@> to_bm25query('chicken', 'chicken_idx') LIMIT 10;"
 				sleep 0.01  # Small delay between queries
 			done
 		} | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$reader_output" 2>&1 &
