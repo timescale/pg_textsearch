@@ -635,6 +635,105 @@ test_read_during_posting_list_growth() {
 	# Clean up
 	run_sql "DROP TABLE IF EXISTS race_test CASCADE;"
 }
+# Test 9: Multi-reallocation race - long write transaction with concurrent reads
+test_long_transaction_reallocation_race() {
+	log "Test 9: Long write transaction with multiple reallocations during concurrent reads"
+
+	# Create table and index
+	run_sql "CREATE TABLE IF NOT EXISTS chicken_race (id SERIAL PRIMARY KEY, content TEXT);"
+	run_sql "CREATE INDEX chicken_idx ON chicken_race USING bm25(content) WITH (text_config='english');"
+
+	info "Starting long write transaction that will trigger multiple posting list reallocations..."
+
+	# Start a LONG write transaction that inserts 100 documents with "chicken"
+	# This will trigger reallocations at documents: 17 (16->32), 33 (32->64), 65 (64->128)
+	local writer_output="${TMP_DIR:-/tmp}/chicken_writer.out"
+	{
+		echo "BEGIN;"
+		echo "SELECT pg_sleep(0.1);"  # Give readers time to start
+		for i in $(seq 1 100); do
+			echo "INSERT INTO chicken_race (content) VALUES ('document $i about chicken farming');"
+			# Small delay between inserts to increase chance of reader overlap
+			if [ $((i % 5)) -eq 0 ]; then
+				echo "SELECT pg_sleep(0.01);"
+			fi
+		done
+		echo "COMMIT;"
+	} | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$writer_output" 2>&1 &
+	local writer_pid=$!
+
+	info "Writer: Long transaction started (PID: $writer_pid), will insert 100 documents with 'chicken'"
+
+	# Give writer time to start and insert first few documents
+	sleep 0.2
+
+	# Now start 3 concurrent readers that repeatedly query "chicken"
+	# These readers will be accessing the posting list while it's being reallocated
+	local reader_pids=()
+	declare -a reader_pids
+	for reader_id in 1 2 3; do
+		local reader_output="${TMP_DIR:-/tmp}/chicken_reader_${reader_id}.out"
+		{
+			for query_num in $(seq 1 20); do
+				echo "SELECT COUNT(*) FROM chicken_race WHERE content <@> to_bm25query('chicken', 'chicken_idx') < -0.01;"
+				sleep 0.01  # Small delay between queries
+			done
+		} | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$reader_output" 2>&1 &
+		local last_pid=$!; reader_pids+=($last_pid); info "Reader $reader_id: Started (PID: $last_pid), will query 'chicken' 20 times"
+	done
+
+	# Wait for writer to complete
+	local writer_exit_code=0
+	wait $writer_pid 2>/dev/null || writer_exit_code=$?
+
+	if [ $writer_exit_code -ne 0 ]; then
+		error "❌ Writer transaction failed (exit code: $writer_exit_code)"
+		cat "$writer_output"
+		return 1
+	fi
+
+	info "Writer: Completed successfully"
+
+	# Wait for all readers and check for crashes
+	local reader_failures=0
+	local reader_idx=0
+	for reader_pid in "${reader_pids[@]}"; do
+		reader_idx=$((reader_idx + 1))
+		local reader_exit_code=0
+		wait $reader_pid 2>/dev/null || reader_exit_code=$?
+
+		local reader_output="${TMP_DIR:-/tmp}/chicken_reader_${reader_idx}.out"
+		local reader_contents=$(cat "$reader_output" 2>/dev/null || echo "")
+
+		if [ $reader_exit_code -ne 0 ]; then
+			error "❌ CRASH: Reader $reader_idx crashed (exit code: $reader_exit_code)"
+			info "Reader $reader_idx output: $reader_contents"
+			reader_failures=$((reader_failures + 1))
+		elif echo "$reader_contents" | grep -qi "ERROR\|FATAL\|server closed\|terminated"; then
+			error "❌ ERROR: Reader $reader_idx encountered error"
+			info "Reader $reader_idx output: $reader_contents"
+			reader_failures=$((reader_failures + 1))
+		else
+			info "Reader $reader_idx: Completed successfully"
+		fi
+	done
+	if [ $reader_failures -gt 0 ]; then
+		error "❌ Test FAILED: $reader_failures reader(s) crashed or encountered errors"
+		info "This indicates use-after-free when posting list was reallocated during concurrent reads"
+		return 1
+	fi
+
+	# Verify final state
+	local final_count=$(run_sql "SELECT COUNT(*) FROM chicken_race;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
+	if [ "$final_count" -eq 100 ]; then
+		log "✅ Long transaction reallocation race test passed: All readers survived, $final_count documents inserted"
+	else
+		warn "Unexpected document count: $final_count (expected 100)"
+	fi
+
+	# Clean up
+	run_sql "DROP TABLE IF EXISTS chicken_race CASCADE;"
+}
 run_concurrent_tests() {
     log "Starting comprehensive concurrent stress tests for pg_textsearch extension"
 
@@ -646,6 +745,7 @@ run_concurrent_tests() {
     test_high_load_stress
     test_concurrent_index_drop
     test_read_during_posting_list_growth
+    test_long_transaction_reallocation_race
 
     # Final system state check
     log "Final system state verification:"
