@@ -645,13 +645,13 @@ test_long_transaction_reallocation_race() {
 
 	info "Starting long write transaction that will trigger multiple posting list reallocations..."
 
-	# Start a LONG write transaction that inserts 100 documents with "chicken"
-	# This will trigger reallocations at documents: 17 (16->32), 33 (32->64), 65 (64->128)
+	# Start a LONG write transaction that inserts 10000 documents with "chicken"
+	# This will trigger reallocations at documents: 17, 33, 65, 129, 257, 513, 1025, 2049, 4097, 8193
 	local writer_output="${TMP_DIR:-/tmp}/chicken_writer.out"
 	{
 		echo "BEGIN;"
 		echo "SELECT pg_sleep(0.1);"  # Give readers time to start
-		for i in $(seq 1 100); do
+		for i in $(seq 1 10000); do
 			echo "INSERT INTO chicken_race (content) VALUES ('document $i about chicken farming');"
 			# Small delay between inserts to increase chance of reader overlap
 			if [ $((i % 5)) -eq 0 ]; then
@@ -662,7 +662,7 @@ test_long_transaction_reallocation_race() {
 	} | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$writer_output" 2>&1 &
 	local writer_pid=$!
 
-	info "Writer: Long transaction started (PID: $writer_pid), will insert 100 documents with 'chicken'"
+	info "Writer: Long transaction started (PID: $writer_pid), will insert 10000 documents with 'chicken'"
 
 	# Give writer time to start and insert first few documents
 	sleep 0.2
@@ -674,12 +674,12 @@ test_long_transaction_reallocation_race() {
 	for reader_id in 1 2 3; do
 		local reader_output="${TMP_DIR:-/tmp}/chicken_reader_${reader_id}.out"
 		{
-			for query_num in $(seq 1 20); do
+			for query_num in $(seq 1 200); do
 				echo "SELECT COUNT(*) FROM chicken_race WHERE content <@> to_bm25query('chicken', 'chicken_idx') < -0.01;"
 				sleep 0.01  # Small delay between queries
 			done
 		} | psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" > "$reader_output" 2>&1 &
-		local last_pid=$!; reader_pids+=($last_pid); info "Reader $reader_id: Started (PID: $last_pid), will query 'chicken' 20 times"
+		local last_pid=$!; reader_pids+=($last_pid); info "Reader $reader_id: Started (PID: $last_pid), will query 'chicken' 200 times"
 	done
 
 	# Wait for writer to complete
@@ -725,10 +725,10 @@ test_long_transaction_reallocation_race() {
 
 	# Verify final state
 	local final_count=$(run_sql "SELECT COUNT(*) FROM chicken_race;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
-	if [ "$final_count" -eq 100 ]; then
+	if [ "$final_count" -eq 10000 ]; then
 		log "✅ Long transaction reallocation race test passed: All readers survived, $final_count documents inserted"
 	else
-		warn "Unexpected document count: $final_count (expected 100)"
+		warn "Unexpected document count: $final_count (expected 10000)"
 	fi
 
 	# Clean up
