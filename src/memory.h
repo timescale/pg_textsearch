@@ -12,7 +12,6 @@
 
 #include <postgres.h>
 
-#include <port/atomics.h>
 #include <utils/dsa.h>
 
 /*
@@ -21,12 +20,10 @@
  * This structure encapsulates memory usage counters and can be passed
  * to low-level allocation functions without creating circular dependencies.
  * It is embedded inline in TpSharedIndexState.
- *
- * Uses atomic operations for lock-free memory visibility across processes.
  */
 typedef struct TpMemoryUsage
 {
-	pg_atomic_uint64 memory_used; /* Current memory usage in bytes */
+	Size memory_used; /* Current memory usage in bytes */
 } TpMemoryUsage;
 
 /*
@@ -38,9 +35,6 @@ typedef struct TpMemoryUsage
  * Low-level functions take (dsa_area *, TpMemoryUsage *) to avoid
  * circular dependencies with state.h.
  */
-
-/* Initialize memory usage tracking (must be called before first use) */
-extern void tp_init_memory_usage(TpMemoryUsage *memory_usage);
 
 /* Allocate memory with tracking */
 extern dsa_pointer
