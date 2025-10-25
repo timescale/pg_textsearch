@@ -40,6 +40,7 @@
 #include "operator.h"
 #include "posting.h"
 #include "query.h"
+#include "segment.h"
 #include "vector.h"
 
 /* Local helper functions */
@@ -897,6 +898,9 @@ tp_process_document_text(
 		if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 			tp_get_memory_limit())
 		{
+			/* For now, still error since we need the index relation to flush.
+			 * TODO: Call tp_flush_memtable_to_segment when we have the
+			 * relation. */
 			tp_report_memory_limit_exceeded(
 					&index_state->shared->memory_usage);
 		}
@@ -1285,6 +1289,48 @@ tp_insert(
 				elog(WARNING, "Invalid TID in tp_insert, skipping");
 			else
 			{
+				/*
+				 * Check if we need to flush BEFORE adding the document.
+				 * This prevents infinite flush loops where a single document
+				 * exceeds the limit after flush.
+				 */
+				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
+					tp_get_memory_limit())
+				{
+					BlockNumber segment_block;
+					size_t		current_usage = tp_get_memory_usage(
+							 &index_state->shared->memory_usage);
+					size_t limit = tp_get_memory_limit();
+
+					elog(DEBUG1,
+						 "Memory limit reached before insert (usage: %zu, "
+						 "limit: %zu), flushing memtable to segment",
+						 current_usage,
+						 limit);
+
+					/* Flush the memtable to a new segment */
+					segment_block =
+							tp_flush_memtable_to_segment(index_state, index);
+
+					if (segment_block == InvalidBlockNumber)
+					{
+						elog(WARNING, "Failed to flush memtable to segment");
+						tp_report_memory_limit_exceeded(
+								&index_state->shared->memory_usage);
+					}
+					else
+					{
+						size_t new_usage = tp_get_memory_usage(
+								&index_state->shared->memory_usage);
+						elog(DEBUG1,
+							 "Successfully flushed memtable to segment at "
+							 "block %u, memory usage after flush: %zu",
+							 segment_block,
+							 new_usage);
+					}
+				}
+
+				/* Now add the document to the (possibly fresh) memtable */
 				tp_add_document_terms(
 						index_state,
 						ht_ctid,
@@ -1294,16 +1340,33 @@ tp_insert(
 						doc_length);
 
 				/*
-				 * Check memory after document completion.
-				 * TODO: Replace this error with spill when segment support is
-				 * added. For now, error to enforce limits.
-				 * Future: tp_spill_memtable_to_disk
+				 * After adding the document, check if we exceeded the limit.
+				 * We allow single documents to temporarily exceed the limit,
+				 * but log a warning if this happens after a fresh flush.
 				 */
 				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 					tp_get_memory_limit())
 				{
-					tp_report_memory_limit_exceeded(
+					size_t usage_after = tp_get_memory_usage(
 							&index_state->shared->memory_usage);
+					size_t limit = tp_get_memory_limit();
+					elog(DEBUG1,
+						 "Memory usage after insert: %zu (limit: %zu)",
+						 usage_after,
+						 limit);
+
+					/* If we just flushed and still exceed, this single doc is
+					 * huge */
+					if (usage_after > limit * 2)
+					{
+						elog(WARNING,
+							 "Single document uses %zu bytes, which exceeds "
+							 "2x memory limit (%zu bytes). "
+							 "Consider increasing "
+							 "pg_textsearch.index_memory_limit",
+							 usage_after,
+							 limit);
+					}
 				}
 			}
 		}

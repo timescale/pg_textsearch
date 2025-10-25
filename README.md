@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml)
 
-Open-source full-text search for Postgres.
+State-of-the-art full-text search for Postgres.
 Supports:
 
 - BM25 ranking with configurable parameters (k1, b)

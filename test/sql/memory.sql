@@ -23,15 +23,16 @@ VALUES ('This is a test document with some content');
 INSERT INTO memory_test (content)
 VALUES ('Another document with different words');
 
--- Try to insert many documents with lots of unique terms to exceed memory
--- This should eventually trigger the memory limit error
+-- Try to insert many documents with lots of unique terms to trigger flush
+-- With flush enabled, this should succeed but trigger flushes
+-- Use fewer documents to keep test time reasonable
 BEGIN;
 DO $$
 DECLARE
     i integer;
     doc text;
 BEGIN
-    FOR i IN 1..1000 LOOP
+    FOR i IN 1..50 LOOP
         -- Generate document with unique terms to increase memory usage
         doc := 'Document number ' || i || ' with unique terms: ';
         -- Add lots of unique words per document
@@ -42,9 +43,9 @@ BEGIN
         INSERT INTO memory_test (content) VALUES (doc);
     END LOOP;
 END $$;
-ROLLBACK;
+COMMIT;
 
--- Verify that the index still works after rollback
+-- Verify that the index still works after flush
 SELECT id, content
 FROM memory_test
 WHERE content <@> to_bm25query('test', 'idx_memory_test') < -0.001

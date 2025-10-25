@@ -51,5 +51,9 @@ tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle);
 /* Index building operations */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
 
+/* Posting list sorting */
+extern void
+tp_sort_posting_list(TpPostingList *posting_list, TpPostingEntry *entries);
+
 /* Shared memory cleanup */
 extern void tp_cleanup_index_shared_memory(Oid index_oid);

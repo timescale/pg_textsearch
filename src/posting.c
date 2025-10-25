@@ -14,6 +14,7 @@
 #include <lib/dshash.h>
 #include <math.h>
 #include <miscadmin.h>
+#include <stdlib.h>
 #include <storage/itemptr.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
@@ -370,3 +371,34 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 /*
  * Shared memory cleanup - simplified stub
  */
+
+/*
+ * Comparison function for sorting posting entries by CTID.
+ */
+static int
+tp_posting_entry_compare(const void *a, const void *b)
+{
+	const TpPostingEntry *entry_a = (const TpPostingEntry *)a;
+	const TpPostingEntry *entry_b = (const TpPostingEntry *)b;
+
+	return ItemPointerCompare(
+			(ItemPointer)&entry_a->ctid, (ItemPointer)&entry_b->ctid);
+}
+
+/*
+ * Sort a posting list by CTID.
+ */
+void
+tp_sort_posting_list(TpPostingList *posting_list, TpPostingEntry *entries)
+{
+	if (posting_list->is_sorted || posting_list->doc_count <= 1)
+		return;
+
+	/* Sort entries by CTID */
+	qsort(entries,
+		  posting_list->doc_count,
+		  sizeof(TpPostingEntry),
+		  tp_posting_entry_compare);
+
+	posting_list->is_sorted = true;
+}

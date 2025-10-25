@@ -59,6 +59,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->total_len		= 0;
 	metap->root_blkno		= InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
+	metap->first_segment	= InvalidBlockNumber;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
