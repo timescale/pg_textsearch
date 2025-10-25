@@ -1,7 +1,8 @@
 -- Test long string handling including URLs, paths, and long terms
--- Load pg_textsearch extension
+-- Load pg_textsearch extension (suppress output for test isolation)
+SET client_min_messages = WARNING;
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+RESET client_min_messages;
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;

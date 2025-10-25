@@ -59,7 +59,7 @@ IncludeBlocks: Regroup
 # Disable main file priority to treat all quoted includes equally
 IncludeIsMainRegex: '$^'
 IncludeCategories:
-  - Regex: '^<postgres\.h>'
+  - Regex: '^[<"]postgres\.h[>"]'
     Priority: -3
     SortPriority: -3
   - Regex: '^<.*\.h>'
