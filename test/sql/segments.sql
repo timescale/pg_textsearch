@@ -52,21 +52,21 @@ COMMIT;
 SET client_min_messages = NOTICE;
 
 -- Test BM25 scoring still works after flush
-SELECT id, doc <@> to_bm25query('segment_test_idx', 'commonword test') AS score
+SELECT id, doc <@> to_bm25query('commonword test', 'segment_test_idx') AS score
 FROM segment_test_docs
 ORDER BY score
 LIMIT 5;
 
 -- Test scoring with unique terms
-SELECT id, doc <@> to_bm25query('segment_test_idx', 'term100') AS score
+SELECT id, doc <@> to_bm25query('term100', 'segment_test_idx') AS score
 FROM segment_test_docs
 ORDER BY score
 LIMIT 3;
 
 -- Test that we can query across all documents
 SELECT COUNT(DISTINCT id) AS total_docs,
-       MIN(doc <@> to_bm25query('segment_test_idx', 'document')) AS min_score,
-       MAX(doc <@> to_bm25query('segment_test_idx', 'document')) AS max_score
+       MIN(doc <@> to_bm25query('document', 'segment_test_idx')) AS min_score,
+       MAX(doc <@> to_bm25query('document', 'segment_test_idx')) AS max_score
 FROM segment_test_docs;
 
 -- Clean up

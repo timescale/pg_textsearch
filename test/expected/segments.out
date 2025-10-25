@@ -45,25 +45,41 @@ COMMIT;
 -- Reset client messages
 SET client_min_messages = NOTICE;
 -- Test BM25 scoring still works after flush
-SELECT id, doc <@> to_bm25query('segment_test_idx', 'commonword test') AS score
+SELECT id, doc <@> to_bm25query('commonword test', 'segment_test_idx') AS score
 FROM segment_test_docs
 ORDER BY score
 LIMIT 5;
-ERROR:  tpquery index name mismatch
-HINT:  Query specifies index "commonword test" but scan is on index "segment_test_idx"
+ id  |        score        
+-----+---------------------
+ 102 | -2.6659164428710938
+ 104 | -2.6659164428710938
+ 189 | -2.6659164428710938
+ 139 | -2.6659164428710938
+ 140 | -2.6659164428710938
+(5 rows)
+
 -- Test scoring with unique terms
-SELECT id, doc <@> to_bm25query('segment_test_idx', 'term100') AS score
+SELECT id, doc <@> to_bm25query('term100', 'segment_test_idx') AS score
 FROM segment_test_docs
 ORDER BY score
 LIMIT 3;
-ERROR:  tpquery index name mismatch
-HINT:  Query specifies index "term100" but scan is on index "segment_test_idx"
+ id  |       score       
+-----+-------------------
+ 100 | -5.29664945602417
+   1 |                 0
+   2 |                 0
+(3 rows)
+
 -- Test that we can query across all documents
 SELECT COUNT(DISTINCT id) AS total_docs,
-       MIN(doc <@> to_bm25query('segment_test_idx', 'document')) AS min_score,
-       MAX(doc <@> to_bm25query('segment_test_idx', 'document')) AS max_score
+       MIN(doc <@> to_bm25query('document', 'segment_test_idx')) AS min_score,
+       MAX(doc <@> to_bm25query('document', 'segment_test_idx')) AS max_score
 FROM segment_test_docs;
-ERROR:  index "document" not found
+ total_docs |      min_score      |      max_score      
+------------+---------------------+---------------------
+        300 | -1.3329582214355469 | -1.2516251802444458
+(1 row)
+
 -- Clean up
 DROP TABLE segment_test_docs;
 RESET pg_textsearch.index_memory_limit;

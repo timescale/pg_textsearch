@@ -8,6 +8,8 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
+
 #include <access/hash.h>
 #include <lib/qunique.h>
 #include <storage/bufmgr.h>
@@ -16,7 +18,6 @@
 #include <utils/timestamp.h>
 
 #include "memtable.h"
-#include "postgres.h"
 #include "posting.h"
 #include "segment.h"
 #include "state.h"
@@ -111,7 +112,6 @@ tp_segment_estimate_size(TpLocalIndexState *state)
 	dshash_seq_status  status;
 	TpStringHashEntry *entry;
 	uint32			   total_size = 0;
-	uint32			   term_count = 0;
 
 	memtable = get_memtable(state);
 
@@ -126,7 +126,6 @@ tp_segment_estimate_size(TpLocalIndexState *state)
 	dshash_seq_init(&status, string_table, false);
 	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
 	{
-		const char *term = tp_get_key_str(state->dsa, &entry->key);
 		/* Get posting list directly from the entry we already have */
 		TpPostingList *posting = NULL;
 		if (entry->key.posting_list != InvalidDsaPointer)
@@ -137,10 +136,9 @@ tp_segment_estimate_size(TpLocalIndexState *state)
 
 		if (posting && posting->doc_count > 0)
 		{
-			term_count++;
 			/* Dictionary entry + string + posting list */
 			total_size += sizeof(TpDictEntry);
-			total_size += strlen(term) + 1;
+			total_size += strlen(tp_get_key_str(state->dsa, &entry->key)) + 1;
 			total_size += posting->doc_count * sizeof(TpSegmentPosting);
 		}
 	}
@@ -168,6 +166,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	TpDocLengthEntry  *doc_entry;
 	TermEntry		  *terms;
 	TpDocLength		  *doc_lengths;
+	TpDictEntry		  *dict_entries;
 	BlockNumber		   root_block;
 	BlockNumber		  *page_map;
 	Buffer			   header_buf;
@@ -177,8 +176,12 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	uint32			   logical_offset;
 	uint32			   term_count = 0;
 	uint32			   doc_count  = 0;
+	uint32			   dict_size;
+	uint32			  *posting_offsets;
+	uint32			  *string_offsets;
 	int				   page_count = 0;
 	int				   max_pages;
+	BlockNumber		   prev_first_segment;
 	MemoryContext	   flush_context;
 	MemoryContext	   old_context;
 
@@ -235,7 +238,6 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	while ((string_entry = (TpStringHashEntry *)dshash_seq_next(
 					&seq_status)) != NULL)
 	{
-		const char *term = tp_get_key_str(state->dsa, &string_entry->key);
 		/* Get posting list directly from the entry we already have */
 		TpPostingList *posting = NULL;
 		if (string_entry->key.posting_list != InvalidDsaPointer)
@@ -268,7 +270,6 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	while ((string_entry = (TpStringHashEntry *)dshash_seq_next(
 					&seq_status)) != NULL)
 	{
-		const char *term = tp_get_key_str(state->dsa, &string_entry->key);
 		/* Get posting list directly from the entry we already have */
 		TpPostingList *posting = NULL;
 		if (string_entry->key.posting_list != InvalidDsaPointer)
@@ -279,6 +280,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 		if (posting && posting->doc_count > 0)
 		{
+			const char *term = tp_get_key_str(state->dsa, &string_entry->key);
 			/* Copy term string to local memory */
 			char *term_copy = pstrdup(term);
 
@@ -319,7 +321,6 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	dshash_seq_term(&seq_status);
 
 	/* Get current first segment for linking */
-	BlockNumber prev_first_segment;
 	{
 		Buffer			metabuf_temp  = ReadBuffer(index, TP_METAPAGE_BLKNO);
 		Page			metapage_temp = BufferGetPage(metabuf_temp);
@@ -357,12 +358,12 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	logical_offset = sizeof(TpSegmentHeader) + max_pages * sizeof(BlockNumber);
 
 	/* Write dictionary */
-	header->dict_offset		  = logical_offset;
-	uint32		 dict_size	  = term_count * sizeof(TpDictEntry);
-	TpDictEntry *dict_entries = palloc(dict_size);
+	header->dict_offset = logical_offset;
+	dict_size			= term_count * sizeof(TpDictEntry);
+	dict_entries		= palloc(dict_size);
 
 	/* Build dictionary with placeholder offsets */
-	for (int i = 0; i < term_count; i++)
+	for (uint32 i = 0; i < term_count; i++)
 	{
 		dict_entries[i].term_hash	   = terms[i].term_hash;
 		dict_entries[i].string_offset  = 0; /* Will update */
@@ -383,9 +384,9 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 	/* Write posting lists and track offsets */
 	header->postings_offset = logical_offset;
-	uint32 *posting_offsets = palloc(term_count * sizeof(uint32));
+	posting_offsets			= palloc(term_count * sizeof(uint32));
 
-	for (int i = 0; i < term_count; i++)
+	for (uint32 i = 0; i < term_count; i++)
 	{
 		TpPostingList	 *posting = terms[i].posting_list;
 		TpPostingEntry	 *entries;
@@ -434,9 +435,9 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 	/* Write string pool and track offsets */
 	header->strings_offset = logical_offset;
-	uint32 *string_offsets = palloc(term_count * sizeof(uint32));
+	string_offsets		   = palloc(term_count * sizeof(uint32));
 
-	for (int i = 0; i < term_count; i++)
+	for (uint32 i = 0; i < term_count; i++)
 	{
 		uint32 str_len = terms[i].term_len + 1; /* Include null terminator */
 		string_offsets[i] = logical_offset;
@@ -451,7 +452,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	header->strings_size = logical_offset - header->strings_offset;
 
 	/* Update dictionary with actual offsets */
-	for (int i = 0; i < term_count; i++)
+	for (uint32 i = 0; i < term_count; i++)
 	{
 		dict_entries[i].string_offset  = string_offsets[i];
 		dict_entries[i].posting_offset = posting_offsets[i];

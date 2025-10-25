@@ -8,12 +8,13 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
+
 #include <access/hash.h>
 #include <storage/bufmgr.h>
 #include <utils/memutils.h>
 
 #include "memtable.h"
-#include "postgres.h"
 #include "posting.h"
 #include "segment.h"
 #include "state.h"
