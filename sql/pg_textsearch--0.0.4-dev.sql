@@ -154,6 +154,11 @@ CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
 
+-- Testing function to force memtable flush to disk segment
+CREATE FUNCTION tp_spill_memtable(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_spill_memtable'
+    LANGUAGE C STRICT VOLATILE;
+
 -- Display warning about prerelease status
 DO $$
 BEGIN

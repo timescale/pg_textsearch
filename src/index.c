@@ -2287,3 +2287,43 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
+
+/*
+ * tp_spill_memtable - Force memtable flush to disk segment for testing
+ */
+PG_FUNCTION_INFO_V1(tp_spill_memtable);
+
+Datum
+tp_spill_memtable(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	char *index_name;
+
+	/* Convert text to C string */
+	index_name = text_to_cstring(index_name_text);
+
+	/*
+	 * TODO: This function is currently not functional due to a deadlock
+	 * issue when accessing shared memory structures from a standalone SQL
+	 * function context. The hang occurs in dshash_seq_init() when trying to
+	 * iterate over the string table.
+	 *
+	 * For now, spilling occurs automatically when memory limits are reached
+	 * during INSERT operations. Explicit manual spilling will be implemented
+	 * once the locking issues are resolved.
+	 *
+	 * Investigating requires attaching a debugger (gdb/lldb) to the backend
+	 * process to trace the exact lock acquisition sequence.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("tp_spill_memtable() is not yet implemented"),
+			 errdetail(
+					 "Index \"%s\": Manual memtable spilling is currently "
+					 "disabled due to unresolved locking issues.",
+					 index_name),
+			 errhint("Memtable spilling occurs automatically during INSERT "
+					 "operations when memory limits are reached.")));
+
+	PG_RETURN_NULL(); /* unreachable */
+}
