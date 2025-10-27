@@ -7,21 +7,21 @@ DATA = sql/pg_textsearch--0.0.4-dev.sql \
 # Source files
 # Full build - debugging initialization crash
 OBJS = \
-	src/mod.o \
+	src/flush.o \
+	src/index.o \
+	src/limit.o \
 	src/memtable.o \
 	src/memory.o \
 	src/metapage.o \
-	src/posting.o \
-	src/index.o \
-	src/vector.o \
-	src/query.o \
-	src/stringtable.o \
+	src/mod.o \
 	src/operator.o \
-	src/limit.o \
+	src/posting.o \
+	src/query.o \
 	src/registry.o \
-	src/state.o \
 	src/segment.o \
-	src/flush.o
+	src/state.o \
+	src/stringtable.o \
+	src/vector.o
 
 # Shared library target
 MODULE_big = pg_textsearch
