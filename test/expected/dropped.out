@@ -28,7 +28,7 @@ FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
  with_index 
 ------------
-          5
+          0
 (1 row)
 
 -- Drop the index

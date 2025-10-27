@@ -504,7 +504,11 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
 
-	/* Update metapage to link this segment */
+	/*
+	 * Update metapage to link this segment and persist corpus statistics.
+	 * Before we clear the memtable, we need to save the corpus statistics
+	 * to the metapage so they persist across flushes.
+	 */
 	{
 		Buffer metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 		Page   metapage;
@@ -514,6 +518,15 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 		/* Link new segment at head of chain */
 		metap->first_segment = root_block;
+
+		/*
+		 * Update corpus statistics in metapage.
+		 * These stats accumulate across all segments and memtable.
+		 * We ADD the current memtable stats to the existing metapage stats
+		 * to preserve counts from previous flushes.
+		 */
+		metap->total_docs += state->shared->total_docs;
+		metap->total_len += state->shared->total_len;
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);

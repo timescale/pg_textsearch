@@ -271,3 +271,51 @@ tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 	/* Not found */
 	return NULL;
 }
+
+/*
+ * tp_segment_get_document_length - Get document length from segment
+ *
+ * Returns the length of the document with the given ctid, or -1 if not found.
+ * Performs a linear search through the document lengths section.
+ */
+int32
+tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid)
+{
+	TpSegmentHeader *header;
+	TpDocLength		*doclens;
+	uint32			 num_docs;
+	uint32			 i;
+
+	if (!reader || !reader->header)
+		return -1;
+
+	header = reader->header;
+
+	/* Check if segment has document lengths */
+	if (header->doclens_size == 0)
+		return -1;
+
+	/* Calculate number of document length entries */
+	num_docs = header->doclens_size / sizeof(TpDocLength);
+
+	/* Allocate buffer for document lengths */
+	doclens = (TpDocLength *)palloc(header->doclens_size);
+
+	/* Read document lengths section */
+	tp_segment_read(
+			reader, header->doclens_offset, doclens, header->doclens_size);
+
+	/* Linear search for matching ctid */
+	for (i = 0; i < num_docs; i++)
+	{
+		if (ItemPointerEquals(&doclens[i].ctid, ctid))
+		{
+			int32 length = doclens[i].length;
+			pfree(doclens);
+			return length;
+		}
+	}
+
+	pfree(doclens);
+	return -1; /* Not found */
+}

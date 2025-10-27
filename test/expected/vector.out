@@ -95,7 +95,7 @@ FROM test_docs
 ORDER BY score;
            content           |  score  
 -----------------------------+---------
- hello world example         | -2.2549
+ hello world example         | -3.7885
  the quick brown fox         |  0.0000
  jumped over the lazy dog    |  0.0000
  sphinx of black quartz      |  0.0000
@@ -112,7 +112,7 @@ ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
          (content <@> to_bm25query('search', 'docs_vector_idx'))::float8;
            content           | postgresql_score | search_score 
 -----------------------------+------------------+--------------
- postgresql full text search |          -0.9967 |      -0.9967
+ postgresql full text search |          -1.6746 |      -1.6746
  the quick brown fox         |           0.0000 |       0.0000
  jumped over the lazy dog    |           0.0000 |       0.0000
  sphinx of black quartz      |           0.0000 |       0.0000
@@ -169,12 +169,12 @@ SELECT
 FROM test_docs
 ORDER BY content <@> to_bm25query('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.2549
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-3.7885
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |         content          | relevance 
 ----+--------------------------+-----------
-  1 | the quick brown fox      |   -2.2549
+  1 | the quick brown fox      |   -3.7885
   2 | jumped over the lazy dog |    0.0000
   3 | sphinx of black quartz   |    0.0000
 (3 rows)
@@ -222,13 +222,13 @@ SELECT o.id,
 FROM order_by_scores o
 JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0986
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.9967
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.8458
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.6746
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
-  1 |      -1.098612 |        -1.098612 | ✓ SCORES MATCH
-  2 |      -0.996679 |        -0.996679 | ✓ SCORES MATCH
+  1 |      -1.845827 |        -1.845827 | ✓ SCORES MATCH
+  2 |      -1.674564 |        -1.674564 | ✓ SCORES MATCH
   3 |       0.000000 |         0.000000 | ✓ SCORES MATCH
 (3 rows)
 

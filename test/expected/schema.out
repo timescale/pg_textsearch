@@ -26,19 +26,19 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
 ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.6547
 ERROR:  index "articles_idx" not found
 -- Test 2: Schema-qualified index name works correctly
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'docs.articles_idx'))::numeric, 4) as score
 FROM docs.articles
 ORDER BY content <@> to_bm25query('hello', 'docs.articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.6547
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5592
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
+  1 | hello world         | -0.6547
+  3 | hello cruel goodbye | -0.5592
   2 | goodbye cruel world |  0.0000
 (3 rows)
 
@@ -47,13 +47,13 @@ SET search_path = docs, public;
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM articles
 ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.6547
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5592
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
+  1 | hello world         | -0.6547
+  3 | hello cruel goodbye | -0.5592
   2 | goodbye cruel world |  0.0000
 (3 rows)
 
@@ -76,12 +76,12 @@ NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles
 ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.9228
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  1 | hello world         | -0.9228
+  2 | goodbye cruel world |  0.0000
 (2 rows)
 
 -- Test 5: INSERT operations with schema-qualified tables and implicit index

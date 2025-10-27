@@ -474,31 +474,61 @@ tp_score_documents(
 		return 0; /* Never reached */
 	}
 
-	total_docs	= local_state->shared->total_docs;
-	avg_doc_len = total_docs > 0 ? (float4)(local_state->shared->total_len /
+	/*
+	 * Get corpus statistics from metapage.
+	 * After a flush, shared memory stats are reset to 0, but metapage
+	 * preserves the total across all segments. We combine metapage stats
+	 * (segments) with shared memory stats (current memtable) for accurate
+	 * BM25 scoring.
+	 */
+	metap = tp_get_metapage(index_relation);
+	if (!metap)
+	{
+		elog(ERROR, "Cannot get metapage for scoring");
+		return 0;
+	}
+
+	/*
+	 * Total docs and total length = metapage stats (flushed segments) +
+	 * current memtable stats
+	 */
+	total_docs	= (int32)(metap->total_docs + local_state->shared->total_docs);
+	avg_doc_len = total_docs > 0 ? (float4)((metap->total_len +
+											 local_state->shared->total_len) /
 											(double)total_docs)
 								 : 0.0f;
 
 	if (total_docs <= 0)
+	{
+		pfree(metap);
 		return 0;
+	}
 
 	/* If avg_doc_len is 0, all documents have zero length and
 	 * would get zero BM25 scores */
 	if (avg_doc_len <= 0.0f)
+	{
+		pfree(metap);
 		return 0;
+	}
 
 	/* Get string hash table */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+	{
+		pfree(metap);
 		return 0;
+	}
 
 	string_table = tp_string_table_attach(
 			local_state->dsa, memtable->string_hash_handle);
 	if (!string_table)
+	{
+		pfree(metap);
 		return 0;
+	}
 
-	/* Get metapage to access segments */
-	metap		  = tp_get_metapage(index_relation);
-	first_segment = metap ? metap->first_segment : InvalidBlockNumber;
+	/* Get first segment block number from metapage */
+	first_segment = metap->first_segment;
 
 	/* Create hash table for accumulating document scores */
 	doc_scores_hash = tp_create_doc_scores_hash(max_results, total_docs);
@@ -559,8 +589,8 @@ tp_score_documents(
 				bool				found;
 
 				/* Look up document length */
-				doc_len = (float4)
-						tp_get_document_length(local_state, &entry->ctid);
+				doc_len = (float4)tp_get_document_length(
+						local_state, index_relation, &entry->ctid);
 				if (doc_len <= 0.0f)
 				{
 					elog(ERROR,
@@ -640,8 +670,8 @@ tp_score_documents(
 					bool				found;
 
 					/* Look up document length */
-					doc_len = (float4)
-							tp_get_document_length(local_state, &entry->ctid);
+					doc_len = (float4)tp_get_document_length(
+							local_state, index_relation, &entry->ctid);
 					if (doc_len <= 0.0f)
 					{
 						elog(ERROR,

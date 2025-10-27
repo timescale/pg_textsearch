@@ -44,9 +44,9 @@ FROM concurrent_test_docs
 ORDER BY score;
  id |                content                 |  score  
 ----+----------------------------------------+---------
-  2 | concurrent programming patterns        | -1.2021
-  5 | database indexing strategies           | -0.3682
-  1 | database query optimization techniques | -0.3294
+  2 | concurrent programming patterns        | -2.0198
+  5 | database indexing strategies           | -1.3391
+  1 | database query optimization techniques | -1.1980
   3 | shared memory management systems       |  0.0000
   4 | lock-free data structures              |  0.0000
 (5 rows)
@@ -66,11 +66,11 @@ ORDER BY score
 LIMIT 5;
  id |                           content                           |  score  
 ----+-------------------------------------------------------------+---------
-  5 | database indexing strategies                                | -0.4212
-  1 | database query optimization techniques                      | -0.3811
-  8 | database concurrent processing improves performance         | -0.3479
-  6 | database systems require concurrent access control          | -0.3201
-  7 | concurrent database operations need careful synchronization | -0.3201
+  8 | database concurrent processing improves performance         | -1.1007
+  6 | database systems require concurrent access control          | -1.0098
+  7 | concurrent database operations need careful synchronization | -1.0098
+  2 | concurrent programming patterns                             | -0.8482
+  5 | database indexing strategies                                | -0.4941
 (5 rows)
 
 -- Test 3: Multiple index creation (simulates concurrent index builds)
@@ -138,14 +138,14 @@ ORDER BY score
 LIMIT 8;
  id |                    content_preview                    |  score  
 ----+-------------------------------------------------------+---------
-  8 | database concurrent processing improves performanc... | -1.8318
-  7 | concurrent database operations need careful synchr... | -1.7231
-  6 | database systems require concurrent access control... | -1.7231
- 10 | test document number 2 contains database and concu... | -1.5404
- 11 | test document number 3 contains database and concu... | -1.5404
-  9 | test document number 1 contains database and concu... | -1.5404
- 12 | test document number 4 contains database and concu... | -1.5404
- 13 | test document number 5 contains database and concu... | -1.5404
+  8 | database concurrent processing improves performanc... | -1.8085
+  7 | concurrent database operations need careful synchr... | -1.6985
+  6 | database systems require concurrent access control... | -1.6985
+ 10 | test document number 2 contains database and concu... | -1.5142
+ 11 | test document number 3 contains database and concu... | -1.5142
+  9 | test document number 1 contains database and concu... | -1.5142
+ 12 | test document number 4 contains database and concu... | -1.5142
+ 13 | test document number 5 contains database and concu... | -1.5142
 (8 rows)
 
 -- Test 5: Mixed operations (insert while searching)
@@ -162,9 +162,9 @@ BEGIN;
     LIMIT 3;
  id |                content                 |  score  
 ----+----------------------------------------+---------
- 59 | new concurrent database research paper | -5.1629
-  5 | database indexing strategies           | -1.0596
-  1 | database query optimization techniques | -0.9880
+ 59 | new concurrent database research paper | -5.1922
+  5 | database indexing strategies           | -1.0505
+  1 | database query optimization techniques | -0.9775
 (3 rows)
 
 COMMIT;
@@ -175,9 +175,9 @@ ORDER BY score
 LIMIT 3;
  id |                content                 |  score  
 ----+----------------------------------------+---------
- 59 | new concurrent database research paper | -5.1629
-  5 | database indexing strategies           | -1.0596
-  1 | database query optimization techniques | -0.9880
+ 59 | new concurrent database research paper | -5.1922
+  5 | database indexing strategies           | -1.0505
+  1 | database query optimization techniques | -0.9775
 (3 rows)
 
 -- Test 6: Index integrity under updates
@@ -193,63 +193,63 @@ FROM concurrent_test_docs
 ORDER BY score;
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
-  2 | updated database system with enhanced concurrent features      | -4.3169
-  1 | updated database system with enhanced concurrent features      | -4.3169
-  5 | database indexing strategies                                   | -1.0686
-  8 | database concurrent processing improves performance            | -0.9327
- 59 | new concurrent database research paper                         | -0.9327
-  6 | database systems require concurrent access control             | -0.8770
-  7 | concurrent database operations need careful synchronization    | -0.8770
- 15 | test document number 7 contains database and concurrent terms  | -0.7833
- 16 | test document number 8 contains database and concurrent terms  | -0.7833
- 17 | test document number 9 contains database and concurrent terms  | -0.7833
- 18 | test document number 10 contains database and concurrent terms | -0.7833
- 19 | test document number 11 contains database and concurrent terms | -0.7833
- 20 | test document number 12 contains database and concurrent terms | -0.7833
- 21 | test document number 13 contains database and concurrent terms | -0.7833
- 22 | test document number 14 contains database and concurrent terms | -0.7833
- 23 | test document number 15 contains database and concurrent terms | -0.7833
- 24 | test document number 16 contains database and concurrent terms | -0.7833
- 25 | test document number 17 contains database and concurrent terms | -0.7833
- 26 | test document number 18 contains database and concurrent terms | -0.7833
- 27 | test document number 19 contains database and concurrent terms | -0.7833
- 28 | test document number 20 contains database and concurrent terms | -0.7833
- 29 | test document number 21 contains database and concurrent terms | -0.7833
- 30 | test document number 22 contains database and concurrent terms | -0.7833
- 31 | test document number 23 contains database and concurrent terms | -0.7833
- 32 | test document number 24 contains database and concurrent terms | -0.7833
- 33 | test document number 25 contains database and concurrent terms | -0.7833
- 34 | test document number 26 contains database and concurrent terms | -0.7833
- 35 | test document number 27 contains database and concurrent terms | -0.7833
- 36 | test document number 28 contains database and concurrent terms | -0.7833
- 37 | test document number 29 contains database and concurrent terms | -0.7833
- 38 | test document number 30 contains database and concurrent terms | -0.7833
- 39 | test document number 31 contains database and concurrent terms | -0.7833
- 40 | test document number 32 contains database and concurrent terms | -0.7833
- 41 | test document number 33 contains database and concurrent terms | -0.7833
- 42 | test document number 34 contains database and concurrent terms | -0.7833
- 43 | test document number 35 contains database and concurrent terms | -0.7833
- 44 | test document number 36 contains database and concurrent terms | -0.7833
- 45 | test document number 37 contains database and concurrent terms | -0.7833
- 46 | test document number 38 contains database and concurrent terms | -0.7833
- 47 | test document number 39 contains database and concurrent terms | -0.7833
- 48 | test document number 40 contains database and concurrent terms | -0.7833
- 49 | test document number 41 contains database and concurrent terms | -0.7833
- 50 | test document number 42 contains database and concurrent terms | -0.7833
- 51 | test document number 43 contains database and concurrent terms | -0.7833
- 52 | test document number 44 contains database and concurrent terms | -0.7833
- 53 | test document number 45 contains database and concurrent terms | -0.7833
- 55 | test document number 47 contains database and concurrent terms | -0.7833
- 56 | test document number 48 contains database and concurrent terms | -0.7833
- 57 | test document number 49 contains database and concurrent terms | -0.7833
- 58 | test document number 50 contains database and concurrent terms | -0.7833
- 54 | test document number 46 contains database and concurrent terms | -0.7833
-  9 | test document number 1 contains database and concurrent terms  | -0.7833
- 10 | test document number 2 contains database and concurrent terms  | -0.7833
- 11 | test document number 3 contains database and concurrent terms  | -0.7833
- 12 | test document number 4 contains database and concurrent terms  | -0.7833
- 13 | test document number 5 contains database and concurrent terms  | -0.7833
- 14 | test document number 6 contains database and concurrent terms  | -0.7833
+  2 | updated database system with enhanced concurrent features      | -4.3446
+  1 | updated database system with enhanced concurrent features      | -4.3446
+  5 | database indexing strategies                                   | -1.0597
+  8 | database concurrent processing improves performance            | -0.9215
+ 59 | new concurrent database research paper                         | -0.9215
+  6 | database systems require concurrent access control             | -0.8651
+  7 | concurrent database operations need careful synchronization    | -0.8651
+ 15 | test document number 7 contains database and concurrent terms  | -0.7707
+ 16 | test document number 8 contains database and concurrent terms  | -0.7707
+ 17 | test document number 9 contains database and concurrent terms  | -0.7707
+ 18 | test document number 10 contains database and concurrent terms | -0.7707
+ 19 | test document number 11 contains database and concurrent terms | -0.7707
+ 20 | test document number 12 contains database and concurrent terms | -0.7707
+ 21 | test document number 13 contains database and concurrent terms | -0.7707
+ 22 | test document number 14 contains database and concurrent terms | -0.7707
+ 23 | test document number 15 contains database and concurrent terms | -0.7707
+ 24 | test document number 16 contains database and concurrent terms | -0.7707
+ 25 | test document number 17 contains database and concurrent terms | -0.7707
+ 26 | test document number 18 contains database and concurrent terms | -0.7707
+ 27 | test document number 19 contains database and concurrent terms | -0.7707
+ 28 | test document number 20 contains database and concurrent terms | -0.7707
+ 29 | test document number 21 contains database and concurrent terms | -0.7707
+ 30 | test document number 22 contains database and concurrent terms | -0.7707
+ 31 | test document number 23 contains database and concurrent terms | -0.7707
+ 32 | test document number 24 contains database and concurrent terms | -0.7707
+ 33 | test document number 25 contains database and concurrent terms | -0.7707
+ 34 | test document number 26 contains database and concurrent terms | -0.7707
+ 35 | test document number 27 contains database and concurrent terms | -0.7707
+ 36 | test document number 28 contains database and concurrent terms | -0.7707
+ 37 | test document number 29 contains database and concurrent terms | -0.7707
+ 38 | test document number 30 contains database and concurrent terms | -0.7707
+ 39 | test document number 31 contains database and concurrent terms | -0.7707
+ 40 | test document number 32 contains database and concurrent terms | -0.7707
+ 41 | test document number 33 contains database and concurrent terms | -0.7707
+ 42 | test document number 34 contains database and concurrent terms | -0.7707
+ 43 | test document number 35 contains database and concurrent terms | -0.7707
+ 44 | test document number 36 contains database and concurrent terms | -0.7707
+ 45 | test document number 37 contains database and concurrent terms | -0.7707
+ 46 | test document number 38 contains database and concurrent terms | -0.7707
+ 47 | test document number 39 contains database and concurrent terms | -0.7707
+ 48 | test document number 40 contains database and concurrent terms | -0.7707
+ 49 | test document number 41 contains database and concurrent terms | -0.7707
+ 50 | test document number 42 contains database and concurrent terms | -0.7707
+ 51 | test document number 43 contains database and concurrent terms | -0.7707
+ 52 | test document number 44 contains database and concurrent terms | -0.7707
+ 53 | test document number 45 contains database and concurrent terms | -0.7707
+ 55 | test document number 47 contains database and concurrent terms | -0.7707
+ 56 | test document number 48 contains database and concurrent terms | -0.7707
+ 57 | test document number 49 contains database and concurrent terms | -0.7707
+ 58 | test document number 50 contains database and concurrent terms | -0.7707
+ 54 | test document number 46 contains database and concurrent terms | -0.7707
+  9 | test document number 1 contains database and concurrent terms  | -0.7707
+ 10 | test document number 2 contains database and concurrent terms  | -0.7707
+ 11 | test document number 3 contains database and concurrent terms  | -0.7707
+ 12 | test document number 4 contains database and concurrent terms  | -0.7707
+ 13 | test document number 5 contains database and concurrent terms  | -0.7707
+ 14 | test document number 6 contains database and concurrent terms  | -0.7707
   3 | shared memory management systems                               |  0.0000
   4 | lock-free data structures                                      |  0.0000
 (59 rows)
@@ -290,49 +290,49 @@ FROM concurrent_test_docs
 ORDER BY score, id;
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
- 60 | exact same terms for testing consistency                       | -4.5188
- 61 | exact same terms for testing consistency                       | -4.5188
- 62 | testing consistency with exact same terms                      | -4.5188
-  9 | test document number 1 contains database and concurrent terms  | -0.7891
- 11 | test document number 3 contains database and concurrent terms  | -0.7891
- 12 | test document number 4 contains database and concurrent terms  | -0.7891
- 13 | test document number 5 contains database and concurrent terms  | -0.7891
- 14 | test document number 6 contains database and concurrent terms  | -0.7891
- 16 | test document number 8 contains database and concurrent terms  | -0.7891
- 17 | test document number 9 contains database and concurrent terms  | -0.7891
- 18 | test document number 10 contains database and concurrent terms | -0.7891
- 19 | test document number 11 contains database and concurrent terms | -0.7891
- 21 | test document number 13 contains database and concurrent terms | -0.7891
- 22 | test document number 14 contains database and concurrent terms | -0.7891
- 23 | test document number 15 contains database and concurrent terms | -0.7891
- 24 | test document number 16 contains database and concurrent terms | -0.7891
- 26 | test document number 18 contains database and concurrent terms | -0.7891
- 27 | test document number 19 contains database and concurrent terms | -0.7891
- 28 | test document number 20 contains database and concurrent terms | -0.7891
- 29 | test document number 21 contains database and concurrent terms | -0.7891
- 31 | test document number 23 contains database and concurrent terms | -0.7891
- 32 | test document number 24 contains database and concurrent terms | -0.7891
- 33 | test document number 25 contains database and concurrent terms | -0.7891
- 34 | test document number 26 contains database and concurrent terms | -0.7891
- 36 | test document number 28 contains database and concurrent terms | -0.7891
- 37 | test document number 29 contains database and concurrent terms | -0.7891
- 38 | test document number 30 contains database and concurrent terms | -0.7891
- 39 | test document number 31 contains database and concurrent terms | -0.7891
- 41 | test document number 33 contains database and concurrent terms | -0.7891
- 42 | test document number 34 contains database and concurrent terms | -0.7891
- 43 | test document number 35 contains database and concurrent terms | -0.7891
- 44 | test document number 36 contains database and concurrent terms | -0.7891
- 46 | test document number 38 contains database and concurrent terms | -0.7891
- 47 | test document number 39 contains database and concurrent terms | -0.7891
- 48 | test document number 40 contains database and concurrent terms | -0.7891
- 49 | test document number 41 contains database and concurrent terms | -0.7891
- 51 | test document number 43 contains database and concurrent terms | -0.7891
- 52 | test document number 44 contains database and concurrent terms | -0.7891
- 53 | test document number 45 contains database and concurrent terms | -0.7891
- 54 | test document number 46 contains database and concurrent terms | -0.7891
- 56 | test document number 48 contains database and concurrent terms | -0.7891
- 57 | test document number 49 contains database and concurrent terms | -0.7891
- 58 | test document number 50 contains database and concurrent terms | -0.7891
+ 60 | exact same terms for testing consistency                       | -4.5695
+ 61 | exact same terms for testing consistency                       | -4.5695
+ 62 | testing consistency with exact same terms                      | -4.5695
+  9 | test document number 1 contains database and concurrent terms  | -0.7770
+ 11 | test document number 3 contains database and concurrent terms  | -0.7770
+ 12 | test document number 4 contains database and concurrent terms  | -0.7770
+ 13 | test document number 5 contains database and concurrent terms  | -0.7770
+ 14 | test document number 6 contains database and concurrent terms  | -0.7770
+ 16 | test document number 8 contains database and concurrent terms  | -0.7770
+ 17 | test document number 9 contains database and concurrent terms  | -0.7770
+ 18 | test document number 10 contains database and concurrent terms | -0.7770
+ 19 | test document number 11 contains database and concurrent terms | -0.7770
+ 21 | test document number 13 contains database and concurrent terms | -0.7770
+ 22 | test document number 14 contains database and concurrent terms | -0.7770
+ 23 | test document number 15 contains database and concurrent terms | -0.7770
+ 24 | test document number 16 contains database and concurrent terms | -0.7770
+ 26 | test document number 18 contains database and concurrent terms | -0.7770
+ 27 | test document number 19 contains database and concurrent terms | -0.7770
+ 28 | test document number 20 contains database and concurrent terms | -0.7770
+ 29 | test document number 21 contains database and concurrent terms | -0.7770
+ 31 | test document number 23 contains database and concurrent terms | -0.7770
+ 32 | test document number 24 contains database and concurrent terms | -0.7770
+ 33 | test document number 25 contains database and concurrent terms | -0.7770
+ 34 | test document number 26 contains database and concurrent terms | -0.7770
+ 36 | test document number 28 contains database and concurrent terms | -0.7770
+ 37 | test document number 29 contains database and concurrent terms | -0.7770
+ 38 | test document number 30 contains database and concurrent terms | -0.7770
+ 39 | test document number 31 contains database and concurrent terms | -0.7770
+ 41 | test document number 33 contains database and concurrent terms | -0.7770
+ 42 | test document number 34 contains database and concurrent terms | -0.7770
+ 43 | test document number 35 contains database and concurrent terms | -0.7770
+ 44 | test document number 36 contains database and concurrent terms | -0.7770
+ 46 | test document number 38 contains database and concurrent terms | -0.7770
+ 47 | test document number 39 contains database and concurrent terms | -0.7770
+ 48 | test document number 40 contains database and concurrent terms | -0.7770
+ 49 | test document number 41 contains database and concurrent terms | -0.7770
+ 51 | test document number 43 contains database and concurrent terms | -0.7770
+ 52 | test document number 44 contains database and concurrent terms | -0.7770
+ 53 | test document number 45 contains database and concurrent terms | -0.7770
+ 54 | test document number 46 contains database and concurrent terms | -0.7770
+ 56 | test document number 48 contains database and concurrent terms | -0.7770
+ 57 | test document number 49 contains database and concurrent terms | -0.7770
+ 58 | test document number 50 contains database and concurrent terms | -0.7770
   1 | updated database system with enhanced concurrent features      |  0.0000
   2 | updated database system with enhanced concurrent features      |  0.0000
   3 | shared memory management systems                               |  0.0000
@@ -380,10 +380,10 @@ FROM multi_idx_test
 ORDER BY english_score;
  id |            content             | english_score 
 ----+--------------------------------+---------------
-  1 | hello world from the test      |       -0.3943
-  5 | hello database world           |       -0.3943
-  3 | hello from another document    |       -0.1971
-  4 | world of databases and indexes |       -0.1971
+  1 | hello world from the test      |       -0.9333
+  5 | hello database world           |       -0.9333
+  3 | hello from another document    |       -0.4667
+  4 | world of databases and indexes |       -0.4667
   2 | the quick brown fox jumps      |        0.0000
 (5 rows)
 
@@ -393,10 +393,10 @@ FROM multi_idx_test
 ORDER BY simple_score;
  id |            content             | simple_score 
 ----+--------------------------------+--------------
-  5 | hello database world           |      -0.4736
-  1 | hello world from the test      |      -0.3902
-  3 | hello from another document    |      -0.2139
-  4 | world of databases and indexes |      -0.1951
+  5 | hello database world           |      -1.0467
+  1 | hello world from the test      |      -0.8647
+  3 | hello from another document    |      -0.4735
+  4 | world of databases and indexes |      -0.4323
   2 | the quick brown fox jumps      |       0.0000
 (5 rows)
 

@@ -26,6 +26,7 @@
 #include "memtable.h"
 #include "metapage.h"
 #include "posting.h"
+#include "segment.h"
 #include "state.h"
 #include "stringtable.h"
 
@@ -324,11 +325,14 @@ tp_store_document_length(
  * Get document length from the document length hash table
  */
 int32
-tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
+tp_get_document_length(
+		TpLocalIndexState *local_state, Relation index, ItemPointer ctid)
 {
 	TpMemtable		 *memtable;
 	dshash_table	 *doclength_table;
 	TpDocLengthEntry *entry;
+	TpIndexMetaPage	  metap;
+	BlockNumber		  first_segment;
 
 	Assert(local_state != NULL);
 	Assert(ctid != NULL);
@@ -337,35 +341,76 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 	if (!memtable)
 		elog(ERROR, "Cannot get memtable - index state corrupted");
 
-	/* Check if document length table exists */
-	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-		elog(ERROR,
-			 "Document length table not initialized for CTID (%u,%u)",
-			 BlockIdGetBlockNumber(&ctid->ip_blkid),
-			 ctid->ip_posid);
-
-	/* Attach to document length table */
-	doclength_table = tp_doclength_table_attach(
-			local_state->dsa, memtable->doc_lengths_handle);
-
-	/* Look up the document length */
-	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
-	if (entry)
+	/*
+	 * First, try to find the document length in the memtable.
+	 * If the memtable's document length table exists, search there.
+	 */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
 	{
-		int32 doc_length = entry->doc_length;
-		dshash_release_lock(doclength_table, entry);
+		/* Attach to document length table */
+		doclength_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+
+		/* Look up the document length */
+		entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
+		if (entry)
+		{
+			int32 doc_length = entry->doc_length;
+			dshash_release_lock(doclength_table, entry);
+			dshash_detach(doclength_table);
+			return doc_length;
+		}
 		dshash_detach(doclength_table);
-		return doc_length;
 	}
-	else
+
+	/*
+	 * Document not found in memtable. Search through segments.
+	 * This happens after a flush when documents have been written to disk.
+	 */
+	metap		  = tp_get_metapage(index);
+	first_segment = metap ? metap->first_segment : InvalidBlockNumber;
+
+	if (metap)
+		pfree(metap);
+
+	if (first_segment != InvalidBlockNumber)
 	{
-		dshash_detach(doclength_table);
-		elog(ERROR,
-			 "Document length not found for CTID (%u,%u)",
-			 BlockIdGetBlockNumber(&ctid->ip_blkid),
-			 ctid->ip_posid);
-		return 0;
+		BlockNumber		 current = first_segment;
+		TpSegmentReader *reader;
+		TpSegmentHeader *header;
+
+		/* Walk segment chain looking for this document */
+		while (current != InvalidBlockNumber)
+		{
+			int32 doc_length;
+
+			reader = tp_segment_open(index, current);
+			if (!reader)
+				break;
+
+			/* Try to get document length from this segment */
+			doc_length = tp_segment_get_document_length(reader, ctid);
+
+			if (doc_length >= 0)
+			{
+				/* Found it! */
+				tp_segment_close(reader);
+				return doc_length;
+			}
+
+			/* Move to next segment */
+			header	= reader->header;
+			current = header->next_segment;
+			tp_segment_close(reader);
+		}
 	}
+
+	/* Document not found anywhere */
+	elog(ERROR,
+		 "Document length not found for CTID (%u,%u)",
+		 BlockIdGetBlockNumber(&ctid->ip_blkid),
+		 ctid->ip_posid);
+	return 0;
 }
 
 /*

@@ -383,9 +383,18 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 							index_name)));
 		}
 
-		total_docs	= index_state->shared->total_docs;
+		/*
+		 * Get corpus statistics from metapage and shared memory.
+		 * After a flush, shared memory stats are reset to 0, but metapage
+		 * preserves the total across all segments. We combine metapage stats
+		 * (segments) with shared memory stats (current memtable) for accurate
+		 * BM25 scoring.
+		 */
+		total_docs	= (int32)(metap->total_docs +
+							  index_state->shared->total_docs);
 		avg_doc_len = total_docs > 0
-							? (float4)(index_state->shared->total_len /
+							? (float4)((metap->total_len +
+										index_state->shared->total_len) /
 									   (double)total_docs)
 							: 0.0f;
 

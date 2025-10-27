@@ -134,6 +134,8 @@ extern void tp_segment_read(
 		uint32			 len);
 extern TpPostingList *
 tp_segment_get_posting_list(TpSegmentReader *reader, const char *term);
+extern int32
+tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
 
 /* Writer operations (in flush.c) */
 extern BlockNumber
