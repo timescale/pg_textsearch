@@ -354,13 +354,22 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	header->created_at		 = GetCurrentTimestamp();
 	header->level			 = 0; /* Memtable flush */
 
+	/*
+	 * Release the header buffer BEFORE starting to write data.
+	 * write_segment_data may need to lock this same buffer (since the header
+	 * page can also hold data), and Postgres buffer locks are not recursive.
+	 * We'll re-acquire it at the end to update final header fields.
+	 */
+	MarkBufferDirty(header_buf);
+	UnlockReleaseBuffer(header_buf);
+
 	/* Start after header and page map (we'll backfill page map) */
 	logical_offset = sizeof(TpSegmentHeader) + max_pages * sizeof(BlockNumber);
 
 	/* Write dictionary */
-	header->dict_offset = logical_offset;
-	dict_size			= term_count * sizeof(TpDictEntry);
-	dict_entries		= palloc(dict_size);
+	uint32 dict_offset = logical_offset;
+	dict_size		   = term_count * sizeof(TpDictEntry);
+	dict_entries	   = palloc(dict_size);
 
 	/* Build dictionary with placeholder offsets */
 	for (uint32 i = 0; i < term_count; i++)
@@ -380,11 +389,11 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 			&logical_offset,
 			dict_entries,
 			dict_size);
-	header->dict_size = logical_offset - header->dict_offset;
+	uint32 dict_size_val = logical_offset - dict_offset;
 
 	/* Write posting lists and track offsets */
-	header->postings_offset = logical_offset;
-	posting_offsets			= palloc(term_count * sizeof(uint32));
+	uint32 postings_offset = logical_offset;
+	posting_offsets		   = palloc(term_count * sizeof(uint32));
 
 	for (uint32 i = 0; i < term_count; i++)
 	{
@@ -420,10 +429,10 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 		pfree(segment_postings);
 	}
-	header->postings_size = logical_offset - header->postings_offset;
+	uint32 postings_size_val = logical_offset - postings_offset;
 
 	/* Write document lengths */
-	header->doclens_offset = logical_offset;
+	uint32 doclens_offset = logical_offset;
 	write_segment_data(
 			index,
 			page_map,
@@ -431,11 +440,11 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 			&logical_offset,
 			doc_lengths,
 			doc_count * sizeof(TpDocLength));
-	header->doclens_size = logical_offset - header->doclens_offset;
+	uint32 doclens_size_val = logical_offset - doclens_offset;
 
 	/* Write string pool and track offsets */
-	header->strings_offset = logical_offset;
-	string_offsets		   = palloc(term_count * sizeof(uint32));
+	uint32 strings_offset = logical_offset;
+	string_offsets		  = palloc(term_count * sizeof(uint32));
 
 	for (uint32 i = 0; i < term_count; i++)
 	{
@@ -449,7 +458,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 				terms[i].term,
 				str_len);
 	}
-	header->strings_size = logical_offset - header->strings_offset;
+	uint32 strings_size_val = logical_offset - strings_offset;
 
 	/* Update dictionary with actual offsets */
 	for (uint32 i = 0; i < term_count; i++)
@@ -459,7 +468,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	}
 
 	/* Rewrite dictionary with correct offsets */
-	logical_offset = header->dict_offset;
+	logical_offset = dict_offset;
 	write_segment_data(
 			index,
 			page_map,
@@ -468,9 +477,26 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 			dict_entries,
 			dict_size);
 
-	/* Update header with final counts */
-	header->num_pages = page_count;
-	header->data_size = logical_offset;
+	/*
+	 * Now re-acquire the header buffer and update all header fields.
+	 * We released it earlier to avoid recursive buffer locking.
+	 */
+	header_buf = ReadBuffer(index, root_block);
+	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+	header_page = BufferGetPage(header_buf);
+	header		= (TpSegmentHeader *)PageGetContents(header_page);
+
+	/* Update header with final counts and offsets */
+	header->dict_offset		= dict_offset;
+	header->dict_size		= dict_size_val;
+	header->postings_offset = postings_offset;
+	header->postings_size	= postings_size_val;
+	header->doclens_offset	= doclens_offset;
+	header->doclens_size	= doclens_size_val;
+	header->strings_offset	= strings_offset;
+	header->strings_size	= strings_size_val;
+	header->num_pages		= page_count;
+	header->data_size		= logical_offset;
 
 	/* Write page map to header */
 	memcpy(header->page_map, page_map, page_count * sizeof(BlockNumber));

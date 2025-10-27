@@ -2296,34 +2296,57 @@ PG_FUNCTION_INFO_V1(tp_spill_memtable);
 Datum
 tp_spill_memtable(PG_FUNCTION_ARGS)
 {
-	text *index_name_text = PG_GETARG_TEXT_PP(0);
-	char *index_name;
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name;
+	Oid				   index_oid;
+	TpLocalIndexState *index_state;
+	Relation		   index_rel;
+	BlockNumber		   segment_block;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
 
-	/*
-	 * TODO: This function is currently not functional due to a deadlock
-	 * issue when accessing shared memory structures from a standalone SQL
-	 * function context. The hang occurs in dshash_seq_init() when trying to
-	 * iterate over the string table.
-	 *
-	 * For now, spilling occurs automatically when memory limits are reached
-	 * during INSERT operations. Explicit manual spilling will be implemented
-	 * once the locking issues are resolved.
-	 *
-	 * Investigating requires attaching a debugger (gdb/lldb) to the backend
-	 * process to trace the exact lock acquisition sequence.
-	 */
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("tp_spill_memtable() is not yet implemented"),
-			 errdetail(
-					 "Index \"%s\": Manual memtable spilling is currently "
-					 "disabled due to unresolved locking issues.",
-					 index_name),
-			 errhint("Memtable spilling occurs automatically during INSERT "
-					 "operations when memory limits are reached.")));
+	/* Resolve index name to OID */
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" does not exist", index_name)));
+	}
 
-	PG_RETURN_NULL(); /* unreachable */
+	/*
+	 * Increment command counter to ensure any recent changes are visible
+	 * and buffers from previous commands are released.
+	 */
+	CommandCounterIncrement();
+
+	/* Open the index with RowExclusiveLock for modification */
+	index_rel = index_open(index_oid, RowExclusiveLock);
+
+	/* Get index state */
+	index_state = tp_get_local_index_state(index_oid);
+	if (index_state == NULL)
+	{
+		index_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("could not get index state for \"%s\"", index_name)));
+	}
+
+	/* Acquire exclusive lock on shared index state (same as tp_insert does) */
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
+	/* Flush the memtable to disk segment */
+	segment_block = tp_flush_memtable_to_segment(index_state, index_rel);
+
+	/* Close the index and release locks */
+	index_close(index_rel, RowExclusiveLock);
+
+	if (segment_block == InvalidBlockNumber)
+	{
+		PG_RETURN_TEXT_P(cstring_to_text("No data to flush or flush failed"));
+	}
+
+	PG_RETURN_TEXT_P(cstring_to_text("Memtable flushed successfully"));
 }
