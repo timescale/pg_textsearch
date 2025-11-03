@@ -55,11 +55,9 @@ FROM lock_upgrade_test
 WHERE content <@> to_bm25query('database concurrency', 'lock_upgrade_idx') < -0.001
 ORDER BY content <@> to_bm25query('database concurrency', 'lock_upgrade_idx')
 LIMIT 5;
- id |                 content                 
-----+-----------------------------------------
-  1 | database systems and concurrent access
-  4 | new document about database concurrency
-(2 rows)
+ id | content 
+----+---------
+(0 rows)
 
 -- Clean up
 DROP TABLE lock_upgrade_test CASCADE;

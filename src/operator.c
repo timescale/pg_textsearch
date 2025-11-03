@@ -573,6 +573,7 @@ tp_score_documents(
 				Assert(memtable->total_terms > 0);
 				avg_idf = metap->idf_sum / memtable->total_terms;
 			}
+
 			idf = tp_calculate_idf_with_epsilon(
 					memtable_posting->doc_count, total_docs, avg_idf);
 

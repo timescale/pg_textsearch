@@ -545,10 +545,7 @@ tp_calculate_idf_sum(Relation index, TpLocalIndexState *index_state)
 	dshash_seq_term(&status);
 	dshash_detach(string_table);
 
-	/* Store the IDF sum and term count in metapage */
-	tp_update_metapage_stats(index, 0, 0, idf_sum);
-
-	/* Also update total_terms in metapage for average IDF calculation */
+	/* Update total_terms and reset idf_sum in metapage before recalculating */
 	{
 		Buffer			metabuf;
 		TpIndexMetaPage metap;
@@ -557,11 +554,16 @@ tp_calculate_idf_sum(Relation index, TpLocalIndexState *index_state)
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
 
+		/* Reset idf_sum to 0 before adding the new calculated sum */
+		metap->idf_sum	   = 0.0;
 		metap->total_terms = term_count;
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 	}
+
+	/* Now store the new IDF sum (will be added to 0) */
+	tp_update_metapage_stats(index, 0, 0, idf_sum);
 
 	/* Update the term count in memtable */
 	memtable->total_terms = term_count;

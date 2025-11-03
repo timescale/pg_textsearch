@@ -97,9 +97,10 @@ SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
 WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
- id | content_preview 
-----+-----------------
-(0 rows)
+ id |    content_preview     
+----+------------------------
+  5 | document five has test
+(1 row)
 
 -- Clean up
 DROP TABLE vacuum_test;

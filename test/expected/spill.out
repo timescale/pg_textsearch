@@ -35,8 +35,8 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 
 -- Force memtable spill
 SELECT tp_spill_memtable('spill_basic_idx');
-    tp_spill_memtable
---------------------------
+     tp_spill_memtable     
+---------------------------
  Spilling disabled (no-op)
 (1 row)
 
@@ -45,13 +45,13 @@ SELECT id, ROUND((doc <@> to_bm25query('world', 'spill_basic_idx'))::numeric, 4)
   as score
 FROM spill_basic
 ORDER BY doc <@> to_bm25query('world', 'spill_basic_idx');
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1137
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1137
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0766
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0766
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
- id |  score
+ id |  score  
 ----+---------
-  2 | -0.1137
-  1 | -0.1137
+  2 | -0.0766
+  1 | -0.0766
   3 |  0.0000
 (3 rows)
 
@@ -70,8 +70,8 @@ INSERT INTO spill_update VALUES
   (2, 'original document two');
 -- Force spill
 SELECT tp_spill_memtable('spill_update_idx');
-    tp_spill_memtable
---------------------------
+     tp_spill_memtable     
+---------------------------
  Spilling disabled (no-op)
 (1 row)
 
@@ -84,11 +84,17 @@ SELECT id, ROUND((doc <@> to_bm25query('document', 'spill_update_idx'))::numeric
   as score
 FROM spill_update
 ORDER BY doc <@> to_bm25query('document', 'spill_update_idx');
-WARNING:  resource was not closed: [5197] (rel=base/1972982/1973029, blockNum=2, flags=0x93800000, refcount=1 2)
-WARNING:  resource was not closed: [5197] (rel=base/1972982/1973029, blockNum=2, flags=0x93800000, refcount=1 1)
- id | score 
-----+-------
-(0 rows)
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.0426
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0426
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0426
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.0426
+ id |  score  
+----+---------
+  2 | -0.0426
+  3 | -0.0426
+  1 | -0.0426
+  4 | -0.0426
+(4 rows)
 
 -- Test 3: Multiple spills
 DROP TABLE IF EXISTS spill_multiple CASCADE;
@@ -103,16 +109,16 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='
 -- First batch
 INSERT INTO spill_multiple VALUES (1, 'first batch document');
 SELECT tp_spill_memtable('spill_multiple_idx');
-    tp_spill_memtable
---------------------------
+     tp_spill_memtable     
+---------------------------
  Spilling disabled (no-op)
 (1 row)
 
 -- Second batch
 INSERT INTO spill_multiple VALUES (2, 'second batch document');
 SELECT tp_spill_memtable('spill_multiple_idx');
-    tp_spill_memtable
---------------------------
+     tp_spill_memtable     
+---------------------------
  Spilling disabled (no-op)
 (1 row)
 
@@ -123,11 +129,15 @@ SELECT id, ROUND((doc <@> to_bm25query('document', 'spill_multiple_idx'))::numer
   as score
 FROM spill_multiple
 ORDER BY doc <@> to_bm25query('document', 'spill_multiple_idx');
-WARNING:  resource was not closed: [5205] (rel=base/1972982/1973037, blockNum=3, flags=0x93800000, refcount=1 2)
-WARNING:  resource was not closed: [5205] (rel=base/1972982/1973037, blockNum=3, flags=0x93800000, refcount=1 1)
- id | score 
-----+-------
-(0 rows)
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1180
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1180
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1180
+ id |  score  
+----+---------
+  2 | -0.1180
+  3 | -0.1180
+  1 | -0.1180
+(3 rows)
 
 -- Test 4: Spill with different query terms
 DROP TABLE IF EXISTS spill_terms CASCADE;
@@ -143,8 +153,8 @@ INSERT INTO spill_terms VALUES
   (1, 'apple banana cherry'),
   (2, 'date elderberry fig');
 SELECT tp_spill_memtable('spill_terms_idx');
-    tp_spill_memtable
---------------------------
+     tp_spill_memtable     
+---------------------------
  Spilling disabled (no-op)
 (1 row)
 
@@ -157,11 +167,14 @@ SELECT id, doc, ROUND((doc <@> to_bm25query('banana', 'spill_terms_idx'))::numer
 FROM spill_terms
 WHERE doc <@> to_bm25query('banana', 'spill_terms_idx') < 0
 ORDER BY doc <@> to_bm25query('banana', 'spill_terms_idx');
-WARNING:  resource was not closed: [5212] (rel=base/1972982/1973045, blockNum=2, flags=0x93800000, refcount=1 2)
-WARNING:  resource was not closed: [5212] (rel=base/1972982/1973045, blockNum=2, flags=0x93800000, refcount=1 1)
- id | doc | score 
-----+-----+-------
-(0 rows)
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8473
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+ id |         doc         |  score  
+----+---------------------+---------
+  1 | apple banana cherry | -0.8473
+(1 row)
 
 -- Query for term in memtable only
 SELECT id, doc, ROUND((doc <@> to_bm25query('kiwi', 'spill_terms_idx'))::numeric, 4)
@@ -169,8 +182,32 @@ SELECT id, doc, ROUND((doc <@> to_bm25query('kiwi', 'spill_terms_idx'))::numeric
 FROM spill_terms
 WHERE doc <@> to_bm25query('kiwi', 'spill_terms_idx') < 0
 ORDER BY doc <@> to_bm25query('kiwi', 'spill_terms_idx');
-PANIC:  ERRORDATA_STACK_SIZE exceeded
-server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-connection to server was lost
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.8473
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+ id |       doc        |  score  
+----+------------------+---------
+  4 | kiwi lemon mango | -0.8473
+(1 row)
+
+-- Query for term in both segment and memtable
+SELECT id, doc, ROUND((doc <@> to_bm25query('apple', 'spill_terms_idx'))::numeric, 4)
+  as score
+FROM spill_terms
+WHERE doc <@> to_bm25query('apple', 'spill_terms_idx') < 0
+ORDER BY doc <@> to_bm25query('apple', 'spill_terms_idx');
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+ id | doc | score 
+----+-----+-------
+(0 rows)
+
+-- Cleanup
+DROP TABLE spill_basic CASCADE;
+DROP TABLE spill_update CASCADE;
+DROP TABLE spill_multiple CASCADE;
+DROP TABLE spill_terms CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

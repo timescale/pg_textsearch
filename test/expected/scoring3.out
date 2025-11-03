@@ -25,12 +25,12 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.1633
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.4574
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog                  | -1.1633
+  1 | the quick brown fox jumps over the lazy dog                  | -0.4574
   2 | a short sentence                                             |  0.0000
   3 | this is a medium length sentence that contains several words |  0.0000
 (3 rows)
@@ -39,13 +39,13 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.7671
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5263
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1410
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0968
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  2 | a short sentence                                             | -0.7671
-  3 | this is a medium length sentence that contains several words | -0.5263
+  2 | a short sentence                                             | -0.1410
+  3 | this is a medium length sentence that contains several words | -0.0968
   1 | the quick brown fox jumps over the lazy dog                  |  0.0000
 (3 rows)
 
