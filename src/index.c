@@ -921,7 +921,7 @@ tp_process_document_text(
 			tp_get_memory_limit())
 		{
 			/* For now, still error since we need the index relation to flush.
-			 * TODO: Call tp_flush_memtable_to_segment when we have the
+			 * TODO: Call tp_write_segment when we have the index
 			 * relation. */
 			tp_report_memory_limit_exceeded(
 					&index_state->shared->memory_usage);
@@ -2333,7 +2333,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", index_name)));
 	}
 
-	/* Call our segment writer to test dictionary building */
+	/* Write segment to disk */
 	segment_root = tp_write_segment(index_state, index_rel);
 
 	/* Close the index */

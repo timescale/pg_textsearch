@@ -7,7 +7,6 @@ DATA = sql/pg_textsearch--0.0.4-dev.sql \
 # Source files
 # Full build - debugging initialization crash
 OBJS = \
-	src/flush.o \
 	src/index.o \
 	src/limit.o \
 	src/memtable/memtable.o \
