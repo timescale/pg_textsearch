@@ -10,37 +10,94 @@ Segments are immutable, disk-based structures that store the inverted index when
 
 Since Postgres doesn't guarantee sequential page allocation, we store a logical → physical page mapping directly in the segment header. This avoids page traversal on open and provides O(1) page access.
 
+### Segment File Layout
+
+The logical segment file contains these sections in order:
+
+1. **Dictionary** - Sorted array of string offsets for binary search
+2. **String Pool** - Variable-length strings with embedded dict_entry offsets
+3. **Dictionary Entries** - Fixed-size posting metadata (offset, count, doc_freq)
+4. **Posting Lists** - Arrays of (ctid, frequency) pairs
+5. **Document Lengths** - Array of (ctid, length) for BM25 normalization
+
+Term lookup flow:
+1. Binary search dictionary for string offset
+2. Read string and compare
+3. If match, read embedded dict_entry offset
+4. Load TpDictEntry
+5. Use posting_offset to read posting list
+
 ```c
 /* Segment header with embedded page map */
 typedef struct TpSegmentHeader {
     /* Metadata */
     uint32 magic;              /* TP_SEGMENT_MAGIC */
     uint32 version;            /* Format version */
+    TimestampTz created_at;    /* Creation time */
     uint32 num_pages;          /* Total pages in segment */
     uint32 data_size;          /* Total data bytes */
 
-    /* Statistics */
-    uint32 num_terms;          /* Number of unique terms */
-    uint32 num_docs;           /* Number of documents */
-
-    /* Section offsets (logical byte offsets) */
-    uint32 dict_offset;        /* Dictionary start */
-    uint32 dict_size;          /* Dictionary size */
-    uint32 postings_offset;    /* Posting lists start */
-    uint32 postings_size;      /* Posting lists size */
-    uint32 doclens_offset;     /* Document lengths start */
-    uint32 doclens_size;       /* Document lengths size */
-    uint32 strings_offset;     /* String pool start */
-    uint32 strings_size;       /* String pool size */
-
     /* Segment management */
-    BlockNumber next_segment;  /* Next segment in index */
-    TimestampTz created_at;    /* Creation time */
-    uint32 level;              /* LSM level (0 for memtable flush) */
+    uint32 level;              /* Storage level (0 for memtable flush) */
 
-    /* Page mapping table - maps logical page → physical BlockNumber */
-    BlockNumber page_map[FLEXIBLE_ARRAY_MEMBER];
+    /* Section offsets in logical file */
+    uint32 dictionary_offset;  /* Offset to TpDictionary */
+    uint32 strings_offset;      /* Offset to string pool */
+    uint32 entries_offset;      /* Offset to TpDictEntry array */
+    uint32 postings_offset;     /* Offset to posting lists */
+    uint32 doc_lengths_offset;  /* Offset to document lengths */
+
+    /* Corpus statistics */
+    uint32 num_terms;          /* Total unique terms */
+    uint32 num_docs;           /* Total documents */
+    uint64 total_tokens;       /* Sum of all document lengths */
+
+    /* Ordered list of pages making up the segment file, used to resolve
+     * logical file offsets to physical Postgres (page, offset) values
+     */
+    BlockNumber page_index;  /* First page of the page index */
 } TpSegmentHeader;
+
+/* Page types for segment pages */
+typedef enum TpPageType {
+    TP_PAGE_SEGMENT_HEADER = 1,  /* Segment header page */
+    TP_PAGE_FILE_INDEX,           /* File index (page map) pages */
+    TP_PAGE_DATA                  /* Data pages containing actual content */
+} TpPageType;
+
+/* Special area for page index pages (goes in page special area) */
+typedef struct TpPageIndexSpecial {
+    BlockNumber next_page;    /* Next page in index chain, InvalidBlockNumber if last */
+    uint16      page_type;    /* TpPageType enum value */
+    uint16      num_entries;  /* Number of BlockNumber entries on this page */
+    uint16      flags;        /* Reserved for future use */
+} TpPageIndexSpecial;
+
+/*
+ * Page Index Design
+ *
+ * The page index stores BlockNumbers directly in the page, packed tightly
+ * for maximum efficiency. We manage the count in the special area.
+ *
+ * Layout of a page index page:
+ * +-------------------+
+ * | PageHeaderData    | <- Standard PG page header
+ * +-------------------+
+ * | BlockNumber[0]    | <- BlockNumbers stored contiguously
+ * | BlockNumber[1]    |
+ * | ...               |
+ * | BlockNumber[n-1]  |
+ * +-------------------+
+ * | (free space)      |
+ * +-------------------+
+ * | TpPageIndexSpecial| <- Special area with next pointer and count
+ * +-------------------+
+ *
+ * The first page index page is referenced by TpSegmentHeader.page_index.
+ * When reading, we follow the chain and load all BlockNumbers into a
+ * contiguous array in memory for O(1) logical-to-physical mapping.
+ */
+
 ```
 
 ### Zero-Copy Data Structures
@@ -48,15 +105,31 @@ typedef struct TpSegmentHeader {
 All structures are designed for direct access from disk:
 
 ```c
-/* Dictionary entry - 24 bytes, aligned for direct access */
+/*
+ * Dictionary structure for fast term lookup
+ *
+ * The dictionary is a sorted array of string offsets, enabling binary search.
+ * Each string is stored as: [length:uint32][text:char*][dict_entry_offset:uint32]
+ * This allows us to quickly find a term and jump to its TpDictEntry.
+ */
+typedef struct TpDictionary {
+    uint32 num_terms;           /* Number of terms in dictionary */
+    uint32 string_offsets[];    /* Sorted array of offsets to strings */
+} TpDictionary;
+
+/* String entry in string pool */
+typedef struct TpStringEntry {
+    uint32 length;              /* String length */
+    char text[];                /* String text (variable length) */
+    /* Immediately after text: uint32 dict_entry_offset */
+} TpStringEntry;
+
+/* Dictionary entry - 12 bytes, more compact without string info */
 typedef struct TpDictEntry {
-    uint32 term_hash;          /* Pre-computed hash for fast comparison */
-    uint32 string_offset;      /* Logical offset in string pool */
-    uint32 string_len;         /* Term length */
     uint32 posting_offset;     /* Logical offset to posting list */
     uint32 posting_count;      /* Number of postings */
     uint32 doc_freq;           /* Document frequency for IDF */
-} __attribute__((aligned(8))) TpDictEntry;
+} __attribute__((aligned(4))) TpDictEntry;
 
 /* Posting entry - 8 bytes, packed */
 typedef struct TpPostingEntry {
@@ -70,208 +143,6 @@ typedef struct TpDocLength {
     uint16 length;             /* 2 bytes - total terms in doc */
     uint32 reserved;           /* 4 bytes padding */
 } TpDocLength;
-```
-
-## Implementation
-
-### Segment Reader
-
-```c
-typedef struct TpSegmentReader {
-    Relation index;
-    BlockNumber root_block;
-
-    /* Cached header with page map */
-    TpSegmentHeader *header;
-    Buffer header_buffer;
-
-    /* Current data page */
-    Buffer current_buffer;
-    uint32 current_logical_page;
-} TpSegmentReader;
-
-/* Open segment - only reads header page */
-TpSegmentReader* tp_segment_open(Relation index, BlockNumber root) {
-    TpSegmentReader *reader = palloc0(sizeof(TpSegmentReader));
-    reader->index = index;
-    reader->root_block = root;
-
-    /* Read header with page map */
-    reader->header_buffer = ReadBuffer(index, root);
-    Page page = BufferGetPage(reader->header_buffer);
-    reader->header = (TpSegmentHeader *)PageGetContents(page);
-
-    /* Validate */
-    if (reader->header->magic != TP_SEGMENT_MAGIC) {
-        elog(ERROR, "invalid segment magic");
-    }
-
-    return reader;
-}
-
-/* Get physical block for logical page - O(1) */
-static inline BlockNumber
-tp_segment_get_physical(TpSegmentReader *reader, uint32 logical_page) {
-    Assert(logical_page < reader->header->num_pages);
-    return reader->header->page_map[logical_page];
-}
-
-/* Read data at logical offset */
-void tp_segment_read(TpSegmentReader *reader, uint32 logical_offset,
-                    void *dest, uint32 len) {
-    while (len > 0) {
-        uint32 logical_page = logical_offset / BLCKSZ;
-        uint32 page_offset = logical_offset % BLCKSZ;
-        uint32 to_read = Min(len, BLCKSZ - page_offset);
-
-        /* Get physical block from mapping */
-        BlockNumber physical = tp_segment_get_physical(reader, logical_page);
-
-        /* Pin page if needed */
-        if (!BufferIsValid(reader->current_buffer) ||
-            reader->current_logical_page != logical_page) {
-
-            if (BufferIsValid(reader->current_buffer)) {
-                ReleaseBuffer(reader->current_buffer);
-            }
-
-            reader->current_buffer = ReadBuffer(reader->index, physical);
-            reader->current_logical_page = logical_page;
-        }
-
-        /* Copy data */
-        Page page = BufferGetPage(reader->current_buffer);
-        memcpy(dest, PageGetContents(page) + page_offset, to_read);
-
-        /* Advance */
-        dest = (char*)dest + to_read;
-        logical_offset += to_read;
-        len -= to_read;
-    }
-}
-```
-
-### Segment Writer
-
-```c
-/* Write memtable to segment */
-BlockNumber tp_write_segment(TpLocalIndexState *state) {
-    /* 1. Estimate size */
-    uint32 data_size = estimate_segment_size(state);
-    uint32 header_size = sizeof(TpSegmentHeader) +
-                        (num_pages * sizeof(BlockNumber));
-    uint32 total_size = header_size + data_size;
-    uint32 num_pages = (total_size + BLCKSZ - 1) / BLCKSZ;
-
-    /* 2. Allocate pages */
-    BlockNumber *pages = palloc(sizeof(BlockNumber) * num_pages);
-    for (int i = 0; i < num_pages; i++) {
-        pages[i] = GetFreeIndexPage(state->index);
-        if (!BlockNumberIsValid(pages[i])) {
-            pages[i] = RelationGetNumberOfBlocks(state->index);
-            /* Extend relation */
-        }
-    }
-
-    /* 3. Build header with page map */
-    TpSegmentHeader *header = palloc0(header_size);
-    header->magic = TP_SEGMENT_MAGIC;
-    header->version = 1;
-    header->num_pages = num_pages;
-    header->num_terms = count_terms(state);
-    header->created_at = GetCurrentTimestamp();
-
-    /* Copy page mapping */
-    memcpy(header->page_map, pages, num_pages * sizeof(BlockNumber));
-
-    /* 4. Create writer context */
-    TpSegmentWriter writer = {
-        .index = state->index,
-        .pages = pages,
-        .num_pages = num_pages,
-        .current_offset = header_size,
-        .header = header
-    };
-
-    /* 5. Write sections */
-    header->dict_offset = writer.current_offset;
-    write_sorted_dictionary(&writer, state);
-    header->dict_size = writer.current_offset - header->dict_offset;
-
-    header->postings_offset = writer.current_offset;
-    write_posting_lists(&writer, state);
-    header->postings_size = writer.current_offset - header->postings_offset;
-
-    /* ... other sections ... */
-
-    /* 6. Write header to first page */
-    Buffer header_buf = ReadBuffer(state->index, pages[0]);
-    Page header_page = BufferGetPage(header_buf);
-    PageInit(header_page, BLCKSZ, 0);
-    memcpy(PageGetContents(header_page), header, header_size);
-    MarkBufferDirty(header_buf);
-    UnlockReleaseBuffer(header_buf);
-
-    pfree(pages);
-    pfree(header);
-
-    return pages[0];  /* Return root block */
-}
-```
-
-### Query Processing
-
-```c
-/* Get posting list from segment */
-TpPostingList* tp_segment_get_posting(BlockNumber root_block,
-                                      const char *term) {
-    /* 1. Open segment */
-    TpSegmentReader *reader = tp_segment_open(index, root_block);
-
-    /* 2. Binary search dictionary */
-    uint32 dict_start = reader->header->dict_offset;
-    uint32 dict_count = reader->header->dict_size / sizeof(TpDictEntry);
-    uint32 term_hash = hash_any((unsigned char*)term, strlen(term));
-
-    uint32 left = 0, right = dict_count - 1;
-    while (left <= right) {
-        uint32 mid = (left + right) / 2;
-
-        /* Read dictionary entry */
-        TpDictEntry entry;
-        uint32 entry_offset = dict_start + mid * sizeof(TpDictEntry);
-        tp_segment_read(reader, entry_offset, &entry, sizeof(entry));
-
-        /* Quick hash check */
-        if (entry.term_hash == term_hash) {
-            /* Confirm with actual string */
-            char *stored_term = palloc(entry.string_len + 1);
-            tp_segment_read(reader,
-                           reader->header->strings_offset + entry.string_offset,
-                           stored_term, entry.string_len);
-            stored_term[entry.string_len] = '\0';
-
-            if (strcmp(term, stored_term) == 0) {
-                /* Found - load posting list */
-                TpPostingList *result = load_posting_list(reader, &entry);
-                pfree(stored_term);
-                tp_segment_close(reader);
-                return result;
-            }
-            pfree(stored_term);
-        }
-
-        /* Binary search continue */
-        if (entry.term_hash < term_hash) {
-            left = mid + 1;
-        } else {
-            right = mid - 1;
-        }
-    }
-
-    tp_segment_close(reader);
-    return NULL;
-}
 ```
 
 ## Key Design Decisions
@@ -292,20 +163,28 @@ TpPostingList* tp_segment_get_posting(BlockNumber root_block,
 - Return pages to FSM on failure
 
 ### Performance
-- **Write**: ~100ms for typical flush (bottleneck: sorting)
-- **Read**: < 1ms per term lookup
-- **Open**: O(1) - only read header
-- **Memory**: Page map uses 4 bytes per page
+- **Write**: Fast flush with sorting as main bottleneck
+- **Read**: Sub-millisecond term lookup via binary search
+- **Open**: O(n) where n = number of page index pages (typically 1-3)
+- **Memory**: Page map uses 4 bytes per data page in segment
 
 ## Capacity
 
-With 8KB pages:
-- Header overhead: ~100 bytes
-- Available for page map: ~8000 bytes
-- Pages per header: ~2000
-- Maximum segment size: ~16MB
+With 8KB pages using direct BlockNumber storage:
+- **Page Index Pages**: Each can store ~2040 BlockNumbers
+  - Page header: ~24 bytes (PageHeaderData)
+  - Special area: ~12 bytes (TpPageIndexSpecial)
+  - Available for BlockNumbers: 8192 - 24 - 12 = 8156 bytes
+  - Entries per page: 8156 / 4 = 2039 BlockNumbers
+- **Maximum segment size**:
+  - Single index page: ~16MB (2039 pages × 8KB)
+  - Two index pages: ~32MB (4078 pages × 8KB)
+  - Three index pages: ~48MB (6117 pages × 8KB)
+  - Scales linearly with additional index pages
+- **Header page overhead**: ~100 bytes for TpSegmentHeader
 
-This is sufficient for v0.0.3. Can add continuation pages later if needed.
+This design scales well beyond v0.0.3 requirements. The page index can grow
+as needed by adding more index pages to the chain.
 
 ## Future Optimizations
 
@@ -313,11 +192,17 @@ This is sufficient for v0.0.3. Can add continuation pages later if needed.
    - Delta encoding for posting lists
    - Prefix compression for terms
 
-2. **Skip Lists** (v0.0.4)
+2. **Column-Oriented Storage** (v0.0.4)
+   - Split structures into parallel arrays to eliminate padding
+   - E.g., posting lists as separate ctid[] and frequency[] arrays
+   - Would save ~25% space on TpDocLength, improve compression ratios
+   - Trade-off: slightly more complex access patterns vs. better space efficiency
+
+3. **Skip Lists** (v0.0.4)
    - For faster posting list intersection
 
-3. **Compaction** (v0.0.5)
+4. **Compaction** (v0.0.5)
    - Background worker to merge segments
 
-4. **Indirect Blocks** (v1.0)
+5. **Indirect Blocks** (v1.0)
    - If segments grow beyond 16MB
