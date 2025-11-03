@@ -36,7 +36,17 @@
 TpSegmentReader *
 tp_segment_open(Relation index, BlockNumber root_block)
 {
-	TpSegmentReader *reader;
+	TpSegmentReader	   *reader;
+	Buffer				header_buf;
+	Page				header_page;
+	TpSegmentHeader	   *header;
+	BlockNumber			page_index_block;
+	Buffer				index_buf;
+	Page				index_page;
+	TpPageIndexSpecial *special;
+	BlockNumber		   *page_entries;
+	uint32				pages_loaded = 0;
+	uint32				i;
 
 	/* Allocate reader structure */
 	reader						 = palloc0(sizeof(TpSegmentReader));
@@ -45,7 +55,67 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	reader->current_buffer		 = InvalidBuffer;
 	reader->current_logical_page = UINT32_MAX;
 
-	/* TODO: Read header and load page index */
+	/* Read header from root block */
+	header_buf = ReadBuffer(index, root_block);
+	LockBuffer(header_buf, BUFFER_LOCK_SHARE);
+	header_page = BufferGetPage(header_buf);
+
+	/* Copy header to reader structure */
+	reader->header = palloc(sizeof(TpSegmentHeader));
+	memcpy(reader->header,
+		   (char *)header_page + SizeOfPageHeaderData,
+		   sizeof(TpSegmentHeader));
+
+	header			  = reader->header;
+	reader->num_pages = header->num_pages;
+
+	/* Get page index location from header */
+	page_index_block = header->page_index;
+
+	/* Keep header buffer for later use */
+	reader->header_buffer = header_buf;
+	LockBuffer(
+			header_buf, BUFFER_LOCK_UNLOCK); /* Just unlock, don't release */
+
+	/* Allocate page map */
+	reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
+
+	/* Read page index chain to build page map */
+	while (page_index_block != InvalidBlockNumber &&
+		   pages_loaded < reader->num_pages)
+	{
+		index_buf = ReadBuffer(index, page_index_block);
+		LockBuffer(index_buf, BUFFER_LOCK_SHARE);
+		index_page = BufferGetPage(index_buf);
+
+		/* Get special area with page index metadata */
+		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
+
+		/* Get pointer to page entries array */
+		page_entries = (BlockNumber *)((char *)index_page +
+									   SizeOfPageHeaderData);
+
+		/* Copy page entries to our map */
+		for (i = 0;
+			 i < special->num_entries && pages_loaded < reader->num_pages;
+			 i++)
+		{
+			reader->page_map[pages_loaded++] = page_entries[i];
+		}
+
+		/* Move to next page in chain */
+		page_index_block = special->next_page;
+
+		UnlockReleaseBuffer(index_buf);
+	}
+
+	if (pages_loaded != reader->num_pages)
+	{
+		elog(WARNING,
+			 "Page index incomplete: expected %u pages, loaded %u",
+			 reader->num_pages,
+			 pages_loaded);
+	}
 
 	return reader;
 }
@@ -69,11 +139,70 @@ void
 tp_segment_read(
 		TpSegmentReader *reader, uint32 logical_offset, void *dest, uint32 len)
 {
-	/* TODO: Implement */
-	(void)reader;
-	(void)logical_offset;
-	(void)dest;
-	(void)len;
+	char  *dest_ptr	  = (char *)dest;
+	uint32 bytes_read = 0;
+
+	while (bytes_read < len)
+	{
+		uint32 logical_page = logical_offset / BLCKSZ;
+		uint32 page_offset	= logical_offset % BLCKSZ;
+		uint32 to_read;
+		Buffer buf;
+		Page   page;
+		char  *src;
+
+		/* Skip page header in offset calculation */
+		if (page_offset < SizeOfPageHeaderData)
+			page_offset = SizeOfPageHeaderData;
+
+		/* Calculate how much to read from this page */
+		to_read = Min(len - bytes_read, BLCKSZ - page_offset);
+
+		/* Check if we have the page in cache */
+		if (reader->current_logical_page != logical_page)
+		{
+			/* Release old buffer if any */
+			if (BufferIsValid(reader->current_buffer))
+			{
+				ReleaseBuffer(reader->current_buffer);
+				reader->current_buffer = InvalidBuffer;
+			}
+
+			/* Validate page number */
+			if (logical_page >= reader->num_pages)
+			{
+				elog(ERROR,
+					 "Invalid logical page %u (max %u)",
+					 logical_page,
+					 reader->num_pages - 1);
+			}
+
+			/* Read the physical page */
+			buf = ReadBuffer(reader->index, reader->page_map[logical_page]);
+
+			reader->current_buffer		 = buf;
+			reader->current_logical_page = logical_page;
+		}
+		else
+		{
+			buf = reader->current_buffer;
+		}
+
+		/* Lock buffer for reading */
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+		/* Copy data from page */
+		page = BufferGetPage(buf);
+		src	 = (char *)page + page_offset;
+		memcpy(dest_ptr + bytes_read, src, to_read);
+
+		/* Unlock but keep buffer pinned for potential reuse */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		/* Advance pointers */
+		bytes_read += to_read;
+		logical_offset += to_read;
+	}
 }
 
 TpPostingList *
@@ -157,27 +286,36 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 	/* Write index pages in reverse order (so we can chain them) */
 	for (int i = num_index_pages - 1; i >= 0; i--)
 	{
-		Buffer		 buffer;
-		Page		 page;
-		BlockNumber *page_data;
-		uint32		 entries_to_write;
-		uint32		 j;
+		Buffer				buffer;
+		Page				page;
+		BlockNumber		   *page_data;
+		TpPageIndexSpecial *special;
+		uint32				entries_to_write;
+		uint32				j;
 
 		buffer = ReadBuffer(index, index_pages[i]);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE); /* Need exclusive lock to
 													  modify */
 		page = BufferGetPage(buffer);
+
+		/* Initialize page with special area */
+		PageInit(page, BLCKSZ, sizeof(TpPageIndexSpecial));
+
+		/* Set up special area */
+		special			   = (TpPageIndexSpecial *)PageGetSpecialPointer(page);
+		special->next_page = prev_block;
+		special->page_type = TP_PAGE_FILE_INDEX;
+		special->num_entries = Min(entries_per_page, num_pages - page_idx);
+		special->flags		 = 0;
+
 		/* Use the data area after the page header */
 		page_data = (BlockNumber *)((char *)page + SizeOfPageHeaderData);
 
-		/* First entry is pointer to next index page (or InvalidBlockNumber) */
-		page_data[0] = prev_block;
-
 		/* Fill with page numbers */
-		entries_to_write = Min(entries_per_page - 1, num_pages - page_idx);
+		entries_to_write = special->num_entries;
 		for (j = 0; j < entries_to_write; j++)
 		{
-			page_data[j + 1] = pages[page_idx++];
+			page_data[j] = pages[page_idx++];
 		}
 
 		MarkBufferDirty(buffer);
@@ -271,7 +409,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
-		string_pos += terms[i].term_len + 1; /* Include null terminator */
+		/* TpStringEntry format: length (4) + text + dict_offset (4) */
+		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
 	}
 
 	/* Write string offsets array */
@@ -282,10 +421,22 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	header.strings_offset = writer.current_offset;
 	for (i = 0; i < num_terms; i++)
 	{
-		tp_segment_writer_write(
-				&writer,
-				terms[i].term,
-				terms[i].term_len + 1); /* Include null terminator */
+		uint32 length	   = terms[i].term_len;
+		uint32 dict_offset = i * sizeof(TpDictEntry);
+
+		elog(DEBUG1,
+			 "Writing string %u: '%s' (len=%u) at offset %u",
+			 i,
+			 terms[i].term,
+			 length,
+			 writer.current_offset - header.strings_offset);
+
+		/* Write TpStringEntry format: length, then text, then
+		 * dict_entry_offset */
+		tp_segment_writer_write(&writer, &length, sizeof(uint32));
+		tp_segment_writer_write(&writer, terms[i].term, length);
+		/* Write dict entry offset (position in entries array) */
+		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
 	/* Write dictionary entries */
@@ -433,6 +584,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	elog(DEBUG1, "  doc_lengths_offset = %u", header.doc_lengths_offset);
 	elog(DEBUG1, "  data_size = %u", header.data_size);
 
+	/* Force a checkpoint to ensure data is on disk */
+	FlushRelationBuffers(index);
+
 	/* Now update the header on disk */
 	elog(DEBUG1,
 		 "tp_write_segment: Reading header block %u to update offsets",
@@ -446,7 +600,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header = (TpSegmentHeader *)((char *)header_page +
 										  SizeOfPageHeaderData);
 	elog(DEBUG1,
-		 "tp_write_segment: Existing header dictionary_offset = %u",
+		 "tp_write_segment: Existing header magic = 0x%08X, dictionary_offset "
+		 "= %u",
+		 existing_header->magic,
 		 existing_header->dictionary_offset);
 
 	/* Write header to the beginning of the page's data area */
@@ -550,15 +706,106 @@ tp_debug_dump_segment_internal(
 	/* If we have terms, dump the dictionary */
 	if (header.num_terms > 0 && header.dictionary_offset > 0)
 	{
+		TpSegmentReader *reader;
+		TpDictionary	 dict_header;
+		uint32			*string_offsets;
+		uint32			 i;
+
 		elog(INFO, "");
 		elog(INFO, "Dictionary Terms (%u):", header.num_terms);
 
-		/* For now, just show the first few terms */
-		/* TODO: Implement full segment reader to access dictionary properly */
-		terms_to_show = Min(header.num_terms, 10);
-		elog(INFO,
-			 "  (Showing first %u terms - full reader not yet implemented)",
-			 terms_to_show);
+		/* Open segment reader */
+		reader = tp_segment_open(index, segment_root);
+
+		/* Read dictionary header */
+		tp_segment_read(
+				reader,
+				header.dictionary_offset,
+				&dict_header,
+				sizeof(dict_header.num_terms));
+
+		/* Read string offsets */
+		string_offsets = palloc(sizeof(uint32) * dict_header.num_terms);
+		tp_segment_read(
+				reader,
+				header.dictionary_offset + sizeof(dict_header.num_terms),
+				string_offsets,
+				sizeof(uint32) * dict_header.num_terms);
+
+		/* Show the first few terms */
+		terms_to_show = Min(header.num_terms, 20);
+
+		for (i = 0; i < terms_to_show; i++)
+		{
+			TpStringEntry string_entry;
+			char		 *term_text;
+			TpDictEntry	  dict_entry;
+			uint32 string_offset = header.strings_offset + string_offsets[i];
+
+			elog(DEBUG1,
+				 "Reading term %u: string_offset=%u (base=%u + offset=%u)",
+				 i,
+				 string_offset,
+				 header.strings_offset,
+				 string_offsets[i]);
+
+			/* Read string length */
+			tp_segment_read(
+					reader,
+					string_offset,
+					&string_entry.length,
+					sizeof(uint32));
+			elog(DEBUG1, "  String length: %u", string_entry.length);
+
+			/* Validate string length */
+			if (string_entry.length > 1024) /* Sanity check */
+			{
+				elog(ERROR,
+					 "Invalid string length %u for term %u",
+					 string_entry.length,
+					 i);
+			}
+
+			/* Read term text */
+			term_text = palloc(string_entry.length + 1);
+			tp_segment_read(
+					reader,
+					string_offset + sizeof(uint32),
+					term_text,
+					string_entry.length);
+			term_text[string_entry.length] = '\0';
+			elog(DEBUG1, "  Term text: '%s'", term_text);
+
+			/* Read dictionary entry for this term */
+			tp_segment_read(
+					reader,
+					header.entries_offset + (i * sizeof(TpDictEntry)),
+					&dict_entry,
+					sizeof(TpDictEntry));
+			elog(DEBUG1,
+				 "  Dict entry: docs=%u, postings=%u",
+				 dict_entry.doc_freq,
+				 dict_entry.posting_count);
+
+			elog(INFO,
+				 "  [%u] '%s' (docs=%u, postings=%u)",
+				 i,
+				 term_text,
+				 dict_entry.doc_freq,
+				 dict_entry.posting_count);
+
+			pfree(term_text);
+		}
+
+		if (header.num_terms > terms_to_show)
+		{
+			elog(INFO,
+				 "  ... and %u more terms",
+				 header.num_terms - terms_to_show);
+		}
+
+		pfree(string_offsets);
+		tp_segment_close(reader);
 	}
 
 	elog(INFO, "========== End Segment Dump ==========");
