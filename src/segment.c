@@ -56,7 +56,11 @@ tp_segment_open(Relation index, BlockNumber root_block)
 				 errmsg("unsupported segment version: %u",
 						reader->header->version)));
 
-	LockBuffer(reader->header_buffer, BUFFER_LOCK_UNLOCK);
+	/*
+	 * Keep buffer locked for reading and pinned for the lifetime of the
+	 * reader. This ensures reader->header remains valid. We'll unlock and
+	 * release in tp_segment_close().
+	 */
 
 	return reader;
 }
@@ -71,7 +75,10 @@ tp_segment_close(TpSegmentReader *reader)
 		ReleaseBuffer(reader->current_buffer);
 
 	if (BufferIsValid(reader->header_buffer))
+	{
+		LockBuffer(reader->header_buffer, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(reader->header_buffer);
+	}
 
 	pfree(reader);
 }

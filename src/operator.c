@@ -201,7 +201,8 @@ tp_get_posting_from_segments(
  * Create and initialize hash table for document scores
  */
 static HTAB *
-tp_create_doc_scores_hash(int max_results, int32 total_docs)
+tp_create_doc_scores_hash(
+		int max_results pg_attribute_unused(), int32 total_docs)
 {
 	HASHCTL hash_ctl;
 
@@ -368,7 +369,7 @@ tp_scan_docid_pages(Relation index_relation, int *total_ctids)
 							   MAXALIGN(sizeof(TpDocidPageHeader)));
 
 		/* Expand array if needed */
-		if (count + docid_header->num_docids > capacity)
+		if (count + docid_header->num_docids > (uint32)capacity)
 		{
 			capacity  = count + docid_header->num_docids + 100;
 			all_ctids = (ItemPointer)
@@ -376,7 +377,7 @@ tp_scan_docid_pages(Relation index_relation, int *total_ctids)
 		}
 
 		/* Copy docids from this page */
-		for (int i = 0; i < docid_header->num_docids; i++)
+		for (uint32 i = 0; i < docid_header->num_docids; i++)
 		{
 			all_ctids[count++] = docids[i];
 		}
@@ -488,15 +489,11 @@ tp_score_documents(
 		return 0;
 	}
 
-	/*
-	 * Total docs and total length = metapage stats (flushed segments) +
-	 * current memtable stats
-	 */
-	total_docs	= (int32)(metap->total_docs + local_state->shared->total_docs);
-	avg_doc_len = total_docs > 0 ? (float4)((metap->total_len +
-											 local_state->shared->total_len) /
-											(double)total_docs)
-								 : 0.0f;
+	/* Get total docs and average length from metapage */
+	total_docs	= (int32)metap->total_docs;
+	avg_doc_len = total_docs > 0
+						? (float4)(metap->total_len / (double)total_docs)
+						: 0.0f;
 
 	if (total_docs <= 0)
 	{
@@ -566,7 +563,7 @@ tp_score_documents(
 
 			/* Calculate IDF for this term */
 			Assert(memtable->total_terms > 0);
-			avg_idf = local_state->shared->idf_sum / memtable->total_terms;
+			avg_idf = metap->idf_sum / memtable->total_terms;
 			idf		= tp_calculate_idf_with_epsilon(
 					memtable_posting->doc_count, total_docs, avg_idf);
 
@@ -644,7 +641,7 @@ tp_score_documents(
 
 				/* Calculate IDF for this term */
 				Assert(memtable->total_terms > 0);
-				avg_idf = local_state->shared->idf_sum / memtable->total_terms;
+				avg_idf = metap->idf_sum / memtable->total_terms;
 				idf		= tp_calculate_idf_with_epsilon(
 						segment_posting->doc_count, total_docs, avg_idf);
 

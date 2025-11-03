@@ -57,6 +57,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->total_docs		= 0;
 	metap->total_terms		= 0;
 	metap->total_len		= 0;
+	metap->idf_sum			= 0.0;
 	metap->root_blkno		= InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
 	metap->first_segment	= InvalidBlockNumber;
@@ -165,8 +166,10 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		MarkBufferDirty(docid_buf);
 
 		/* Update metapage to point to this new page */
-		BlockNumber new_docid_page = BufferGetBlockNumber(docid_buf);
-		metap->first_docid_page	   = new_docid_page;
+		{
+			BlockNumber new_docid_page = BufferGetBlockNumber(docid_buf);
+			metap->first_docid_page	   = new_docid_page;
+		}
 
 		MarkBufferDirty(metabuf);
 
@@ -206,7 +209,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	/* Check if current page has room for another docid */
 	page_capacity = TP_DOCIDS_PER_PAGE;
 
-	if (docid_header->num_docids >= page_capacity)
+	if (docid_header->num_docids >= (uint32)page_capacity)
 	{
 		/* Current page is full, create a new one */
 		Buffer			   new_buf = ReadBuffer(index, P_NEW);
@@ -255,6 +258,36 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 }
 
 /*
+ * Clear all docid pages after successful flush to segment
+ * This prevents stale docids from being used during recovery
+ */
+void
+tp_clear_docid_pages(Relation index)
+{
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
+
+	/* Get the metapage to clear the docid page pointer */
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	/*
+	 * Simply clear the first_docid_page pointer. We don't need to
+	 * physically delete the pages - they'll be reused or reclaimed
+	 * by vacuum. This ensures recovery won't try to rebuild from
+	 * stale docids.
+	 */
+	metap->first_docid_page = InvalidBlockNumber;
+
+	MarkBufferDirty(metabuf);
+	FlushOneBuffer(metabuf);
+	UnlockReleaseBuffer(metabuf);
+}
+
+/*
  * Recover from docid pages by rebuilding the in-memory structures
  * This is called during index startup after a crash
  */
@@ -267,7 +300,6 @@ tp_recover_from_docid_pages(Relation index)
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
-	int				   total_recovered = 0;
 
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -303,7 +335,7 @@ tp_recover_from_docid_pages(Relation index)
 		docids = (ItemPointer)((char *)docid_header +
 							   sizeof(TpDocidPageHeader));
 
-		for (int i = 0; i < docid_header->num_docids; i++)
+		for (uint32 i = 0; i < docid_header->num_docids; i++)
 		{
 			ItemPointer		   ctid = &docids[i];
 			Relation		   heap_rel;
@@ -394,6 +426,7 @@ tp_recover_from_docid_pages(Relation index)
 
 						/* Add document terms to posting lists */
 						tp_add_document_terms(
+								index,
 								local_state,
 								ctid,
 								terms,
@@ -408,7 +441,6 @@ tp_recover_from_docid_pages(Relation index)
 						}
 						pfree(terms);
 						pfree(frequencies);
-						total_recovered++;
 					}
 
 					/* Free the vector */
@@ -428,4 +460,32 @@ tp_recover_from_docid_pages(Relation index)
 		current_page = docid_header->next_page;
 		UnlockReleaseBuffer(docid_buf);
 	}
+}
+
+/*
+ * tp_update_metapage_stats - Increment corpus statistics in metapage
+ *
+ * Updates total_docs, total_len, and idf_sum atomically.
+ * Called on every document insert and during IDF calculation.
+ */
+void
+tp_update_metapage_stats(
+		Relation index, int32 doc_delta, int64 len_delta, float8 idf_delta)
+{
+	Buffer			buf;
+	Page			page;
+	TpIndexMetaPage metap;
+
+	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page  = BufferGetPage(buf);
+	metap = (TpIndexMetaPage)PageGetContents(page);
+
+	/* Update statistics */
+	metap->total_docs += doc_delta;
+	metap->total_len += len_delta;
+	metap->idf_sum += idf_delta;
+
+	MarkBufferDirty(buf);
+	UnlockReleaseBuffer(buf);
 }

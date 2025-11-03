@@ -283,11 +283,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid				   = index_oid;
-	shared_state->heap_oid				   = heap_oid;
-	shared_state->total_docs			   = 0;
-	shared_state->total_len				   = 0;
-	shared_state->idf_sum				   = 0.0;
+	shared_state->index_oid = index_oid;
+	shared_state->heap_oid	= heap_oid;
+	/* Corpus stats now stored in metapage only */
 	shared_state->memory_usage.memory_used = 0;
 
 	/* Initialize the per-index LWLock */
@@ -595,7 +593,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 
 		/* Recalculate IDF sum after recovery for proper BM25 scoring */
-		tp_calculate_idf_sum(local_state);
+		tp_calculate_idf_sum(index_rel, local_state);
 	}
 
 	/* Clean up */
@@ -623,6 +621,7 @@ tp_rebuild_posting_lists_from_docids(
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
 	Relation		   heap_rel;
+	uint32			   docs_recovered = 0;
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
@@ -744,11 +743,12 @@ tp_rebuild_posting_lists_from_docids(
 							ctid,
 							metap->text_config_oid,
 							local_state,
+							index_rel,
 							&doc_length))
 				{
-					/* Update corpus statistics */
-					local_state->shared->total_docs++;
-					local_state->shared->total_len += doc_length;
+					/* Corpus statistics updated in metapage via
+					 * tp_add_document_terms */
+					docs_recovered++;
 				}
 			}
 
@@ -764,13 +764,10 @@ tp_rebuild_posting_lists_from_docids(
 	relation_close(heap_rel, AccessShareLock);
 
 	/* Log recovery completion */
-	if (local_state && local_state->shared)
-	{
-		elog(INFO,
-			 "Recovery complete for tapir index %u: %u documents restored",
-			 index_rel->rd_id,
-			 local_state->shared->total_docs);
-	}
+	elog(INFO,
+		 "Recovery complete for tapir index %u: %u documents restored",
+		 index_rel->rd_id,
+		 docs_recovered);
 }
 
 /*

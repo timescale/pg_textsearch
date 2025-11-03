@@ -343,12 +343,14 @@ tp_has_child_tables(Relation heap)
 			elog(ERROR, "SPI_connect failed");
 
 		/* Query to check if this table has any children */
-		const char *query = "SELECT 1 FROM pg_catalog.pg_inherits "
-							"WHERE inhparent = $1 LIMIT 1";
+		{
+			const char *query = "SELECT 1 FROM pg_catalog.pg_inherits "
+								"WHERE inhparent = $1 LIMIT 1";
 
-		/* Prepare the plan */
-		Oid argtypes[1] = {OIDOID};
-		plan			= SPI_prepare(query, 1, argtypes);
+			/* Prepare the plan */
+			Oid argtypes[1] = {OIDOID};
+			plan			= SPI_prepare(query, 1, argtypes);
+		}
 
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed");
@@ -487,7 +489,7 @@ tp_build_init_metapage(
  * Calculate the sum of all IDF values for the index
  */
 void
-tp_calculate_idf_sum(TpLocalIndexState *index_state)
+tp_calculate_idf_sum(Relation index, TpLocalIndexState *index_state)
 {
 	TpMemtable		  *memtable;
 	dshash_table	  *string_table;
@@ -496,11 +498,16 @@ tp_calculate_idf_sum(TpLocalIndexState *index_state)
 	float8			   idf_sum = 0.0;
 	int32			   total_docs;
 	int32			   term_count = 0;
+	TpIndexMetaPage	   metap;
 
 	Assert(index_state != NULL);
 	Assert(index_state->shared != NULL);
 
-	total_docs = index_state->shared->total_docs;
+	/* Get total_docs from metapage */
+	metap	   = tp_get_metapage(index);
+	total_docs = (int32)metap->total_docs;
+	pfree(metap);
+
 	if (total_docs == 0)
 		return; /* No documents, no IDF to calculate */
 
@@ -538,8 +545,8 @@ tp_calculate_idf_sum(TpLocalIndexState *index_state)
 	dshash_seq_term(&status);
 	dshash_detach(string_table);
 
-	/* Store the IDF sum in shared state */
-	index_state->shared->idf_sum = idf_sum;
+	/* Store the IDF sum in metapage */
+	tp_update_metapage_stats(index, 0, 0, idf_sum);
 
 	/* Update the term count in memtable */
 	memtable->total_terms = term_count;
@@ -553,32 +560,23 @@ tp_build_finalize_and_update_stats(
 		uint64			  *total_len)
 {
 	Buffer			metabuf;
-	Page			metapage;
 	TpIndexMetaPage metap;
 
 	Assert(index_state != NULL);
 
 	/* Calculate IDF sum for average IDF computation */
-	tp_calculate_idf_sum(index_state);
+	tp_calculate_idf_sum(index, index_state);
 
-	/* Get actual statistics from the shared state */
-	*total_docs = index_state->shared->total_docs;
-	*total_len	= index_state->shared->total_len;
-
-	/* Update metapage with computed statistics */
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	metap->total_docs = *total_docs;
-	metap->total_len  = *total_len;
-
-	MarkBufferDirty(metabuf);
+	/* Get actual statistics from metapage (updated during build) */
+	metap		= tp_get_metapage(index);
+	*total_docs = metap->total_docs;
+	*total_len	= metap->total_len;
+	pfree(metap);
 
 	/* Flush metapage to disk immediately to ensure crash recovery works */
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	FlushOneBuffer(metabuf);
-
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -837,6 +835,7 @@ tp_process_document_text(
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
+		Relation		   index,
 		int32			  *doc_length_out)
 {
 	char	*document_str;
@@ -884,7 +883,13 @@ tp_process_document_text(
 
 		/* Add document terms to posting lists */
 		tp_add_document_terms(
-				index_state, ctid, terms, frequencies, term_count, doc_length);
+				index,
+				index_state,
+				ctid,
+				terms,
+				frequencies,
+				term_count,
+				doc_length);
 
 		/*
 		 * Check memory after document completion.
@@ -956,6 +961,7 @@ tp_process_document(
 				ctid,
 				text_config_oid,
 				index_state,
+				index,
 				&doc_length))
 	{
 		return false;
@@ -1332,6 +1338,7 @@ tp_insert(
 
 				/* Now add the document to the (possibly fresh) memtable */
 				tp_add_document_terms(
+						index,
 						index_state,
 						ht_ctid,
 						terms,
@@ -1382,7 +1389,7 @@ tp_insert(
 	tp_add_docid_to_pages(index, ht_ctid);
 
 	/* Recalculate IDF sum after insert for proper BM25 scoring */
-	tp_calculate_idf_sum(index_state);
+	tp_calculate_idf_sum(index, index_state);
 
 	return true;
 }
@@ -1792,8 +1799,10 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		Assert(so->result_scores != NULL);
 
 		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
-		float4 raw_score		 = so->result_scores[so->current_pos];
-		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
+		{
+			float4 raw_score = so->result_scores[so->current_pos];
+			bm25_score		 = (raw_score > 0) ? -raw_score : raw_score;
+		}
 		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
@@ -2058,17 +2067,15 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
 
-	/* Show corpus statistics */
+	/* Show corpus statistics from metapage */
 	appendStringInfo(&result, "Corpus Statistics:\n");
-	appendStringInfo(
-			&result, "  total_docs: %d\n", index_state->shared->total_docs);
-	appendStringInfo(
-			&result, "  total_len: %ld\n", index_state->shared->total_len);
+	appendStringInfo(&result, "  total_docs: %lu\n", metap->total_docs);
+	appendStringInfo(&result, "  total_len: %lu\n", metap->total_len);
+	appendStringInfo(&result, "  idf_sum: %.4f\n", metap->idf_sum);
 
-	if (index_state->shared->total_docs > 0)
+	if (metap->total_docs > 0)
 	{
-		float avg_doc_len = (float)index_state->shared->total_len /
-							(float)index_state->shared->total_docs;
+		float avg_doc_len = (float)metap->total_len / (float)metap->total_docs;
 
 		appendStringInfo(&result, "  avg_doc_len: %.4f\n", avg_doc_len);
 	}

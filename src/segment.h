@@ -142,4 +142,5 @@ extern BlockNumber
 tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index);
 
 /* Utility functions */
-extern uint32 tp_segment_estimate_size(TpLocalIndexState *state);
+extern uint32
+tp_segment_estimate_size(TpLocalIndexState *state, Relation index);

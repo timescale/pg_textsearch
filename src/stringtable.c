@@ -527,6 +527,7 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
  */
 void
 tp_add_document_terms(
+		Relation		   index,
 		TpLocalIndexState *local_state,
 		ItemPointer		   ctid,
 		char			 **terms,
@@ -553,11 +554,8 @@ tp_add_document_terms(
 	tp_store_document_length(local_state, ctid, doc_length);
 
 	/*
-	 * Update corpus statistics.
+	 * Update corpus statistics in metapage.
 	 * Protected by the per-index LWLock acquired at transaction level.
-	 * The lock's memory barriers ensure these updates are visible to other
-	 * backends on NUMA systems.
 	 */
-	local_state->shared->total_docs++;
-	local_state->shared->total_len += doc_length;
+	tp_update_metapage_stats(index, 1, doc_length, 0.0);
 }

@@ -54,11 +54,33 @@ tp_free_posting_list(
 	if (DsaPointerIsValid(posting_list->entries_dp))
 	{
 		entries_size = posting_list->capacity * sizeof(TpPostingEntry);
+
+		/* Check if we're about to underflow */
+		if (memory_usage->memory_used < entries_size)
+		{
+			elog(ERROR,
+				 "Memory tracking underflow: trying to free %zu bytes but "
+				 "only %zu bytes tracked. capacity=%d, doc_count=%d",
+				 entries_size,
+				 memory_usage->memory_used,
+				 posting_list->capacity,
+				 posting_list->doc_count);
+		}
+
 		tp_dsa_free(
 				area, memory_usage, posting_list->entries_dp, entries_size);
 	}
 
 	/* Free the posting list structure itself */
+	if (memory_usage->memory_used < sizeof(TpPostingList))
+	{
+		elog(ERROR,
+			 "Memory tracking underflow: trying to free %zu bytes but "
+			 "only %zu bytes tracked",
+			 sizeof(TpPostingList),
+			 memory_usage->memory_used);
+	}
+
 	tp_dsa_free(area, memory_usage, posting_list_dp, sizeof(TpPostingList));
 }
 

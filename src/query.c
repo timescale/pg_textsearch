@@ -390,12 +390,9 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		 * (segments) with shared memory stats (current memtable) for accurate
 		 * BM25 scoring.
 		 */
-		total_docs	= (int32)(metap->total_docs +
-							  index_state->shared->total_docs);
+		total_docs	= (int32)metap->total_docs;
 		avg_doc_len = total_docs > 0
-							? (float4)((metap->total_len +
-										index_state->shared->total_len) /
-									   (double)total_docs)
+							? (float4)(metap->total_len / (double)total_docs)
 							: 0.0f;
 
 		/* Tokenize the document text using the index's text configuration */
@@ -473,7 +470,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				if (memtable->total_terms == 0)
 					elog(ERROR, "Invalid index state: total_terms is zero");
 
-				avg_idf = index_state->shared->idf_sum / memtable->total_terms;
+				avg_idf = metap->idf_sum / memtable->total_terms;
 				idf		= tp_calculate_idf_with_epsilon(
 						posting_list->doc_count, total_docs, avg_idf);
 			}

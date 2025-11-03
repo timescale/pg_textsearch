@@ -105,7 +105,7 @@ write_segment_data(
  * Estimate segment size based on memtable contents
  */
 uint32
-tp_segment_estimate_size(TpLocalIndexState *state)
+tp_segment_estimate_size(TpLocalIndexState *state, Relation index)
 {
 	TpMemtable		  *memtable;
 	dshash_table	  *string_table;
@@ -145,9 +145,15 @@ tp_segment_estimate_size(TpLocalIndexState *state)
 	dshash_seq_term(&status);
 
 	/* Add header, document lengths, and overhead */
-	total_size += sizeof(TpSegmentHeader);
-	total_size += state->shared->total_docs * sizeof(TpDocLength);
-	total_size += BLCKSZ; /* Page overhead estimate */
+	{
+		TpIndexMetaPage metap = tp_get_metapage(index);
+
+		total_size += sizeof(TpSegmentHeader);
+		total_size += metap->total_docs * sizeof(TpDocLength);
+		total_size += BLCKSZ; /* Page overhead estimate */
+
+		pfree(metap);
+	}
 
 	return total_size;
 }
@@ -177,6 +183,14 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	uint32			   term_count = 0;
 	uint32			   doc_count  = 0;
 	uint32			   dict_size;
+	uint32			   dict_offset;
+	uint32			   dict_size_val;
+	uint32			   postings_offset;
+	uint32			   postings_size_val;
+	uint32			   doclens_offset;
+	uint32			   doclens_size_val;
+	uint32			   strings_offset;
+	uint32			   strings_size_val;
 	uint32			  *posting_offsets;
 	uint32			  *string_offsets;
 	int				   page_count = 0;
@@ -217,17 +231,24 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	doc_lengths_table = tp_doclength_table_attach(
 			state->dsa, memtable->doc_lengths_handle);
 
-	/* No data to flush? */
-	if (state->shared->total_docs == 0)
+	/* No data to flush? Check metapage for document count */
 	{
-		MemoryContextSwitchTo(old_context);
-		MemoryContextDelete(flush_context);
-		return InvalidBlockNumber;
+		TpIndexMetaPage metap	 = tp_get_metapage(index);
+		bool			has_docs = (metap->total_docs > 0);
+
+		pfree(metap);
+
+		if (!has_docs)
+		{
+			MemoryContextSwitchTo(old_context);
+			MemoryContextDelete(flush_context);
+			return InvalidBlockNumber;
+		}
 	}
 
 	/* Estimate pages needed */
 	{
-		uint32 estimated_size = tp_segment_estimate_size(state);
+		uint32 estimated_size = tp_segment_estimate_size(state, index);
 		max_pages			  = (estimated_size + BLCKSZ - 1) / BLCKSZ +
 					2; /* Add safety margin */
 	}
@@ -341,18 +362,23 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	page_count	= 1;
 
 	/* Initialize header (will update offsets as we write) */
-	header					 = (TpSegmentHeader *)PageGetContents(header_page);
-	header->magic			 = TP_SEGMENT_MAGIC;
-	header->version			 = TP_SEGMENT_VERSION;
-	header->num_pages		 = 0; /* Will update at end */
-	header->data_size		 = 0; /* Will update at end */
-	header->num_terms		 = term_count;
-	header->num_docs		 = doc_count;
-	header->total_terms		 = memtable->total_terms;
-	header->total_doc_length = state->shared->total_len;
-	header->next_segment	 = prev_first_segment; /* Link to previous head */
-	header->created_at		 = GetCurrentTimestamp();
-	header->level			 = 0; /* Memtable flush */
+	header				= (TpSegmentHeader *)PageGetContents(header_page);
+	header->magic		= TP_SEGMENT_MAGIC;
+	header->version		= TP_SEGMENT_VERSION;
+	header->num_pages	= 0; /* Will update at end */
+	header->data_size	= 0; /* Will update at end */
+	header->num_terms	= term_count;
+	header->num_docs	= doc_count;
+	header->total_terms = memtable->total_terms;
+	/* Get total_doc_length from metapage */
+	{
+		TpIndexMetaPage metap	 = tp_get_metapage(index);
+		header->total_doc_length = metap->total_len;
+		pfree(metap);
+	}
+	header->next_segment = prev_first_segment; /* Link to previous head */
+	header->created_at	 = GetCurrentTimestamp();
+	header->level		 = 0; /* Memtable flush */
 
 	/*
 	 * Release the header buffer BEFORE starting to write data.
@@ -367,9 +393,9 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 	logical_offset = sizeof(TpSegmentHeader) + max_pages * sizeof(BlockNumber);
 
 	/* Write dictionary */
-	uint32 dict_offset = logical_offset;
-	dict_size		   = term_count * sizeof(TpDictEntry);
-	dict_entries	   = palloc(dict_size);
+	dict_offset	 = logical_offset;
+	dict_size	 = term_count * sizeof(TpDictEntry);
+	dict_entries = palloc(dict_size);
 
 	/* Build dictionary with placeholder offsets */
 	for (uint32 i = 0; i < term_count; i++)
@@ -389,11 +415,11 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 			&logical_offset,
 			dict_entries,
 			dict_size);
-	uint32 dict_size_val = logical_offset - dict_offset;
+	dict_size_val = logical_offset - dict_offset;
 
 	/* Write posting lists and track offsets */
-	uint32 postings_offset = logical_offset;
-	posting_offsets		   = palloc(term_count * sizeof(uint32));
+	postings_offset = logical_offset;
+	posting_offsets = palloc(term_count * sizeof(uint32));
 
 	for (uint32 i = 0; i < term_count; i++)
 	{
@@ -429,10 +455,10 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 
 		pfree(segment_postings);
 	}
-	uint32 postings_size_val = logical_offset - postings_offset;
+	postings_size_val = logical_offset - postings_offset;
 
 	/* Write document lengths */
-	uint32 doclens_offset = logical_offset;
+	doclens_offset = logical_offset;
 	write_segment_data(
 			index,
 			page_map,
@@ -440,15 +466,17 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 			&logical_offset,
 			doc_lengths,
 			doc_count * sizeof(TpDocLength));
-	uint32 doclens_size_val = logical_offset - doclens_offset;
+	doclens_size_val = logical_offset - doclens_offset;
 
 	/* Write string pool and track offsets */
-	uint32 strings_offset = logical_offset;
-	string_offsets		  = palloc(term_count * sizeof(uint32));
+	strings_offset = logical_offset;
+	string_offsets = palloc(term_count * sizeof(uint32));
 
 	for (uint32 i = 0; i < term_count; i++)
 	{
-		uint32 str_len = terms[i].term_len + 1; /* Include null terminator */
+		uint32 str_len;
+
+		str_len = terms[i].term_len + 1; /* Include null terminator */
 		string_offsets[i] = logical_offset;
 		write_segment_data(
 				index,
@@ -458,7 +486,7 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 				terms[i].term,
 				str_len);
 	}
-	uint32 strings_size_val = logical_offset - strings_offset;
+	strings_size_val = logical_offset - strings_offset;
 
 	/* Update dictionary with actual offsets */
 	for (uint32 i = 0; i < term_count; i++)
@@ -520,13 +548,10 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 		metap->first_segment = root_block;
 
 		/*
-		 * Update corpus statistics in metapage.
-		 * These stats accumulate across all segments and memtable.
-		 * We ADD the current memtable stats to the existing metapage stats
-		 * to preserve counts from previous flushes.
+		 * Note: Corpus statistics (total_docs, total_len, idf_sum) are
+		 * already up-to-date in metapage, as they are maintained in
+		 * real-time by tp_add_document_terms(). No need to update them here.
 		 */
-		metap->total_docs += state->shared->total_docs;
-		metap->total_len += state->shared->total_len;
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
@@ -543,10 +568,18 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 		memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 	}
 
-	/* Reset statistics */
-	state->shared->total_docs = 0;
-	state->shared->total_len  = 0;
-	memtable->total_terms	  = 0;
+	/*
+	 * Clear docid pages since documents are now safely in the segment.
+	 * This prevents stale docids from being used during recovery.
+	 */
+	tp_clear_docid_pages(index);
+
+	/*
+	 * Reset term count statistics.
+	 * Note: Corpus statistics (total_docs, total_len, idf_sum) remain
+	 * in metapage and are not cleared.
+	 */
+	memtable->total_terms = 0;
 
 	/* Clean up */
 	pfree(page_map);

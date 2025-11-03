@@ -79,6 +79,7 @@ extern void tp_string_table_clear(
 
 /* Document term management functions */
 extern void tp_add_document_terms(
+		Relation		   index,
 		TpLocalIndexState *local_state,
 		ItemPointer		   ctid,
 		char			 **terms,

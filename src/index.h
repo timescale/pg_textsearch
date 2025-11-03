@@ -110,10 +110,12 @@ extern bool tp_process_document_text(
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
+		Relation		   index,
 		int32			  *doc_length_out);
 
 /* GUC variable for logging BM25 scores */
 extern bool tp_log_scores;
 
 /* IDF sum calculation for average IDF */
-extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);
+extern void
+tp_calculate_idf_sum(Relation index, TpLocalIndexState *index_state);
