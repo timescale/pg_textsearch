@@ -208,10 +208,133 @@ tp_segment_read(
 TpPostingList *
 tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 {
-	/* TODO: Implement binary search */
-	(void)reader;
-	(void)term;
-	return NULL;
+	TpSegmentHeader *header = reader->header;
+	TpDictionary	 dict_header;
+	uint32			*string_offsets;
+	int				 left, right, mid;
+	TpPostingList	*result = NULL;
+
+	if (header->num_terms == 0 || header->dictionary_offset == 0)
+		return NULL;
+
+	/* Read dictionary header */
+	tp_segment_read(
+			reader,
+			header->dictionary_offset,
+			&dict_header,
+			sizeof(dict_header.num_terms));
+
+	/* Read string offsets array */
+	string_offsets = palloc(sizeof(uint32) * dict_header.num_terms);
+	tp_segment_read(
+			reader,
+			header->dictionary_offset + sizeof(dict_header.num_terms),
+			string_offsets,
+			sizeof(uint32) * dict_header.num_terms);
+
+	/* Binary search for the term */
+	left  = 0;
+	right = dict_header.num_terms - 1;
+
+	while (left <= right)
+	{
+		TpStringEntry string_entry;
+		char		 *term_text;
+		int			  cmp;
+		uint32		  string_offset;
+
+		mid			  = left + (right - left) / 2;
+		string_offset = header->strings_offset + string_offsets[mid];
+
+		/* Read string length */
+		tp_segment_read(
+				reader, string_offset, &string_entry.length, sizeof(uint32));
+
+		/* Read term text */
+		term_text = palloc(string_entry.length + 1);
+		tp_segment_read(
+				reader,
+				string_offset + sizeof(uint32),
+				term_text,
+				string_entry.length);
+		term_text[string_entry.length] = '\0';
+
+		/* Compare terms */
+		cmp = strcmp(term, term_text);
+
+		if (cmp == 0)
+		{
+			/* Found it! Read the dictionary entry and posting list */
+			TpDictEntry		  dict_entry;
+			TpSegmentPosting *postings;
+			uint32			  i;
+
+			/* Read dictionary entry */
+			tp_segment_read(
+					reader,
+					header->entries_offset + (mid * sizeof(TpDictEntry)),
+					&dict_entry,
+					sizeof(TpDictEntry));
+
+			/* Allocate result structure */
+			result			  = palloc0(sizeof(TpPostingList));
+			result->doc_count = dict_entry.posting_count;
+			result->doc_freq  = dict_entry.doc_freq;
+			result->capacity  = dict_entry.posting_count;
+			result->is_sorted = true; /* Segments store sorted postings */
+
+			/* Read posting data from segment */
+			if (dict_entry.posting_count > 0)
+			{
+				TpPostingEntry *entries;
+
+				postings = palloc(
+						sizeof(TpSegmentPosting) * dict_entry.posting_count);
+				tp_segment_read(
+						reader,
+						header->postings_offset + dict_entry.posting_offset,
+						postings,
+						sizeof(TpSegmentPosting) * dict_entry.posting_count);
+
+				/* Convert to TpPostingEntry array in local memory */
+				entries = palloc(
+						sizeof(TpPostingEntry) * dict_entry.posting_count);
+				for (i = 0; i < dict_entry.posting_count; i++)
+				{
+					entries[i].ctid		 = postings[i].ctid;
+					entries[i].doc_id	 = -1; /* Not used for segments */
+					entries[i].frequency = postings[i].frequency;
+				}
+
+				/* For segment-based posting lists, we store entries locally,
+				 * not in DSA */
+				result->entries_dp = (dsa_pointer)
+						entries; /* Hack: store local pointer as dsa_pointer */
+
+				pfree(postings);
+			}
+			else
+			{
+				result->entries_dp = InvalidDsaPointer;
+			}
+
+			pfree(term_text);
+			break;
+		}
+		else if (cmp < 0)
+		{
+			right = mid - 1;
+		}
+		else
+		{
+			left = mid + 1;
+		}
+
+		pfree(term_text);
+	}
+
+	pfree(string_offsets);
+	return result;
 }
 
 /*
@@ -220,9 +343,30 @@ tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 int32
 tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid)
 {
-	/* TODO: Implement document length lookup */
-	(void)reader;
-	(void)ctid;
+	TpSegmentHeader *header = reader->header;
+	TpDocLength		 doc_length;
+	uint32			 i;
+
+	if (header->num_docs == 0 || header->doc_lengths_offset == 0)
+		return -1;
+
+	/* Linear search through document lengths (could optimize with binary
+	 * search) */
+	for (i = 0; i < header->num_docs; i++)
+	{
+		tp_segment_read(
+				reader,
+				header->doc_lengths_offset + (i * sizeof(TpDocLength)),
+				&doc_length,
+				sizeof(TpDocLength));
+
+		if (ItemPointerEquals(ctid, &doc_length.ctid))
+		{
+			return (int32)doc_length.length;
+		}
+	}
+
+	/* Document not found */
 	return -1;
 }
 
