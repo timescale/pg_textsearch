@@ -562,9 +562,18 @@ tp_score_documents(
 			float8			avg_idf;
 
 			/* Calculate IDF for this term */
-			Assert(memtable->total_terms > 0);
-			avg_idf = metap->idf_sum / memtable->total_terms;
-			idf		= tp_calculate_idf_with_epsilon(
+			/* Use metapage total_terms which persists across flushes */
+			if (metap->total_terms > 0)
+			{
+				avg_idf = metap->idf_sum / metap->total_terms;
+			}
+			else
+			{
+				/* Fallback to memtable if metapage not updated yet */
+				Assert(memtable->total_terms > 0);
+				avg_idf = metap->idf_sum / memtable->total_terms;
+			}
+			idf = tp_calculate_idf_with_epsilon(
 					memtable_posting->doc_count, total_docs, avg_idf);
 
 			/* Get entries from memtable posting list */
@@ -640,9 +649,18 @@ tp_score_documents(
 				float8			avg_idf;
 
 				/* Calculate IDF for this term */
-				Assert(memtable->total_terms > 0);
-				avg_idf = metap->idf_sum / memtable->total_terms;
-				idf		= tp_calculate_idf_with_epsilon(
+				/* Use metapage total_terms which persists across flushes */
+				if (metap->total_terms > 0)
+				{
+					avg_idf = metap->idf_sum / metap->total_terms;
+				}
+				else
+				{
+					/* Fallback to memtable if metapage not updated yet */
+					Assert(memtable->total_terms > 0);
+					avg_idf = metap->idf_sum / memtable->total_terms;
+				}
+				idf = tp_calculate_idf_with_epsilon(
 						segment_posting->doc_count, total_docs, avg_idf);
 
 				/* Get entries from segment posting list (stored in entries_dp)

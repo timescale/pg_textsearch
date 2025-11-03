@@ -467,11 +467,21 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				if (!memtable)
 					elog(ERROR, "Cannot get memtable - index state corrupted");
 
-				if (memtable->total_terms == 0)
+				/* Use metapage total_terms which persists across flushes */
+				if (metap->total_terms > 0)
+				{
+					avg_idf = metap->idf_sum / metap->total_terms;
+				}
+				else if (memtable->total_terms > 0)
+				{
+					/* Fallback to memtable if metapage not updated yet */
+					avg_idf = metap->idf_sum / memtable->total_terms;
+				}
+				else
+				{
 					elog(ERROR, "Invalid index state: total_terms is zero");
-
-				avg_idf = metap->idf_sum / memtable->total_terms;
-				idf		= tp_calculate_idf_with_epsilon(
+				}
+				idf = tp_calculate_idf_with_epsilon(
 						posting_list->doc_count, total_docs, avg_idf);
 			}
 

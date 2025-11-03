@@ -328,6 +328,8 @@ tp_has_child_tables(Relation heap)
 	Datum		  values[1];
 	char		 *nulls			= " "; /* No nulls */
 	volatile bool spi_connected = false;
+	const char	 *query;
+	Oid			  argtypes[1];
 
 	/* First check if it's a partitioned table (quick check) */
 	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
@@ -343,14 +345,12 @@ tp_has_child_tables(Relation heap)
 			elog(ERROR, "SPI_connect failed");
 
 		/* Query to check if this table has any children */
-		{
-			const char *query = "SELECT 1 FROM pg_catalog.pg_inherits "
-								"WHERE inhparent = $1 LIMIT 1";
+		query = "SELECT 1 FROM pg_catalog.pg_inherits "
+				"WHERE inhparent = $1 LIMIT 1";
 
-			/* Prepare the plan */
-			Oid argtypes[1] = {OIDOID};
-			plan			= SPI_prepare(query, 1, argtypes);
-		}
+		/* Prepare the plan */
+		argtypes[0] = OIDOID;
+		plan		= SPI_prepare(query, 1, argtypes);
 
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed");
@@ -545,8 +545,23 @@ tp_calculate_idf_sum(Relation index, TpLocalIndexState *index_state)
 	dshash_seq_term(&status);
 	dshash_detach(string_table);
 
-	/* Store the IDF sum in metapage */
+	/* Store the IDF sum and term count in metapage */
 	tp_update_metapage_stats(index, 0, 0, idf_sum);
+
+	/* Also update total_terms in metapage for average IDF calculation */
+	{
+		Buffer			metabuf;
+		TpIndexMetaPage metap;
+
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
+
+		metap->total_terms = term_count;
+
+		MarkBufferDirty(metabuf);
+		UnlockReleaseBuffer(metabuf);
+	}
 
 	/* Update the term count in memtable */
 	memtable->total_terms = term_count;
@@ -1303,37 +1318,12 @@ tp_insert(
 				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 					tp_get_memory_limit())
 				{
-					BlockNumber segment_block;
-					size_t		current_usage = tp_get_memory_usage(
-							 &index_state->shared->memory_usage);
-					size_t limit = tp_get_memory_limit();
-
-					elog(DEBUG1,
-						 "Memory limit reached before insert (usage: %zu, "
-						 "limit: %zu), flushing memtable to segment",
-						 current_usage,
-						 limit);
-
-					/* Flush the memtable to a new segment */
-					segment_block =
-							tp_flush_memtable_to_segment(index_state, index);
-
-					if (segment_block == InvalidBlockNumber)
-					{
-						elog(WARNING, "Failed to flush memtable to segment");
-						tp_report_memory_limit_exceeded(
-								&index_state->shared->memory_usage);
-					}
-					else
-					{
-						size_t new_usage = tp_get_memory_usage(
-								&index_state->shared->memory_usage);
-						elog(DEBUG1,
-							 "Successfully flushed memtable to segment at "
-							 "block %u, memory usage after flush: %zu",
-							 segment_block,
-							 new_usage);
-					}
+					/* DISABLED: Automatic spilling disabled pending segment
+					 * refactoring */
+					/* For now, just report the error instead of trying to
+					 * flush */
+					tp_report_memory_limit_exceeded(
+							&index_state->shared->memory_usage);
 				}
 
 				/* Now add the document to the (possibly fresh) memtable */
@@ -1747,6 +1737,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	TpScanOpaque so = (TpScanOpaque)scan->opaque;
 	float4		 bm25_score;
+	float4		 raw_score;
 	BlockNumber	 blknum;
 
 	Assert(scan != NULL);
@@ -1799,10 +1790,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		Assert(so->result_scores != NULL);
 
 		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
-		{
-			float4 raw_score = so->result_scores[so->current_pos];
-			bm25_score		 = (raw_score > 0) ? -raw_score : raw_score;
-		}
+		raw_score				 = so->result_scores[so->current_pos];
+		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
 		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
@@ -2308,7 +2297,6 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	Oid				   index_oid;
 	TpLocalIndexState *index_state;
 	Relation		   index_rel;
-	BlockNumber		   segment_block;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
@@ -2341,19 +2329,10 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", index_name)));
 	}
 
-	/* Acquire exclusive lock on shared index state (same as tp_insert does) */
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-
-	/* Flush the memtable to disk segment */
-	segment_block = tp_flush_memtable_to_segment(index_state, index_rel);
-
-	/* Close the index and release locks */
+	/* DISABLED: Spilling is temporarily disabled pending segment refactoring
+	 */
+	/* Just close the index and return success */
 	index_close(index_rel, RowExclusiveLock);
 
-	if (segment_block == InvalidBlockNumber)
-	{
-		PG_RETURN_TEXT_P(cstring_to_text("No data to flush or flush failed"));
-	}
-
-	PG_RETURN_TEXT_P(cstring_to_text("Memtable flushed successfully"));
+	PG_RETURN_TEXT_P(cstring_to_text("Spilling disabled (no-op)"));
 }

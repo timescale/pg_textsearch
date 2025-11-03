@@ -37,12 +37,12 @@ typedef struct TpIndexMetaPageData
 	uint32		version;		 /* Index format version */
 	Oid			text_config_oid; /* Text search configuration OID */
 	uint64		total_docs;		 /* Total number of documents */
-	uint64		total_terms;	 /* Total term occurrences across all docs */
-	uint64		total_len;		 /* Total length of all documents */
-	float8		idf_sum;	/* Sum of IDF values for avg IDF calculation */
-	float4		k1;			/* BM25 k1 parameter */
-	float4		b;			/* BM25 b parameter */
-	BlockNumber root_blkno; /* Root page of the index tree */
+	uint64		total_terms; /* Number of unique terms for IDF calculation */
+	uint64		total_len;	 /* Total length of all documents */
+	float8		idf_sum;	 /* Sum of IDF values for avg IDF calculation */
+	float4		k1;			 /* BM25 k1 parameter */
+	float4		b;			 /* BM25 b parameter */
+	BlockNumber root_blkno;	 /* Root page of the index tree */
 	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
 	BlockNumber first_docid_page; /* First page of docid chain for crash
 								   * recovery */
