@@ -30,11 +30,11 @@
 #include <utils/snapmgr.h>
 
 #include "index.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
 #include "metapage.h"
-#include "posting.h"
 #include "registry.h"
 #include "state.h"
-#include "stringtable.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;

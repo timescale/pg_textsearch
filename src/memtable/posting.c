@@ -20,14 +20,14 @@
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
 
+#include "../constants.h"
+#include "../memory.h"
+#include "../metapage.h"
+#include "../segment/segment.h"
+#include "../state.h"
 #include "common/hashfn.h"
-#include "constants.h"
-#include "memory.h"
 #include "memtable.h"
-#include "metapage.h"
 #include "posting.h"
-#include "segment.h"
-#include "state.h"
 #include "stringtable.h"
 
 /* Configuration parameters */

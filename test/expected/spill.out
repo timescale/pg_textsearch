@@ -35,9 +35,9 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 
 -- Force memtable spill
 SELECT tp_spill_memtable('spill_basic_idx');
-     tp_spill_memtable     
----------------------------
- Spilling disabled (no-op)
+                tp_spill_memtable                
+-------------------------------------------------
+ Dictionary built and segment written to block 2
 (1 row)
 
 -- Query after spill - should still work
@@ -70,9 +70,9 @@ INSERT INTO spill_update VALUES
   (2, 'original document two');
 -- Force spill
 SELECT tp_spill_memtable('spill_update_idx');
-     tp_spill_memtable     
----------------------------
- Spilling disabled (no-op)
+                tp_spill_memtable                
+-------------------------------------------------
+ Dictionary built and segment written to block 2
 (1 row)
 
 -- Add more documents after spill
@@ -109,17 +109,17 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='
 -- First batch
 INSERT INTO spill_multiple VALUES (1, 'first batch document');
 SELECT tp_spill_memtable('spill_multiple_idx');
-     tp_spill_memtable     
----------------------------
- Spilling disabled (no-op)
+                tp_spill_memtable                
+-------------------------------------------------
+ Dictionary built and segment written to block 2
 (1 row)
 
 -- Second batch
 INSERT INTO spill_multiple VALUES (2, 'second batch document');
 SELECT tp_spill_memtable('spill_multiple_idx');
-     tp_spill_memtable     
----------------------------
- Spilling disabled (no-op)
+                tp_spill_memtable                 
+--------------------------------------------------
+ Dictionary built and segment written to block 13
 (1 row)
 
 -- Third batch
@@ -153,9 +153,9 @@ INSERT INTO spill_terms VALUES
   (1, 'apple banana cherry'),
   (2, 'date elderberry fig');
 SELECT tp_spill_memtable('spill_terms_idx');
-     tp_spill_memtable     
----------------------------
- Spilling disabled (no-op)
+                tp_spill_memtable                
+-------------------------------------------------
+ Dictionary built and segment written to block 2
 (1 row)
 
 INSERT INTO spill_terms VALUES

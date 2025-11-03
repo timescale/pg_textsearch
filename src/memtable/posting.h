@@ -14,7 +14,7 @@
 #include <storage/spin.h>
 #include <utils/hsearch.h>
 
-#include "index.h"
+#include "../index.h"
 #include "memtable.h"
 #include "stringtable.h"
 

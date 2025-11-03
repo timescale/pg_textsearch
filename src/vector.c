@@ -19,9 +19,9 @@
 
 #include "constants.h"
 #include "index.h"
-#include "memtable.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
 #include "metapage.h"
-#include "posting.h"
 #include "vector.h"
 
 /* Local helper functions */

@@ -17,11 +17,11 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
-#include "memtable.h"
-#include "posting.h"
-#include "segment.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
+#include "segment/segment.h"
 #include "state.h"
-#include "stringtable.h"
 
 /*
  * Term entry for sorting during flush
@@ -104,6 +104,8 @@ write_segment_data(
 /*
  * Estimate segment size based on memtable contents
  */
+#if 0
+/* TODO: Update for new segment structure */
 uint32
 tp_segment_estimate_size(TpLocalIndexState *state, Relation index)
 {
@@ -157,6 +159,7 @@ tp_segment_estimate_size(TpLocalIndexState *state, Relation index)
 
 	return total_size;
 }
+#endif
 
 /*
  * Flush memtable to disk segment
@@ -164,6 +167,10 @@ tp_segment_estimate_size(TpLocalIndexState *state, Relation index)
 BlockNumber
 tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 {
+	/* TODO: Implement actual segment writing */
+	return InvalidBlockNumber;
+#if 0
+	/* Old implementation - needs updating for new segment structure */
 	TpMemtable		  *memtable;
 	dshash_table	  *string_table;
 	dshash_table	  *doc_lengths_table;
@@ -599,4 +606,5 @@ tp_flush_memtable_to_segment(TpLocalIndexState *state, Relation index)
 		 root_block);
 
 	return root_block;
+#endif
 }

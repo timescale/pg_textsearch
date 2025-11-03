@@ -14,8 +14,8 @@
 #include <utils/inval.h>
 
 #include "constants.h"
-#include "memtable.h"
-#include "posting.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
 #include "registry.h"
 #include "state.h"
 

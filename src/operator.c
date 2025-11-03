@@ -20,13 +20,13 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
-#include "memtable.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
 #include "metapage.h"
 #include "operator.h"
-#include "posting.h"
-#include "segment.h"
+#include "segment/segment.h"
 #include "state.h"
-#include "stringtable.h"
 
 /*
  * Centralized IDF calculation (basic version)

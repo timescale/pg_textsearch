@@ -24,9 +24,9 @@
 #include <utils/rel.h>
 
 #include "constants.h"
-#include "memtable.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
 #include "metapage.h"
-#include "posting.h"
 #include "state.h"
 #include "vector.h"
 

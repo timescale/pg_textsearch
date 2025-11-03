@@ -20,11 +20,11 @@
 #include <miscadmin.h>
 #include <utils/memutils.h>
 
+#include "../memory.h"
+#include "../state.h"
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
-#include "memory.h"
 #include "posting.h"
-#include "state.h"
 #include "stringtable.h"
 
 /*

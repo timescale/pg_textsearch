@@ -10,17 +10,18 @@ OBJS = \
 	src/flush.o \
 	src/index.o \
 	src/limit.o \
-	src/memtable.o \
+	src/memtable/memtable.o \
+	src/memtable/posting.o \
+	src/memtable/stringtable.o \
 	src/memory.o \
 	src/metapage.o \
 	src/mod.o \
 	src/operator.o \
-	src/posting.o \
 	src/query.o \
 	src/registry.o \
-	src/segment.o \
+	src/segment/dictionary.o \
+	src/segment/segment.o \
 	src/state.o \
-	src/stringtable.o \
 	src/vector.o
 
 # Shared library target

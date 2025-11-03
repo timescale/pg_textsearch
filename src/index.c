@@ -35,12 +35,12 @@
 #include "constants.h"
 #include "index.h"
 #include "limit.h"
-#include "memtable.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
 #include "metapage.h"
 #include "operator.h"
-#include "posting.h"
 #include "query.h"
-#include "segment.h"
+#include "segment/segment.h"
 #include "vector.h"
 
 /* Local helper functions */
@@ -2290,6 +2290,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
  * tp_spill_memtable - Force memtable flush to disk segment for testing
  */
 PG_FUNCTION_INFO_V1(tp_spill_memtable);
+PG_FUNCTION_INFO_V1(bm25_debug_dump_segment);
 
 Datum
 tp_spill_memtable(PG_FUNCTION_ARGS)
@@ -2299,6 +2300,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	Oid				   index_oid;
 	TpLocalIndexState *index_state;
 	Relation		   index_rel;
+	BlockNumber		   segment_root;
 
 	/* Convert text to C string */
 	index_name = text_to_cstring(index_name_text);
@@ -2331,10 +2333,53 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", index_name)));
 	}
 
-	/* DISABLED: Spilling is temporarily disabled pending segment refactoring
-	 */
-	/* Just close the index and return success */
+	/* Call our segment writer to test dictionary building */
+	segment_root = tp_write_segment(index_state, index_rel);
+
+	/* Close the index */
 	index_close(index_rel, RowExclusiveLock);
 
-	PG_RETURN_TEXT_P(cstring_to_text("Spilling disabled (no-op)"));
+	/* Return result message */
+	if (BlockNumberIsValid(segment_root))
+	{
+		char msg[256];
+		snprintf(
+				msg,
+				sizeof(msg),
+				"Dictionary built and segment written to block %u",
+				segment_root);
+		PG_RETURN_TEXT_P(cstring_to_text(msg));
+	}
+	else
+	{
+		PG_RETURN_TEXT_P(
+				cstring_to_text("Dictionary built successfully (segment "
+								"writing not yet implemented)"));
+	}
+}
+
+/*
+ * bm25_debug_dump_segment_wrapper - PostgreSQL wrapper for segment debug
+ * dumper
+ */
+
+/* External function declaration */
+extern void tp_debug_dump_segment_internal(
+		const char *index_name, BlockNumber segment_root);
+
+Datum
+bm25_debug_dump_segment(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	int32 segment_root	  = PG_GETARG_INT32(1);
+	char *index_name;
+
+	/* Convert index name to C string */
+	index_name = text_to_cstring(index_name_text);
+
+	/* Call the actual dump function (defined in segment/segment.c) */
+	tp_debug_dump_segment_internal(index_name, (BlockNumber)segment_root);
+
+	pfree(index_name);
+	PG_RETURN_VOID();
 }

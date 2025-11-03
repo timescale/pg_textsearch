@@ -159,6 +159,11 @@ CREATE FUNCTION tp_spill_memtable(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_spill_memtable'
     LANGUAGE C STRICT VOLATILE;
 
+-- Debug function to dump segment contents
+CREATE FUNCTION bm25_debug_dump_segment(text, int) RETURNS void
+    AS 'MODULE_PATHNAME', 'bm25_debug_dump_segment'
+    LANGUAGE C STRICT;
+
 -- Display warning about prerelease status
 DO $$
 BEGIN
