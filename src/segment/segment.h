@@ -209,11 +209,6 @@ extern bool tp_segment_get_direct(
 		TpSegmentDirectAccess *access);
 extern void tp_segment_release_direct(TpSegmentDirectAccess *access);
 
-/* Forward declaration for posting list */
-struct TpPostingList;
-extern struct TpPostingList *
-tp_segment_get_posting_list(TpSegmentReader *reader, const char *term);
-
 /* Document length lookup */
 extern int32
 tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
