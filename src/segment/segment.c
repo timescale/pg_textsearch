@@ -41,12 +41,65 @@ typedef struct PageMapCache
 	BlockNumber *page_map;	 /* Cached page map */
 } PageMapCache;
 
+/*
+ * Global page map cache to avoid re-reading page maps for the same segment.
+ * This is safe because segments are immutable once written.
+ */
 static PageMapCache page_map_cache = {InvalidOid, InvalidBlockNumber, 0, NULL};
 
 /*
- * Stub implementations for now
+ * Helper function to read a term string at a given dictionary index.
+ * Returns the allocated string which must be freed by caller.
  */
+static char *
+read_term_at_index(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		uint32			*string_offsets)
+{
+	TpStringEntry string_entry;
+	char		 *term_text;
+	uint32		  string_offset;
 
+	string_offset = header->strings_offset + string_offsets[index];
+
+	/* Read string length */
+	tp_segment_read(
+			reader, string_offset, &string_entry.length, sizeof(uint32));
+
+	/* Allocate buffer and read term text */
+	term_text = palloc(string_entry.length + 1);
+	tp_segment_read(
+			reader,
+			string_offset + sizeof(uint32),
+			term_text,
+			string_entry.length);
+	term_text[string_entry.length] = '\0';
+
+	return term_text;
+}
+
+/*
+ * Helper function to read a dictionary entry at a given index
+ */
+static void
+read_dict_entry(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		TpDictEntry		*entry)
+{
+	tp_segment_read(
+			reader,
+			header->entries_offset + (index * sizeof(TpDictEntry)),
+			entry,
+			sizeof(TpDictEntry));
+}
+
+/*
+ * Open segment for reading
+ */
 TpSegmentReader *
 tp_segment_open(Relation index, BlockNumber root_block)
 {
@@ -353,26 +406,13 @@ tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 
 	while (left <= right)
 	{
-		TpStringEntry string_entry;
-		char		 *term_text;
-		int			  cmp;
-		uint32		  string_offset;
+		char *term_text;
+		int	  cmp;
 
-		mid			  = left + (right - left) / 2;
-		string_offset = header->strings_offset + string_offsets[mid];
+		mid = left + (right - left) / 2;
 
-		/* Read string length */
-		tp_segment_read(
-				reader, string_offset, &string_entry.length, sizeof(uint32));
-
-		/* Read term text */
-		term_text = palloc(string_entry.length + 1);
-		tp_segment_read(
-				reader,
-				string_offset + sizeof(uint32),
-				term_text,
-				string_entry.length);
-		term_text[string_entry.length] = '\0';
+		/* Read term at this index */
+		term_text = read_term_at_index(reader, header, mid, string_offsets);
 
 		/* Compare terms */
 		cmp = strcmp(term, term_text);
@@ -385,11 +425,7 @@ tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 			uint32			  i;
 
 			/* Read dictionary entry */
-			tp_segment_read(
-					reader,
-					header->entries_offset + (mid * sizeof(TpDictEntry)),
-					&dict_entry,
-					sizeof(TpDictEntry));
+			read_dict_entry(reader, header, mid, &dict_entry);
 
 			/* Allocate result structure */
 			result			  = palloc0(sizeof(TpPostingList));
@@ -656,6 +692,135 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 }
 
 /*
+ * Write posting lists section of segment
+ */
+static void
+write_segment_postings(
+		TpLocalIndexState *state,
+		TpSegmentWriter	  *writer,
+		TermInfo		  *terms,
+		uint32			   num_terms)
+{
+	uint32 i;
+
+	for (i = 0; i < num_terms; i++)
+	{
+		TpPostingList *posting_list = NULL;
+
+		/* Get posting list from DSA if valid */
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
+		{
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
+		}
+
+		if (posting_list && posting_list->doc_count > 0)
+		{
+			/* Get posting entries from DSA */
+			TpPostingEntry *entries = (TpPostingEntry *)
+					dsa_get_address(state->dsa, posting_list->entries_dp);
+
+			/* Convert all postings to segment format at once */
+			TpSegmentPosting *seg_postings = palloc(
+					sizeof(TpSegmentPosting) * posting_list->doc_count);
+			int32 j;
+
+			for (j = 0; j < posting_list->doc_count; j++)
+			{
+				seg_postings[j].ctid	  = entries[j].ctid;
+				seg_postings[j].frequency = (uint16)entries[j].frequency;
+			}
+
+			/* Write all postings in a single batch */
+			tp_segment_writer_write(
+					writer,
+					seg_postings,
+					sizeof(TpSegmentPosting) * posting_list->doc_count);
+
+			pfree(seg_postings);
+		}
+	}
+}
+
+/*
+ * Write document lengths section of segment
+ */
+static uint32
+write_segment_doc_lengths(TpLocalIndexState *state, TpSegmentWriter *writer)
+{
+	TpMemtable *memtable  = get_memtable(state);
+	uint32		doc_count = 0;
+
+	/* Check if memtable has document lengths */
+	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_table	 *doc_lengths_hash;
+		dshash_seq_status seq_status;
+		TpDocLengthEntry *doc_entry;
+		dshash_parameters doc_lengths_params;
+		TpDocLength		 *doc_lengths_array;
+		uint32			  capacity = 1024;
+
+		/* Setup parameters for doc lengths hash table */
+		memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
+		doc_lengths_params.key_size			= sizeof(ItemPointerData);
+		doc_lengths_params.entry_size		= sizeof(TpDocLengthEntry);
+		doc_lengths_params.hash_function	= dshash_memhash;
+		doc_lengths_params.compare_function = dshash_memcmp;
+
+		/* Attach to document lengths hash table */
+		doc_lengths_hash = dshash_attach(
+				state->dsa,
+				&doc_lengths_params,
+				memtable->doc_lengths_handle,
+				NULL);
+
+		/* Collect document lengths in a single pass */
+		doc_lengths_array = palloc(sizeof(TpDocLength) * capacity);
+
+		dshash_seq_init(&seq_status, doc_lengths_hash, false);
+		while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
+						&seq_status)) != NULL)
+		{
+			/* Grow array if needed */
+			if (doc_count >= capacity)
+			{
+				capacity *= 2;
+				doc_lengths_array = repalloc(
+						doc_lengths_array, sizeof(TpDocLength) * capacity);
+			}
+
+			doc_lengths_array[doc_count].ctid = doc_entry->ctid;
+			doc_lengths_array[doc_count].length =
+					(uint16)doc_entry->doc_length;
+			doc_lengths_array[doc_count].reserved = 0;
+			doc_count++;
+		}
+		dshash_seq_term(&seq_status);
+
+		if (doc_count > 0)
+		{
+			/* Sort by CTID for binary search */
+			qsort(doc_lengths_array,
+				  doc_count,
+				  sizeof(TpDocLength),
+				  (int (*)(const void *, const void *))ItemPointerCompare);
+
+			/* Write all document lengths in a single batch */
+			tp_segment_writer_write(
+					writer,
+					doc_lengths_array,
+					sizeof(TpDocLength) * doc_count);
+		}
+
+		pfree(doc_lengths_array);
+		dshash_detach(doc_lengths_hash);
+	}
+
+	return doc_count;
+}
+
+/*
  * Write segment from memtable
  */
 BlockNumber
@@ -736,16 +901,36 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	tp_segment_writer_write(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
 
-	/* Allocate and calculate string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
+	/* Allocate arrays for offsets */
+	string_offsets	= palloc0(num_terms * sizeof(uint32));
+	posting_offsets = palloc0(num_terms * sizeof(uint32));
 
-	/* Calculate offsets for each string */
-	string_pos = 0;
+	/* Single pass: calculate both string and posting offsets */
+	string_pos	   = 0;
+	current_offset = 0;
 	for (i = 0; i < num_terms; i++)
 	{
+		TpPostingList *posting_list = NULL;
+
+		/* Calculate string offset */
 		string_offsets[i] = string_pos;
 		/* TpStringEntry format: length (4) + text + dict_offset (4) */
 		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+
+		/* Calculate posting offset */
+		posting_offsets[i] = current_offset;
+
+		/* Get posting list from DSA if valid */
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
+		{
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
+			if (posting_list && posting_list->doc_count > 0)
+			{
+				current_offset += sizeof(TpSegmentPosting) *
+								  posting_list->doc_count;
+			}
+		}
 	}
 
 	/* Write string offsets array */
@@ -766,35 +951,10 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			 length,
 			 writer.current_offset - header.strings_offset);
 
-		/* Write TpStringEntry format: length, then text, then
-		 * dict_entry_offset */
+		/* Write string entry: length, text, dict offset */
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
 		tp_segment_writer_write(&writer, terms[i].term, length);
-		/* Write dict entry offset (position in entries array) */
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
-	}
-
-	/* Pre-calculate posting offsets for dictionary entries */
-	posting_offsets = palloc0(num_terms * sizeof(uint32));
-	current_offset	= 0;
-
-	for (i = 0; i < num_terms; i++)
-	{
-		TpPostingList *posting_list = NULL;
-
-		posting_offsets[i] = current_offset;
-
-		/* Get posting list from DSA if valid */
-		if (terms[i].posting_list_dp != InvalidDsaPointer)
-		{
-			posting_list = (TpPostingList *)
-					dsa_get_address(state->dsa, terms[i].posting_list_dp);
-			if (posting_list && posting_list->doc_count > 0)
-			{
-				current_offset += sizeof(TpSegmentPosting) *
-								  posting_list->doc_count;
-			}
-		}
 	}
 
 	/* Write dictionary entries with correct posting offsets */
@@ -827,119 +987,11 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 	/* Write posting lists */
 	header.postings_offset = writer.current_offset;
-	for (i = 0; i < num_terms; i++)
-	{
-		TpPostingList *posting_list = NULL;
-
-		/* Get posting list from DSA if valid */
-		if (terms[i].posting_list_dp != InvalidDsaPointer)
-		{
-			posting_list = (TpPostingList *)
-					dsa_get_address(state->dsa, terms[i].posting_list_dp);
-		}
-
-		if (posting_list && posting_list->doc_count > 0)
-		{
-			/* Get posting entries from DSA */
-			TpPostingEntry *entries = (TpPostingEntry *)
-					dsa_get_address(state->dsa, posting_list->entries_dp);
-
-			/* Convert all postings to segment format at once */
-			TpSegmentPosting *seg_postings = palloc(
-					sizeof(TpSegmentPosting) * posting_list->doc_count);
-			int32 j;
-			for (j = 0; j < posting_list->doc_count; j++)
-			{
-				seg_postings[j].ctid	  = entries[j].ctid;
-				seg_postings[j].frequency = (uint16)entries[j].frequency;
-			}
-
-			/* Write all postings in a single batch */
-			tp_segment_writer_write(
-					&writer,
-					seg_postings,
-					sizeof(TpSegmentPosting) * posting_list->doc_count);
-
-			pfree(seg_postings);
-		}
-	}
+	write_segment_postings(state, &writer, terms, num_terms);
 
 	/* Write document lengths */
 	header.doc_lengths_offset = writer.current_offset;
-	{
-		TpMemtable *memtable = get_memtable(state);
-
-		/* Check if memtable has document lengths */
-		if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-		{
-			dshash_table	 *doc_lengths_hash;
-			dshash_seq_status seq_status;
-			TpDocLengthEntry *doc_entry;
-			uint32			  doc_count = 0;
-			dshash_parameters doc_lengths_params;
-			TpDocLength		 *doc_lengths_array;
-			uint32 capacity = 1024; /* Start with reasonable capacity */
-
-			/* Setup parameters for doc lengths hash table */
-			memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
-			doc_lengths_params.key_size	  = sizeof(ItemPointerData);
-			doc_lengths_params.entry_size = sizeof(TpDocLengthEntry);
-			/* Use simple hash wrapper for ItemPointer */
-			doc_lengths_params.hash_function	= dshash_memhash;
-			doc_lengths_params.compare_function = dshash_memcmp;
-
-			/* Attach to document lengths hash table */
-			doc_lengths_hash = dshash_attach(
-					state->dsa,
-					&doc_lengths_params,
-					memtable->doc_lengths_handle,
-					NULL);
-
-			/* Collect document lengths in a single pass */
-			doc_lengths_array = palloc(sizeof(TpDocLength) * capacity);
-
-			dshash_seq_init(&seq_status, doc_lengths_hash, false);
-			while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
-							&seq_status)) != NULL)
-			{
-				/* Grow array if needed */
-				if (doc_count >= capacity)
-				{
-					capacity *= 2;
-					doc_lengths_array = repalloc(
-							doc_lengths_array, sizeof(TpDocLength) * capacity);
-				}
-
-				doc_lengths_array[doc_count].ctid = doc_entry->ctid;
-				doc_lengths_array[doc_count].length =
-						(uint16)doc_entry->doc_length;
-				doc_lengths_array[doc_count].reserved = 0;
-				doc_count++;
-			}
-			dshash_seq_term(&seq_status);
-
-			header.num_docs = doc_count;
-
-			if (doc_count > 0)
-			{
-				/* Sort by CTID for binary search */
-				qsort(doc_lengths_array,
-					  doc_count,
-					  sizeof(TpDocLength),
-					  (int (*)(const void *, const void *))ItemPointerCompare);
-
-				/* Write all document lengths in a single batch */
-				tp_segment_writer_write(
-						&writer,
-						doc_lengths_array,
-						sizeof(TpDocLength) * doc_count);
-			}
-
-			pfree(doc_lengths_array);
-
-			dshash_detach(doc_lengths_hash);
-		}
-	}
+	header.num_docs			  = write_segment_doc_lengths(state, &writer);
 
 	/* Write page index */
 	tp_segment_writer_flush(&writer);
@@ -1116,9 +1168,8 @@ tp_debug_dump_segment_internal(
 
 		for (i = 0; i < terms_to_show; i++)
 		{
-			TpStringEntry string_entry;
-			char		 *term_text;
-			TpDictEntry	  dict_entry;
+			char	   *term_text;
+			TpDictEntry dict_entry;
 			uint32 string_offset = header.strings_offset + string_offsets[i];
 
 			elog(DEBUG1,
@@ -1128,39 +1179,23 @@ tp_debug_dump_segment_internal(
 				 header.strings_offset,
 				 string_offsets[i]);
 
-			/* Read string length */
-			tp_segment_read(
-					reader,
-					string_offset,
-					&string_entry.length,
-					sizeof(uint32));
-			elog(DEBUG1, "  String length: %u", string_entry.length);
+			/* Read term at this index */
+			term_text = read_term_at_index(reader, &header, i, string_offsets);
+			elog(DEBUG1, "  String length: %u", (uint32)strlen(term_text));
 
 			/* Validate string length */
-			if (string_entry.length > 1024) /* Sanity check */
+			if (strlen(term_text) > 1024) /* Sanity check */
 			{
 				elog(ERROR,
 					 "Invalid string length %u for term %u",
-					 string_entry.length,
+					 (uint32)strlen(term_text),
 					 i);
 			}
 
-			/* Read term text */
-			term_text = palloc(string_entry.length + 1);
-			tp_segment_read(
-					reader,
-					string_offset + sizeof(uint32),
-					term_text,
-					string_entry.length);
-			term_text[string_entry.length] = '\0';
 			elog(DEBUG1, "  Term text: '%s'", term_text);
 
 			/* Read dictionary entry for this term */
-			tp_segment_read(
-					reader,
-					header.entries_offset + (i * sizeof(TpDictEntry)),
-					&dict_entry,
-					sizeof(TpDictEntry));
+			read_dict_entry(reader, &header, i, &dict_entry);
 			elog(DEBUG1,
 				 "  Dict entry: docs=%u, postings=%u",
 				 dict_entry.doc_freq,

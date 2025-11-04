@@ -4,7 +4,7 @@
  *    Disk-based segment structures for pg_textsearch
  *
  * IDENTIFICATION
- *    src/segment.h
+ *    src/segment/segment.h
  *
  *-------------------------------------------------------------------------
  */
