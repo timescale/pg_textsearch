@@ -675,6 +675,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	Page			 header_page;
 	TpSegmentHeader *existing_header;
 	TpSegmentHeader *updated_header;
+	uint32			*posting_offsets;
+	uint32			 current_offset;
 
 	/* Build sorted dictionary */
 	terms = tp_build_dictionary(state, &num_terms);
@@ -772,7 +774,30 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
-	/* Write dictionary entries */
+	/* Pre-calculate posting offsets for dictionary entries */
+	posting_offsets = palloc0(num_terms * sizeof(uint32));
+	current_offset	= 0;
+
+	for (i = 0; i < num_terms; i++)
+	{
+		TpPostingList *posting_list = NULL;
+
+		posting_offsets[i] = current_offset;
+
+		/* Get posting list from DSA if valid */
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
+		{
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
+			if (posting_list && posting_list->doc_count > 0)
+			{
+				current_offset += sizeof(TpSegmentPosting) *
+								  posting_list->doc_count;
+			}
+		}
+	}
+
+	/* Write dictionary entries with correct posting offsets */
 	header.entries_offset = writer.current_offset;
 	for (i = 0; i < num_terms; i++)
 	{
@@ -786,8 +811,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					dsa_get_address(state->dsa, terms[i].posting_list_dp);
 		}
 
-		/* Fill in dictionary entry */
-		entry.posting_offset = 0; /* Will update with actual offset later */
+		/* Fill in dictionary entry with correct offset */
+		entry.posting_offset = posting_offsets[i];
 		entry.posting_count	 = posting_list ? posting_list->doc_count : 0;
 		entry.doc_freq		 = posting_list ? posting_list->doc_freq : 0;
 
@@ -798,53 +823,45 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntry));
 	}
 
+	pfree(posting_offsets);
+
 	/* Write posting lists */
 	header.postings_offset = writer.current_offset;
+	for (i = 0; i < num_terms; i++)
 	{
-		uint32 *posting_offsets = palloc0(num_terms * sizeof(uint32));
+		TpPostingList *posting_list = NULL;
 
-		for (i = 0; i < num_terms; i++)
+		/* Get posting list from DSA if valid */
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
 		{
-			TpPostingList *posting_list = NULL;
-
-			/* Record offset for this term's posting list */
-			posting_offsets[i] = writer.current_offset -
-								 header.postings_offset;
-
-			/* Get posting list from DSA if valid */
-			if (terms[i].posting_list_dp != InvalidDsaPointer)
-			{
-				posting_list = (TpPostingList *)
-						dsa_get_address(state->dsa, terms[i].posting_list_dp);
-			}
-
-			if (posting_list && posting_list->doc_count > 0)
-			{
-				/* Get posting entries from DSA */
-				TpPostingEntry *entries = (TpPostingEntry *)
-						dsa_get_address(state->dsa, posting_list->entries_dp);
-
-				/* Convert all postings to segment format at once */
-				TpSegmentPosting *seg_postings = palloc(
-						sizeof(TpSegmentPosting) * posting_list->doc_count);
-				int32 j;
-				for (j = 0; j < posting_list->doc_count; j++)
-				{
-					seg_postings[j].ctid	  = entries[j].ctid;
-					seg_postings[j].frequency = (uint16)entries[j].frequency;
-				}
-
-				/* Write all postings in a single batch */
-				tp_segment_writer_write(
-						&writer,
-						seg_postings,
-						sizeof(TpSegmentPosting) * posting_list->doc_count);
-
-				pfree(seg_postings);
-			}
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
 		}
 
-		pfree(posting_offsets);
+		if (posting_list && posting_list->doc_count > 0)
+		{
+			/* Get posting entries from DSA */
+			TpPostingEntry *entries = (TpPostingEntry *)
+					dsa_get_address(state->dsa, posting_list->entries_dp);
+
+			/* Convert all postings to segment format at once */
+			TpSegmentPosting *seg_postings = palloc(
+					sizeof(TpSegmentPosting) * posting_list->doc_count);
+			int32 j;
+			for (j = 0; j < posting_list->doc_count; j++)
+			{
+				seg_postings[j].ctid	  = entries[j].ctid;
+				seg_postings[j].frequency = (uint16)entries[j].frequency;
+			}
+
+			/* Write all postings in a single batch */
+			tp_segment_writer_write(
+					&writer,
+					seg_postings,
+					sizeof(TpSegmentPosting) * posting_list->doc_count);
+
+			pfree(seg_postings);
+		}
 	}
 
 	/* Write document lengths */
