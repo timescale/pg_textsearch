@@ -777,16 +777,23 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 				TpPostingEntry *entries = (TpPostingEntry *)
 						dsa_get_address(state->dsa, posting_list->entries_dp);
 
-				/* Write each posting */
+				/* Convert all postings to segment format at once */
+				TpSegmentPosting *seg_postings = palloc(
+						sizeof(TpSegmentPosting) * posting_list->doc_count);
 				int32 j;
 				for (j = 0; j < posting_list->doc_count; j++)
 				{
-					TpSegmentPosting seg_posting;
-					seg_posting.ctid	  = entries[j].ctid;
-					seg_posting.frequency = (uint16)entries[j].frequency;
-					tp_segment_writer_write(
-							&writer, &seg_posting, sizeof(TpSegmentPosting));
+					seg_postings[j].ctid	  = entries[j].ctid;
+					seg_postings[j].frequency = (uint16)entries[j].frequency;
 				}
+
+				/* Write all postings in a single batch */
+				tp_segment_writer_write(
+						&writer,
+						seg_postings,
+						sizeof(TpSegmentPosting) * posting_list->doc_count);
+
+				pfree(seg_postings);
 			}
 		}
 
