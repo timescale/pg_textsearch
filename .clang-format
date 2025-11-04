@@ -98,4 +98,4 @@ MaxEmptyLinesToKeep: 1
 CompactNamespaces: false
 
 # Encourage blank lines around function declarations
-SeparateDefinitionBlocks: Always
+# SeparateDefinitionBlocks: Always  # Requires clang-format 14+, disabled for CI compatibility
