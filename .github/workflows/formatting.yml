@@ -18,17 +18,17 @@ jobs:
     - name: Install clang-format
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang-format-11
+        sudo apt-get install -y clang-format
 
     - name: Check formatting
       run: |
         # Find all C source and header files
         find src -name "*.c" -o -name "*.h" | while read file; do
           echo "Checking $file"
-          if ! clang-format-11 --dry-run --Werror "$file" > /dev/null 2>&1; then
+          if ! clang-format --dry-run --Werror "$file" > /dev/null 2>&1; then
             echo "❌ $file is not properly formatted"
             echo "Expected format:"
-            clang-format-11 "$file"
+            clang-format "$file"
             exit 1
           else
             echo "✅ $file is properly formatted"
