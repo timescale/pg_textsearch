@@ -37,6 +37,8 @@ typedef struct TpSegmentPostingIterator
 	/* Track current direct access to release buffer properly */
 	TpSegmentDirectAccess current_access;
 	bool				  has_active_access;
+	/* Fallback buffer for when direct access fails */
+	TpSegmentPosting fallback_posting;
 } TpSegmentPostingIterator;
 
 /*
@@ -197,10 +199,12 @@ tp_segment_posting_iterator_next(
 				&iter->current_access))
 	{
 		/* Fallback to regular read if direct access fails */
-		static TpSegmentPosting temp_posting;
 		tp_segment_read(
-				iter->reader, offset, &temp_posting, sizeof(TpSegmentPosting));
-		*posting = &temp_posting;
+				iter->reader,
+				offset,
+				&iter->fallback_posting,
+				sizeof(TpSegmentPosting));
+		*posting = &iter->fallback_posting;
 	}
 	else
 	{
