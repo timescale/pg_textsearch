@@ -459,41 +459,81 @@ tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid)
 }
 
 /*
- * Allocate pages for segment
+ * Allocate a single page for segment
  */
-static BlockNumber *
-allocate_segment_pages(Relation index, uint32 num_pages)
+static BlockNumber
+allocate_segment_page(Relation index)
 {
-	BlockNumber *pages;
-	uint32		 i;
+	Buffer		buffer;
+	BlockNumber block;
 
-	if (num_pages == 0)
+	/* Use RBM_ZERO_AND_LOCK to get a new zero-filled page */
+	buffer = ReadBufferExtended(
+			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+
+	/* The page should already be initialized by RBM_ZERO_AND_LOCK */
+	block = BufferGetBlockNumber(buffer);
+
+	elog(DEBUG2, "Allocated page at block %u", block);
+
+	MarkBufferDirty(buffer);
+	UnlockReleaseBuffer(buffer);
+
+	return block;
+}
+
+/*
+ * Grow writer's page array if needed
+ */
+static void
+tp_segment_writer_grow_pages(TpSegmentWriter *writer)
+{
+	if (writer->pages_allocated >= writer->pages_capacity)
 	{
-		elog(ERROR, "Cannot allocate 0 pages");
+		uint32 new_capacity = writer->pages_capacity == 0
+									  ? 8
+									  : writer->pages_capacity * 2;
+
+		if (writer->pages)
+		{
+			writer->pages = repalloc(
+					writer->pages, new_capacity * sizeof(BlockNumber));
+		}
+		else
+		{
+			writer->pages = palloc(new_capacity * sizeof(BlockNumber));
+		}
+
+		writer->pages_capacity = new_capacity;
+
+		elog(DEBUG2, "Grew page array capacity to %u", new_capacity);
 	}
+}
 
-	pages = palloc(num_pages * sizeof(BlockNumber));
+/*
+ * Allocate a new page for the writer
+ */
+static BlockNumber
+tp_segment_writer_allocate_page(TpSegmentWriter *writer)
+{
+	BlockNumber new_page;
 
-	elog(DEBUG1, "Allocating %u pages for segment", num_pages);
+	/* Ensure we have space in the pages array */
+	tp_segment_writer_grow_pages(writer);
 
-	for (i = 0; i < num_pages; i++)
-	{
-		Buffer buffer;
+	/* Allocate the actual page */
+	new_page = allocate_segment_page(writer->index);
 
-		/* Use RBM_ZERO_AND_LOCK to get a new zero-filled page */
-		buffer = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+	/* Add to our tracking array */
+	writer->pages[writer->pages_allocated] = new_page;
+	writer->pages_allocated++;
 
-		/* The page should already be initialized by RBM_ZERO_AND_LOCK */
-		pages[i] = BufferGetBlockNumber(buffer);
+	elog(DEBUG2,
+		 "Writer allocated page %u (total: %u)",
+		 new_page,
+		 writer->pages_allocated);
 
-		elog(DEBUG2, "Allocated page %u at block %u", i, pages[i]);
-
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
-	}
-
-	return pages;
+	return new_page;
 }
 
 /*
@@ -512,8 +552,14 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
 							 entries_per_page;
 
-	/* Allocate index pages */
-	BlockNumber *index_pages = allocate_segment_pages(index, num_index_pages);
+	/* Allocate index pages incrementally */
+	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	uint32		 i;
+
+	for (i = 0; i < num_index_pages; i++)
+	{
+		index_pages[i] = allocate_segment_page(index);
+	}
 
 	/* Write index pages in reverse order (so we can chain them) */
 	for (int i = num_index_pages - 1; i >= 0; i--)
@@ -570,9 +616,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 {
 	TermInfo		*terms;
 	uint32			 num_terms;
-	uint32			 num_pages_needed;
-	uint32			 estimated_size;
-	BlockNumber		*pages;
 	BlockNumber		 header_block;
 	BlockNumber		 page_index_root;
 	TpSegmentWriter	 writer;
@@ -586,14 +629,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	TpSegmentHeader *existing_header;
 	TpSegmentHeader *updated_header;
 
-	/* Estimate segment size */
-	estimated_size	 = tp_segment_estimate_size(state, index);
-	num_pages_needed = (estimated_size + BLCKSZ - 1) / BLCKSZ;
-
-	/* Ensure minimum of 1 page */
-	if (num_pages_needed == 0)
-		num_pages_needed = 1;
-
 	/* Build sorted dictionary */
 	terms = tp_build_dictionary(state, &num_terms);
 
@@ -604,32 +639,25 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	}
 
 	elog(DEBUG1,
-		 "tp_write_segment: Starting segment write with %u terms, estimated "
-		 "size %u bytes (%u pages)",
-		 num_terms,
-		 estimated_size,
-		 num_pages_needed);
+		 "tp_write_segment: Starting segment write with %u terms",
+		 num_terms);
 
-	/* Allocate pages for segment data */
-	pages		 = allocate_segment_pages(index, num_pages_needed);
-	header_block = pages[0];
+	/* Initialize writer with incremental page allocation */
+	tp_segment_writer_init(&writer, index);
+
+	/* The first page is our header page */
+	header_block = writer.pages[0];
 
 	elog(DEBUG1,
-		 "tp_write_segment: Allocated %u pages, header at block %u "
-		 "(pages[0]=%u)",
-		 num_pages_needed,
-		 header_block,
-		 pages[0]);
-
-	/* Initialize writer */
-	tp_segment_writer_init(&writer, index, pages, num_pages_needed);
+		 "tp_write_segment: Writer initialized, header at block %u",
+		 header_block);
 
 	/* Write header (placeholder - will update offsets later) */
 	memset(&header, 0, sizeof(TpSegmentHeader));
 	header.magic		= TP_SEGMENT_MAGIC;
 	header.version		= TP_SEGMENT_VERSION;
 	header.created_at	= GetCurrentTimestamp();
-	header.num_pages	= num_pages_needed;
+	header.num_pages	= 0; /* Will be updated at the end */
 	header.num_terms	= num_terms;
 	header.level		= 0; /* L0 segment from memtable */
 	header.next_segment = InvalidBlockNumber;
@@ -849,11 +877,13 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 	/* Write page index */
 	tp_segment_writer_flush(&writer);
-	page_index_root	  = write_page_index(index, pages, num_pages_needed);
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
 	header.page_index = page_index_root;
 
-	/* Update header with actual offsets */
+	/* Update header with actual offsets and page count */
 	header.data_size = writer.current_offset;
+	header.num_pages = writer.pages_allocated;
 
 	/* Finish with the writer BEFORE updating the header */
 	tp_segment_writer_finish(&writer);
@@ -905,7 +935,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Clean up */
 	tp_free_dictionary(terms, num_terms);
 	pfree(string_offsets);
-	pfree(pages);
+	if (writer.pages)
+		pfree(writer.pages);
 
 	elog(DEBUG1,
 		 "Wrote segment with %u terms to block %u",
@@ -1098,29 +1129,30 @@ tp_debug_dump_segment_internal(
 /* Segment writer helper functions */
 
 void
-tp_segment_writer_init(
-		TpSegmentWriter *writer,
-		Relation		 index,
-		BlockNumber		*pages,
-		uint32			 num_pages)
+tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 {
 	elog(DEBUG2,
-		 "tp_segment_writer_init: Initializing writer with %u pages",
-		 num_pages);
+		 "tp_segment_writer_init: Initializing writer for incremental "
+		 "allocation");
 
-	writer->index		   = index;
-	writer->pages		   = pages;
-	writer->num_pages	   = num_pages;
-	writer->current_offset = 0;
-	writer->buffer		   = palloc(BLCKSZ);
-	writer->buffer_page	   = 0;
-	writer->buffer_pos	   = SizeOfPageHeaderData; /* Skip page header */
+	writer->index			= index;
+	writer->pages			= NULL;
+	writer->pages_allocated = 0;
+	writer->pages_capacity	= 0;
+	writer->current_offset	= 0;
+	writer->buffer			= palloc(BLCKSZ);
+	writer->buffer_page		= 0;
+	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
+
+	/* Allocate first page */
+	tp_segment_writer_allocate_page(writer);
 
 	/* Initialize first page */
 	PageInit((Page)writer->buffer, BLCKSZ, 0);
 
 	elog(DEBUG2,
-		 "tp_segment_writer_init: Writer initialized, buffer at %p",
+		 "tp_segment_writer_init: Writer initialized with first page, buffer "
+		 "at %p",
 		 writer->buffer);
 }
 
@@ -1153,9 +1185,11 @@ tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len)
 			if (bytes_written < len)
 			{
 				writer->buffer_page++;
-				if (writer->buffer_page >= writer->num_pages)
+
+				/* Allocate a new page if needed */
+				if (writer->buffer_page >= writer->pages_allocated)
 				{
-					elog(ERROR, "Segment writer ran out of pages");
+					tp_segment_writer_allocate_page(writer);
 				}
 
 				/* Initialize new page */
@@ -1172,7 +1206,7 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 	Buffer buffer;
 	Page   page;
 
-	if (writer->buffer_page >= writer->num_pages)
+	if (writer->buffer_page >= writer->pages_allocated)
 		return; /* Nothing to flush */
 
 	/* Write current buffer to disk */

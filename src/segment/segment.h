@@ -159,12 +159,13 @@ typedef struct TpSegmentReader
 typedef struct TpSegmentWriter
 {
 	Relation	 index;
-	BlockNumber *pages;			 /* Allocated data pages */
-	uint32		 num_pages;		 /* Number of data pages */
-	uint32		 current_offset; /* Current write position in logical file */
-	char		*buffer;		 /* Write buffer (one page) */
-	uint32		 buffer_page;	 /* Which logical page is in buffer */
-	uint32		 buffer_pos;	 /* Position within buffer */
+	BlockNumber *pages; /* Dynamically allocated array of page blocks */
+	uint32		 pages_allocated; /* Number of pages allocated so far */
+	uint32		 pages_capacity;  /* Capacity of the pages array */
+	uint32		 current_offset;  /* Current write position in logical file */
+	char		*buffer;		  /* Write buffer (one page) */
+	uint32		 buffer_page;	  /* Which logical page is in buffer */
+	uint32		 buffer_pos;	  /* Position within buffer */
 } TpSegmentWriter;
 
 /* Forward declarations for index.c */
@@ -174,18 +175,10 @@ struct TpLocalIndexState;
  * Function declarations
  */
 
-/* Size estimation */
-extern uint32
-tp_segment_estimate_size(struct TpLocalIndexState *state, Relation index);
-
 /* Writer functions */
 extern BlockNumber
 			tp_write_segment(struct TpLocalIndexState *state, Relation index);
-extern void tp_segment_writer_init(
-		TpSegmentWriter *writer,
-		Relation		 index,
-		BlockNumber		*pages,
-		uint32			 num_pages);
+extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
 extern void tp_segment_writer_flush(TpSegmentWriter *writer);
