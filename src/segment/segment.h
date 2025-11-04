@@ -222,4 +222,26 @@ tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
 extern void tp_debug_dump_segment_internal(
 		const char *index_name, BlockNumber segment_root);
 
+/* Zero-copy query execution - defined in segment_query.c */
+struct TpLocalIndexState; /* Forward declaration */
+typedef struct DocumentScoreEntry
+{
+	ItemPointerData ctid;
+	float4			score;
+	float4			doc_length;
+} DocumentScoreEntry;
+
+extern void tp_process_term_in_segments(
+		Relation				  index,
+		BlockNumber				  first_segment,
+		const char				 *term,
+		int32					  total_docs,
+		float8					  avg_idf,
+		float4					  query_frequency,
+		float4					  k1,
+		float4					  b,
+		float4					  avg_doc_len,
+		void					 *doc_scores_hash, /* HTAB* */
+		struct TpLocalIndexState *local_state);
+
 #endif /* SEGMENT_H */
