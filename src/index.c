@@ -2367,9 +2367,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PG_RETURN_TEXT_P(cstring_to_text(
-				"Dictionary built successfully (segment "
-				"writing not yet implemented)"));
+		PG_RETURN_TEXT_P(
+				cstring_to_text("Dictionary built successfully (segment "
+								"writing not yet implemented)"));
 	}
 }
 
