@@ -117,9 +117,9 @@ SELECT tp_spill_memtable('spill_multiple_idx');
 -- Second batch
 INSERT INTO spill_multiple VALUES (2, 'second batch document');
 SELECT tp_spill_memtable('spill_multiple_idx');
-                tp_spill_memtable                 
---------------------------------------------------
- Dictionary built and segment written to block 13
+                tp_spill_memtable                
+-------------------------------------------------
+ Dictionary built and segment written to block 4
 (1 row)
 
 -- Third batch

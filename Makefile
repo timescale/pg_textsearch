@@ -20,6 +20,7 @@ OBJS = \
 	src/registry.o \
 	src/segment/dictionary.o \
 	src/segment/segment.o \
+	src/segment/segment_size.o \
 	src/state.o \
 	src/vector.o
 

@@ -174,6 +174,10 @@ struct TpLocalIndexState;
  * Function declarations
  */
 
+/* Size estimation */
+extern uint32
+tp_segment_estimate_size(struct TpLocalIndexState *state, Relation index);
+
 /* Writer functions */
 extern BlockNumber
 			tp_write_segment(struct TpLocalIndexState *state, Relation index);
@@ -195,6 +199,22 @@ extern void				tp_segment_read(
 					void			*dest,
 					uint32			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
+
+/* Zero-copy reader functions */
+typedef struct TpSegmentDirectAccess
+{
+	Buffer buffer;	  /* Pinned buffer */
+	Page   page;	  /* Page pointer */
+	void  *data;	  /* Pointer to data in page */
+	uint32 available; /* Bytes available from this position */
+} TpSegmentDirectAccess;
+
+extern bool tp_segment_get_direct(
+		TpSegmentReader		  *reader,
+		uint32				   logical_offset,
+		uint32				   len,
+		TpSegmentDirectAccess *access);
+extern void tp_segment_release_direct(TpSegmentDirectAccess *access);
 
 /* Forward declaration for posting list */
 struct TpPostingList;

@@ -909,22 +909,37 @@ tp_process_document_text(
 				doc_length);
 
 		/*
-		 * Check memory after document completion.
+		 * Check memory after document completion and spill if needed.
 		 * We allow temporary overage within a document (bounded by single
 		 * document size), but check at document boundaries to decide if
 		 * spill is needed before the next document.
-		 *
-		 * TODO: Replace this error with spill when segment support is added.
-		 * For now, error to enforce limits. Future: tp_spill_memtable_to_disk
 		 */
 		if (tp_get_memory_usage(&index_state->shared->memory_usage) >
 			tp_get_memory_limit())
 		{
-			/* For now, still error since we need the index relation to flush.
-			 * TODO: Call tp_write_segment when we have the index
-			 * relation. */
-			tp_report_memory_limit_exceeded(
-					&index_state->shared->memory_usage);
+			BlockNumber segment_root;
+
+			elog(DEBUG1,
+				 "Memory limit exceeded (%zu/%zu bytes), spilling memtable to "
+				 "segment",
+				 tp_get_memory_usage(&index_state->shared->memory_usage),
+				 tp_get_memory_limit());
+
+			/* Spill the memtable to a segment */
+			segment_root = tp_write_segment(index_state, index);
+
+			if (segment_root != InvalidBlockNumber)
+			{
+				elog(DEBUG1,
+					 "Successfully spilled memtable to segment at block %u",
+					 segment_root);
+			}
+			else
+			{
+				/* If spill failed, report the error */
+				tp_report_memory_limit_exceeded(
+						&index_state->shared->memory_usage);
+			}
 		}
 
 		/* Free the terms array and individual lexemes */
@@ -2352,9 +2367,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PG_RETURN_TEXT_P(
-				cstring_to_text("Dictionary built successfully (segment "
-								"writing not yet implemented)"));
+		PG_RETURN_TEXT_P(cstring_to_text(
+				"Dictionary built successfully (segment "
+				"writing not yet implemented)"));
 	}
 }
 

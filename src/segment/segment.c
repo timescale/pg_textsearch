@@ -13,6 +13,7 @@
 #include "../memtable/memtable.h"
 #include "../memtable/posting.h"
 #include "../memtable/stringtable.h"
+#include "../metapage.h"
 #include "../state.h"
 #include "access/genam.h"
 #include "access/hash.h"
@@ -205,6 +206,73 @@ tp_segment_read(
 	}
 }
 
+/*
+ * Get direct access to data in a segment page (zero-copy)
+ * Returns true if successful, false if data spans multiple pages
+ */
+bool
+tp_segment_get_direct(
+		TpSegmentReader		  *reader,
+		uint32				   logical_offset,
+		uint32				   len,
+		TpSegmentDirectAccess *access)
+{
+	uint32		logical_page = logical_offset / BLCKSZ;
+	uint32		page_offset	 = logical_offset % BLCKSZ;
+	Buffer		buf;
+	Page		page;
+	BlockNumber physical_block;
+
+	/* Check if data spans pages - if so, can't do zero-copy */
+	if (page_offset + len > BLCKSZ)
+		return false;
+
+	/* Validate logical page */
+	if (logical_page >= reader->num_pages)
+	{
+		elog(ERROR,
+			 "Invalid logical page %u (segment has %u pages)",
+			 logical_page,
+			 reader->num_pages);
+	}
+
+	/* Get physical block from page map */
+	physical_block = reader->page_map[logical_page];
+
+	/* Read the physical page */
+	buf = ReadBuffer(reader->index, physical_block);
+
+	/* Lock buffer for reading */
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+	/* Get page and data pointer */
+	page = BufferGetPage(buf);
+
+	/* Fill in access structure */
+	access->buffer	  = buf;
+	access->page	  = page;
+	access->data	  = (char *)page + page_offset;
+	access->available = BLCKSZ - page_offset;
+
+	return true;
+}
+
+/*
+ * Release direct access to segment page
+ */
+void
+tp_segment_release_direct(TpSegmentDirectAccess *access)
+{
+	if (BufferIsValid(access->buffer))
+	{
+		LockBuffer(access->buffer, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(access->buffer);
+		access->buffer = InvalidBuffer;
+		access->page   = NULL;
+		access->data   = NULL;
+	}
+}
+
 TpPostingList *
 tp_segment_get_posting_list(TpSegmentReader *reader, const char *term)
 {
@@ -345,24 +413,44 @@ tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid)
 {
 	TpSegmentHeader *header = reader->header;
 	TpDocLength		 doc_length;
-	uint32			 i;
+	int32			 left, right, mid;
+	int				 cmp;
 
 	if (header->num_docs == 0 || header->doc_lengths_offset == 0)
 		return -1;
 
-	/* Linear search through document lengths (could optimize with binary
-	 * search) */
-	for (i = 0; i < header->num_docs; i++)
+	/* Binary search through sorted document lengths */
+	left  = 0;
+	right = header->num_docs - 1;
+
+	while (left <= right)
 	{
+		mid = left + (right - left) / 2;
+
+		/* Read the document length at mid position */
 		tp_segment_read(
 				reader,
-				header->doc_lengths_offset + (i * sizeof(TpDocLength)),
+				header->doc_lengths_offset + (mid * sizeof(TpDocLength)),
 				&doc_length,
 				sizeof(TpDocLength));
 
-		if (ItemPointerEquals(ctid, &doc_length.ctid))
+		/* Compare CTIDs */
+		cmp = ItemPointerCompare(ctid, &doc_length.ctid);
+
+		if (cmp == 0)
 		{
+			/* Found the document */
 			return (int32)doc_length.length;
+		}
+		else if (cmp < 0)
+		{
+			/* Target is before mid */
+			right = mid - 1;
+		}
+		else
+		{
+			/* Target is after mid */
+			left = mid + 1;
 		}
 	}
 
@@ -482,7 +570,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 {
 	TermInfo		*terms;
 	uint32			 num_terms;
-	uint32			 num_pages_needed = 10; /* TODO: Calculate actual size */
+	uint32			 num_pages_needed;
+	uint32			 estimated_size;
 	BlockNumber		*pages;
 	BlockNumber		 header_block;
 	BlockNumber		 page_index_root;
@@ -497,6 +586,14 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	TpSegmentHeader *existing_header;
 	TpSegmentHeader *updated_header;
 
+	/* Estimate segment size */
+	estimated_size	 = tp_segment_estimate_size(state, index);
+	num_pages_needed = (estimated_size + BLCKSZ - 1) / BLCKSZ;
+
+	/* Ensure minimum of 1 page */
+	if (num_pages_needed == 0)
+		num_pages_needed = 1;
+
 	/* Build sorted dictionary */
 	terms = tp_build_dictionary(state, &num_terms);
 
@@ -507,8 +604,11 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	}
 
 	elog(DEBUG1,
-		 "tp_write_segment: Starting segment write with %u terms",
-		 num_terms);
+		 "tp_write_segment: Starting segment write with %u terms, estimated "
+		 "size %u bytes (%u pages)",
+		 num_terms,
+		 estimated_size,
+		 num_pages_needed);
 
 	/* Allocate pages for segment data */
 	pages		 = allocate_segment_pages(index, num_pages_needed);
@@ -531,10 +631,24 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	header.created_at	= GetCurrentTimestamp();
 	header.num_pages	= num_pages_needed;
 	header.num_terms	= num_terms;
-	header.num_docs		= 0; /* TODO: Get actual doc count */
-	header.total_tokens = 0; /* TODO: Get actual token count */
 	header.level		= 0; /* L0 segment from memtable */
 	header.next_segment = InvalidBlockNumber;
+
+	/* Get corpus statistics from metapage */
+	{
+		TpIndexMetaPage metap = tp_get_metapage(index);
+		if (metap)
+		{
+			header.num_docs		= metap->total_docs;
+			header.total_tokens = metap->total_len;
+			pfree(metap);
+		}
+		else
+		{
+			header.num_docs		= 0;
+			header.total_tokens = 0;
+		}
+	}
 
 	/* Write header (will update with correct values later) */
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
@@ -664,6 +778,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			TpDocLengthEntry *doc_entry;
 			uint32			  doc_count = 0;
 			dshash_parameters doc_lengths_params;
+			TpDocLength		 *doc_lengths_array;
+			uint32			  idx = 0;
 
 			/* Setup parameters for doc lengths hash table */
 			memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
@@ -691,19 +807,41 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 			header.num_docs = doc_count;
 
-			/* Now write the document lengths */
-			dshash_seq_init(&seq_status, doc_lengths_hash, false);
-			while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
-							&seq_status)) != NULL)
+			/* Collect all document lengths into an array for sorting */
+			if (doc_count > 0)
 			{
-				TpDocLength doc_length;
-				doc_length.ctid		= doc_entry->ctid;
-				doc_length.length	= (uint16)doc_entry->doc_length;
-				doc_length.reserved = 0;
-				tp_segment_writer_write(
-						&writer, &doc_length, sizeof(TpDocLength));
+				doc_lengths_array = palloc(sizeof(TpDocLength) * doc_count);
+
+				/* Collect document lengths */
+				dshash_seq_init(&seq_status, doc_lengths_hash, false);
+				while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
+								&seq_status)) != NULL)
+				{
+					doc_lengths_array[idx].ctid = doc_entry->ctid;
+					doc_lengths_array[idx].length =
+							(uint16)doc_entry->doc_length;
+					doc_lengths_array[idx].reserved = 0;
+					idx++;
+				}
+				dshash_seq_term(&seq_status);
+
+				/* Sort by CTID for binary search */
+				qsort(doc_lengths_array,
+					  doc_count,
+					  sizeof(TpDocLength),
+					  (int (*)(const void *, const void *))ItemPointerCompare);
+
+				/* Write sorted document lengths */
+				for (idx = 0; idx < doc_count; idx++)
+				{
+					tp_segment_writer_write(
+							&writer,
+							&doc_lengths_array[idx],
+							sizeof(TpDocLength));
+				}
+
+				pfree(doc_lengths_array);
 			}
-			dshash_seq_term(&seq_status);
 
 			dshash_detach(doc_lengths_hash);
 		}
