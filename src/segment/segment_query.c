@@ -34,6 +34,9 @@ typedef struct TpSegmentPostingIterator
 	uint32			 postings_offset;
 	bool			 initialized;
 	bool			 finished;
+	/* Track current direct access to release buffer properly */
+	TpSegmentDirectAccess current_access;
+	bool				  has_active_access;
 } TpSegmentPostingIterator;
 
 /*
@@ -48,14 +51,16 @@ tp_segment_posting_iterator_init(
 {
 	TpSegmentHeader *header = reader->header;
 	TpDictionary	 dict_header;
-	uint32			*string_offsets;
 	int				 left, right, mid;
+	char			*term_buffer = NULL;
+	uint32			 buffer_size = 0;
 
-	iter->reader		  = reader;
-	iter->term			  = term;
-	iter->current_posting = 0;
-	iter->initialized	  = false;
-	iter->finished		  = true; /* Default to finished if not found */
+	iter->reader			= reader;
+	iter->term				= term;
+	iter->current_posting	= 0;
+	iter->initialized		= false;
+	iter->finished			= true; /* Default to finished if not found */
+	iter->has_active_access = false;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -67,14 +72,6 @@ tp_segment_posting_iterator_init(
 			&dict_header,
 			sizeof(dict_header.num_terms));
 
-	/* Read string offsets array */
-	string_offsets = palloc(sizeof(uint32) * dict_header.num_terms);
-	tp_segment_read(
-			reader,
-			header->dictionary_offset + sizeof(dict_header.num_terms),
-			string_offsets,
-			sizeof(uint32) * dict_header.num_terms);
-
 	/* Binary search for the term */
 	left  = 0;
 	right = dict_header.num_terms - 1;
@@ -82,28 +79,45 @@ tp_segment_posting_iterator_init(
 	while (left <= right)
 	{
 		TpStringEntry string_entry;
-		char		 *term_text;
 		int			  cmp;
+		uint32		  string_offset_value;
 		uint32		  string_offset;
 
-		mid			  = left + (right - left) / 2;
-		string_offset = header->strings_offset + string_offsets[mid];
+		mid = left + (right - left) / 2;
+
+		/* Read just the single string offset we need for this iteration */
+		tp_segment_read(
+				reader,
+				header->dictionary_offset + sizeof(dict_header.num_terms) +
+						(mid * sizeof(uint32)),
+				&string_offset_value,
+				sizeof(uint32));
+
+		string_offset = header->strings_offset + string_offset_value;
 
 		/* Read string length */
 		tp_segment_read(
 				reader, string_offset, &string_entry.length, sizeof(uint32));
 
+		/* Reallocate buffer if needed */
+		if (string_entry.length + 1 > buffer_size)
+		{
+			if (term_buffer)
+				pfree(term_buffer);
+			buffer_size = string_entry.length + 1;
+			term_buffer = palloc(buffer_size);
+		}
+
 		/* Read term text */
-		term_text = palloc(string_entry.length + 1);
 		tp_segment_read(
 				reader,
 				string_offset + sizeof(uint32),
-				term_text,
+				term_buffer,
 				string_entry.length);
-		term_text[string_entry.length] = '\0';
+		term_buffer[string_entry.length] = '\0';
 
 		/* Compare terms */
-		cmp = strcmp(term, term_text);
+		cmp = strcmp(term, term_buffer);
 
 		if (cmp == 0)
 		{
@@ -120,8 +134,8 @@ tp_segment_posting_iterator_init(
 			iter->initialized = true;
 			iter->finished	  = (iter->dict_entry.posting_count == 0);
 
-			pfree(term_text);
-			pfree(string_offsets);
+			if (term_buffer)
+				pfree(term_buffer);
 			return true;
 		}
 		else if (cmp < 0)
@@ -132,11 +146,10 @@ tp_segment_posting_iterator_init(
 		{
 			left = mid + 1;
 		}
-
-		pfree(term_text);
 	}
 
-	pfree(string_offsets);
+	if (term_buffer)
+		pfree(term_buffer);
 	return false;
 }
 
@@ -148,16 +161,28 @@ static bool
 tp_segment_posting_iterator_next(
 		TpSegmentPostingIterator *iter, TpSegmentPosting **posting)
 {
-	TpSegmentDirectAccess access;
-	uint32				  offset;
+	uint32 offset;
 
 	if (iter->finished || !iter->initialized)
 		return false;
 
 	if (iter->current_posting >= iter->dict_entry.posting_count)
 	{
+		/* Release any active buffer before marking as finished */
+		if (iter->has_active_access)
+		{
+			tp_segment_release_direct(&iter->current_access);
+			iter->has_active_access = false;
+		}
 		iter->finished = true;
 		return false;
+	}
+
+	/* Release previous buffer if we have one */
+	if (iter->has_active_access)
+	{
+		tp_segment_release_direct(&iter->current_access);
+		iter->has_active_access = false;
 	}
 
 	/* Calculate offset for current posting */
@@ -166,7 +191,10 @@ tp_segment_posting_iterator_next(
 
 	/* Get direct access to the posting */
 	if (!tp_segment_get_direct(
-				iter->reader, offset, sizeof(TpSegmentPosting), &access))
+				iter->reader,
+				offset,
+				sizeof(TpSegmentPosting),
+				&iter->current_access))
 	{
 		/* Fallback to regular read if direct access fails */
 		static TpSegmentPosting temp_posting;
@@ -177,7 +205,8 @@ tp_segment_posting_iterator_next(
 	else
 	{
 		/* Zero-copy: return pointer directly into the page */
-		*posting = (TpSegmentPosting *)access.data;
+		*posting = (TpSegmentPosting *)iter->current_access.data;
+		iter->has_active_access = true;
 	}
 
 	iter->current_posting++;
@@ -210,10 +239,13 @@ tp_process_term_in_segments(
 	TpSegmentReader			*reader	 = NULL;
 	TpSegmentPostingIterator iter;
 	TpSegmentPosting		*posting;
-	int32  doc_freq = 0; /* Total document frequency across segments */
-	float4 idf;
 
-	/* First pass: count total document frequency across all segments */
+	/*
+	 * Single pass: process each segment independently.
+	 * For the naive implementation, we calculate IDF per-segment based on
+	 * that segment's document frequency. This avoids the need for a
+	 * double traversal while still providing reasonable scoring.
+	 */
 	current = first_segment;
 	while (current != InvalidBlockNumber)
 	{
@@ -227,39 +259,15 @@ tp_process_term_in_segments(
 		/* Initialize iterator for this term */
 		if (tp_segment_posting_iterator_init(&iter, reader, term))
 		{
-			/* Add document count from this segment */
-			doc_freq += iter.dict_entry.doc_freq;
-		}
+			float4 idf;
 
-		/* Get next segment from header */
-		header	= reader->header;
-		current = header->next_segment;
+			/*
+			 * Calculate IDF for this segment using its document frequency.
+			 * This is an approximation but avoids the double traversal.
+			 */
+			idf = tp_calculate_idf_with_epsilon(
+					iter.dict_entry.doc_freq, total_docs, avg_idf);
 
-		/* Close this segment */
-		tp_segment_close(reader);
-	}
-
-	/* If no documents found, nothing to process */
-	if (doc_freq == 0)
-		return;
-
-	/* Calculate IDF for this term using the total document frequency */
-	idf = tp_calculate_idf_with_epsilon(doc_freq, total_docs, avg_idf);
-
-	/* Second pass: process posting lists and calculate scores */
-	current = first_segment;
-	while (current != InvalidBlockNumber)
-	{
-		TpSegmentHeader *header;
-
-		/* Open segment */
-		reader = tp_segment_open(index, current);
-		if (!reader)
-			break;
-
-		/* Initialize iterator for this term */
-		if (tp_segment_posting_iterator_init(&iter, reader, term))
-		{
 			/* Process each posting using zero-copy iteration */
 			while (tp_segment_posting_iterator_next(&iter, &posting))
 			{
@@ -311,6 +319,13 @@ tp_process_term_in_segments(
 				{
 					doc_entry->score += term_score;
 				}
+			}
+
+			/* Release any active buffer when done with this iterator */
+			if (iter.has_active_access)
+			{
+				tp_segment_release_direct(&iter.current_access);
+				iter.has_active_access = false;
 			}
 		}
 
