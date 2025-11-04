@@ -334,6 +334,7 @@ tp_score_documents(
 	HTAB				*doc_scores_hash;
 	DocumentScoreEntry **sorted_docs;
 	float4				 avg_doc_len;
+	float8				 avg_idf;
 	int32				 total_docs;
 	int					 scored_count	  = 0;
 	int					 additional_count = 0;
@@ -423,6 +424,22 @@ tp_score_documents(
 		elog(ERROR, "Failed to create document scores hash table");
 	}
 
+	/* Calculate average IDF once for all terms */
+	if (metap->total_terms > 0)
+	{
+		avg_idf = metap->idf_sum / metap->total_terms;
+	}
+	else if (memtable->total_terms > 0)
+	{
+		/* Fallback to memtable if metapage not updated yet */
+		avg_idf = metap->idf_sum / memtable->total_terms;
+	}
+	else
+	{
+		/* No terms at all */
+		avg_idf = 0.0;
+	}
+
 	/* Calculate BM25 scores for matching documents */
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
@@ -445,21 +462,8 @@ tp_score_documents(
 		{
 			TpPostingEntry *entries;
 			float4			idf;
-			float8			avg_idf;
 
-			/* Calculate IDF for this term */
-			/* Use metapage total_terms which persists across flushes */
-			if (metap->total_terms > 0)
-			{
-				avg_idf = metap->idf_sum / metap->total_terms;
-			}
-			else
-			{
-				/* Fallback to memtable if metapage not updated yet */
-				Assert(memtable->total_terms > 0);
-				avg_idf = metap->idf_sum / memtable->total_terms;
-			}
-
+			/* Calculate IDF for this term using the cached avg_idf */
 			idf = tp_calculate_idf_with_epsilon(
 					memtable_posting->doc_count, total_docs, avg_idf);
 
@@ -529,20 +533,6 @@ tp_score_documents(
 		 */
 		if (first_segment != InvalidBlockNumber)
 		{
-			float8 avg_idf;
-
-			/* Calculate average IDF for epsilon handling */
-			if (metap->total_terms > 0)
-			{
-				avg_idf = metap->idf_sum / metap->total_terms;
-			}
-			else
-			{
-				/* Fallback to memtable if metapage not updated yet */
-				Assert(memtable->total_terms > 0);
-				avg_idf = metap->idf_sum / memtable->total_terms;
-			}
-
 			/* Process term across all segments using zero-copy iteration */
 			tp_process_term_in_segments(
 					index_relation,
