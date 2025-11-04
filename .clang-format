@@ -54,8 +54,8 @@ PointerAlignment: Right
 DerivePointerAlignment: false
 
 # Include handling (postgres.h first, then system, then local with blank lines)
-SortIncludes: true
-IncludeBlocks: Regroup
+SortIncludes: false
+IncludeBlocks: Preserve
 # Disable main file priority to treat all quoted includes equally
 IncludeIsMainRegex: '$^'
 IncludeCategories:
