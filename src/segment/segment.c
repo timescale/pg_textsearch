@@ -814,7 +814,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			uint32			  doc_count = 0;
 			dshash_parameters doc_lengths_params;
 			TpDocLength		 *doc_lengths_array;
-			uint32			  idx = 0;
+			uint32 capacity = 1024; /* Start with reasonable capacity */
 
 			/* Setup parameters for doc lengths hash table */
 			memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
@@ -831,52 +831,47 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					memtable->doc_lengths_handle,
 					NULL);
 
-			/* Count documents first */
+			/* Collect document lengths in a single pass */
+			doc_lengths_array = palloc(sizeof(TpDocLength) * capacity);
+
 			dshash_seq_init(&seq_status, doc_lengths_hash, false);
 			while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
 							&seq_status)) != NULL)
 			{
+				/* Grow array if needed */
+				if (doc_count >= capacity)
+				{
+					capacity *= 2;
+					doc_lengths_array = repalloc(
+							doc_lengths_array, sizeof(TpDocLength) * capacity);
+				}
+
+				doc_lengths_array[doc_count].ctid = doc_entry->ctid;
+				doc_lengths_array[doc_count].length =
+						(uint16)doc_entry->doc_length;
+				doc_lengths_array[doc_count].reserved = 0;
 				doc_count++;
 			}
 			dshash_seq_term(&seq_status);
 
 			header.num_docs = doc_count;
 
-			/* Collect all document lengths into an array for sorting */
 			if (doc_count > 0)
 			{
-				doc_lengths_array = palloc(sizeof(TpDocLength) * doc_count);
-
-				/* Collect document lengths */
-				dshash_seq_init(&seq_status, doc_lengths_hash, false);
-				while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
-								&seq_status)) != NULL)
-				{
-					doc_lengths_array[idx].ctid = doc_entry->ctid;
-					doc_lengths_array[idx].length =
-							(uint16)doc_entry->doc_length;
-					doc_lengths_array[idx].reserved = 0;
-					idx++;
-				}
-				dshash_seq_term(&seq_status);
-
 				/* Sort by CTID for binary search */
 				qsort(doc_lengths_array,
 					  doc_count,
 					  sizeof(TpDocLength),
 					  (int (*)(const void *, const void *))ItemPointerCompare);
 
-				/* Write sorted document lengths */
-				for (idx = 0; idx < doc_count; idx++)
-				{
-					tp_segment_writer_write(
-							&writer,
-							&doc_lengths_array[idx],
-							sizeof(TpDocLength));
-				}
-
-				pfree(doc_lengths_array);
+				/* Write all document lengths in a single batch */
+				tp_segment_writer_write(
+						&writer,
+						doc_lengths_array,
+						sizeof(TpDocLength) * doc_count);
 			}
+
+			pfree(doc_lengths_array);
 
 			dshash_detach(doc_lengths_hash);
 		}
