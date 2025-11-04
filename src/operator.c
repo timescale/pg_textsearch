@@ -492,8 +492,8 @@ tp_score_documents(
 	/* Get total docs and average length from metapage */
 	total_docs	= (int32)metap->total_docs;
 	avg_doc_len = total_docs > 0
-						? (float4)(metap->total_len / (double)total_docs)
-						: 0.0f;
+						  ? (float4)(metap->total_len / (double)total_docs)
+						  : 0.0f;
 
 	if (total_docs <= 0)
 	{

@@ -174,9 +174,9 @@ tp_add_document_to_posting_list(
 	if (posting_list->doc_count >= posting_list->capacity)
 	{
 		int32 new_capacity = posting_list->capacity == 0
-								   ? TP_INITIAL_POSTING_LIST_CAPACITY
-								   : posting_list->capacity *
-											 tp_posting_list_growth_factor;
+									 ? TP_INITIAL_POSTING_LIST_CAPACITY
+									 : posting_list->capacity *
+											   tp_posting_list_growth_factor;
 		Size  old_size	   = posting_list->capacity * sizeof(TpPostingEntry);
 		Size  new_size	   = new_capacity * sizeof(TpPostingEntry);
 

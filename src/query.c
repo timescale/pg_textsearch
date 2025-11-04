@@ -392,8 +392,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		 */
 		total_docs	= (int32)metap->total_docs;
 		avg_doc_len = total_docs > 0
-							? (float4)(metap->total_len / (double)total_docs)
-							: 0.0f;
+							  ? (float4)(metap->total_len / (double)total_docs)
+							  : 0.0f;
 
 		/* Tokenize the document text using the index's text configuration */
 		tsvector_datum = DirectFunctionCall2Coll(
