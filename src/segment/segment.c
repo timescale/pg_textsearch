@@ -31,6 +31,19 @@
 #include "utils/timestamp.h"
 
 /*
+ * Simple page map cache to avoid re-reading for the same segment
+ */
+typedef struct PageMapCache
+{
+	Oid			 index_oid;	 /* Index relation OID */
+	BlockNumber	 root_block; /* Segment root block */
+	uint32		 num_pages;	 /* Number of pages */
+	BlockNumber *page_map;	 /* Cached page map */
+} PageMapCache;
+
+static PageMapCache page_map_cache = {InvalidOid, InvalidBlockNumber, 0, NULL};
+
+/*
  * Stub implementations for now
  */
 
@@ -78,36 +91,70 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	LockBuffer(
 			header_buf, BUFFER_LOCK_UNLOCK); /* Just unlock, don't release */
 
-	/* Allocate page map */
-	reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
-
-	/* Read page index chain to build page map */
-	while (page_index_block != InvalidBlockNumber &&
-		   pages_loaded < reader->num_pages)
+	/* Check if we can use cached page map */
+	if (page_map_cache.index_oid == RelationGetRelid(index) &&
+		page_map_cache.root_block == root_block &&
+		page_map_cache.num_pages == reader->num_pages &&
+		page_map_cache.page_map != NULL)
 	{
-		index_buf = ReadBuffer(index, page_index_block);
-		LockBuffer(index_buf, BUFFER_LOCK_SHARE);
-		index_page = BufferGetPage(index_buf);
+		/* Use cached page map - just copy the pointer, don't allocate */
+		reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
+		memcpy(reader->page_map,
+			   page_map_cache.page_map,
+			   sizeof(BlockNumber) * reader->num_pages);
+		pages_loaded = reader->num_pages; /* Skip the loading loop */
+	}
+	else
+	{
+		/* Need to load page map from disk */
+		reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
 
-		/* Get special area with page index metadata */
-		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
-
-		/* Get pointer to page entries array */
-		page_entries = (BlockNumber *)((char *)index_page +
-									   SizeOfPageHeaderData);
-
-		/* Copy page entries to our map */
-		for (i = 0;
-			 i < special->num_entries && pages_loaded < reader->num_pages;
-			 i++)
+		/* Read page index chain to build page map */
+		while (page_index_block != InvalidBlockNumber &&
+			   pages_loaded < reader->num_pages)
 		{
-			reader->page_map[pages_loaded++] = page_entries[i];
+			index_buf = ReadBuffer(index, page_index_block);
+			LockBuffer(index_buf, BUFFER_LOCK_SHARE);
+			index_page = BufferGetPage(index_buf);
+
+			/* Get special area with page index metadata */
+			special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
+
+			/* Get pointer to page entries array */
+			page_entries = (BlockNumber *)((char *)index_page +
+										   SizeOfPageHeaderData);
+
+			/* Copy page entries to our map */
+			for (i = 0;
+				 i < special->num_entries && pages_loaded < reader->num_pages;
+				 i++)
+			{
+				reader->page_map[pages_loaded++] = page_entries[i];
+			}
+
+			/* Move to next page in chain */
+			page_index_block = special->next_page;
+
+			UnlockReleaseBuffer(index_buf);
 		}
 
-		/* Move to next page in chain */
-		page_index_block = special->next_page;
+		/* Update cache with newly loaded page map */
+		if (pages_loaded == reader->num_pages)
+		{
+			/* Free old cache if present */
+			if (page_map_cache.page_map)
+				pfree(page_map_cache.page_map);
 
-		UnlockReleaseBuffer(index_buf);
+			/* Allocate new cache and copy page map */
+			page_map_cache.index_oid  = RelationGetRelid(index);
+			page_map_cache.root_block = root_block;
+			page_map_cache.num_pages  = reader->num_pages;
+			page_map_cache.page_map	  = palloc(
+					  sizeof(BlockNumber) * reader->num_pages);
+			memcpy(page_map_cache.page_map,
+				   reader->page_map,
+				   sizeof(BlockNumber) * reader->num_pages);
+		}
 	}
 
 	if (pages_loaded != reader->num_pages)
