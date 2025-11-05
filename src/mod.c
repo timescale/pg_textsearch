@@ -7,6 +7,7 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
+#include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <utils/guc.h>
@@ -18,7 +19,11 @@
 #include "registry.h"
 #include "state.h"
 
+#if PG_VERSION_NUM >= 180000
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "0.0.3-dev");
+#else
 PG_MODULE_MAGIC;
+#endif
 
 /* Relation options for Tapir indexes */
 relopt_kind tp_relopt_kind;
