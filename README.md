@@ -33,6 +33,8 @@ make
 make install # may need sudo
 ```
 
+**Note for PostgreSQL 18 users**: There is a known issue with Dynamic Shared Area (DSA) allocation in PostgreSQL 18 that may cause "out of memory" errors when creating indexes. This is being investigated. As a workaround, you can add pg_textsearch to `shared_preload_libraries` in postgresql.conf and restart the server.
+
 ## Getting Started
 
 Enable the extension (do this once in each database where you want to use it)

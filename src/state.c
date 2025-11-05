@@ -269,6 +269,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
 
+	elog(DEBUG1,
+		 "Attempting to allocate shared state, size=%zu",
+		 sizeof(TpSharedIndexState));
+
 	/*
 	 * Allocate shared state in DSA.
 	 * Use dsa_allocate directly (not tp_dsa_allocate) because shared_state

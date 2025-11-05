@@ -40,6 +40,12 @@ tp_registry_init(void)
 {
 	/* Request shared memory for the registry */
 	RequestAddinShmemSpace(sizeof(TpGlobalRegistry));
+
+#if PG_VERSION_NUM >= 180000
+	/* PG18 requires additional shared memory for DSA control structures
+	 * Request extra space to ensure DSA can initialize properly */
+	RequestAddinShmemSpace(32 * 1024); /* 32KB for DSA control */
+#endif
 }
 
 /*
@@ -96,6 +102,21 @@ tp_registry_get_dsa(void)
 	if (tapir_dsa != NULL)
 		return tapir_dsa;
 
+#if PG_VERSION_NUM >= 180000
+	/* PG18 has issues with DSA when not preloaded - require preloading */
+	if (!IsUnderPostmaster || !tapir_registry)
+	{
+		/* Not running under postmaster or registry not initialized from
+		 * preload */
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pg_textsearch requires shared_preload_libraries "
+						"configuration in PostgreSQL 18"),
+				 errhint("Add 'pg_textsearch' to shared_preload_libraries in "
+						 "postgresql.conf and restart the server.")));
+	}
+#endif
+
 	/* Ensure registry is initialized */
 	if (!tapir_registry)
 	{
@@ -114,14 +135,39 @@ tp_registry_get_dsa(void)
 		int			  tranche_id = LWLockNewTrancheId();
 
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		tapir_dsa  = dsa_create(tranche_id);
+
+		/* Register the tranche for LWLock debugging/monitoring */
+		LWLockRegisterTranche(tranche_id, "pg_textsearch DSA");
+
+#if PG_VERSION_NUM >= 180000
+		/* PG18: Use larger initial segment to avoid allocation failures
+		 * The default 1MB seems insufficient after control structure overhead
+		 */
+		tapir_dsa = dsa_create_ext(
+				tranche_id,
+				4 * 1024 * 1024, /* 4MB initial segment */
+				DSA_MAX_SEGMENT_SIZE);
+#else
+		/* PG17 and earlier: Use default parameters */
+		tapir_dsa = dsa_create(tranche_id);
+#endif
 		MemoryContextSwitchTo(oldcontext);
+
+		if (tapir_dsa == NULL)
+		{
+			LWLockRelease(&tapir_registry->lock);
+			elog(ERROR, "Failed to create DSA area");
+		}
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
 
 		/* Pin the mapping for this backend */
 		dsa_pin_mapping(tapir_dsa);
+
+		elog(DEBUG1,
+			 "DSA created successfully with tranche_id %d",
+			 tranche_id);
 
 		/* Store handle for other backends */
 		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
@@ -130,6 +176,10 @@ tp_registry_get_dsa(void)
 	{
 		/* DSA exists - attach to it */
 		MemoryContext oldcontext;
+
+		/* Register the tranche for this backend */
+		/* Note: We don't know the exact tranche_id here, but DSA handles this
+		 * internally */
 
 		/* Attach in TopMemoryContext so the dsa_area structure
 		 * doesn't get freed when query memory contexts are cleaned up.
