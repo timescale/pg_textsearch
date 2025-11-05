@@ -33,3 +33,8 @@ CLAUDE.md
 
 # VSCode files
 compile_commands.json
+
+# Benchmark data files (too large for repo)
+benchmarks/data/
+*.tsv
+*.csv
