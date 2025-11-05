@@ -16,4 +16,4 @@
 #include "memtable.h"
 
 /* GUC variable for memory limit (currently not enforced) */
-int tp_index_memory_limit = 64; /* 64MB default */
+int tp_index_memory_limit = 16; /* 16MB default */

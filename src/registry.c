@@ -23,6 +23,7 @@
 #include <utils/memutils.h>
 
 #include "registry.h"
+#include "memory.h"
 
 /* Backend-local pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;
@@ -112,13 +113,40 @@ tp_registry_get_dsa(void)
 		/* First backend - create the DSA */
 		MemoryContext oldcontext;
 		int			  tranche_id = LWLockNewTrancheId();
+		size_t		  init_segment_size;
+		size_t		  max_segment_size;
+
+		/*
+		 * Calculate appropriate DSA segment sizes based on configured memory
+		 * limit. Without this, DSA pre-allocates 46MB regardless of our
+		 * actual needs, wasting shared memory.
+		 *
+		 * Use smaller initial segment and cap maximum segment size to avoid
+		 * wasting shared memory.
+		 */
+		max_segment_size = tp_get_memory_limit();
+
+		/* Start with 256KB segments instead of default 1MB */
+		init_segment_size = 256 * 1024L;
+
+		/* Make sure init size doesn't exceed max */
+		if (init_segment_size > max_segment_size)
+			init_segment_size = max_segment_size;
+
+		elog(DEBUG1,
+			 "Creating DSA with init_segment=%zu max_segment=%zu "
+			 "(limit=%zuMB)",
+			 init_segment_size,
+			 max_segment_size,
+			 max_segment_size / (1024 * 1024));
 
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
 		/* Register the tranche for LWLock debugging/monitoring */
 		LWLockRegisterTranche(tranche_id, "pg_textsearch DSA");
 
-		tapir_dsa = dsa_create(tranche_id);
+		tapir_dsa  = dsa_create_ext(
+				 tranche_id, init_segment_size, max_segment_size);
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)
@@ -126,6 +154,13 @@ tp_registry_get_dsa(void)
 			LWLockRelease(&tapir_registry->lock);
 			elog(ERROR, "Failed to create DSA area");
 		}
+
+		/* Set total DSA size limit to prevent over-allocation */
+		dsa_set_size_limit(tapir_dsa, max_segment_size);
+
+		elog(DEBUG1,
+			 "DSA created and limited to %zuMB total",
+			 max_segment_size / (1024 * 1024));
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);

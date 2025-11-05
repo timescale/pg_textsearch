@@ -121,7 +121,7 @@ LIMIT 10;
 
 ### Memtable
 
-Top-level inverted index stored in shared memory using PostgreSQL Dynamic Shared Areas (DSA).  Makes updates efficient while supporting fast reads too.  Memory budget enforced via `pg_textsearch.index_memory_limit` GUC (default 64MB per index).  Future versions will flush to disk (segment) when full.  For durability, document IDs are stored in index metapages.  Protected by shared memory locks.
+Top-level inverted index stored in shared memory using PostgreSQL Dynamic Shared Areas (DSA).  Makes updates efficient while supporting fast reads too.  Memory budget enforced via `pg_textsearch.index_memory_limit` GUC (default 16MB per index).  Future versions will flush to disk (segment) when full.  For durability, document IDs are stored in index metapages.  Protected by shared memory locks.
 
 Composition of memtable:
 

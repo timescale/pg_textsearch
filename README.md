@@ -202,7 +202,7 @@ Optional settings in `postgresql.conf`:
 
 ```bash
 # Per-index memory limit (can be changed without restart)
-pg_textsearch.index_memory_limit = 64MB      # Memory limit per index, default 64MB
+pg_textsearch.index_memory_limit = 16MB      # Memory limit per index, default 16MB
 
 # Query limit when no LIMIT clause detected
 pg_textsearch.default_limit = 1000           # default 1000

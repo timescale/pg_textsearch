@@ -39,7 +39,7 @@ INSERT INTO long_string_docs (content, category) VALUES
     ('The antidisestablishmentarianism movement was characterized by pneumonoultramicroscopicsilicovolcanoconiosispneumonoultramicroscopicsilicovolcanoconiosis research', 'scientific'),
 
     -- Long JSON-like structured content
-    ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":64,"max_terms":1000000}}', 'json');
+    ('Configuration: {"search_engine":"tapir","algorithms":{"primary":"bm25","parameters":{"k1":1.2,"b":0.75}},"text_processing":{"stemming":"english","tokenization":"standard"},"performance":{"shared_memory_mb":16,"max_terms":1000000}}', 'json');
 
 -- Create pg_textsearch index on long strings
 CREATE INDEX long_strings_idx ON long_string_docs USING bm25(content)

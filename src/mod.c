@@ -76,7 +76,7 @@ _PG_init(void)
 			"Per-index memory limit in MB",
 			"Controls the maximum memory each pg_textsearch index can use",
 			&tp_index_memory_limit,
-			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
+			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 16MB */
 			1,							   /* min 1MB */
 			TP_MAX_INDEX_MEMORY_LIMIT,	   /* max 512MB */
 			PGC_SUSET,					   /* Superuser can change with SET */
