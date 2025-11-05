@@ -1807,6 +1807,10 @@ tp_costestimate(
 	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
+#if PG_VERSION_NUM >= 180000
+	/* See "On disable_cost" thread on pgsql-hackers */
+	path->path.disabled_nodes = 2;
+#endif
 }
 
 /*

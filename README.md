@@ -23,7 +23,7 @@ mascot and the name occurs in various places in the source code.
 
 ### Linux and Mac
 
-Compile and install the extension (requires PostgreSQL 17)
+Compile and install the extension (requires PostgreSQL 17 or 18)
 
 ```sh
 cd /tmp
@@ -235,7 +235,7 @@ SELECT indexname FROM pg_indexes WHERE indexdef LIKE '%USING bm25%';
 If your machine has multiple Postgres installations, specify the path to `pg_config`:
 
 ```sh
-export PG_CONFIG=/Library/PostgreSQL/17/bin/pg_config
+export PG_CONFIG=/Library/PostgreSQL/18/bin/pg_config  # or 17
 make clean && make && make install
 ```
 
@@ -243,7 +243,8 @@ If you get compilation errors, install Postgres development files:
 
 ```sh
 # Ubuntu/Debian
-sudo apt install postgresql-server-dev-17
+sudo apt install postgresql-server-dev-17  # for PostgreSQL 17
+sudo apt install postgresql-server-dev-18  # for PostgreSQL 18
 ```
 
 ## Reference
@@ -340,4 +341,4 @@ brew install pre-commit && pre-commit install  # macOS
 4. Ensure `make installcheck` and `make test-concurrency` pass
 5. Submit a pull request
 
-All pull requests are automatically tested against PostgreSQL 17.
+All pull requests are automatically tested against PostgreSQL 17 and 18.

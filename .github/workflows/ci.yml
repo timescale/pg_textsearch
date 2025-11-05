@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pg_version: [17]
+        pg_version: [17, 18]
 
     steps:
     - uses: actions/checkout@v4
@@ -111,6 +111,8 @@ jobs:
         config:
           - { cc: gcc, pg_version: 17 }
           - { cc: clang, pg_version: 17 }
+          - { cc: gcc, pg_version: 18 }
+          - { cc: clang, pg_version: 18 }
 
     steps:
     - uses: actions/checkout@v4
