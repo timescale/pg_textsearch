@@ -595,7 +595,7 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies	  = 1; /* Strategy 1 for ORDER BY */
+	amroutine->amstrategies	  = 0; /* No search strategies - ORDER BY only */
 	amroutine->amsupport	  = 8; /* 8 for distance */
 	amroutine->amoptsprocnum  = 0;
 	amroutine->amcanorder	  = false;
