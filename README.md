@@ -19,6 +19,19 @@ implementation is in place and working. This is prerelease software and should n
 The original name of the project was Tapir - **T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval.  We still use the tapir as our
 mascot and the name occurs in various places in the source code.
 
+## PostgreSQL Version Compatibility
+
+pg_textsearch supports:
+- PostgreSQL 17
+- PostgreSQL 18
+
+### New in PostgreSQL 18 Support
+
+- **Embedded index name syntax**: Use `index_name:query` format in cast expressions for
+  better compatibility with PG18's query planner
+- **Improved ORDER BY optimization**: Full support for PG18's consistent ordering semantics
+- **Query planner compatibility**: Works correctly with PG18's more eager expression evaluation
+
 ## Installation
 
 ### Linux and Mac
@@ -135,12 +148,20 @@ The `bm25query` type represents queries for BM25 scoring with optional index con
 ```sql
 -- Create a bm25query with index name (required for WHERE clause and standalone scoring)
 SELECT to_bm25query('search query text', 'docs_idx');
--- Returns: docs_idx:{search query text}
+-- Returns: docs_idx:search query text
+
+-- Embedded index name syntax (alternative form using cast)
+SELECT 'docs_idx:search query text'::bm25query;
+-- Returns: docs_idx:search query text
 
 -- Create a bm25query without index name (only works in ORDER BY with index scan)
 SELECT to_bm25query('search query text');
--- Returns: {search query text}
+-- Returns: search query text
 ```
+
+**Note**: In PostgreSQL 18, the embedded index name syntax using single colon (`:`) allows the
+query planner to determine the index name even when evaluating SELECT clause expressions early.
+This ensures compatibility across different query evaluation strategies.
 
 #### bm25query Functions
 
