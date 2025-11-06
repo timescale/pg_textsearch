@@ -802,20 +802,27 @@ tp_free_terms_array(char **terms, int term_count)
 
 /*
  * Setup table scanning for index build
+ * Returns the snapshot (PG18+ only) for later unregistration
  */
-static void
+static Snapshot
 tp_setup_table_scan(
 		Relation heap, TableScanDesc *scan_out, TupleTableSlot **slot_out)
 {
+	Snapshot snapshot = NULL;
+
 #if PG_VERSION_NUM >= 180000
-	/* PG18: Use SnapshotAny for index builds to see all tuples
-	 * This avoids snapshot registration issues while still seeing all data */
-	*scan_out = table_beginscan(heap, SnapshotAny, 0, NULL);
+	/* PG18: Must register the snapshot for index builds */
+	snapshot = GetTransactionSnapshot();
+	if (snapshot)
+		snapshot = RegisterSnapshot(snapshot);
+	*scan_out = table_beginscan(heap, snapshot, 0, NULL);
 #else
 	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
 #endif
 
 	*slot_out = table_slot_create(heap, NULL);
+
+	return snapshot;
 }
 
 /*
@@ -968,6 +975,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	double			   k1, b;
 	TableScanDesc	   scan;
 	TupleTableSlot	  *slot;
+	Snapshot		   snapshot	  = NULL;
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
@@ -1014,7 +1022,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
 
 	/* Prepare to scan table */
-	tp_setup_table_scan(heap, &scan, &slot);
+	snapshot = tp_setup_table_scan(heap, &scan, &slot);
 
 	/* Process each document in the heap */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -1030,6 +1038,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
+
+#if PG_VERSION_NUM >= 180000
+	/* Unregister the snapshot (PG18+ only) */
+	if (snapshot)
+		UnregisterSnapshot(snapshot);
+#endif
 
 	/* Report metadata writing phase */
 	pgstat_progress_update_param(
