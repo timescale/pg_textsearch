@@ -102,21 +102,6 @@ tp_registry_get_dsa(void)
 	if (tapir_dsa != NULL)
 		return tapir_dsa;
 
-#if PG_VERSION_NUM >= 180000
-	/* PG18 has issues with DSA when not preloaded - require preloading */
-	if (!IsUnderPostmaster || !tapir_registry)
-	{
-		/* Not running under postmaster or registry not initialized from
-		 * preload */
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("pg_textsearch requires shared_preload_libraries "
-						"configuration in PostgreSQL 18"),
-				 errhint("Add 'pg_textsearch' to shared_preload_libraries in "
-						 "postgresql.conf and restart the server.")));
-	}
-#endif
-
 	/* Ensure registry is initialized */
 	if (!tapir_registry)
 	{

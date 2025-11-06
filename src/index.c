@@ -807,7 +807,13 @@ static void
 tp_setup_table_scan(
 		Relation heap, TableScanDesc *scan_out, TupleTableSlot **slot_out)
 {
+#if PG_VERSION_NUM >= 180000
+	/* PG18: Use SnapshotAny for index builds to see all tuples
+	 * This avoids snapshot registration issues while still seeing all data */
+	*scan_out = table_beginscan(heap, SnapshotAny, 0, NULL);
+#else
 	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
+#endif
 
 	*slot_out = table_slot_create(heap, NULL);
 }
