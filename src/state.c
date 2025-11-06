@@ -156,10 +156,6 @@ tp_get_local_index_state(Oid index_oid)
 				 * We rebuild the index state from the on-disk metapage to
 				 * recover the memtable and posting lists.
 				 */
-				elog(DEBUG1,
-					 "Index %u exists on disk but not in registry - "
-					 "attempting recovery",
-					 index_oid);
 
 				/* Only attempt recovery if we can safely validate the metapage
 				 */
@@ -268,10 +264,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
-
-	elog(DEBUG1,
-		 "Attempting to allocate shared state, size=%zu",
-		 sizeof(TpSharedIndexState));
 
 	/*
 	 * Allocate shared state in DSA.
