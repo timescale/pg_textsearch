@@ -26,10 +26,6 @@ INSERT INTO articles (title, content, category) VALUES
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
 -- Create pg_textsearch index with text_config
 CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation articles_tapir_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 12 documents, avg_length=9.17, text_config='english' (k1=1.20, b=0.75)
 -- Disable sequential scans to force index usage
 SET enable_seqscan = off;
 -- Test 1: Basic text similarity search with LIMIT
@@ -38,14 +34,12 @@ SELECT title, content, content <@> 'database'::bm25query as score
 FROM articles
 ORDER BY content <@> 'database'::bm25query
 LIMIT 5;
-                       QUERY PLAN                        
----------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'database'::bm25query))
-         ->  Seq Scan on articles
-               Disabled: true
-(5 rows)
+   ->  Index Scan using articles_tapir_idx on articles
+         Order By: (content <@> 'database'::bm25query)
+(3 rows)
 
 SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as score
 FROM articles
@@ -59,14 +53,12 @@ SELECT title, content, content <@> 'machine learning'::bm25query as score
 FROM articles
 ORDER BY content <@> 'machine learning'::bm25query
 LIMIT 3;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                          QUERY PLAN                           
+---------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'machine learning'::bm25query))
-         ->  Seq Scan on articles
-               Disabled: true
-(5 rows)
+   ->  Index Scan using articles_tapir_idx on articles
+         Order By: (content <@> 'machine learning'::bm25query)
+(3 rows)
 
 SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeric, 4) as score
 FROM articles
@@ -81,15 +73,13 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'::bm25query
 LIMIT 10;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                           QUERY PLAN                           
+----------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'search algorithms'::bm25query))
-         ->  Seq Scan on articles
-               Disabled: true
-               Filter: (category = 'technology'::text)
-(6 rows)
+   ->  Index Scan using articles_tapir_idx on articles
+         Order By: (content <@> 'search algorithms'::bm25query)
+         Filter: (category = 'technology'::text)
+(4 rows)
 
 SELECT title, content, ROUND((content <@> 'search algorithms'::bm25query)::numeric, 4) as score
 FROM articles
@@ -120,14 +110,12 @@ SELECT title, content, content <@> 'database optimization'::bm25query as score
 FROM articles
 ORDER BY content <@> 'database optimization'::bm25query
 LIMIT 10;
-                              QUERY PLAN                              
-----------------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'database optimization'::bm25query))
-         ->  Seq Scan on articles
-               Disabled: true
-(5 rows)
+   ->  Index Scan using articles_tapir_idx on articles
+         Order By: (content <@> 'database optimization'::bm25query)
+(3 rows)
 
 SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::numeric, 4) as score
 FROM articles
@@ -149,12 +137,11 @@ ORDER BY s.term, a.content <@> to_bm25query(s.term);
  Sort
    Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])))))
    ->  Nested Loop
-         ->  Seq Scan on articles a
-               Disabled: true
+         ->  ProjectSet
+               ->  Result
          ->  Materialize
-               ->  ProjectSet
-                     ->  Result
-(8 rows)
+               ->  Seq Scan on articles a
+(7 rows)
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
