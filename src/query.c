@@ -41,23 +41,24 @@ PG_FUNCTION_INFO_V1(tpquery_eq);
  * tpquery input function
  * Formats:
  *   "query_text" - simple query without index name
- *   "index_name::query_text" - query with embedded index name
+ *   "index_name:query_text" - query with embedded index name
+ * Note: If query_text contains a colon, use to_bm25query() instead
  */
 Datum
 tpquery_in(PG_FUNCTION_ARGS)
 {
 	char	*str = PG_GETARG_CSTRING(0);
-	char	*double_colon;
+	char	*colon;
 	TpQuery *result;
 
-	/* Check for index name prefix (format: "index_name::query") */
-	double_colon = strstr(str, "::");
-	if (double_colon && double_colon != str)
+	/* Check for index name prefix (format: "index_name:query") */
+	colon = strchr(str, ':');
+	if (colon && colon != str)
 	{
-		/* Found :: separator and it's not at the start - extract index name */
-		int	  index_name_len = double_colon - str;
+		/* Found colon and it's not at the start - extract index name */
+		int	  index_name_len = colon - str;
 		char *index_name	 = palloc(index_name_len + 1);
-		char *query_text	 = double_colon + 2; /* Skip past :: */
+		char *query_text	 = colon + 1; /* Skip past : */
 
 		/* Copy the index name */
 		memcpy(index_name, str, index_name_len);
@@ -87,11 +88,11 @@ tpquery_out(PG_FUNCTION_ARGS)
 
 	if (tpquery->index_name_len > 0)
 	{
-		/* Format with index name: "index_name::query_text" */
+		/* Format with index name: "index_name:query_text" */
 		char *index_name = get_tpquery_index_name(tpquery);
 		char *query_text = get_tpquery_text(tpquery);
 
-		appendStringInfo(str, "%s::%s", index_name, query_text);
+		appendStringInfo(str, "%s:%s", index_name, query_text);
 	}
 	else
 	{
