@@ -49,11 +49,11 @@ SELECT title, content, content <@> to_bm25query('database', 'limit_test_idx') as
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
+                              QUERY PLAN
+----------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
-         Order By: (content <@> 'limit_test_idx:{database}'::bm25query)
+         Order By: (content <@> 'limit_test_idx:database'::bm25query)
 (3 rows)
 
 SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_idx'))::numeric, 4) as score
@@ -119,11 +119,11 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-                                              QUERY PLAN                                              
-------------------------------------------------------------------------------------------------------
+                                             QUERY PLAN
+----------------------------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: (round(((content <@> 'limit_test_idx:{database system}'::bm25query))::numeric, 4))
+         Sort Key: (round(((content <@> 'limit_test_idx:database system'::bm25query))::numeric, 4))
          ->  Index Scan using limit_test_pkey on limit_test
                Index Cond: (id > 5)
 (5 rows)
@@ -271,11 +271,11 @@ SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-                              QUERY PLAN                              
-----------------------------------------------------------------------
+                             QUERY PLAN
+--------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
-         Order By: (content <@> 'limit_test_idx:{simple}'::bm25query)
+         Order By: (content <@> 'limit_test_idx:simple'::bm25query)
 (3 rows)
 
 -- Case: Multiple ORDER BY clauses
