@@ -1,5 +1,5 @@
 EXTENSION = pg_textsearch
-DATA = sql/pg_textsearch--0.0.3-dev.sql
+DATA = sql/pg_textsearch--0.0.3.sql
 
 # Source files
 # Full build - debugging initialization crash
