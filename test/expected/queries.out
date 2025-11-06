@@ -35,67 +35,103 @@ NOTICE:  BM25 index build completed: 12 documents, avg_length=9.17, text_config=
 SET enable_seqscan = off;
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database'::bm25query as score
+SELECT title, content, content <@> to_bm25query('database', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'database'::bm25query
+ORDER BY content <@> to_bm25query('database', 'articles_tapir_idx')
 LIMIT 5;
-                      QUERY PLAN                       
--------------------------------------------------------
+                                         QUERY PLAN
+---------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database'::bm25query)
+         Order By: (content <@> to_bm25query('database'::text, 'articles_tapir_idx'::text))
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('database', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database'::bm25query
+ORDER BY content <@> to_bm25query('database', 'articles_tapir_idx')
 LIMIT 5;
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.0060
-ERROR:  text <@> tpquery operator requires index name
-HINT:  Use to_tpquery(text, index_name) for standalone scoring
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.0060
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0060
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+           title           |                                              content                                              |  score
+---------------------------+---------------------------------------------------------------------------------------------------+---------
+ Data Mining Techniques    | data mining algorithms for pattern discovery and knowledge extraction from large databases       | -1.0060
+ Database Optimization     | database indexing and query optimization strategies for improving performance in large datasets  | -1.0060
+ Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | -1.0060
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
+ Text Search Algorithms    | full text search with tapir ranking and relevance scoring for information retrieval systems      | 0.0000
+(5 rows)
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning'::bm25query as score
+SELECT title, content, content <@> to_bm25query('machine learning', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
-                          QUERY PLAN                           
----------------------------------------------------------------
+                                            QUERY PLAN
+---------------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'machine learning'::bm25query)
+         Order By: (content <@> to_bm25query('machine learning'::text, 'articles_tapir_idx'::text))
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('machine learning', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-2.8917
-ERROR:  text <@> tpquery operator requires index name
-HINT:  Use to_tpquery(text, index_name) for standalone scoring
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.8857
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.9538
+             title             |                                               content                                                |  score
+-------------------------------+------------------------------------------------------------------------------------------------------+---------
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -2.8917
+ Document Classification       | text mining and document classification using machine learning and statistical methods              | -1.8857
+ Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -0.9538
+(3 rows)
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms'::bm25query as score
+SELECT title, content, content <@> to_bm25query('search algorithms', 'articles_tapir_idx') as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
-                           QUERY PLAN                           
-----------------------------------------------------------------
+                                             QUERY PLAN
+-----------------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'search algorithms'::bm25query)
+         Order By: (content <@> to_bm25query('search algorithms'::text, 'articles_tapir_idx'::text))
          Filter: (category = 'technology'::text)
 (4 rows)
 
-SELECT title, content, ROUND((content <@> 'search algorithms'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('search algorithms', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.6468
-ERROR:  text <@> tpquery operator requires index name
-HINT:  Use to_tpquery(text, index_name) for standalone scoring
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.4335
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.9538
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5277
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
+           title           |                                               content                                                |  score
+---------------------------+------------------------------------------------------------------------------------------------------+---------
+ Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            | -1.6468
+ Data Mining Techniques    | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.4335
+ Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      | -0.9538
+ Text Search Algorithms    | full text search with tapir ranking and relevance scoring for information retrieval systems         | -0.5277
+ Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | 0.0000
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | 0.0000
+ Natural Language Processing | natural language processing techniques including parsing stemming and semantic analysis            | 0.0000
+ Database Optimization     | database indexing and query optimization strategies for improving performance in large datasets     | 0.0000
+ Document Classification   | text mining and document classification using machine learning and statistical methods              | 0.0000
+ Distributed Computing     | distributed systems and scalability challenges in modern cloud computing environments               | 0.0000
+(10 rows)
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
 SELECT a2.title, a2.content, ROUND((a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
@@ -114,24 +150,44 @@ LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization'::bm25query as score
+SELECT title, content, content <@> to_bm25query('database optimization', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                                               QUERY PLAN
+--------------------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
-         Order By: (content <@> 'database optimization'::bm25query)
+         Order By: (content <@> to_bm25query('database optimization'::text, 'articles_tapir_idx'::text))
 (3 rows)
 
-SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('database optimization', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.0582
-ERROR:  text <@> tpquery operator requires index name
-HINT:  Use to_tpquery(text, index_name) for standalone scoring
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.8486
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0060
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.5899
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
+           title           |                                               content                                                |  score
+---------------------------+------------------------------------------------------------------------------------------------------+---------
+ Database Optimization     | database indexing and query optimization strategies for improving performance in large datasets     | -3.0582
+ Data Mining Techniques    | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.8486
+ Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | -1.0060
+ Big Data Analytics        | big data analytics platforms and tools for processing massive datasets efficiently                  | -0.5899
+ Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction |  0.0000
+ Text Search Algorithms    | full text search with tapir ranking and relevance scoring for information retrieval systems         |  0.0000
+ Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      |  0.0000
+ Natural Language Processing | natural language processing techniques including parsing stemming and semantic analysis            |  0.0000
+ Document Classification   | text mining and document classification using machine learning and statistical methods              |  0.0000
+ Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            |  0.0000
+(10 rows)
 -- Test 6: Batch search with different queries (no index)
 EXPLAIN (COSTS OFF)
 WITH search_terms AS (

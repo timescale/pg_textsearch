@@ -37,40 +37,40 @@ SET enable_seqscan = off;
 
 -- Test 1: Basic text similarity search with LIMIT
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database'::bm25query as score
+SELECT title, content, content <@> to_bm25query('database', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'database'::bm25query
+ORDER BY content <@> to_bm25query('database', 'articles_tapir_idx')
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> 'database'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('database', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database'::bm25query
+ORDER BY content <@> to_bm25query('database', 'articles_tapir_idx')
 LIMIT 5;
 
 -- Test 2: Multi-term search with ranking
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'machine learning'::bm25query as score
+SELECT title, content, content <@> to_bm25query('machine learning', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
-SELECT title, content, ROUND((content <@> 'machine learning'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('machine learning', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
 -- Test 3: Category-filtered search
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'search algorithms'::bm25query as score
+SELECT title, content, content <@> to_bm25query('search algorithms', 'articles_tapir_idx') as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'search algorithms'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('search algorithms', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -83,14 +83,14 @@ LIMIT 5;
 
 -- Test 5: Top results with scoring
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'database optimization'::bm25query as score
+SELECT title, content, content <@> to_bm25query('database optimization', 'articles_tapir_idx') as score
 FROM articles
-ORDER BY content <@> 'database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'database optimization'::bm25query)::numeric, 4) as score
+SELECT title, content, ROUND((content <@> to_bm25query('database optimization', 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
 -- Test 6: Batch search with different queries (no index)
