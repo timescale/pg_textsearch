@@ -80,15 +80,15 @@ jobs:
         echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
 
         pg_ctl -D $PGDATA start -w
-        createdb test_upgrade
+        createdb -h /tmp test_upgrade
 
         # Install old version
         sudo cp pg_textsearch_old.so /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pg_textsearch.so
 
-        psql -d test_upgrade -c "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
+        psql -h /tmp -d test_upgrade -c "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
 
         # Create test data with old version
-        psql -d test_upgrade << SQL
+        psql -h /tmp -d test_upgrade << SQL
         CREATE TABLE test_docs (
           id SERIAL PRIMARY KEY,
           content TEXT
@@ -111,10 +111,10 @@ jobs:
         sudo make install
 
         # Perform upgrade
-        psql -d test_upgrade -c "ALTER EXTENSION pg_textsearch UPDATE;"
+        psql -h /tmp -d test_upgrade -c "ALTER EXTENSION pg_textsearch UPDATE;"
 
         # Verify upgrade
-        psql -d test_upgrade << SQL
+        psql -h /tmp -d test_upgrade << SQL
         -- Check version
         SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';
 
