@@ -51,18 +51,24 @@ ORDER BY content <@> to_bm25query('https website', 'long_strings_idx')
 LIMIT 5;
 
 -- Test 2: Search for technical terms
-SELECT id, category,
-       ROUND((content <@> to_bm25query('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
-FROM long_string_docs
-ORDER BY content <@> to_bm25query('postgresql extension', 'long_strings_idx')
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, category,
+           ROUND((content <@> to_bm25query('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
+    FROM long_string_docs
+    ORDER BY content <@> to_bm25query('postgresql extension', 'long_strings_idx')
+    LIMIT 10
+) AS subquery
+ORDER BY score, id;
 
 -- Test 3: Search for long path components
-SELECT id, LEFT(content, 60) || '...' as content_preview,
-       ROUND((content <@> to_bm25query('file log error', 'long_strings_idx'))::numeric, 4) as score
-FROM long_string_docs
-ORDER BY content <@> to_bm25query('file log error', 'long_strings_idx')
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, LEFT(content, 60) || '...' as content_preview,
+           ROUND((content <@> to_bm25query('file log error', 'long_strings_idx'))::numeric, 4) as score
+    FROM long_string_docs
+    ORDER BY content <@> to_bm25query('file log error', 'long_strings_idx')
+    LIMIT 10
+) AS subquery
+ORDER BY score, id;
 
 -- Test 4: Test vectorization of very long URLs
 SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
@@ -71,19 +77,25 @@ SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokeniza
 SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
 
 -- Test 6: Test mixed long and short terms
-SELECT id, ROUND((content <@> to_bm25query('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
-FROM long_string_docs
-ORDER BY content <@> to_bm25query('algorithm bm25', 'long_strings_idx')
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, ROUND((content <@> to_bm25query('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
+    FROM long_string_docs
+    ORDER BY content <@> to_bm25query('algorithm bm25', 'long_strings_idx')
+    LIMIT 10
+) AS subquery
+ORDER BY score, id;
 
 -- Test 7: Performance test with multiple long term queries
-SELECT
-    id,
-    category,
-    ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
-FROM long_string_docs
-ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
-LIMIT 10;
+SELECT * FROM (
+    SELECT
+        id,
+        category,
+        ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+    FROM long_string_docs
+    ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
+    LIMIT 10
+) AS subquery
+ORDER BY multi_term_score, id;
 
 -- Test 8: Test URL tokenization specifics
 SELECT
@@ -98,11 +110,14 @@ INSERT INTO long_string_docs (content, category) VALUES
      ' and should still be indexed correctly', 'stress_test');
 
 -- Verify the stress test document was indexed
-SELECT id, LEFT(content, 50) || '...' as preview,
-       ROUND((content <@> to_bm25query('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
-FROM long_string_docs
-ORDER BY content <@> to_bm25query('document ridiculously long', 'long_strings_idx')
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, LEFT(content, 50) || '...' as preview,
+           ROUND((content <@> to_bm25query('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
+    FROM long_string_docs
+    ORDER BY content <@> to_bm25query('document ridiculously long', 'long_strings_idx')
+    LIMIT 10
+) AS subquery
+ORDER BY score, id;
 
 -- Test 10: Memory usage statistics after indexing long strings
 SELECT
