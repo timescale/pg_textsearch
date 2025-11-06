@@ -24,7 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        # Only test PG17 for upgrades from old versions
+        # since PG18 support was added in v0.0.3
+        pg_version: [17]
         old_version: ['0.0.1', '0.0.2']
 
     steps:
@@ -83,6 +85,7 @@ jobs:
         initdb -D $PGDATA
         echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
         echo "port = 54${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
 
         pg_ctl -D $PGDATA start -w
         createdb -p 54${{ matrix.pg_version }} test_upgrade
@@ -167,6 +170,7 @@ jobs:
         initdb -D $PGDATA
         echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
         echo "port = 55${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
 
         pg_ctl -D $PGDATA start -w
         createdb -p 55${{ matrix.pg_version }} test_clean
