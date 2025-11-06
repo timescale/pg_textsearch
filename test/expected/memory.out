@@ -1,7 +1,7 @@
 -- Test memory limit enforcement for pg_textsearch indexes
 -- Create extension if not exists
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.3-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.3: This is prerelease software and should not be used in production.
 -- Create test table
 DROP TABLE IF EXISTS memory_test CASCADE;
 NOTICE:  table "memory_test" does not exist, skipping
