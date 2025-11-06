@@ -39,17 +39,39 @@ PG_FUNCTION_INFO_V1(tpquery_eq);
 
 /*
  * tpquery input function
- * Format: "query_text" (simple cast from text)
- * Index names not supported in text cast - use to_tpquery() functions instead
+ * Formats:
+ *   "query_text" - simple query without index name
+ *   "index_name::query_text" - query with embedded index name
  */
 Datum
 tpquery_in(PG_FUNCTION_ARGS)
 {
 	char	*str = PG_GETARG_CSTRING(0);
+	char	*double_colon;
 	TpQuery *result;
 
-	/* Simple format: just the query text, no special syntax */
-	result = create_tpquery(str, NULL);
+	/* Check for index name prefix (format: "index_name::query") */
+	double_colon = strstr(str, "::");
+	if (double_colon && double_colon != str)
+	{
+		/* Found :: separator and it's not at the start - extract index name */
+		int	  index_name_len = double_colon - str;
+		char *index_name	 = palloc(index_name_len + 1);
+		char *query_text	 = double_colon + 2; /* Skip past :: */
+
+		/* Copy the index name */
+		memcpy(index_name, str, index_name_len);
+		index_name[index_name_len] = '\0';
+
+		/* Create query with index name */
+		result = create_tpquery(query_text, index_name);
+		pfree(index_name);
+	}
+	else
+	{
+		/* No index name prefix - use the entire string as query text */
+		result = create_tpquery(str, NULL);
+	}
 
 	PG_RETURN_POINTER(result);
 }
@@ -65,11 +87,11 @@ tpquery_out(PG_FUNCTION_ARGS)
 
 	if (tpquery->index_name_len > 0)
 	{
-		/* Format with index name: "index_name:{query_text}" */
+		/* Format with index name: "index_name::query_text" */
 		char *index_name = get_tpquery_index_name(tpquery);
 		char *query_text = get_tpquery_text(tpquery);
 
-		appendStringInfo(str, "%s:{%s}", index_name, query_text);
+		appendStringInfo(str, "%s::%s", index_name, query_text);
 	}
 	else
 	{
