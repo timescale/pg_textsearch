@@ -51,12 +51,12 @@ LIMIT 5;
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'articles_tapir_idx:machine learning'::bm25query as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:machine learning'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:machine learning'::bm25query
+ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
 -- Test 3: Category-filtered search
@@ -64,13 +64,13 @@ EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'articles_tapir_idx:search algorithms'::bm25query as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'articles_tapir_idx:search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:search algorithms'::bm25query)::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> 'articles_tapir_idx:search algorithms'::bm25query
+ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
@@ -85,31 +85,33 @@ LIMIT 5;
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'articles_tapir_idx:database optimization'::bm25query as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database optimization'::bm25query)::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:database optimization'::bm25query
+ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
--- Test 6: Batch search with different queries (no index)
+-- Test 6: Batch search with different queries
+-- Note: In PG18, queries without index names fail due to eager evaluation
+-- This test uses the index name to work correctly
 EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, a.content <@> to_bm25query(s.term) as score
+SELECT s.term, a.title, a.content <@> to_bm25query(s.term, 'articles_tapir_idx') as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term);
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
-SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term))::numeric, 4) as score
+SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term);
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
@@ -117,7 +119,7 @@ WITH order_by_results AS (
     SELECT id, title,
            ROUND((content <@> 'articles_tapir_idx:machine learning algorithm'::bm25query)::numeric, 6) as order_by_score
     FROM articles
-    ORDER BY content <@> 'articles_tapir_idx:machine learning algorithm'::bm25query
+    ORDER BY content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx')
     LIMIT 2
 ),
 standalone_results AS (

@@ -595,7 +595,7 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies	  = 0; /* No search strategies - ORDER BY only */
+	amroutine->amstrategies	  = 1; /* Strategy 1 for ORDER BY */
 	amroutine->amsupport	  = 8; /* 8 for distance */
 	amroutine->amoptsprocnum  = 0;
 	amroutine->amcanorder	  = false;
@@ -603,7 +603,8 @@ tp_handler(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM >= 180000
 	amroutine->amcanhash			= false;
 	amroutine->amconsistentequality = false;
-	amroutine->amconsistentordering = false;
+	amroutine->amconsistentordering =
+			true; /* Support consistent ordering for ORDER BY */
 #endif
 	amroutine->amcanbackward	  = false; /* Cannot scan backwards */
 	amroutine->amcanunique		  = false; /* Cannot enforce uniqueness */
@@ -1827,10 +1828,6 @@ tp_costestimate(
 	}
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
-#if PG_VERSION_NUM >= 180000
-	/* See "On disable_cost" thread on pgsql-hackers */
-	path->path.disabled_nodes = 2;
-#endif
 }
 
 /*
