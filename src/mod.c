@@ -26,7 +26,7 @@ PG_MODULE_MAGIC;
 #endif
 
 /* Relation options for Tapir indexes */
-static relopt_kind tp_relopt_kind;
+relopt_kind tp_relopt_kind;
 
 /* External variable from limits module */
 extern int tp_default_limit;
