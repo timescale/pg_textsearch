@@ -145,8 +145,8 @@ tp_registry_get_dsa(void)
 		/* Register the tranche for LWLock debugging/monitoring */
 		LWLockRegisterTranche(tranche_id, "pg_textsearch DSA");
 
-		tapir_dsa  = dsa_create_ext(
-				 tranche_id, init_segment_size, max_segment_size);
+		tapir_dsa = dsa_create_ext(
+				tranche_id, init_segment_size, max_segment_size);
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)
