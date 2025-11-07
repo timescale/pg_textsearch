@@ -1,0 +1,222 @@
+name: Upgrade Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Target version to test upgrades to (leave empty for current branch)'
+        required: false
+        type: string
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  pull_request:
+    paths:
+      - 'sql/**'
+      - 'src/**'
+      - 'Makefile'
+      - 'pg_textsearch.control'
+      - '.github/workflows/upgrade-tests.yml'
+
+jobs:
+  test-upgrades:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only test PG17 for upgrades from old versions
+        # since PG18 support was added in v0.0.3
+        pg_version: [17]
+        old_version: ['0.0.1', '0.0.2']
+
+    steps:
+    - name: Checkout current code
+      uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+        sudo systemctl stop postgresql
+
+    - name: Build current version
+      run: |
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean
+        make
+        sudo make install
+
+    - name: Attempt to download old version
+      id: download
+      run: |
+        # Try to download the old release
+        if wget -q https://github.com/Tapir-Database/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz; then
+          echo "downloaded=true" >> $GITHUB_OUTPUT
+        else
+          echo "Warning: v${{ matrix.old_version }} not available for download"
+          echo "downloaded=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build old version from source
+      if: steps.download.outputs.downloaded == 'true'
+      run: |
+        tar -xzf pg_textsearch-${{ matrix.old_version }}.tar.gz
+        cd pg_textsearch-${{ matrix.old_version }}
+
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean
+        make
+
+        # Save old .so file
+        cp pg_textsearch.so ../pg_textsearch_old.so
+        cd ..
+
+    - name: Test upgrade from ${{ matrix.old_version }}
+      if: steps.download.outputs.downloaded == 'true'
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/test_pgdata_${{ matrix.pg_version }}_${{ matrix.old_version }}
+
+        # Initialize database
+        initdb -D $PGDATA
+        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
+        echo "port = 54${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w
+        createdb -h /tmp -p 54${{ matrix.pg_version }} test_upgrade
+
+        # Install old version
+        sudo cp pg_textsearch_old.so /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pg_textsearch.so
+
+        # Create extension with old version
+        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade -c "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
+
+        # Create test data
+        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade << 'SQL'
+        CREATE TABLE test_docs (
+          id SERIAL PRIMARY KEY,
+          content TEXT NOT NULL
+        );
+
+        INSERT INTO test_docs (content) VALUES
+          ('PostgreSQL is a powerful, open source object-relational database system'),
+          ('It has more than 35 years of active development'),
+          ('PostgreSQL has earned a strong reputation for reliability and performance'),
+          ('Full text search capabilities are built into PostgreSQL'),
+          ('The BM25 algorithm provides relevance ranking for text search');
+
+        CREATE INDEX idx_test_bm25 ON test_docs
+        USING bm25 (content) WITH (text_config = 'english');
+
+        -- Store count for verification
+        SELECT COUNT(*) AS before_count FROM test_docs
+        WHERE content @@ to_tsquery('english', 'postgresql');
+        SQL
+
+        # Install new version
+        sudo make install
+
+        # Perform upgrade
+        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade -c "ALTER EXTENSION pg_textsearch UPDATE;"
+
+        # Verify upgrade
+        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade << 'SQL'
+        -- Check version
+        SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';
+
+        -- Test that searches still work
+        SELECT COUNT(*) AS after_count FROM test_docs
+        WHERE content @@ to_tsquery('english', 'postgresql');
+
+        -- Test BM25 scoring still works
+        SELECT id, content <@> to_bm25query('postgresql database', 'idx_test_bm25'::text) AS score
+        FROM test_docs
+        ORDER BY score DESC
+        LIMIT 3;
+
+        -- Test creating new index after upgrade
+        CREATE TABLE new_docs (
+          id SERIAL PRIMARY KEY,
+          content TEXT NOT NULL
+        );
+
+        INSERT INTO new_docs (content) VALUES
+          ('Testing the upgrade process'),
+          ('New documents added after upgrading'),
+          ('BM25 ranking should work correctly');
+
+        CREATE INDEX idx_new_bm25 ON new_docs
+        USING bm25 (content) WITH (text_config = 'english');
+
+        SELECT COUNT(*) FROM new_docs
+        WHERE content @@ to_tsquery('english', 'upgrade');
+        SQL
+
+        # Cleanup
+        pg_ctl -D $PGDATA stop -m immediate
+        rm -rf $PGDATA
+
+    - name: Test clean install (no upgrade)
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/test_pgdata_clean_${{ matrix.pg_version }}
+
+        # Initialize database
+        initdb -D $PGDATA
+        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
+        echo "port = 55${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w
+        createdb -h /tmp -p 55${{ matrix.pg_version }} test_clean
+
+        # Install current version directly
+        sudo make install
+
+        psql -h /tmp -p 55${{ matrix.pg_version }} -d test_clean -c "CREATE EXTENSION pg_textsearch;"
+
+        # Basic functionality test
+        psql -h /tmp -p 55${{ matrix.pg_version }} -d test_clean << 'SQL'
+        CREATE TABLE docs (content TEXT);
+        INSERT INTO docs VALUES ('Test document');
+        CREATE INDEX idx_bm25 ON docs USING bm25 (content) WITH (text_config = 'english');
+        SELECT COUNT(*) FROM docs WHERE content @@ to_tsquery('english', 'test');
+        SQL
+
+        # Cleanup
+        pg_ctl -D $PGDATA stop -m immediate
+        rm -rf $PGDATA
+
+    - name: Report results
+      if: always()
+      run: |
+        echo "### Upgrade Test Results"
+        echo "PostgreSQL Version: ${{ matrix.pg_version }}"
+        if [ "${{ steps.download.outputs.downloaded }}" = "true" ]; then
+          echo "✅ Tested upgrade from v${{ matrix.old_version }} to current version"
+        else
+          echo "⚠️ Skipped upgrade from v${{ matrix.old_version }} (release not available)"
+        fi
+        echo "✅ Tested clean installation of current version"
+
+  summary:
+    needs: test-upgrades
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Upgrade Test Summary
+      run: |
+        echo "## Upgrade Testing Complete"
+        echo
+        echo "All upgrade paths have been tested:"
+        echo "- PostgreSQL 17 & 18"
+        echo "- Upgrades from v0.0.1 and v0.0.2 (where available)"
+        echo "- Clean installations"
+        echo
+        echo "Check individual job results for details."

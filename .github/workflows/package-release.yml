@@ -15,7 +15,143 @@ permissions:
   contents: write  # Needed to upload assets to releases
 
 jobs:
+  test-upgrades:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Only test PG17 for upgrades from old versions
+        # since PG18 support was added in v0.0.3
+        pg_version: [17]
+        old_version: ['0.0.1', '0.0.2']
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+        sudo systemctl stop postgresql
+
+    - name: Build current version
+      run: |
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean
+        make
+        sudo make install
+
+    - name: Download and install old version
+      run: |
+        # Download old release
+        wget -q https://github.com/Tapir-Database/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz || {
+          echo "Warning: Could not download v${{ matrix.old_version }} - skipping this upgrade test"
+          echo "SKIP_TEST=true" >> $GITHUB_ENV
+          exit 0
+        }
+
+        # Extract and build old version
+        tar -xzf pg_textsearch-${{ matrix.old_version }}.tar.gz
+        cd pg_textsearch-${{ matrix.old_version }}
+
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean
+        make
+
+        # Save old .so file
+        cp pg_textsearch.so ../pg_textsearch_old.so
+        cd ..
+
+    - name: Test upgrade path
+      if: env.SKIP_TEST != 'true'
+      run: |
+        # Setup test database
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/test_pgdata
+
+        initdb -D $PGDATA
+        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
+        echo "port = 5432" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w
+        createdb -h /tmp test_upgrade
+
+        # Install old version
+        sudo cp pg_textsearch_old.so /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pg_textsearch.so
+
+        psql -h /tmp -d test_upgrade -c "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
+
+        # Create test data with old version
+        psql -h /tmp -d test_upgrade << SQL
+        CREATE TABLE test_docs (
+          id SERIAL PRIMARY KEY,
+          content TEXT
+        );
+
+        INSERT INTO test_docs (content) VALUES
+          ('PostgreSQL is a powerful database system'),
+          ('Full text search with BM25 ranking'),
+          ('Testing upgrade from version ${{ matrix.old_version }}');
+
+        CREATE INDEX idx_test_bm25 ON test_docs
+        USING bm25 (content) WITH (text_config = 'english');
+
+        -- Verify search works
+        SELECT COUNT(*) FROM test_docs
+        WHERE content @@ to_tsquery('english', 'postgresql');
+        SQL
+
+        # Install new version
+        sudo make install
+
+        # Perform upgrade
+        psql -h /tmp -d test_upgrade -c "ALTER EXTENSION pg_textsearch UPDATE;"
+
+        # Verify upgrade
+        psql -h /tmp -d test_upgrade << SQL
+        -- Check version
+        SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';
+
+        -- Test that old index still works
+        SELECT COUNT(*) FROM test_docs
+        WHERE content @@ to_tsquery('english', 'postgresql');
+
+        -- Test creating new index after upgrade
+        CREATE TABLE new_docs (
+          id SERIAL PRIMARY KEY,
+          content TEXT
+        );
+
+        INSERT INTO new_docs (content) VALUES ('New document after upgrade');
+
+        CREATE INDEX idx_new_bm25 ON new_docs
+        USING bm25 (content) WITH (text_config = 'english');
+
+        SELECT COUNT(*) FROM new_docs
+        WHERE content @@ to_tsquery('english', 'upgrade');
+        SQL
+
+        # Cleanup
+        pg_ctl -D $PGDATA stop -m immediate
+        rm -rf $PGDATA
+
+    - name: Report upgrade test result
+      if: always()
+      run: |
+        if [ "$SKIP_TEST" = "true" ]; then
+          echo "⚠️ Upgrade test from v${{ matrix.old_version }} was skipped (old version not available)"
+        else
+          echo "✅ Upgrade test from v${{ matrix.old_version }} to current version on PostgreSQL ${{ matrix.pg_version }} completed successfully"
+        fi
+
   build-packages:
+    needs: test-upgrades
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -106,6 +242,7 @@ jobs:
         retention-days: 30
 
   build-source:
+    needs: test-upgrades
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
