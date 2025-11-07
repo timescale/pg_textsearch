@@ -282,21 +282,25 @@ tp_process_term_in_segments(
 				DocumentScoreEntry *doc_entry;
 				bool				found;
 				HTAB			   *hash_table = (HTAB *)doc_scores_hash;
+				ItemPointerData		local_ctid;
+
+				/* Copy ctid to avoid packed member alignment issues */
+				local_ctid = posting->ctid;
 
 				/* Look up document length */
 				doc_len = (float4)
-						tp_segment_get_document_length(reader, &posting->ctid);
+						tp_segment_get_document_length(reader, &local_ctid);
 				if (doc_len <= 0.0f)
 				{
 					/* Document not found in this segment, try memtable */
 					doc_len = (float4)tp_get_document_length(
-							local_state, index, &posting->ctid);
+							local_state, index, &local_ctid);
 					if (doc_len <= 0.0f)
 						continue; /* Skip if still not found */
 				}
 
 				/* Validate TID */
-				if (!ItemPointerIsValid(&posting->ctid))
+				if (!ItemPointerIsValid(&local_ctid))
 					continue;
 
 				/* Calculate BM25 term score */
@@ -312,10 +316,10 @@ tp_process_term_in_segments(
 
 				/* Add or update document score in hash table */
 				doc_entry = (DocumentScoreEntry *)hash_search(
-						hash_table, &posting->ctid, HASH_ENTER, &found);
+						hash_table, &local_ctid, HASH_ENTER, &found);
 				if (!found)
 				{
-					doc_entry->ctid		  = posting->ctid;
+					doc_entry->ctid		  = local_ctid;
 					doc_entry->score	  = term_score;
 					doc_entry->doc_length = doc_len;
 				}

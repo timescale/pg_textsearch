@@ -1012,13 +1012,17 @@ tp_process_document(
 IndexBuildResult *
 tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
-	IndexBuildResult  *result;
-	char			  *text_config_name = NULL;
-	Oid				   text_config_oid	= InvalidOid;
-	double			   k1, b;
-	TableScanDesc	   scan;
-	TupleTableSlot	  *slot;
-	Snapshot		   snapshot	  = NULL;
+	IndexBuildResult *result;
+	char			 *text_config_name = NULL;
+	Oid				  text_config_oid  = InvalidOid;
+	double			  k1, b;
+	TableScanDesc	  scan;
+	TupleTableSlot	 *slot;
+#if PG_VERSION_NUM >= 180000
+	Snapshot snapshot = NULL;
+#else
+	Snapshot snapshot pg_attribute_unused() = NULL;
+#endif
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
