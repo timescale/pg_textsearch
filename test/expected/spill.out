@@ -1,7 +1,7 @@
 -- Test memtable spilling to segments using tp_spill_memtable()
 -- This test verifies that forced spills work correctly with small datasets
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.3-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 -- Test 1: Basic spill with small dataset
