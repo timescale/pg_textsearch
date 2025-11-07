@@ -1921,30 +1921,30 @@ bytea *
 tp_options(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] =
-		{{"text_config",
-		  RELOPT_TYPE_STRING,
-		  offsetof(TpOptions, text_config_offset)
+			{{"text_config",
+			  RELOPT_TYPE_STRING,
+			  offsetof(TpOptions, text_config_offset)
 #if PG_VERSION_NUM >= 180000
-				  ,
-		  -1
+					  ,
+			  -1
 #endif
-		 },
-		 {"k1",
-		  RELOPT_TYPE_REAL,
-		  offsetof(TpOptions, k1)
+			 },
+			 {"k1",
+			  RELOPT_TYPE_REAL,
+			  offsetof(TpOptions, k1)
 #if PG_VERSION_NUM >= 180000
-				  ,
-		  -1
+					  ,
+			  -1
 #endif
-		 },
-		 {"b",
-		  RELOPT_TYPE_REAL,
-		  offsetof(TpOptions, b)
+			 },
+			 {"b",
+			  RELOPT_TYPE_REAL,
+			  offsetof(TpOptions, b)
 #if PG_VERSION_NUM >= 180000
-				  ,
-		  -1
+					  ,
+			  -1
 #endif
-		 }};
+			 }};
 
 	return (bytea *)build_reloptions(
 			reloptions,
