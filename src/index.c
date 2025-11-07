@@ -400,7 +400,7 @@ typedef struct TpOptions
 } TpOptions;
 
 /* Relation options - initialized in mod.c */
-extern relopt_kind tp_relopt_kind;
+/* Note: tp_relopt_kind is declared in constants.h */
 
 /* Helper functions for tp_build */
 static void
@@ -1923,10 +1923,28 @@ tp_options(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] =
 			{{"text_config",
 			  RELOPT_TYPE_STRING,
-			  offsetof(TpOptions, text_config_offset),
-			  -1},
-			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1), -1},
-			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b), -1}};
+			  offsetof(TpOptions, text_config_offset)
+#if PG_VERSION_NUM >= 180000
+					  ,
+			  -1
+#endif
+			 },
+			 {"k1",
+			  RELOPT_TYPE_REAL,
+			  offsetof(TpOptions, k1)
+#if PG_VERSION_NUM >= 180000
+					  ,
+			  -1
+#endif
+			 },
+			 {"b",
+			  RELOPT_TYPE_REAL,
+			  offsetof(TpOptions, b)
+#if PG_VERSION_NUM >= 180000
+					  ,
+			  -1
+#endif
+			 }};
 
 	return (bytea *)build_reloptions(
 			reloptions,
@@ -2376,9 +2394,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PG_RETURN_TEXT_P(
-				cstring_to_text("Dictionary built successfully (segment "
-								"writing not yet implemented)"));
+		PG_RETURN_TEXT_P(cstring_to_text(
+				"Dictionary built successfully (segment "
+				"writing not yet implemented)"));
 	}
 }
 

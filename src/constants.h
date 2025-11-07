@@ -1,5 +1,10 @@
 #pragma once
 
+#include <access/reloptions.h>
+
+/* Global variable for index AM options */
+extern relopt_kind tp_relopt_kind;
+
 /* Magic numbers and metadata */
 #define TP_MAGIC		  0x3A7F9B2E
 #define TP_VERSION		  1

@@ -31,21 +31,11 @@
 #include "utils/timestamp.h"
 
 /*
- * Simple page map cache to avoid re-reading for the same segment
+ * Note: We previously had a global page map cache here, but it was removed
+ * due to race conditions when multiple backends accessed it concurrently.
+ * Since segments are small and page maps are not frequently re-read in the
+ * same backend, the performance impact of removing the cache is minimal.
  */
-typedef struct PageMapCache
-{
-	Oid			 index_oid;	 /* Index relation OID */
-	BlockNumber	 root_block; /* Segment root block */
-	uint32		 num_pages;	 /* Number of pages */
-	BlockNumber *page_map;	 /* Cached page map */
-} PageMapCache;
-
-/*
- * Global page map cache to avoid re-reading page maps for the same segment.
- * This is safe because segments are immutable once written.
- */
-static PageMapCache page_map_cache = {InvalidOid, InvalidBlockNumber, 0, NULL};
 
 /*
  * Helper function to read a term string at a given dictionary index.
@@ -62,11 +52,30 @@ read_term_at_index(
 	char		 *term_text;
 	uint32		  string_offset;
 
+	/* Check for overflow when calculating string offset */
+	if (string_offsets[index] > UINT32_MAX - header->strings_offset)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("string offset overflow detected"),
+				 errdetail(
+						 "String offset %u + base %u would overflow",
+						 string_offsets[index],
+						 header->strings_offset)));
+
 	string_offset = header->strings_offset + string_offsets[index];
 
 	/* Read string length */
 	tp_segment_read(
 			reader, string_offset, &string_entry.length, sizeof(uint32));
+
+	/* Check for overflow when adding sizeof(uint32) */
+	if (string_offset > UINT32_MAX - sizeof(uint32))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("string data offset overflow detected"),
+				 errdetail(
+						 "String offset %u + sizeof(uint32) would overflow",
+						 string_offset)));
 
 	/* Allocate buffer and read term text */
 	term_text = palloc(string_entry.length + 1);
@@ -90,11 +99,33 @@ read_dict_entry(
 		uint32			 index,
 		TpDictEntry		*entry)
 {
-	tp_segment_read(
-			reader,
-			header->entries_offset + (index * sizeof(TpDictEntry)),
-			entry,
-			sizeof(TpDictEntry));
+	uint32 offset_increment;
+	uint32 entry_offset;
+
+	/* Check for multiplication overflow */
+	if (index > UINT32_MAX / sizeof(TpDictEntry))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("dictionary entry index overflow"),
+				 errdetail(
+						 "Index %u * sizeof(TpDictEntry) would overflow",
+						 index)));
+
+	offset_increment = index * sizeof(TpDictEntry);
+
+	/* Check for addition overflow */
+	if (offset_increment > UINT32_MAX - header->entries_offset)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("dictionary entry offset overflow"),
+				 errdetail(
+						 "Entry offset %u + increment %u would overflow",
+						 header->entries_offset,
+						 offset_increment)));
+
+	entry_offset = header->entries_offset + offset_increment;
+
+	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
 }
 
 /*
@@ -144,78 +175,53 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	LockBuffer(
 			header_buf, BUFFER_LOCK_UNLOCK); /* Just unlock, don't release */
 
-	/* Check if we can use cached page map */
-	if (page_map_cache.index_oid == RelationGetRelid(index) &&
-		page_map_cache.root_block == root_block &&
-		page_map_cache.num_pages == reader->num_pages &&
-		page_map_cache.page_map != NULL)
-	{
-		/* Use cached page map - just copy the pointer, don't allocate */
-		reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
-		memcpy(reader->page_map,
-			   page_map_cache.page_map,
-			   sizeof(BlockNumber) * reader->num_pages);
-		pages_loaded = reader->num_pages; /* Skip the loading loop */
-	}
-	else
-	{
-		/* Need to load page map from disk */
-		reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
+	/* Always load page map from disk - no caching due to concurrency issues */
+	reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
 
-		/* Read page index chain to build page map */
-		while (page_index_block != InvalidBlockNumber &&
-			   pages_loaded < reader->num_pages)
+	/* Read page index chain to build page map */
+	while (page_index_block != InvalidBlockNumber &&
+		   pages_loaded < reader->num_pages)
+	{
+		index_buf = ReadBuffer(index, page_index_block);
+		LockBuffer(index_buf, BUFFER_LOCK_SHARE);
+		index_page = BufferGetPage(index_buf);
+
+		/* Get special area with page index metadata */
+		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
+
+		/* Get pointer to page entries array */
+		page_entries = (BlockNumber *)((char *)index_page +
+									   SizeOfPageHeaderData);
+
+		/* Copy page entries to our map */
+		for (i = 0;
+			 i < special->num_entries && pages_loaded < reader->num_pages;
+			 i++)
 		{
-			index_buf = ReadBuffer(index, page_index_block);
-			LockBuffer(index_buf, BUFFER_LOCK_SHARE);
-			index_page = BufferGetPage(index_buf);
-
-			/* Get special area with page index metadata */
-			special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
-
-			/* Get pointer to page entries array */
-			page_entries = (BlockNumber *)((char *)index_page +
-										   SizeOfPageHeaderData);
-
-			/* Copy page entries to our map */
-			for (i = 0;
-				 i < special->num_entries && pages_loaded < reader->num_pages;
-				 i++)
-			{
-				reader->page_map[pages_loaded++] = page_entries[i];
-			}
-
-			/* Move to next page in chain */
-			page_index_block = special->next_page;
-
-			UnlockReleaseBuffer(index_buf);
+			reader->page_map[pages_loaded++] = page_entries[i];
 		}
 
-		/* Update cache with newly loaded page map */
-		if (pages_loaded == reader->num_pages)
-		{
-			/* Free old cache if present */
-			if (page_map_cache.page_map)
-				pfree(page_map_cache.page_map);
+		/* Move to next page in chain */
+		page_index_block = special->next_page;
 
-			/* Allocate new cache and copy page map */
-			page_map_cache.index_oid  = RelationGetRelid(index);
-			page_map_cache.root_block = root_block;
-			page_map_cache.num_pages  = reader->num_pages;
-			page_map_cache.page_map	  = palloc(
-					  sizeof(BlockNumber) * reader->num_pages);
-			memcpy(page_map_cache.page_map,
-				   reader->page_map,
-				   sizeof(BlockNumber) * reader->num_pages);
-		}
+		UnlockReleaseBuffer(index_buf);
 	}
 
 	if (pages_loaded != reader->num_pages)
 	{
-		elog(WARNING,
-			 "Page index incomplete: expected %u pages, loaded %u",
-			 reader->num_pages,
-			 pages_loaded);
+		/* Free allocated memory before erroring out */
+		if (reader->page_map)
+			pfree(reader->page_map);
+		pfree(reader);
+
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("segment page index is incomplete"),
+				 errdetail(
+						 "Expected %u pages but only loaded %u pages",
+						 reader->num_pages,
+						 pages_loaded),
+				 errhint("The index may be corrupted and should be rebuilt")));
 	}
 
 	return reader;
