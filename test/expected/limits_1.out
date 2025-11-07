@@ -3,7 +3,7 @@
 SET log_duration = off;
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.3: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
