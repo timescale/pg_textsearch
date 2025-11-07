@@ -156,6 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        pg_version: [17, 18]
         platform:
           - type: amd64
             docker_platform: linux/amd64
@@ -199,7 +200,7 @@ jobs:
         CFLAGS="-O3 -DNDEBUG" make
 
         # Package the extension
-        bash scripts/package-deb.sh "$1" "$PWD" "$2"
+        bash scripts/package-deb.sh "$1" "$PWD" "$2" "$3"
         BUILDSCRIPT
 
         chmod +x build.sh
@@ -211,8 +212,8 @@ jobs:
           -v "$PWD:/build" \
           -w /build \
           --user root \
-          timescale/timescaledb-ha:pg17-all \
-          bash -c "apt-get update && apt-get install -y build-essential postgresql-server-dev-17 && /build/build.sh '$VERSION' '${{ matrix.platform.type }}'"
+          timescale/timescaledb-ha:pg${{ matrix.pg_version }}-all \
+          bash -c "apt-get update && apt-get install -y build-essential postgresql-server-dev-${{ matrix.pg_version }} && /build/build.sh '$VERSION' '${{ matrix.platform.type }}' '${{ matrix.pg_version }}'"
 
     - name: Verify package architecture
       run: |
@@ -229,13 +230,13 @@ jobs:
       run: |
         cd dist
         # Create zip with the expected naming convention for timescaledb-docker-cloud
-        zip pg-textsearch-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}.zip *.deb
+        zip pg-textsearch-${{ env.VERSION }}-pg${{ matrix.pg_version }}-${{ matrix.platform.type }}.zip *.deb
         cd ..
 
     - name: Upload package artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: pg-textsearch-${{ env.VERSION }}-pg17-${{ matrix.platform.type }}
+        name: pg-textsearch-${{ env.VERSION }}-pg${{ matrix.pg_version }}-${{ matrix.platform.type }}
         path: |
           dist/*.deb
           dist/*.zip

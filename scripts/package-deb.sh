@@ -5,13 +5,14 @@ set -eux
 VERSION="${1}"
 BASEDIR="${2}"
 ARCH="${3}"
+PG_VERSION="${4}"
 
 # Clean version without 'v' prefix
 CLEAN_VERSION=${VERSION#v}
 
 # Debian package version format
 DEB_VERSION="${CLEAN_VERSION}-1"
-PACKAGE_NAME="pg-textsearch-postgresql-17"
+PACKAGE_NAME="pg-textsearch-postgresql-${PG_VERSION}"
 
 # Setup directories
 DEBDIR="${BASEDIR}/dist"
@@ -25,8 +26,8 @@ mkdir -p "${DEBDIR}"
 # Support both Docker (TimescaleDB) and regular PostgreSQL installations
 if [ -x "/usr/local/bin/pg_config" ]; then
     PG_CONFIG="/usr/local/bin/pg_config"
-elif [ -x "/usr/lib/postgresql/17/bin/pg_config" ]; then
-    PG_CONFIG="/usr/lib/postgresql/17/bin/pg_config"
+elif [ -x "/usr/lib/postgresql/${PG_VERSION}/bin/pg_config" ]; then
+    PG_CONFIG="/usr/lib/postgresql/${PG_VERSION}/bin/pg_config"
 else
     echo "Error: pg_config not found in expected locations"
     exit 1
@@ -59,7 +60,7 @@ Package: ${PACKAGE_NAME}
 Version: ${DEB_VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: Timescale <hello@timescale.com>
-Depends: timescaledb-2-postgresql-17 | postgresql-17
+Depends: timescaledb-2-postgresql-${PG_VERSION} | postgresql-${PG_VERSION}
 Section: database
 Priority: optional
 Homepage: https://github.com/timescale/pg_textsearch
