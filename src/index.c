@@ -1111,7 +1111,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (OidIsValid(text_config_oid))
 	{
 		elog(NOTICE,
-			 "BM25 index build completed: %lu documents, avg_length=%.2f, "
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1122,7 +1123,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	else
 	{
 		elog(NOTICE,
-			 "BM25 index build completed: %lu documents, avg_length=%.2f "
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1921,9 +1923,10 @@ tp_options(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] =
 			{{"text_config",
 			  RELOPT_TYPE_STRING,
-			  offsetof(TpOptions, text_config_offset)},
-			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1)},
-			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b)}};
+			  offsetof(TpOptions, text_config_offset),
+			  -1},
+			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1), -1},
+			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b), -1}};
 
 	return (bytea *)build_reloptions(
 			reloptions,
@@ -2079,8 +2082,10 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 
 	/* Show corpus statistics from metapage */
 	appendStringInfo(&result, "Corpus Statistics:\n");
-	appendStringInfo(&result, "  total_docs: %lu\n", metap->total_docs);
-	appendStringInfo(&result, "  total_len: %lu\n", metap->total_len);
+	appendStringInfo(
+			&result, "  total_docs: " UINT64_FORMAT "\n", metap->total_docs);
+	appendStringInfo(
+			&result, "  total_len: " UINT64_FORMAT "\n", metap->total_len);
 	appendStringInfo(&result, "  idf_sum: %.4f\n", metap->idf_sum);
 
 	if (metap->total_docs > 0)

@@ -1010,7 +1010,7 @@ tp_debug_dump_segment_internal(
 	/* Corpus statistics */
 	elog(INFO, "Terms: %u", header.num_terms);
 	elog(INFO, "Docs: %u", header.num_docs);
-	elog(INFO, "Total tokens: %lu", header.total_tokens);
+	elog(INFO, "Total tokens: " UINT64_FORMAT, header.total_tokens);
 
 	/* Section offsets */
 	elog(INFO, "Dictionary offset: %u", header.dictionary_offset);
