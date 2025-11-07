@@ -553,6 +553,9 @@ tp_score_documents(
 	if (metap)
 		pfree(metap);
 
+	/* Get the actual count of scored documents from the hash table */
+	scored_count = hash_get_num_entries(doc_scores_hash);
+
 	/* If we don't have enough scored results, find additional zero-scored
 	 * documents */
 	if (scored_count < max_results)
