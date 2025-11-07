@@ -17,8 +17,11 @@ jobs:
 
     - name: Install clang-format
       run: |
+        # Install a specific version of clang-format to ensure consistency
         sudo apt-get update
-        sudo apt-get install -y clang-format
+        # Install clang-format-15 for consistency across environments
+        sudo apt-get install -y clang-format-15
+        sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-15 100
 
     - name: Check formatting
       run: |
