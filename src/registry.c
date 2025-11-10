@@ -65,8 +65,14 @@ tp_registry_shmem_startup(void)
 		/* Initialize the registry lock */
 		LWLockInitialize(&tapir_registry->lock, LWLockNewTrancheId());
 
-		/* Initialize DSA handle as invalid */
+		/* Initialize DSA handle as invalid (deprecated) */
 		tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
+
+		/* Initialize shared DSA pool */
+		tapir_registry->dsa_pool.handle		 = DSA_HANDLE_INVALID;
+		tapir_registry->dsa_pool.total_size	 = 0;
+		tapir_registry->dsa_pool.used_size	 = 0;
+		tapir_registry->dsa_pool.initialized = false;
 
 		/* Initialize all entries as not in use */
 		for (int i = 0; i < TP_MAX_INDEXES; i++)
@@ -88,7 +94,7 @@ tp_registry_shmem_startup(void)
  * Get or create the shared DSA area
  *
  * This function is called by any backend that needs access to the DSA.
- * The first backend creates it, others attach to it.
+ * Uses a single shared DSA pool for all indexes to avoid segment exhaustion.
  */
 dsa_area *
 tp_registry_get_dsa(void)
@@ -105,62 +111,69 @@ tp_registry_get_dsa(void)
 			elog(ERROR, "Failed to initialize Tapir registry");
 	}
 
-	/* Check if DSA exists, create if needed */
+	/* Check if DSA pool exists, create if needed */
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
 
-	if (tapir_registry->dsa_handle == DSA_HANDLE_INVALID)
+	/* Use the new shared pool instead of per-index DSAs */
+	if (!tapir_registry->dsa_pool.initialized ||
+		tapir_registry->dsa_pool.handle == DSA_HANDLE_INVALID)
 	{
-		/* First backend - create the DSA */
+		/* First backend - create the shared DSA pool */
 		MemoryContext oldcontext;
 		int			  tranche_id = LWLockNewTrancheId();
 		size_t		  init_segment_size;
-		size_t		  max_segment_size;
+		size_t		  max_total_size;
 
 		/*
-		 * Calculate appropriate DSA segment sizes based on configured memory
-		 * limit. Without this, DSA pre-allocates 46MB regardless of our
-		 * actual needs, wasting shared memory.
-		 *
-		 * Use smaller initial segment and cap maximum segment size to avoid
-		 * wasting shared memory.
+		 * Create ONE shared DSA pool for ALL indexes.
+		 * Size it based on total expected usage across all indexes.
+		 * This avoids creating multiple DSA areas which exhaust DSM segments.
 		 */
-		max_segment_size = tp_get_memory_limit();
+		max_total_size = (size_t)TP_MAX_INDEXES * tp_get_memory_limit();
 
-		/* Start with 256KB segments instead of default 1MB */
-		init_segment_size = 256 * 1024L;
+		/* Cap at 256MB to be reasonable */
+		if (max_total_size > 256 * 1024 * 1024L)
+			max_total_size = 256 * 1024 * 1024L;
+
+		/* Start with 1MB initial segment */
+		init_segment_size = 1024 * 1024L;
 
 		/* Make sure init size doesn't exceed max */
-		if (init_segment_size > max_segment_size)
-			init_segment_size = max_segment_size;
+		if (init_segment_size > max_total_size)
+			init_segment_size = max_total_size;
 
 		elog(DEBUG1,
-			 "Creating DSA with init_segment=%zu max_segment=%zu "
-			 "(limit=%zuMB)",
+			 "Creating SHARED DSA pool with init_segment=%zu max_total=%zuMB "
+			 "for ALL indexes",
 			 init_segment_size,
-			 max_segment_size,
-			 max_segment_size / (1024 * 1024));
+			 max_total_size / (1024 * 1024));
 
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
 		/* Register the tranche for LWLock debugging/monitoring */
-		LWLockRegisterTranche(tranche_id, "pg_textsearch DSA");
+		LWLockRegisterTranche(tranche_id, "pg_textsearch Shared DSA Pool");
 
+		/* Create with reasonable max segment size to avoid too many segments
+		 */
 		tapir_dsa = dsa_create_ext(
-				tranche_id, init_segment_size, max_segment_size);
+				tranche_id,
+				init_segment_size,
+				16 * 1024 * 1024L); /* 16MB max segment size */
+
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)
 		{
 			LWLockRelease(&tapir_registry->lock);
-			elog(ERROR, "Failed to create DSA area");
+			elog(ERROR, "Failed to create shared DSA pool");
 		}
 
-		/* Set total DSA size limit to prevent over-allocation */
-		dsa_set_size_limit(tapir_dsa, max_segment_size);
+		/* Set total DSA size limit */
+		dsa_set_size_limit(tapir_dsa, max_total_size);
 
 		elog(DEBUG1,
-			 "DSA created and limited to %zuMB total",
-			 max_segment_size / (1024 * 1024));
+			 "Shared DSA pool created and limited to %zuMB total",
+			 max_total_size / (1024 * 1024));
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
@@ -168,30 +181,30 @@ tp_registry_get_dsa(void)
 		/* Pin the mapping for this backend */
 		dsa_pin_mapping(tapir_dsa);
 
-		/* Store handle for other backends */
-		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
+		/* Store handle and mark as initialized */
+		tapir_registry->dsa_pool.handle		 = dsa_get_handle(tapir_dsa);
+		tapir_registry->dsa_pool.total_size	 = max_total_size;
+		tapir_registry->dsa_pool.used_size	 = 0;
+		tapir_registry->dsa_pool.initialized = true;
+
+		/* Also update deprecated field for compatibility */
+		tapir_registry->dsa_handle = tapir_registry->dsa_pool.handle;
 	}
 	else
 	{
-		/* DSA exists - attach to it */
+		/* DSA pool exists - attach to it */
 		MemoryContext oldcontext;
 
-		/* Register the tranche for this backend */
-		/* Note: We don't know the exact tranche_id here, but DSA handles this
-		 * internally */
-
 		/* Attach in TopMemoryContext so the dsa_area structure
-		 * doesn't get freed when query memory contexts are cleaned up.
-		 * This prevents heap-use-after-free errors when accessing the DSA
-		 * in subsequent queries. */
+		 * doesn't get freed when query memory contexts are cleaned up */
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		tapir_dsa  = dsa_attach(tapir_registry->dsa_handle);
+		tapir_dsa  = dsa_attach(tapir_registry->dsa_pool.handle);
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)
 		{
 			LWLockRelease(&tapir_registry->lock);
-			elog(ERROR, "Failed to attach to Tapir shared DSA");
+			elog(ERROR, "Failed to attach to shared DSA pool");
 		}
 
 		/* Pin the mapping for this backend */

@@ -610,25 +610,34 @@ write_segment_postings(
 			/* Get posting entries from DSA */
 			TpPostingEntry *entries = (TpPostingEntry *)
 					dsa_get_address(state->dsa, posting_list->entries_dp);
-
-			/* Convert all postings to segment format at once */
-			TpSegmentPosting *seg_postings = palloc(
-					sizeof(TpSegmentPosting) * posting_list->doc_count);
 			int32 j;
 
+			/* Grow reusable buffer if needed */
+			if (writer->posting_buffer_size < (uint32)posting_list->doc_count)
+			{
+				if (writer->posting_buffer)
+					pfree(writer->posting_buffer);
+				writer->posting_buffer_size = (uint32)posting_list->doc_count;
+				writer->posting_buffer		= palloc(
+						 sizeof(TpSegmentPosting) *
+						 writer->posting_buffer_size);
+			}
+
+			/* Convert all postings to segment format using reusable buffer */
 			for (j = 0; j < posting_list->doc_count; j++)
 			{
-				seg_postings[j].ctid	  = entries[j].ctid;
-				seg_postings[j].frequency = (uint16)entries[j].frequency;
+				writer->posting_buffer[j].ctid = entries[j].ctid;
+				writer->posting_buffer[j].frequency =
+						(uint16)entries[j].frequency;
 			}
 
 			/* Write all postings in a single batch */
 			tp_segment_writer_write(
 					writer,
-					seg_postings,
+					writer->posting_buffer,
 					sizeof(TpSegmentPosting) * posting_list->doc_count);
 
-			pfree(seg_postings);
+			/* Buffer is reused, not freed here */
 		}
 	}
 }
@@ -1136,6 +1145,10 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->buffer_page		= 0;
 	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
 
+	/* Initialize reusable posting buffer */
+	writer->posting_buffer		= NULL;
+	writer->posting_buffer_size = 0;
+
 	/* Allocate first page */
 	tp_segment_writer_allocate_page(writer);
 
@@ -1224,4 +1237,12 @@ tp_segment_writer_finish(TpSegmentWriter *writer)
 		tp_segment_writer_flush(writer);
 	}
 	pfree(writer->buffer);
+
+	/* Free reusable posting buffer if allocated */
+	if (writer->posting_buffer)
+	{
+		pfree(writer->posting_buffer);
+		writer->posting_buffer		= NULL;
+		writer->posting_buffer_size = 0;
+	}
 }

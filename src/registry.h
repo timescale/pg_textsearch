@@ -35,14 +35,27 @@ typedef struct TpRegistryEntry
 } TpRegistryEntry;
 
 /*
+ * Shared DSA pool for all indexes
+ * This eliminates per-index DSA segment proliferation
+ */
+typedef struct TpDSAPool
+{
+	dsa_handle handle;		/* DSA handle for attachment */
+	Size	   total_size;	/* Total size limit */
+	Size	   used_size;	/* Approximate used size (best effort tracking) */
+	bool	   initialized; /* Whether pool is initialized */
+} TpDSAPool;
+
+/*
  * Global registry stored in regular shared memory
  */
 typedef struct TpGlobalRegistry
 {
-	LWLock			lock;					 /* Protects the registry */
-	dsa_handle		dsa_handle;				 /* Handle for shared DSA area */
+	LWLock			lock;		/* Protects the registry */
+	dsa_handle		dsa_handle; /* DEPRECATED - kept for compatibility */
 	TpRegistryEntry entries[TP_MAX_INDEXES]; /* Fixed-size array of entries */
 	int				num_entries;			 /* Number of active entries */
+	TpDSAPool		dsa_pool; /* Shared DSA pool for all indexes */
 } TpGlobalRegistry;
 
 /* Registry management functions */

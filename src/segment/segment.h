@@ -135,6 +135,7 @@ typedef struct TpDocLength
 /*
  * Segment reader context
  */
+
 typedef struct TpSegmentReader
 {
 	Relation	index;
@@ -166,6 +167,10 @@ typedef struct TpSegmentWriter
 	char		*buffer;		  /* Write buffer (one page) */
 	uint32		 buffer_page;	  /* Which logical page is in buffer */
 	uint32		 buffer_pos;	  /* Position within buffer */
+
+	/* Reusable buffer for posting list conversion */
+	TpSegmentPosting *posting_buffer;	   /* Reusable posting buffer */
+	uint32			  posting_buffer_size; /* Current size of buffer */
 } TpSegmentWriter;
 
 /* Forward declarations for index.c */
