@@ -2341,7 +2341,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
  */
 PG_FUNCTION_INFO_V1(tp_spill_memtable);
 PG_FUNCTION_INFO_V1(bm25_debug_dump_segment);
-PG_FUNCTION_INFO_V1(bm25_analyze_index);
+// PG_FUNCTION_INFO_V1(bm25_analyze_index); // disabled for now
 
 Datum
 tp_spill_memtable(PG_FUNCTION_ARGS)
@@ -2458,30 +2458,31 @@ bm25_debug_dump_segment(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* External function declaration for analyzer */
-extern void
-tp_analyze_index_to_file(const char *index_name, const char *filename);
+/* External function declaration for analyzer - disabled for now */
+// extern void
+// tp_analyze_index_to_file(const char *index_name, const char *filename);
 
 /*
  * SQL-callable function to analyze index and write to file
  * Usage: SELECT bm25_analyze_index('index_name', '/path/to/output.txt');
+ * DISABLED FOR NOW - causing CI issues
  */
-Datum
-bm25_analyze_index(PG_FUNCTION_ARGS)
-{
-	text *index_name_text = PG_GETARG_TEXT_PP(0);
-	text *filename_text	  = PG_GETARG_TEXT_PP(1);
-	char *index_name;
-	char *filename;
+// Datum
+// bm25_analyze_index(PG_FUNCTION_ARGS)
+// {
+// 	text *index_name_text = PG_GETARG_TEXT_PP(0);
+// 	text *filename_text	  = PG_GETARG_TEXT_PP(1);
+// 	char *index_name;
+// 	char *filename;
 
-	/* Convert arguments to C strings */
-	index_name = text_to_cstring(index_name_text);
-	filename   = text_to_cstring(filename_text);
+// 	/* Convert arguments to C strings */
+// 	index_name = text_to_cstring(index_name_text);
+// 	filename   = text_to_cstring(filename_text);
 
-	/* Call the analyzer function */
-	tp_analyze_index_to_file(index_name, filename);
+// 	/* Call the analyzer function */
+// 	tp_analyze_index_to_file(index_name, filename);
 
-	pfree(index_name);
-	pfree(filename);
-	PG_RETURN_VOID();
-}
+// 	pfree(index_name);
+// 	pfree(filename);
+// 	PG_RETURN_VOID();
+// }

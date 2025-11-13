@@ -226,12 +226,12 @@ extern void tp_segment_dump_to_file(
 		BlockNumber segment_root,
 		const char *filename);
 
-/* Segment analyzer functions */
-extern void
-tp_analyze_index_to_file(const char *index_name, const char *filename);
-extern void
-tp_analyze_segment_chain(FILE *fp, Relation index, BlockNumber first_segment);
-extern void tp_analyze_dictionary(FILE *fp, struct TpSegmentReader *reader);
+/* Segment analyzer functions - disabled for now (causing CI issues) */
+// extern void
+// tp_analyze_index_to_file(const char *index_name, const char *filename);
+// extern void
+// tp_analyze_segment_chain(FILE *fp, Relation index, BlockNumber first_segment);
+// extern void tp_analyze_dictionary(FILE *fp, struct TpSegmentReader *reader);
 
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */

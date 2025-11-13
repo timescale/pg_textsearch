@@ -239,11 +239,17 @@ tp_segment_open(Relation index, BlockNumber root_block)
 void
 tp_segment_close(TpSegmentReader *reader)
 {
+	if (!reader)
+		return;
+
 	if (BufferIsValid(reader->current_buffer))
 		ReleaseBuffer(reader->current_buffer);
 
 	if (BufferIsValid(reader->header_buffer))
 		ReleaseBuffer(reader->header_buffer);
+
+	if (reader->header)
+		pfree(reader->header);
 
 	if (reader->page_map)
 		pfree(reader->page_map);

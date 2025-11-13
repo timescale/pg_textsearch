@@ -164,10 +164,10 @@ CREATE FUNCTION bm25_debug_dump_segment(text, int) RETURNS void
     AS 'MODULE_PATHNAME', 'bm25_debug_dump_segment'
     LANGUAGE C STRICT;
 
--- Analyze index and write detailed report to file
-CREATE FUNCTION bm25_analyze_index(text, text) RETURNS void
-    AS 'MODULE_PATHNAME', 'bm25_analyze_index'
-    LANGUAGE C STRICT;
+-- Analyze index and write detailed report to file (disabled for now - causing CI issues)
+-- CREATE FUNCTION bm25_analyze_index(text, text) RETURNS void
+--     AS 'MODULE_PATHNAME', 'bm25_analyze_index'
+--     LANGUAGE C STRICT;
 
 -- Display warning about prerelease status
 DO $$
