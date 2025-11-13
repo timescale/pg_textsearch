@@ -2387,6 +2387,12 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Write segment to disk */
 	segment_root = tp_write_segment(index_state, index_rel);
 
+	/* Clear the memtable after successful spilling */
+	if (segment_root != InvalidBlockNumber)
+	{
+		tp_clear_memtable(index_state);
+	}
+
 	/* Update metapage with segment root */
 	if (segment_root != InvalidBlockNumber)
 	{
@@ -2426,9 +2432,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PG_RETURN_TEXT_P(
-				cstring_to_text("Dictionary built successfully (segment "
-								"writing not yet implemented)"));
+		PG_RETURN_TEXT_P(cstring_to_text(
+				"Dictionary built successfully (segment "
+				"writing not yet implemented)"));
 	}
 }
 

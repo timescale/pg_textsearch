@@ -230,8 +230,9 @@ extern void tp_segment_dump_to_file(
 // extern void
 // tp_analyze_index_to_file(const char *index_name, const char *filename);
 // extern void
-// tp_analyze_segment_chain(FILE *fp, Relation index, BlockNumber first_segment);
-// extern void tp_analyze_dictionary(FILE *fp, struct TpSegmentReader *reader);
+// tp_analyze_segment_chain(FILE *fp, Relation index, BlockNumber
+// first_segment); extern void tp_analyze_dictionary(FILE *fp, struct
+// TpSegmentReader *reader);
 
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */

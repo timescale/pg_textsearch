@@ -456,6 +456,71 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 }
 
 /*
+ * Clear the memtable contents after spilling to disk
+ *
+ * This function clears all entries from the string hash table and
+ * document lengths table, but keeps the structures intact for reuse.
+ * Called after successfully writing a segment to disk.
+ */
+void
+tp_clear_memtable(TpLocalIndexState *local_state)
+{
+	TpMemtable	 *memtable;
+	dshash_table *string_hash;
+	dshash_table *doc_lengths_hash;
+
+	if (local_state == NULL || local_state->shared == NULL)
+		return;
+
+	memtable = (TpMemtable *)dsa_get_address(
+			local_state->dsa, local_state->shared->memtable_dp);
+
+	/* Clear the string hash table if it exists */
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	{
+		string_hash = tp_string_table_attach(
+				local_state->dsa, memtable->string_hash_handle);
+		if (string_hash != NULL)
+		{
+			/* Free all strings and posting lists but keep the table */
+			tp_string_table_clear(
+					local_state->dsa,
+					&local_state->shared->memory_usage,
+					string_hash);
+			dshash_detach(string_hash);
+		}
+	}
+
+	/* Clear the document lengths hash table if it exists */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_seq_status status;
+		TpDocLengthEntry *entry;
+
+		doc_lengths_hash = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+		if (doc_lengths_hash != NULL)
+		{
+			/* Clear all entries from doc lengths table */
+			dshash_seq_init(&status, doc_lengths_hash, true);
+			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
+				   NULL)
+			{
+				dshash_delete_current(&status);
+			}
+			dshash_seq_term(&status);
+			dshash_detach(doc_lengths_hash);
+		}
+	}
+
+	/* Reset the term count */
+	memtable->total_terms = 0;
+
+	/* Reset memory usage to 0 since we cleared everything */
+	local_state->shared->memory_usage.memory_used = 0;
+}
+
+/*
  * Get local index state from cache without creating it if not found
  * Returns NULL if the index is not in the local cache
  */

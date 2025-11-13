@@ -375,7 +375,7 @@ tp_segment_get_direct(
 	/* Fill in access structure */
 	access->buffer	  = buf;
 	access->page	  = page;
-	access->data	  = (char *)page + page_offset;
+	access->data	  = (char *)page + SizeOfPageHeaderData + page_offset;
 	access->available = BLCKSZ - page_offset;
 
 	return true;

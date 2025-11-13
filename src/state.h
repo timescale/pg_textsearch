@@ -111,6 +111,7 @@ extern void tp_release_local_index_state(TpLocalIndexState *local_state);
 extern TpLocalIndexState			 *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
+extern void tp_clear_memtable(TpLocalIndexState *local_state);
 extern void tp_destroy_shared_index_state(TpSharedIndexState *shared_state);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(
