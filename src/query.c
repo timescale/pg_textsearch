@@ -24,6 +24,7 @@
 #include "query.h"
 #include "state.h"
 #include "vector.h"
+#include "segment/segment.h"
 
 /* Local helper functions */
 
@@ -455,28 +456,136 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 			/* Get posting list for this term from memtable */
 			posting_list = tp_get_posting_list(index_state, query_lexeme);
 
-			/*
-			 * If term not found in memtable or has no documents,
-			 * we need to check segments. For now, we'll just use
-			 * a reasonable default doc_count of 1 if segments exist.
-			 * This is a temporary fix - ideally we'd count docs in segments.
-			 */
-			if ((!posting_list || posting_list->doc_count == 0) &&
-				metap->first_segment != InvalidBlockNumber)
+			int32 doc_freq = 0;
+
+			/* If we have a posting list in memtable, use its doc count */
+			if (posting_list && posting_list->doc_count > 0)
 			{
-				/* Term might be in segments but not memtable.
-				 * Use a reasonable default doc_count for IDF calculation.
-				 * TODO: Actually count documents in segments.
-				 */
-				static TpPostingList dummy_posting;
-				/* Use half of total_docs as a reasonable estimate */
-				dummy_posting.doc_count = (total_docs > 1) ? (total_docs / 2)
-														   : 1;
-				posting_list			= &dummy_posting;
+				doc_freq = posting_list->doc_count;
 			}
-			else if (!posting_list || posting_list->doc_count == 0)
+			/* Otherwise, check segments for the term */
+			else if (metap->first_segment != InvalidBlockNumber)
 			{
-				continue; /* Term not in index at all, skip */
+				/* Search segments for this term to get document frequency */
+				BlockNumber current = metap->first_segment;
+
+				while (current != InvalidBlockNumber && doc_freq == 0)
+				{
+					TpSegmentReader *reader;
+					TpSegmentHeader *header;
+
+					/* Open segment */
+					reader = tp_segment_open(index_rel, current);
+					if (!reader)
+						break;
+
+					/* Try to find the term in this segment's dictionary */
+					header = reader->header;
+					if (header->num_terms > 0 && header->dictionary_offset > 0)
+					{
+						/* Read dictionary header */
+						TpDictionary dict_header;
+						tp_segment_read(
+								reader,
+								header->dictionary_offset,
+								&dict_header,
+								sizeof(dict_header.num_terms));
+
+						/* Binary search for the term */
+						int	   left = 0, right = dict_header.num_terms - 1;
+						char  *term_buffer = NULL;
+						uint32 buffer_size = 0;
+
+						while (left <= right)
+						{
+							int			  mid = left + (right - left) / 2;
+							uint32		  string_offset_value;
+							uint32		  string_offset;
+							TpStringEntry string_entry;
+
+							/* Read string offset */
+							tp_segment_read(
+									reader,
+									header->dictionary_offset +
+											sizeof(dict_header.num_terms) +
+											(mid * sizeof(uint32)),
+									&string_offset_value,
+									sizeof(uint32));
+
+							string_offset = header->strings_offset +
+											string_offset_value;
+
+							/* Read string length */
+							tp_segment_read(
+									reader,
+									string_offset,
+									&string_entry.length,
+									sizeof(uint32));
+
+							/* Reallocate buffer if needed */
+							if (string_entry.length + 1 > buffer_size)
+							{
+								if (term_buffer)
+									pfree(term_buffer);
+								buffer_size = string_entry.length + 1;
+								term_buffer = palloc(buffer_size);
+							}
+
+							/* Read term text */
+							tp_segment_read(
+									reader,
+									string_offset + sizeof(uint32),
+									term_buffer,
+									string_entry.length);
+							term_buffer[string_entry.length] = '\0';
+
+							/* Compare terms */
+							int cmp = strcmp(query_lexeme, term_buffer);
+
+							if (cmp == 0)
+							{
+								/* Found it! Read the dictionary entry */
+								TpDictEntry dict_entry;
+								tp_segment_read(
+										reader,
+										header->entries_offset +
+												(mid * sizeof(TpDictEntry)),
+										&dict_entry,
+										sizeof(TpDictEntry));
+								doc_freq = dict_entry.doc_freq;
+								break;
+							}
+							else if (cmp < 0)
+								right = mid - 1;
+							else
+								left = mid + 1;
+						}
+
+						if (term_buffer)
+							pfree(term_buffer);
+					}
+
+					/* Get next segment */
+					current = header->next_segment;
+
+					/* Close this segment */
+					tp_segment_close(reader);
+				}
+
+				/* If we found the term in segments, create a dummy posting
+				 * list with the correct doc_freq for IDF calculation */
+				if (doc_freq > 0)
+				{
+					static TpPostingList dummy_posting;
+					dummy_posting.doc_count = doc_freq;
+					posting_list			= &dummy_posting;
+				}
+			}
+
+			/* If term not found anywhere, skip it */
+			if (doc_freq == 0)
+			{
+				continue;
 			}
 
 			/* Calculate IDF with epsilon handling */
@@ -500,12 +609,13 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				else
 				{
 					/* If both are zero after spilling, use a default */
-					elog(DEBUG1,
-						 "Both total_terms are 0, using default avg_idf");
 					avg_idf = 0.693; /* ln(2), reasonable default */
 				}
+
+				/* Use the actual doc_freq we found (either from memtable or
+				 * segments) */
 				idf = tp_calculate_idf_with_epsilon(
-						posting_list->doc_count, total_docs, avg_idf);
+						doc_freq, total_docs, avg_idf);
 			}
 
 			/* Calculate BM25 term score */
