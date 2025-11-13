@@ -221,6 +221,17 @@ tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
 /* Debug functions */
 extern void tp_debug_dump_segment_internal(
 		const char *index_name, BlockNumber segment_root);
+extern void tp_segment_dump_to_file(
+		const char *index_name,
+		BlockNumber segment_root,
+		const char *filename);
+
+/* Segment analyzer functions */
+extern void
+tp_analyze_index_to_file(const char *index_name, const char *filename);
+extern void
+tp_analyze_segment_chain(FILE *fp, Relation index, BlockNumber first_segment);
+extern void tp_analyze_dictionary(FILE *fp, struct TpSegmentReader *reader);
 
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */

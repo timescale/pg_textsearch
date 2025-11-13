@@ -131,12 +131,12 @@ tp_registry_get_dsa(void)
 		 */
 		max_total_size = (size_t)TP_MAX_INDEXES * tp_get_memory_limit();
 
-		/* Cap at 256MB to be reasonable */
-		if (max_total_size > 256 * 1024 * 1024L)
-			max_total_size = 256 * 1024 * 1024L;
+		/* Cap at 1GB for larger datasets */
+		if (max_total_size > 1024 * 1024 * 1024L)
+			max_total_size = 1024 * 1024 * 1024L;
 
-		/* Start with 1MB initial segment */
-		init_segment_size = 1024 * 1024L;
+		/* Start with 16MB initial segment to reduce fragmentation */
+		init_segment_size = 16 * 1024 * 1024L;
 
 		/* Make sure init size doesn't exceed max */
 		if (init_segment_size > max_total_size)
@@ -153,12 +153,12 @@ tp_registry_get_dsa(void)
 		/* Register the tranche for LWLock debugging/monitoring */
 		LWLockRegisterTranche(tranche_id, "pg_textsearch Shared DSA Pool");
 
-		/* Create with reasonable max segment size to avoid too many segments
+		/* Create with larger max segment size to avoid too many segments
 		 */
 		tapir_dsa = dsa_create_ext(
 				tranche_id,
 				init_segment_size,
-				16 * 1024 * 1024L); /* 16MB max segment size */
+				128 * 1024 * 1024L); /* 128MB max segment size */
 
 		MemoryContextSwitchTo(oldcontext);
 

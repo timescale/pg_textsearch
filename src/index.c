@@ -910,17 +910,17 @@ tp_process_document_text(
 
 		/*
 		 * Check memory after document completion and spill if needed.
-		 * We allow temporary overage within a document (bounded by single
-		 * document size), but check at document boundaries to decide if
-		 * spill is needed before the next document.
+		 * Spill at 50% of memory limit to aggressively prevent DSA exhaustion.
+		 * This gives us significant headroom before hitting the hard limit.
 		 */
 		if (tp_get_memory_usage(&index_state->shared->memory_usage) >
-			tp_get_memory_limit())
+			(tp_get_memory_limit() / 2))
 		{
 			BlockNumber segment_root;
 
 			elog(DEBUG1,
-				 "Memory limit exceeded (%zu/%zu bytes), spilling memtable to "
+				 "Memory usage at 50%% threshold (%zu/%zu bytes), spilling "
+				 "memtable to "
 				 "segment",
 				 tp_get_memory_usage(&index_state->shared->memory_usage),
 				 tp_get_memory_limit());
@@ -933,6 +933,14 @@ tp_process_document_text(
 				elog(DEBUG1,
 					 "Successfully spilled memtable to segment at block %u",
 					 segment_root);
+
+				/* Dump segment contents to file for debugging */
+				/* Commented out for now - call manually after segment creation
+				tp_segment_dump_to_file(
+					RelationGetRelationName(index),
+					segment_root,
+					"/tmp/bm25_segment_dump.txt");
+				*/
 			}
 			else
 			{
@@ -1339,7 +1347,7 @@ tp_insert(
 				 * exceeds the limit after flush.
 				 */
 				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
-					tp_get_memory_limit())
+					(tp_get_memory_limit() / 2))
 				{
 					/* DISABLED: Automatic spilling disabled pending segment
 					 * refactoring */
@@ -1365,7 +1373,7 @@ tp_insert(
 				 * but log a warning if this happens after a fresh flush.
 				 */
 				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
-					tp_get_memory_limit())
+					(tp_get_memory_limit() / 2))
 				{
 					size_t usage_after = tp_get_memory_usage(
 							&index_state->shared->memory_usage);
@@ -2333,6 +2341,7 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
  */
 PG_FUNCTION_INFO_V1(tp_spill_memtable);
 PG_FUNCTION_INFO_V1(bm25_debug_dump_segment);
+PG_FUNCTION_INFO_V1(bm25_analyze_index);
 
 Datum
 tp_spill_memtable(PG_FUNCTION_ARGS)
@@ -2377,6 +2386,29 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 	/* Write segment to disk */
 	segment_root = tp_write_segment(index_state, index_rel);
+
+	/* Update metapage with segment root */
+	if (segment_root != InvalidBlockNumber)
+	{
+		Buffer			metabuf;
+		Page			metap;
+		TpIndexMetaPage meta;
+
+		/* Get metapage and update first_segment pointer */
+		metabuf = ReadBuffer(index_rel, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metap = BufferGetPage(metabuf);
+		meta  = (TpIndexMetaPage)PageGetContents(metap);
+
+		/* Only update if not already set (for first segment) */
+		if (meta->first_segment == InvalidBlockNumber)
+		{
+			meta->first_segment = segment_root;
+			MarkBufferDirty(metabuf);
+		}
+
+		UnlockReleaseBuffer(metabuf);
+	}
 
 	/* Close the index */
 	index_close(index_rel, RowExclusiveLock);
@@ -2423,5 +2455,33 @@ bm25_debug_dump_segment(PG_FUNCTION_ARGS)
 	tp_debug_dump_segment_internal(index_name, (BlockNumber)segment_root);
 
 	pfree(index_name);
+	PG_RETURN_VOID();
+}
+
+/* External function declaration for analyzer */
+extern void
+tp_analyze_index_to_file(const char *index_name, const char *filename);
+
+/*
+ * SQL-callable function to analyze index and write to file
+ * Usage: SELECT bm25_analyze_index('index_name', '/path/to/output.txt');
+ */
+Datum
+bm25_analyze_index(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	text *filename_text	  = PG_GETARG_TEXT_PP(1);
+	char *index_name;
+	char *filename;
+
+	/* Convert arguments to C strings */
+	index_name = text_to_cstring(index_name_text);
+	filename   = text_to_cstring(filename_text);
+
+	/* Call the analyzer function */
+	tp_analyze_index_to_file(index_name, filename);
+
+	pfree(index_name);
+	pfree(filename);
 	PG_RETURN_VOID();
 }
