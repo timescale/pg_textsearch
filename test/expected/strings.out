@@ -45,14 +45,14 @@ SELECT id, LEFT(content, 80) || '...' as content_preview,
 FROM long_string_docs
 ORDER BY content <@> to_bm25query('https website', 'long_strings_idx')
 LIMIT 5;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0517
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.2147
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
-  1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.0517
+  1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.2147
   2 | API endpoint: https://api.search-service.example.org/v2/documents/search/bm25?qu... |  0.0000
   3 | Documentation available at https://docs.postgresql-extensions.community/tapir/ge... |  0.0000
   4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src/posting-list-manage... |  0.0000
@@ -68,7 +68,7 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.1558
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.4064
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
@@ -80,7 +80,7 @@ NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
  id |  category  |  score  
 ----+------------+---------
-  6 | config     | -3.1558
+  6 | config     | -3.4064
   1 | web        |  0.0000
   2 | api        |  0.0000
   3 | docs       |  0.0000
@@ -101,8 +101,8 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-4.3436
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-3.9159
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-4.9159
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-4.4319
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
@@ -113,8 +113,8 @@ NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
-  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.3436
-  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -3.9159
+  5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.9159
+  4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -4.4319
   1 | Visit our website at https://www.example-company.com/product... |  0.0000
   2 | API endpoint: https://api.search-service.example.org/v2/docu... |  0.0000
   3 | Documentation available at https://docs.postgresql-extension... |  0.0000
@@ -147,11 +147,11 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.9242
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.7676
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.6423
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3640
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7705
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.5925
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.5925
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
@@ -159,15 +159,15 @@ NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |  score  
 ----+---------
-  8 | -0.9242
- 10 | -0.7676
-  1 |  0.0000
+  8 | -1.6423
+ 10 | -1.3640
+  1 | -0.7705
+  6 | -0.5925
+  7 | -0.5925
   2 |  0.0000
   3 |  0.0000
   4 |  0.0000
   5 |  0.0000
-  6 |  0.0000
-  7 |  0.0000
   9 |  0.0000
 (10 rows)
 
@@ -182,9 +182,9 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY multi_term_score, id;
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.8073
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.5756
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.4780
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-4.3853
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.8648
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.7182
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
@@ -194,9 +194,9 @@ NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |  category  | multi_term_score 
 ----+------------+------------------
-  6 | config     |          -3.8073
-  8 | mixed      |          -0.5756
- 10 | json       |          -0.4780
+  6 | config     |          -4.3853
+  8 | mixed      |          -0.8648
+ 10 | json       |          -0.7182
   1 | web        |           0.0000
   2 | api        |           0.0000
   3 | docs       |           0.0000
@@ -230,9 +230,9 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-4.8824
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.1305
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.0905
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-5.5076
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.5699
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.5143
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
@@ -242,9 +242,9 @@ NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
- 11 | This document contains a ridiculously long compoun... | -4.8824
-  3 | Documentation available at https://docs.postgresql... | -1.1305
-  7 | Function name: tp_calculate_bm25_relevance_score_w... | -1.0905
+ 11 | This document contains a ridiculously long compoun... | -5.5076
+  3 | Documentation available at https://docs.postgresql... | -1.5699
+  7 | Function name: tp_calculate_bm25_relevance_score_w... | -1.5143
   1 | Visit our website at https://www.example-company.c... |  0.0000
   2 | API endpoint: https://api.search-service.example.o... |  0.0000
   4 | Error in file /usr/local/lib/postgresql/extensions... |  0.0000
@@ -293,9 +293,9 @@ WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
 ORDER BY content_length;
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
- 12 | stack_test       |            612 | Stack allocation likely | -1.2024
- 13 | heap_test        |           1111 | Heap allocation likely  | -1.2024
- 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.2995
+ 12 | stack_test       |            612 | Stack allocation likely | -1.7085
+ 13 | heap_test        |           1111 | Heap allocation likely  | -1.7085
+ 14 | mixed_allocation |           1730 | Heap allocation likely  | -1.3618
 (3 rows)
 
 -- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
@@ -311,7 +311,7 @@ WHERE category = 'extreme'
     AND content <@> to_bm25query('extreme testing', 'long_strings_idx') < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
- Extreme length test |        23614 | -3.8411
+ Extreme length test |        23614 | -4.2077
 (1 row)
 
 -- Cleanup

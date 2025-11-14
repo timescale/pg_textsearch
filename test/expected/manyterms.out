@@ -54,7 +54,7 @@ ORDER BY score
 LIMIT 1;
  id | content |  score  
 ----+---------+---------
- 74 | fifty   | -3.9703
+ 74 | fifty   | -3.9890
 (1 row)
 
 -- Clean up

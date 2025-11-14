@@ -29,10 +29,11 @@
 
 /*
  * Centralized IDF calculation (basic version)
- * Calculates IDF using the standard BM25 formula: log((N - df + 0.5) / (df +
+ * Calculates IDF using a modified BM25 formula: log(1 + (N - df + 0.5) / (df +
  * 0.5))
- * This version uses a simple epsilon for negative IDFs.
- * Use tp_calculate_idf_with_epsilon when average_idf is available.
+ * This formula ensures IDF is always non-negative by adding 1 to the ratio
+ * before taking the logarithm, preventing negative values that can occur with
+ * very common terms.
  */
 float4
 tp_calculate_idf(int32 doc_freq, int32 total_docs)
@@ -40,23 +41,20 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
 	double idf_denominator = (double)(doc_freq + 0.5);
 	double idf_ratio	   = idf_numerator / idf_denominator;
-	double raw_idf		   = log(idf_ratio);
+	double raw_idf		   = log(1.0 + idf_ratio);
 
 	/*
-	 * For negative IDFs, use a simple epsilon value.
-	 * This is used during index building when average_idf isn't yet known.
+	 * With the modified formula (log(1 + ratio)), IDF is always non-negative
+	 * since log(1 + x) >= 0 for all x >= 0, and our ratio is always >= 0.
 	 */
-	if (raw_idf < 0)
-	{
-		return 0.25; /* Simple epsilon */
-	}
-
 	return (float4)raw_idf;
 }
 
 /*
- * IDF calculation with proper epsilon handling
- * Uses epsilon * average_idf for negative IDFs to match Python rank_bm25
+ * IDF calculation with average IDF parameter
+ * Uses modified BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
+ * The average_idf parameter is kept for compatibility but no longer needed
+ * since this formula ensures non-negative IDF values.
  */
 float4
 tp_calculate_idf_with_epsilon(
@@ -65,18 +63,12 @@ tp_calculate_idf_with_epsilon(
 	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
 	double idf_denominator = (double)(doc_freq + 0.5);
 	double idf_ratio	   = idf_numerator / idf_denominator;
-	double raw_idf		   = log(idf_ratio);
+	double raw_idf		   = log(1.0 + idf_ratio);
 
 	/*
-	 * Python rank_bm25 uses epsilon * average_idf for negative IDFs.
-	 * Default epsilon is 0.25 in BM25Okapi.
+	 * With the modified formula, IDF is always non-negative.
+	 * No epsilon handling needed as log(1 + x) >= 0 for all x >= 0.
 	 */
-	if (raw_idf < 0)
-	{
-		const float8 epsilon = 0.25;
-		return (float4)(epsilon * average_idf);
-	}
-
 	return (float4)raw_idf;
 }
 
