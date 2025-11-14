@@ -54,6 +54,7 @@ SELECT to_bm25vector('test text', 'nonexistent_index');
 \set VERBOSITY default
 
 -- Test pg_textsearch scoring using standalone text <@> bm25query operations
+-- VALIDATE_BM25: table=test_docs query="hello world" index=docs_vector_idx
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
@@ -86,6 +87,7 @@ SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{world:2,hello:1}'::bm25vector;
 
 -- Test scoring with real documents
+-- VALIDATE_BM25: table=test_docs query="quick fox" index=docs_vector_idx
 SELECT
     id,
     content,

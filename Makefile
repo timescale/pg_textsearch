@@ -122,4 +122,53 @@ format-single:
 
 format-check: lint-format
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single
+# BM25 Validation targets
+PYTHON = python3
+VALIDATION_DIR = test/python
+TEMPLATE_DIR = test/sql
+SQL_DIR = test/sql
+
+# Find all template files
+TEMPLATES = $(wildcard $(TEMPLATE_DIR)/*.sql.template)
+# Generate corresponding SQL file names
+GENERATED_SQL = $(TEMPLATES:.sql.template=.sql)
+
+# Rule to convert .sql.template to .sql
+%.sql: %.sql.template
+	@echo "Processing template $< -> $@"
+	@cd $(VALIDATION_DIR) && $(PYTHON) process_templates.py ../../$< ../../$@
+
+# Process all templates
+process-templates: $(GENERATED_SQL)
+	@echo "All templates processed successfully"
+
+# Generate validation SQL from templates
+validate-templates: install process-templates
+	@echo "Generating validation SQL from templates..."
+	@for template in $(TEMPLATES); do \
+		sql=$${template%.template}; \
+		echo "Validating $$sql..."; \
+		psql -f $$sql 2>&1 | grep -E "(PASS|FAIL): Results"; \
+	done
+
+# Install Python dependencies for validation
+install-validation-deps:
+	@if [ -f $(VALIDATION_DIR)/requirements.txt ]; then \
+		$(PYTHON) -m pip install -r $(VALIDATION_DIR)/requirements.txt; \
+	else \
+		echo "Installing Python dependencies..."; \
+		$(PYTHON) -m pip install psycopg2-binary rank-bm25; \
+	fi
+
+# Clean generated SQL files
+clean-templates:
+	@echo "Cleaning generated SQL files..."
+	@rm -f $(GENERATED_SQL)
+
+# Test the validation system with a sample template
+test-validation: install install-validation-deps
+	@echo "Testing BM25 validation system..."
+	@cd $(VALIDATION_DIR) && $(PYTHON) test_template.py
+	@echo "Validation test completed."
+
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single process-templates validate-templates install-validation-deps test-validation clean-templates
