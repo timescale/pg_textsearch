@@ -103,7 +103,7 @@ WITH search_terms AS (
 SELECT s.term, a.title, a.content <@> to_bm25query(s.term, 'articles_tapir_idx') as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
 
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
@@ -111,7 +111,7 @@ WITH search_terms AS (
 SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'

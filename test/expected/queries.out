@@ -201,11 +201,11 @@ WITH search_terms AS (
 SELECT s.term, a.title, a.content <@> to_bm25query(s.term, 'articles_tapir_idx') as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
-                                                                                                                    QUERY PLAN                                                                                                                    
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
+                                                                                                                        QUERY PLAN                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Sort
-   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text)))
+   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text))), a.title
    ->  Nested Loop
          ->  Seq Scan on articles a
                Disabled: true
@@ -220,57 +220,57 @@ WITH search_terms AS (
 SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
        term        |             title             |  score  
 -------------------+-------------------------------+---------
- database          | Database Optimization         | -1.3220
  database          | Data Mining Techniques        | -1.3220
+ database          | Database Optimization         | -1.3220
  database          | Introduction to Databases     | -1.2651
- database          | Document Classification       |  0.0000
  database          | Big Data Analytics            |  0.0000
- database          | Machine Learning Fundamentals |  0.0000
- database          | Web Search Evolution          |  0.0000
- database          | Text Search Algorithms        |  0.0000
- database          | Information Retrieval         |  0.0000
  database          | Distributed Computing         |  0.0000
+ database          | Document Classification       |  0.0000
+ database          | Information Retrieval         |  0.0000
+ database          | Machine Learning Fundamentals |  0.0000
  database          | Natural Language Processing   |  0.0000
  database          | Search Engine Design          |  0.0000
+ database          | Text Search Algorithms        |  0.0000
+ database          | Web Search Evolution          |  0.0000
  machine learning  | Document Classification       | -3.3220
  machine learning  | Machine Learning Fundamentals | -3.3220
- machine learning  | Distributed Computing         |  0.0000
- machine learning  | Database Optimization         |  0.0000
- machine learning  | Natural Language Processing   |  0.0000
- machine learning  | Introduction to Databases     |  0.0000
  machine learning  | Big Data Analytics            |  0.0000
+ machine learning  | Data Mining Techniques        |  0.0000
+ machine learning  | Database Optimization         |  0.0000
+ machine learning  | Distributed Computing         |  0.0000
+ machine learning  | Information Retrieval         |  0.0000
+ machine learning  | Introduction to Databases     |  0.0000
+ machine learning  | Natural Language Processing   |  0.0000
  machine learning  | Search Engine Design          |  0.0000
  machine learning  | Text Search Algorithms        |  0.0000
- machine learning  | Data Mining Techniques        |  0.0000
  machine learning  | Web Search Evolution          |  0.0000
- machine learning  | Information Retrieval         |  0.0000
  search algorithms | Search Engine Design          | -2.3908
  search algorithms | Data Mining Techniques        | -1.3220
  search algorithms | Machine Learning Fundamentals | -1.3220
  search algorithms | Web Search Evolution          | -1.1191
  search algorithms | Text Search Algorithms        | -1.0228
  search algorithms | Information Retrieval         | -0.9806
- search algorithms | Document Classification       |  0.0000
  search algorithms | Big Data Analytics            |  0.0000
- search algorithms | Natural Language Processing   |  0.0000
  search algorithms | Database Optimization         |  0.0000
- search algorithms | Introduction to Databases     |  0.0000
  search algorithms | Distributed Computing         |  0.0000
+ search algorithms | Document Classification       |  0.0000
+ search algorithms | Introduction to Databases     |  0.0000
+ search algorithms | Natural Language Processing   |  0.0000
  text mining       | Document Classification       | -3.3220
  text mining       | Data Mining Techniques        | -1.6610
  text mining       | Text Search Algorithms        | -1.5895
  text mining       | Big Data Analytics            |  0.0000
+ text mining       | Database Optimization         |  0.0000
+ text mining       | Distributed Computing         |  0.0000
+ text mining       | Information Retrieval         |  0.0000
+ text mining       | Introduction to Databases     |  0.0000
+ text mining       | Machine Learning Fundamentals |  0.0000
  text mining       | Natural Language Processing   |  0.0000
  text mining       | Search Engine Design          |  0.0000
- text mining       | Information Retrieval         |  0.0000
- text mining       | Distributed Computing         |  0.0000
- text mining       | Machine Learning Fundamentals |  0.0000
  text mining       | Web Search Evolution          |  0.0000
- text mining       | Introduction to Databases     |  0.0000
- text mining       | Database Optimization         |  0.0000
 (48 rows)
 
 -- Test scoring consistency for multi-term query
