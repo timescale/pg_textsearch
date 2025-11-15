@@ -96,9 +96,7 @@ LIMIT 10;
 -- Test 6: Batch search with different queries
 -- Note: In PG18, queries without index names fail due to eager evaluation
 -- This test uses the index name to work correctly
--- EXPLAIN plan output removed due to platform differences
--- EXPLAIN (COSTS OFF) query removed to avoid CI failures
-
+EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )

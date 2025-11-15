@@ -54,6 +54,9 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('database concurrent processing improves performance', 'tech');
 
 -- Search to verify posting lists updated correctly
+-- Note: The ranking order reflects proper BM25 scoring where documents
+-- containing both query terms rank higher than those with single terms.
+-- The IDF formula ensures all terms contribute positively to the score.
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score

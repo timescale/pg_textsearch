@@ -29,11 +29,9 @@
 
 /*
  * Centralized IDF calculation (basic version)
- * Calculates IDF using a modified BM25 formula: log(1 + (N - df + 0.5) / (df +
- * 0.5))
- * This formula ensures IDF is always non-negative by adding 1 to the ratio
- * before taking the logarithm, preventing negative values that can occur with
- * very common terms.
+ * Calculates IDF using BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
+ * This formula ensures IDF is always non-negative since log(1 + x) >= 0
+ * for all x >= 0.
  */
 float4
 tp_calculate_idf(int32 doc_freq, int32 total_docs)
@@ -44,32 +42,23 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	double raw_idf		   = log(1.0 + idf_ratio);
 
 	/*
-	 * With the modified formula (log(1 + ratio)), IDF is always non-negative
-	 * since log(1 + x) >= 0 for all x >= 0, and our ratio is always >= 0.
+	 * IDF is always non-negative since log(1 + x) >= 0 for all x >= 0,
+	 * and our ratio is always >= 0.
 	 */
 	return (float4)raw_idf;
 }
 
 /*
- * IDF calculation with average IDF parameter
- * Uses modified BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
- * The average_idf parameter is kept for compatibility but no longer needed
- * since this formula ensures non-negative IDF values.
+ * IDF calculation with average IDF parameter (deprecated)
+ * The average_idf parameter is ignored. This function exists for compatibility
+ * and simply calls tp_calculate_idf.
  */
 float4
 tp_calculate_idf_with_epsilon(
 		int32 doc_freq, int32 total_docs, float8 average_idf)
 {
-	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
-	double idf_denominator = (double)(doc_freq + 0.5);
-	double idf_ratio	   = idf_numerator / idf_denominator;
-	double raw_idf		   = log(1.0 + idf_ratio);
-
-	/*
-	 * With the modified formula, IDF is always non-negative.
-	 * No epsilon handling needed as log(1 + x) >= 0 for all x >= 0.
-	 */
-	return (float4)raw_idf;
+	/* Ignore average_idf parameter - no longer needed */
+	return tp_calculate_idf(doc_freq, total_docs);
 }
 
 /*
