@@ -49,19 +49,6 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 }
 
 /*
- * IDF calculation with average IDF parameter (deprecated)
- * The average_idf parameter is ignored. This function exists for compatibility
- * and simply calls tp_calculate_idf.
- */
-float4
-tp_calculate_idf_with_epsilon(
-		int32 doc_freq, int32 total_docs, float8 average_idf)
-{
-	/* Ignore average_idf parameter - no longer needed */
-	return tp_calculate_idf(doc_freq, total_docs);
-}
-
-/*
  * Document score entry for BM25 calculation
  */
 typedef struct DocumentScoreEntry
@@ -383,7 +370,6 @@ tp_score_documents(
 		TpPostingList  *posting_list;
 		TpPostingEntry *entries;
 		float4			idf;
-		float8			avg_idf;
 
 		posting_list = tp_string_table_get_posting_list(
 				local_state->dsa, string_table, term);
@@ -391,12 +377,8 @@ tp_score_documents(
 		if (!posting_list || posting_list->doc_count == 0)
 			continue;
 
-		/* Calculate IDF with epsilon handling */
-		Assert(memtable->total_terms >
-			   0); /* Must have terms if we have docs */
-		avg_idf = local_state->shared->idf_sum / memtable->total_terms;
-		idf		= tp_calculate_idf_with_epsilon(
-				posting_list->doc_count, total_docs, avg_idf);
+		/* Calculate IDF for this term */
+		idf = tp_calculate_idf(posting_list->doc_count, total_docs);
 
 		/* Get posting entries */
 		entries = tp_get_posting_entries(local_state->dsa, posting_list);
