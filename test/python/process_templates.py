@@ -97,9 +97,13 @@ def main():
         # This prevents registry overflow when running multiple templates sequentially
         clear_registry_sql = "SELECT bm25_clear_registry();"
         _, error = executor.execute_sql_internal(clear_registry_sql)
-        if error and "does not exist" not in str(error):
-            # Only log if it's not a "function doesn't exist" error
-            logger.debug(f"Registry clear attempt: {error}")
+        if error:
+            if "does not exist" not in str(error):
+                # Real error (not just missing function) - should fail
+                logger.error(f"Failed to clear registry: {error}")
+                sys.exit(1)
+            # Function doesn't exist yet - OK for first run
+            logger.debug(f"Registry function not yet available: {error}")
 
         # Process template
         processor = TemplateProcessor(executor)

@@ -438,7 +438,7 @@ tp_registry_reset_dsa(void)
 PG_FUNCTION_INFO_V1(bm25_clear_registry);
 
 Datum
-bm25_clear_registry(PG_FUNCTION_ARGS)
+bm25_clear_registry(PG_FUNCTION_ARGS __attribute__((unused)))
 {
 	/* Require superuser privileges for safety */
 	if (!superuser())
