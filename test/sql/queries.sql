@@ -100,6 +100,14 @@ EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
+SELECT s.term, a.title, a.content <@> to_bm25query(s.term, 'articles_tapir_idx') as score
+FROM search_terms s
+CROSS JOIN articles a
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
+
+WITH search_terms AS (
+    SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
+)
 SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
