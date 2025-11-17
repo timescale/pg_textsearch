@@ -55,10 +55,19 @@ test-local: install
 	@rm -rf tmp_check_shared
 
 # Clean test directories
-clean: clean-test-dirs
+clean: clean-test-dirs clean-validation
 
 clean-test-dirs:
 	@rm -rf tmp_check_shared
+
+clean-validation:
+	@# Clean generated validation SQL files
+	@rm -f test/sql/*_validated.sql
+	@# Clean expected output files
+	@rm -f test/expected/*_validated.out
+	@# Clean any Python cache
+	@rm -rf test/python/__pycache__
+	@rm -f test/python/*.pyc
 
 # Shell script test targets
 test-concurrency: install
@@ -125,59 +134,24 @@ format-check: lint-format
 # BM25 Validation targets
 PYTHON = python3
 VALIDATION_DIR = test/python
-TEMPLATE_DIR = test/sql
-SQL_DIR = test/sql
 
-# Find all template files
-TEMPLATES = $(wildcard $(TEMPLATE_DIR)/*.sql.template)
-# Generate corresponding SQL file names
-GENERATED_SQL = $(TEMPLATES:.sql.template=.sql)
-
-# Rule to convert .sql.template to .sql
-%.sql: %.sql.template
-	@echo "Processing template $< -> $@"
-	@cd $(VALIDATION_DIR) && $(PYTHON) process_templates.py ../../$< ../../$@
-
-# Process all templates
-process-templates: $(GENERATED_SQL)
-	@echo "All templates processed successfully"
-
-# Generate validation SQL from templates
-validate-templates: install process-templates
-	@echo "Generating validation SQL from templates..."
-	@for template in $(TEMPLATES); do \
-		sql=$${template%.template}; \
-		echo "Validating $$sql..."; \
-		psql -f $$sql 2>&1 | grep -E "(PASS|FAIL): Results"; \
-	done
-
-# Install Python dependencies for validation
-install-validation-deps:
-	@echo "Checking Python dependencies..."
+# Single validation target that does everything needed
+.PHONY: validate
+validate: install
+	@echo "Running BM25 validation..."
+	@# Check Python dependencies
 	@if ! $(PYTHON) -c "import psycopg2" 2>/dev/null; then \
-		echo "Error: psycopg2 not found. Please install it using one of:"; \
-		echo "  - brew install postgresql && pip3 install --user psycopg2-binary"; \
-		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install psycopg2-binary"; \
-		exit 1; \
+		echo "Installing psycopg2-binary..."; \
+		$(PYTHON) -m pip install --user psycopg2-binary || \
+			(echo "Failed to install psycopg2. Please run: pip install psycopg2-binary" && exit 1); \
 	fi
 	@if ! $(PYTHON) -c "import rank_bm25" 2>/dev/null; then \
-		echo "Error: rank-bm25 not found. Please install it using one of:"; \
-		echo "  - pip3 install --user rank-bm25"; \
-		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install rank-bm25"; \
-		exit 1; \
+		echo "Installing rank-bm25..."; \
+		$(PYTHON) -m pip install --user rank-bm25 || \
+			(echo "Failed to install rank-bm25. Please run: pip install rank-bm25" && exit 1); \
 	fi
-	@echo "All Python dependencies are installed"
-
-# Clean generated SQL files
-clean-templates:
-	@echo "Cleaning generated SQL files..."
-	@rm -f $(GENERATED_SQL)
-
-# Test the validation system with a sample template
-test-validation: install install-validation-deps
-	@echo "Testing BM25 validation system..."
-	@cd $(VALIDATION_DIR) && $(PYTHON) test_template.py
-	@echo "Validation test completed."
+	@# Run validation using the dedicated validation makefile
+	@$(MAKE) -f Makefile.validation validate-all
 
 # Help target
 .PHONY: help
@@ -204,15 +178,9 @@ help:
 	@echo "  make format-diff  - Show formatting differences"
 	@echo "  make format-single FILE=path/to/file.c - Format specific file"
 	@echo ""
-	@echo "BM25 validation targets:"
-	@echo "  make process-templates    - Process SQL template files"
-	@echo "  make validate-templates   - Generate and run validation SQL"
-	@echo "  make test-validation      - Test the validation system"
-	@echo "  make install-validation-deps - Install Python dependencies"
-	@echo "  make clean-templates      - Clean generated SQL files"
-	@echo ""
-	@echo "For BM25 validation workflow, see also:"
-	@echo "  make -f Makefile.validation help"
+	@echo "BM25 validation target:"
+	@echo "  make validate     - Run BM25 scoring validation tests"
+	@echo "                      (auto-installs Python dependencies, generates expected outputs)"
 	@echo ""
 	@echo "Configuration:"
 	@echo "  PG_CONFIG - Path to pg_config (default: pg_config)"
