@@ -39,12 +39,27 @@ setup-test-db:
 		 createdb -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) $(DB_NAME))
 	@echo "Test database ready"
 
+# Clean test database (drop all tables once at the beginning)
+.PHONY: clean-test-db
+clean-test-db: setup-test-db
+	@echo "Cleaning test database '$(DB_NAME)'..."
+	@psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d $(DB_NAME) -c \
+		"DO \$$\$$ \
+		DECLARE r RECORD; \
+		BEGIN \
+		  FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') \
+		  LOOP \
+		    EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; \
+		  END LOOP; \
+		END \$$\$$;"
+	@echo "Test database cleaned"
+
 # Process all templates
 .PHONY: validate-all
-validate-all: setup-test-db $(SQL_FILES)
+validate-all: clean-test-db $(SQL_FILES)
 	@echo "All templates have been processed"
 
-# Rule to process individual templates
+# Rule to process individual templates (no --force here, cleanup is done once at start)
 $(SQL_DIR)/%_validated.sql: $(SQL_DIR)/%.sql.template
 	@echo "Processing template: $<"
 	$(PYTHON) $(TEMPLATE_PROCESSOR) \
@@ -52,7 +67,6 @@ $(SQL_DIR)/%_validated.sql: $(SQL_DIR)/%.sql.template
 		--port $(DB_PORT) \
 		--database $(DB_NAME) \
 		--user $(DB_USER) \
-		--force \
 		"$<" "$@"
 
 # Generate expected output files
@@ -82,7 +96,7 @@ list-templates:
 
 # Process a specific template (usage: make validate-one TEMPLATE=scoring1)
 .PHONY: validate-one
-validate-one:
+validate-one: setup-test-db
 ifndef TEMPLATE
 	@echo "Error: TEMPLATE variable not set"
 	@echo "Usage: make validate-one TEMPLATE=scoring1"

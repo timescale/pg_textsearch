@@ -68,38 +68,30 @@ def main():
         result, error = executor.execute_sql_internal(check_tables_sql)
         table_count = result[0]['table_count'] if result else 0
 
-        if table_count > 0:
-            if not args.force:
-                logger.error(f"Database '{args.database}' contains {table_count} existing tables.")
-                logger.error("This validation system needs a clean database to avoid conflicts.")
-                logger.error("Either:")
-                logger.error("  1. Use a test database (recommended)")
-                logger.error("  2. Add --force flag to drop all tables (WARNING: DESTRUCTIVE!)")
+        if table_count > 0 and args.force:
+            logger.warning("=" * 60)
+            logger.warning(f"WARNING: Dropping ALL tables in database '{args.database}'")
+            logger.warning("=" * 60)
+
+            # Drop all user tables in public schema
+            drop_all_sql = """
+                DO $$
+                DECLARE
+                    r RECORD;
+                BEGIN
+                    -- Drop all tables in public schema (CASCADE will handle dependencies)
+                    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
+                    LOOP
+                        EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+                    END LOOP;
+                END $$;
+            """
+            _, error = executor.execute_sql_internal(drop_all_sql)
+            if error:
+                logger.error(f"Failed to clean database: {error}")
                 sys.exit(1)
-            else:
-                logger.warning("=" * 60)
-                logger.warning(f"WARNING: Dropping ALL tables in database '{args.database}'")
-                logger.warning("=" * 60)
 
-                # Drop all user tables in public schema
-                drop_all_sql = """
-                    DO $$
-                    DECLARE
-                        r RECORD;
-                    BEGIN
-                        -- Drop all tables in public schema (CASCADE will handle dependencies)
-                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
-                        LOOP
-                            EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
-                        END LOOP;
-                    END $$;
-                """
-                _, error = executor.execute_sql_internal(drop_all_sql)
-                if error:
-                    logger.error(f"Failed to clean database: {error}")
-                    sys.exit(1)
-
-                logger.info("Database cleaned successfully")
+            logger.info("Database cleaned successfully")
 
         # Process template
         processor = TemplateProcessor(executor)
