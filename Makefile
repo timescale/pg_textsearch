@@ -142,13 +142,13 @@ validate: install
 	@# Check Python dependencies
 	@if ! $(PYTHON) -c "import psycopg2" 2>/dev/null; then \
 		echo "Installing psycopg2-binary..."; \
-		$(PYTHON) -m pip install --user psycopg2-binary || \
-			(echo "Failed to install psycopg2. Please run: pip install psycopg2-binary" && exit 1); \
+		$(PYTHON) -m pip install --user --break-system-packages psycopg2-binary || \
+			(echo "Failed to install psycopg2. Please run: pip install --user --break-system-packages psycopg2-binary" && exit 1); \
 	fi
 	@if ! $(PYTHON) -c "import rank_bm25" 2>/dev/null; then \
 		echo "Installing rank-bm25..."; \
-		$(PYTHON) -m pip install --user rank-bm25 || \
-			(echo "Failed to install rank-bm25. Please run: pip install rank-bm25" && exit 1); \
+		$(PYTHON) -m pip install --user --break-system-packages rank-bm25 || \
+			(echo "Failed to install rank-bm25. Please run: pip install --user --break-system-packages rank-bm25" && exit 1); \
 	fi
 	@# Run validation using the dedicated validation makefile
 	@$(MAKE) -f Makefile.validation validate-all
