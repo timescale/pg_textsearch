@@ -37,3 +37,6 @@ target/
 __pycache__/
 *.pyc
 PR_BREAKDOWN.md
+
+# Python virtual environment
+venv/

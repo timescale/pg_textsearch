@@ -153,12 +153,20 @@ validate-templates: install process-templates
 
 # Install Python dependencies for validation
 install-validation-deps:
-	@if [ -f $(VALIDATION_DIR)/requirements.txt ]; then \
-		$(PYTHON) -m pip install -r $(VALIDATION_DIR)/requirements.txt; \
-	else \
-		echo "Installing Python dependencies..."; \
-		$(PYTHON) -m pip install psycopg2-binary rank-bm25; \
+	@echo "Checking Python dependencies..."
+	@if ! $(PYTHON) -c "import psycopg2" 2>/dev/null; then \
+		echo "Error: psycopg2 not found. Please install it using one of:"; \
+		echo "  - brew install postgresql && pip3 install --user psycopg2-binary"; \
+		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install psycopg2-binary"; \
+		exit 1; \
 	fi
+	@if ! $(PYTHON) -c "import tantivy" 2>/dev/null; then \
+		echo "Error: tantivy not found. Please install it using one of:"; \
+		echo "  - pip3 install --user tantivy"; \
+		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install tantivy"; \
+		exit 1; \
+	fi
+	@echo "All Python dependencies are installed"
 
 # Clean generated SQL files
 clean-templates:
