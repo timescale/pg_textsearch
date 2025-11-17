@@ -141,8 +141,12 @@ class TemplateProcessor:
                 # Don't add the validation query to setup_sql
                 # (it's the query being validated, not setup)
             else:
-                # Accumulate non-validation SQL as setup
-                setup_sql.append(line)
+                # Skip psql meta-commands (they start with backslash)
+                if line.strip().startswith('\\'):
+                    pass  # Skip psql meta-commands
+                else:
+                    # Accumulate non-validation SQL as setup
+                    setup_sql.append(line)
 
             i += 1
 

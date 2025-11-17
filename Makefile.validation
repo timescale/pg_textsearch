@@ -8,7 +8,8 @@ TEMPLATE_PROCESSOR := test/python/process_templates.py
 # Database connection parameters
 DB_HOST ?= localhost
 DB_PORT ?= 5432
-DB_NAME ?= postgres
+# Use a dedicated test database for validation to avoid data loss
+DB_NAME ?= pg_textsearch_test
 DB_USER ?= $(shell whoami)
 
 # Directories
@@ -27,11 +28,20 @@ EXPECTED_FILES := $(addprefix $(EXPECTED_DIR)/,$(addsuffix _validated.out,$(TEMP
 
 # Default target
 .PHONY: all
-all: validate-all
+all: setup-test-db validate-all
+
+# Create test database if it doesn't exist
+.PHONY: setup-test-db
+setup-test-db:
+	@echo "Setting up test database '$(DB_NAME)'..."
+	@psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '$(DB_NAME)'" | grep -q 1 || \
+		(echo "Creating test database '$(DB_NAME)'..." && \
+		 createdb -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) $(DB_NAME))
+	@echo "Test database ready"
 
 # Process all templates
 .PHONY: validate-all
-validate-all: $(SQL_FILES)
+validate-all: setup-test-db $(SQL_FILES)
 	@echo "All templates have been processed"
 
 # Rule to process individual templates
@@ -42,6 +52,7 @@ $(SQL_DIR)/%_validated.sql: $(SQL_DIR)/%.sql.template
 		--port $(DB_PORT) \
 		--database $(DB_NAME) \
 		--user $(DB_USER) \
+		--force \
 		"$<" "$@"
 
 # Generate expected output files
@@ -128,8 +139,13 @@ help:
 	@echo "Environment variables:"
 	@echo "  DB_HOST - Database host (default: localhost)"
 	@echo "  DB_PORT - Database port (default: 5432)"
-	@echo "  DB_NAME - Database name (default: postgres)"
+	@echo "  DB_NAME - Database name (default: pg_textsearch_test)"
 	@echo "  DB_USER - Database user (default: current user)"
+	@echo ""
+	@echo "IMPORTANT: This system uses a dedicated test database by default."
+	@echo "  The test database will be created if it doesn't exist."
+	@echo "  ALL TABLES in the test database will be dropped during validation!"
+	@echo "  To use a different database, set DB_NAME=your_db_name"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make -f Makefile.validation validate-all"

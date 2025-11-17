@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--database', default='postgres', help='Database name')
     parser.add_argument('--user', default=os.environ.get('USER', 'postgres'), help='Database user')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
+    parser.add_argument('--force', action='store_true', help='Force cleanup of all tables in database')
 
     args = parser.parse_args()
 
@@ -57,15 +58,48 @@ def main():
     try:
         executor.connect()
 
-        # Clean up any existing test tables from previous runs
-        # This helps ensure templates run in a clean state
-        cleanup_tables = [
-            'validation_docs', 'test_docs', 'docs', 'documents',
-            'aerodocs', 'mixed_docs', 'string_test', 'manyterms_docs'
-        ]
-        for table in cleanup_tables:
-            cleanup_sql = f"DROP TABLE IF EXISTS {table} CASCADE"
-            executor.execute_sql_internal(cleanup_sql)
+        # Check for existing user tables (excluding system tables)
+        check_tables_sql = """
+            SELECT COUNT(*) as table_count
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_type = 'BASE TABLE'
+        """
+        result, error = executor.execute_sql_internal(check_tables_sql)
+        table_count = result[0]['table_count'] if result else 0
+
+        if table_count > 0:
+            if not args.force:
+                logger.error(f"Database '{args.database}' contains {table_count} existing tables.")
+                logger.error("This validation system needs a clean database to avoid conflicts.")
+                logger.error("Either:")
+                logger.error("  1. Use a test database (recommended)")
+                logger.error("  2. Add --force flag to drop all tables (WARNING: DESTRUCTIVE!)")
+                sys.exit(1)
+            else:
+                logger.warning("=" * 60)
+                logger.warning(f"WARNING: Dropping ALL tables in database '{args.database}'")
+                logger.warning("=" * 60)
+
+                # Drop all user tables in public schema
+                drop_all_sql = """
+                    DO $$
+                    DECLARE
+                        r RECORD;
+                    BEGIN
+                        -- Drop all tables in public schema (CASCADE will handle dependencies)
+                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
+                        LOOP
+                            EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+                        END LOOP;
+                    END $$;
+                """
+                _, error = executor.execute_sql_internal(drop_all_sql)
+                if error:
+                    logger.error(f"Failed to clean database: {error}")
+                    sys.exit(1)
+
+                logger.info("Database cleaned successfully")
 
         # Process template
         processor = TemplateProcessor(executor)
