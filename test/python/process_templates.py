@@ -93,6 +93,14 @@ def main():
 
             logger.info("Database cleaned successfully")
 
+        # Clear BM25 registry before processing template
+        # This prevents registry overflow when running multiple templates sequentially
+        clear_registry_sql = "SELECT bm25_clear_registry();"
+        _, error = executor.execute_sql_internal(clear_registry_sql)
+        if error and "does not exist" not in str(error):
+            # Only log if it's not a "function doesn't exist" error
+            logger.debug(f"Registry clear attempt: {error}")
+
         # Process template
         processor = TemplateProcessor(executor)
         processor.process_template(str(template_path), args.output)

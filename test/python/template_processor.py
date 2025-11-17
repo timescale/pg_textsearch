@@ -10,9 +10,12 @@ Processes SQL template files with VALIDATE_BM25 markers to generate:
 
 import re
 import logging
+import subprocess
+import tempfile
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import math
+import os
 
 from bm25_tantivy import BM25Tantivy
 from tokenizer import PostgresTokenizer
@@ -46,6 +49,60 @@ class TemplateProcessor:
     def __init__(self, executor: PostgresExecutor):
         self.executor = executor
         self.tokenizer = PostgresTokenizer(executor.conn)
+        # Store database connection info for psql subprocess
+        self.db_host = executor.host
+        self.db_port = executor.port
+        self.db_name = executor.database
+        self.db_user = executor.user
+
+    def _execute_sql_via_psql(self, sql: str, check_on_error_stop: bool = True) -> Tuple[str, str]:
+        """
+        Execute SQL via psql subprocess to properly handle meta-commands.
+
+        Args:
+            sql: SQL to execute
+            check_on_error_stop: Whether to check ON_ERROR_STOP setting in SQL
+
+        Returns:
+            Tuple of (stdout, stderr)
+        """
+        # Check if SQL contains ON_ERROR_STOP off (which means errors are expected)
+        on_error_stop = 'ON_ERROR_STOP=1'  # Default
+        if check_on_error_stop and '\\set ON_ERROR_STOP off' in sql:
+            # Don't set ON_ERROR_STOP=1 if the SQL explicitly turns it off
+            on_error_stop = None
+
+        # Write SQL to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
+            f.write(sql)
+            temp_sql_file = f.name
+
+        try:
+            # Build psql command
+            cmd = [
+                'psql',
+                '-h', self.db_host,
+                '-p', str(self.db_port),
+                '-d', self.db_name,
+                '-U', self.db_user,
+                '-f', temp_sql_file
+            ]
+            if on_error_stop:
+                cmd.extend(['-v', on_error_stop])
+
+            # Execute psql
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PGPASSWORD': ''}  # Use empty password or from env
+            )
+
+            return result.stdout, result.stderr
+
+        finally:
+            # Clean up temp file
+            os.unlink(temp_sql_file)
 
     def process_template(self, template_path: str, output_path: str):
         """
@@ -56,25 +113,38 @@ class TemplateProcessor:
             output_path: Path to write generated SQL
         """
         # First pass: Parse template and collect validation points
-        validations = self._parse_template(template_path)
+        validations, cleanup_sql = self._parse_template(template_path)
 
         # Process each validation point
         output_lines = []
+        executed_sql_hash = set()  # Track what SQL we've already executed
 
         for validation in validations:
-            # Execute setup SQL to create tables/indexes
-            if validation.setup_sql:
+            # Execute incremental setup SQL for this validation
+            if validation.setup_sql.strip():
                 logger.debug(f"Executing setup SQL for validation at line {validation.line_number}")
-                results, error = self.executor.execute_sql_internal(validation.setup_sql)
-                if error:
-                    logger.error(f"Setup SQL failed: {error}")
+                # Use psql subprocess to properly handle meta-commands
+                stdout, stderr = self._execute_sql_via_psql(validation.setup_sql)
+
+                # Check for errors in stderr (psql reports errors there)
+                # Only fail early if ON_ERROR_STOP is not explicitly turned off
+                has_error_stop_off = '\\set ON_ERROR_STOP off' in validation.setup_sql
+                if stderr and 'ERROR' in stderr and not has_error_stop_off:
+                    logger.error(f"Setup SQL failed at line {validation.line_number}: {stderr}")
                     # Include setup SQL in output even if it failed
                     output_lines.append(validation.setup_sql)
-                    output_lines.append(f"-- ERROR in setup: {error}\n")
-                    continue
+                    output_lines.append(f"-- ERROR in setup at line {validation.line_number}: {stderr}\n")
+                    # Fail early - exit immediately on error
+                    logger.error(f"Stopping processing due to error")
+                    import sys
+                    sys.exit(1)
                 else:
                     # Include successful setup SQL in output
                     output_lines.append(validation.setup_sql)
+                    if stdout:
+                        logger.debug(f"Setup SQL output: {stdout}")
+                    if stderr and has_error_stop_off:
+                        logger.debug(f"Expected error (ON_ERROR_STOP off): {stderr}")
 
             # Now compute expected scores with tables/indexes in place
             try:
@@ -90,24 +160,38 @@ class TemplateProcessor:
                 output_lines.append(f"\n-- ERROR generating validation for line {validation.line_number}: {e}\n")
                 output_lines.append(validation.original_sql)
 
+        # Execute cleanup SQL (DROP statements at end of template)
+        if cleanup_sql and cleanup_sql.strip():
+            logger.debug(f"Executing cleanup SQL for {template_path}")
+            stdout, stderr = self._execute_sql_via_psql(cleanup_sql)
+
+            # Include cleanup SQL in output
+            output_lines.append("\n-- Cleanup\n")
+            output_lines.append(cleanup_sql)
+
+            if stderr and 'ERROR' in stderr:
+                logger.warning(f"Cleanup SQL had errors (may be expected): {stderr}")
+
         # Write output
         with open(output_path, 'w') as f:
             f.write(''.join(output_lines))
 
         logger.info(f"Generated validation SQL: {output_path}")
 
-    def _parse_template(self, template_path: str) -> List[ValidationTemplate]:
+    def _parse_template(self, template_path: str) -> Tuple[List[ValidationTemplate], str]:
         """
         Parse template file and extract validation points with their setup SQL.
 
         Returns:
-            List of ValidationTemplate objects with setup_sql populated
+            Tuple of (List of ValidationTemplate objects, cleanup SQL after last validation)
         """
         with open(template_path, 'r') as f:
             lines = f.readlines()
 
         validations = []
-        setup_sql = []  # Accumulate setup SQL
+        all_setup_sql = []  # All accumulated setup SQL
+        last_validation_end = 0  # Track where the last validation ended
+        last_validation_line = -1  # Track the line number of the last validation
         i = 0
 
         while i < len(lines):
@@ -116,6 +200,9 @@ class TemplateProcessor:
             # Check for validation marker
             match = self.VALIDATE_PATTERN.search(line)
             if match:
+                # Only include SQL since the last validation (incremental)
+                incremental_sql = ''.join(all_setup_sql[last_validation_end:])
+
                 # Extract validation info
                 validation = ValidationTemplate(
                     line_number=i + 1,
@@ -123,7 +210,7 @@ class TemplateProcessor:
                     query=match.group(2),
                     index=match.group(3),
                     text_config=match.group(4),
-                    setup_sql=''.join(setup_sql)  # All SQL up to this point
+                    setup_sql=incremental_sql  # Only new SQL since last validation
                 )
 
                 # Find the SQL query that follows the marker
@@ -138,19 +225,26 @@ class TemplateProcessor:
                 validation.original_sql = ''.join(sql_lines)
                 validations.append(validation)
 
+                # Update the markers for the next validation
+                last_validation_end = len(all_setup_sql)
+                last_validation_line = i
+
                 # Don't add the validation query to setup_sql
                 # (it's the query being validated, not setup)
             else:
-                # Skip psql meta-commands (they start with backslash)
-                if line.strip().startswith('\\'):
-                    pass  # Skip psql meta-commands
-                else:
-                    # Accumulate non-validation SQL as setup
-                    setup_sql.append(line)
+                # Accumulate non-validation SQL as setup
+                # This includes psql meta-commands which will be properly
+                # handled by psql subprocess execution
+                all_setup_sql.append(line)
 
             i += 1
 
-        return validations
+        # Collect cleanup SQL (everything after the last validation)
+        cleanup_sql = ''
+        if last_validation_line >= 0 and last_validation_line < len(lines) - 1:
+            cleanup_sql = ''.join(lines[last_validation_line + 1:])
+
+        return validations, cleanup_sql
 
     def _generate_validation_sql(self, validation: ValidationTemplate,
                                  expected_scores: Dict[str, float]) -> str:

@@ -154,6 +154,11 @@ CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
 
+-- Clear the BM25 index registry (used by validation tests)
+CREATE FUNCTION bm25_clear_registry() RETURNS void
+    AS 'MODULE_PATHNAME', 'bm25_clear_registry'
+    LANGUAGE C STRICT VOLATILE;
+
 -- Display warning about prerelease status
 DO $$
 BEGIN
