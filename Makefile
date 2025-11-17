@@ -160,10 +160,10 @@ install-validation-deps:
 		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install psycopg2-binary"; \
 		exit 1; \
 	fi
-	@if ! $(PYTHON) -c "import tantivy" 2>/dev/null; then \
-		echo "Error: tantivy not found. Please install it using one of:"; \
-		echo "  - pip3 install --user tantivy"; \
-		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install tantivy"; \
+	@if ! $(PYTHON) -c "import rank_bm25" 2>/dev/null; then \
+		echo "Error: rank-bm25 not found. Please install it using one of:"; \
+		echo "  - pip3 install --user rank-bm25"; \
+		echo "  - Create a virtual environment: python3 -m venv venv && source venv/bin/activate && pip install rank-bm25"; \
 		exit 1; \
 	fi
 	@echo "All Python dependencies are installed"

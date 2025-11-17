@@ -83,8 +83,8 @@ endif
 .PHONY: check-deps
 check-deps:
 	@echo "Checking Python dependencies..."
-	@$(PYTHON) -c "import tantivy" 2>/dev/null || \
-		(echo "Error: tantivy-py not installed. Run: pip install tantivy" && exit 1)
+	@$(PYTHON) -c "import rank_bm25" 2>/dev/null || \
+		(echo "Error: rank-bm25 not installed. Run: pip install rank-bm25" && exit 1)
 	@$(PYTHON) -c "import psycopg2" 2>/dev/null || \
 		(echo "Error: psycopg2 not installed. Run: pip install psycopg2-binary" && exit 1)
 	@echo "All dependencies are installed"
