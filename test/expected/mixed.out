@@ -39,6 +39,7 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
 -- Verify basic search works
+-- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
@@ -63,6 +64,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 -- Note: The ranking order reflects proper BM25 scoring where documents
 -- containing both query terms rank higher than those with single terms.
 -- The IDF formula ensures all terms contribute positively to the score.
+-- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
@@ -134,6 +136,7 @@ FROM concurrent_test_docs;
 (1 row)
 
 -- Test top results still make sense
+-- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, substring(content, 1, 50) || '...' as content_preview,
        ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
@@ -159,6 +162,7 @@ BEGIN;
     INSERT INTO concurrent_test_docs (content, category) VALUES
     ('new concurrent database research paper', 'research');
     -- Search within same transaction
+    -- VALIDATE_BM25: table=concurrent_test_docs query="research database" index=concurrent_idx1
     SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
     FROM concurrent_test_docs
     ORDER BY score
@@ -172,6 +176,7 @@ BEGIN;
 
 COMMIT;
 -- Verify the insert is visible after commit
+-- VALIDATE_BM25: table=concurrent_test_docs query="research database" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
@@ -191,6 +196,7 @@ UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 -- Verify search finds updated documents
+-- VALIDATE_BM25: table=concurrent_test_docs query="enhanced database" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
@@ -269,7 +275,7 @@ FROM concurrent_test_docs;
 (1 row)
 
 -- Delete some stress test documents
-DELETE FROM concurrent_test_docs 
+DELETE FROM concurrent_test_docs
 WHERE content LIKE 'test document number%' AND id % 5 = 0;
 -- Count after delete to verify cleanup
 SELECT COUNT(*) as count_after_delete
@@ -288,6 +294,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('exact same terms for testing consistency', 'test'),
 ('testing consistency with exact same terms', 'test');
 -- Search should find all variants
+-- VALIDATE_BM25: table=concurrent_test_docs query="exact same terms" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score, id;
@@ -378,6 +385,7 @@ INSERT INTO multi_idx_test (content) VALUES
 ('world of databases and indexes'),
 ('hello database world');
 -- Query using the English index
+-- VALIDATE_BM25: table=multi_idx_test query="hello world" index=multi_idx_english
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score;
@@ -391,6 +399,7 @@ ORDER BY english_score;
 (5 rows)
 
 -- Query using the Simple index
+-- VALIDATE_BM25: table=multi_idx_test query="hello world" index=multi_idx_simple
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score;

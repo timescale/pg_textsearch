@@ -61,13 +61,10 @@ clean-test-dirs:
 	@rm -rf tmp_check_shared
 
 clean-validation:
-	@# Clean generated validation SQL files
-	@rm -f test/sql/*_validated.sql
-	@# Clean expected output files
-	@rm -f test/expected/*_validated.out
 	@# Clean any Python cache
 	@rm -rf test/python/__pycache__
 	@rm -f test/python/*.pyc
+	@# Note: Generated .sql and .out files are kept as they're checked into git
 
 # Shell script test targets
 test-concurrency: install
@@ -152,6 +149,8 @@ validate: install
 	fi
 	@# Run validation using the dedicated validation makefile
 	@$(MAKE) -f Makefile.validation validate-all
+	@# Generate expected output files by running SQL through psql
+	@$(MAKE) -f Makefile.validation generate-expected
 
 # Help target
 .PHONY: help

@@ -23,21 +23,25 @@ CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Bulk mode query 1: 'hello'
+-- VALIDATE_BM25: table=scoring2_bulk query="hello" index=scoring2_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring2_bulk_idx'), id;
 
 -- Bulk mode query 2: 'world'
+-- VALIDATE_BM25: table=scoring2_bulk query="world" index=scoring2_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('world', 'scoring2_bulk_idx'), id;
 
 -- Bulk mode query 3: 'goodbye'
+-- VALIDATE_BM25: table=scoring2_bulk query="goodbye" index=scoring2_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring2_bulk_idx'), id;
 
 -- Bulk mode query 4: 'domination'
+-- VALIDATE_BM25: table=scoring2_bulk query="domination" index=scoring2_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('domination', 'scoring2_bulk_idx'), id;
@@ -60,21 +64,25 @@ INSERT INTO scoring2_incr (content) VALUES ('world domination');
 INSERT INTO scoring2_incr (content) VALUES ('hello');
 
 -- Incremental mode query 1: 'hello'
+-- VALIDATE_BM25: table=scoring2_incr query="hello" index=scoring2_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring2_incr_idx'), id;
 
 -- Incremental mode query 2: 'world'
+-- VALIDATE_BM25: table=scoring2_incr query="world" index=scoring2_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
 ORDER BY content <@> to_bm25query('world', 'scoring2_incr_idx'), id;
 
 -- Incremental mode query 3: 'goodbye'
+-- VALIDATE_BM25: table=scoring2_incr query="goodbye" index=scoring2_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring2_incr_idx'), id;
 
 -- Incremental mode query 4: 'domination'
+-- VALIDATE_BM25: table=scoring2_incr query="domination" index=scoring2_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
 ORDER BY content <@> to_bm25query('domination', 'scoring2_incr_idx'), id;

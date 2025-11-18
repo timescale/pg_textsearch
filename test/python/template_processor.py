@@ -386,29 +386,9 @@ class TemplateProcessor:
             if score > 0:  # Only include documents with positive scores
                 # PostgreSQL uses negative scores for ordering
                 neg_score = -score
-
-                # Build row values based on columns
-                values = []
-                for col in columns:
-                    col_lower = col.lower()
-                    if col_lower == 'id':
-                        # Need to get the ID from the actual table
-                        id_sql = f"SELECT id FROM {table} WHERE content = %s"
-                        with self.executor.conn.cursor() as cursor:
-                            cursor.execute(id_sql, (content,))
-                            result = cursor.fetchone()
-                            if result:
-                                values.append(str(result[0]))
-                    elif col_lower == 'content':
-                        # Escape single quotes in content
-                        escaped_content = content.replace("'", "''")
-                        values.append(f"'{escaped_content}'::text")
-                    elif col_lower in ('score', 'relevance'):
-                        # Round to 6 decimal places for consistency
-                        values.append(f"ROUND({neg_score}::numeric, 6)")
-
-                if values:
-                    rows.append(f"  SELECT {', '.join(values)}")
+                # For validation, we only need the scores
+                # Round to 6 decimal places for consistency
+                rows.append(f"  SELECT ROUND({neg_score}::numeric, 6)")
 
         if not rows:
             return "-- No documents match the query"

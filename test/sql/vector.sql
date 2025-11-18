@@ -54,6 +54,7 @@ SELECT to_bm25vector('test text', 'nonexistent_index');
 \set VERBOSITY default
 
 -- Test pg_textsearch scoring using standalone text <@> bm25query operations
+-- VALIDATE_BM25: table=test_docs query="hello world" index=docs_vector_idx
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
@@ -61,6 +62,7 @@ FROM test_docs
 ORDER BY score;
 
 -- Test different query terms with standalone text <@> bm25query operations
+-- VALIDATE_BM25: table=test_docs query="postgresql search" index=docs_vector_idx
 SELECT
     content,
     ROUND((content <@> to_bm25query('postgresql', 'docs_vector_idx'))::numeric, 4) as postgresql_score,
@@ -86,6 +88,7 @@ SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{world:2,hello:1}'::bm25vector;
 
 -- Test scoring with real documents
+-- VALIDATE_BM25: table=test_docs query="quick fox" index=docs_vector_idx
 SELECT
     id,
     content,
@@ -105,6 +108,7 @@ SELECT
 
 -- Test scoring consistency: ORDER BY vs standalone scoring
 \echo 'Testing ORDER BY vs standalone scoring consistency'
+-- VALIDATE_BM25: table=test_docs query="fox dog" index=docs_simple_idx
 WITH order_by_scores AS (
     SELECT id, content,
            ROUND((content <@> to_bm25query('fox dog', 'docs_simple_idx'))::numeric, 6) as order_by_score

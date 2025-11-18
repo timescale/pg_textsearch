@@ -46,6 +46,7 @@ LIMIT 5;
          Order By: (content <@> 'articles_tapir_idx:database'::bm25query)
 (3 rows)
 
+-- VALIDATE_BM25: table=articles query="database" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database'::bm25query)::numeric, 4) as score
 FROM articles
 ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
@@ -77,6 +78,7 @@ LIMIT 3;
          Order By: (content <@> 'articles_tapir_idx:machine learning'::bm25query)
 (3 rows)
 
+-- VALIDATE_BM25: table=articles query="machine learning" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:machine learning'::bm25query)::numeric, 4) as score
 FROM articles
 ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
@@ -106,6 +108,7 @@ LIMIT 10;
          Filter: (category = 'technology'::text)
 (4 rows)
 
+-- VALIDATE_BM25: table=articles query="search algorithms" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:search algorithms'::bm25query)::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
@@ -163,6 +166,7 @@ LIMIT 10;
          Order By: (content <@> 'articles_tapir_idx:database optimization'::bm25query)
 (3 rows)
 
+-- VALIDATE_BM25: table=articles query="database optimization" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database optimization'::bm25query)::numeric, 4) as score
 FROM articles
 ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
@@ -207,11 +211,12 @@ ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.tit
  Sort
    Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text))), a.title
    ->  Nested Loop
-         ->  ProjectSet
-               ->  Result
+         ->  Seq Scan on articles a
+               Disabled: true
          ->  Materialize
-               ->  Seq Scan on articles a
-(7 rows)
+               ->  ProjectSet
+                     ->  Result
+(8 rows)
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'

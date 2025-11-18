@@ -20,16 +20,19 @@ CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Bulk mode query 1: 'hello'
+-- VALIDATE_BM25: table=scoring6_bulk query="hello" index=scoring6_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring6_bulk_idx'), id;
 
 -- Bulk mode query 2: 'goodbye'
+-- VALIDATE_BM25: table=scoring6_bulk query="goodbye" index=scoring6_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'), id;
 
 -- Bulk mode query 3: 'world'
+-- VALIDATE_BM25: table=scoring6_bulk query="world" index=scoring6_bulk_idx
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
 ORDER BY content <@> to_bm25query('world', 'scoring6_bulk_idx'), id;
@@ -49,16 +52,19 @@ INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
 INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
 
 -- Incremental mode query 1: 'hello'
+-- VALIDATE_BM25: table=scoring6_incr query="hello" index=scoring6_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring6_incr_idx'), id;
 
 -- Incremental mode query 2: 'goodbye'
+-- VALIDATE_BM25: table=scoring6_incr query="goodbye" index=scoring6_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring6_incr_idx'), id;
 
 -- Incremental mode query 3: 'world'
+-- VALIDATE_BM25: table=scoring6_incr query="world" index=scoring6_incr_idx
 SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
 ORDER BY content <@> to_bm25query('world', 'scoring6_incr_idx'), id;

@@ -1,0 +1,54 @@
+-- Test template for BM25 validation system
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+CREATE EXTENSION
+-- Create test table
+CREATE TABLE validation_docs (
+    id integer PRIMARY KEY,
+    content text
+);
+CREATE TABLE
+-- Insert test documents
+INSERT INTO validation_docs VALUES
+    (1, 'hello world example'),
+    (2, 'goodbye cruel world'),
+    (3, 'hello hello hello'),
+    (4, 'random document text');
+INSERT 0 4
+-- Create BM25 index
+CREATE INDEX validation_idx ON validation_docs
+USING bm25 (content)
+WITH (text_config='english');
+NOTICE:  BM25 index build started for relation validation_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 4 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
+-- VALIDATE_BM25: table=validation_docs query="hello" index=validation_idx
+SELECT id, content,
+       ROUND((content <@> to_bm25query('hello', 'validation_idx'))::numeric, 6) as score
+FROM validation_docs
+WHERE content <@> to_bm25query('hello', 'validation_idx') < 0
+ORDER BY score DESC;
+ id |       content       |   score   
+----+---------------------+-----------
+  1 | hello world example | -0.693147
+  3 | hello hello hello   | -1.089231
+(2 rows)
+
+-- VALIDATE_BM25: table=validation_docs query="world" index=validation_idx
+SELECT id, content,
+       ROUND((content <@> to_bm25query('world', 'validation_idx'))::numeric, 6) as score
+FROM validation_docs
+ORDER BY score DESC;
+ id |       content        |   score   
+----+----------------------+-----------
+  3 | hello hello hello    |  0.000000
+  4 | random document text |  0.000000
+  1 | hello world example  | -0.693147
+  2 | goodbye cruel world  | -0.693147
+(4 rows)
+
+-- Cleanup
+DROP TABLE validation_docs CASCADE;
+DROP TABLE

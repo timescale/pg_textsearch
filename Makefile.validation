@@ -23,12 +23,12 @@ TEMPLATES := aerodocs basic index limits mixed queries \
 
 # Derived file lists
 TEMPLATE_FILES := $(addprefix $(SQL_DIR)/,$(addsuffix .sql.template,$(TEMPLATES)))
-SQL_FILES := $(addprefix $(SQL_DIR)/,$(addsuffix _validated.sql,$(TEMPLATES)))
-EXPECTED_FILES := $(addprefix $(EXPECTED_DIR)/,$(addsuffix _validated.out,$(TEMPLATES)))
+SQL_FILES := $(addprefix $(SQL_DIR)/,$(addsuffix .sql,$(TEMPLATES)))
+EXPECTED_FILES := $(addprefix $(EXPECTED_DIR)/,$(addsuffix .out,$(TEMPLATES)))
 
 # Default target
 .PHONY: all
-all: setup-test-db validate-all
+all: setup-test-db validate-all generate-expected
 
 # Create test database if it doesn't exist
 .PHONY: setup-test-db
@@ -59,10 +59,10 @@ clean-test-db: setup-test-db
 validate-all: clean-test-db clean-validation $(SQL_FILES)
 	@echo "All templates have been processed"
 
-# Rule to process individual templates (no --force here, cleanup is done once at start)
-$(SQL_DIR)/%_validated.sql: $(SQL_DIR)/%.sql.template
+# Rule to process individual templates
+$(SQL_DIR)/%.sql: $(SQL_DIR)/%.sql.template
 	@echo "Processing template: $<"
-	$(PYTHON) $(TEMPLATE_PROCESSOR) \
+	@$(PYTHON) $(TEMPLATE_PROCESSOR) \
 		--host $(DB_HOST) \
 		--port $(DB_PORT) \
 		--database $(DB_NAME) \
@@ -74,10 +74,10 @@ $(SQL_DIR)/%_validated.sql: $(SQL_DIR)/%.sql.template
 generate-expected: $(SQL_FILES)
 	@echo "Generating expected output files..."
 	@for sql in $(SQL_FILES); do \
-		base=$$(basename $$sql _validated.sql); \
-		out=$(EXPECTED_DIR)/$${base}_validated.out; \
+		base=$$(basename $$sql .sql); \
+		out=$(EXPECTED_DIR)/$${base}.out; \
 		echo "Generating $$out from $$sql"; \
-		psql -h $(DB_HOST) -p $(DB_PORT) -d $(DB_NAME) -U $(DB_USER) \
+		psql -a -h $(DB_HOST) -p $(DB_PORT) -d $(DB_NAME) -U $(DB_USER) \
 			-f $$sql > $$out 2>&1 || true; \
 	done
 
@@ -102,7 +102,7 @@ ifndef TEMPLATE
 	@echo "Usage: make validate-one TEMPLATE=scoring1"
 	@exit 1
 endif
-	@$(MAKE) -f Makefile.validation $(SQL_DIR)/$(TEMPLATE)_validated.sql
+	@$(MAKE) -f Makefile.validation $(SQL_DIR)/$(TEMPLATE).sql
 
 # Check if Python dependencies are installed
 .PHONY: check-deps
@@ -119,8 +119,8 @@ check-deps:
 test-validation: $(SQL_FILES)
 	@echo "Running validation tests..."
 	@for sql in $(SQL_FILES); do \
-		base=$$(basename $$sql _validated.sql); \
-		expected=$(EXPECTED_DIR)/$${base}_validated.out; \
+		base=$$(basename $$sql .sql); \
+		expected=$(EXPECTED_DIR)/$${base}.out; \
 		actual=/tmp/$${base}_actual.out; \
 		echo "Testing $$base..."; \
 		psql -h $(DB_HOST) -p $(DB_PORT) -d $(DB_NAME) -U $(DB_USER) \
