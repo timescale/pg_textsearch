@@ -226,6 +226,35 @@ jobs:
         file check-arch/usr/lib/postgresql/*/lib/pg_textsearch.so | grep -E "(x86-64|aarch64)" || true
         rm -rf check-arch
 
+    - name: Verify PostgreSQL version in package
+      run: |
+        DEB_FILE=$(ls dist/*.deb)
+        EXPECTED_PG_VERSION="${{ matrix.pg_version }}"
+
+        echo "Checking package: $DEB_FILE"
+        echo "Expected PostgreSQL version: $EXPECTED_PG_VERSION"
+
+        # List package contents and extract the PostgreSQL version directory
+        ACTUAL_PG_DIR=$(dpkg -c "$DEB_FILE" | grep -oP 'usr/lib/postgresql/\K\d+' | head -n1)
+
+        echo "Actual PostgreSQL version in package: $ACTUAL_PG_DIR"
+
+        # Verify the PostgreSQL version matches
+        if [ "$ACTUAL_PG_DIR" != "$EXPECTED_PG_VERSION" ]; then
+          echo "❌ ERROR: Package contains PostgreSQL $ACTUAL_PG_DIR binaries but should contain PostgreSQL $EXPECTED_PG_VERSION"
+          echo "This indicates the build used the wrong pg_config"
+          exit 1
+        fi
+
+        # Also verify the .deb filename contains the correct version
+        if ! echo "$DEB_FILE" | grep -q "postgresql-${EXPECTED_PG_VERSION}"; then
+          echo "❌ ERROR: .deb filename does not contain postgresql-${EXPECTED_PG_VERSION}"
+          echo "Found: $DEB_FILE"
+          exit 1
+        fi
+
+        echo "✅ Package verification passed: PostgreSQL version is correct"
+
     - name: Create zip archive
       run: |
         cd dist
