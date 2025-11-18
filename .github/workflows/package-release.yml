@@ -195,7 +195,7 @@ jobs:
         # The TimescaleDB builder image should have build tools installed
         # Build the extension
         cd /build
-        export PG_CONFIG=/usr/local/bin/pg_config
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         CFLAGS="-O3 -DNDEBUG" make
 
