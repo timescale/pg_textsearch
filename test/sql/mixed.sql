@@ -4,6 +4,7 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 
@@ -40,8 +41,8 @@ CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify basic search works
--- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score;
 
@@ -58,8 +59,8 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 -- Note: The ranking order reflects proper BM25 scoring where documents
 -- containing both query terms rank higher than those with single terms.
 -- The IDF formula ensures all terms contribute positively to the score.
--- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
@@ -101,8 +102,8 @@ SELECT COUNT(*) as total_matches
 FROM concurrent_test_docs;
 
 -- Test top results still make sense
--- VALIDATE_BM25: table=concurrent_test_docs query="database concurrent" index=concurrent_idx1
 SELECT id, substring(content, 1, 50) || '...' as content_preview,
+
        ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
@@ -117,16 +118,16 @@ BEGIN;
     ('new concurrent database research paper', 'research');
 
     -- Search within same transaction
-    -- VALIDATE_BM25: table=concurrent_test_docs query="research database" index=concurrent_idx1
     SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
+
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
 COMMIT;
 
 -- Verify the insert is visible after commit
--- VALIDATE_BM25: table=concurrent_test_docs query="research database" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
@@ -140,8 +141,8 @@ SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 
 -- Verify search finds updated documents
--- VALIDATE_BM25: table=concurrent_test_docs query="enhanced database" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score;
 
@@ -170,8 +171,8 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 ('testing consistency with exact same terms', 'test');
 
 -- Search should find all variants
--- VALIDATE_BM25: table=concurrent_test_docs query="exact same terms" index=concurrent_idx1
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score, id;
 
@@ -203,14 +204,14 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello database world');
 
 -- Query using the English index
--- VALIDATE_BM25: table=multi_idx_test query="hello world" index=multi_idx_english
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+
 FROM multi_idx_test
 ORDER BY english_score;
 
 -- Query using the Simple index
--- VALIDATE_BM25: table=multi_idx_test query="hello world" index=multi_idx_simple
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+
 FROM multi_idx_test
 ORDER BY simple_score;
 

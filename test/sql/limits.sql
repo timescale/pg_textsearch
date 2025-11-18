@@ -6,6 +6,7 @@ SET log_duration = off;
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -52,30 +53,30 @@ FROM limit_test
 ORDER BY 3
 LIMIT 5;
 
--- VALIDATE_BM25: table=limit_test query="database" index=limit_test_idx
 SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
 
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
--- VALIDATE_BM25: table=limit_test query="search" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('search', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
 
 -- Test LIMIT 3
--- VALIDATE_BM25: table=limit_test query="optimization" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('optimization', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
 
 -- Test LIMIT 10
--- VALIDATE_BM25: table=limit_test query="algorithm" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('algorithm', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
@@ -89,8 +90,8 @@ WHERE id > 5
 ORDER BY 2
 LIMIT 7;
 
--- VALIDATE_BM25: table=limit_test query="database system" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
@@ -100,15 +101,15 @@ LIMIT 7;
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
 
 -- Test 5: LIMIT with OFFSET
--- VALIDATE_BM25: table=limit_test query="performance" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('performance', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
 
 -- Test 6: Very small LIMIT (edge case)
--- VALIDATE_BM25: table=limit_test query="text" index=limit_test_idx
 SELECT title, ROUND((content <@> to_bm25query('text', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
@@ -124,8 +125,8 @@ FROM (
 ) subq;
 
 -- Test 8: LIMIT in subquery
--- VALIDATE_BM25: table=limit_test query="mining" index=limit_test_idx
 SELECT * FROM (
+
     SELECT title, ROUND((content <@> to_bm25query('mining', 'limit_test_idx'))::numeric, 4) as score
     FROM limit_test
     ORDER BY 2

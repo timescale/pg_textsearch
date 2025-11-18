@@ -3,6 +3,7 @@
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 
@@ -46,8 +47,8 @@ INSERT INTO test_docs (content) VALUES
     ('sphinx of black quartz');
 
 -- Test text <@> bm25query operator (should work)
--- VALIDATE_BM25: table=test_docs query="hello" index=test_tapir_idx
 SELECT content, content <@> to_bm25query('hello', 'test_tapir_idx') as score
+
 FROM test_docs
 ORDER BY score
 LIMIT 1;

@@ -6,6 +6,7 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 
@@ -66,8 +67,8 @@ SET enable_seqscan = off;
 
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'
--- VALIDATE_BM25: table=aerodocs_documents query="aerodynamic flow" index=cranfield_tapir_idx
 SELECT
+
     doc_id,
     LEFT(title, 60) as title_preview,
     ROUND((full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
@@ -77,8 +78,8 @@ LIMIT 5;
 
 -- Test 2: Multi-term search
 \echo 'Test 2: Multi-term search'
--- VALIDATE_BM25: table=aerodocs_documents query="boundary layer turbulent" index=cranfield_tapir_idx
 SELECT
+
     doc_id,
     LEFT(title, 60) as title_preview,
     ROUND((full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score
@@ -88,8 +89,8 @@ LIMIT 5;
 
 -- Test 3: Top-10 results for first query
 \echo 'Test 3: Top-10 results for first query'
--- VALIDATE_BM25: table=aerodocs_documents query="aerodynamic flow analysis" index=cranfield_tapir_idx
 WITH pgts_results AS (
+
     SELECT
         doc_id,
         ROUND((full_text <@> to_bm25query('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as pgts_score,
@@ -122,8 +123,8 @@ ORDER BY q.query_id;
 -- Test 5: Index usage verification
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
--- VALIDATE_BM25: table=aerodocs_documents query="supersonic aircraft design" index=cranfield_tapir_idx
 EXPLAIN (COSTS OFF)
+
 SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC

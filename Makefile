@@ -55,16 +55,10 @@ test-local: install
 	@rm -rf tmp_check_shared
 
 # Clean test directories
-clean: clean-test-dirs clean-validation
+clean: clean-test-dirs
 
 clean-test-dirs:
 	@rm -rf tmp_check_shared
-
-clean-validation:
-	@# Clean any Python cache
-	@rm -rf test/python/__pycache__
-	@rm -f test/python/*.pyc
-	@# Note: Generated .sql and .out files are kept as they're checked into git
 
 # Shell script test targets
 test-concurrency: install
@@ -128,29 +122,6 @@ format-single:
 
 format-check: lint-format
 
-# BM25 Validation targets
-PYTHON = python3
-VALIDATION_DIR = test/python
-
-# Single validation target that does everything needed
-.PHONY: validate
-validate: install
-	@echo "Running BM25 validation..."
-	@# Check Python dependencies
-	@if ! $(PYTHON) -c "import psycopg2" 2>/dev/null; then \
-		echo "Installing psycopg2-binary..."; \
-		$(PYTHON) -m pip install --user --break-system-packages psycopg2-binary || \
-			(echo "Failed to install psycopg2. Please run: pip install --user --break-system-packages psycopg2-binary" && exit 1); \
-	fi
-	@if ! $(PYTHON) -c "import rank_bm25" 2>/dev/null; then \
-		echo "Installing rank-bm25..."; \
-		$(PYTHON) -m pip install --user --break-system-packages rank-bm25 || \
-			(echo "Failed to install rank-bm25. Please run: pip install --user --break-system-packages rank-bm25" && exit 1); \
-	fi
-	@# Run validation using the dedicated validation makefile
-	@$(MAKE) -f Makefile.validation validate-all
-	@# Generate expected output files by running SQL through psql
-	@$(MAKE) -f Makefile.validation generate-expected
 
 # Help target
 .PHONY: help
@@ -177,10 +148,6 @@ help:
 	@echo "  make format-diff  - Show formatting differences"
 	@echo "  make format-single FILE=path/to/file.c - Format specific file"
 	@echo ""
-	@echo "BM25 validation target:"
-	@echo "  make validate     - Run BM25 scoring validation tests"
-	@echo "                      (auto-installs Python dependencies, generates expected outputs)"
-	@echo ""
 	@echo "Configuration:"
 	@echo "  PG_CONFIG - Path to pg_config (default: pg_config)"
 	@echo ""
@@ -189,4 +156,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single process-templates validate-templates install-validation-deps test-validation clean-templates
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single help

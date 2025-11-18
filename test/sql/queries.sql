@@ -3,6 +3,7 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -42,8 +43,8 @@ FROM articles
 ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
 LIMIT 5;
 
--- VALIDATE_BM25: table=articles query="database" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
 LIMIT 5;
@@ -55,8 +56,8 @@ FROM articles
 ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
--- VALIDATE_BM25: table=articles query="machine learning" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:machine learning'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
@@ -69,8 +70,8 @@ WHERE category = 'technology'
 ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
--- VALIDATE_BM25: table=articles query="search algorithms" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:search algorithms'::bm25query)::numeric, 4) as score
+
 FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
@@ -91,8 +92,8 @@ FROM articles
 ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
--- VALIDATE_BM25: table=articles query="database optimization" index=articles_tapir_idx
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database optimization'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
