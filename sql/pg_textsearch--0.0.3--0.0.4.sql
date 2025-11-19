@@ -1,6 +1,5 @@
--- Upgrade from pg_textsearch 0.0.3 to 0.0.4-dev
+-- Upgrade from pg_textsearch 0.0.3 to 0.0.4
 --
--- This is a development version upgrade with no schema changes yet.
--- Future changes in 0.0.4-dev will be added here.
+-- This release includes bug fixes and improvements but no schema changes.
 
 -- No changes required for upgrade

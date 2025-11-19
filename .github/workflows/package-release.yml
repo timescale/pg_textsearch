@@ -19,10 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Only test PG17 for upgrades from old versions
-        # since PG18 support was added in v0.0.3
-        pg_version: [17]
-        old_version: ['0.0.1', '0.0.2']
+        include:
+          # Test PG17 for all old versions
+          - pg_version: 17
+            old_version: '0.0.1'
+          - pg_version: 17
+            old_version: '0.0.2'
+          - pg_version: 17
+            old_version: '0.0.3'
+          # Test PG18 only for 0.0.3+ (PG18 support added in v0.0.3)
+          - pg_version: 18
+            old_version: '0.0.3'
 
     steps:
     - uses: actions/checkout@v4
