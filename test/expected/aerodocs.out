@@ -5,7 +5,10 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
--- Load validation functions
+-- Load validation functions quietly
+\i test/sql/load_validation_quiet.sql
+-- Load validation functions quietly
+\set QUIET on
 \i test/sql/validation.sql
 -- Pure SQL BM25 Implementation for Validation
 -- Computes BM25 scores using the Tantivy formula and validates to 4 decimal places
@@ -393,8 +396,10 @@ BEGIN
     DROP TABLE IF EXISTS comp_tapir;
 END;
 $$ LANGUAGE plpgsql;
+\set QUIET off
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
+SET
 \set ON_ERROR_STOP on
 \echo 'Testing pg_textsearch with sample aerodynamics documents...'
 Testing pg_textsearch with sample aerodynamics documents...
@@ -411,10 +416,12 @@ CREATE TABLE aerodocs_documents (
         COALESCE(content, '')
     ) STORED
 );
+CREATE TABLE
 CREATE TABLE cranfield_queries (
     query_id INTEGER PRIMARY KEY,
     query_text TEXT NOT NULL
 );
+CREATE TABLE
 -- Expected rankings table removed - we test against actual output
 \echo 'Loading subset of Cranfield documents for testing...'
 Loading subset of Cranfield documents for testing...
@@ -429,11 +436,13 @@ INSERT INTO aerodocs_documents (doc_id, title, author, content) VALUES
 (8, 'measurements of the effect of two-dimensional and three-dimensional roughness elements on boundary layer transition .', 'klebanoff,p.s.', 'in his study of the effect of roughness on transition, h. l. dryden found, on the basis of available data, that the effect of a two-dimensional roughness element such as a /trip wire/ could be represented reasonably well in terms of a functional relation between and, where is the reynolds number of transition based on distance from the leading edge, is the height of the roughness element, and is the boundary-layer displacement thickness at the position of the element .  at his suggestion some additional data were obtained, primarily to extend the range to higher values of, during the course of an investigation of transition on a flat plate conducted at the national bureau of standards .  after the results on the two- dimensional roughness elements were obtained, it appeared to be desirable to see whether a row of three-dimensional roughness elements would behave in the same way .'),
 (9, 'transition studies and skin friction measurements on an insulated flat plate at a mach number of 5.8 .', 'korkegi,r.h.', 'an investigation of transition and skin friction on an insulated flat plate, 5 by 26 in., was made in the galcit 5 by 5 in. hypersonic wind tunnel at a nominal mach number of 5.8 . the phosphorescent lacquer technique was used for transition detection and was found to be in good agreement with total-head rake measurements along the plate surface and pitot boundary- layer surveys .  it was found that the boundary layer was laminar at reynolds numbers of at least 5 x 10 .  transverse contamination caused by the turbulent boundary layer on the tunnel sidewall originated far downstream of the flat plate leading edge at reynolds numbers of 1.5 to 2 x 10, and spread at a uniform angle of 5 compared to 9 degree in low-speed flow . the effect of two-dimensional and local disturbances was investigated .  the technique of air injection into the boundary layer as a means of hastening transition was extensively used . although the onset of transition occurred at reynolds numbers as low as 10, a fully developed turbulent boundary layer was not obtained at reynolds numbers much below 2 x 10 regardless of the amount of air injected . a qualitative discussion of these results is given with emphasis on the possibility of a greater stability of the laminar boundary layer in hypersonic flow than at lower speeds . direct skin-friction measurements were made by means of the floating element technique, over a range of reynolds numbers verified as being laminar over the complete range .  with air injection, turbulent shear was obtained only for reynolds numbers greater than 2 x 10, this value being in good agreement with earlier results of this investigation .  the turbulent skin-friction coefficient was found to be approximately 0.40 of that for incompressible flow for a constant value of r, and 0.46 for an effective reynolds number between 5 and 6 x 10 .'),
 (10, 'the theory of the impact tube at low pressure .', 'chambre,p.l. and schaaf,s.a.', 'a theoretical analysis has been made for an impact tube of the relation between free-stream mach number and the impact and free-stream pressures and densities for extremely low pressures . it is shown that the results differ appreciably from the corresponding continuum relations .');
+INSERT 0 10
 -- Insert sample queries
 INSERT INTO cranfield_queries (query_id, query_text) VALUES
 (1, 'aerodynamic flow analysis'),
 (2, 'boundary layer turbulent'),
 (3, 'wing design optimization');
+INSERT 0 3
 -- Expected rankings are now captured in the test's expected output file
 -- Create pg_textsearch index for Cranfield documents with text_config
 CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
@@ -442,10 +451,39 @@ NOTICE:  BM25 index build started for relation cranfield_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 10 documents, avg_length=87.80, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
 \echo 'pg_textsearch index created. Running validation tests...'
 pg_textsearch index created. Running validation tests...
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
+SET
+-- Test 0: Simple single-term validation
+\echo 'Test 0: Single-term query validation'
+Test 0: Single-term query validation
+SELECT
+    doc_id,
+    LEFT(title, 60) as title_preview,
+    ROUND((full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx'))::numeric, 4) as score
+FROM aerodocs_documents
+ORDER BY full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx') ASC
+LIMIT 3;
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0424
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+ doc_id |                        title_preview                         |  score  
+--------+--------------------------------------------------------------+---------
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.0424
+      5 | one-dimensional transient heat conduction into a double-laye | -1.8948
+      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
+(3 rows)
+
+-- Validate single-term BM25 scoring
+SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir_idx', 'aerodynamic', 'english', 1.2, 0.75) as aerodynamic_valid;
+ aerodynamic_valid 
+-------------------
+ t
+(1 row)
+
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'
 Test 1: Basic search with <@> operator
@@ -561,6 +599,7 @@ ORDER BY q.query_id;
 \echo 'Test 5: Verify index usage with EXPLAIN'
 Test 5: Verify index usage with EXPLAIN
 SET jit = off;
+SET
 EXPLAIN (COSTS OFF)
 SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
@@ -575,11 +614,15 @@ LIMIT 10;
 
 -- Reset settings
 SET enable_seqscan = on;
+SET
 \echo 'Cranfield pg_textsearch validation completed successfully.'
 Cranfield pg_textsearch validation completed successfully.
 \echo 'All tests demonstrate proper pg_textsearch functionality with the <@> operator.'
 All tests demonstrate proper pg_textsearch functionality with the <@> operator.
 -- Clean up
 DROP TABLE aerodocs_documents CASCADE;
+DROP TABLE
 DROP TABLE cranfield_queries CASCADE;
+DROP TABLE
 DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION

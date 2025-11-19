@@ -3,7 +3,10 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
--- Load validation functions
+-- Load validation functions quietly
+\i test/sql/load_validation_quiet.sql
+-- Load validation functions quietly
+\set QUIET on
 \i test/sql/validation.sql
 -- Pure SQL BM25 Implementation for Validation
 -- Computes BM25 scores using the Tantivy formula and validates to 4 decimal places
@@ -391,19 +394,28 @@ BEGIN
     DROP TABLE IF EXISTS comp_tapir;
 END;
 $$ LANGUAGE plpgsql;
+\set QUIET off
 SET pg_textsearch.log_scores = true;
+SET
 SET enable_seqscan = off;
+SET
 -- MODE 1: Bulk build (insert data, then create index)
 CREATE TABLE scoring2_bulk (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
+CREATE TABLE
 -- Insert test documents
 INSERT INTO scoring2_bulk (content) VALUES ('hello world');
+INSERT 0 1
 INSERT INTO scoring2_bulk (content) VALUES ('goodbye world');
+INSERT 0 1
 INSERT INTO scoring2_bulk (content) VALUES ('hello goodbye');
+INSERT 0 1
 INSERT INTO scoring2_bulk (content) VALUES ('world domination');
+INSERT 0 1
 INSERT INTO scoring2_bulk (content) VALUES ('hello');
+INSERT 0 1
 -- Create index after data insertion (bulk build)
 CREATE INDEX scoring2_bulk_idx ON scoring2_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -411,6 +423,7 @@ NOTICE:  BM25 index build started for relation scoring2_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=1.80, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
 -- Bulk mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_bulk_idx'))::numeric, 4) as score
 FROM scoring2_bulk
@@ -516,6 +529,7 @@ CREATE TABLE scoring2_incr (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
+CREATE TABLE
 -- Create index before data insertion (incremental build)
 CREATE INDEX scoring2_incr_idx ON scoring2_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -523,12 +537,18 @@ NOTICE:  BM25 index build started for relation scoring2_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
 -- Insert test documents incrementally
 INSERT INTO scoring2_incr (content) VALUES ('hello world');
+INSERT 0 1
 INSERT INTO scoring2_incr (content) VALUES ('goodbye world');
+INSERT 0 1
 INSERT INTO scoring2_incr (content) VALUES ('hello goodbye');
+INSERT 0 1
 INSERT INTO scoring2_incr (content) VALUES ('world domination');
+INSERT 0 1
 INSERT INTO scoring2_incr (content) VALUES ('hello');
+INSERT 0 1
 -- Incremental mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring2_incr_idx'))::numeric, 4) as score
 FROM scoring2_incr
@@ -631,5 +651,8 @@ SELECT validate_bm25_scoring('scoring2_incr', 'content', 'scoring2_incr_idx', 'd
 
 -- Cleanup
 DROP TABLE scoring2_bulk CASCADE;
+DROP TABLE
 DROP TABLE scoring2_incr CASCADE;
+DROP TABLE
 DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION

@@ -3,8 +3,8 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Load validation functions
-\i test/sql/validation.sql
+-- Load validation functions quietly
+\i test/sql/load_validation_quiet.sql
 
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;

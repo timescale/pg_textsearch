@@ -6,8 +6,8 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Load validation functions
-\i test/sql/validation.sql
+-- Load validation functions quietly
+\i test/sql/load_validation_quiet.sql
 
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
@@ -66,6 +66,19 @@ CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
 
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
+
+-- Test 0: Simple single-term validation
+\echo 'Test 0: Single-term query validation'
+SELECT
+    doc_id,
+    LEFT(title, 60) as title_preview,
+    ROUND((full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx'))::numeric, 4) as score
+FROM aerodocs_documents
+ORDER BY full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx') ASC
+LIMIT 3;
+
+-- Validate single-term BM25 scoring
+SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir_idx', 'aerodynamic', 'english', 1.2, 0.75) as aerodynamic_valid;
 
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'

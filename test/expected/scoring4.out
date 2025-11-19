@@ -3,7 +3,10 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
--- Load validation functions
+-- Load validation functions quietly
+\i test/sql/load_validation_quiet.sql
+-- Load validation functions quietly
+\set QUIET on
 \i test/sql/validation.sql
 -- Pure SQL BM25 Implementation for Validation
 -- Computes BM25 scores using the Tantivy formula and validates to 4 decimal places
@@ -391,16 +394,22 @@ BEGIN
     DROP TABLE IF EXISTS comp_tapir;
 END;
 $$ LANGUAGE plpgsql;
+\set QUIET off
 SET pg_textsearch.log_scores = true;
+SET
 SET enable_seqscan = off;
+SET
 -- MODE 1: Bulk build (insert data, then create index)
 CREATE TABLE scoring4_bulk (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
+CREATE TABLE
 -- Insert test documents
 INSERT INTO scoring4_bulk (content) VALUES ('goodbye world');
+INSERT 0 1
 INSERT INTO scoring4_bulk (content) VALUES ('goodbyes are hard');
+INSERT 0 1
 -- Create index after data insertion (bulk build)
 CREATE INDEX scoring4_bulk_idx ON scoring4_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -408,6 +417,7 @@ NOTICE:  BM25 index build started for relation scoring4_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
 -- Bulk mode query 1: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'))::numeric, 4) as score
 FROM scoring4_bulk
@@ -432,6 +442,7 @@ CREATE TABLE scoring4_incr (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
+CREATE TABLE
 -- Create index before data insertion (incremental build)
 CREATE INDEX scoring4_incr_idx ON scoring4_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -439,9 +450,12 @@ NOTICE:  BM25 index build started for relation scoring4_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX
 -- Insert test documents incrementally
 INSERT INTO scoring4_incr (content) VALUES ('goodbye world');
+INSERT 0 1
 INSERT INTO scoring4_incr (content) VALUES ('goodbyes are hard');
+INSERT 0 1
 -- Incremental mode query 1: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_incr_idx'))::numeric, 4) as score
 FROM scoring4_incr
@@ -463,5 +477,8 @@ SELECT validate_bm25_scoring('scoring4_incr', 'content', 'scoring4_incr_idx', 'g
 
 -- Cleanup
 DROP TABLE scoring4_bulk CASCADE;
+DROP TABLE
 DROP TABLE scoring4_incr CASCADE;
+DROP TABLE
 DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION
