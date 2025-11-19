@@ -177,12 +177,15 @@ tp_object_access(
 	/* We only care about DROP events on relations (indexes are relations) */
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
+		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *)arg;
+
+		/* Skip internal drops */
+		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
+			return;
+
 		/* Check if this is one of our indexes */
 		if (!tp_registry_is_registered(objectId))
-		{
-			/* Not our index, ignore */
 			return;
-		}
 
 		/* Cleanup shared memory BEFORE unregistering */
 		tp_cleanup_index_shared_memory(objectId);
