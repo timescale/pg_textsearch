@@ -78,6 +78,19 @@ test-all: test test-shell
 # Override installcheck to use our custom test setup
 installcheck: test
 
+# Generate expected output files from current test results
+expected:
+	@echo "Generating expected output files from current results..."
+	@for test in $(REGRESS); do \
+		if [ -f test/results/$$test.out ]; then \
+			cp test/results/$$test.out test/expected/$$test.out; \
+			echo "  Updated test/expected/$$test.out"; \
+		else \
+			echo "  Warning: No results file for $$test"; \
+		fi; \
+	done
+	@echo "Expected files updated. Review changes before committing."
+
 # Code formatting targets
 lint-format:
 	@echo "Checking C code formatting with clang-format..."
@@ -141,6 +154,7 @@ help:
 	@echo "  make test-shell   - Run shell-based tests (concurrency + recovery)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
+	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
 	@echo "  make format       - Auto-format C code with clang-format"
@@ -156,4 +170,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all expected lint-format format format-check format-diff format-single help
