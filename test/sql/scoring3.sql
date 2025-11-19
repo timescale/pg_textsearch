@@ -3,6 +3,9 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+-- Load validation functions
+\i test/sql/validation.sql
+
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
@@ -27,11 +30,17 @@ SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
 
+-- Validate BM25 scoring for 'quick'
+SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'quick', 'english', 1.2, 0.75) as quick_bulk_valid;
+
 -- Bulk mode query 2: 'sentence'
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
 
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
+
+-- Validate BM25 scoring for 'sentence'
+SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'sentence', 'english', 1.2, 0.75) as sentence_bulk_valid;
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring3_incr (
@@ -54,11 +63,17 @@ SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
 
+-- Validate BM25 scoring for 'quick' (incremental)
+SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'quick', 'english', 1.2, 0.75) as quick_incr_valid;
+
 -- Incremental mode query 2: 'sentence'
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
 
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
+
+-- Validate BM25 scoring for 'sentence' (incremental)
+SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'sentence', 'english', 1.2, 0.75) as sentence_incr_valid;
 
 -- Cleanup
 DROP TABLE scoring3_bulk CASCADE;

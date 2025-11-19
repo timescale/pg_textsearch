@@ -6,6 +6,8 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+-- Load validation functions
+\i test/sql/validation.sql
 
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
