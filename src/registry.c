@@ -19,7 +19,6 @@
 #include <storage/ipc.h>
 #include <storage/lwlock.h>
 #include <storage/shmem.h>
-#include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
@@ -207,7 +206,6 @@ tp_registry_register(
 	{
 		if (tapir_registry->entries[i].index_oid == InvalidOid)
 		{
-			/* Found empty slot */
 			tapir_registry->entries[i].index_oid	   = index_oid;
 			tapir_registry->entries[i].shared_state	   = shared_state;
 			tapir_registry->entries[i].shared_state_dp = shared_dp;
@@ -356,14 +354,9 @@ tp_registry_is_registered(Oid index_oid)
 void
 tp_registry_unregister(Oid index_oid)
 {
-	bool found = false;
-
 	if (!tapir_registry)
 	{
 		/* Registry not initialized - nothing to unregister */
-		ereport(WARNING,
-				(errmsg("cannot unregister index %u: registry not initialized",
-						index_oid)));
 		return;
 	}
 
@@ -377,17 +370,8 @@ tp_registry_unregister(Oid index_oid)
 			tapir_registry->entries[i].shared_state	   = NULL;
 			tapir_registry->entries[i].shared_state_dp = InvalidDsaPointer;
 			tapir_registry->num_entries--;
-			found = true;
 			break;
 		}
-	}
-
-	if (!found)
-	{
-		ereport(WARNING,
-				(errmsg("attempted to unregister index %u that is not in "
-						"registry",
-						index_oid)));
 	}
 
 	LWLockRelease(&tapir_registry->lock);
@@ -404,16 +388,7 @@ void
 tp_registry_reset_dsa(void)
 {
 	if (!tapir_registry)
-	{
-		/* Registry not attached in this backend - initialize it */
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-		{
-			ereport(WARNING,
-					(errmsg("cannot reset registry: initialization failed")));
-			return;
-		}
-	}
+		return;
 
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
 
@@ -427,30 +402,4 @@ tp_registry_reset_dsa(void)
 	tapir_registry->num_entries = 0;
 
 	LWLockRelease(&tapir_registry->lock);
-}
-
-/*
- * SQL function: bm25_clear_registry()
- *
- * Clear all entries from the registry. Used by validation tests to ensure
- * clean state between template runs.
- */
-PG_FUNCTION_INFO_V1(bm25_clear_registry);
-
-Datum
-bm25_clear_registry(PG_FUNCTION_ARGS __attribute__((unused)))
-{
-	/* Require superuser privileges for safety */
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to clear BM25 registry")));
-
-	tp_registry_reset_dsa();
-
-	ereport(NOTICE,
-			(errmsg("BM25 registry cleared - all index registrations "
-					"removed")));
-
-	PG_RETURN_VOID();
 }
