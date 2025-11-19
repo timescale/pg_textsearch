@@ -3,6 +3,7 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+\set ECHO none
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 -- MODE 1: Bulk build (insert data, then create index)
@@ -25,29 +26,43 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.4574
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog                  | -0.4574
+  1 | the quick brown fox jumps over the lazy dog                  | -0.8782
   2 | a short sentence                                             |  0.0000
   3 | this is a medium length sentence that contains several words |  0.0000
 (3 rows)
+
+-- Validate BM25 scoring for 'quick'
+SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'quick', 'english', 1.2, 0.75) as quick_bulk_valid;
+ quick_bulk_valid 
+------------------
+ t
+(1 row)
 
 -- Bulk mode query 2: 'sentence'
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1410
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0968
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  2 | a short sentence                                             | -0.1410
-  3 | this is a medium length sentence that contains several words | -0.0968
+  2 | a short sentence                                             | -0.6134
+  3 | this is a medium length sentence that contains several words | -0.4208
   1 | the quick brown fox jumps over the lazy dog                  |  0.0000
 (3 rows)
+
+-- Validate BM25 scoring for 'sentence'
+SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'sentence', 'english', 1.2, 0.75) as sentence_bulk_valid;
+ sentence_bulk_valid 
+---------------------
+ t
+(1 row)
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring3_incr (
@@ -69,29 +84,43 @@ INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence th
 SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.4574
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog                  | -0.4574
+  1 | the quick brown fox jumps over the lazy dog                  | -0.8782
   2 | a short sentence                                             |  0.0000
   3 | this is a medium length sentence that contains several words |  0.0000
 (3 rows)
+
+-- Validate BM25 scoring for 'quick' (incremental)
+SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'quick', 'english', 1.2, 0.75) as quick_incr_valid;
+ quick_incr_valid 
+------------------
+ t
+(1 row)
 
 -- Incremental mode query 2: 'sentence'
 SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
 ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1410
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.0968
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
-  2 | a short sentence                                             | -0.1410
-  3 | this is a medium length sentence that contains several words | -0.0968
+  2 | a short sentence                                             | -0.6134
+  3 | this is a medium length sentence that contains several words | -0.4208
   1 | the quick brown fox jumps over the lazy dog                  |  0.0000
 (3 rows)
+
+-- Validate BM25 scoring for 'sentence' (incremental)
+SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'sentence', 'english', 1.2, 0.75) as sentence_incr_valid;
+ sentence_incr_valid 
+---------------------
+ t
+(1 row)
 
 -- Cleanup
 DROP TABLE scoring3_bulk CASCADE;

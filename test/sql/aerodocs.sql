@@ -6,6 +6,10 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+\set ECHO none
+\i test/sql/validation.sql
+\set ECHO all
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 
@@ -64,6 +68,19 @@ CREATE INDEX cranfield_tapir_idx ON aerodocs_documents USING bm25(full_text)
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
 
+-- Test 0: Simple single-term validation
+\echo 'Test 0: Single-term query validation'
+SELECT
+    doc_id,
+    LEFT(title, 60) as title_preview,
+    ROUND((full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx'))::numeric, 4) as score
+FROM aerodocs_documents
+ORDER BY full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx') ASC
+LIMIT 3;
+
+-- Validate single-term BM25 scoring
+SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir_idx', 'aerodynamic', 'english', 1.2, 0.75) as aerodynamic_valid;
+
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'
 SELECT
@@ -87,6 +104,7 @@ LIMIT 5;
 -- Test 3: Top-10 results for first query
 \echo 'Test 3: Top-10 results for first query'
 WITH pgts_results AS (
+
     SELECT
         doc_id,
         ROUND((full_text <@> to_bm25query('aerodynamic flow analysis', 'cranfield_tapir_idx'))::numeric, 4) as pgts_score,
@@ -120,6 +138,7 @@ ORDER BY q.query_id;
 \echo 'Test 5: Verify index usage with EXPLAIN'
 SET jit = off;
 EXPLAIN (COSTS OFF)
+
 SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC

@@ -2,6 +2,11 @@
 -- Generated BM25 test with 2 documents and 1 queries
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+\set ECHO none
+\i test/sql/validation.sql
+\set ECHO all
+
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 
@@ -21,8 +26,12 @@ CREATE INDEX scoring4_bulk_idx ON scoring4_bulk USING bm25(content)
 
 -- Bulk mode query 1: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'))::numeric, 4) as score
+
 FROM scoring4_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'), id;
+
+-- Validate BM25 scoring for 'goodbye'
+SELECT validate_bm25_scoring('scoring4_bulk', 'content', 'scoring4_bulk_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_bulk_valid;
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring4_incr (
@@ -40,8 +49,12 @@ INSERT INTO scoring4_incr (content) VALUES ('goodbyes are hard');
 
 -- Incremental mode query 1: 'goodbye'
 SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring4_incr_idx'))::numeric, 4) as score
+
 FROM scoring4_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_incr_idx'), id;
+
+-- Validate BM25 scoring for 'goodbye' (incremental)
+SELECT validate_bm25_scoring('scoring4_incr', 'content', 'scoring4_incr_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_incr_valid;
 
 -- Cleanup
 DROP TABLE scoring4_bulk CASCADE;

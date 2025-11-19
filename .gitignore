@@ -33,3 +33,11 @@ CLAUDE.md
 
 # VSCode files
 compile_commands.json
+target/
+__pycache__/
+*.pyc
+PR_BREAKDOWN.md
+
+# Python virtual environment
+venv/
+test/sql/*_validated.sql

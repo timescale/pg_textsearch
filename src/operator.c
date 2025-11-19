@@ -29,10 +29,9 @@
 
 /*
  * Centralized IDF calculation (basic version)
- * Calculates IDF using the standard BM25 formula: log((N - df + 0.5) / (df +
- * 0.5))
- * This version uses a simple epsilon for negative IDFs.
- * Use tp_calculate_idf_with_epsilon when average_idf is available.
+ * Calculates IDF using BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
+ * This formula ensures IDF is always non-negative since log(1 + x) >= 0
+ * for all x >= 0.
  */
 float4
 tp_calculate_idf(int32 doc_freq, int32 total_docs)
@@ -40,44 +39,7 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
 	double idf_denominator = (double)(doc_freq + 0.5);
 	double idf_ratio	   = idf_numerator / idf_denominator;
-	double raw_idf		   = log(idf_ratio);
-
-	/*
-	 * For negative IDFs, use a simple epsilon value.
-	 * This is used during index building when average_idf isn't yet known.
-	 */
-	if (raw_idf < 0)
-	{
-		return 0.25; /* Simple epsilon */
-	}
-
-	return (float4)raw_idf;
-}
-
-/*
- * IDF calculation with proper epsilon handling
- * Uses epsilon * average_idf for negative IDFs to match Python rank_bm25
- */
-float4
-tp_calculate_idf_with_epsilon(
-		int32 doc_freq, int32 total_docs, float8 average_idf)
-{
-	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
-	double idf_denominator = (double)(doc_freq + 0.5);
-	double idf_ratio	   = idf_numerator / idf_denominator;
-	double raw_idf		   = log(idf_ratio);
-
-	/*
-	 * Python rank_bm25 uses epsilon * average_idf for negative IDFs.
-	 * Default epsilon is 0.25 in BM25Okapi.
-	 */
-	if (raw_idf < 0)
-	{
-		const float8 epsilon = 0.25;
-		return (float4)(epsilon * average_idf);
-	}
-
-	return (float4)raw_idf;
+	return (float4)log(1.0 + idf_ratio);
 }
 
 /*
@@ -402,7 +364,6 @@ tp_score_documents(
 		TpPostingList  *posting_list;
 		TpPostingEntry *entries;
 		float4			idf;
-		float8			avg_idf;
 
 		posting_list = tp_string_table_get_posting_list(
 				local_state->dsa, string_table, term);
@@ -410,12 +371,8 @@ tp_score_documents(
 		if (!posting_list || posting_list->doc_count == 0)
 			continue;
 
-		/* Calculate IDF with epsilon handling */
-		Assert(memtable->total_terms >
-			   0); /* Must have terms if we have docs */
-		avg_idf = local_state->shared->idf_sum / memtable->total_terms;
-		idf		= tp_calculate_idf_with_epsilon(
-				posting_list->doc_count, total_docs, avg_idf);
+		/* Calculate IDF for this term */
+		idf = tp_calculate_idf(posting_list->doc_count, total_docs);
 
 		/* Get posting entries */
 		entries = tp_get_posting_entries(local_state->dsa, posting_list);

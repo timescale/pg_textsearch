@@ -3,6 +3,7 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -43,6 +44,7 @@ ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
 LIMIT 5;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
 LIMIT 5;
@@ -55,6 +57,7 @@ ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:machine learning'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
@@ -68,6 +71,7 @@ ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:search algorithms'::bm25query)::numeric, 4) as score
+
 FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
@@ -89,6 +93,7 @@ ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
 
 SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database optimization'::bm25query)::numeric, 4) as score
+
 FROM articles
 ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
@@ -96,22 +101,15 @@ LIMIT 10;
 -- Test 6: Batch search with different queries
 -- Note: In PG18, queries without index names fail due to eager evaluation
 -- This test uses the index name to work correctly
+-- The CROSS JOIN here intentionally doesn't use the index (tests scoring computation)
 EXPLAIN (COSTS OFF)
-WITH search_terms AS (
-    SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
-)
-SELECT s.term, a.title, a.content <@> to_bm25query(s.term, 'articles_tapir_idx') as score
-FROM search_terms s
-CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
-
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
 SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx');
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'

@@ -4,6 +4,7 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 
@@ -97,6 +98,7 @@ FROM concurrent_test_docs;
 
 -- Test top results still make sense
 SELECT id, substring(content, 1, 50) || '...' as content_preview,
+
        ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score
@@ -112,6 +114,7 @@ BEGIN;
 
     -- Search within same transaction
     SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
+
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
@@ -119,6 +122,7 @@ COMMIT;
 
 -- Verify the insert is visible after commit
 SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
@@ -133,6 +137,7 @@ WHERE id IN (1, 2);
 
 -- Verify search finds updated documents
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score;
 
@@ -144,7 +149,7 @@ SELECT COUNT(*) as count_before_delete
 FROM concurrent_test_docs;
 
 -- Delete some stress test documents
-DELETE FROM concurrent_test_docs 
+DELETE FROM concurrent_test_docs
 WHERE content LIKE 'test document number%' AND id % 5 = 0;
 
 -- Count after delete to verify cleanup
@@ -162,6 +167,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 
 -- Search should find all variants
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
+
 FROM concurrent_test_docs
 ORDER BY score, id;
 
@@ -194,11 +200,13 @@ INSERT INTO multi_idx_test (content) VALUES
 
 -- Query using the English index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+
 FROM multi_idx_test
 ORDER BY english_score;
 
 -- Query using the Simple index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+
 FROM multi_idx_test
 ORDER BY simple_score;
 

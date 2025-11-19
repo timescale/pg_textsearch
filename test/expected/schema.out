@@ -26,19 +26,19 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
 ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5235
 ERROR:  index "articles_idx" not found
 -- Test 2: Schema-qualified index name works correctly
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'docs.articles_idx'))::numeric, 4) as score
 FROM docs.articles
 ORDER BY content <@> to_bm25query('hello', 'docs.articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5235
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4471
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
+  1 | hello world         | -0.5235
+  3 | hello cruel goodbye | -0.4471
   2 | goodbye cruel world |  0.0000
 (3 rows)
 
@@ -47,13 +47,13 @@ SET search_path = docs, public;
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM articles
 ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.1215
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1423
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5235
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4471
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  id |       content       |  score  
 ----+---------------------+---------
-  1 | hello world         | -0.1423
-  3 | hello cruel goodbye | -0.1215
+  1 | hello world         | -0.5235
+  3 | hello cruel goodbye | -0.4471
   2 | goodbye cruel world |  0.0000
 (3 rows)
 
@@ -76,12 +76,12 @@ NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles
 ORDER BY content <@> to_bm25query('hello', 'public_articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7549
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  1 | hello world         | -0.7549
+  2 | goodbye cruel world |  0.0000
 (2 rows)
 
 -- Test 5: INSERT operations with schema-qualified tables and implicit index
@@ -113,12 +113,12 @@ SELECT content, ROUND((content <@> to_bm25query('testing',
   'bar.baz_content_idx'))::numeric, 4) as score
 FROM bar.baz
 ORDER BY content <@> to_bm25query('testing', 'bar.baz_content_idx'), content;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4722
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.9066
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
      content      |  score  
 ------------------+---------
- testing schemas  | -0.4722
+ testing schemas  | -0.9066
  another document |  0.0000
  really           |  0.0000
 (3 rows)
@@ -142,12 +142,12 @@ SELECT content, ROUND((content <@> to_bm25query('testing',
   'edge_case.demo_content_idx'))::numeric, 4) as score
 FROM edge_case.demo
 ORDER BY content <@> to_bm25query('testing', 'edge_case.demo_content_idx'), content;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6100
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-     content     | score  
------------------+--------
- really          | 0.0000
- testing schemas | 0.0000
+     content     |  score  
+-----------------+---------
+ testing schemas | -0.6100
+ really          |  0.0000
 (2 rows)
 
 DROP TABLE edge_case.demo CASCADE;

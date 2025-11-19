@@ -453,21 +453,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				continue; /* Term not in index, skip */
 			}
 
-			/* Calculate IDF with epsilon handling */
-			{
-				TpMemtable *memtable = get_memtable(index_state);
-				float8		avg_idf;
-
-				if (!memtable)
-					elog(ERROR, "Cannot get memtable - index state corrupted");
-
-				if (memtable->total_terms == 0)
-					elog(ERROR, "Invalid index state: total_terms is zero");
-
-				avg_idf = index_state->shared->idf_sum / memtable->total_terms;
-				idf		= tp_calculate_idf_with_epsilon(
-						posting_list->doc_count, total_docs, avg_idf);
-			}
+			/* Calculate IDF for this term */
+			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
 
 			/* Calculate BM25 term score */
 			term_score = calculate_term_score(

@@ -6,6 +6,7 @@ SET log_duration = off;
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -53,6 +54,7 @@ ORDER BY 3
 LIMIT 5;
 
 SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
@@ -60,18 +62,21 @@ LIMIT 5;
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
 SELECT title, ROUND((content <@> to_bm25query('search', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
 
 -- Test LIMIT 3
 SELECT title, ROUND((content <@> to_bm25query('optimization', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
 
 -- Test LIMIT 10
 SELECT title, ROUND((content <@> to_bm25query('algorithm', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
@@ -86,6 +91,7 @@ ORDER BY 2
 LIMIT 7;
 
 SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
@@ -96,12 +102,14 @@ LIMIT 7;
 
 -- Test 5: LIMIT with OFFSET
 SELECT title, ROUND((content <@> to_bm25query('performance', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
 
 -- Test 6: Very small LIMIT (edge case)
 SELECT title, ROUND((content <@> to_bm25query('text', 'limit_test_idx'))::numeric, 4) as score
+
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
@@ -118,6 +126,7 @@ FROM (
 
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
+
     SELECT title, ROUND((content <@> to_bm25query('mining', 'limit_test_idx'))::numeric, 4) as score
     FROM limit_test
     ORDER BY 2

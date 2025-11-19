@@ -5,6 +5,7 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+\set ECHO none
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 \set ON_ERROR_STOP on
@@ -58,6 +59,33 @@ NOTICE:  BM25 index build completed: 10 documents, avg_length=87.80, text_config
 pg_textsearch index created. Running validation tests...
 -- Disable sequential scans to ensure index usage
 SET enable_seqscan = off;
+-- Test 0: Simple single-term validation
+\echo 'Test 0: Single-term query validation'
+Test 0: Single-term query validation
+SELECT
+    doc_id,
+    LEFT(title, 60) as title_preview,
+    ROUND((full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx'))::numeric, 4) as score
+FROM aerodocs_documents
+ORDER BY full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx') ASC
+LIMIT 3;
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0424
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+ doc_id |                        title_preview                         |  score  
+--------+--------------------------------------------------------------+---------
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.0424
+      5 | one-dimensional transient heat conduction into a double-laye | -1.8948
+      2 | simple shear flow past a flat plate in an incompressible flu |  0.0000
+(3 rows)
+
+-- Validate single-term BM25 scoring
+SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir_idx', 'aerodynamic', 'english', 1.2, 0.75) as aerodynamic_valid;
+ aerodynamic_valid 
+-------------------
+ t
+(1 row)
+
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'
 Test 1: Basic search with <@> operator
@@ -68,18 +96,18 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0817
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.5650
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6878
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6846
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6770
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.4269
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6700
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6668
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6595
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      1 | experimental investigation of the aerodynamics of a wing in  | -2.0817
-      5 | one-dimensional transient heat conduction into a double-laye | -1.5650
-      3 | the boundary layer in simple shear flow past a flat plate .  | -0.6878
-      2 | simple shear flow past a flat plate in an incompressible flu | -0.6846
-      4 | approximate solutions of the incompressible laminar boundary | -0.6770
+      1 | experimental investigation of the aerodynamics of a wing in  | -2.4269
+      5 | one-dimensional transient heat conduction into a double-laye | -1.8948
+      3 | the boundary layer in simple shear flow past a flat plate .  | -0.6700
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.6668
+      4 | approximate solutions of the incompressible laminar boundary | -0.6595
 (5 rows)
 
 -- Test 2: Multi-term search
@@ -92,18 +120,18 @@ SELECT
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx') ASC
 LIMIT 5;
-NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-2.9094
-NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-2.5597
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.4829
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.3756
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.3143
+NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-2.8603
+NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-2.4678
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.9987
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.9264
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8852
  doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
-      9 | transition studies and skin friction measurements on an insu | -2.9094
-      7 | the effect of controlled three-dimensional roughness on boun | -2.5597
-      4 | approximate solutions of the incompressible laminar boundary | -1.4829
-      3 | the boundary layer in simple shear flow past a flat plate .  | -1.3756
-      2 | simple shear flow past a flat plate in an incompressible flu | -1.3143
+      9 | transition studies and skin friction measurements on an insu | -2.8603
+      7 | the effect of controlled three-dimensional roughness on boun | -2.4678
+      4 | approximate solutions of the incompressible laminar boundary | -0.9987
+      3 | the boundary layer in simple shear flow past a flat plate .  | -0.9264
+      2 | simple shear flow past a flat plate in an incompressible flu | -0.8852
 (5 rows)
 
 -- Test 3: Top-10 results for first query
@@ -125,27 +153,27 @@ FROM pgts_results br
 JOIN aerodocs_documents d ON br.doc_id = d.doc_id
 WHERE br.pgts_rank <= 10
 ORDER BY br.pgts_rank;
-NOTICE:  BM25 index scan: tid=(1,4), BM25_score=-2.4331
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0817
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.5650
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6878
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6846
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6770
-NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-0.5308
-NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-0.4786
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.4541
+NOTICE:  BM25 index scan: tid=(1,4), BM25_score=-2.6263
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.4269
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6700
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6668
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6595
+NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-0.5170
+NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-0.4662
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.4424
 NOTICE:  BM25 index scan: tid=(1,2), BM25_score=0.0000
  doc_id | pgts_rank |  score  |                   title_preview                    
 --------+-----------+---------+----------------------------------------------------
-     10 |         1 | -2.4331 | the theory of the impact tube at low pressure .
-      1 |         2 | -2.0817 | experimental investigation of the aerodynamics of 
-      5 |         3 | -1.5650 | one-dimensional transient heat conduction into a d
-      3 |         4 | -0.6878 | the boundary layer in simple shear flow past a fla
-      2 |         5 | -0.6846 | simple shear flow past a flat plate in an incompre
-      4 |         6 | -0.6770 | approximate solutions of the incompressible lamina
-      7 |         7 | -0.5308 | the effect of controlled three-dimensional roughne
-      9 |         8 | -0.4786 | transition studies and skin friction measurements 
-      6 |         9 | -0.4541 | one-dimensional transient heat flow in a multilaye
+     10 |         1 | -2.6263 | the theory of the impact tube at low pressure .
+      1 |         2 | -2.4269 | experimental investigation of the aerodynamics of 
+      5 |         3 | -1.8948 | one-dimensional transient heat conduction into a d
+      3 |         4 | -0.6700 | the boundary layer in simple shear flow past a fla
+      2 |         5 | -0.6668 | simple shear flow past a flat plate in an incompre
+      4 |         6 | -0.6595 | approximate solutions of the incompressible lamina
+      7 |         7 | -0.5170 | the effect of controlled three-dimensional roughne
+      9 |         8 | -0.4662 | transition studies and skin friction measurements 
+      6 |         9 | -0.4424 | one-dimensional transient heat flow in a multilaye
       8 |        10 |  0.0000 | measurements of the effect of two-dimensional and 
 (10 rows)
 
@@ -178,11 +206,11 @@ SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', '
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC
 LIMIT 10;
-                                           QUERY PLAN                                            
--------------------------------------------------------------------------------------------------
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using cranfield_tapir_idx on aerodocs_documents
-         Order By: (full_text <@> 'cranfield_tapir_idx:{supersonic aircraft design}'::bm25query)
+         Order By: (full_text <@> 'cranfield_tapir_idx:supersonic aircraft design'::bm25query)
 (3 rows)
 
 -- Reset settings

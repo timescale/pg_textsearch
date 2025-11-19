@@ -3,6 +3,7 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+\set ECHO none
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
 -- MODE 1: Bulk build (insert data, then create index)
@@ -24,25 +25,39 @@ NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring1_bulk_idx'))::numeric, 4) as score
 FROM scoring1_bulk
 ORDER BY content <@> to_bm25query('hello', 'scoring1_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7549
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  1 | hello world         | -0.7549
+  2 | goodbye cruel world |  0.0000
 (2 rows)
+
+-- Validate BM25 scoring for 'hello'
+SELECT validate_bm25_scoring('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'hello', 'english', 1.2, 0.75) as hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
 
 -- Bulk mode query 2: 'cruel'
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_bulk_idx'))::numeric, 4) as score
 FROM scoring1_bulk
 ORDER BY content <@> to_bm25query('cruel', 'scoring1_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6407
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  2 | goodbye cruel world | -0.6407
+  1 | hello world         |  0.0000
 (2 rows)
+
+-- Validate BM25 scoring for 'cruel'
+SELECT validate_bm25_scoring('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'cruel', 'english', 1.2, 0.75) as cruel_valid;
+ cruel_valid 
+-------------
+ t
+(1 row)
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring1_incr (
@@ -63,25 +78,39 @@ INSERT INTO scoring1_incr (content) VALUES ('goodbye cruel world');
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring1_incr_idx'))::numeric, 4) as score
 FROM scoring1_incr
 ORDER BY content <@> to_bm25query('hello', 'scoring1_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7549
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  1 | hello world         | -0.7549
+  2 | goodbye cruel world |  0.0000
 (2 rows)
+
+-- Validate BM25 scoring for 'hello' (incremental)
+SELECT validate_bm25_scoring('scoring1_incr', 'content', 'scoring1_incr_idx', 'hello', 'english', 1.2, 0.75) as hello_incr_valid;
+ hello_incr_valid 
+------------------
+ t
+(1 row)
 
 -- Incremental mode query 2: 'cruel'
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_incr_idx'))::numeric, 4) as score
 FROM scoring1_incr
 ORDER BY content <@> to_bm25query('cruel', 'scoring1_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6407
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
- id |       content       | score  
-----+---------------------+--------
-  1 | hello world         | 0.0000
-  2 | goodbye cruel world | 0.0000
+ id |       content       |  score  
+----+---------------------+---------
+  2 | goodbye cruel world | -0.6407
+  1 | hello world         |  0.0000
 (2 rows)
+
+-- Validate BM25 scoring for 'cruel' (incremental)
+SELECT validate_bm25_scoring('scoring1_incr', 'content', 'scoring1_incr_idx', 'cruel', 'english', 1.2, 0.75) as cruel_incr_valid;
+ cruel_incr_valid 
+------------------
+ t
+(1 row)
 
 -- Cleanup
 DROP TABLE scoring1_bulk CASCADE;

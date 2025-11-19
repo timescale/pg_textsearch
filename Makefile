@@ -78,6 +78,19 @@ test-all: test test-shell
 # Override installcheck to use our custom test setup
 installcheck: test
 
+# Generate expected output files from current test results
+expected:
+	@echo "Generating expected output files from current results..."
+	@for test in $(REGRESS); do \
+		if [ -f test/results/$$test.out ]; then \
+			cp test/results/$$test.out test/expected/$$test.out; \
+			echo "  Updated test/expected/$$test.out"; \
+		else \
+			echo "  Warning: No results file for $$test"; \
+		fi; \
+	done
+	@echo "Expected files updated. Review changes before committing."
+
 # Code formatting targets
 lint-format:
 	@echo "Checking C code formatting with clang-format..."
@@ -122,4 +135,39 @@ format-single:
 
 format-check: lint-format
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all lint-format format format-check format-diff format-single
+
+# Help target
+.PHONY: help
+help:
+	@echo "pg_textsearch Makefile"
+	@echo ""
+	@echo "Build targets:"
+	@echo "  make              - Build the extension"
+	@echo "  make install      - Build and install the extension"
+	@echo "  make clean        - Clean build artifacts and test directories"
+	@echo ""
+	@echo "Testing targets:"
+	@echo "  make test         - Run regression tests (alias for installcheck)"
+	@echo "  make installcheck - Run regression tests"
+	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
+	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
+	@echo "  make test-shell   - Run shell-based tests (concurrency + recovery)"
+	@echo "  make test-concurrency - Run concurrency tests"
+	@echo "  make test-recovery    - Run crash recovery tests"
+	@echo "  make expected     - Generate expected output files from test results"
+	@echo ""
+	@echo "Code formatting targets:"
+	@echo "  make format       - Auto-format C code with clang-format"
+	@echo "  make format-check - Check C code formatting (alias: lint-format)"
+	@echo "  make format-diff  - Show formatting differences"
+	@echo "  make format-single FILE=path/to/file.c - Format specific file"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  PG_CONFIG - Path to pg_config (default: pg_config)"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make && make install"
+	@echo "  make test-all"
+	@echo "  make format"
+
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all expected lint-format format format-check format-diff format-single help
