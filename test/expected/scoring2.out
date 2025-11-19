@@ -4,8 +4,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
 -- Load validation functions quietly
-\i test/sql/load_validation_quiet.sql
--- Load validation functions quietly
 \set QUIET on
 \i test/sql/validation.sql
 -- Pure SQL BM25 Implementation for Validation

@@ -7,7 +7,9 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Load validation functions quietly
-\i test/sql/load_validation_quiet.sql
+\set QUIET on
+\i test/sql/validation.sql
+\set QUIET off
 
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
