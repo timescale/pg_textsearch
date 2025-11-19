@@ -107,69 +107,51 @@ tp_get_local_index_state(Oid index_oid)
 		 * 2. We're in crash recovery after a restart
 		 * 3. The index doesn't exist
 		 * 4. The index is being built right now
+		 * 5. Backend startup when other backends created the index
 		 *
-		 * IMPORTANT: We should NEVER attempt to rebuild from disk during
-		 * normal CREATE INDEX operations. The registry entry should be
-		 * created BEFORE tp_insert is called during index build.
-		 *
-		 * Only attempt recovery during actual PostgreSQL crash recovery.
+		 * Check if the index exists and needs to be rebuilt.
 		 */
+		Relation index_rel;
+		bool	 index_exists = false;
 
-		/*
-		 * Detect crash recovery mode by excluding normal and bootstrap
-		 * processing modes. This condition is used because there is no direct
-		 * InRecovery() function available in the context we're operating in.
-		 * We're in recovery if we're neither in normal processing nor
-		 * bootstrap mode.
-		 */
-		if (!IsNormalProcessingMode() && !IsBootstrapProcessingMode())
+		PG_TRY();
 		{
-			/* We might be in recovery - check if index exists */
-			Relation index_rel;
-			bool	 index_exists = false;
-
-			PG_TRY();
+			index_rel = index_open(index_oid, AccessShareLock);
+			if (index_rel != NULL)
 			{
-				index_rel = index_open(index_oid, AccessShareLock);
-				if (index_rel != NULL)
-				{
-					index_exists = true;
-					index_close(index_rel, AccessShareLock);
-				}
-			}
-			PG_CATCH();
-			{
-				/* Index doesn't exist - that's fine */
-				FlushErrorState();
-			}
-			PG_END_TRY();
-
-			if (index_exists)
-			{
-				/*
-				 * Index exists on disk but not in the registry. This can
-				 * occur after:
-				 * 1. PostgreSQL crash/restart (shared memory was cleared)
-				 * 2. Extension reload after DROP/CREATE EXTENSION
-				 * 3. Backend startup when other backends created the index
-				 *
-				 * We rebuild the index state from the on-disk metapage to
-				 * recover the memtable and posting lists.
-				 */
-
-				/* Only attempt recovery if we can safely validate the metapage
-				 */
-				local_state = tp_rebuild_index_from_disk(index_oid);
-				if (local_state != NULL)
-				{
-					return local_state;
-				}
-
-				/* Recovery failed - index might be corrupted or stale */
+				index_exists = true;
+				index_close(index_rel, AccessShareLock);
 			}
 		}
+		PG_CATCH();
+		{
+			/* Index doesn't exist - that's fine */
+			FlushErrorState();
+		}
+		PG_END_TRY();
 
-		/* Index not found in registry and we're not in recovery mode */
+		if (index_exists)
+		{
+			/*
+			 * Index exists on disk but not in the registry. This can
+			 * occur after:
+			 * 1. PostgreSQL crash/restart (shared memory was cleared)
+			 * 2. Extension reload after DROP/CREATE EXTENSION
+			 * 3. Backend startup when other backends created the index
+			 *
+			 * We rebuild the index state from the on-disk metapage to
+			 * recover the memtable and posting lists.
+			 */
+			local_state = tp_rebuild_index_from_disk(index_oid);
+			if (local_state != NULL)
+			{
+				return local_state;
+			}
+
+			/* Recovery failed - index might be corrupted or stale */
+		}
+
+		/* Index not found in registry and doesn't exist on disk */
 		return NULL;
 	}
 
@@ -594,7 +576,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		/* Rebuild posting lists from docid pages */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 
-		/* Recalculate IDF sum after recovery for proper BM25 scoring */
+		/* Recalculate IDF sum after recovery */
 		tp_calculate_idf_sum(local_state);
 	}
 

@@ -1318,7 +1318,7 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
-	/* Recalculate IDF sum after insert for proper BM25 scoring */
+	/* Recalculate IDF sum after insert */
 	tp_calculate_idf_sum(index_state);
 
 	return true;
