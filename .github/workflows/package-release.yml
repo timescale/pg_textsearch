@@ -192,10 +192,24 @@ jobs:
         #!/bin/bash
         set -ex
 
-        # The TimescaleDB builder image should have build tools installed
+        PG_VERSION="$3"
+        echo "Building for PostgreSQL version: $PG_VERSION"
+
+        # Use the correct pg_config for the target PostgreSQL version
+        # The postgresql-server-dev-XX package installs pg_config here
+        export PG_CONFIG="/usr/lib/postgresql/$PG_VERSION/bin/pg_config"
+
+        if [ ! -f "$PG_CONFIG" ]; then
+            echo "ERROR: pg_config not found at $PG_CONFIG"
+            echo "Make sure postgresql-server-dev-$PG_VERSION is installed"
+            exit 1
+        fi
+
+        echo "Using pg_config: $PG_CONFIG"
+        $PG_CONFIG --version
+
         # Build the extension
         cd /build
-        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         CFLAGS="-O3 -DNDEBUG" make
 
