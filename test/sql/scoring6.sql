@@ -3,9 +3,9 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
-\o /dev/null
+\set ECHO none
 \i test/sql/validation.sql
-\o
+\set ECHO all
 
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;

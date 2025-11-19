@@ -6,9 +6,9 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
-\o /dev/null
+\set ECHO none
 \i test/sql/validation.sql
-\o
+\set ECHO all
 
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
