@@ -85,7 +85,6 @@ SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir
 -- Test 1: Basic search functionality
 \echo 'Test 1: Basic search with <@> operator'
 SELECT
-
     doc_id,
     LEFT(title, 60) as title_preview,
     ROUND((full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
@@ -96,7 +95,6 @@ LIMIT 5;
 -- Test 2: Multi-term search
 \echo 'Test 2: Multi-term search'
 SELECT
-
     doc_id,
     LEFT(title, 60) as title_preview,
     ROUND((full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score

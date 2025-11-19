@@ -101,6 +101,7 @@ LIMIT 10;
 -- Test 6: Batch search with different queries
 -- Note: In PG18, queries without index names fail due to eager evaluation
 -- This test uses the index name to work correctly
+-- The CROSS JOIN here intentionally doesn't use the index (tests scoring computation)
 EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term

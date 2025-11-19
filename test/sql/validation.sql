@@ -1,5 +1,14 @@
--- Pure SQL BM25 Implementation for Validation
--- Computes BM25 scores using the Tantivy formula and validates to 4 decimal places
+-- BM25 Score Validation Functions
+--
+-- Formula: BM25(q,d) = Σ IDF(qi) * (tf(qi,d) * (k1 + 1)) / (tf(qi,d) + k1 * (1 - b + b * |d| / avgdl))
+-- Where:
+--   IDF(qi) = ln(1 + (N - df(qi) + 0.5) / (df(qi) + 0.5))
+--   tf(qi,d) = term frequency of qi in document d
+--   |d| = document length, avgdl = average document length
+--   k1 = term frequency saturation, b = length normalization
+--
+-- Usage Example:
+--   SELECT validate_bm25_scoring('mytable', 'content_column', 'my_bm25_idx', 'search query', 'english', 1.2, 0.75)
 
 CREATE OR REPLACE FUNCTION validate_bm25_scoring(
     p_table_name text,
