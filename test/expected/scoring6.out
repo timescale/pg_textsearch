@@ -3,8 +3,7 @@
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
--- Load validation functions quietly
-\set QUIET on
+\o /dev/null
 \i test/sql/validation.sql
 -- BM25 Score Validation Functions
 --
@@ -401,22 +400,17 @@ BEGIN
     DROP TABLE IF EXISTS comp_tapir;
 END;
 $$ LANGUAGE plpgsql;
-\set QUIET off
+\o
 SET pg_textsearch.log_scores = true;
-SET
 SET enable_seqscan = off;
-SET
 -- MODE 1: Bulk build (insert data, then create index)
 CREATE TABLE scoring6_bulk (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
-CREATE TABLE
 -- Insert test documents
 INSERT INTO scoring6_bulk (content) VALUES ('hello, world!');
-INSERT 0 1
 INSERT INTO scoring6_bulk (content) VALUES ('goodbye cruel world...');
-INSERT 0 1
 -- Create index after data insertion (bulk build)
 CREATE INDEX scoring6_bulk_idx ON scoring6_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -424,7 +418,6 @@ NOTICE:  BM25 index build started for relation scoring6_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
-CREATE INDEX
 -- Bulk mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
 FROM scoring6_bulk
@@ -487,7 +480,6 @@ CREATE TABLE scoring6_incr (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
-CREATE TABLE
 -- Create index before data insertion (incremental build)
 CREATE INDEX scoring6_incr_idx ON scoring6_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
@@ -495,12 +487,9 @@ NOTICE:  BM25 index build started for relation scoring6_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
-CREATE INDEX
 -- Insert test documents incrementally
 INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
-INSERT 0 1
 INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
-INSERT 0 1
 -- Incremental mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_incr_idx'))::numeric, 4) as score
 FROM scoring6_incr
@@ -560,8 +549,5 @@ SELECT validate_bm25_scoring('scoring6_incr', 'content', 'scoring6_incr_idx', 'w
 
 -- Cleanup
 DROP TABLE scoring6_bulk CASCADE;
-DROP TABLE
 DROP TABLE scoring6_incr CASCADE;
-DROP TABLE
 DROP EXTENSION pg_textsearch CASCADE;
-DROP EXTENSION

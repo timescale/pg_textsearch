@@ -37,6 +37,8 @@ Indexes:
     "test_docs_pkey" PRIMARY KEY, btree (id)
     "docs_english_idx" bm25 (content) WITH (text_config=english)
     "docs_simple_idx" bm25 (content) WITH (text_config=simple, k1='1.5', b='0.8')
+Not-null constraints:
+    "test_docs_id_not_null" NOT NULL "id"
 
 -- Test basic index operations
 INSERT INTO test_docs (content) VALUES ('new document for testing');
