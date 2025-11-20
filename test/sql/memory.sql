@@ -56,3 +56,4 @@ RESET pg_textsearch.index_memory_limit;
 
 -- Clean up
 DROP TABLE memory_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;
