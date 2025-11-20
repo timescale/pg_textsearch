@@ -8,14 +8,14 @@ DATA = sql/pg_textsearch--0.0.4.sql \
 # Full build - debugging initialization crash
 OBJS = \
 	src/mod.o \
-	src/memtable.o \
+	src/memtable/memtable.o \
 	src/memory.o \
 	src/metapage.o \
-	src/posting.o \
+	src/memtable/posting.o \
 	src/index.o \
 	src/vector.o \
 	src/query.o \
-	src/stringtable.o \
+	src/memtable/stringtable.o \
 	src/operator.o \
 	src/limit.o \
 	src/registry.o \

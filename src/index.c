@@ -35,10 +35,10 @@
 #include "constants.h"
 #include "index.h"
 #include "limit.h"
-#include "memtable.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
 #include "metapage.h"
 #include "operator.h"
-#include "posting.h"
 #include "query.h"
 #include "vector.h"
 
