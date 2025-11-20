@@ -1,7 +1,7 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE dropped_idx_test (
     id SERIAL PRIMARY KEY,

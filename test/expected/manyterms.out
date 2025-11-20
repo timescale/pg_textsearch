@@ -2,7 +2,7 @@
 -- This test creates enough unique terms to trigger hash table resize
 -- and verifies the system continues to work correctly
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Create test table

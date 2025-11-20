@@ -11,7 +11,7 @@ Supports:
 - PostgreSQL text search configurations (english, french, german, etc.)
 - bm25 index and bm25query data type for fast ranked searches
 
-🚀 **Development Status**: v0.0.4-dev - Memtable-based
+🚀 **Development Status**: v0.0.4 - Memtable-based
 implementation is in place and working. This is prerelease software and should not be used in production.
 
 ## Historical note
