@@ -2292,8 +2292,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		appendStringInfo(
-				&result, "No segment written (memtable may be empty)\n");
+		appendStringInfo(&result, "No segment written (memtable is empty)\n");
 	}
 
 	/* Close the index */

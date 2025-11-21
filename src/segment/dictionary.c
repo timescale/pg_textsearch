@@ -51,6 +51,13 @@ tp_build_dictionary(TpLocalIndexState *state, uint32 *num_terms)
 		elog(ERROR, "memtable not found in shared memory");
 	}
 
+	/* Check if memtable has been cleared (no string hash table) */
+	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+	{
+		*num_terms = 0;
+		return NULL;
+	}
+
 	/* Attach to string hash table */
 	string_table =
 			tp_string_table_attach(state->dsa, memtable->string_hash_handle);
@@ -113,6 +120,10 @@ void
 tp_free_dictionary(TermInfo *terms, uint32 num_terms)
 {
 	uint32 i;
+
+	/* Handle NULL terms array */
+	if (!terms)
+		return;
 
 	for (i = 0; i < num_terms; i++)
 	{
