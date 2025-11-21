@@ -1,7 +1,7 @@
 -- Test memory limit enforcement for pg_textsearch indexes
 -- Create extension if not exists
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Create test table
 DROP TABLE IF EXISTS memory_test CASCADE;
 NOTICE:  table "memory_test" does not exist, skipping
@@ -53,7 +53,7 @@ FROM memory_test
 WHERE content <@> to_bm25query('test', 'idx_memory_test') < -0.001
 ORDER BY content <@> to_bm25query('test', 'idx_memory_test')
 LIMIT 5;
- id |                  content                  
+ id |                  content
 ----+-------------------------------------------
   1 | This is a test document with some content
 (1 row)

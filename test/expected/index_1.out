@@ -1,7 +1,7 @@
 -- Test pg_textsearch index access method functionality
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Setup test table
@@ -29,10 +29,10 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=4.00, text_config='
 -- Verify indexes were created
 \d+ test_docs
                                                  Table "public.test_docs"
- Column  |  Type   | Collation | Nullable |                Default                | Storage  | Stats target | Description 
+ Column  |  Type   | Collation | Nullable |                Default                | Storage  | Stats target | Description
 ---------+---------+-----------+----------+---------------------------------------+----------+--------------+-------------
- id      | integer |           | not null | nextval('test_docs_id_seq'::regclass) | plain    |              | 
- content | text    |           |          |                                       | extended |              | 
+ id      | integer |           | not null | nextval('test_docs_id_seq'::regclass) | plain    |              |
+ content | text    |           |          |                                       | extended |              |
 Indexes:
     "test_docs_pkey" PRIMARY KEY, btree (id)
     "docs_english_idx" bm25 (content) WITH (text_config=english)
@@ -44,13 +44,13 @@ Not-null constraints:
 INSERT INTO test_docs (content) VALUES ('new document for testing');
 -- Test that to_bm25vector works with our indexes
 SELECT to_bm25vector('test document content', 'docs_english_idx');
-                 to_bm25vector                  
+                 to_bm25vector
 ------------------------------------------------
  docs_english_idx:{content:1,document:1,test:1}
 (1 row)
 
 SELECT to_bm25vector('test document content', 'docs_simple_idx');
-                 to_bm25vector                 
+                 to_bm25vector
 -----------------------------------------------
  docs_simple_idx:{content:1,document:1,test:1}
 (1 row)
@@ -65,7 +65,7 @@ SELECT
 FROM pg_class i
 WHERE i.relname IN ('docs_english_idx', 'docs_simple_idx')
 ORDER BY i.relname;
-    index_name    | options_status 
+    index_name    | options_status
 ------------------+----------------
  docs_english_idx | has_options
  docs_simple_idx  | has_options
@@ -75,7 +75,7 @@ ORDER BY i.relname;
 SELECT
     'docs_english_idx' as index_name,
     to_bm25vector('postgresql database system', 'docs_english_idx') as vector;
-    index_name    |                       vector                       
+    index_name    |                       vector
 ------------------+----------------------------------------------------
  docs_english_idx | docs_english_idx:{databas:1,postgresql:1,system:1}
 (1 row)
@@ -83,7 +83,7 @@ SELECT
 SELECT
     'docs_simple_idx' as index_name,
     to_bm25vector('postgresql database system', 'docs_simple_idx') as vector;
-   index_name    |                       vector                       
+   index_name    |                       vector
 -----------------+----------------------------------------------------
  docs_simple_idx | docs_simple_idx:{database:1,postgresql:1,system:1}
 (1 row)

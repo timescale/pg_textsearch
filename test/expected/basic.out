@@ -1,60 +1,60 @@
 -- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Test bm25vector type exists
 SELECT pg_typeof('my_index:{database:2,system:1}'::bm25vector);
- pg_typeof  
+ pg_typeof
 ------------
  bm25vector
 (1 row)
 
 -- Test bm25vector input/output
 SELECT 'my_index:{database:2,system:1}'::bm25vector;
-           bm25vector           
+           bm25vector
 --------------------------------
  my_index:{database:2,system:1}
 (1 row)
 
 -- Test empty bm25vector
 SELECT 'my_index:{}'::bm25vector;
- bm25vector  
+ bm25vector
 -------------
  my_index:{}
 (1 row)
 
 -- Test bm25query type
 SELECT pg_typeof('search terms'::bm25query);
- pg_typeof 
+ pg_typeof
 -----------
  bm25query
 (1 row)
 
 -- Test bm25query input/output
 SELECT 'search terms'::bm25query;
-  bm25query   
+  bm25query
 --------------
  search terms
 (1 row)
 
 -- Test to_bm25query functions
 SELECT to_bm25query('hello world');
- to_bm25query 
+ to_bm25query
 --------------
  hello world
 (1 row)
 
 SELECT to_bm25query('test query', 'my_index');
-    to_bm25query     
+    to_bm25query
 ---------------------
  my_index:test query
 (1 row)
 
 -- Test bm25 access method exists
 SELECT amname FROM pg_am WHERE amname = 'bm25';
- amname 
+ amname
 --------
  bm25
 (1 row)
@@ -70,7 +70,7 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='
 SELECT indexrelid::regclass FROM pg_index
 WHERE indrelid = 'test_docs'::regclass
 AND indexrelid::regclass::text LIKE '%tapir%';
-   indexrelid   
+   indexrelid
 ----------------
  test_tapir_idx
 (1 row)
@@ -88,7 +88,7 @@ FROM test_docs
 ORDER BY score
 LIMIT 1;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.3863
-       content       |        score        
+       content       |        score
 ---------------------+---------------------
  hello world example | -1.3862943649291992
 (1 row)

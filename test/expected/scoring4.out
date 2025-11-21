@@ -2,7 +2,7 @@
 -- Generated BM25 test with 2 documents and 1 queries
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 \set ECHO none
 SET pg_textsearch.log_scores = true;
 SET enable_seqscan = off;
@@ -27,7 +27,7 @@ FROM scoring4_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_bulk_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1823
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1823
- id |      content      |  score  
+ id |      content      |  score
 ----+-------------------+---------
   1 | goodbye world     | -0.1823
   2 | goodbyes are hard | -0.1823
@@ -35,7 +35,7 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1823
 
 -- Validate BM25 scoring for 'goodbye'
 SELECT validate_bm25_scoring('scoring4_bulk', 'content', 'scoring4_bulk_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_bulk_valid;
- goodbye_bulk_valid 
+ goodbye_bulk_valid
 --------------------
  t
 (1 row)
@@ -61,7 +61,7 @@ FROM scoring4_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring4_incr_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1823
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1823
- id |      content      |  score  
+ id |      content      |  score
 ----+-------------------+---------
   1 | goodbye world     | -0.1823
   2 | goodbyes are hard | -0.1823
@@ -69,7 +69,7 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1823
 
 -- Validate BM25 scoring for 'goodbye' (incremental)
 SELECT validate_bm25_scoring('scoring4_incr', 'content', 'scoring4_incr_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_incr_valid;
- goodbye_incr_valid 
+ goodbye_incr_valid
 --------------------
  t
 (1 row)

@@ -1,7 +1,7 @@
 -- Test bm25vector type and operators functionality
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -29,52 +29,52 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=3.20, text_config='
 -- Test bm25vector I/O functions
 -- Test input/output with index name format
 SELECT 'docs_vector_idx:{hello:2,world:1}'::bm25vector;
-            bm25vector             
+            bm25vector
 -----------------------------------
  docs_vector_idx:{hello:2,world:1}
 (1 row)
 
 SELECT 'docs_vector_idx:{}'::bm25vector;
-     bm25vector     
+     bm25vector
 --------------------
  docs_vector_idx:{}
 (1 row)
 
 -- Test to_bm25vector function
 SELECT to_bm25vector('hello world', 'docs_vector_idx');
-           to_bm25vector           
+           to_bm25vector
 -----------------------------------
  docs_vector_idx:{hello:1,world:1}
 (1 row)
 
 SELECT to_bm25vector('postgresql search', 'docs_vector_idx');
-              to_bm25vector              
+              to_bm25vector
 -----------------------------------------
  docs_vector_idx:{postgresql:1,search:1}
 (1 row)
 
 -- Test to_bm25vector edge cases
 SELECT to_bm25vector('', 'docs_vector_idx');  -- empty text
-   to_bm25vector    
+   to_bm25vector
 --------------------
  docs_vector_idx:{}
 (1 row)
 
 SELECT to_bm25vector('hello, world! How are you? I''m fine.', 'docs_vector_idx');  -- punctuation
-                to_bm25vector                 
+                to_bm25vector
 ----------------------------------------------
  docs_vector_idx:{fine:1,hello:1,m:1,world:1}
 (1 row)
 
 SELECT to_bm25vector('Testing 123 with numbers and text', 'docs_vector_idx');  -- numbers
-                 to_bm25vector                  
+                 to_bm25vector
 ------------------------------------------------
  docs_vector_idx:{123:1,number:1,test:1,text:1}
 (1 row)
 
 -- Test that different queries create different vectors
 SELECT to_bm25vector('hello', 'docs_vector_idx') = to_bm25vector('world', 'docs_vector_idx');
- ?column? 
+ ?column?
 ----------
  f
 (1 row)
@@ -93,7 +93,7 @@ SELECT
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
 ORDER BY score;
-           content           |  score  
+           content           |  score
 -----------------------------+---------
  hello world example         | -2.8453
  the quick brown fox         |  0.0000
@@ -110,7 +110,7 @@ SELECT
 FROM test_docs
 ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
          (content <@> to_bm25query('search', 'docs_vector_idx'))::float8;
-           content           | postgresql_score | search_score 
+           content           | postgresql_score | search_score
 -----------------------------+------------------+--------------
  postgresql full text search |          -1.2577 |      -1.2577
  the quick brown fox         |           0.0000 |       0.0000
@@ -121,20 +121,20 @@ ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
 
 -- Test vector serialization/deserialization
 SELECT to_bm25vector('hello', 'docs_vector_idx')::text;
-       to_bm25vector       
+       to_bm25vector
 ---------------------------
  docs_vector_idx:{hello:1}
 (1 row)
 
 SELECT to_bm25vector('test word', 'docs_vector_idx')::text;
-          to_bm25vector          
+          to_bm25vector
 ---------------------------------
  docs_vector_idx:{test:1,word:1}
 (1 row)
 
 -- Test with longer text
 SELECT to_bm25vector('this is a longer test with multiple words and repetitions test test', 'docs_vector_idx');
-                        to_bm25vector                         
+                        to_bm25vector
 --------------------------------------------------------------
  docs_vector_idx:{longer:1,multipl:1,repetit:1,test:3,word:1}
 (1 row)
@@ -143,20 +143,20 @@ SELECT to_bm25vector('this is a longer test with multiple words and repetitions 
 SELECT
     to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('hello world', 'docs_vector_idx') as should_be_true,
     to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('world hello', 'docs_vector_idx') as depends_on_order;
- should_be_true | depends_on_order 
+ should_be_true | depends_on_order
 ----------------+------------------
  t              | t
 (1 row)
 
 -- Test direct bm25vector equality (including order-independence fix)
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello:1,world:2}'::bm25vector;
- ?column? 
+ ?column?
 ----------
  t
 (1 row)
 
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{world:2,hello:1}'::bm25vector;
- ?column? 
+ ?column?
 ----------
  t
 (1 row)
@@ -172,7 +172,7 @@ LIMIT 3;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.8453
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
- id |         content          | relevance 
+ id |         content          | relevance
 ----+--------------------------+-----------
   1 | the quick brown fox      |   -2.8453
   2 | jumped over the lazy dog |    0.0000
@@ -190,7 +190,7 @@ SELECT
     'running' as query,
     to_bm25vector('running runner runs', 'docs_vector_idx') as english_stemmed,
     to_bm25vector('running runner runs', 'docs_simple_idx') as simple_no_stem;
-  query  |         english_stemmed          |               simple_no_stem                
+  query  |         english_stemmed          |               simple_no_stem
 ---------+----------------------------------+---------------------------------------------
  running | docs_vector_idx:{run:2,runner:1} | docs_simple_idx:{runner:1,running:1,runs:1}
 (1 row)
@@ -225,7 +225,7 @@ ORDER BY o.id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.3863
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.2577
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
- id | order_by_score | standalone_score | score_consistency 
+ id | order_by_score | standalone_score | score_consistency
 ----+----------------+------------------+-------------------
   1 |      -1.386294 |        -1.386294 | ✓ SCORES MATCH
   2 |      -1.257669 |        -1.257669 | ✓ SCORES MATCH

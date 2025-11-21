@@ -1,7 +1,7 @@
 -- Test behavior when using a dropped index name in queries
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Create test table
 CREATE TABLE dropped_idx_test (
     id SERIAL PRIMARY KEY,
@@ -26,7 +26,7 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=3.00, text_config='
 SELECT COUNT(*) AS with_index
 FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
- with_index 
+ with_index
 ------------
           5
 (1 row)

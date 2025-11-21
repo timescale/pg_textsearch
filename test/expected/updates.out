@@ -2,7 +2,7 @@
 -- This test reproduces the NULL index_state crash reported in production
 -- Install the extension if not already installed
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.4: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
 -- Test basic UPDATE operations
 CREATE TABLE update_test (
     id SERIAL PRIMARY KEY,
@@ -32,7 +32,7 @@ SET content = 'PostgreSQL is an advanced relational database',
     meta = meta || '{"last_updated": "2025-01-01", "version": 2}'::jsonb
 WHERE id = 2
 RETURNING id, content;
- id |                    content                    
+ id |                    content
 ----+-----------------------------------------------
   2 | PostgreSQL is an advanced relational database
 (1 row)
@@ -48,7 +48,7 @@ SET
     meta = meta || '{"last_updated": "2025-01-15", "num_updates": 3}'::jsonb
 WHERE meta @> '{"type": "search"}'::jsonb
 RETURNING id;
- id 
+ id
 ----
   3
 (1 row)
@@ -73,7 +73,7 @@ WHERE id = 2;
 SELECT id, substring(content, 1, 50) as content_preview, meta->>'type' as type
 FROM update_test
 ORDER BY id;
- id |                  content_preview                   |   type   
+ id |                  content_preview                   |   type
 ----+----------------------------------------------------+----------
   1 | Previously NULL content now has text               | test
   2 | Content from subquery for id 2                     | database
@@ -84,7 +84,7 @@ ORDER BY id;
 BEGIN;
 UPDATE update_test SET content = 'Transaction test' WHERE id = 1;
 SELECT id, substring(content, 1, 30) as preview FROM update_test WHERE id = 1;
- id |     preview      
+ id |     preview
 ----+------------------
   1 | Transaction test
 (1 row)
@@ -92,7 +92,7 @@ SELECT id, substring(content, 1, 30) as preview FROM update_test WHERE id = 1;
 ROLLBACK;
 -- Verify content was not changed
 SELECT id, substring(content, 1, 30) as preview FROM update_test WHERE id = 1;
- id |            preview             
+ id |            preview
 ----+--------------------------------
   1 | Previously NULL content now ha
 (1 row)
@@ -103,7 +103,7 @@ UPDATE update_test SET content = 'Committed transaction update' WHERE id = 1;
 COMMIT;
 -- Verify content was changed
 SELECT id, substring(content, 1, 30) as preview FROM update_test WHERE id = 1;
- id |           preview            
+ id |           preview
 ----+------------------------------
   1 | Committed transaction update
 (1 row)
