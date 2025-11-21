@@ -66,6 +66,14 @@ tp_build_dictionary(TpLocalIndexState *state, uint32 *num_terms)
 		elog(ERROR, "failed to attach to string table");
 	}
 
+	/* Check if the table is empty (memtable was cleared) */
+	if (memtable->total_terms == 0)
+	{
+		dshash_detach(string_table);
+		*num_terms = 0;
+		return NULL;
+	}
+
 	/* Allocate initial array */
 	terms = palloc(sizeof(TermInfo) * capacity);
 
