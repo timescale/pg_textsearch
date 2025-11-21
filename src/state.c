@@ -805,9 +805,8 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		 * exclusive from the start.
 		 */
 		elog(WARNING,
-			 "Upgrading index lock from shared to exclusive for index %u - "
-			 "potential deadlock risk",
-			 local_state->shared->index_oid);
+			 "Upgrading index lock from shared to exclusive - "
+			 "potential deadlock risk");
 
 		LWLockRelease(&local_state->shared->lock);
 		local_state->lock_held = false;
