@@ -17,14 +17,17 @@ INSERT INTO lock_upgrade_test (content) VALUES
 CREATE INDEX lock_upgrade_idx ON lock_upgrade_test USING bm25(content)
     WITH (text_config='english', k1=1.2, b=0.75);
 
+-- Force index scan (small tables default to seq scan)
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+
 -- Test: Single transaction that first reads (shared lock) then writes (exclusive lock)
 -- This should trigger the lock upgrade path in tp_acquire_index_lock
 BEGIN;
 
--- First operation: SELECT acquires shared lock
+-- First operation: SELECT acquires shared lock via index scan
 SELECT id, content
 FROM lock_upgrade_test
-WHERE content <@> to_bm25query('database', 'lock_upgrade_idx') < -0.001
 ORDER BY content <@> to_bm25query('database', 'lock_upgrade_idx')
 LIMIT 5;
 
