@@ -932,8 +932,12 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
-	/* Write dictionary entries with correct posting offsets */
-	header.entries_offset = writer.current_offset;
+	/* Calculate where postings will start */
+	header.entries_offset  = writer.current_offset;
+	header.postings_offset = writer.current_offset +
+							 (num_terms * sizeof(TpDictEntry));
+
+	/* Write dictionary entries with absolute posting offsets */
 	for (i = 0; i < num_terms; i++)
 	{
 		TpDictEntry	   entry;
@@ -946,8 +950,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					dsa_get_address(state->dsa, terms[i].posting_list_dp);
 		}
 
-		/* Fill in dictionary entry with correct offset */
-		entry.posting_offset = posting_offsets[i];
+		/* Fill in dictionary entry with ABSOLUTE offset */
+		entry.posting_offset = header.postings_offset + posting_offsets[i];
 		entry.posting_count	 = posting_list ? posting_list->doc_count : 0;
 		entry.doc_freq		 = posting_list ? posting_list->doc_freq : 0;
 
@@ -958,10 +962,12 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntry));
 	}
 
+	/* Verify we're at the expected position */
+	Assert(writer.current_offset == header.postings_offset);
+
 	pfree(posting_offsets);
 
 	/* Write posting lists */
-	header.postings_offset = writer.current_offset;
 	write_segment_postings(state, &writer, terms, num_terms);
 
 	/* Write document lengths */
@@ -1314,6 +1320,70 @@ tp_debug_dump_segment_internal(
 				 term_text,
 				 dict_entry.doc_freq,
 				 dict_entry.posting_count);
+
+			/* Read and display posting list for this term */
+			if (dict_entry.posting_count > 0 &&
+				i < 10) /* Show postings for first 10 terms */
+			{
+				uint32			  j;
+				TpSegmentPosting *postings;
+				StringInfoData	  posting_info;
+
+				/* Validate offset is within bounds */
+				if (dict_entry.posting_offset < header.postings_offset ||
+					dict_entry.posting_offset >= header.doc_lengths_offset)
+				{
+					elog(INFO,
+						 "      WARNING: Invalid posting offset %u (expected "
+						 "between %u and %u)",
+						 dict_entry.posting_offset,
+						 header.postings_offset,
+						 header.doc_lengths_offset);
+					continue;
+				}
+
+				postings = palloc(
+						sizeof(TpSegmentPosting) * dict_entry.posting_count);
+
+				/* Read the posting list from the segment */
+				tp_segment_read(
+						reader,
+						dict_entry.posting_offset,
+						postings,
+						sizeof(TpSegmentPosting) * dict_entry.posting_count);
+
+				/* Build a string with all postings */
+				initStringInfo(&posting_info);
+				appendStringInfo(&posting_info, "      Postings: ");
+
+				for (j = 0; j < dict_entry.posting_count && j < 20;
+					 j++) /* Limit to 20 postings per term */
+				{
+					if (j > 0)
+						appendStringInfo(&posting_info, ", ");
+
+					/* Format: (block,offset):freq */
+					appendStringInfo(
+							&posting_info,
+							"(%u,%u):%u",
+							ItemPointerGetBlockNumberNoCheck(
+									&postings[j].ctid),
+							ItemPointerGetOffsetNumberNoCheck(
+									&postings[j].ctid),
+							postings[j].frequency);
+				}
+
+				if (dict_entry.posting_count > 20)
+					appendStringInfo(
+							&posting_info,
+							" ... +%u more",
+							dict_entry.posting_count - 20);
+
+				elog(INFO, "%s", posting_info.data);
+
+				pfree(posting_info.data);
+				pfree(postings);
+			}
 
 			pfree(term_text);
 		}
