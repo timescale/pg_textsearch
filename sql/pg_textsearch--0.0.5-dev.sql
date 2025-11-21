@@ -160,3 +160,9 @@ BEGIN
     RAISE INFO 'pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.';
 END
 $$;
+
+-- Debug function to force segment write for testing
+CREATE OR REPLACE FUNCTION bm25_debug_spill_index(index_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'tp_spill_memtable'
+LANGUAGE C VOLATILE STRICT;

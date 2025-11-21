@@ -40,6 +40,7 @@
 #include "metapage.h"
 #include "operator.h"
 #include "query.h"
+#include "segment/segment.h"
 #include "vector.h"
 
 /* Local helper functions */
@@ -2224,6 +2225,73 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		pfree(metap);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+/*
+ * tp_spill_memtable - Force memtable flush to disk segment for testing
+ *
+ * This function allows manual triggering of segment writes for testing
+ * and verification purposes.
+ */
+PG_FUNCTION_INFO_V1(tp_spill_memtable);
+
+Datum
+tp_spill_memtable(PG_FUNCTION_ARGS)
+{
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name	   = text_to_cstring(index_name_text);
+	Oid				   index_oid;
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	BlockNumber		   segment_root;
+	StringInfoData	   result;
+
+	/* Look up the index OID */
+	index_oid =
+			get_relname_relid(index_name, get_namespace_oid("public", false));
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" does not exist", index_name)));
+
+	/* Open the index */
+	index_rel = index_open(index_oid, RowExclusiveLock);
+
+	/* Get index state */
+	index_state = tp_get_local_index_state(RelationGetRelid(index_rel));
+
+	/* Acquire exclusive lock for write operation */
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
+	/* Write the segment */
+	segment_root = tp_write_segment(index_state, index_rel);
+
+	/* Release lock */
+	tp_release_index_lock(index_state);
+
+	/* Build result message */
+	initStringInfo(&result);
+
+	if (segment_root != InvalidBlockNumber)
+	{
+		appendStringInfo(
+				&result,
+				"Successfully wrote segment at block %u\n",
+				segment_root);
+
+		/* Also show segment contents for verification */
+		tp_debug_dump_segment_internal(index_name, segment_root);
+	}
+	else
+	{
+		appendStringInfo(
+				&result, "No segment written (memtable may be empty)\n");
+	}
+
+	/* Close the index */
+	index_close(index_rel, RowExclusiveLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
