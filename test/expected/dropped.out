@@ -26,7 +26,7 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=3.00, text_config='
 SELECT COUNT(*) AS with_index
 FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
- with_index
+ with_index 
 ------------
           5
 (1 row)

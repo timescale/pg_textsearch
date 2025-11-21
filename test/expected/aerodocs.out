@@ -72,7 +72,7 @@ LIMIT 3;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.0424
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- doc_id |                        title_preview                         |  score
+ doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       1 | experimental investigation of the aerodynamics of a wing in  | -2.0424
       5 | one-dimensional transient heat conduction into a double-laye | -1.8948
@@ -81,7 +81,7 @@ NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 
 -- Validate single-term BM25 scoring
 SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir_idx', 'aerodynamic', 'english', 1.2, 0.75) as aerodynamic_valid;
- aerodynamic_valid
+ aerodynamic_valid 
 -------------------
  t
 (1 row)
@@ -101,7 +101,7 @@ NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.8948
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.6700
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6668
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.6595
- doc_id |                        title_preview                         |  score
+ doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       1 | experimental investigation of the aerodynamics of a wing in  | -2.4269
       5 | one-dimensional transient heat conduction into a double-laye | -1.8948
@@ -125,7 +125,7 @@ NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-2.4678
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.9987
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.9264
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8852
- doc_id |                        title_preview                         |  score
+ doc_id |                        title_preview                         |  score  
 --------+--------------------------------------------------------------+---------
       9 | transition studies and skin friction measurements on an insu | -2.8603
       7 | the effect of controlled three-dimensional roughness on boun | -2.4678
@@ -163,18 +163,18 @@ NOTICE:  BM25 index scan: tid=(1,1), BM25_score=-0.5170
 NOTICE:  BM25 index scan: tid=(1,3), BM25_score=-0.4662
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.4424
 NOTICE:  BM25 index scan: tid=(1,2), BM25_score=0.0000
- doc_id | pgts_rank |  score  |                   title_preview
+ doc_id | pgts_rank |  score  |                   title_preview                    
 --------+-----------+---------+----------------------------------------------------
      10 |         1 | -2.6263 | the theory of the impact tube at low pressure .
-      1 |         2 | -2.4269 | experimental investigation of the aerodynamics of
+      1 |         2 | -2.4269 | experimental investigation of the aerodynamics of 
       5 |         3 | -1.8948 | one-dimensional transient heat conduction into a d
       3 |         4 | -0.6700 | the boundary layer in simple shear flow past a fla
       2 |         5 | -0.6668 | simple shear flow past a flat plate in an incompre
       4 |         6 | -0.6595 | approximate solutions of the incompressible lamina
       7 |         7 | -0.5170 | the effect of controlled three-dimensional roughne
-      9 |         8 | -0.4662 | transition studies and skin friction measurements
+      9 |         8 | -0.4662 | transition studies and skin friction measurements 
       6 |         9 | -0.4424 | one-dimensional transient heat flow in a multilaye
-      8 |        10 |  0.0000 | measurements of the effect of two-dimensional and
+      8 |        10 |  0.0000 | measurements of the effect of two-dimensional and 
 (10 rows)
 
 -- Test 4: Performance test with multiple queries
@@ -190,7 +190,7 @@ CROSS JOIN aerodocs_documents d
 WHERE q.query_id <= 5  -- Test first 5 queries for performance
 GROUP BY q.query_id, q.query_text
 ORDER BY q.query_id;
- query_id |        query_preview         | total_docs | matching_docs
+ query_id |        query_preview         | total_docs | matching_docs 
 ----------+------------------------------+------------+---------------
         1 | aerodynamic flow analysis... |         10 |             9
         2 | boundary layer turbulent...  |         10 |             9
@@ -206,7 +206,7 @@ SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', '
 FROM aerodocs_documents
 ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC
 LIMIT 10;
-                                          QUERY PLAN
+                                          QUERY PLAN                                           
 -----------------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using cranfield_tapir_idx on aerodocs_documents

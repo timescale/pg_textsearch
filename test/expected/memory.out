@@ -53,7 +53,7 @@ FROM memory_test
 WHERE content <@> to_bm25query('test', 'idx_memory_test') < -0.001
 ORDER BY content <@> to_bm25query('test', 'idx_memory_test')
 LIMIT 5;
- id |                  content
+ id |                  content                  
 ----+-------------------------------------------
   1 | This is a test document with some content
 (1 row)

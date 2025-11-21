@@ -50,7 +50,7 @@ NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
- id |                                   content_preview                                   |  score
+ id |                                   content_preview                                   |  score  
 ----+-------------------------------------------------------------------------------------+---------
   1 | Visit our website at https://www.example-company.com/products/database-solutions... | -2.2147
   2 | API endpoint: https://api.search-service.example.org/v2/documents/search/bm25?qu... |  0.0000
@@ -78,7 +78,7 @@ NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
- id |  category  |  score
+ id |  category  |  score  
 ----+------------+---------
   6 | config     | -3.4064
   1 | web        |  0.0000
@@ -111,7 +111,7 @@ NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
- id |                         content_preview                         |  score
+ id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
   5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.9159
   4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -4.4319
@@ -127,14 +127,14 @@ NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
 
 -- Test 4: Test vectorization of very long URLs
 SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
-                                                                                                                                                                          to_bm25vector
+                                                                                                                                                                          to_bm25vector                                                                                                                                                                          
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  long_strings_idx:{/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1,www.very-long-domain-name-for-testing-url-tokenization.example.com:1,www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3:1}
 (1 row)
 
 -- Test 5: Test extremely long single term handling
 SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
-                                                         to_bm25vector
+                                                         to_bm25vector                                                         
 -------------------------------------------------------------------------------------------------------------------------------
  long_strings_idx:{supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarian:1}
 (1 row)
@@ -157,7 +157,7 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
- id |  score
+ id |  score  
 ----+---------
   8 | -1.6423
  10 | -1.3640
@@ -192,7 +192,7 @@ NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
- id |  category  | multi_term_score
+ id |  category  | multi_term_score 
 ----+------------+------------------
   6 | config     |          -4.3853
   8 | mixed      |          -0.8648
@@ -210,7 +210,7 @@ NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
 SELECT
     'URL components' as test_type,
     to_bm25vector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
-   test_type    |                                     url_vector
+   test_type    |                                     url_vector                                      
 ----------------+-------------------------------------------------------------------------------------
  URL components | long_strings_idx:{/path?param=value:1,example.com:1,example.com/path?param=value:1}
 (1 row)
@@ -240,7 +240,7 @@ NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
- id |                        preview                        |  score
+ id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
  11 | This document contains a ridiculously long compoun... | -5.5076
   3 | Documentation available at https://docs.postgresql... | -1.5699
@@ -262,7 +262,7 @@ SELECT
     COUNT(CASE WHEN LENGTH(content) > 200 THEN 1 END) as long_documents,
     COUNT(CASE WHEN LENGTH(content) > 500 THEN 1 END) as very_long_documents
 FROM long_string_docs;
- total_documents |  avg_content_length  | max_content_length | long_documents | very_long_documents
+ total_documents |  avg_content_length  | max_content_length | long_documents | very_long_documents 
 -----------------+----------------------+--------------------+----------------+---------------------
               11 | 179.7272727272727273 |                268 |              4 |                   0
 (1 row)
@@ -291,7 +291,7 @@ FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
     AND content <@> to_bm25query('term allocation', 'long_strings_idx') < 0
 ORDER BY content_length;
- id |     category     | content_length |     allocation_type     |  score
+ id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
  12 | stack_test       |            612 | Stack allocation likely | -1.7085
  13 | heap_test        |           1111 | Heap allocation likely  | -1.7085
@@ -309,7 +309,7 @@ SELECT
 FROM long_string_docs
 WHERE category = 'extreme'
     AND content <@> to_bm25query('extreme testing', 'long_strings_idx') < 0;
-      test_name      | total_length |  score
+      test_name      | total_length |  score  
 ---------------------+--------------+---------
  Extreme length test |        23614 | -4.2077
 (1 row)

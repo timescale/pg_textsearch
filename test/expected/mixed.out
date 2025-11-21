@@ -42,7 +42,7 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=3.80, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
- id |                content                 |  score
+ id |                content                 |  score  
 ----+----------------------------------------+---------
   2 | concurrent programming patterns        | -1.5169
   5 | database indexing strategies           | -0.9580
@@ -64,7 +64,7 @@ SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'conc
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 5;
- id |                           content                           |  score
+ id |                           content                           |  score  
 ----+-------------------------------------------------------------+---------
   8 | database concurrent processing improves performance         | -1.1341
   6 | database systems require concurrent access control          | -1.0433
@@ -96,7 +96,7 @@ UNION ALL
 SELECT 'Table 2' as source, id, content
 FROM concurrent_test_docs2
 ORDER BY source, id;
- source  | id |                           content
+ source  | id |                           content                           
 ---------+----+-------------------------------------------------------------
  Table 1 |  1 | database query optimization techniques
  Table 1 |  2 | concurrent programming patterns
@@ -125,7 +125,7 @@ FROM generate_series(1, 50) i;
 -- Verify search still works with larger dataset
 SELECT COUNT(*) as total_matches
 FROM concurrent_test_docs;
- total_matches
+ total_matches 
 ---------------
             58
 (1 row)
@@ -136,7 +136,7 @@ SELECT id, substring(content, 1, 50) || '...' as content_preview,
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 8;
- id |                    content_preview                    |  score
+ id |                    content_preview                    |  score  
 ----+-------------------------------------------------------+---------
   8 | database concurrent processing improves performanc... | -0.1628
   7 | concurrent database operations need careful synchr... | -0.1531
@@ -160,7 +160,7 @@ BEGIN;
     FROM concurrent_test_docs
     ORDER BY score
     LIMIT 3;
- id |                content                 |  score
+ id |                content                 |  score  
 ----+----------------------------------------+---------
  59 | new concurrent database research paper | -4.3363
   5 | database indexing strategies           | -0.0796
@@ -173,7 +173,7 @@ SELECT id, content, ROUND((content <@> to_bm25query('research database', 'concur
 FROM concurrent_test_docs
 ORDER BY score
 LIMIT 3;
- id |                content                 |  score
+ id |                content                 |  score  
 ----+----------------------------------------+---------
  59 | new concurrent database research paper | -4.3363
   5 | database indexing strategies           | -0.0796
@@ -191,7 +191,7 @@ WHERE id IN (1, 2);
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score;
- id |                            content                             |  score
+ id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
   2 | updated database system with enhanced concurrent features      | -3.5477
   1 | updated database system with enhanced concurrent features      | -3.5477
@@ -260,7 +260,7 @@ Test 7: Delete operations
 -- Count before delete
 SELECT COUNT(*) as count_before_delete
 FROM concurrent_test_docs;
- count_before_delete
+ count_before_delete 
 ---------------------
                   59
 (1 row)
@@ -271,7 +271,7 @@ WHERE content LIKE 'test document number%' AND id % 5 = 0;
 -- Count after delete to verify cleanup
 SELECT COUNT(*) as count_after_delete
 FROM concurrent_test_docs;
- count_after_delete
+ count_after_delete 
 --------------------
                  49
 (1 row)
@@ -288,7 +288,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
 ORDER BY score, id;
- id |                            content                             |  score
+ id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
  60 | exact same terms for testing consistency                       | -3.8184
  61 | exact same terms for testing consistency                       | -3.8184
@@ -378,7 +378,7 @@ INSERT INTO multi_idx_test (content) VALUES
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
 ORDER BY english_score;
- id |            content             | english_score
+ id |            content             | english_score 
 ----+--------------------------------+---------------
   1 | hello world from the test      |       -1.1063
   5 | hello database world           |       -1.1063
@@ -391,7 +391,7 @@ ORDER BY english_score;
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
 ORDER BY simple_score;
- id |            content             | simple_score
+ id |            content             | simple_score 
 ----+--------------------------------+--------------
   5 | hello database world           |      -1.2393
   1 | hello world from the test      |      -1.0210
@@ -408,7 +408,7 @@ FROM pg_index i
 JOIN pg_class c ON c.oid = i.indrelid
 WHERE c.relname = 'multi_idx_test'
 ORDER BY index_name;
-     index_name      | index_size
+     index_name      | index_size 
 ---------------------+------------
  multi_idx_test_pkey | 16 kB
  multi_idx_english   | 16 kB
@@ -431,7 +431,7 @@ SELECT
     COUNT(*) as total_docs,
     COUNT(DISTINCT content) as unique_docs
 FROM concurrent_test_docs2;
-      table_name       | total_docs | unique_docs
+      table_name       | total_docs | unique_docs 
 -----------------------+------------+-------------
  concurrent_test_docs  |         52 |          50
  concurrent_test_docs2 |          5 |           5

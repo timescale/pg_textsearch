@@ -49,7 +49,7 @@ SELECT title, content, content <@> to_bm25query('database', 'limit_test_idx') as
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-                              QUERY PLAN
+                              QUERY PLAN                              
 ----------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
@@ -60,7 +60,7 @@ SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_i
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-         title         |                              content                               |  score
+         title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
  Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
  Database Architecture | database system architecture with storage and indexing strategies  | -0.9394
@@ -75,7 +75,7 @@ SELECT title, ROUND((content <@> to_bm25query('search', 'limit_test_idx'))::nume
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-       title       |  score
+       title       |  score  
 -------------------+---------
  Search Technology | -1.8610
 (1 row)
@@ -85,7 +85,7 @@ SELECT title, ROUND((content <@> to_bm25query('optimization', 'limit_test_idx'))
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-        title         |  score
+        title         |  score  
 ----------------------+---------
  Query Optimization   | -1.3915
  Database Performance | -1.3915
@@ -97,7 +97,7 @@ SELECT title, ROUND((content <@> to_bm25query('algorithm', 'limit_test_idx'))::n
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.3915
  Search Engines        | -1.3074
@@ -119,7 +119,7 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-                                             QUERY PLAN
+                                             QUERY PLAN                                             
 ----------------------------------------------------------------------------------------------------
  Limit
    ->  Sort
@@ -133,7 +133,7 @@ FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Database Theory       | -2.3309
  Database Architecture | -2.3309
@@ -151,7 +151,7 @@ SELECT title, ROUND((content <@> to_bm25query('performance', 'limit_test_idx')):
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
-         title         |  score
+         title         |  score  
 -----------------------+---------
  Algorithm Design      | -1.8610
  Information Retrieval |  0.0000
@@ -165,7 +165,7 @@ SELECT title, ROUND((content <@> to_bm25query('text', 'limit_test_idx'))::numeri
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-      title      |  score
+      title      |  score  
 -----------------+---------
  Text Processing | -1.7484
 (1 row)
@@ -199,7 +199,7 @@ NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
- has_results
+ has_results 
 -------------
  t
 (1 row)
@@ -211,7 +211,7 @@ SELECT * FROM (
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-     title      |  score
+     title      |  score  
 ----------------+---------
  Data Mining    | -2.0767
  Text Analytics | -2.0767
@@ -225,7 +225,7 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
 ) q1;
 NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
- query_name | results
+ query_name | results 
 ------------+---------
  Query 1    |       2
 (1 row)
@@ -243,7 +243,7 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
- query_name | results
+ query_name | results 
 ------------+---------
  Query 2    |       8
 (1 row)
@@ -257,7 +257,7 @@ NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
- query_name | results
+ query_name | results 
 ------------+---------
  Query 3    |       4
 (1 row)
@@ -271,7 +271,7 @@ SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-                             QUERY PLAN
+                             QUERY PLAN                             
 --------------------------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
@@ -295,7 +295,7 @@ FROM (
 ) subq;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- pushdown_safe_count
+ pushdown_safe_count 
 ---------------------
                    2
 (1 row)
@@ -311,7 +311,7 @@ FROM (
 ) subq;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
- pushdown_unsafe_count
+ pushdown_unsafe_count 
 -----------------------
                      1
 (1 row)
@@ -346,7 +346,7 @@ NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
- large_limit_has_results
+ large_limit_has_results 
 -------------------------
  t
 (1 row)
@@ -356,7 +356,7 @@ SELECT title, content <@> to_bm25query('zero_limit', 'limit_test_idx') as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;
- title | score
+ title | score 
 -------+-------
 (0 rows)
 

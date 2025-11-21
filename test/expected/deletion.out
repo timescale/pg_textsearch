@@ -28,7 +28,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |         content_preview
+ id |         content_preview          
 ----+----------------------------------
   3 | third document with test keyword
   5 | fifth document with test again
@@ -43,7 +43,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview
+ id |        content_preview         
 ----+--------------------------------
   5 | fifth document with test again
 (1 row)
@@ -56,7 +56,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview
+ id |        content_preview         
 ----+--------------------------------
   5 | fifth document with test again
 (1 row)
@@ -69,7 +69,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id | content_preview
+ id | content_preview 
 ----+-----------------
 (0 rows)
 
@@ -83,7 +83,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id |        content_preview
+ id |        content_preview         
 ----+--------------------------------
   6 | new document with test keyword
 (1 row)
@@ -96,7 +96,7 @@ FROM deletion_test
 WHERE content <@> to_bm25query('test', 'deletion_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'deletion_idx') DESC
 LIMIT 5;
- id | content_preview
+ id | content_preview 
 ----+-----------------
 (0 rows)
 

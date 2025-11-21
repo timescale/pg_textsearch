@@ -28,20 +28,20 @@ INSERT INTO manyterms_test (content) VALUES
 ('fortynine'), ('fifty'), ('fiftyone'), ('fiftytwo'), ('fiftythree'), ('fiftyfour'), ('fiftyfive'), ('fiftysix');
 -- Verify we can count all documents successfully (no errors from resize)
 SELECT COUNT(*) as total_docs FROM manyterms_test;
- total_docs
+ total_docs 
 ------------
          80
 (1 row)
 
 -- Test searching for specific terms works correctly after resize
 SELECT id, content FROM manyterms_test WHERE content = 'alpha' ORDER BY id LIMIT 1;
- id | content
+ id | content 
 ----+---------
   1 | alpha
 (1 row)
 
 SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT 1;
- id | content
+ id | content 
 ----+---------
  24 | omega
 (1 row)
@@ -52,7 +52,7 @@ FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score
 LIMIT 1;
- id | content |  score
+ id | content |  score  
 ----+---------+---------
  74 | fifty   | -3.9890
 (1 row)

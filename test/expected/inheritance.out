@@ -23,13 +23,13 @@ INSERT INTO child_docs2 (content) VALUES
     ('Indexes help improve query performance');
 -- Verify parent sees inherited data
 SELECT COUNT(*) as parent_count FROM parent_docs;
- parent_count
+ parent_count 
 --------------
             4
 (1 row)
 
 SELECT COUNT(*) as parent_only_count FROM ONLY parent_docs;
- parent_only_count
+ parent_only_count 
 -------------------
                  0
 (1 row)
@@ -48,7 +48,7 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
 -- Verify child index was created successfully with correct document count
 SELECT bm25_debug_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
- has_two_docs
+ has_two_docs 
 --------------
  t
 (1 row)
@@ -57,7 +57,7 @@ SELECT bm25_debug_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_t
 SELECT COUNT(*) as matching_docs
 FROM child_docs1
 WHERE content @@ to_tsquery('english', 'postgresql & inheritance');
- matching_docs
+ matching_docs 
 ---------------
              1
 (1 row)
@@ -93,7 +93,7 @@ SELECT indexrelid::regclass as index_name
 FROM pg_index
 WHERE indrelid = 'partition_2024'::regclass
   AND indexrelid::regclass::text LIKE '%content%';
-         index_name
+         index_name         
 ----------------------------
  partition_2024_content_idx
 (1 row)
@@ -112,7 +112,7 @@ INSERT INTO partition_2025 (content, created_at) VALUES
 SELECT COUNT(*) as num_partition_indexes
 FROM pg_index
 WHERE indrelid IN ('partition_2024'::regclass, 'partition_2025'::regclass);
- num_partition_indexes
+ num_partition_indexes 
 -----------------------
                      2
 (1 row)
@@ -135,7 +135,7 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=3.50, text_config='english' (k1=1.20, b=0.75)
 -- Verify regular index works
 SELECT bm25_debug_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
- has_two_docs
+ has_two_docs 
 --------------
  t
 (1 row)

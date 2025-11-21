@@ -28,7 +28,7 @@ SELECT split_part(
     split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_before;
- total_docs_before
+ total_docs_before 
 -------------------
  5
 (1 row)
@@ -42,7 +42,7 @@ SELECT split_part(
     split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_delete;
- total_docs_after_delete
+ total_docs_after_delete 
 -------------------------
  5
 (1 row)
@@ -55,7 +55,7 @@ SELECT split_part(
     split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_vacuum;
- total_docs_after_vacuum
+ total_docs_after_vacuum 
 -------------------------
  5
 (1 row)
@@ -66,7 +66,7 @@ FROM vacuum_test
 WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'vacuum_idx')
 LIMIT 5;
- id |    content_preview
+ id |    content_preview     
 ----+------------------------
   5 | document five has test
 (1 row)
@@ -87,7 +87,7 @@ SELECT split_part(
     split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_vacuum_full;
- total_docs_after_vacuum_full
+ total_docs_after_vacuum_full 
 ------------------------------
  1
 (1 row)
@@ -97,7 +97,7 @@ SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
 WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
- id |    content_preview
+ id |    content_preview     
 ----+------------------------
   5 | document five has test
 (1 row)

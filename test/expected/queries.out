@@ -39,7 +39,7 @@ SELECT title, content, content <@> 'articles_tapir_idx:database'::bm25query as s
 FROM articles
 ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
 LIMIT 5;
-                                QUERY PLAN
+                                QUERY PLAN                                
 --------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -55,7 +55,7 @@ NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.2651
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-             title             |                                               content                                               |  score
+             title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
  Database Optimization         | database indexing and query optimization strategies for improving performance in large datasets     | -1.3220
@@ -70,7 +70,7 @@ SELECT title, content, content <@> 'articles_tapir_idx:machine learning'::bm25qu
 FROM articles
 ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
 LIMIT 3;
-                                    QUERY PLAN
+                                    QUERY PLAN                                    
 ----------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -84,7 +84,7 @@ LIMIT 3;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-3.3220
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-3.3220
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-             title             |                                               content                                               |  score
+             title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -3.3220
  Document Classification       | text mining and document classification using machine learning and statistical methods              | -3.3220
@@ -98,7 +98,7 @@ FROM articles
 WHERE category = 'technology'
 ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
 LIMIT 10;
-                                    QUERY PLAN
+                                    QUERY PLAN                                     
 -----------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -121,7 +121,7 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
-             title             |                                               content                                               |  score
+             title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -2.3908
  Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
@@ -141,7 +141,7 @@ WHERE a1.id = 3  -- "Text Search Algorithms" article
   AND a2.id != a1.id
 ORDER BY a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx')
 LIMIT 5;
-           title           |                                               content                                               |  score
+           title           |                                               content                                               |  score  
 ---------------------------+-----------------------------------------------------------------------------------------------------+---------
  Search Engine Design      | search relevance and ranking algorithms with focus on user experience and result quality            | -4.3908
  Information Retrieval     | information retrieval and search engines using vector space models and term frequency analysis      | -4.0286
@@ -156,7 +156,7 @@ SELECT title, content, content <@> 'articles_tapir_idx:database optimization'::b
 FROM articles
 ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
 LIMIT 10;
-                                      QUERY PLAN
+                                      QUERY PLAN                                       
 ---------------------------------------------------------------------------------------
  Limit
    ->  Index Scan using articles_tapir_idx on articles
@@ -177,7 +177,7 @@ NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
 NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
-             title             |                                               content                                               |  score
+             title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Database Optimization         | database indexing and query optimization strategies for improving performance in large datasets     | -3.4977
  Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
@@ -203,7 +203,7 @@ SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapi
 FROM search_terms s
 CROSS JOIN articles a
 ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
-                                                                                                                        QUERY PLAN
+                                                                                                                        QUERY PLAN                                                                                                                         
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Sort
    Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text))), a.title
@@ -243,7 +243,7 @@ JOIN standalone_results s ON o.id = s.id
 ORDER BY o.id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-4.6440
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-3.3220
- id |             title             | order_by_score | standalone_score | consistency_check
+ id |             title             | order_by_score | standalone_score | consistency_check 
 ----+-------------------------------+----------------+------------------+-------------------
   2 | Machine Learning Fundamentals |      -4.644046 |        -4.644046 | ✓ CONSISTENT
   7 | Document Classification       |      -3.322026 |        -3.322026 | ✓ CONSISTENT
