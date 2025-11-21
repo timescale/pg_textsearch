@@ -1516,6 +1516,9 @@ tp_execute_scoring_query(IndexScanDesc scan)
 			return false;
 		}
 
+		/* Acquire shared lock for reading the memtable */
+		tp_acquire_index_lock(index_state, LW_SHARED);
+
 		/* Use the original query vector stored during rescan, or create one
 		 * from text */
 		query_vector = so->query_vector;
