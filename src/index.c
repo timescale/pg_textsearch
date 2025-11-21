@@ -2230,10 +2230,11 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * tp_spill_memtable - Force memtable flush to disk segment for testing
+ * tp_spill_memtable - Force memtable flush to disk segment
  *
- * This function allows manual triggering of segment writes for testing
- * and verification purposes.
+ * This function allows manual triggering of segment writes.
+ * Returns the block number of the written segment, or NULL if memtable was
+ * empty.
  */
 PG_FUNCTION_INFO_V1(tp_spill_memtable);
 
@@ -2246,7 +2247,6 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	Relation		   index_rel;
 	TpLocalIndexState *index_state;
 	BlockNumber		   segment_root;
-	StringInfoData	   result;
 
 	/* Look up the index OID */
 	index_oid =
@@ -2277,26 +2277,44 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Release lock */
 	tp_release_index_lock(index_state);
 
-	/* Build result message */
-	initStringInfo(&result);
-
-	if (segment_root != InvalidBlockNumber)
-	{
-		appendStringInfo(
-				&result,
-				"Successfully wrote segment at block %u\n",
-				segment_root);
-
-		/* Also show segment contents for verification */
-		tp_debug_dump_segment_internal(index_name, segment_root);
-	}
-	else
-	{
-		appendStringInfo(&result, "No segment written (memtable is empty)\n");
-	}
-
 	/* Close the index */
 	index_close(index_rel, RowExclusiveLock);
 
-	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+	/* Return block number or NULL */
+	if (segment_root != InvalidBlockNumber)
+	{
+		PG_RETURN_INT32(segment_root);
+	}
+	else
+	{
+		PG_RETURN_NULL();
+	}
+}
+
+/*
+ * tp_debug_dump_segment - Dump segment contents for debugging
+ *
+ * This function shows the internal structure of a segment at the specified
+ * block.
+ */
+PG_FUNCTION_INFO_V1(tp_debug_dump_segment);
+
+Datum
+tp_debug_dump_segment(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	char *index_name	  = text_to_cstring(index_name_text);
+	int32 segment_block	  = PG_GETARG_INT32(1);
+
+	/* Validate block number */
+	if (segment_block < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid segment block number: %d", segment_block)));
+
+	/* Call internal dump function */
+	tp_debug_dump_segment_internal(index_name, (BlockNumber)segment_block);
+
+	PG_RETURN_TEXT_P(
+			cstring_to_text("Segment dump complete (check server log)"));
 }
