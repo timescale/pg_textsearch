@@ -880,3 +880,53 @@ tp_release_all_index_locks(void)
 		}
 	}
 }
+
+/*
+ * Clear the memtable after segment spill
+ * This resets the string hash table and document lengths while preserving
+ * corpus statistics and configuration.
+ */
+void
+tp_clear_memtable(TpLocalIndexState *local_state)
+{
+	TpMemtable	 *memtable;
+	dshash_table *string_table;
+	dshash_table *doc_lengths_table;
+
+	if (!local_state || !local_state->shared)
+		return;
+
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		return;
+
+	/* Destroy existing string hash table if present */
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	{
+		string_table = tp_string_table_attach(
+				local_state->dsa, memtable->string_hash_handle);
+		if (string_table)
+		{
+			dshash_destroy(string_table);
+			memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+			memtable->total_terms		 = 0;
+		}
+	}
+
+	/* Destroy existing document lengths table if present */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		doc_lengths_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+		if (doc_lengths_table)
+		{
+			dshash_destroy(doc_lengths_table);
+			memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+		}
+	}
+
+	/* Reset memory usage tracking */
+	local_state->shared->memory_usage.memory_used = 0;
+	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
+	 * as they represent the overall index state, not just the memtable */
+}

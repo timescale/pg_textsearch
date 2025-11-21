@@ -2268,6 +2268,12 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Write the segment */
 	segment_root = tp_write_segment(index_state, index_rel);
 
+	/* Clear the memtable after successful spilling */
+	if (segment_root != InvalidBlockNumber)
+	{
+		tp_clear_memtable(index_state);
+	}
+
 	/* Release lock */
 	tp_release_index_lock(index_state);
 

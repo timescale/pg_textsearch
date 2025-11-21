@@ -126,3 +126,6 @@ extern void
 tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
 extern void tp_release_index_lock(TpLocalIndexState *local_state);
 extern void tp_release_all_index_locks(void);
+
+/* Memtable management */
+extern void tp_clear_memtable(TpLocalIndexState *local_state);
