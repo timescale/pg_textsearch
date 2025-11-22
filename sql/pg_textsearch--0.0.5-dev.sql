@@ -149,7 +149,12 @@ DEFAULT FOR TYPE text USING bm25 AS
     OPERATOR    1   <@> (text, bm25query) FOR ORDER BY float_ops,
     FUNCTION    8   bm25_distance(text, bm25query);
 
--- Debug function to dump index contents
+-- Debug function to dump index contents (memtable and segments)
+CREATE FUNCTION bm25_debug_dump(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_debug_dump'
+    LANGUAGE C STRICT STABLE;
+
+-- Backward compatibility alias
 CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
     LANGUAGE C STRICT STABLE;
@@ -165,10 +170,4 @@ $$;
 CREATE OR REPLACE FUNCTION bm25_spill_index(index_name text)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
-LANGUAGE C VOLATILE STRICT;
-
--- Debug function to dump segment contents
-CREATE OR REPLACE FUNCTION bm25_debug_dump_segment(index_name text, segment_block int4)
-RETURNS text
-AS 'MODULE_PATHNAME', 'tp_debug_dump_segment'
 LANGUAGE C VOLATILE STRICT;

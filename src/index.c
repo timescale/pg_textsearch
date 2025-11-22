@@ -1948,12 +1948,14 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
- * tp_debug_dump_index - Debug function to show internal index structure
+ * tp_debug_dump - Debug function to show internal index structure
+ * including both memtable and all segments
  */
-PG_FUNCTION_INFO_V1(tp_debug_dump_index);
+PG_FUNCTION_INFO_V1(tp_debug_dump);
+PG_FUNCTION_INFO_V1(tp_debug_dump_index); /* Backward compatibility */
 
 Datum
-tp_debug_dump_index(PG_FUNCTION_ARGS)
+tp_debug_dump(PG_FUNCTION_ARGS)
 {
 	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
 	char			  *index_name;
@@ -2220,6 +2222,42 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		appendStringInfo(&result, "  No recovery pages\n");
 	}
 
+	/* Dump all segments if any exist */
+	if (metap && metap->first_segment != InvalidBlockNumber)
+	{
+		appendStringInfo(&result, "\nSegments:\n");
+		BlockNumber current_segment = metap->first_segment;
+		int			segment_count	= 0;
+
+		while (current_segment != InvalidBlockNumber)
+		{
+			segment_count++;
+			appendStringInfo(
+					&result,
+					"  Segment #%d at block %u\n",
+					segment_count,
+					current_segment);
+
+			/* Dump this segment to the server log */
+			tp_debug_dump_segment_internal(index_name, current_segment);
+
+			/* For now, only one segment chain is supported */
+			/* Future versions will read next_segment from segment header */
+			current_segment = InvalidBlockNumber;
+		}
+
+		if (segment_count > 0)
+		{
+			appendStringInfo(
+					&result,
+					"  (Detailed segment contents written to server log)\n");
+		}
+	}
+	else
+	{
+		appendStringInfo(&result, "\nNo segments written yet\n");
+	}
+
 	/* Cleanup */
 	if (metap)
 		pfree(metap);
@@ -2227,6 +2265,13 @@ tp_debug_dump_index(PG_FUNCTION_ARGS)
 		index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+/* Backward compatibility wrapper */
+Datum
+tp_debug_dump_index(PG_FUNCTION_ARGS)
+{
+	return tp_debug_dump(fcinfo);
 }
 
 /*
@@ -2271,7 +2316,25 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Clear the memtable after successful spilling */
 	if (segment_root != InvalidBlockNumber)
 	{
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage metap;
+
 		tp_clear_memtable(index_state);
+
+		/* Update metapage with first segment if not already set */
+		metabuf = ReadBuffer(index_rel, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		if (metap->first_segment == InvalidBlockNumber)
+		{
+			metap->first_segment = segment_root;
+			MarkBufferDirty(metabuf);
+		}
+
+		UnlockReleaseBuffer(metabuf);
 	}
 
 	/* Release lock */
@@ -2289,32 +2352,4 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		PG_RETURN_NULL();
 	}
-}
-
-/*
- * tp_debug_dump_segment - Dump segment contents for debugging
- *
- * This function shows the internal structure of a segment at the specified
- * block.
- */
-PG_FUNCTION_INFO_V1(tp_debug_dump_segment);
-
-Datum
-tp_debug_dump_segment(PG_FUNCTION_ARGS)
-{
-	text *index_name_text = PG_GETARG_TEXT_PP(0);
-	char *index_name	  = text_to_cstring(index_name_text);
-	int32 segment_block	  = PG_GETARG_INT32(1);
-
-	/* Validate block number */
-	if (segment_block < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid segment block number: %d", segment_block)));
-
-	/* Call internal dump function */
-	tp_debug_dump_segment_internal(index_name, (BlockNumber)segment_block);
-
-	PG_RETURN_TEXT_P(
-			cstring_to_text("Segment dump complete (check server log)"));
 }

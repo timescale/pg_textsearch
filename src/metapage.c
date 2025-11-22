@@ -59,6 +59,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->total_len		= 0;
 	metap->root_blkno		= InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
+	metap->first_segment	= InvalidBlockNumber;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
@@ -111,6 +112,18 @@ tp_get_metapage(Relation index)
 			 RelationGetRelationName(index),
 			 TP_MAGIC,
 			 metap->magic);
+	}
+
+	/* Check version compatibility */
+	if (metap->version != TP_VERSION)
+	{
+		UnlockReleaseBuffer(buf);
+		elog(ERROR,
+			 "Incompatible index version for \"%s\": found version %d, "
+			 "expected %d. Please drop and recreate the index.",
+			 RelationGetRelationName(index),
+			 metap->version,
+			 TP_VERSION);
 	}
 
 	/* Copy metapage data to avoid buffer issues */
