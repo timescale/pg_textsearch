@@ -926,7 +926,14 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Finish with the writer BEFORE updating the header */
 	tp_segment_writer_finish(&writer);
 
-	/* Force a checkpoint to ensure data is on disk */
+	/*
+	 * Force dirty buffers to disk. This ensures crash safety for single-server
+	 * deployments but does not provide WAL logging for streaming replication
+	 * or point-in-time recovery (PITR).
+	 *
+	 * TODO: Add proper WAL logging for replication support. This would require
+	 * registering a resource manager and implementing redo functions.
+	 */
 	FlushRelationBuffers(index);
 
 	/* Now update the header on disk */
