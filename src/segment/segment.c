@@ -170,12 +170,6 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	header			  = reader->header;
 	reader->num_pages = header->num_pages;
 
-	elog(DEBUG1, "tp_segment_open: Reading header from block %u", root_block);
-	elog(DEBUG1, "  magic = 0x%08X", header->magic);
-	elog(DEBUG1, "  num_pages = %u", header->num_pages);
-	elog(DEBUG1, "  page_index = %u", header->page_index);
-	elog(DEBUG1, "  data_size = %u", header->data_size);
-
 	/* Get page index location from header */
 	page_index_block = header->page_index;
 
@@ -762,7 +756,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	Buffer			 header_buf;
 	Page			 header_page;
 	TpSegmentHeader *existing_header;
-	TpSegmentHeader *updated_header;
 	uint32			*posting_offsets;
 	uint32			 current_offset;
 
@@ -778,21 +771,13 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		return InvalidBlockNumber;
 	}
 
-	elog(DEBUG1,
-		 "tp_write_segment: Starting segment write with %u terms",
-		 num_terms);
-
 	/* Initialize writer with incremental page allocation */
 	tp_segment_writer_init(&writer, index);
 
-	/* The first page is allocated in tp_segment_writer_init, so we can get it
-	 * now */
+	/* The first page is allocated in tp_segment_writer_init */
 	if (writer.pages_allocated > 0)
 	{
 		header_block = writer.pages[0];
-		elog(DEBUG1,
-			 "tp_write_segment: Writer initialized with header at block %u",
-			 header_block);
 	}
 	else
 	{
@@ -811,10 +796,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 	/* Dictionary immediately follows header */
 	header.dictionary_offset = sizeof(TpSegmentHeader);
-	elog(DEBUG1,
-		 "sizeof(TpSegmentHeader) = %lu, dictionary_offset = %u",
-		 (unsigned long)sizeof(TpSegmentHeader),
-		 header.dictionary_offset);
 
 	/* Get corpus statistics from metapage */
 	{
@@ -833,48 +814,12 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	}
 
 	/* Write header (will update with correct values later) */
-	elog(DEBUG1,
-		 "tp_write_segment: Writing initial header with dictionary_offset=%u",
-		 header.dictionary_offset);
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
 
-	/* Write dictionary section - already set in header */
-	elog(DEBUG1,
-		 "tp_write_segment: Setting dictionary_offset to %u",
-		 header.dictionary_offset);
+	/* Write dictionary section */
 	dict.num_terms = num_terms;
-	elog(DEBUG1,
-		 "Writing dictionary header with num_terms=%u at offset %u "
-		 "(buffer_page=%u, block=%u)",
-		 num_terms,
-		 writer.current_offset,
-		 writer.buffer_page,
-		 writer.buffer_page < writer.pages_allocated
-				 ? writer.pages[writer.buffer_page]
-				 : InvalidBlockNumber);
-
-	/* Debug: Check buffer before and after dictionary write */
-	{
-		uint32 *before_ptr = (uint32 *)(writer.buffer + writer.buffer_pos);
-		elog(DEBUG1,
-			 "Before dict write: buffer_pos=%u, value at buffer[%u]=%u",
-			 writer.buffer_pos,
-			 writer.buffer_pos,
-			 *before_ptr);
-	}
-
 	tp_segment_writer_write(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
-
-	{
-		/* Dictionary was just written, check what's in the buffer */
-		uint32 *dict_in_buffer = (uint32 *)(writer.buffer +
-											SizeOfPageHeaderData + 80);
-		elog(DEBUG1,
-			 "After dict write: dict num_terms in buffer at offset %lu = %u",
-			 (unsigned long)(SizeOfPageHeaderData + 80),
-			 *dict_in_buffer);
-	}
 
 	/* Allocate arrays for offsets */
 	string_offsets	= palloc0(num_terms * sizeof(uint32));
@@ -918,13 +863,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	{
 		uint32 length	   = terms[i].term_len;
 		uint32 dict_offset = i * sizeof(TpDictEntry);
-
-		elog(DEBUG1,
-			 "Writing string %u: '%s' (len=%u) at offset %u",
-			 i,
-			 terms[i].term,
-			 length,
-			 writer.current_offset - header.strings_offset);
 
 		/* Write string entry: length, text, dict offset */
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
@@ -977,17 +915,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Write page index */
 	tp_segment_writer_flush(&writer);
 
-	elog(DEBUG1,
-		 "tp_write_segment: Creating page index for %u pages",
-		 writer.pages_allocated);
-
 	page_index_root =
 			write_page_index(index, writer.pages, writer.pages_allocated);
 	header.page_index = page_index_root;
-
-	elog(DEBUG1,
-		 "tp_write_segment: Page index root at block %u",
-		 page_index_root);
 
 	/* Update header with actual offsets and page count */
 	header.data_size = writer.current_offset;
@@ -996,106 +926,30 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Finish with the writer BEFORE updating the header */
 	tp_segment_writer_finish(&writer);
 
-	elog(DEBUG1, "tp_write_segment: Updating header with offsets:");
-	elog(DEBUG1, "  dictionary_offset = %u", header.dictionary_offset);
-	elog(DEBUG1, "  strings_offset = %u", header.strings_offset);
-	elog(DEBUG1, "  entries_offset = %u", header.entries_offset);
-	elog(DEBUG1, "  postings_offset = %u", header.postings_offset);
-	elog(DEBUG1, "  doc_lengths_offset = %u", header.doc_lengths_offset);
-	elog(DEBUG1, "  data_size = %u", header.data_size);
-	elog(DEBUG1, "  num_pages = %u", header.num_pages);
-	elog(DEBUG1, "  page_index = %u", header.page_index);
-
 	/* Force a checkpoint to ensure data is on disk */
 	FlushRelationBuffers(index);
 
 	/* Now update the header on disk */
-	elog(DEBUG1,
-		 "tp_write_segment: Reading header block %u to update offsets",
-		 header_block);
 	header_buf = ReadBuffer(index, header_block);
-	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE); /* Need exclusive lock to
-													  modify */
+	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 	header_page = BufferGetPage(header_buf);
 
-	/* Check what's currently in the header */
-	existing_header = (TpSegmentHeader *)((char *)header_page +
-										  SizeOfPageHeaderData);
-	elog(DEBUG1,
-		 "tp_write_segment: Existing header magic = 0x%08X, dictionary_offset "
-		 "= %u",
-		 existing_header->magic,
-		 existing_header->dictionary_offset);
-
-	/* Debug: Check what's at the dictionary offset before update */
-	{
-		uint32 *dict_num_terms_ptr = (uint32 *)((char *)header_page +
-												SizeOfPageHeaderData + 80);
-		elog(DEBUG1,
-			 "Before update: value at offset 80 (dict num_terms) = %u",
-			 *dict_num_terms_ptr);
-	}
-
-	/* Only update the header fields that changed, not the entire page
-	 * The dictionary starts immediately after the header at offset 80
-	 * Be careful not to overwrite dictionary data or change num_terms
-	 *
-	 * IMPORTANT: Do NOT update num_terms, num_docs, or total_tokens as they
-	 * were already set correctly when the header was first written.
+	/*
+	 * Update only the offset fields that were calculated after writing data.
+	 * Do NOT update num_terms, num_docs, or total_tokens as they were already
+	 * set correctly when the header was first written.
 	 */
-
-	/* Update only the offset fields that were calculated after writing data */
-	elog(DEBUG1,
-		 "Updating header offsets: strings=%u, entries=%u, postings=%u, "
-		 "doc_lengths=%u",
-		 header.strings_offset,
-		 header.entries_offset,
-		 header.postings_offset,
-		 header.doc_lengths_offset);
-	elog(DEBUG1,
-		 "Header num_terms before update: %u",
-		 existing_header->num_terms);
-
-	existing_header->strings_offset		= header.strings_offset;
-	existing_header->entries_offset		= header.entries_offset;
+	existing_header					= (TpSegmentHeader *)((char *)header_page +
+										  SizeOfPageHeaderData);
+	existing_header->strings_offset = header.strings_offset;
+	existing_header->entries_offset = header.entries_offset;
 	existing_header->postings_offset	= header.postings_offset;
 	existing_header->doc_lengths_offset = header.doc_lengths_offset;
 	existing_header->data_size			= header.data_size;
 	existing_header->num_pages			= header.num_pages;
 	existing_header->page_index			= header.page_index;
-	/* DO NOT UPDATE: num_terms, num_docs, total_tokens - already correct */
-
-	elog(DEBUG1,
-		 "Header num_terms after update: %u",
-		 existing_header->num_terms);
-
-	/* Debug: Check what's at the dictionary offset after update */
-	{
-		uint32 *dict_num_terms_ptr = (uint32 *)((char *)header_page +
-												SizeOfPageHeaderData + 80);
-		elog(DEBUG1,
-			 "After update: value at offset 80 (dict num_terms) = %u",
-			 *dict_num_terms_ptr);
-	}
-
-	/* Verify the update */
-	updated_header = (TpSegmentHeader *)((char *)header_page +
-										 SizeOfPageHeaderData);
-	elog(DEBUG1,
-		 "tp_write_segment: After update dictionary_offset = %u",
-		 updated_header->dictionary_offset);
 
 	MarkBufferDirty(header_buf);
-
-	/* Final check before releasing buffer */
-	{
-		uint32 *dict_num_terms_ptr = (uint32 *)((char *)header_page +
-												SizeOfPageHeaderData + 80);
-		elog(DEBUG1,
-			 "Before releasing buffer: value at offset 80 = %u",
-			 *dict_num_terms_ptr);
-	}
-
 	UnlockReleaseBuffer(header_buf);
 
 	/* Flush the header to disk to ensure it's persisted */
@@ -1129,17 +983,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		current_nblocks = RelationGetNumberOfBlocks(index);
 
 		if (new_nblocks < current_nblocks)
-		{
-			elog(DEBUG1,
-				 "Truncating relation from %u blocks to %u blocks (saving "
-				 "%.2fMB)",
-				 current_nblocks,
-				 new_nblocks,
-				 (float)(current_nblocks - new_nblocks) * BLCKSZ /
-						 (1024.0 * 1024.0));
-
 			RelationTruncate(index, new_nblocks);
-		}
 	}
 
 	/* Clean up */
@@ -1147,11 +991,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	pfree(string_offsets);
 	if (writer.pages)
 		pfree(writer.pages);
-
-	elog(DEBUG1,
-		 "Wrote segment with %u terms to block %u",
-		 num_terms,
-		 header_block);
 
 	return header_block;
 }
@@ -1199,16 +1038,6 @@ tp_debug_dump_segment_internal(
 		   (char *)header_page + SizeOfPageHeaderData,
 		   sizeof(TpSegmentHeader));
 
-	/* Debug: log what we just read */
-	elog(DEBUG1,
-		 "tp_segment_open: Read header from block %u - magic=0x%08X, "
-		 "dictionary_offset=%u, strings_offset=%u, entries_offset=%u",
-		 segment_root,
-		 header.magic,
-		 header.dictionary_offset,
-		 header.strings_offset,
-		 header.entries_offset);
-
 	UnlockReleaseBuffer(header_buf);
 
 	/* Dump header info */
@@ -1253,19 +1082,11 @@ tp_debug_dump_segment_internal(
 		reader = tp_segment_open(index, segment_root);
 
 		/* Read dictionary header */
-		elog(DEBUG1,
-			 "Reading dictionary header from offset %u (segment root block "
-			 "%u)",
-			 header.dictionary_offset,
-			 segment_root);
 		tp_segment_read(
 				reader,
 				header.dictionary_offset,
 				&dict_header,
 				sizeof(dict_header.num_terms));
-		elog(DEBUG1,
-			 "Read dictionary header with num_terms=%u",
-			 dict_header.num_terms);
 		elog(INFO, "Dictionary Terms (%u):", dict_header.num_terms);
 
 		/* Read string offsets */
@@ -1283,18 +1104,9 @@ tp_debug_dump_segment_internal(
 		{
 			char	   *term_text;
 			TpDictEntry dict_entry;
-			uint32 string_offset = header.strings_offset + string_offsets[i];
-
-			elog(DEBUG1,
-				 "Reading term %u: string_offset=%u (base=%u + offset=%u)",
-				 i,
-				 string_offset,
-				 header.strings_offset,
-				 string_offsets[i]);
 
 			/* Read term at this index */
 			term_text = read_term_at_index(reader, &header, i, string_offsets);
-			elog(DEBUG1, "  String length: %u", (uint32)strlen(term_text));
 
 			/* Validate string length */
 			if (strlen(term_text) > 1024) /* Sanity check */
@@ -1305,14 +1117,8 @@ tp_debug_dump_segment_internal(
 					 i);
 			}
 
-			elog(DEBUG1, "  Term text: '%s'", term_text);
-
 			/* Read dictionary entry for this term */
 			read_dict_entry(reader, &header, i, &dict_entry);
-			elog(DEBUG1,
-				 "  Dict entry: docs=%u, postings=%u",
-				 dict_entry.doc_freq,
-				 dict_entry.posting_count);
 
 			elog(INFO,
 				 "  [%u] '%s' (docs=%u, postings=%u)",

@@ -2044,7 +2044,7 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 				&result, "  first_docid_page: %u\n", metap->first_docid_page);
 	}
 
-	/* Show term dictionary and posting lists */
+	/* Show term dictionary and posting lists with adaptive detail */
 	appendStringInfo(&result, "Term Dictionary:\n");
 
 	memtable = get_memtable(index_state);
@@ -2059,9 +2059,21 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 
 			if (string_table)
 			{
-				uint32			   term_count = 0;
+				uint32			   term_count  = 0;
+				uint32			   terms_shown = 0;
 				dshash_seq_status  status;
 				TpStringHashEntry *entry;
+
+				/* Define adaptive output limits */
+				const int MAX_TERMS_FULL_DETAIL =
+						20; /* Show full posting lists */
+				const int MAX_TERMS_SUMMARY =
+						100; /* Show just doc frequency */
+				const size_t MAX_OUTPUT_SIZE = 256 *
+											   1024; /* 256KB soft limit */
+
+				/* Track approximate output size */
+				size_t approx_output_size = result.len;
 
 				/* Iterate through all entries using dshash sequential scan */
 				dshash_seq_init(
@@ -2070,26 +2082,94 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 				while ((entry = (TpStringHashEntry *)dshash_seq_next(
 								&status)) != NULL)
 				{
-					/* Show term info if it has a posting list */
+					/* Count all terms regardless of display */
 					if (DsaPointerIsValid(entry->key.posting_list))
 					{
-						TpPostingList *posting_list =
-								dsa_get_address(area, entry->key.posting_list);
-						const char *stored_str =
-								tp_get_key_str(area, &entry->key);
-
-						appendStringInfo(
-								&result,
-								"  '%s': doc_freq=%d\n",
-								stored_str,
-								posting_list->doc_count);
 						term_count++;
+
+						/* Decide how much detail to show based on count and
+						 * size */
+						if (approx_output_size < MAX_OUTPUT_SIZE)
+						{
+							TpPostingList *posting_list = dsa_get_address(
+									area, entry->key.posting_list);
+							const char *stored_str =
+									tp_get_key_str(area, &entry->key);
+
+							if (terms_shown < MAX_TERMS_FULL_DETAIL)
+							{
+								/* Full detail for first few terms */
+								appendStringInfo(
+										&result,
+										"  '%s': doc_freq=%d, postings=",
+										stored_str,
+										posting_list->doc_count);
+
+								/* Show first few postings */
+								TpPostingEntry *postings =
+										tp_get_posting_entries(
+												area, posting_list);
+								int max_postings_shown = 5;
+								int postings_shown	   = 0;
+
+								for (int i = 0; i < posting_list->doc_count &&
+												i < max_postings_shown;
+									 i++)
+								{
+									if (i > 0)
+										appendStringInfo(&result, ",");
+									appendStringInfo(
+											&result,
+											"(%u,%u):%d",
+											BlockIdGetBlockNumber(
+													&postings[i]
+															 .ctid.ip_blkid),
+											postings[i].ctid.ip_posid,
+											postings[i].frequency);
+									postings_shown++;
+								}
+
+								if (posting_list->doc_count >
+									max_postings_shown)
+								{
+									appendStringInfo(
+											&result,
+											"... (%d more)",
+											posting_list->doc_count -
+													postings_shown);
+								}
+								appendStringInfo(&result, "\n");
+							}
+							else if (terms_shown < MAX_TERMS_SUMMARY)
+							{
+								/* Summary for next batch of terms */
+								appendStringInfo(
+										&result,
+										"  '%s': doc_freq=%d\n",
+										stored_str,
+										posting_list->doc_count);
+							}
+							/* Else: term is counted but not shown */
+
+							terms_shown++;
+							approx_output_size = result.len;
+						}
 					}
 				}
 
 				dshash_seq_term(&status);
 				dshash_detach(string_table);
 
+				/* Report what was shown vs total */
+				if (terms_shown < term_count)
+				{
+					appendStringInfo(
+							&result,
+							"  ... showing %u of %u terms (output "
+							"truncated)\n",
+							terms_shown,
+							term_count);
+				}
 				appendStringInfo(&result, "Total terms: %u\n", term_count);
 			}
 			else
@@ -2110,7 +2190,7 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 				&result, "  No terms (string hash table not initialized)\n");
 	}
 
-	/* Show document length hash table */
+	/* Show document length hash table with adaptive detail */
 	appendStringInfo(&result, "Document Length Hash Table:\n");
 	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
 	{
@@ -2123,31 +2203,51 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 			{
 				dshash_seq_status status;
 				TpDocLengthEntry *entry;
-				int				  count = 0;
+				int				  total_count	   = 0;
+				int				  shown_count	   = 0;
+				int				  max_docs_to_show = 10;
+				const size_t	  MAX_OUTPUT_SIZE  = 256 *
+											   1024; /* 256KB soft limit */
+
+				/* Check output size before showing documents */
+				if (result.len > MAX_OUTPUT_SIZE * 0.8)
+				{
+					max_docs_to_show =
+							3; /* Reduce if output is already large */
+				}
 
 				/* Iterate through document length entries */
 				dshash_seq_init(
 						&status, doclength_table, false); /* shared lock */
 
 				while ((entry = (TpDocLengthEntry *)dshash_seq_next(
-								&status)) != NULL &&
-					   count < 10)
+								&status)) != NULL)
 				{
-					appendStringInfo(
-							&result,
-							"  CTID (%u,%u): doc_length=%d\n",
-							BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
-							entry->ctid.ip_posid,
-							entry->doc_length);
-					count++;
+					total_count++;
+
+					if (shown_count < max_docs_to_show)
+					{
+						appendStringInfo(
+								&result,
+								"  CTID (%u,%u): doc_length=%d\n",
+								BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
+								entry->ctid.ip_posid,
+								entry->doc_length);
+						shown_count++;
+					}
 				}
 
-				if (count >= 10)
+				if (shown_count < total_count)
 					appendStringInfo(
-							&result, "  ... (showing first 10 entries)\n");
+							&result,
+							"  ... (showing %d of %d entries)\n",
+							shown_count,
+							total_count);
 
 				appendStringInfo(
-						&result, "Total document length entries: %d\n", count);
+						&result,
+						"Total document length entries: %d\n",
+						total_count);
 
 				dshash_seq_term(&status);
 				dshash_detach(doclength_table);
@@ -2292,10 +2392,12 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	Relation		   index_rel;
 	TpLocalIndexState *index_state;
 	BlockNumber		   segment_root;
+	RangeVar		  *rv;
 
-	/* Look up the index OID */
-	index_oid =
-			get_relname_relid(index_name, get_namespace_oid("public", false));
+	/* Parse index name (supports schema.index notation) */
+	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
+	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
+
 	if (!OidIsValid(index_oid))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -2306,6 +2408,13 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 	/* Get index state */
 	index_state = tp_get_local_index_state(RelationGetRelid(index_rel));
+	if (!index_state)
+	{
+		index_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", index_name)));
+	}
 
 	/* Acquire exclusive lock for write operation */
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);

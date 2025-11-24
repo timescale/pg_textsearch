@@ -116,8 +116,6 @@ tp_build_dictionary(TpLocalIndexState *state, uint32 *num_terms)
 
 	*num_terms = count;
 
-	elog(DEBUG1, "Built dictionary with %u terms", count);
-
 	return terms;
 }
 
