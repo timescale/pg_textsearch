@@ -42,8 +42,8 @@ extern void tp_add_document_to_posting_list(
 extern void tp_store_document_length(
 		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length);
 
-extern int32
-tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid);
+extern int32 tp_get_document_length(
+		TpLocalIndexState *local_state, Relation index, ItemPointer ctid);
 
 extern dshash_table *
 tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle);

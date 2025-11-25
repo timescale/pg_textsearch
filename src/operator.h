@@ -33,3 +33,5 @@ extern int tp_score_documents(
 
 /* IDF calculation */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
+extern float4 tp_calculate_idf_with_epsilon(
+		int32 doc_freq, int32 total_docs, float8 average_idf);

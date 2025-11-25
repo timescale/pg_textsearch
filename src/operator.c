@@ -43,6 +43,32 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 }
 
 /*
+ * IDF calculation with proper epsilon handling.
+ * Uses epsilon * average_idf for negative IDFs to match Python rank_bm25.
+ */
+float4
+tp_calculate_idf_with_epsilon(
+		int32 doc_freq, int32 total_docs, float8 average_idf)
+{
+	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
+	double idf_denominator = (double)(doc_freq + 0.5);
+	double idf_ratio	   = idf_numerator / idf_denominator;
+	double raw_idf		   = log(idf_ratio);
+
+	/*
+	 * Python rank_bm25 uses epsilon * average_idf for negative IDFs.
+	 * Default epsilon is 0.25 in BM25Okapi.
+	 */
+	if (raw_idf < 0)
+	{
+		const float8 epsilon = 0.25;
+		return (float4)(epsilon * average_idf);
+	}
+
+	return (float4)raw_idf;
+}
+
+/*
  * Document score entry for BM25 calculation
  */
 typedef struct DocumentScoreEntry
@@ -391,8 +417,8 @@ tp_score_documents(
 			bool				found;
 
 			/* Look up document length from memtable hash table */
-			doc_len = (float4)
-					tp_get_document_length(local_state, &entry->ctid);
+			doc_len = (float4)tp_get_document_length(
+					local_state, index_relation, &entry->ctid);
 			if (doc_len <= 0.0f)
 			{
 				elog(ERROR,

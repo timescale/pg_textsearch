@@ -23,7 +23,8 @@ OBJS = \
 	src/state.o \
 	src/dump.o \
 	src/segment/segment.o \
-	src/segment/dictionary.o
+	src/segment/dictionary.o \
+	src/segment/segment_query.o
 
 # Shared library target
 MODULE_big = pg_textsearch
