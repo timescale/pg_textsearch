@@ -33,6 +33,7 @@
 #include <utils/syscache.h>
 
 #include "constants.h"
+#include "dump.h"
 #include "index.h"
 #include "limit.h"
 #include "memtable/memtable.h"
@@ -1950,420 +1951,58 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 /*
  * tp_dump_index - Debug function to show internal index structure
  * including both memtable and all segments
+ *
+ * Takes index name and optional filename. If filename is provided,
+ * writes full dump to file (no truncation, includes hex dumps).
+ * Otherwise returns truncated output as text.
  */
 PG_FUNCTION_INFO_V1(tp_dump_index);
 
 Datum
 tp_dump_index(PG_FUNCTION_ARGS)
 {
-	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
-	char			  *index_name;
-	StringInfoData	   result;
-	Oid				   index_oid;
-	TpLocalIndexState *index_state;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	TpMemtable		  *memtable;
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	char *index_name	  = text_to_cstring(index_name_text);
 
-	/* Convert text to C string */
-	index_name = text_to_cstring(index_name_text);
-
-	initStringInfo(&result);
-
-	appendStringInfo(&result, "Tapir Index Debug: %s\n", index_name);
-
-	index_oid = tp_resolve_index_name_shared(index_name);
-	if (!OidIsValid(index_oid))
+	/* Check for optional filename parameter */
+	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
 	{
-		appendStringInfo(&result, "ERROR: Index '%s' not found\n", index_name);
+		/* File mode - full dump with hex */
+		text *filename_text = PG_GETARG_TEXT_PP(1);
+		char *filename		= text_to_cstring(filename_text);
+		FILE *fp;
+
+		fp = fopen(filename, "w");
+		if (!fp)
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not open file \"%s\": %m", filename)));
+		}
+
+		{
+			DumpOutput out;
+			dump_init_file(&out, fp);
+			tp_dump_index_to_output(index_name, &out);
+		}
+
+		fclose(fp);
+
+		elog(INFO, "Index dump written to %s", filename);
+		PG_RETURN_TEXT_P(cstring_to_text_with_len(filename, strlen(filename)));
+	}
+	else
+	{
+		/* String mode - truncated output for SQL return */
+		StringInfoData result;
+		DumpOutput	   out;
+
+		initStringInfo(&result);
+		dump_init_string(&out, &result);
+		tp_dump_index_to_output(index_name, &out);
+
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
-
-	/* Open the index relation to read metapage */
-	index_rel = index_open(index_oid, AccessShareLock);
-
-	/* Get the metapage */
-	metap = tp_get_metapage(index_rel);
-
-	/* Get index state to inspect corpus statistics */
-	index_state = tp_get_local_index_state(index_oid);
-	if (index_state == NULL)
-	{
-		appendStringInfo(
-				&result,
-				"ERROR: Could not get index state for '%s'\n",
-				index_name);
-		if (metap)
-			pfree(metap);
-		if (index_rel)
-			index_close(index_rel, AccessShareLock);
-		PG_RETURN_TEXT_P(cstring_to_text(result.data));
-	}
-
-	/* Show corpus statistics */
-	appendStringInfo(&result, "Corpus Statistics:\n");
-	appendStringInfo(
-			&result, "  total_docs: %d\n", index_state->shared->total_docs);
-	appendStringInfo(
-			&result, "  total_len: %ld\n", index_state->shared->total_len);
-
-	if (index_state->shared->total_docs > 0)
-	{
-		float avg_doc_len = (float)index_state->shared->total_len /
-							(float)index_state->shared->total_docs;
-
-		appendStringInfo(&result, "  avg_doc_len: %.4f\n", avg_doc_len);
-	}
-	else
-	{
-		appendStringInfo(&result, "  avg_doc_len: 0 (no documents)\n");
-	}
-
-	/* Add DSA memory consumption statistics */
-	if (index_state->dsa)
-	{
-		size_t dsa_total_size = dsa_get_total_size(index_state->dsa);
-		appendStringInfo(&result, "Memory Usage:\n");
-		appendStringInfo(
-				&result,
-				"  DSA total size: %zu bytes (%.2f MB)\n",
-				dsa_total_size,
-				(double)dsa_total_size / (1024.0 * 1024.0));
-	}
-
-	appendStringInfo(&result, "BM25 Parameters:\n");
-	if (metap)
-	{
-		appendStringInfo(&result, "  k1: %.2f\n", metap->k1);
-		appendStringInfo(&result, "  b: %.2f\n", metap->b);
-
-		appendStringInfo(&result, "Metapage Recovery Info:\n");
-		appendStringInfo(&result, "  magic: 0x%08X\n", metap->magic);
-		appendStringInfo(
-				&result, "  first_docid_page: %u\n", metap->first_docid_page);
-	}
-
-	/* Show term dictionary and posting lists with adaptive detail */
-	appendStringInfo(&result, "Term Dictionary:\n");
-
-	memtable = get_memtable(index_state);
-	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
-	{
-		dsa_area *area = index_state->dsa;
-
-		if (area)
-		{
-			dshash_table *string_table =
-					tp_string_table_attach(area, memtable->string_hash_handle);
-
-			if (string_table)
-			{
-				uint32			   term_count  = 0;
-				uint32			   terms_shown = 0;
-				dshash_seq_status  status;
-				TpStringHashEntry *entry;
-
-				/* Define adaptive output limits */
-				const int MAX_TERMS_FULL_DETAIL =
-						20; /* Show full posting lists */
-				const int MAX_TERMS_SUMMARY =
-						100; /* Show just doc frequency */
-				const size_t MAX_OUTPUT_SIZE = 256 *
-											   1024; /* 256KB soft limit */
-
-				/* Track approximate output size */
-				size_t approx_output_size = result.len;
-
-				/* Iterate through all entries using dshash sequential scan */
-				dshash_seq_init(
-						&status, string_table, false); /* shared lock */
-
-				while ((entry = (TpStringHashEntry *)dshash_seq_next(
-								&status)) != NULL)
-				{
-					/* Count all terms regardless of display */
-					if (DsaPointerIsValid(entry->key.posting_list))
-					{
-						term_count++;
-
-						/* Decide how much detail to show based on count and
-						 * size */
-						if (approx_output_size < MAX_OUTPUT_SIZE)
-						{
-							TpPostingList *posting_list = dsa_get_address(
-									area, entry->key.posting_list);
-							const char *stored_str =
-									tp_get_key_str(area, &entry->key);
-
-							if (terms_shown < MAX_TERMS_FULL_DETAIL)
-							{
-								/* Full detail for first few terms */
-								appendStringInfo(
-										&result,
-										"  '%s': doc_freq=%d, postings=",
-										stored_str,
-										posting_list->doc_count);
-
-								/* Show first few postings */
-								TpPostingEntry *postings =
-										tp_get_posting_entries(
-												area, posting_list);
-								int max_postings_shown = 5;
-								int postings_shown	   = 0;
-
-								for (int i = 0; i < posting_list->doc_count &&
-												i < max_postings_shown;
-									 i++)
-								{
-									if (i > 0)
-										appendStringInfo(&result, ",");
-									appendStringInfo(
-											&result,
-											"(%u,%u):%d",
-											BlockIdGetBlockNumber(
-													&postings[i]
-															 .ctid.ip_blkid),
-											postings[i].ctid.ip_posid,
-											postings[i].frequency);
-									postings_shown++;
-								}
-
-								if (posting_list->doc_count >
-									max_postings_shown)
-								{
-									appendStringInfo(
-											&result,
-											"... (%d more)",
-											posting_list->doc_count -
-													postings_shown);
-								}
-								appendStringInfo(&result, "\n");
-							}
-							else if (terms_shown < MAX_TERMS_SUMMARY)
-							{
-								/* Summary for next batch of terms */
-								appendStringInfo(
-										&result,
-										"  '%s': doc_freq=%d\n",
-										stored_str,
-										posting_list->doc_count);
-							}
-							/* Else: term is counted but not shown */
-
-							terms_shown++;
-							approx_output_size = result.len;
-						}
-					}
-				}
-
-				dshash_seq_term(&status);
-				dshash_detach(string_table);
-
-				/* Report what was shown vs total */
-				if (terms_shown < term_count)
-				{
-					appendStringInfo(
-							&result,
-							"  ... showing %u of %u terms (output "
-							"truncated)\n",
-							terms_shown,
-							term_count);
-				}
-				appendStringInfo(&result, "Total terms: %u\n", term_count);
-			}
-			else
-			{
-				appendStringInfo(
-						&result,
-						"  ERROR: Cannot attach to string hash table\n");
-			}
-		}
-		else
-		{
-			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
-		}
-	}
-	else
-	{
-		appendStringInfo(
-				&result, "  No terms (string hash table not initialized)\n");
-	}
-
-	/* Show document length hash table with adaptive detail */
-	appendStringInfo(&result, "Document Length Hash Table:\n");
-	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-	{
-		dsa_area *area = index_state->dsa;
-		if (area)
-		{
-			dshash_table *doclength_table = tp_doclength_table_attach(
-					area, memtable->doc_lengths_handle);
-			if (doclength_table)
-			{
-				dshash_seq_status status;
-				TpDocLengthEntry *entry;
-				int				  total_count	   = 0;
-				int				  shown_count	   = 0;
-				int				  max_docs_to_show = 10;
-				const size_t	  MAX_OUTPUT_SIZE  = 256 *
-											   1024; /* 256KB soft limit */
-
-				/* Check output size before showing documents */
-				if (result.len > MAX_OUTPUT_SIZE * 0.8)
-				{
-					max_docs_to_show =
-							3; /* Reduce if output is already large */
-				}
-
-				/* Iterate through document length entries */
-				dshash_seq_init(
-						&status, doclength_table, false); /* shared lock */
-
-				while ((entry = (TpDocLengthEntry *)dshash_seq_next(
-								&status)) != NULL)
-				{
-					total_count++;
-
-					if (shown_count < max_docs_to_show)
-					{
-						appendStringInfo(
-								&result,
-								"  CTID (%u,%u): doc_length=%d\n",
-								BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
-								entry->ctid.ip_posid,
-								entry->doc_length);
-						shown_count++;
-					}
-				}
-
-				if (shown_count < total_count)
-					appendStringInfo(
-							&result,
-							"  ... (showing %d of %d entries)\n",
-							shown_count,
-							total_count);
-
-				appendStringInfo(
-						&result,
-						"Total document length entries: %d\n",
-						total_count);
-
-				dshash_seq_term(&status);
-				dshash_detach(doclength_table);
-			}
-			else
-			{
-				appendStringInfo(
-						&result,
-						"  ERROR: Cannot attach to document length hash "
-						"table\n");
-			}
-		}
-		else
-		{
-			appendStringInfo(&result, "  ERROR: Cannot access DSA area\n");
-		}
-	}
-	else
-	{
-		appendStringInfo(
-				&result,
-				"  No document length table (doc_lengths_handle not "
-				"initialized)\n");
-	}
-
-	/* Add crash recovery information */
-	appendStringInfo(&result, "Crash Recovery:\n");
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		/* Count total pages and documents for recovery */
-		Buffer			   docid_buf;
-		Page			   docid_page;
-		TpDocidPageHeader *docid_header;
-		BlockNumber		   current_page = metap->first_docid_page;
-		int				   page_count	= 0;
-		int				   total_docids = 0;
-
-		while (current_page != InvalidBlockNumber)
-		{
-			docid_buf = ReadBuffer(index_rel, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
-			{
-				total_docids += docid_header->num_docids;
-				page_count++;
-				current_page = docid_header->next_page;
-			}
-			else
-			{
-				/* Stop if we hit an invalid page */
-				current_page = InvalidBlockNumber;
-			}
-
-			UnlockReleaseBuffer(docid_buf);
-
-			/* Safety limit */
-			if (page_count > 10000)
-				break;
-		}
-
-		appendStringInfo(
-				&result,
-				"  Pages: %d, Documents: %d\n",
-				page_count,
-				total_docids);
-	}
-	else
-	{
-		appendStringInfo(&result, "  No recovery pages\n");
-	}
-
-	/* Dump all segments if any exist */
-	if (metap && metap->first_segment != InvalidBlockNumber)
-	{
-		appendStringInfo(&result, "\nSegments:\n");
-		BlockNumber current_segment = metap->first_segment;
-		int			segment_count	= 0;
-
-		while (current_segment != InvalidBlockNumber)
-		{
-			segment_count++;
-			appendStringInfo(
-					&result,
-					"  Segment #%d at block %u\n",
-					segment_count,
-					current_segment);
-
-			/* Dump this segment to the server log */
-			tp_debug_dump_segment_internal(index_name, current_segment);
-
-			/* For now, only one segment chain is supported */
-			/* Future versions will read next_segment from segment header */
-			current_segment = InvalidBlockNumber;
-		}
-
-		if (segment_count > 0)
-		{
-			appendStringInfo(
-					&result,
-					"  (Detailed segment contents written to server log)\n");
-		}
-	}
-	else
-	{
-		appendStringInfo(&result, "\nNo segments written yet\n");
-	}
-
-	/* Cleanup */
-	if (metap)
-		pfree(metap);
-	if (index_rel)
-		index_close(index_rel, AccessShareLock);
-
-	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
 
 /*

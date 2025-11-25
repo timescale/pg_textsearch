@@ -94,6 +94,14 @@ typedef struct TpDictionary
 
 /*
  * String entry in string pool
+ *
+ * TODO: Optimize storage for short strings. Current overhead is 8 bytes per
+ * term (4-byte length + 4-byte dict_entry_offset). Since most stemmed terms
+ * are short (3-10 chars), this overhead is significant. Options:
+ * - Use 1-byte length (terms rarely > 255 chars), saves 3 bytes/term
+ * - Eliminate dict_entry_offset by computing from term index, saves 4
+ *   bytes/term
+ * - Use varint encoding for length
  */
 typedef struct TpStringEntry
 {
@@ -218,12 +226,9 @@ extern int32
 tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
 
 /* Debug functions */
-extern void tp_debug_dump_segment_internal(
-		const char *index_name, BlockNumber segment_root);
-extern void tp_segment_dump_to_file(
-		const char *index_name,
-		BlockNumber segment_root,
-		const char *filename);
+struct DumpOutput; /* Forward declaration */
+extern void tp_dump_segment_to_output(
+		Relation index, BlockNumber segment_root, struct DumpOutput *out);
 
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */

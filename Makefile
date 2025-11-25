@@ -21,6 +21,7 @@ OBJS = \
 	src/limit.o \
 	src/registry.o \
 	src/state.o \
+	src/dump.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o
 

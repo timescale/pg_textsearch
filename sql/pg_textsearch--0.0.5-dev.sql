@@ -150,7 +150,13 @@ DEFAULT FOR TYPE text USING bm25 AS
     FUNCTION    8   bm25_distance(text, bm25query);
 
 -- Debug function to dump index contents (memtable and segments)
+-- Single argument version returns truncated output as text
 CREATE FUNCTION bm25_dump_index(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_dump_index'
+    LANGUAGE C STRICT STABLE;
+
+-- Two argument version writes full dump (with hex) to file
+CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
