@@ -102,27 +102,27 @@ ORDER BY content <@> to_bm25query('testing', 'edge_case.demo_content_idx'), cont
 DROP TABLE edge_case.demo CASCADE;
 DROP SCHEMA edge_case CASCADE;
 
--- Test 6: bm25_debug_dump_index with schema-qualified indexes
+-- Test 6: bm25_dump_index with schema-qualified indexes
 -- Test that the debug function properly handles schema resolution
 
 -- Test debug with public schema index (should work)
-SELECT bm25_debug_dump_index('public_articles_idx')::text ~ 'Tapir Index Debug: public_articles_idx' AS debug_public_works;
+SELECT bm25_dump_index('public_articles_idx')::text ~ 'Tapir Index Debug: public_articles_idx' AS debug_public_works;
 
 -- Test debug with schema-qualified index name (should work)
-SELECT bm25_debug_dump_index('bar.baz_content_idx')::text ~ 'Tapir Index Debug: bar.baz_content_idx' AS debug_schema_qualified;
+SELECT bm25_dump_index('bar.baz_content_idx')::text ~ 'Tapir Index Debug: bar.baz_content_idx' AS debug_schema_qualified;
 
 -- Test debug with unqualified name for schema index (should fail when not in search path)
-SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'ERROR: Index ''baz_content_idx'' not found' AS debug_unqualified_fails;
+SELECT bm25_dump_index('baz_content_idx')::text ~ 'ERROR: Index ''baz_content_idx'' not found' AS debug_unqualified_fails;
 
 -- Test debug with search_path set
 SET search_path = bar, public;
-SELECT bm25_debug_dump_index('baz_content_idx')::text ~ 'Tapir Index Debug: baz_content_idx' AS debug_with_search_path;
+SELECT bm25_dump_index('baz_content_idx')::text ~ 'Tapir Index Debug: baz_content_idx' AS debug_with_search_path;
 
 -- Reset search_path
 SET search_path = public;
 
 -- Test debug with non-existent index
-SELECT bm25_debug_dump_index('nonexistent_idx')::text ~ 'ERROR: Index ''nonexistent_idx'' not found' AS debug_nonexistent;
+SELECT bm25_dump_index('nonexistent_idx')::text ~ 'ERROR: Index ''nonexistent_idx'' not found' AS debug_nonexistent;
 
 -- Cleanup
 DROP TABLE bar.baz CASCADE;

@@ -40,7 +40,7 @@ CREATE INDEX parent_bm25_idx ON parent_docs USING bm25(content) WITH (text_confi
 CREATE INDEX child1_bm25_idx ON child_docs1 USING bm25(content) WITH (text_config='english');
 
 -- Verify child index was created successfully with correct document count
-SELECT bm25_debug_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
+SELECT bm25_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
 
 -- Test searching on child table works
 SELECT COUNT(*) as matching_docs
@@ -110,7 +110,7 @@ INSERT INTO regular_docs (content) VALUES
 CREATE INDEX regular_bm25_idx ON regular_docs USING bm25(content) WITH (text_config='english');
 
 -- Verify regular index works
-SELECT bm25_debug_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
+SELECT bm25_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
 
 -- Cleanup
 DROP TABLE regular_docs CASCADE;

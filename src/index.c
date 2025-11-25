@@ -1948,14 +1948,13 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
- * tp_debug_dump - Debug function to show internal index structure
+ * tp_dump_index - Debug function to show internal index structure
  * including both memtable and all segments
  */
-PG_FUNCTION_INFO_V1(tp_debug_dump);
-PG_FUNCTION_INFO_V1(tp_debug_dump_index); /* Backward compatibility */
+PG_FUNCTION_INFO_V1(tp_dump_index);
 
 Datum
-tp_debug_dump(PG_FUNCTION_ARGS)
+tp_dump_index(PG_FUNCTION_ARGS)
 {
 	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
 	char			  *index_name;
@@ -2365,13 +2364,6 @@ tp_debug_dump(PG_FUNCTION_ARGS)
 		index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
-}
-
-/* Backward compatibility wrapper */
-Datum
-tp_debug_dump_index(PG_FUNCTION_ARGS)
-{
-	return tp_debug_dump(fcinfo);
 }
 
 /*

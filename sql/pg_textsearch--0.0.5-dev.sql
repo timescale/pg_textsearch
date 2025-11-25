@@ -150,13 +150,8 @@ DEFAULT FOR TYPE text USING bm25 AS
     FUNCTION    8   bm25_distance(text, bm25query);
 
 -- Debug function to dump index contents (memtable and segments)
-CREATE FUNCTION bm25_debug_dump(text) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_debug_dump'
-    LANGUAGE C STRICT STABLE;
-
--- Backward compatibility alias
-CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
+CREATE FUNCTION bm25_dump_index(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
 -- Display warning about prerelease status
