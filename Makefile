@@ -20,7 +20,10 @@ OBJS = \
 	src/operator.o \
 	src/limit.o \
 	src/registry.o \
-	src/state.o
+	src/state.o \
+	src/dump.o \
+	src/segment/segment.o \
+	src/segment/dictionary.o
 
 # Shared library target
 MODULE_big = pg_textsearch

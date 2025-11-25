@@ -45,6 +45,7 @@ typedef struct TpIndexMetaPageData
 	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
 	BlockNumber first_docid_page; /* First page of docid chain for crash
 								   * recovery */
+	BlockNumber first_segment;	  /* First segment in the segment chain */
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;

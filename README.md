@@ -193,7 +193,7 @@ FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 
 -- Debug index internal structure (shows term dictionary and posting lists)
-SELECT bm25_debug_dump_index('index_name');
+SELECT bm25_dump_index('index_name');
 ```
 
 ### Configuration

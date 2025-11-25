@@ -25,7 +25,7 @@ WITH (text_config = 'english');
 -- Check index statistics before deletions
 -- Extract just the total_docs line from debug output
 SELECT split_part(
-    split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
+    split_part(bm25_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_before;
 
@@ -36,7 +36,7 @@ DELETE FROM vacuum_test WHERE id IN (
 
 -- Check that index statistics haven't changed yet (deletions not processed)
 SELECT split_part(
-    split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
+    split_part(bm25_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_delete;
 
@@ -46,7 +46,7 @@ VACUUM vacuum_test;
 -- Check index statistics after VACUUM
 -- Note: Our current implementation may not update stats until rebuild
 SELECT split_part(
-    split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
+    split_part(bm25_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_vacuum;
 
@@ -67,7 +67,7 @@ VACUUM FULL vacuum_test;
 
 -- Check statistics after VACUUM FULL
 SELECT split_part(
-    split_part(bm25_debug_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
+    split_part(bm25_dump_index('vacuum_idx')::text, 'total_docs: ', 2),
     E'\n', 1
 ) AS total_docs_after_vacuum_full;
 

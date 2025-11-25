@@ -149,14 +149,27 @@ DEFAULT FOR TYPE text USING bm25 AS
     OPERATOR    1   <@> (text, bm25query) FOR ORDER BY float_ops,
     FUNCTION    8   bm25_distance(text, bm25query);
 
--- Debug function to dump index contents
-CREATE FUNCTION bm25_debug_dump_index(text, boolean DEFAULT false) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_debug_dump_index'
+-- Debug function to dump index contents (memtable and segments)
+-- Single argument version returns truncated output as text
+CREATE FUNCTION bm25_dump_index(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_dump_index'
+    LANGUAGE C STRICT STABLE;
+
+-- Two argument version writes full dump (with hex) to file
+CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
 -- Display warning about prerelease status
 DO $$
 BEGIN
     RAISE INFO 'pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.';
+    RAISE INFO 'This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.';
 END
 $$;
+
+-- Function to force segment write (spill memtable to disk)
+CREATE OR REPLACE FUNCTION bm25_spill_index(index_name text)
+RETURNS int4
+AS 'MODULE_PATHNAME', 'tp_spill_memtable'
+LANGUAGE C VOLATILE STRICT;

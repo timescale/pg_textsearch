@@ -2,7 +2,7 @@
 
 /* Magic numbers and metadata */
 #define TP_MAGIC		  0x3A7F9B2E
-#define TP_VERSION		  1
+#define TP_VERSION		  2 /* Bumped for first_segment field in metapage */
 #define TP_METAPAGE_BLKNO 0
 
 /* BM25 scoring constants */

@@ -880,3 +880,73 @@ tp_release_all_index_locks(void)
 		}
 	}
 }
+
+/*
+ * Clear the memtable after segment spill
+ * This removes all entries from the string hash table and document lengths
+ * table while keeping the tables themselves valid for future use.
+ * Corpus statistics are preserved as they represent the overall index state.
+ */
+void
+tp_clear_memtable(TpLocalIndexState *local_state)
+{
+	TpMemtable		 *memtable;
+	dshash_table	 *string_table;
+	dshash_table	 *doc_lengths_table;
+	dshash_seq_status status;
+	void			 *entry;
+
+	if (!local_state || !local_state->shared)
+		return;
+
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		return;
+
+	/* Clear all entries from string hash table if present */
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	{
+		string_table = tp_string_table_attach(
+				local_state->dsa, memtable->string_hash_handle);
+		if (string_table)
+		{
+			/* Delete all entries using exclusive lock for modification */
+			dshash_seq_init(&status, string_table, true); /* exclusive lock */
+			while ((entry = dshash_seq_next(&status)) != NULL)
+			{
+				/* This deletes the current entry and advances the iterator */
+				dshash_delete_current(&status);
+			}
+			dshash_seq_term(&status);
+			dshash_detach(string_table);
+
+			/* Reset term count but keep handle valid */
+			memtable->total_terms = 0;
+		}
+	}
+
+	/* Clear all entries from document lengths table if present */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		doc_lengths_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+		if (doc_lengths_table)
+		{
+			/* Delete all entries using exclusive lock for modification */
+			dshash_seq_init(
+					&status, doc_lengths_table, true); /* exclusive lock */
+			while ((entry = dshash_seq_next(&status)) != NULL)
+			{
+				/* This deletes the current entry and advances the iterator */
+				dshash_delete_current(&status);
+			}
+			dshash_seq_term(&status);
+			dshash_detach(doc_lengths_table);
+		}
+	}
+
+	/* Reset memory usage tracking */
+	local_state->shared->memory_usage.memory_used = 0;
+	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
+	 * as they represent the overall index state, not just the memtable */
+}

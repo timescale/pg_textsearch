@@ -2,6 +2,7 @@
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Test 1: PostgreSQL native table inheritance
 -- Create parent and child tables
 CREATE TABLE parent_docs (
@@ -47,7 +48,7 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
 -- Verify child index was created successfully with correct document count
-SELECT bm25_debug_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
+SELECT bm25_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
  has_two_docs 
 --------------
  t
@@ -134,7 +135,7 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=3.50, text_config='english' (k1=1.20, b=0.75)
 -- Verify regular index works
-SELECT bm25_debug_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
+SELECT bm25_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
  has_two_docs 
 --------------
  t

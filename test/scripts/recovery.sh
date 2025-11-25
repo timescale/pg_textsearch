@@ -241,7 +241,7 @@ EOF
     log "Phase 4: Testing debug dump functionality after recovery..."
 
     # This is the critical test that should expose the recovery bug
-    DEBUG_RESULT=$(run_sql "SELECT bm25_debug_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
+    DEBUG_RESULT=$(run_sql "SELECT bm25_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
 
     if echo "$DEBUG_RESULT" | grep -q "FAILED\|ERROR\|connection.*lost"; then
         error "Debug dump failed after recovery - this exposes the recovery bug!"

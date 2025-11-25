@@ -2,6 +2,7 @@
 -- Create extension if not exists
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Create test table
 DROP TABLE IF EXISTS memory_test CASCADE;
 NOTICE:  table "memory_test" does not exist, skipping
