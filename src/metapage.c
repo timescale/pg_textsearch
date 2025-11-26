@@ -57,7 +57,6 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->total_docs		= 0;
 	metap->total_terms		= 0;
 	metap->total_len		= 0;
-	metap->idf_sum			= 0.0;
 	metap->root_blkno		= InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
 	metap->first_segment	= InvalidBlockNumber;
@@ -272,8 +271,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
  * This is used when flushing to update global stats
  */
 void
-tp_update_metapage_stats(
-		Relation index, int32 doc_delta, int64 len_delta, float8 idf_delta)
+tp_update_metapage_stats(Relation index, int32 doc_delta, int64 len_delta)
 {
 	Buffer			metabuf;
 	Page			metapage;
@@ -286,7 +284,6 @@ tp_update_metapage_stats(
 
 	metap->total_docs += doc_delta;
 	metap->total_len += len_delta;
-	metap->idf_sum += idf_delta;
 
 	MarkBufferDirty(metabuf);
 	FlushOneBuffer(metabuf);

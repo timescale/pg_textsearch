@@ -39,7 +39,6 @@ typedef struct TpIndexMetaPageData
 	uint64		total_docs;		  /* Total number of documents */
 	uint64		total_terms;	  /* Number of unique terms for IDF calc */
 	uint64		total_len;		  /* Total length of all documents */
-	float8		idf_sum;		  /* Sum of IDF values for avg IDF calc */
 	float4		k1;				  /* BM25 k1 parameter */
 	float4		b;				  /* BM25 b parameter */
 	BlockNumber root_blkno;		  /* Root page of the index tree */
@@ -70,8 +69,8 @@ typedef struct TpDocidPageHeader
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
-extern void			   tp_update_metapage_stats(
-				   Relation index, int32 doc_delta, int64 len_delta, float8 idf_delta);
+extern void
+tp_update_metapage_stats(Relation index, int32 doc_delta, int64 len_delta);
 
 /*
  * Document ID operations for crash recovery

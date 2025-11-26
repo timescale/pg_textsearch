@@ -1,0 +1,302 @@
+-- Test case: segment
+-- Tests segment query functionality with multiple spill cycles and
+-- post-spill inserts
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+\set ECHO none
+SET pg_textsearch.log_scores = false;
+SET enable_seqscan = off;
+-- Create table and index
+CREATE TABLE segment_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE INDEX segment_test_idx ON segment_test USING bm25(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation segment_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+--------------------------------------------------------------------------------
+-- Phase 1: Initial data in memtable
+--------------------------------------------------------------------------------
+INSERT INTO segment_test (content) VALUES ('hello world');
+INSERT INTO segment_test (content) VALUES ('goodbye cruel world');
+INSERT INTO segment_test (content) VALUES ('hello goodbye');
+INSERT INTO segment_test (content) VALUES ('world peace');
+-- Validate BM25 scoring before spill (memtable only)
+SELECT 'Phase 1: memtable only' AS phase;
+         phase          
+------------------------
+ Phase 1: memtable only
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world', 'english', 1.2, 0.75)
+       AS hello_world_valid;
+ hello_world_valid 
+-------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Phase 2: First spill to segment
+--------------------------------------------------------------------------------
+SELECT bm25_spill_index('segment_test_idx') IS NOT NULL AS first_spill;
+ first_spill 
+-------------
+ t
+(1 row)
+
+-- Validate BM25 scoring after first spill (segment only)
+SELECT 'Phase 2: after first spill (segment only)' AS phase;
+                   phase                   
+-------------------------------------------
+ Phase 2: after first spill (segment only)
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world', 'english', 1.2, 0.75)
+       AS hello_world_valid;
+ hello_world_valid 
+-------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Phase 3: Post-spill inserts (memtable + segment)
+--------------------------------------------------------------------------------
+INSERT INTO segment_test (content) VALUES ('hello again friend');
+INSERT INTO segment_test (content) VALUES ('peaceful world harmony');
+INSERT INTO segment_test (content) VALUES ('cruel goodbye forever');
+-- Validate BM25 scoring with mixed data (segment + memtable)
+SELECT 'Phase 3: post-spill inserts (segment + memtable)' AS phase;
+                      phase                       
+--------------------------------------------------
+ Phase 3: post-spill inserts (segment + memtable)
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'cruel', 'english', 1.2, 0.75)
+       AS cruel_valid;
+ cruel_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world', 'english', 1.2, 0.75)
+       AS hello_world_valid;
+ hello_world_valid 
+-------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Phase 4: Second spill (two segments now)
+--------------------------------------------------------------------------------
+SELECT bm25_spill_index('segment_test_idx') IS NOT NULL AS second_spill;
+ second_spill 
+--------------
+ t
+(1 row)
+
+-- Validate BM25 scoring after second spill (two segments)
+SELECT 'Phase 4: after second spill (two segments)' AS phase;
+                   phase                    
+--------------------------------------------
+ Phase 4: after second spill (two segments)
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'cruel', 'english', 1.2, 0.75)
+       AS cruel_valid;
+ cruel_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world', 'english', 1.2, 0.75)
+       AS hello_world_valid;
+ hello_world_valid 
+-------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Phase 5: More inserts after second spill
+--------------------------------------------------------------------------------
+INSERT INTO segment_test (content) VALUES ('hello hello hello');
+INSERT INTO segment_test (content) VALUES ('world world');
+INSERT INTO segment_test (content) VALUES ('new unique term');
+-- Validate with three data sources (two segments + memtable)
+SELECT 'Phase 5: more inserts (two segments + memtable)' AS phase;
+                      phase                      
+-------------------------------------------------
+ Phase 5: more inserts (two segments + memtable)
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'unique', 'english', 1.2, 0.75)
+       AS unique_valid;
+ unique_valid 
+--------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world', 'english', 1.2, 0.75)
+       AS hello_world_valid;
+ hello_world_valid 
+-------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Phase 6: Third spill and final validation
+--------------------------------------------------------------------------------
+SELECT bm25_spill_index('segment_test_idx') IS NOT NULL AS third_spill;
+ third_spill 
+-------------
+ t
+(1 row)
+
+SELECT 'Phase 6: after third spill (three segments)' AS phase;
+                    phase                    
+---------------------------------------------
+ Phase 6: after third spill (three segments)
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello', 'english', 1.2, 0.75)
+       AS hello_valid;
+ hello_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'world', 'english', 1.2, 0.75)
+       AS world_valid;
+ world_valid 
+-------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('segment_test', 'content', 'segment_test_idx',
+                             'hello world cruel peace', 'english', 1.2, 0.75)
+       AS multi_term_valid;
+ multi_term_valid 
+------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Verify row counts and final state
+--------------------------------------------------------------------------------
+SELECT COUNT(*) AS total_documents FROM segment_test;
+ total_documents 
+-----------------
+              10
+(1 row)
+
+-- Show final scores for reference (not validated, just for visibility)
+SELECT id, content,
+       ROUND((content <@> to_bm25query('hello', 'segment_test_idx'))::numeric, 4)
+       AS hello_score
+FROM segment_test
+WHERE content <@> to_bm25query('hello', 'segment_test_idx') < 0
+ORDER BY content <@> to_bm25query('hello', 'segment_test_idx'), id;
+ id |      content       | hello_score 
+----+--------------------+-------------
+  8 | hello hello hello  |     -1.3468
+  1 | hello world        |     -0.9735
+  3 | hello goodbye      |     -0.9735
+  5 | hello again friend |     -0.9735
+(4 rows)
+
+-- Cleanup
+DROP TABLE segment_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

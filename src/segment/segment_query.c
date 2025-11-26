@@ -131,11 +131,14 @@ tp_segment_posting_iterator_init(
 					&iter->dict_entry,
 					sizeof(TpDictEntry));
 
-			iter->dict_entry_idx  = mid;
-			iter->postings_offset = header->postings_offset +
-									iter->dict_entry.posting_offset;
-			iter->initialized = true;
-			iter->finished	  = (iter->dict_entry.posting_count == 0);
+			iter->dict_entry_idx = mid;
+			/*
+			 * dict_entry.posting_offset is already an absolute offset (set
+			 * during segment write as header.postings_offset + relative_off)
+			 */
+			iter->postings_offset = iter->dict_entry.posting_offset;
+			iter->initialized	  = true;
+			iter->finished		  = (iter->dict_entry.posting_count == 0);
 
 			if (term_buffer)
 				pfree(term_buffer);
@@ -219,35 +222,26 @@ tp_segment_posting_iterator_next(
 }
 
 /*
- * Process a term across all segments using zero-copy iteration
- * This function is called from the query execution path in operator.c
+ * Score documents matching a term across all segments.
+ * IDF is pre-computed using unified doc_freq from memtable + segments.
  */
 void
 tp_process_term_in_segments(
 		Relation		   index,
 		BlockNumber		   first_segment,
 		const char		  *term,
-		int32			   total_docs,
-		float8			   avg_idf,
+		float4			   idf,
 		float4			   query_frequency,
 		float4			   k1,
 		float4			   b,
 		float4			   avg_doc_len,
-		void			  *doc_scores_hash, /* HTAB* */
+		void			  *doc_scores_hash,
 		TpLocalIndexState *local_state)
 {
 	BlockNumber				 current = first_segment;
 	TpSegmentReader			*reader	 = NULL;
 	TpSegmentPostingIterator iter;
 	TpSegmentPosting		*posting;
-
-	/*
-	 * Single pass: process each segment independently.
-	 * For the naive implementation, we calculate IDF per-segment based on
-	 * that segment's document frequency. This avoids the need for a
-	 * double traversal while still providing reasonable scoring.
-	 */
-	current = first_segment;
 	while (current != InvalidBlockNumber)
 	{
 		TpSegmentHeader *header;
@@ -260,19 +254,10 @@ tp_process_term_in_segments(
 		/* Initialize iterator for this term */
 		if (tp_segment_posting_iterator_init(&iter, reader, term))
 		{
-			float4 idf;
-
-			/*
-			 * Calculate IDF for this segment using its document frequency.
-			 * This is an approximation but avoids the double traversal.
-			 */
-			idf = tp_calculate_idf_with_epsilon(
-					iter.dict_entry.doc_freq, total_docs, avg_idf);
-
 			/* Process each posting using zero-copy iteration */
 			while (tp_segment_posting_iterator_next(&iter, &posting))
 			{
-				float4				tf = posting->frequency;
+				float4				tf;
 				float4				doc_len;
 				float4				term_score;
 				double				numerator_d, denominator_d;
@@ -281,12 +266,22 @@ tp_process_term_in_segments(
 				HTAB			   *hash_table = (HTAB *)doc_scores_hash;
 				ItemPointerData		local_ctid;
 
+				/* Check for NULL posting */
+				if (posting == NULL)
+				{
+					elog(ERROR,
+						 "tp_process_term_in_segments: posting is NULL!");
+				}
+
+				tf = posting->frequency;
+
 				/* Copy ctid to avoid packed member alignment issues */
 				local_ctid = posting->ctid;
 
 				/* Look up document length */
 				doc_len = (float4)
 						tp_segment_get_document_length(reader, &local_ctid);
+
 				if (doc_len <= 0.0f)
 				{
 					/* Document not found in this segment, try memtable */
@@ -341,4 +336,115 @@ tp_process_term_in_segments(
 		/* Close this segment */
 		tp_segment_close(reader);
 	}
+}
+
+/*
+ * Sum doc_freq for a term across all segments.
+ */
+uint32
+tp_segment_get_doc_freq(
+		Relation index, BlockNumber first_segment, const char *term)
+{
+	BlockNumber		 current	 = first_segment;
+	TpSegmentReader *reader		 = NULL;
+	uint32			 doc_freq	 = 0;
+	char			*term_buffer = NULL;
+	uint32			 buffer_size = 0;
+
+	while (current != InvalidBlockNumber)
+	{
+		TpSegmentHeader *header;
+		TpDictionary	 dict_header;
+		int				 left, right;
+
+		reader = tp_segment_open(index, current);
+		if (!reader)
+			break;
+
+		header = reader->header;
+		if (header->num_terms == 0 || header->dictionary_offset == 0)
+		{
+			current = header->next_segment;
+			tp_segment_close(reader);
+			continue;
+		}
+
+		tp_segment_read(
+				reader,
+				header->dictionary_offset,
+				&dict_header,
+				sizeof(dict_header.num_terms));
+
+		left  = 0;
+		right = dict_header.num_terms - 1;
+
+		while (left <= right)
+		{
+			TpStringEntry string_entry;
+			int			  cmp;
+			uint32		  string_offset_value;
+			uint32		  string_offset;
+			int			  mid = left + (right - left) / 2;
+
+			tp_segment_read(
+					reader,
+					header->dictionary_offset + sizeof(dict_header.num_terms) +
+							(mid * sizeof(uint32)),
+					&string_offset_value,
+					sizeof(uint32));
+
+			string_offset = header->strings_offset + string_offset_value;
+
+			tp_segment_read(
+					reader,
+					string_offset,
+					&string_entry.length,
+					sizeof(uint32));
+
+			if (string_entry.length + 1 > buffer_size)
+			{
+				if (term_buffer)
+					pfree(term_buffer);
+				buffer_size = string_entry.length + 1;
+				term_buffer = palloc(buffer_size);
+			}
+
+			tp_segment_read(
+					reader,
+					string_offset + sizeof(uint32),
+					term_buffer,
+					string_entry.length);
+			term_buffer[string_entry.length] = '\0';
+
+			cmp = strcmp(term, term_buffer);
+
+			if (cmp == 0)
+			{
+				TpDictEntry dict_entry;
+				tp_segment_read(
+						reader,
+						header->entries_offset + (mid * sizeof(TpDictEntry)),
+						&dict_entry,
+						sizeof(TpDictEntry));
+				doc_freq += dict_entry.doc_freq;
+				break;
+			}
+			else if (cmp < 0)
+			{
+				right = mid - 1;
+			}
+			else
+			{
+				left = mid + 1;
+			}
+		}
+
+		current = header->next_segment;
+		tp_segment_close(reader);
+	}
+
+	if (term_buffer)
+		pfree(term_buffer);
+
+	return doc_freq;
 }

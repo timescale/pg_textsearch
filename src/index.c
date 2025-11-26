@@ -2062,17 +2062,31 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 		tp_clear_memtable(index_state);
 
-		/* Update metapage with first segment if not already set */
+		/* Link new segment as chain head */
 		metabuf = ReadBuffer(index_rel, 0);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metapage = BufferGetPage(metabuf);
 		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-		if (metap->first_segment == InvalidBlockNumber)
+		if (metap->first_segment != InvalidBlockNumber)
 		{
-			metap->first_segment = segment_root;
-			MarkBufferDirty(metabuf);
+			/* Point new segment to old chain head */
+			Buffer			 seg_buf;
+			Page			 seg_page;
+			TpSegmentHeader *seg_header;
+
+			seg_buf = ReadBuffer(index_rel, segment_root);
+			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+			seg_page				 = BufferGetPage(seg_buf);
+			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
+											   SizeOfPageHeaderData);
+			seg_header->next_segment = metap->first_segment;
+			MarkBufferDirty(seg_buf);
+			UnlockReleaseBuffer(seg_buf);
 		}
+
+		metap->first_segment = segment_root;
+		MarkBufferDirty(metabuf);
 
 		UnlockReleaseBuffer(metabuf);
 	}

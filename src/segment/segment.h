@@ -244,13 +244,16 @@ extern void tp_process_term_in_segments(
 		Relation				  index,
 		BlockNumber				  first_segment,
 		const char				 *term,
-		int32					  total_docs,
-		float8					  avg_idf,
+		float4					  idf, /* Pre-computed IDF using unified df */
 		float4					  query_frequency,
 		float4					  k1,
 		float4					  b,
 		float4					  avg_doc_len,
 		void					 *doc_scores_hash, /* HTAB* */
 		struct TpLocalIndexState *local_state);
+
+/* Look up doc_freq for a term from segments (for operator scoring) */
+extern uint32 tp_segment_get_doc_freq(
+		Relation index, BlockNumber first_segment, const char *term);
 
 #endif /* SEGMENT_H */

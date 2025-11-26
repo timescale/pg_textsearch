@@ -910,14 +910,14 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 				local_state->dsa, memtable->string_hash_handle);
 		if (string_table)
 		{
-			/* Delete all entries using exclusive lock for modification */
-			dshash_seq_init(&status, string_table, true); /* exclusive lock */
-			while ((entry = dshash_seq_next(&status)) != NULL)
-			{
-				/* This deletes the current entry and advances the iterator */
-				dshash_delete_current(&status);
-			}
-			dshash_seq_term(&status);
+			/*
+			 * Use tp_string_table_clear to properly free all DSA allocations
+			 * (strings and posting lists) and update memory accounting.
+			 */
+			tp_string_table_clear(
+					local_state->dsa,
+					&local_state->shared->memory_usage,
+					string_table);
 			dshash_detach(string_table);
 
 			/* Reset term count but keep handle valid */
@@ -945,8 +945,11 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		}
 	}
 
-	/* Reset memory usage tracking */
-	local_state->shared->memory_usage.memory_used = 0;
+	/*
+	 * Don't reset memory_used to 0 manually - tp_string_table_clear already
+	 * properly decremented it for each freed allocation. The remaining
+	 * memory_used should be just for the memtable struct itself.
+	 */
 	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
 	 * as they represent the overall index state, not just the memtable */
 }
