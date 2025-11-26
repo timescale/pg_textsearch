@@ -58,6 +58,9 @@ EOF
 
     createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+
+    # Load validation functions
+    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -f "${SCRIPT_DIR}/../sql/validation.sql" >/dev/null
 }
 
 run_sql() {
@@ -247,45 +250,72 @@ test_multiple_spills_concurrent_reads() {
 }
 
 #
-# Test 4: BM25 scoring consistency across segment + memtable
+# Test 4: Validated BM25 scoring across segment + memtable
 #
-test_bm25_scoring_consistency() {
-    log "Test 4: BM25 scoring consistency across segment + memtable"
+test_bm25_scoring_validated() {
+    log "Test 4: Validated BM25 scoring across segment + memtable"
 
     run_sql_quiet "CREATE TABLE score_test (id SERIAL PRIMARY KEY, content TEXT);"
 
     # Insert known documents
     run_sql_quiet "INSERT INTO score_test (content) VALUES
-        ('alpha alpha alpha'),
-        ('alpha beta'),
-        ('beta beta beta'),
-        ('gamma');"
+        ('hello world'),
+        ('goodbye cruel world'),
+        ('hello goodbye'),
+        ('world peace');"
 
-    run_sql_quiet "CREATE INDEX score_idx ON score_test USING bm25(content) WITH (text_config='english');"
+    run_sql_quiet "CREATE INDEX score_idx ON score_test USING bm25(content) WITH (text_config='english', k1=1.2, b=0.75);"
 
-    # Get score before spill
-    local score_before=$(run_sql_value "SELECT ROUND((content <@> to_bm25query('alpha', 'score_idx'))::numeric, 4) FROM score_test WHERE id = 1;")
+    # Phase 1: Validate in memtable only
+    local valid_memtable=$(run_sql_value "SELECT validate_bm25_scoring('score_test', 'content', 'score_idx', 'hello world', 'english', 1.2, 0.75);")
+    if [ "$valid_memtable" != "t" ]; then
+        error "❌ Test 4 failed: BM25 validation failed in memtable phase"
+    fi
+    info "Phase 1 (memtable only): validated"
 
+    # Phase 2: Spill to segment
     run_sql_quiet "SELECT bm25_spill_index('score_idx');"
 
-    # Add more documents to memtable
-    run_sql_quiet "INSERT INTO score_test (content) VALUES
-        ('alpha delta'),
-        ('epsilon');"
-
-    # Get score after spill (should account for unified IDF)
-    local score_after=$(run_sql_value "SELECT ROUND((content <@> to_bm25query('alpha', 'score_idx'))::numeric, 4) FROM score_test WHERE id = 1;")
-
-    info "Score for 'alpha alpha alpha' before spill: $score_before"
-    info "Score for 'alpha alpha alpha' after spill: $score_after"
-
-    # Scores should change due to IDF recalculation with new docs
-    # But both should be negative (valid BM25 scores)
-    if [[ "$score_before" == -* ]] && [[ "$score_after" == -* ]]; then
-        log "✅ Test 4 passed: Scores are valid BM25 scores"
-    else
-        error "❌ Test 4 failed: Invalid scores before=$score_before after=$score_after"
+    local valid_segment=$(run_sql_value "SELECT validate_bm25_scoring('score_test', 'content', 'score_idx', 'hello world', 'english', 1.2, 0.75);")
+    if [ "$valid_segment" != "t" ]; then
+        error "❌ Test 4 failed: BM25 validation failed after spill (segment only)"
     fi
+    info "Phase 2 (segment only): validated"
+
+    # Phase 3: Add more documents to memtable (mixed segment + memtable)
+    run_sql_quiet "INSERT INTO score_test (content) VALUES
+        ('hello again friend'),
+        ('peaceful world harmony'),
+        ('cruel goodbye forever');"
+
+    local valid_mixed=$(run_sql_value "SELECT validate_bm25_scoring('score_test', 'content', 'score_idx', 'hello world', 'english', 1.2, 0.75);")
+    if [ "$valid_mixed" != "t" ]; then
+        error "❌ Test 4 failed: BM25 validation failed with mixed segment + memtable"
+    fi
+    info "Phase 3 (segment + memtable): validated"
+
+    # Phase 4: Second spill
+    run_sql_quiet "SELECT bm25_spill_index('score_idx');"
+
+    local valid_two_segments=$(run_sql_value "SELECT validate_bm25_scoring('score_test', 'content', 'score_idx', 'hello world', 'english', 1.2, 0.75);")
+    if [ "$valid_two_segments" != "t" ]; then
+        error "❌ Test 4 failed: BM25 validation failed with two segments"
+    fi
+    info "Phase 4 (two segments): validated"
+
+    # Phase 5: More inserts after second spill
+    run_sql_quiet "INSERT INTO score_test (content) VALUES
+        ('hello hello hello'),
+        ('world world'),
+        ('new unique term');"
+
+    local valid_final=$(run_sql_value "SELECT validate_bm25_scoring('score_test', 'content', 'score_idx', 'hello world', 'english', 1.2, 0.75);")
+    if [ "$valid_final" != "t" ]; then
+        error "❌ Test 4 failed: BM25 validation failed with two segments + memtable"
+    fi
+    info "Phase 5 (two segments + memtable): validated"
+
+    log "✅ Test 4 passed: All BM25 scores validated against reference implementation"
 
     run_sql_quiet "DROP TABLE score_test CASCADE;"
 }
@@ -376,7 +406,7 @@ run_segment_tests() {
     test_concurrent_segment_reads
     test_concurrent_memtable_write_segment_read
     test_multiple_spills_concurrent_reads
-    test_bm25_scoring_consistency
+    test_bm25_scoring_validated
     test_doc_length_lookup
     test_read_during_spill
 
