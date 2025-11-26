@@ -91,6 +91,13 @@ jobs:
           echo "✗ Concurrency tests failed"
           exit 1
         fi
+        echo "Running segment tests..."
+        if (cd test/scripts && ./segment.sh); then
+          echo "✓ Segment tests passed"
+        else
+          echo "✗ Segment tests failed"
+          exit 1
+        fi
 
     - name: Upload test results on failure
       if: failure()

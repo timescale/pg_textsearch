@@ -23,7 +23,8 @@ OBJS = \
 	src/state.o \
 	src/dump.o \
 	src/segment/segment.o \
-	src/segment/dictionary.o
+	src/segment/dictionary.o \
+	src/segment/segment_query.o
 
 # Shared library target
 MODULE_big = pg_textsearch
@@ -35,7 +36,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic deletion vacuum dropped empty index inheritance limits lock manyterms memory mixed queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings updates vector
+REGRESS = aerodocs basic deletion vacuum dropped empty index inheritance limits lock manyterms memory mixed queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 segment strings updates vector
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
@@ -64,23 +65,27 @@ clean: clean-test-dirs
 clean-test-dirs:
 	@rm -rf tmp_check_shared
 
-# Shell script test targets
-test-concurrency: install
+# Shell script test targets (assume extension is already installed)
+test-concurrency:
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./concurrency.sh
 
-test-recovery: install
+test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 
-test-shell: test-concurrency test-recovery
+test-segment:
+	@echo "Running multi-backend segment tests..."
+	@cd test/scripts && ./segment.sh
+
+test-shell: test-concurrency test-recovery test-segment
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
-# Override installcheck to use our custom test setup
-installcheck: test
+# Override installcheck to run all tests (SQL regression + shell scripts)
+installcheck: test test-shell
 
 # Generate expected output files from current test results
 expected:
@@ -151,13 +156,14 @@ help:
 	@echo "  make clean        - Clean build artifacts and test directories"
 	@echo ""
 	@echo "Testing targets:"
-	@echo "  make test         - Run regression tests (alias for installcheck)"
-	@echo "  make installcheck - Run regression tests"
+	@echo "  make test         - Run SQL regression tests only"
+	@echo "  make installcheck - Run all tests (SQL + shell scripts)"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
-	@echo "  make test-shell   - Run shell-based tests (concurrency + recovery)"
+	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
+	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -174,4 +180,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all expected lint-format format format-check format-diff format-single help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-shell test-all expected lint-format format format-check format-diff format-single help

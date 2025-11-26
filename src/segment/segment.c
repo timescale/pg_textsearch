@@ -808,21 +808,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Dictionary immediately follows header */
 	header.dictionary_offset = sizeof(TpSegmentHeader);
 
-	/* Get corpus statistics from metapage */
-	{
-		TpIndexMetaPage metap = tp_get_metapage(index);
-		if (metap)
-		{
-			header.num_docs		= metap->total_docs;
-			header.total_tokens = metap->total_len;
-			pfree(metap);
-		}
-		else
-		{
-			header.num_docs		= 0;
-			header.total_tokens = 0;
-		}
-	}
+	/* Get corpus statistics from shared state (most up-to-date values) */
+	header.num_docs		= state->shared->total_docs;
+	header.total_tokens = state->shared->total_len;
 
 	/* Write header (will update with correct values later) */
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
@@ -953,9 +941,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	header_page = BufferGetPage(header_buf);
 
 	/*
-	 * Update only the offset fields that were calculated after writing data.
-	 * Do NOT update num_terms, num_docs, or total_tokens as they were already
-	 * set correctly when the header was first written.
+	 * Update header fields that were calculated after writing data.
+	 * num_docs is set from write_segment_doc_lengths() return value which
+	 * is the actual count of documents in THIS segment (not total corpus).
 	 */
 	existing_header					= (TpSegmentHeader *)((char *)header_page +
 										  SizeOfPageHeaderData);
@@ -963,6 +951,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header->entries_offset = header.entries_offset;
 	existing_header->postings_offset	= header.postings_offset;
 	existing_header->doc_lengths_offset = header.doc_lengths_offset;
+	existing_header->num_docs			= header.num_docs;
 	existing_header->data_size			= header.data_size;
 	existing_header->num_pages			= header.num_pages;
 	existing_header->page_index			= header.page_index;

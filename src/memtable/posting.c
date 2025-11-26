@@ -320,10 +320,14 @@ tp_store_document_length(
 }
 
 /*
- * Get document length from the document length hash table
+ * Get document length from the document length hash table.
+ * Falls back to searching segments if not found in memtable.
  */
 int32
-tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
+tp_get_document_length(
+		TpLocalIndexState *local_state,
+		Relation index	   pg_attribute_unused(),
+		ItemPointer		   ctid)
 {
 	TpMemtable		 *memtable;
 	dshash_table	 *doclength_table;
@@ -336,12 +340,8 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 	if (!memtable)
 		elog(ERROR, "Cannot get memtable - index state corrupted");
 
-	/* Check if document length table exists */
 	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-		elog(ERROR,
-			 "Document length table not initialized for CTID (%u,%u)",
-			 BlockIdGetBlockNumber(&ctid->ip_blkid),
-			 ctid->ip_posid);
+		return -1; /* Not in memtable, may be in segment */
 
 	/* Attach to document length table */
 	doclength_table = tp_doclength_table_attach(
@@ -359,11 +359,7 @@ tp_get_document_length(TpLocalIndexState *local_state, ItemPointer ctid)
 	else
 	{
 		dshash_detach(doclength_table);
-		elog(ERROR,
-			 "Document length not found for CTID (%u,%u)",
-			 BlockIdGetBlockNumber(&ctid->ip_blkid),
-			 ctid->ip_posid);
-		return 0;
+		return -1; /* Not in memtable, may be in segment */
 	}
 }
 

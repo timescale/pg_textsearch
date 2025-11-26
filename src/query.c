@@ -22,6 +22,7 @@
 #include "metapage.h"
 #include "operator.h"
 #include "query.h"
+#include "segment/segment.h"
 #include "state.h"
 #include "vector.h"
 
@@ -341,11 +342,12 @@ calculate_term_score(
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	text			  *text_arg = PG_GETARG_TEXT_PP(0);
-	TpQuery			  *query	= (TpQuery *)PG_GETARG_POINTER(1);
-	char			  *index_name;
-	char			  *query_text = get_tpquery_text(query);
-	Oid				   index_oid;
+	text	*text_arg = PG_GETARG_TEXT_PP(0);
+	TpQuery *query	  = (TpQuery *)PG_GETARG_POINTER(1);
+	char	*index_name;
+	char	*query_text = get_tpquery_text(query);
+	Oid		 index_oid;
+
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	Oid				   text_config_oid;
@@ -446,15 +448,30 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 				continue; /* Query term not in document */
 			}
 
-			/* Get posting list for this term */
+			/* Sum doc_freq from memtable + segments for unified IDF */
+			uint32 unified_doc_freq	 = 0;
+			uint32 memtable_doc_freq = 0;
+			uint32 segment_doc_freq	 = 0;
+
 			posting_list = tp_get_posting_list(index_state, query_lexeme);
-			if (!posting_list || posting_list->doc_count == 0)
+			if (posting_list && posting_list->doc_count > 0)
+				memtable_doc_freq = posting_list->doc_count;
+
+			if (metap->first_segment != InvalidBlockNumber)
 			{
-				continue; /* Term not in index, skip */
+				segment_doc_freq = tp_segment_get_doc_freq(
+						index_rel, metap->first_segment, query_lexeme);
 			}
 
-			/* Calculate IDF for this term */
-			idf = tp_calculate_idf(posting_list->doc_count, total_docs);
+			unified_doc_freq = memtable_doc_freq + segment_doc_freq;
+			if (unified_doc_freq == 0)
+			{
+				pfree(query_lexeme);
+				continue;
+			}
+
+			/* Calculate IDF using unified doc_freq */
+			idf = tp_calculate_idf(unified_doc_freq, total_docs);
 
 			/* Calculate BM25 term score */
 			term_score = calculate_term_score(
