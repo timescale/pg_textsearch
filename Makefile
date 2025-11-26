@@ -74,7 +74,11 @@ test-recovery: install
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 
-test-shell: test-concurrency test-recovery
+test-segment: install
+	@echo "Running multi-backend segment tests..."
+	@cd test/scripts && ./segment.sh
+
+test-shell: test-concurrency test-recovery test-segment
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -156,9 +160,10 @@ help:
 	@echo "  make installcheck - Run regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
-	@echo "  make test-shell   - Run shell-based tests (concurrency + recovery)"
+	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
+	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -175,4 +180,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-shell test-all expected lint-format format format-check format-diff format-single help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-shell test-all expected lint-format format format-check format-diff format-single help

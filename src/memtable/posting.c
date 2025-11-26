@@ -340,12 +340,8 @@ tp_get_document_length(
 	if (!memtable)
 		elog(ERROR, "Cannot get memtable - index state corrupted");
 
-	/* Check if document length table exists */
 	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-	{
-		/* Not an error anymore - document may be in segment */
-		return -1;
-	}
+		return -1; /* Not in memtable, may be in segment */
 
 	/* Attach to document length table */
 	doclength_table = tp_doclength_table_attach(
@@ -363,8 +359,7 @@ tp_get_document_length(
 	else
 	{
 		dshash_detach(doclength_table);
-		/* Return -1 instead of error - document may be in segment */
-		return -1;
+		return -1; /* Not in memtable, may be in segment */
 	}
 }
 
