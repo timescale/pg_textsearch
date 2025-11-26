@@ -719,13 +719,17 @@ tp_rebuild_posting_lists_from_docids(
 			{
 				document_text = DatumGetTextPP(text_datum);
 
-				/* Use shared helper to process document text and rebuild
-				 * posting lists */
+				/*
+				 * Use shared helper to process document text and rebuild
+				 * posting lists. Pass NULL for index_rel to disable auto-spill
+				 * during recovery (we're rebuilding from docid pages).
+				 */
 				if (tp_process_document_text(
 							document_text,
 							ctid,
 							metap->text_config_oid,
 							local_state,
+							NULL, /* No auto-spill during recovery */
 							&doc_length))
 				{
 					/* Update corpus statistics */
