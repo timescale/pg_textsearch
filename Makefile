@@ -84,8 +84,8 @@ test-shell: test-concurrency test-recovery test-segment
 test-all: test test-shell
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
-# Override installcheck to use our custom test setup
-installcheck: test
+# Override installcheck to run all tests (SQL regression + shell scripts)
+installcheck: test test-shell
 
 # Generate expected output files from current test results
 expected:
@@ -156,8 +156,8 @@ help:
 	@echo "  make clean        - Clean build artifacts and test directories"
 	@echo ""
 	@echo "Testing targets:"
-	@echo "  make test         - Run regression tests (alias for installcheck)"
-	@echo "  make installcheck - Run regression tests"
+	@echo "  make test         - Run SQL regression tests only"
+	@echo "  make installcheck - Run all tests (SQL + shell scripts)"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
 	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
