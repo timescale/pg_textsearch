@@ -14,6 +14,7 @@
 #include <commands/vacuum.h>
 #include <executor/spi.h>
 #include <math.h>
+#include <miscadmin.h>
 #include <nodes/execnodes.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
@@ -36,6 +37,7 @@
 #include "dump.h"
 #include "index.h"
 #include "limit.h"
+#include "memory.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "metapage.h"
@@ -103,9 +105,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!index_state || !index_rel)
 		return;
 
-	/* Check if memory limit is exceeded */
-	if (tp_get_memory_usage(&index_state->shared->memory_usage) <=
-		tp_get_memory_limit())
+	/* Check if memory limit is exceeded using DSA total size */
+	if (tp_get_dsa_memory_usage(index_state->dsa) < tp_get_memory_limit())
 		return;
 
 	/* Write the segment */
@@ -766,8 +767,11 @@ tp_bulkdelete(
 }
 
 /* Tapir-specific build phases */
-#define TP_PHASE_BUILD_MEMTABLE 2
-#define TP_PHASE_WRITE_METADATA 3
+#define TP_PHASE_LOADING 2
+#define TP_PHASE_WRITING 3
+
+/* Progress reporting interval (tuples) */
+#define TP_PROGRESS_REPORT_INTERVAL 1000
 
 char *
 tp_buildphasename(int64 phase)
@@ -776,10 +780,10 @@ tp_buildphasename(int64 phase)
 	{
 	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
 		return "initializing";
-	case TP_PHASE_BUILD_MEMTABLE:
-		return "building memtable";
-	case TP_PHASE_WRITE_METADATA:
-		return "writing metadata";
+	case TP_PHASE_LOADING:
+		return "loading tuples";
+	case TP_PHASE_WRITING:
+		return "writing index";
 	default:
 		return NULL;
 	}
@@ -1079,9 +1083,21 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	index_state = tp_create_shared_index_state(
 			RelationGetRelid(index), RelationGetRelid(heap));
 
-	/* Report memtable building phase */
+	/* Report loading phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+
+	/*
+	 * Report estimated tuple count for progress tracking.
+	 * Use reltuples for estimate (may be -1 if never analyzed).
+	 */
+	{
+		double reltuples  = heap->rd_rel->reltuples;
+		int64  tuples_est = (reltuples > 0) ? (int64)reltuples : 0;
+
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_TOTAL, tuples_est);
+	}
 
 	/* Prepare to scan table */
 	snapshot = tp_setup_table_scan(heap, &scan, &slot);
@@ -1096,7 +1112,20 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				index_state,
 				index,
 				&total_docs);
+
+		/* Report progress every TP_PROGRESS_REPORT_INTERVAL tuples */
+		if (total_docs % TP_PROGRESS_REPORT_INTERVAL == 0)
+		{
+			pgstat_progress_update_param(
+					PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
+
+			/* Allow query cancellation */
+			CHECK_FOR_INTERRUPTS();
+		}
 	}
+
+	/* Report final tuple count */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
 
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
@@ -1107,9 +1136,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		UnregisterSnapshot(snapshot);
 #endif
 
-	/* Report metadata writing phase */
+	/* Report writing phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITE_METADATA);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
 
 	/* Finalize posting lists and update statistics */
 	tp_build_finalize_and_update_stats(

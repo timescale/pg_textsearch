@@ -35,13 +35,9 @@ int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;
  * Free a posting list and its entries array
  */
 void
-tp_free_posting_list(
-		dsa_area	  *area,
-		TpMemoryUsage *memory_usage,
-		dsa_pointer	   posting_list_dp)
+tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
 {
 	TpPostingList *posting_list;
-	Size		   entries_size;
 
 	if (!DsaPointerIsValid(posting_list_dp))
 		return;
@@ -50,14 +46,10 @@ tp_free_posting_list(
 
 	/* Free entries array if it exists */
 	if (DsaPointerIsValid(posting_list->entries_dp))
-	{
-		entries_size = posting_list->capacity * sizeof(TpPostingEntry);
-		tp_dsa_free(
-				area, memory_usage, posting_list->entries_dp, entries_size);
-	}
+		dsa_free(area, posting_list->entries_dp);
 
 	/* Free the posting list structure itself */
-	tp_dsa_free(area, memory_usage, posting_list_dp, sizeof(TpPostingList));
+	dsa_free(area, posting_list_dp);
 }
 
 /* Helper function to get entries array from posting list */
@@ -102,16 +94,14 @@ tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
  * Returns the DSA pointer to the allocated posting list
  */
 dsa_pointer
-tp_alloc_posting_list(dsa_area *dsa, TpMemoryUsage *memory_usage)
+tp_alloc_posting_list(dsa_area *dsa)
 {
 	dsa_pointer	   posting_list_dp;
 	TpPostingList *posting_list;
 
 	Assert(dsa != NULL);
-	Assert(memory_usage != NULL);
 
-	posting_list_dp =
-			tp_dsa_allocate(dsa, memory_usage, sizeof(TpPostingList));
+	posting_list_dp = dsa_allocate(dsa, sizeof(TpPostingList));
 	if (!DsaPointerIsValid(posting_list_dp))
 		elog(ERROR, "Failed to allocate posting list in DSA");
 
@@ -153,13 +143,9 @@ tp_add_document_to_posting_list(
 								   ? TP_INITIAL_POSTING_LIST_CAPACITY
 								   : posting_list->capacity *
 											 tp_posting_list_growth_factor;
-		Size  old_size	   = posting_list->capacity * sizeof(TpPostingEntry);
 		Size  new_size	   = new_capacity * sizeof(TpPostingEntry);
 
-		new_entries_dp = tp_dsa_allocate(
-				local_state->dsa,
-				&local_state->shared->memory_usage,
-				new_size);
+		new_entries_dp = dsa_allocate(local_state->dsa, new_size);
 		if (!DsaPointerIsValid(new_entries_dp))
 			elog(ERROR, "Failed to allocate posting entries in DSA");
 
@@ -175,11 +161,7 @@ tp_add_document_to_posting_list(
 				   old_entries,
 				   posting_list->doc_count * sizeof(TpPostingEntry));
 
-			tp_dsa_free(
-					local_state->dsa,
-					&local_state->shared->memory_usage,
-					posting_list->entries_dp,
-					old_size);
+			dsa_free(local_state->dsa, posting_list->entries_dp);
 		}
 
 		posting_list->entries_dp = new_entries_dp;
@@ -314,6 +296,14 @@ tp_store_document_length(
 			dshash_find_or_insert(doclength_table, ctid, &found);
 	entry->ctid		  = *ctid;
 	entry->doc_length = doc_length;
+
+	/*
+	 * Note: We don't track dshash overhead for doc_lengths table here because
+	 * there's no corresponding cleanup that subtracts it. The table is
+	 * destroyed with dshash_destroy() in tp_free_shared_state() without
+	 * tracking individual entry overhead. The string table uses
+	 * tp_string_table_clear() which does track this overhead.
+	 */
 
 	dshash_release_lock(doclength_table, entry);
 	dshash_detach(doclength_table);
