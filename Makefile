@@ -65,16 +65,16 @@ clean: clean-test-dirs
 clean-test-dirs:
 	@rm -rf tmp_check_shared
 
-# Shell script test targets
-test-concurrency: install
+# Shell script test targets (assume extension is already installed)
+test-concurrency:
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./concurrency.sh
 
-test-recovery: install
+test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 
-test-segment: install
+test-segment:
 	@echo "Running multi-backend segment tests..."
 	@cd test/scripts && ./segment.sh
 
