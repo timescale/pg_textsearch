@@ -65,6 +65,12 @@ tp_segment_posting_iterator_init(
 	iter->finished			= true; /* Default to finished if not found */
 	iter->has_active_access = false;
 
+	/* Initialize the direct access structure to prevent garbage values */
+	iter->current_access.buffer	   = InvalidBuffer;
+	iter->current_access.page	   = NULL;
+	iter->current_access.data	   = NULL;
+	iter->current_access.available = 0;
+
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
 

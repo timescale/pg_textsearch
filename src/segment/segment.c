@@ -334,6 +334,14 @@ tp_segment_read(
 /*
  * Get direct access to data in a segment page (zero-copy)
  * Returns true if successful, false if data spans multiple pages
+ *
+ * IMPORTANT: This function reuses reader->current_buffer when possible to
+ * avoid creating multiple buffer pins on the same page. The buffer is locked
+ * with BUFFER_LOCK_SHARE and must be released by calling
+ * tp_segment_release_direct().
+ *
+ * Unlike tp_segment_read() which unlocks immediately after copying, this
+ * function keeps the buffer locked so the caller can safely access the data.
  */
 bool
 tp_segment_get_direct(
@@ -347,6 +355,12 @@ tp_segment_get_direct(
 	Buffer		buf;
 	Page		page;
 	BlockNumber physical_block;
+
+	/* Initialize access structure to invalid state */
+	access->buffer	  = InvalidBuffer;
+	access->page	  = NULL;
+	access->data	  = NULL;
+	access->available = 0;
 
 	/* Check if data spans pages - if so, can't do zero-copy */
 	if (page_offset + len > SEGMENT_DATA_PER_PAGE)
@@ -364,8 +378,32 @@ tp_segment_get_direct(
 	/* Get physical block from page map */
 	physical_block = reader->page_map[logical_page];
 
-	/* Read the physical page */
-	buf = ReadBuffer(reader->index, physical_block);
+	/*
+	 * Check if this page is already cached in reader->current_buffer.
+	 * If so, reuse it to avoid creating another buffer pin on the same page.
+	 */
+	if (reader->current_logical_page == logical_page &&
+		BufferIsValid(reader->current_buffer))
+	{
+		buf = reader->current_buffer;
+	}
+	else
+	{
+		/* Release old buffer if any */
+		if (BufferIsValid(reader->current_buffer))
+		{
+			ReleaseBuffer(reader->current_buffer);
+			reader->current_buffer		 = InvalidBuffer;
+			reader->current_logical_page = UINT32_MAX;
+		}
+
+		/* Read the physical page - this pins the buffer */
+		buf = ReadBuffer(reader->index, physical_block);
+
+		/* Cache this buffer for future use */
+		reader->current_buffer		 = buf;
+		reader->current_logical_page = logical_page;
+	}
 
 	/* Lock buffer for reading */
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -373,7 +411,11 @@ tp_segment_get_direct(
 	/* Get page and data pointer */
 	page = BufferGetPage(buf);
 
-	/* Fill in access structure */
+	/* Fill in access structure - note: we DON'T store the buffer here
+	 * because we're reusing reader->current_buffer. The caller should
+	 * call tp_segment_release_direct() which will just unlock, not release
+	 * the pin.
+	 */
 	access->buffer	  = buf;
 	access->page	  = page;
 	access->data	  = (char *)page + SizeOfPageHeaderData + page_offset;
@@ -384,6 +426,12 @@ tp_segment_get_direct(
 
 /*
  * Release direct access to segment page
+ *
+ * Since tp_segment_get_direct() reuses reader->current_buffer, we only
+ * unlock the buffer here - we do NOT release the pin. The buffer pin
+ * will be released when:
+ * - tp_segment_read() or tp_segment_get_direct() reads a different page
+ * - tp_segment_close() is called
  */
 void
 tp_segment_release_direct(TpSegmentDirectAccess *access)
@@ -391,7 +439,7 @@ tp_segment_release_direct(TpSegmentDirectAccess *access)
 	if (BufferIsValid(access->buffer))
 	{
 		LockBuffer(access->buffer, BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(access->buffer);
+		/* DO NOT release the buffer - it's managed by the reader */
 		access->buffer = InvalidBuffer;
 		access->page   = NULL;
 		access->data   = NULL;
