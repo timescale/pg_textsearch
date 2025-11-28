@@ -19,13 +19,6 @@
 /* External GUC variable */
 extern int tp_index_memory_limit;
 
-/*
- * Get current DSA memory usage using dsa_get_total_size().
- *
- * This returns the total size of all DSA segments allocated for this area.
- * It captures all memory including dshash internal structures, bucket
- * arrays, and free space within segments.
- */
 Size
 tp_get_dsa_memory_usage(dsa_area *dsa)
 {

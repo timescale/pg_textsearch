@@ -297,14 +297,6 @@ tp_store_document_length(
 	entry->ctid		  = *ctid;
 	entry->doc_length = doc_length;
 
-	/*
-	 * Note: We don't track dshash overhead for doc_lengths table here because
-	 * there's no corresponding cleanup that subtracts it. The table is
-	 * destroyed with dshash_destroy() in tp_free_shared_state() without
-	 * tracking individual entry overhead. The string table uses
-	 * tp_string_table_clear() which does track this overhead.
-	 */
-
 	dshash_release_lock(doclength_table, entry);
 	dshash_detach(doclength_table);
 }

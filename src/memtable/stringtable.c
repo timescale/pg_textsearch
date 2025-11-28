@@ -226,7 +226,7 @@ tp_string_table_insert(
 
 	if (!found)
 	{
-		/* New entry - allocate string and posting list */
+		/* New entry */
 		entry->key.term.dp		= tp_alloc_string_dsa(area, str, len);
 		entry->key.posting_list = tp_alloc_posting_list(area);
 	}
