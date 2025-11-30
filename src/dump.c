@@ -12,6 +12,7 @@
 
 #include <access/htup_details.h>
 #include <catalog/namespace.h>
+#include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
@@ -72,6 +73,8 @@ dump_memtable(DumpOutput *out, TpLocalIndexState *index_state)
 			while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) !=
 				   NULL)
 			{
+				CHECK_FOR_INTERRUPTS();
+
 				if (DsaPointerIsValid(entry->key.posting_list))
 				{
 					TpPostingList *posting_list;
@@ -189,6 +192,8 @@ dump_memtable(DumpOutput *out, TpLocalIndexState *index_state)
 			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
 				   NULL)
 			{
+				CHECK_FOR_INTERRUPTS();
+
 				total_count++;
 
 				if (shown_count < max_docs)
@@ -227,6 +232,247 @@ dump_memtable(DumpOutput *out, TpLocalIndexState *index_state)
 	{
 		dump_printf(out, "  No document length table (not initialized)\n");
 	}
+}
+
+/*
+ * Summarize index statistics without dumping content
+ */
+void
+tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
+{
+	Oid				   index_oid;
+	Relation		   index_rel = NULL;
+	TpIndexMetaPage	   metap	 = NULL;
+	TpLocalIndexState *index_state;
+	TpMemtable		  *memtable;
+	dsa_area		  *area;
+	uint32			   memtable_terms  = 0;
+	uint32			   memtable_docs   = 0;
+	int				   segment_count   = 0;
+	uint32			   segment_terms   = 0;
+	uint32			   segment_docs	   = 0;
+	uint64			   segment_tokens  = 0;
+	uint32			   recovery_pages  = 0;
+	uint32			   recovery_docids = 0;
+
+	dump_printf(out, "Index: %s\n", index_name);
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+	{
+		dump_printf(out, "ERROR: Index '%s' not found\n", index_name);
+		return;
+	}
+
+	/* Open the index */
+	index_rel = index_open(index_oid, AccessShareLock);
+
+	/* Get the metapage */
+	metap = tp_get_metapage(index_rel);
+
+	/* Get index state */
+	index_state = tp_get_local_index_state(index_oid);
+	if (index_state == NULL)
+	{
+		dump_printf(
+				out,
+				"ERROR: Could not get index state for '%s'\n",
+				index_name);
+		if (metap)
+			pfree(metap);
+		if (index_rel)
+			index_close(index_rel, AccessShareLock);
+		return;
+	}
+
+	/* Corpus statistics */
+	dump_printf(out, "\nCorpus Statistics:\n");
+	dump_printf(out, "  total_docs: %d\n", index_state->shared->total_docs);
+	dump_printf(
+			out, "  total_len: %ld\n", (long)index_state->shared->total_len);
+
+	if (index_state->shared->total_docs > 0)
+	{
+		float avg_doc_len = (float)index_state->shared->total_len /
+							(float)index_state->shared->total_docs;
+		dump_printf(out, "  avg_doc_len: %.2f\n", avg_doc_len);
+	}
+
+	/* BM25 parameters */
+	dump_printf(out, "\nBM25 Parameters:\n");
+	if (metap)
+	{
+		dump_printf(out, "  k1: %.2f\n", metap->k1);
+		dump_printf(out, "  b: %.2f\n", metap->b);
+	}
+
+	/* Memory usage */
+	if (index_state->dsa)
+	{
+		size_t dsa_total_size = dsa_get_total_size(index_state->dsa);
+		dump_printf(out, "\nMemory Usage:\n");
+		dump_printf(
+				out,
+				"  DSA total size: %zu bytes (%.2f MB)\n",
+				dsa_total_size,
+				(double)dsa_total_size / (1024.0 * 1024.0));
+	}
+
+	/* Count memtable terms without iterating content */
+	memtable = get_memtable(index_state);
+	area	 = index_state->dsa;
+
+	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID &&
+		area)
+	{
+		dshash_table *string_table =
+				tp_string_table_attach(area, memtable->string_hash_handle);
+		if (string_table)
+		{
+			dshash_seq_status  status;
+			TpStringHashEntry *entry;
+
+			dshash_seq_init(&status, string_table, false);
+			while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) !=
+				   NULL)
+			{
+				CHECK_FOR_INTERRUPTS();
+				if (DsaPointerIsValid(entry->key.posting_list))
+					memtable_terms++;
+			}
+			dshash_seq_term(&status);
+			dshash_detach(string_table);
+		}
+	}
+
+	/* Count memtable documents */
+	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID &&
+		area)
+	{
+		dshash_table *doclength_table =
+				tp_doclength_table_attach(area, memtable->doc_lengths_handle);
+		if (doclength_table)
+		{
+			dshash_seq_status status;
+			TpDocLengthEntry *entry;
+
+			dshash_seq_init(&status, doclength_table, false);
+			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
+				   NULL)
+			{
+				CHECK_FOR_INTERRUPTS();
+				memtable_docs++;
+			}
+			dshash_seq_term(&status);
+			dshash_detach(doclength_table);
+		}
+	}
+
+	dump_printf(out, "\nMemtable:\n");
+	dump_printf(out, "  terms: %u\n", memtable_terms);
+	dump_printf(out, "  documents: %u\n", memtable_docs);
+
+	/* Count recovery pages */
+	if (metap && metap->first_docid_page != InvalidBlockNumber)
+	{
+		Buffer			   docid_buf;
+		Page			   docid_page;
+		TpDocidPageHeader *docid_header;
+		BlockNumber		   current_page = metap->first_docid_page;
+
+		while (current_page != InvalidBlockNumber && recovery_pages < 10000)
+		{
+			CHECK_FOR_INTERRUPTS();
+
+			docid_buf = ReadBuffer(index_rel, current_page);
+			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+			docid_page	 = BufferGetPage(docid_buf);
+			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+
+			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
+			{
+				recovery_docids += docid_header->num_docids;
+				recovery_pages++;
+				current_page = docid_header->next_page;
+			}
+			else
+			{
+				current_page = InvalidBlockNumber;
+			}
+
+			UnlockReleaseBuffer(docid_buf);
+		}
+	}
+
+	dump_printf(out, "\nRecovery Pages:\n");
+	dump_printf(out, "  pages: %u\n", recovery_pages);
+	dump_printf(out, "  docids: %u\n", recovery_docids);
+
+	/* Segment summary */
+	dump_printf(out, "\nSegments:\n");
+	if (metap && metap->first_segment != InvalidBlockNumber)
+	{
+		BlockNumber current_segment = metap->first_segment;
+
+		while (current_segment != InvalidBlockNumber)
+		{
+			TpSegmentReader *reader;
+
+			CHECK_FOR_INTERRUPTS();
+
+			reader = tp_segment_open(index_rel, current_segment);
+			if (reader && reader->header)
+			{
+				TpSegmentHeader *header = reader->header;
+
+				segment_count++;
+				segment_terms += header->num_terms;
+				segment_docs += header->num_docs;
+				segment_tokens += header->total_tokens;
+
+				dump_printf(
+						out,
+						"  Segment %d (block %u):\n",
+						segment_count,
+						current_segment);
+				dump_printf(out, "    terms: %u\n", header->num_terms);
+				dump_printf(out, "    documents: %u\n", header->num_docs);
+				dump_printf(
+						out, "    total_tokens: %lu\n", header->total_tokens);
+				dump_printf(out, "    pages: %u\n", header->num_pages);
+
+				current_segment = header->next_segment;
+				tp_segment_close(reader);
+			}
+			else
+			{
+				current_segment = InvalidBlockNumber;
+			}
+		}
+
+		dump_printf(out, "  Total across segments:\n");
+		dump_printf(out, "    segments: %d\n", segment_count);
+		dump_printf(out, "    terms: %u\n", segment_terms);
+		dump_printf(out, "    documents: %u\n", segment_docs);
+		dump_printf(out, "    total_tokens: %lu\n", segment_tokens);
+	}
+	else
+	{
+		dump_printf(out, "  (none)\n");
+	}
+
+	/* Index size */
+	dump_printf(out, "\nIndex Size:\n");
+	dump_printf(
+			out,
+			"  on-disk: %lu bytes\n",
+			(unsigned long)RelationGetNumberOfBlocks(index_rel) * BLCKSZ);
+
+	/* Cleanup */
+	if (metap)
+		pfree(metap);
+	if (index_rel)
+		index_close(index_rel, AccessShareLock);
 }
 
 /*
@@ -327,6 +573,8 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 
 		while (current_page != InvalidBlockNumber)
 		{
+			CHECK_FOR_INTERRUPTS();
+
 			docid_buf = ReadBuffer(index_rel, current_page);
 			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
 			docid_page	 = BufferGetPage(docid_buf);
@@ -364,6 +612,8 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 
 		while (current_segment != InvalidBlockNumber)
 		{
+			CHECK_FOR_INTERRUPTS();
+
 			tp_dump_segment_to_output(index_rel, current_segment, out);
 
 			/* Future: read next_segment from header */

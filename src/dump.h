@@ -93,4 +93,8 @@ dump_should_truncate(DumpOutput *out, size_t limit)
 /* Dump index function - declared in dump.c */
 extern void tp_dump_index_to_output(const char *index_name, DumpOutput *out);
 
+/* Summarize index function - declared in dump.c */
+extern void
+tp_summarize_index_to_output(const char *index_name, DumpOutput *out);
+
 #endif /* DUMP_H */

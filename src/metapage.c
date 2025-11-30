@@ -37,6 +37,35 @@
 	 sizeof(ItemPointerData))
 
 /*
+ * Cached state for the docid page writer.
+ * This avoids O(n) chain traversal on every insert by remembering
+ * the last page we wrote to.
+ */
+typedef struct TpDocidWriterState
+{
+	Oid			index_oid;	/* Index this state is for */
+	BlockNumber last_page;	/* Last docid page written to */
+	int			num_docids; /* Number of docids on that page */
+	bool		valid;		/* Is this cache entry valid? */
+} TpDocidWriterState;
+
+/* Backend-local cache for docid writer */
+static TpDocidWriterState docid_writer_cache =
+		{InvalidOid, InvalidBlockNumber, 0, false};
+
+/*
+ * Invalidate the docid writer cache.
+ * This must be called at the start of index build to prevent stale cache
+ * entries from a previous index (e.g., during VACUUM FULL which creates
+ * a new index file with different block layout).
+ */
+void
+tp_invalidate_docid_cache(void)
+{
+	docid_writer_cache.valid = false;
+}
+
+/*
  * Initialize Tapir index metapage
  */
 void
@@ -137,94 +166,146 @@ tp_get_metapage(Relation index)
 /*
  * Add a document ID to the docid pages for crash recovery
  * This appends the ctid to the chain of docid pages
+ *
+ * OPTIMIZATION: Uses a backend-local cache to remember the last docid page
+ * we wrote to. This avoids O(n) chain traversal on every insert, reducing
+ * complexity from O(n²) to O(n) for building an index with n documents.
  */
 void
 tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 {
-	Buffer			   metabuf, docid_buf;
+	Buffer			   metabuf	 = InvalidBuffer;
+	Buffer			   docid_buf = InvalidBuffer;
 	Page			   metapage, docid_page;
 	TpIndexMetaPage	   metap;
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
-	BlockNumber		   current_page, new_page;
-	int				   page_capacity;
+	BlockNumber		   target_page;
+	uint32			   page_capacity = TP_DOCIDS_PER_PAGE;
+	Oid				   index_oid	 = RelationGetRelid(index);
+	bool			   cache_valid;
 
-	/* Get the metapage to find the first docid page */
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+	/*
+	 * Check if we have a valid cache entry for this index. The cache is valid
+	 * if it's for the same index and the cached page isn't full yet.
+	 */
+	cache_valid = docid_writer_cache.valid &&
+				  docid_writer_cache.index_oid == index_oid &&
+				  docid_writer_cache.last_page != InvalidBlockNumber &&
+				  docid_writer_cache.num_docids < page_capacity;
 
-	/* Find the last page in the docid chain */
-	current_page = metap->first_docid_page;
-
-	if (current_page == InvalidBlockNumber)
+	if (cache_valid)
 	{
-		/* No docid pages yet, create the first one */
-		new_page  = P_NEW;
-		docid_buf = ReadBuffer(index, new_page);
+		/*
+		 * Fast path: use cached page directly without touching metapage.
+		 * We still need to verify the page is valid in case of concurrent
+		 * modifications (rare during index build, but possible).
+		 */
+		target_page = docid_writer_cache.last_page;
+		docid_buf	= ReadBuffer(index, target_page);
 		LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
 
-		docid_page = BufferGetPage(docid_buf);
-		PageInit(docid_page, BLCKSZ, 0);
+		docid_page	 = BufferGetPage(docid_buf);
+		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 
-		docid_header		= (TpDocidPageHeader *)PageGetContents(docid_page);
-		docid_header->magic = TP_DOCID_PAGE_MAGIC;
-		docid_header->num_docids = 0;
-		docid_header->next_page	 = InvalidBlockNumber;
-		docid_header->reserved	 = 0;
-
-		MarkBufferDirty(docid_buf);
-
-		/* Update metapage to point to this new page */
-		BlockNumber new_docid_page = BufferGetBlockNumber(docid_buf);
-		metap->first_docid_page	   = new_docid_page;
-
-		MarkBufferDirty(metabuf);
-
-		/* Flush metapage to disk immediately to ensure crash recovery works */
-		FlushOneBuffer(metabuf);
-	}
-	else
-	{
-		/* Follow the chain to find the last page */
-		BlockNumber next_page = current_page;
-
-		while (next_page != InvalidBlockNumber)
+		/* Verify page is still valid and has room */
+		if (docid_header->magic != TP_DOCID_PAGE_MAGIC ||
+			docid_header->num_docids >= page_capacity)
 		{
-			current_page = next_page;
-			docid_buf	 = ReadBuffer(index, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-			next_page	 = docid_header->next_page;
-
-			if (next_page == InvalidBlockNumber)
-			{
-				/* This is the last page - upgrade to exclusive lock */
-				LockBuffer(docid_buf, BUFFER_LOCK_UNLOCK);
-				LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
-				/* Re-read header after lock upgrade */
-				docid_header = (TpDocidPageHeader *)PageGetContents(
-						docid_page);
-				break;
-			}
-			else
-				UnlockReleaseBuffer(docid_buf);
+			/* Cache is stale, invalidate and fall through to slow path */
+			UnlockReleaseBuffer(docid_buf);
+			docid_buf				 = InvalidBuffer;
+			docid_writer_cache.valid = false;
+			cache_valid				 = false;
 		}
 	}
 
-	/* Check if current page has room for another docid */
-	page_capacity = TP_DOCIDS_PER_PAGE;
+	if (!cache_valid)
+	{
+		/*
+		 * Slow path: need to access metapage to find/create docid page.
+		 * This happens on first insert or when cache is invalidated.
+		 */
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
+		target_page = metap->first_docid_page;
+
+		if (target_page == InvalidBlockNumber)
+		{
+			/* No docid pages yet, create the first one */
+			docid_buf = ReadBuffer(index, P_NEW);
+			LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
+
+			docid_page = BufferGetPage(docid_buf);
+			PageInit(docid_page, BLCKSZ, 0);
+
+			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
+			docid_header->magic		 = TP_DOCID_PAGE_MAGIC;
+			docid_header->num_docids = 0;
+			docid_header->next_page	 = InvalidBlockNumber;
+			docid_header->reserved	 = 0;
+
+			MarkBufferDirty(docid_buf);
+
+			/* Update metapage to point to this new page */
+			target_page				= BufferGetBlockNumber(docid_buf);
+			metap->first_docid_page = target_page;
+
+			MarkBufferDirty(metabuf);
+			FlushOneBuffer(metabuf);
+		}
+		else
+		{
+			/*
+			 * Walk chain to find last page. After this, we cache it so
+			 * subsequent calls are O(1).
+			 */
+			BlockNumber current_page = target_page;
+			BlockNumber next_page;
+
+			while (current_page != InvalidBlockNumber)
+			{
+				docid_buf = ReadBuffer(index, current_page);
+				LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
+
+				docid_page	 = BufferGetPage(docid_buf);
+				docid_header = (TpDocidPageHeader *)PageGetContents(
+						docid_page);
+				next_page = docid_header->next_page;
+
+				if (next_page == InvalidBlockNumber)
+				{
+					/* Found last page - upgrade to exclusive lock */
+					LockBuffer(docid_buf, BUFFER_LOCK_UNLOCK);
+					LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
+					docid_header = (TpDocidPageHeader *)PageGetContents(
+							docid_page);
+					target_page = current_page;
+					break;
+				}
+
+				UnlockReleaseBuffer(docid_buf);
+				current_page = next_page;
+			}
+		}
+
+		/* Release metapage early - we don't need it anymore */
+		if (BufferIsValid(metabuf))
+			UnlockReleaseBuffer(metabuf);
+	}
+
+	/* Check if current page has room for another docid */
 	if (docid_header->num_docids >= page_capacity)
 	{
 		/* Current page is full, create a new one */
-		Buffer			   new_buf = ReadBuffer(index, P_NEW);
+		Buffer			   new_buf;
 		Page			   new_docid_page;
 		TpDocidPageHeader *new_header;
 
+		new_buf = ReadBuffer(index, P_NEW);
 		LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
 		new_docid_page = BufferGetPage(new_buf);
 		PageInit(new_docid_page, BLCKSZ, 0);
@@ -240,7 +321,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		/* Link old page to new page */
 		docid_header->next_page = BufferGetBlockNumber(new_buf);
 		MarkBufferDirty(docid_buf);
-
 		FlushOneBuffer(docid_buf);
 
 		UnlockReleaseBuffer(docid_buf);
@@ -249,6 +329,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		docid_buf	 = new_buf;
 		docid_page	 = new_docid_page;
 		docid_header = new_header;
+		target_page	 = BufferGetBlockNumber(new_buf);
 	}
 
 	/* Add the docid to the current page */
@@ -260,10 +341,20 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 
 	MarkBufferDirty(docid_buf);
 
-	FlushOneBuffer(docid_buf);
+	/*
+	 * Only flush when page is full. Individual docids are protected by the
+	 * dirty page - they'll be written during checkpoint or when full.
+	 */
+	if (docid_header->num_docids >= page_capacity)
+		FlushOneBuffer(docid_buf);
+
+	/* Update cache for next call */
+	docid_writer_cache.index_oid  = index_oid;
+	docid_writer_cache.last_page  = target_page;
+	docid_writer_cache.num_docids = docid_header->num_docids;
+	docid_writer_cache.valid	  = true;
 
 	UnlockReleaseBuffer(docid_buf);
-	UnlockReleaseBuffer(metabuf);
 }
 
 /*
@@ -318,6 +409,9 @@ tp_clear_docid_pages(Relation index)
 	MarkBufferDirty(metabuf);
 	FlushOneBuffer(metabuf);
 	UnlockReleaseBuffer(metabuf);
+
+	/* Invalidate the docid writer cache since pages are cleared */
+	docid_writer_cache.valid = false;
 }
 
 /*

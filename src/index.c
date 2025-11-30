@@ -1051,6 +1051,13 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 "BM25 index build started for relation %s",
 		 RelationGetRelationName(index));
 
+	/*
+	 * Invalidate docid cache to prevent stale entries from a previous build.
+	 * This is critical during VACUUM FULL, which creates a new index file
+	 * with different block layout than the old one.
+	 */
+	tp_invalidate_docid_cache();
+
 	/* Check if the heap uses table inheritance */
 	if (tp_has_child_tables(heap))
 	{
@@ -2081,6 +2088,29 @@ tp_dump_index(PG_FUNCTION_ARGS)
 
 		PG_RETURN_TEXT_P(cstring_to_text(result.data));
 	}
+}
+
+/*
+ * tp_summarize_index - Show index statistics without dumping content
+ *
+ * A faster alternative to bm25_dump_index that shows only statistics:
+ * corpus statistics, BM25 parameters, memory usage, memtable/segment counts.
+ */
+PG_FUNCTION_INFO_V1(tp_summarize_index);
+
+Datum
+tp_summarize_index(PG_FUNCTION_ARGS)
+{
+	text		  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char		  *index_name	   = text_to_cstring(index_name_text);
+	StringInfoData result;
+	DumpOutput	   out;
+
+	initStringInfo(&result);
+	dump_init_string(&out, &result);
+	tp_summarize_index_to_output(index_name, &out);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
 
 /*

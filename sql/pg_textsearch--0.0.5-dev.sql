@@ -173,3 +173,8 @@ CREATE OR REPLACE FUNCTION bm25_spill_index(index_name text)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
 LANGUAGE C VOLATILE STRICT;
+
+-- Fast summary function showing only statistics (no content dump)
+CREATE FUNCTION bm25_summarize_index(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_summarize_index'
+    LANGUAGE C STRICT STABLE;
