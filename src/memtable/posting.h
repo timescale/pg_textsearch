@@ -22,10 +22,7 @@
 extern int tp_posting_list_growth_factor;
 
 /* Posting list memory management */
-extern void tp_free_posting_list(
-		dsa_area	  *area,
-		TpMemoryUsage *memory_usage,
-		dsa_pointer	   posting_list_dp);
+extern void tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp);
 extern TpPostingEntry *
 tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list);
 

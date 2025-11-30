@@ -265,19 +265,17 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid				   = index_oid;
-	shared_state->heap_oid				   = heap_oid;
-	shared_state->total_docs			   = 0;
-	shared_state->total_len				   = 0;
-	shared_state->idf_sum				   = 0.0;
-	shared_state->memory_usage.memory_used = 0;
+	shared_state->index_oid	 = index_oid;
+	shared_state->heap_oid	 = heap_oid;
+	shared_state->total_docs = 0;
+	shared_state->total_len	 = 0;
+	shared_state->idf_sum	 = 0.0;
 
 	/* Initialize the per-index LWLock */
 	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
 
 	/* Allocate and initialize memtable */
-	memtable_dp = tp_dsa_allocate(
-			dsa, &shared_state->memory_usage, sizeof(TpMemtable));
+	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
 
@@ -304,12 +302,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
 			/* Clean up allocations on failure */
-			tp_dsa_free(
-					dsa,
-					&shared_state->memory_usage,
-					memtable_dp,
-					sizeof(TpMemtable));
-			/* Free shared_state directly (not tracked) */
+			dsa_free(dsa, memtable_dp);
 			dsa_free(dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
@@ -386,8 +379,7 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		if (string_hash != NULL)
 		{
 			/* Free all strings and posting lists */
-			tp_string_table_clear(
-					dsa, &shared_state->memory_usage, string_hash);
+			tp_string_table_clear(dsa, string_hash);
 			dshash_destroy(string_hash);
 		}
 	}
@@ -404,16 +396,9 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	}
 
 	/* Free shared state structures from DSA */
-	tp_dsa_free(
-			dsa,
-			&shared_state->memory_usage,
-			shared_state->memtable_dp,
-			sizeof(TpMemtable));
+	dsa_free(dsa, shared_state->memtable_dp);
 
-	/* Verify all tracked memory has been freed */
-	Assert(shared_state->memory_usage.memory_used == 0);
-
-	/* Free shared_state directly (not tracked) */
+	/* Free shared_state */
 	dsa_free(dsa, shared_dp);
 
 	/* Clean up local state if we have it cached */
@@ -719,13 +704,17 @@ tp_rebuild_posting_lists_from_docids(
 			{
 				document_text = DatumGetTextPP(text_datum);
 
-				/* Use shared helper to process document text and rebuild
-				 * posting lists */
+				/*
+				 * Use shared helper to process document text and rebuild
+				 * posting lists. Pass NULL for index_rel to disable auto-spill
+				 * during recovery (we're rebuilding from docid pages).
+				 */
 				if (tp_process_document_text(
 							document_text,
 							ctid,
 							metap->text_config_oid,
 							local_state,
+							NULL, /* No auto-spill during recovery */
 							&doc_length))
 				{
 					/* Update corpus statistics */
@@ -912,12 +901,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		{
 			/*
 			 * Use tp_string_table_clear to properly free all DSA allocations
-			 * (strings and posting lists) and update memory accounting.
+			 * (strings and posting lists).
 			 */
-			tp_string_table_clear(
-					local_state->dsa,
-					&local_state->shared->memory_usage,
-					string_table);
+			tp_string_table_clear(local_state->dsa, string_table);
 			dshash_detach(string_table);
 
 			/* Reset term count but keep handle valid */
@@ -945,11 +931,6 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		}
 	}
 
-	/*
-	 * Don't reset memory_used to 0 manually - tp_string_table_clear already
-	 * properly decremented it for each freed allocation. The remaining
-	 * memory_used should be just for the memtable struct itself.
-	 */
 	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
 	 * as they represent the overall index state, not just the memtable */
 }

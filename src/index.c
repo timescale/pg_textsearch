@@ -14,6 +14,7 @@
 #include <commands/vacuum.h>
 #include <executor/spi.h>
 #include <math.h>
+#include <miscadmin.h>
 #include <nodes/execnodes.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
@@ -36,6 +37,7 @@
 #include "dump.h"
 #include "index.h"
 #include "limit.h"
+#include "memory.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "metapage.h"
@@ -46,11 +48,13 @@
 
 /* Local helper functions */
 static char *tp_get_qualified_index_name(Relation indexRelation);
-static bool	 tp_search_posting_lists(
-		 IndexScanDesc		scan,
-		 TpLocalIndexState *index_state,
-		 TpVector		   *query_vector,
-		 TpIndexMetaPage	metap);
+static void
+tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel);
+static bool tp_search_posting_lists(
+		IndexScanDesc	   scan,
+		TpLocalIndexState *index_state,
+		TpVector		  *query_vector,
+		TpIndexMetaPage	   metap);
 static void tp_rescan_cleanup_results(TpScanOpaque so);
 static void tp_rescan_validate_query_index(
 		const char *query_index_name, Relation indexRelation);
@@ -83,6 +87,66 @@ tp_get_qualified_index_name(Relation indexRelation)
 	else
 	{
 		return RelationGetRelationName(indexRelation);
+	}
+}
+
+/*
+ * Auto-spill memtable to disk segment when memory limit is exceeded.
+ * This is called after each document insert to check if spill is needed.
+ */
+static void
+tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
+{
+	BlockNumber		segment_root;
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
+
+	if (!index_state || !index_rel)
+		return;
+
+	/* Check if memory limit is exceeded using DSA total size */
+	if (tp_get_dsa_memory_usage(index_state->dsa) < tp_get_memory_limit())
+		return;
+
+	/* Write the segment */
+	segment_root = tp_write_segment(index_state, index_rel);
+
+	/* Clear memtable and update metapage if spill succeeded */
+	if (segment_root != InvalidBlockNumber)
+	{
+		tp_clear_memtable(index_state);
+
+		/* Link new segment as chain head */
+		metabuf = ReadBuffer(index_rel, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		if (metap->first_segment != InvalidBlockNumber)
+		{
+			/* Point new segment to old chain head */
+			Buffer			 seg_buf;
+			Page			 seg_page;
+			TpSegmentHeader *seg_header;
+
+			seg_buf = ReadBuffer(index_rel, segment_root);
+			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+			seg_page				 = BufferGetPage(seg_buf);
+			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
+											   SizeOfPageHeaderData);
+			seg_header->next_segment = metap->first_segment;
+			MarkBufferDirty(seg_buf);
+			UnlockReleaseBuffer(seg_buf);
+		}
+
+		metap->first_segment = segment_root;
+		MarkBufferDirty(metabuf);
+		UnlockReleaseBuffer(metabuf);
+
+		elog(DEBUG1,
+			 "Auto-spilled memtable to segment at block %u",
+			 segment_root);
 	}
 }
 
@@ -703,8 +767,11 @@ tp_bulkdelete(
 }
 
 /* Tapir-specific build phases */
-#define TP_PHASE_BUILD_MEMTABLE 2
-#define TP_PHASE_WRITE_METADATA 3
+#define TP_PHASE_LOADING 2
+#define TP_PHASE_WRITING 3
+
+/* Progress reporting interval (tuples) */
+#define TP_PROGRESS_REPORT_INTERVAL 1000
 
 char *
 tp_buildphasename(int64 phase)
@@ -713,10 +780,10 @@ tp_buildphasename(int64 phase)
 	{
 	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
 		return "initializing";
-	case TP_PHASE_BUILD_MEMTABLE:
-		return "building memtable";
-	case TP_PHASE_WRITE_METADATA:
-		return "writing metadata";
+	case TP_PHASE_LOADING:
+		return "loading tuples";
+	case TP_PHASE_WRITING:
+		return "writing index";
 	default:
 		return NULL;
 	}
@@ -830,7 +897,10 @@ tp_setup_table_scan(
 
 /*
  * Core document processing: convert text to terms and add to posting lists
- * This is shared between index building and docid recovery
+ * This is shared between index building and docid recovery.
+ *
+ * If index_rel is provided, auto-spill will occur when memory limit is
+ * exceeded. If index_rel is NULL, no auto-spill occurs (recovery path).
  */
 bool
 tp_process_document_text(
@@ -838,6 +908,7 @@ tp_process_document_text(
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
+		Relation		   index_rel,
 		int32			  *doc_length_out)
 {
 	char	*document_str;
@@ -888,20 +959,11 @@ tp_process_document_text(
 				index_state, ctid, terms, frequencies, term_count, doc_length);
 
 		/*
-		 * Check memory after document completion.
-		 * We allow temporary overage within a document (bounded by single
-		 * document size), but check at document boundaries to decide if
-		 * spill is needed before the next document.
-		 *
-		 * TODO: Replace this error with spill when segment support is added.
-		 * For now, error to enforce limits. Future: tp_spill_memtable_to_disk
+		 * Check memory after document completion and auto-spill if needed.
+		 * Only spill if index_rel is provided (not during recovery).
 		 */
-		if (tp_get_memory_usage(&index_state->shared->memory_usage) >
-			tp_get_memory_limit())
-		{
-			tp_report_memory_limit_exceeded(
-					&index_state->shared->memory_usage);
-		}
+		if (index_rel != NULL)
+			tp_auto_spill_if_needed(index_state, index_rel);
 
 		/* Free the terms array and individual lexemes */
 		tp_free_terms_array(terms, term_count);
@@ -954,6 +1016,7 @@ tp_process_document(
 				ctid,
 				text_config_oid,
 				index_state,
+				index,
 				&doc_length))
 	{
 		return false;
@@ -1027,9 +1090,21 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	index_state = tp_create_shared_index_state(
 			RelationGetRelid(index), RelationGetRelid(heap));
 
-	/* Report memtable building phase */
+	/* Report loading phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_BUILD_MEMTABLE);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+
+	/*
+	 * Report estimated tuple count for progress tracking.
+	 * Use reltuples for estimate (may be -1 if never analyzed).
+	 */
+	{
+		double reltuples  = heap->rd_rel->reltuples;
+		int64  tuples_est = (reltuples > 0) ? (int64)reltuples : 0;
+
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_TOTAL, tuples_est);
+	}
 
 	/* Prepare to scan table */
 	snapshot = tp_setup_table_scan(heap, &scan, &slot);
@@ -1044,7 +1119,20 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				index_state,
 				index,
 				&total_docs);
+
+		/* Report progress every TP_PROGRESS_REPORT_INTERVAL tuples */
+		if (total_docs % TP_PROGRESS_REPORT_INTERVAL == 0)
+		{
+			pgstat_progress_update_param(
+					PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
+
+			/* Allow query cancellation */
+			CHECK_FOR_INTERRUPTS();
+		}
 	}
+
+	/* Report final tuple count */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
 
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
@@ -1055,9 +1143,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		UnregisterSnapshot(snapshot);
 #endif
 
-	/* Report metadata writing phase */
+	/* Report writing phase */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITE_METADATA);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
 
 	/* Finalize posting lists and update statistics */
 	tp_build_finalize_and_update_stats(
@@ -1302,18 +1390,8 @@ tp_insert(
 						term_count,
 						doc_length);
 
-				/*
-				 * Check memory after document completion.
-				 * TODO: Replace this error with spill when segment support is
-				 * added. For now, error to enforce limits.
-				 * Future: tp_spill_memtable_to_disk
-				 */
-				if (tp_get_memory_usage(&index_state->shared->memory_usage) >
-					tp_get_memory_limit())
-				{
-					tp_report_memory_limit_exceeded(
-							&index_state->shared->memory_usage);
-				}
+				/* Auto-spill if memory limit exceeded */
+				tp_auto_spill_if_needed(index_state, index);
 			}
 		}
 

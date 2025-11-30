@@ -143,16 +143,12 @@ tp_string_table_attach(dsa_area *area, dshash_table_handle handle)
  * Returns the dsa_pointer to the allocated string
  */
 static dsa_pointer
-tp_alloc_string_dsa(
-		dsa_area	  *area,
-		TpMemoryUsage *memory_usage,
-		const char	  *str,
-		size_t		   len)
+tp_alloc_string_dsa(dsa_area *area, const char *str, size_t len)
 {
 	dsa_pointer string_dp;
 	char	   *string_data;
 
-	string_dp = tp_dsa_allocate(area, memory_usage, len + 1);
+	string_dp = dsa_allocate(area, len + 1);
 	if (!DsaPointerIsValid(string_dp))
 		elog(ERROR, "Failed to allocate string in DSA");
 
@@ -209,18 +205,13 @@ tp_string_table_lookup(
  */
 TpStringHashEntry *
 tp_string_table_insert(
-		dsa_area	  *area,
-		TpMemoryUsage *memory_usage,
-		dshash_table  *ht,
-		const char	  *str,
-		size_t		   len)
+		dsa_area *area, dshash_table *ht, const char *str, size_t len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
 	bool			   found;
 
 	Assert(area != NULL);
-	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
 	Assert(len > 0);
@@ -236,8 +227,8 @@ tp_string_table_insert(
 	if (!found)
 	{
 		/* New entry */
-		entry->key.term.dp = tp_alloc_string_dsa(area, memory_usage, str, len);
-		entry->key.posting_list = tp_alloc_posting_list(area, memory_usage);
+		entry->key.term.dp		= tp_alloc_string_dsa(area, str, len);
+		entry->key.posting_list = tp_alloc_posting_list(area);
 	}
 
 	/* Release the lock acquired by dshash_find_or_insert */
@@ -252,18 +243,12 @@ tp_string_table_insert(
  */
 bool
 tp_string_table_delete(
-		dsa_area	  *area,
-		TpMemoryUsage *memory_usage,
-		dshash_table  *ht,
-		const char	  *str,
-		size_t		   len)
+		dsa_area *area, dshash_table *ht, const char *str, size_t len)
 {
 	TpStringKey		   lookup_key;
 	TpStringHashEntry *entry;
-	size_t			   str_len;
 
 	Assert(area != NULL);
-	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 	Assert(str != NULL);
 
@@ -280,17 +265,11 @@ tp_string_table_delete(
 
 	if (entry)
 	{
-		const char *str;
-
-		/* Get the string from DSA to determine its length */
-		str		= tp_get_key_str(area, &entry->key);
-		str_len = strlen(str);
-
 		/* Free the string */
-		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
+		dsa_free(area, entry->key.term.dp);
 
 		/* Free posting list */
-		tp_free_posting_list(area, memory_usage, entry->key.posting_list);
+		tp_free_posting_list(area, entry->key.posting_list);
 
 		/* Delete entry (releases lock) */
 		dshash_delete_entry(ht, entry);
@@ -306,15 +285,12 @@ tp_string_table_delete(
  * Frees all DSA string allocations
  */
 void
-tp_string_table_clear(
-		dsa_area *area, TpMemoryUsage *memory_usage, dshash_table *ht)
+tp_string_table_clear(dsa_area *area, dshash_table *ht)
 {
 	dshash_seq_status  status;
 	TpStringHashEntry *entry;
-	size_t			   str_len;
 
 	Assert(area != NULL);
-	Assert(memory_usage != NULL);
 	Assert(ht != NULL);
 
 	/* Iterate through all entries and delete them */
@@ -322,17 +298,11 @@ tp_string_table_clear(
 
 	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
 	{
-		const char *str;
-
-		/* Get the string from DSA to determine its length */
-		str		= tp_get_key_str(area, &entry->key);
-		str_len = strlen(str);
-
 		/* Free the string */
-		tp_dsa_free(area, memory_usage, entry->key.term.dp, str_len + 1);
+		dsa_free(area, entry->key.term.dp);
 
 		/* Free posting list */
-		tp_free_posting_list(area, memory_usage, entry->key.posting_list);
+		tp_free_posting_list(area, entry->key.posting_list);
 
 		/* Delete current entry */
 		dshash_delete_current(&status);
@@ -486,11 +456,7 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	{
 		/* Insert the term */
 		string_entry = tp_string_table_insert(
-				local_state->dsa,
-				&local_state->shared->memory_usage,
-				string_table,
-				term,
-				term_len);
+				local_state->dsa, string_table, term, term_len);
 		if (!string_entry)
 		{
 			elog(ERROR, "Failed to insert term '%s' into string table", term);
@@ -507,9 +473,8 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	else
 	{
 		/* Create new posting list */
-		posting_list_dp = tp_alloc_posting_list(
-				local_state->dsa, &local_state->shared->memory_usage);
-		posting_list = dsa_get_address(local_state->dsa, posting_list_dp);
+		posting_list_dp = tp_alloc_posting_list(local_state->dsa);
+		posting_list	= dsa_get_address(local_state->dsa, posting_list_dp);
 
 		/* Associate posting list with string entry */
 		string_entry->key.posting_list = posting_list_dp;

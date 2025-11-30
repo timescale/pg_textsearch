@@ -24,8 +24,7 @@ INSERT INTO memory_test (content)
 VALUES ('Another document with different words');
 
 -- Try to insert many documents with lots of unique terms to exceed memory
--- This should eventually trigger the memory limit error
-BEGIN;
+-- With auto-spill, this should succeed by spilling to disk segments
 DO $$
 DECLARE
     i integer;
@@ -42,10 +41,12 @@ BEGIN
         INSERT INTO memory_test (content) VALUES (doc);
     END LOOP;
 END $$;
-ROLLBACK;
 
--- Verify that the index still works after rollback
-SELECT id, content
+-- Verify that all documents were inserted and index works
+SELECT COUNT(*) AS total_docs FROM memory_test;
+
+-- Search should find documents
+SELECT id, left(content, 50) AS content_preview
 FROM memory_test
 WHERE content <@> to_bm25query('test', 'idx_memory_test') < -0.001
 ORDER BY content <@> to_bm25query('test', 'idx_memory_test')

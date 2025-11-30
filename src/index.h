@@ -110,6 +110,7 @@ extern bool tp_process_document_text(
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
+		Relation		   index_rel,
 		int32			  *doc_length_out);
 
 /* GUC variable for logging BM25 scores */

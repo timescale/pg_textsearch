@@ -240,6 +240,22 @@ CREATE INDEX custom_idx ON documents USING bm25(content)
 ```
 
 
+## Limitations
+
+### Word Length Limit
+
+pg_textsearch inherits PostgreSQL's tsvector word length limit of 2047 characters.
+Words exceeding this limit are ignored during tokenization (with an INFO message).
+This is defined by `MAXSTRLEN` in PostgreSQL's text search implementation.
+
+For typical natural language text, this limit is never encountered. It may affect
+documents containing very long tokens such as base64-encoded data, long URLs, or
+concatenated identifiers.
+
+This behavior is similar to other search engines:
+- Elasticsearch: Truncates tokens (configurable via `truncate` filter, default 10 chars)
+- Tantivy: Truncates to 255 bytes by default
+
 ## Troubleshooting
 
 ```sql
