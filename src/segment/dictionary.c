@@ -66,13 +66,12 @@ tp_build_dictionary(TpLocalIndexState *state, uint32 *num_terms)
 		elog(ERROR, "failed to attach to string table");
 	}
 
-	/* Check if the table is empty (memtable was cleared) */
-	if (memtable->total_terms == 0)
-	{
-		dshash_detach(string_table);
-		*num_terms = 0;
-		return NULL;
-	}
+	/*
+	 * NOTE: We don't check memtable->total_terms here because it's only
+	 * set at the end of index build in tp_calculate_idf_sum(). During
+	 * mid-build auto-spill, total_terms is still 0 even though the
+	 * string table has entries. Instead, we iterate and count naturally.
+	 */
 
 	/* Allocate initial array */
 	terms = palloc(sizeof(TermInfo) * capacity);

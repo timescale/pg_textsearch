@@ -72,6 +72,13 @@ typedef struct TpSharedIndexState
 	/* Note: num_unique_terms is available as memtable->total_terms */
 
 	/*
+	 * Auto-spill tracking: DSA size at last spill to prevent repeated spills.
+	 * DSA memory doesn't shrink when we clear the memtable, so we track the
+	 * size at the last spill and only spill again if DSA has grown.
+	 */
+	Size last_spill_dsa_size;
+
+	/*
 	 * Per-index LWLock for transaction-level serialization.
 	 * Writers acquire this in exclusive mode once per transaction.
 	 * Readers acquire this in shared mode once per transaction.

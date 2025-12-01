@@ -93,6 +93,10 @@ tp_get_qualified_index_name(Relation indexRelation)
 /*
  * Auto-spill memtable to disk segment when memory limit is exceeded.
  * This is called after each document insert to check if spill is needed.
+ *
+ * To avoid repeated spills at the same memory level (since DSA doesn't shrink
+ * after clearing memtable), we track the DSA size at the last spill in the
+ * shared state and only spill again if DSA has grown since then.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
@@ -102,12 +106,52 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	Page			metapage;
 	TpIndexMetaPage metap;
 
-	if (!index_state || !index_rel)
+	if (!index_state || !index_rel || !index_state->shared)
 		return;
 
 	/* Check if memory limit is exceeded using DSA total size */
-	if (tp_get_dsa_memory_usage(index_state->dsa) < tp_get_memory_limit())
-		return;
+	{
+		Size	   dsa_usage	= tp_get_dsa_memory_usage(index_state->dsa);
+		Size	   memory_limit = tp_get_memory_limit();
+		static int check_count	= 0;
+
+		check_count++;
+		/* Log every 10000 checks to avoid flooding logs */
+		if (check_count % 10000 == 0)
+		{
+			elog(DEBUG1,
+				 "Auto-spill check #%d: DSA usage=%zu bytes (%.2f MB), "
+				 "limit=%zu bytes (%.2f MB)",
+				 check_count,
+				 dsa_usage,
+				 (double)dsa_usage / (1024.0 * 1024.0),
+				 memory_limit,
+				 (double)memory_limit / (1024.0 * 1024.0));
+		}
+
+		if (dsa_usage < memory_limit)
+			return;
+
+		/*
+		 * Only spill if DSA has grown since last spill. This prevents
+		 * repeated spills at the same memory level, since DSA doesn't
+		 * shrink when we clear the memtable (it keeps allocated segments).
+		 * The last_spill_dsa_size is stored per-index in the shared state.
+		 */
+		if (dsa_usage <= index_state->shared->last_spill_dsa_size)
+			return;
+
+		elog(NOTICE,
+			 "Auto-spill triggered: DSA usage=%zu bytes (%.2f MB) >= "
+			 "limit=%zu bytes (%.2f MB)",
+			 dsa_usage,
+			 (double)dsa_usage / (1024.0 * 1024.0),
+			 memory_limit,
+			 (double)memory_limit / (1024.0 * 1024.0));
+
+		/* Record current DSA size to prevent repeated spills at this level */
+		index_state->shared->last_spill_dsa_size = dsa_usage;
+	}
 
 	/* Write the segment */
 	segment_root = tp_write_segment(index_state, index_rel);

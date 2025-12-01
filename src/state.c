@@ -933,4 +933,11 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 
 	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
 	 * as they represent the overall index state, not just the memtable */
+
+	/*
+	 * Aggressively try to reclaim empty DSA superblocks.
+	 * This helps dsa_get_total_size() report actual usage after clearing,
+	 * which prevents repeated spurious auto-spills.
+	 */
+	dsa_trim(local_state->dsa);
 }

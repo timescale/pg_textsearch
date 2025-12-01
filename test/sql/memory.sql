@@ -10,6 +10,10 @@ CREATE TABLE memory_test (id serial PRIMARY KEY, content text);
 -- Set a very low memory limit (1MB) to trigger the limit
 SET pg_textsearch.index_memory_limit = 1;
 
+-- Suppress auto-spill NOTICE messages during test to avoid non-deterministic output
+-- (The exact DSA memory values vary between runs)
+SET client_min_messages = WARNING;
+
 -- Create an index with the low memory limit
 CREATE INDEX idx_memory_test
 ON memory_test
@@ -41,6 +45,9 @@ BEGIN
         INSERT INTO memory_test (content) VALUES (doc);
     END LOOP;
 END $$;
+
+-- Re-enable notices for verification output
+RESET client_min_messages;
 
 -- Verify that all documents were inserted and index works
 SELECT COUNT(*) AS total_docs FROM memory_test;
