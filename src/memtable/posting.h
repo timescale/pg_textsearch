@@ -42,6 +42,14 @@ extern void tp_store_document_length(
 extern int32 tp_get_document_length(
 		TpLocalIndexState *local_state, Relation index, ItemPointer ctid);
 
+/*
+ * Get document length using a pre-attached doclength table.
+ * This avoids repeated dshash_attach/detach overhead when looking up
+ * multiple document lengths.
+ */
+extern int32 tp_get_document_length_attached(
+		dshash_table *doclength_table, ItemPointer ctid);
+
 extern dshash_table *
 tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle);
 

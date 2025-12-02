@@ -34,7 +34,11 @@
 #include "memtable/stringtable.h"
 #include "metapage.h"
 #include "registry.h"
+#include "segment/segment.h"
 #include "state.h"
+
+/* External GUC from mod.c */
+extern int tp_bulk_load_threshold;
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
@@ -171,10 +175,11 @@ tp_get_local_index_state(Oid index_oid)
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
-		local_state->shared	   = shared_state;
-		local_state->dsa	   = dsa;
-		local_state->lock_held = false;
-		local_state->lock_mode = 0;
+		local_state->shared				   = shared_state;
+		local_state->dsa				   = dsa;
+		local_state->lock_held			   = false;
+		local_state->lock_mode			   = 0;
+		local_state->terms_added_this_xact = 0;
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -311,10 +316,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared	   = shared_state;
-	local_state->dsa	   = dsa;
-	local_state->lock_held = false;
-	local_state->lock_mode = 0;
+	local_state->shared				   = shared_state;
+	local_state->dsa				   = dsa;
+	local_state->lock_held			   = false;
+	local_state->lock_mode			   = 0;
+	local_state->terms_added_this_xact = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -871,19 +877,23 @@ tp_release_all_index_locks(void)
 }
 
 /*
- * Clear the memtable after segment spill
- * This removes all entries from the string hash table and document lengths
- * table while keeping the tables themselves valid for future use.
+ * Clear the memtable after segment spill by destroying hash tables completely.
+ *
+ * This destroys the string hash table and document lengths table entirely,
+ * allowing their DSA memory to be freed. The tables will be recreated on
+ * demand when new documents are added. This aggressive approach ensures
+ * that DSA segments can be released back to the OS.
+ *
  * Corpus statistics are preserved as they represent the overall index state.
  */
 void
 tp_clear_memtable(TpLocalIndexState *local_state)
 {
-	TpMemtable		 *memtable;
-	dshash_table	 *string_table;
-	dshash_table	 *doc_lengths_table;
-	dshash_seq_status status;
-	void			 *entry;
+	TpMemtable	 *memtable;
+	dshash_table *string_table;
+	dshash_table *doc_lengths_table;
+	Size		  dsa_size_before;
+	Size		  dsa_size_after;
 
 	if (!local_state || !local_state->shared)
 		return;
@@ -892,43 +902,46 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	if (!memtable)
 		return;
 
-	/* Clear all entries from string hash table if present */
+	/* Capture DSA size before clearing for debug output */
+	dsa_size_before = dsa_get_total_size(local_state->dsa);
+
+	/*
+	 * Destroy the string hash table completely instead of just clearing.
+	 * This frees all DSA allocations (strings and posting lists) and
+	 * destroys the hash table itself, allowing its memory to be released.
+	 */
 	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
 		string_table = tp_string_table_attach(
 				local_state->dsa, memtable->string_hash_handle);
 		if (string_table)
 		{
-			/*
-			 * Use tp_string_table_clear to properly free all DSA allocations
-			 * (strings and posting lists).
-			 */
+			/* Free all strings and posting lists */
 			tp_string_table_clear(local_state->dsa, string_table);
-			dshash_detach(string_table);
-
-			/* Reset term count but keep handle valid */
-			memtable->total_terms = 0;
+			/* Destroy the hash table itself */
+			dshash_destroy(string_table);
 		}
+		/* Mark handle as invalid - table will be recreated on demand */
+		memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+		memtable->total_terms		 = 0;
 	}
 
-	/* Clear all entries from document lengths table if present */
+	/*
+	 * Destroy the document lengths hash table completely.
+	 * The table will be recreated on demand when new documents are added.
+	 */
 	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
 	{
 		doc_lengths_table = tp_doclength_table_attach(
 				local_state->dsa, memtable->doc_lengths_handle);
 		if (doc_lengths_table)
 		{
-			/* Delete all entries using exclusive lock for modification */
-			dshash_seq_init(
-					&status, doc_lengths_table, true); /* exclusive lock */
-			while ((entry = dshash_seq_next(&status)) != NULL)
-			{
-				/* This deletes the current entry and advances the iterator */
-				dshash_delete_current(&status);
-			}
-			dshash_seq_term(&status);
-			dshash_detach(doc_lengths_table);
+			/* Destroy the hash table (no entries to free - just ItemPointer
+			 * keys) */
+			dshash_destroy(doc_lengths_table);
 		}
+		/* Mark handle as invalid - table will be recreated on demand */
+		memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 	}
 
 	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
@@ -936,8 +949,147 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 
 	/*
 	 * Aggressively try to reclaim empty DSA superblocks.
-	 * This helps dsa_get_total_size() report actual usage after clearing,
-	 * which prevents repeated spurious auto-spills.
+	 * After destroying the hash tables, entire segments should be freeable.
 	 */
 	dsa_trim(local_state->dsa);
+
+	/* Capture DSA size after clearing and log the results */
+	dsa_size_after = dsa_get_total_size(local_state->dsa);
+
+	elog(DEBUG1,
+		 "Memtable cleared: DSA size before=%.2f MB, after=%.2f MB, "
+		 "freed=%.2f MB",
+		 (double)dsa_size_before / (1024.0 * 1024.0),
+		 (double)dsa_size_after / (1024.0 * 1024.0),
+		 (double)(dsa_size_before - dsa_size_after) / (1024.0 * 1024.0));
+
+	/*
+	 * Reset last_spill_dsa_size to allow future spills based on actual usage.
+	 * Since we destroyed the hash tables, the DSA size should have shrunk
+	 * significantly, and we want auto-spill to trigger based on new growth.
+	 */
+	local_state->shared->last_spill_dsa_size = dsa_size_after;
+}
+
+/*
+ * Check if any index had a bulk load (many terms added) this transaction.
+ * If so, spill to disk to prevent unbounded memory growth.
+ *
+ * This is called at PRE_COMMIT via the transaction callback in mod.c.
+ * The threshold is configurable via pg_textsearch.bulk_load_threshold GUC.
+ */
+void
+tp_bulk_load_spill_check(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	/* Nothing to do if cache not initialized or threshold is 0 (disabled) */
+	if (local_state_cache == NULL || tp_bulk_load_threshold == 0)
+		return;
+
+	/* Iterate through all cached local states */
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
+	{
+		TpLocalIndexState *local_state = entry->local_state;
+		Relation		   index_rel;
+		BlockNumber		   segment_root;
+		Buffer			   metabuf;
+		Page			   metapage;
+		TpIndexMetaPage	   metap;
+
+		if (!local_state || !local_state->shared)
+			continue;
+
+		/* Check if this index exceeded the bulk load threshold */
+		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
+			continue;
+
+		elog(NOTICE,
+			 "Bulk load spill triggered for index %u: %ld terms added this "
+			 "transaction (threshold: %d)",
+			 local_state->shared->index_oid,
+			 (long)local_state->terms_added_this_xact,
+			 tp_bulk_load_threshold);
+
+		/* Open the index relation */
+		PG_TRY();
+		{
+			index_rel = index_open(
+					local_state->shared->index_oid, RowExclusiveLock);
+		}
+		PG_CATCH();
+		{
+			/* Index might have been dropped */
+			FlushErrorState();
+			continue;
+		}
+		PG_END_TRY();
+
+		/* Write the segment */
+		segment_root = tp_write_segment(local_state, index_rel);
+
+		/* Clear memtable and update metapage if spill succeeded */
+		if (segment_root != InvalidBlockNumber)
+		{
+			tp_clear_memtable(local_state);
+
+			/* Link new segment as chain head */
+			metabuf = ReadBuffer(index_rel, 0);
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+			metapage = BufferGetPage(metabuf);
+			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+			if (metap->first_segment != InvalidBlockNumber)
+			{
+				/* Point new segment to old chain head */
+				Buffer			 seg_buf;
+				Page			 seg_page;
+				TpSegmentHeader *seg_header;
+
+				seg_buf = ReadBuffer(index_rel, segment_root);
+				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+				seg_page   = BufferGetPage(seg_buf);
+				seg_header = (TpSegmentHeader *)((char *)seg_page +
+												 SizeOfPageHeaderData);
+				seg_header->next_segment = metap->first_segment;
+				MarkBufferDirty(seg_buf);
+				UnlockReleaseBuffer(seg_buf);
+			}
+
+			metap->first_segment = segment_root;
+			MarkBufferDirty(metabuf);
+			UnlockReleaseBuffer(metabuf);
+
+			elog(DEBUG1,
+				 "Bulk load spilled memtable to segment at block %u",
+				 segment_root);
+		}
+
+		index_close(index_rel, RowExclusiveLock);
+	}
+}
+
+/*
+ * Reset bulk load counters for all cached indexes.
+ * Called at transaction end (COMMIT/ABORT) via the transaction callback.
+ */
+void
+tp_reset_bulk_load_counters(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	/* Nothing to do if cache not initialized */
+	if (local_state_cache == NULL)
+		return;
+
+	/* Iterate through all cached local states and reset counters */
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
+	{
+		if (entry->local_state)
+			entry->local_state->terms_added_this_xact = 0;
+	}
 }

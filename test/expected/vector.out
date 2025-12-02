@@ -171,14 +171,10 @@ FROM test_docs
 ORDER BY content <@> to_bm25query('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
 LIMIT 3;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.8453
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
- id |         content          | relevance 
-----+--------------------------+-----------
-  1 | the quick brown fox      |   -2.8453
-  2 | jumped over the lazy dog |    0.0000
-  3 | sphinx of black quartz   |    0.0000
-(3 rows)
+ id |       content       | relevance 
+----+---------------------+-----------
+  1 | the quick brown fox |   -2.8453
+(1 row)
 
 -- Test with another index using simple config
 CREATE INDEX docs_simple_idx ON test_docs USING bm25(content) WITH (text_config='simple');
@@ -225,13 +221,11 @@ JOIN standalone_scores s ON o.id = s.id
 ORDER BY o.id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.3863
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.2577
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
  id | order_by_score | standalone_score | score_consistency 
 ----+----------------+------------------+-------------------
   1 |      -1.386294 |        -1.386294 | ✓ SCORES MATCH
   2 |      -1.257669 |        -1.257669 | ✓ SCORES MATCH
-  3 |       0.000000 |         0.000000 | ✓ SCORES MATCH
-(3 rows)
+(2 rows)
 
 -- Cleanup
 DROP INDEX docs_vector_idx;

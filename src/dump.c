@@ -413,6 +413,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	if (metap && metap->first_segment != InvalidBlockNumber)
 	{
 		BlockNumber current_segment = metap->first_segment;
+		uint64		segment_pages	= 0;
 
 		while (current_segment != InvalidBlockNumber)
 		{
@@ -424,22 +425,25 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 			if (reader && reader->header)
 			{
 				TpSegmentHeader *header = reader->header;
+				Size			 seg_size;
 
 				segment_count++;
 				segment_terms += header->num_terms;
 				segment_docs += header->num_docs;
 				segment_tokens += header->total_tokens;
+				segment_pages += header->num_pages;
+				seg_size = (Size)header->num_pages * BLCKSZ;
 
 				dump_printf(
 						out,
-						"  Segment %d (block %u):\n",
+						"  Segment %d: block=%u, pages=%u, size=%.1fMB, "
+						"terms=%u, docs=%u\n",
 						segment_count,
-						current_segment);
-				dump_printf(out, "    terms: %u\n", header->num_terms);
-				dump_printf(out, "    documents: %u\n", header->num_docs);
-				dump_printf(
-						out, "    total_tokens: %lu\n", header->total_tokens);
-				dump_printf(out, "    pages: %u\n", header->num_pages);
+						current_segment,
+						header->num_pages,
+						(double)seg_size / (1024.0 * 1024.0),
+						header->num_terms,
+						header->num_docs);
 
 				current_segment = header->next_segment;
 				tp_segment_close(reader);
@@ -450,11 +454,15 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 			}
 		}
 
-		dump_printf(out, "  Total across segments:\n");
-		dump_printf(out, "    segments: %d\n", segment_count);
-		dump_printf(out, "    terms: %u\n", segment_terms);
-		dump_printf(out, "    documents: %u\n", segment_docs);
-		dump_printf(out, "    total_tokens: %lu\n", segment_tokens);
+		dump_printf(
+				out,
+				"  Total: %d segments, %lu pages (%.1fMB), "
+				"%u terms, %u docs\n",
+				segment_count,
+				segment_pages,
+				(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
+				segment_terms,
+				segment_docs);
 	}
 	else
 	{
@@ -605,19 +613,63 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "  No recovery pages\n");
 	}
 
-	/* Segments */
+	/* Detailed segment dump (first 2 only) */
 	if (metap && metap->first_segment != InvalidBlockNumber)
 	{
 		BlockNumber current_segment = metap->first_segment;
+		int			dumped_count	= 0;
+		int			total_segments	= 0;
+		const int	max_dump		= 2;
 
+		/* First count total segments */
 		while (current_segment != InvalidBlockNumber)
 		{
+			TpSegmentReader *reader;
+
+			reader = tp_segment_open(index_rel, current_segment);
+			if (reader && reader->header)
+			{
+				total_segments++;
+				current_segment = reader->header->next_segment;
+				tp_segment_close(reader);
+			}
+			else
+			{
+				current_segment = InvalidBlockNumber;
+			}
+		}
+
+		/* Now dump first N segments */
+		current_segment = metap->first_segment;
+		while (current_segment != InvalidBlockNumber &&
+			   dumped_count < max_dump)
+		{
+			TpSegmentReader *reader;
+
 			CHECK_FOR_INTERRUPTS();
 
 			tp_dump_segment_to_output(index_rel, current_segment, out);
+			dumped_count++;
 
-			/* Future: read next_segment from header */
-			current_segment = InvalidBlockNumber;
+			/* Read next_segment from header to traverse the chain */
+			reader = tp_segment_open(index_rel, current_segment);
+			if (reader && reader->header)
+			{
+				current_segment = reader->header->next_segment;
+				tp_segment_close(reader);
+			}
+			else
+			{
+				current_segment = InvalidBlockNumber;
+			}
+		}
+
+		if (total_segments > max_dump)
+		{
+			dump_printf(
+					out,
+					"\n... %d more segments not shown\n",
+					total_segments - max_dump);
 		}
 	}
 	else

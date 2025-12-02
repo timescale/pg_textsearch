@@ -34,6 +34,9 @@ extern int tp_default_limit;
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
+/* Global variable for bulk load spill threshold (0 = disabled) */
+int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
+
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -108,6 +111,21 @@ _PG_init(void)
 			&tp_log_scores,
 			false,		 /* default off */
 			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.bulk_load_threshold",
+			"Terms per transaction to trigger bulk load spill",
+			"If a transaction adds at least this many terms, spill to disk "
+			"at transaction end. Set to 0 to disable bulk load spill.",
+			&tp_bulk_load_threshold,
+			TP_DEFAULT_BULK_LOAD_THRESHOLD, /* default 100K */
+			0,								/* min 0 (disabled) */
+			INT_MAX,						/* max INT_MAX */
+			PGC_USERSET,
 			0,
 			NULL,
 			NULL,
@@ -222,23 +240,33 @@ tp_shmem_startup(void)
 
 /*
  * Transaction callback - release index locks at transaction end
+ * and check for bulk load auto-spill at pre-commit
  */
 static void
 tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 {
-	/* We only care about transaction commit and abort */
 	switch (event)
 	{
+	case XACT_EVENT_PRE_COMMIT:
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
+		/*
+		 * Check for bulk load auto-spill before commit.
+		 * If any index had a large number of terms added this transaction,
+		 * spill to disk to prevent unbounded memory growth.
+		 */
+		tp_bulk_load_spill_check();
+		break;
+
 	case XACT_EVENT_COMMIT:
 	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_COMMIT:
 	case XACT_EVENT_PARALLEL_ABORT:
 		/* Release all index locks held by this backend */
 		tp_release_all_index_locks();
+		/* Reset bulk load counters for next transaction */
+		tp_reset_bulk_load_counters();
 		break;
 
-	case XACT_EVENT_PRE_COMMIT:
-	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 	case XACT_EVENT_PRE_PREPARE:
 	case XACT_EVENT_PREPARE:
 		/* Nothing to do for these events */

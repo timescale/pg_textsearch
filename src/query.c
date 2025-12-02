@@ -26,7 +26,97 @@
 #include "state.h"
 #include "vector.h"
 
+/*
+ * Cache for per-query IDF values to avoid repeated segment lookups.
+ *
+ * When the <@> operator is called per-row (e.g., ORDER BY text <@> query),
+ * we need to calculate IDF for each query term. Without caching, this
+ * requires opening all segments for EVERY row, which is catastrophically
+ * slow with 1.86M rows and multiple segments.
+ *
+ * The cache is stored in fn_extra and persists for the duration of the
+ * query. IDF values are computed once on first call and reused.
+ */
+#define MAX_CACHED_TERMS 64
+
+typedef struct TermIdfEntry
+{
+	char   term[NAMEDATALEN]; /* null-terminated term string */
+	uint32 doc_freq;		  /* unified doc frequency (memtable + segments) */
+	float4 idf;				  /* cached IDF value */
+} TermIdfEntry;
+
+typedef struct QueryScoreCache
+{
+	Oid			 index_oid;		/* index this cache is for */
+	BlockNumber	 first_segment; /* segment chain head at cache time */
+	int32		 total_docs;	/* total docs at cache time */
+	float4		 avg_doc_len;	/* avg doc length at cache time */
+	int			 num_terms;		/* number of cached terms */
+	TermIdfEntry terms[MAX_CACHED_TERMS];
+} QueryScoreCache;
+
 /* Local helper functions */
+
+/*
+ * Look up cached IDF for a term. Returns -1.0 if not found in cache.
+ */
+static float4
+lookup_cached_idf(QueryScoreCache *cache, const char *term, uint32 *doc_freq)
+{
+	int i;
+
+	if (!cache)
+		return -1.0f;
+
+	for (i = 0; i < cache->num_terms; i++)
+	{
+		if (strcmp(cache->terms[i].term, term) == 0)
+		{
+			if (doc_freq)
+				*doc_freq = cache->terms[i].doc_freq;
+			return cache->terms[i].idf;
+		}
+	}
+	return -1.0f;
+}
+
+/*
+ * Add a term's IDF to the cache.
+ */
+static void
+cache_term_idf(
+		QueryScoreCache *cache, const char *term, uint32 doc_freq, float4 idf)
+{
+	if (!cache || cache->num_terms >= MAX_CACHED_TERMS)
+		return;
+
+	strlcpy(cache->terms[cache->num_terms].term, term, NAMEDATALEN);
+	cache->terms[cache->num_terms].doc_freq = doc_freq;
+	cache->terms[cache->num_terms].idf		= idf;
+	cache->num_terms++;
+}
+
+/*
+ * Check if the cache is valid for the current index state.
+ */
+static bool
+cache_is_valid(
+		QueryScoreCache *cache,
+		Oid				 index_oid,
+		BlockNumber		 first_segment,
+		int32			 total_docs)
+{
+	if (!cache)
+		return false;
+	if (cache->index_oid != index_oid)
+		return false;
+	if (cache->first_segment != first_segment)
+		return false;
+	if (cache->total_docs != total_docs)
+		return false;
+	return true;
+}
 
 PG_FUNCTION_INFO_V1(tpquery_in);
 PG_FUNCTION_INFO_V1(tpquery_out);
@@ -338,6 +428,10 @@ calculate_term_score(
 
 /*
  * BM25 scoring function for text <@> tpquery operations
+ *
+ * This operator is called per-row when scoring documents, so we use fn_extra
+ * to cache IDF values across rows. Without caching, each row would require
+ * opening all segments for each query term - catastrophic for large indexes.
  */
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
@@ -364,6 +458,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	int				   q_i;
 	float4			   doc_length;
 	int				   query_term_count;
+	QueryScoreCache	  *cache;
+	BlockNumber		   first_segment;
 
 	/* Validate query and open index */
 	index_rel = validate_and_open_index(query, &index_name);
@@ -374,6 +470,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		/* Get the metapage to extract text_config_oid */
 		metap			= tp_get_metapage(index_rel);
 		text_config_oid = metap->text_config_oid;
+		first_segment	= metap->first_segment;
 
 		/* Get index state for corpus statistics */
 		index_state = tp_get_local_index_state(index_oid);
@@ -390,6 +487,25 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 							? (float4)(index_state->shared->total_len /
 									   (double)total_docs)
 							: 0.0f;
+
+		/*
+		 * Get or initialize the IDF cache. The cache is stored in fn_extra
+		 * and persists for the duration of the query. We invalidate it if
+		 * the index state changes (new segments, new documents).
+		 */
+		cache = (QueryScoreCache *)fcinfo->flinfo->fn_extra;
+		if (!cache_is_valid(cache, index_oid, first_segment, total_docs))
+		{
+			/* Allocate new cache in function memory context */
+			cache = (QueryScoreCache *)MemoryContextAllocZero(
+					fcinfo->flinfo->fn_mcxt, sizeof(QueryScoreCache));
+			cache->index_oid		 = index_oid;
+			cache->first_segment	 = first_segment;
+			cache->total_docs		 = total_docs;
+			cache->avg_doc_len		 = avg_doc_len;
+			cache->num_terms		 = 0;
+			fcinfo->flinfo->fn_extra = cache;
+		}
 
 		/* Tokenize the document text using the index's text configuration */
 		tsvector_datum = DirectFunctionCall2Coll(
@@ -445,33 +561,49 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 			if (tf == 0.0f)
 			{
+				pfree(query_lexeme);
 				continue; /* Query term not in document */
 			}
 
-			/* Sum doc_freq from memtable + segments for unified IDF */
-			uint32 unified_doc_freq	 = 0;
-			uint32 memtable_doc_freq = 0;
-			uint32 segment_doc_freq	 = 0;
-
-			posting_list = tp_get_posting_list(index_state, query_lexeme);
-			if (posting_list && posting_list->doc_count > 0)
-				memtable_doc_freq = posting_list->doc_count;
-
-			if (metap->first_segment != InvalidBlockNumber)
+			/*
+			 * Get IDF from cache if available. The cache avoids repeated
+			 * segment opens which was causing catastrophic performance
+			 * (opening all segments for each term for each row).
+			 */
 			{
-				segment_doc_freq = tp_segment_get_doc_freq(
-						index_rel, metap->first_segment, query_lexeme);
-			}
+				uint32 cached_doc_freq = 0;
+				idf = lookup_cached_idf(cache, query_lexeme, &cached_doc_freq);
 
-			unified_doc_freq = memtable_doc_freq + segment_doc_freq;
-			if (unified_doc_freq == 0)
-			{
-				pfree(query_lexeme);
-				continue;
-			}
+				if (idf < 0.0f)
+				{
+					/* Cache miss - calculate IDF and cache it */
+					uint32 unified_doc_freq	 = 0;
+					uint32 memtable_doc_freq = 0;
+					uint32 segment_doc_freq	 = 0;
 
-			/* Calculate IDF using unified doc_freq */
-			idf = tp_calculate_idf(unified_doc_freq, total_docs);
+					posting_list =
+							tp_get_posting_list(index_state, query_lexeme);
+					if (posting_list && posting_list->doc_count > 0)
+						memtable_doc_freq = posting_list->doc_count;
+
+					if (first_segment != InvalidBlockNumber)
+					{
+						segment_doc_freq = tp_segment_get_doc_freq(
+								index_rel, first_segment, query_lexeme);
+					}
+
+					unified_doc_freq = memtable_doc_freq + segment_doc_freq;
+					if (unified_doc_freq == 0)
+					{
+						pfree(query_lexeme);
+						continue;
+					}
+
+					/* Calculate IDF and cache it */
+					idf = tp_calculate_idf(unified_doc_freq, total_docs);
+					cache_term_idf(cache, query_lexeme, unified_doc_freq, idf);
+				}
+			}
 
 			/* Calculate BM25 term score */
 			term_score = calculate_term_score(

@@ -32,16 +32,12 @@ ORDER BY content <@> to_bm25query('hello', 'scoring2_bulk_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-0.6588
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5156
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  5 | hello            | -0.6588
-  1 | hello world      | -0.5156
-  3 | hello goodbye    | -0.5156
-  2 | goodbye world    |  0.0000
-  4 | world domination |  0.0000
-(5 rows)
+ id |    content    |  score  
+----+---------------+---------
+  5 | hello         | -0.6588
+  1 | hello world   | -0.5156
+  3 | hello goodbye | -0.5156
+(3 rows)
 
 -- Validate BM25 scoring for 'hello'
 SELECT validate_bm25_scoring('scoring2_bulk', 'content', 'scoring2_bulk_idx', 'hello', 'english', 1.2, 0.75) as hello_bulk_valid;
@@ -57,16 +53,12 @@ ORDER BY content <@> to_bm25query('world', 'scoring2_bulk_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5156
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |     content      |  score  
 ----+------------------+---------
   1 | hello world      | -0.5156
   2 | goodbye world    | -0.5156
   4 | world domination | -0.5156
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+(3 rows)
 
 -- Validate BM25 scoring for 'world'
 SELECT validate_bm25_scoring('scoring2_bulk', 'content', 'scoring2_bulk_idx', 'world', 'english', 1.2, 0.75) as world_bulk_valid;
@@ -81,17 +73,11 @@ FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('goodbye', 'scoring2_bulk_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8374
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.8374
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  2 | goodbye world    | -0.8374
-  3 | hello goodbye    | -0.8374
-  1 | hello world      |  0.0000
-  4 | world domination |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+ id |    content    |  score  
+----+---------------+---------
+  2 | goodbye world | -0.8374
+  3 | hello goodbye | -0.8374
+(2 rows)
 
 -- Validate BM25 scoring for 'goodbye'
 SELECT validate_bm25_scoring('scoring2_bulk', 'content', 'scoring2_bulk_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_bulk_valid;
@@ -105,18 +91,10 @@ SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_bulk
 FROM scoring2_bulk
 ORDER BY content <@> to_bm25query('domination', 'scoring2_bulk_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3260
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |     content      |  score  
 ----+------------------+---------
   4 | world domination | -1.3260
-  1 | hello world      |  0.0000
-  2 | goodbye world    |  0.0000
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+(1 row)
 
 -- Validate BM25 scoring for 'domination'
 SELECT validate_bm25_scoring('scoring2_bulk', 'content', 'scoring2_bulk_idx', 'domination', 'english', 1.2, 0.75) as domination_bulk_valid;
@@ -150,16 +128,12 @@ ORDER BY content <@> to_bm25query('hello', 'scoring2_incr_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-0.6588
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5156
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  5 | hello            | -0.6588
-  1 | hello world      | -0.5156
-  3 | hello goodbye    | -0.5156
-  2 | goodbye world    |  0.0000
-  4 | world domination |  0.0000
-(5 rows)
+ id |    content    |  score  
+----+---------------+---------
+  5 | hello         | -0.6588
+  1 | hello world   | -0.5156
+  3 | hello goodbye | -0.5156
+(3 rows)
 
 -- Validate BM25 scoring for 'hello' (incremental)
 SELECT validate_bm25_scoring('scoring2_incr', 'content', 'scoring2_incr_idx', 'hello', 'english', 1.2, 0.75) as hello_incr_valid;
@@ -175,16 +149,12 @@ ORDER BY content <@> to_bm25query('world', 'scoring2_incr_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.5156
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5156
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |     content      |  score  
 ----+------------------+---------
   1 | hello world      | -0.5156
   2 | goodbye world    | -0.5156
   4 | world domination | -0.5156
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+(3 rows)
 
 -- Validate BM25 scoring for 'world' (incremental)
 SELECT validate_bm25_scoring('scoring2_incr', 'content', 'scoring2_incr_idx', 'world', 'english', 1.2, 0.75) as world_incr_valid;
@@ -199,17 +169,11 @@ FROM scoring2_incr
 ORDER BY content <@> to_bm25query('goodbye', 'scoring2_incr_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8374
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.8374
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
- id |     content      |  score  
-----+------------------+---------
-  2 | goodbye world    | -0.8374
-  3 | hello goodbye    | -0.8374
-  1 | hello world      |  0.0000
-  4 | world domination |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+ id |    content    |  score  
+----+---------------+---------
+  2 | goodbye world | -0.8374
+  3 | hello goodbye | -0.8374
+(2 rows)
 
 -- Validate BM25 scoring for 'goodbye' (incremental)
 SELECT validate_bm25_scoring('scoring2_incr', 'content', 'scoring2_incr_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_incr_valid;
@@ -223,18 +187,10 @@ SELECT id, content, ROUND((content <@> to_bm25query('domination', 'scoring2_incr
 FROM scoring2_incr
 ORDER BY content <@> to_bm25query('domination', 'scoring2_incr_idx'), id;
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3260
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
  id |     content      |  score  
 ----+------------------+---------
   4 | world domination | -1.3260
-  1 | hello world      |  0.0000
-  2 | goodbye world    |  0.0000
-  3 | hello goodbye    |  0.0000
-  5 | hello            |  0.0000
-(5 rows)
+(1 row)
 
 -- Validate BM25 scoring for 'domination' (incremental)
 SELECT validate_bm25_scoring('scoring2_incr', 'content', 'scoring2_incr_idx', 'domination', 'english', 1.2, 0.75) as domination_incr_valid;

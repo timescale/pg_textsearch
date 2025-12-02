@@ -302,6 +302,30 @@ tp_store_document_length(
 }
 
 /*
+ * Get document length using a pre-attached doclength table.
+ * This is the optimized version for bulk lookups - avoids repeated
+ * dshash_attach/detach overhead.
+ */
+int32
+tp_get_document_length_attached(
+		dshash_table *doclength_table, ItemPointer ctid)
+{
+	TpDocLengthEntry *entry;
+
+	Assert(doclength_table != NULL);
+	Assert(ctid != NULL);
+
+	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
+	if (entry)
+	{
+		int32 doc_length = entry->doc_length;
+		dshash_release_lock(doclength_table, entry);
+		return doc_length;
+	}
+	return -1; /* Not found */
+}
+
+/*
  * Get document length from the document length hash table.
  * Falls back to searching segments if not found in memtable.
  */
@@ -311,9 +335,9 @@ tp_get_document_length(
 		Relation index	   pg_attribute_unused(),
 		ItemPointer		   ctid)
 {
-	TpMemtable		 *memtable;
-	dshash_table	 *doclength_table;
-	TpDocLengthEntry *entry;
+	TpMemtable	 *memtable;
+	dshash_table *doclength_table;
+	int32		  doc_length;
 
 	Assert(local_state != NULL);
 	Assert(ctid != NULL);
@@ -329,20 +353,11 @@ tp_get_document_length(
 	doclength_table = tp_doclength_table_attach(
 			local_state->dsa, memtable->doc_lengths_handle);
 
-	/* Look up the document length */
-	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
-	if (entry)
-	{
-		int32 doc_length = entry->doc_length;
-		dshash_release_lock(doclength_table, entry);
-		dshash_detach(doclength_table);
-		return doc_length;
-	}
-	else
-	{
-		dshash_detach(doclength_table);
-		return -1; /* Not in memtable, may be in segment */
-	}
+	/* Look up the document length using the attached table */
+	doc_length = tp_get_document_length_attached(doclength_table, ctid);
+
+	dshash_detach(doclength_table);
+	return doc_length;
 }
 
 /*

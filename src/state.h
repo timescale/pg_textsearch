@@ -104,6 +104,9 @@ typedef struct TpLocalIndexState
 	/* Transaction-level lock tracking */
 	bool	   lock_held; /* True if we hold the lock in this transaction */
 	LWLockMode lock_mode; /* Mode we're holding (LW_SHARED or LW_EXCLUSIVE) */
+
+	/* Bulk load tracking: terms added in current transaction */
+	int64 terms_added_this_xact;
 } TpLocalIndexState;
 
 /* Function declarations for index state management */
@@ -131,3 +134,7 @@ extern void tp_release_all_index_locks(void);
 
 /* Memtable management */
 extern void tp_clear_memtable(TpLocalIndexState *local_state);
+
+/* Bulk load auto-spill */
+extern void tp_bulk_load_spill_check(void);
+extern void tp_reset_bulk_load_counters(void);

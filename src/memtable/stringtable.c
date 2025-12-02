@@ -525,4 +525,7 @@ tp_add_document_terms(
 	 */
 	local_state->shared->total_docs++;
 	local_state->shared->total_len += doc_length;
+
+	/* Track terms added in this transaction for bulk load detection */
+	local_state->terms_added_this_xact += term_count;
 }

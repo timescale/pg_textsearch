@@ -294,10 +294,7 @@ tp_score_documents(
 	DocumentScoreEntry **sorted_docs;
 	float4				 avg_doc_len;
 	int32				 total_docs;
-	int					 scored_count	  = 0;
-	int					 additional_count = 0;
-	int					 total_results;
-	ItemPointer			 additional_ctids = NULL;
+	int					 scored_count = 0;
 	dshash_table		*string_table;
 	TpMemtable			*memtable;
 	BlockNumber			 first_segment;
@@ -388,6 +385,19 @@ tp_score_documents(
 	/* Calculate BM25 scores from memtable if available */
 	if (string_table)
 	{
+		dshash_table *doclength_table = NULL;
+
+		/*
+		 * Attach to document length table once for all lookups.
+		 * This eliminates per-document attach/detach overhead which was
+		 * a major bottleneck in query performance.
+		 */
+		if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+		{
+			doclength_table = tp_doclength_table_attach(
+					local_state->dsa, memtable->doc_lengths_handle);
+		}
+
 		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
 			const char	   *term = query_terms[term_idx];
@@ -420,9 +430,21 @@ tp_score_documents(
 				DocumentScoreEntry *doc_entry;
 				bool				found;
 
-				/* Look up document length from memtable hash table */
-				doc_len = (float4)tp_get_document_length(
-						local_state, index_relation, &entry->ctid);
+				/* Validate TID first */
+				if (!ItemPointerIsValid(&entry->ctid))
+					continue;
+
+				/* Look up document length using pre-attached table */
+				if (doclength_table)
+				{
+					doc_len = (float4)tp_get_document_length_attached(
+							doclength_table, &entry->ctid);
+				}
+				else
+				{
+					doc_len = -1.0f;
+				}
+
 				if (doc_len <= 0.0f)
 				{
 					elog(ERROR,
@@ -430,10 +452,6 @@ tp_score_documents(
 						 BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
 						 entry->ctid.ip_posid);
 				}
-
-				/* Validate TID */
-				if (!ItemPointerIsValid(&entry->ctid))
-					continue;
 
 				/* Calculate BM25 term score contribution */
 				numerator_d = (double)tf * ((double)k1 + 1.0);
@@ -468,6 +486,11 @@ tp_score_documents(
 				}
 			}
 		}
+
+		/* Detach from document length table */
+		if (doclength_table)
+			dshash_detach(doclength_table);
+
 		dshash_detach(string_table);
 	}
 
@@ -495,78 +518,32 @@ tp_score_documents(
 	/* Free unified doc_freqs array */
 	pfree(unified_doc_freqs);
 
-	/* If we don't have enough scored results, find additional zero-scored
-	 * documents */
-	if (scored_count < max_results)
-	{
-		int			needed_additional = max_results - scored_count;
-		int			found_additional  = 0;
-		ItemPointer all_index_ctids;
-		int			total_index_ctids;
-
-		/* Allocate array for additional CTIDs */
-		additional_ctids = palloc(needed_additional * sizeof(ItemPointerData));
-
-		/* Scan docid pages to get all documents in the index */
-		all_index_ctids =
-				tp_scan_docid_pages(index_relation, &total_index_ctids);
-
-		if (all_index_ctids && total_index_ctids > 0)
-		{
-			/* Check each document to see if it was already scored */
-			for (int i = 0;
-				 i < total_index_ctids && found_additional < needed_additional;
-				 i++)
-			{
-				ItemPointer test_ctid = &all_index_ctids[i];
-
-				/* Check if this CTID was already scored */
-				DocumentScoreEntry *existing = (DocumentScoreEntry *)
-						hash_search(
-								doc_scores_hash, test_ctid, HASH_FIND, NULL);
-
-				if (!existing)
-				{
-					/* Not scored - add as zero-scored document */
-					additional_ctids[found_additional] = *test_ctid;
-					found_additional++;
-				}
-			}
-
-			pfree(all_index_ctids);
-		}
-
-		additional_count = found_additional;
-	}
+	/*
+	 * Note: Previously this code would scan all docid pages to find
+	 * "additional" zero-scored documents when fewer than max_results
+	 * documents matched the query. This caused severe performance issues
+	 * with large indexes (scanning millions of docid pages). We now only
+	 * return documents that actually match the query terms, which is the
+	 * expected behavior for a search engine anyway.
+	 */
 
 	/* Extract and sort documents by score */
 	sorted_docs = tp_extract_and_sort_documents(
 			doc_scores_hash, max_results, &scored_count);
 
-	/* Ensure we don't exceed max_results total documents */
-	total_results = scored_count + additional_count;
-	if (total_results > max_results)
-	{
-		additional_count = max_results - scored_count;
-		if (additional_count < 0)
-			additional_count = 0;
-	}
-
-	/* Copy results to output arrays */
+	/* Copy results to output arrays (no additional zero-scored documents) */
 	tp_copy_results_to_output(
 			sorted_docs,
 			scored_count,
-			additional_ctids,
-			additional_count,
+			NULL, /* no additional_ctids */
+			0,	  /* no additional_count */
 			result_ctids,
 			result_scores);
 
 	/* Cleanup */
 	if (sorted_docs)
 		pfree(sorted_docs);
-	if (additional_ctids)
-		pfree(additional_ctids);
 	hash_destroy(doc_scores_hash);
 
-	return scored_count + additional_count;
+	return scored_count;
 }

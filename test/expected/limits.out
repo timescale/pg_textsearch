@@ -180,29 +180,9 @@ FROM (
     ORDER BY 2
     LIMIT 1000
 ) subq;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,12), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,13), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,14), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,15), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,16), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
  has_results 
 -------------
- t
+ f
 (1 row)
 
 -- Test 8: LIMIT in subquery
@@ -239,14 +219,9 @@ SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
 NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-1.8610
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.7484
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.6487
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
  query_name | results 
 ------------+---------
- Query 2    |       8
+ Query 2    |       3
 (1 row)
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
@@ -294,11 +269,9 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  pushdown_safe_count 
 ---------------------
-                   2
+                   0
 (1 row)
 
 -- Test with unsafe pushdown case (has WHERE clause)
@@ -310,11 +283,9 @@ FROM (
     ORDER BY 2
     LIMIT 2
 ) subq;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
  pushdown_unsafe_count 
 -----------------------
-                     1
+                     0
 (1 row)
 
 -- Test 12: Edge cases for LIMIT pushdown
@@ -327,29 +298,9 @@ FROM (
     ORDER BY 2
     LIMIT 50000  -- Much larger than our dataset
 ) subq;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,9), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,12), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,13), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,14), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,15), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,16), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,17), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,18), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,19), BM25_score=0.0000
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=0.0000
  large_limit_has_results 
 -------------------------
- t
+ f
 (1 row)
 
 -- LIMIT 0 edge case

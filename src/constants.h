@@ -16,6 +16,8 @@
 #define TP_DEFAULT_QUERY_LIMIT		  1000
 #define TP_MAX_QUERY_LIMIT			  100000
 #define TP_DEFAULT_SEGMENT_THRESHOLD  10000
+#define TP_DEFAULT_BULK_LOAD_THRESHOLD \
+	100000 /* terms per xact to trigger spill */
 
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
