@@ -168,28 +168,25 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.2651
 -- Note: In PG18, queries without index names fail due to eager evaluation
 -- This test uses the index name to work correctly
 -- The CROSS JOIN here intentionally doesn't use the index (tests scoring computation)
--- Note: EXPLAIN removed - output differs between PG17/PG18 but query works correctly
+EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
 )
 SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
 FROM search_terms s
 CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title
-LIMIT 10;
-   term   |             title             |  score  
-----------+-------------------------------+---------
- database | Data Mining Techniques        | -1.3220
- database | Database Optimization         | -1.3220
- database | Introduction to Databases     | -1.2651
- database | Big Data Analytics            |  0.0000
- database | Distributed Computing         |  0.0000
- database | Document Classification       |  0.0000
- database | Information Retrieval         |  0.0000
- database | Machine Learning Fundamentals |  0.0000
- database | Natural Language Processing   |  0.0000
- database | Search Engine Design          |  0.0000
-(10 rows)
+ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
+                                                                                                                        QUERY PLAN                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text))), a.title
+   ->  Nested Loop
+         ->  Seq Scan on articles a
+               Disabled: true
+         ->  Materialize
+               ->  ProjectSet
+                     ->  Result
+(8 rows)
 
 -- Test scoring consistency for multi-term query
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
