@@ -961,15 +961,8 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	 */
 	dsa_trim(local_state->dsa);
 
-	/* Capture DSA size after clearing and log the results */
+	/* Capture DSA size after clearing */
 	dsa_size_after = dsa_get_total_size(local_state->dsa);
-
-	elog(DEBUG1,
-		 "Memtable cleared: DSA size before=%.2f MB, after=%.2f MB, "
-		 "freed=%.2f MB",
-		 (double)dsa_size_before / (1024.0 * 1024.0),
-		 (double)dsa_size_after / (1024.0 * 1024.0),
-		 (double)(dsa_size_before - dsa_size_after) / (1024.0 * 1024.0));
 
 	/*
 	 * Reset last_spill_dsa_size to allow future spills based on actual usage.

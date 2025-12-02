@@ -277,6 +277,66 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Validate that index scan and standalone scoring produce identical results
+-- Index scan is triggered by ORDER BY score LIMIT; standalone runs on all rows
+CREATE OR REPLACE FUNCTION validate_index_vs_standalone(
+    p_table_name text,
+    p_text_column text,
+    p_index_name text,
+    p_query text,
+    p_limit integer DEFAULT 100
+) RETURNS boolean AS $$
+DECLARE
+    v_all_match boolean;
+    v_sql text;
+BEGIN
+    -- Get scores via index scan mode (ORDER BY score triggers index use)
+    v_sql := format($sql$
+        CREATE TEMP TABLE idx_scan_scores ON COMMIT DROP AS
+        SELECT
+            %I as content,
+            (%I <@> to_bm25query(%L, %L))::float8 as score
+        FROM %I
+        WHERE %I IS NOT NULL
+        ORDER BY %I <@> to_bm25query(%L, %L)
+        LIMIT %s
+    $sql$, p_text_column, p_text_column, p_query, p_index_name,
+          p_table_name, p_text_column,
+          p_text_column, p_query, p_index_name, p_limit);
+    EXECUTE v_sql;
+
+    -- Get scores via standalone scoring mode (no ORDER BY score)
+    v_sql := format($sql$
+        CREATE TEMP TABLE standalone_scores ON COMMIT DROP AS
+        SELECT
+            %I as content,
+            (%I <@> to_bm25query(%L, %L))::float8 as score
+        FROM %I
+        WHERE %I IS NOT NULL
+          AND (%I <@> to_bm25query(%L, %L)) < 0
+    $sql$, p_text_column, p_text_column, p_query, p_index_name,
+          p_table_name, p_text_column,
+          p_text_column, p_query, p_index_name);
+    EXECUTE v_sql;
+
+    -- Verify all index scan results exist in standalone with matching scores
+    SELECT bool_and(
+        EXISTS (
+            SELECT 1 FROM standalone_scores s
+            WHERE s.content = i.content
+              AND ROUND(s.score::numeric, 6) = ROUND(i.score::numeric, 6)
+        )
+    ) INTO v_all_match
+    FROM idx_scan_scores i;
+
+    -- Cleanup
+    DROP TABLE IF EXISTS idx_scan_scores;
+    DROP TABLE IF EXISTS standalone_scores;
+
+    RETURN COALESCE(v_all_match, true);
+END;
+$$ LANGUAGE plpgsql;
+
 -- Simpler comparison function
 CREATE OR REPLACE FUNCTION compare_bm25_scores(
     p_table_name text,

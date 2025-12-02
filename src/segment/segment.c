@@ -164,14 +164,7 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	 */
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (root_block >= nblocks)
-	{
-		elog(DEBUG1,
-			 "tp_segment_open: root_block=%u is beyond relation end "
-			 "(nblocks=%u)",
-			 root_block,
-			 nblocks);
 		return NULL;
-	}
 
 	/* Allocate reader structure */
 	reader						 = palloc0(sizeof(TpSegmentReader));

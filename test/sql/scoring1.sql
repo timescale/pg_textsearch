@@ -33,6 +33,9 @@ ORDER BY content <@> to_bm25query('hello', 'scoring1_bulk_idx'), id;
 -- Validate BM25 scoring for 'hello'
 SELECT validate_bm25_scoring('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'hello', 'english', 1.2, 0.75) as hello_valid;
 
+-- Validate index scan vs standalone scoring match for 'hello'
+SELECT validate_index_vs_standalone('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'hello') as hello_modes_match;
+
 -- Bulk mode query 2: 'cruel'
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_bulk_idx'))::numeric, 4) as score
 
@@ -41,6 +44,9 @@ ORDER BY content <@> to_bm25query('cruel', 'scoring1_bulk_idx'), id;
 
 -- Validate BM25 scoring for 'cruel'
 SELECT validate_bm25_scoring('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'cruel', 'english', 1.2, 0.75) as cruel_valid;
+
+-- Validate index scan vs standalone scoring match for 'cruel'
+SELECT validate_index_vs_standalone('scoring1_bulk', 'content', 'scoring1_bulk_idx', 'cruel') as cruel_modes_match;
 
 -- MODE 2: Incremental build (create index, then insert data)
 CREATE TABLE scoring1_incr (
@@ -65,6 +71,9 @@ ORDER BY content <@> to_bm25query('hello', 'scoring1_incr_idx'), id;
 -- Validate BM25 scoring for 'hello' (incremental)
 SELECT validate_bm25_scoring('scoring1_incr', 'content', 'scoring1_incr_idx', 'hello', 'english', 1.2, 0.75) as hello_incr_valid;
 
+-- Validate index scan vs standalone scoring match for 'hello' (incremental)
+SELECT validate_index_vs_standalone('scoring1_incr', 'content', 'scoring1_incr_idx', 'hello') as hello_incr_modes_match;
+
 -- Incremental mode query 2: 'cruel'
 SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring1_incr_idx'))::numeric, 4) as score
 
@@ -73,6 +82,9 @@ ORDER BY content <@> to_bm25query('cruel', 'scoring1_incr_idx'), id;
 
 -- Validate BM25 scoring for 'cruel' (incremental)
 SELECT validate_bm25_scoring('scoring1_incr', 'content', 'scoring1_incr_idx', 'cruel', 'english', 1.2, 0.75) as cruel_incr_valid;
+
+-- Validate index scan vs standalone scoring match for 'cruel' (incremental)
+SELECT validate_index_vs_standalone('scoring1_incr', 'content', 'scoring1_incr_idx', 'cruel') as cruel_incr_modes_match;
 
 -- Cleanup
 DROP TABLE scoring1_bulk CASCADE;

@@ -518,15 +518,6 @@ tp_score_documents(
 	/* Free unified doc_freqs array */
 	pfree(unified_doc_freqs);
 
-	/*
-	 * Note: Previously this code would scan all docid pages to find
-	 * "additional" zero-scored documents when fewer than max_results
-	 * documents matched the query. This caused severe performance issues
-	 * with large indexes (scanning millions of docid pages). We now only
-	 * return documents that actually match the query terms, which is the
-	 * expected behavior for a search engine anyway.
-	 */
-
 	/* Extract and sort documents by score */
 	sorted_docs = tp_extract_and_sort_documents(
 			doc_scores_hash, max_results, &scored_count);
