@@ -157,12 +157,11 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	uint32				i;
 	BlockNumber			nblocks;
 
-	elog(DEBUG1,
-		 "tp_segment_open: opening segment at root_block=%u for index %u",
-		 root_block,
-		 RelationGetRelid(index));
-
-	/* Check if root_block is valid before trying to read */
+	/*
+	 * Validate root_block is within the relation. In Postgres, blocks are
+	 * allocated sequentially from 0 to nblocks-1, so any valid block number
+	 * must be < nblocks. This is the standard way to validate block numbers.
+	 */
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (root_block >= nblocks)
 	{
@@ -197,28 +196,20 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	/* Validate header magic number */
 	if (header->magic != TP_SEGMENT_MAGIC)
 	{
-		elog(WARNING,
-			 "tp_segment_open: invalid segment header at block %u "
-			 "(magic=0x%08X, expected 0x%08X)",
-			 root_block,
-			 header->magic,
-			 TP_SEGMENT_MAGIC);
 		UnlockReleaseBuffer(header_buf);
 		pfree(reader->header);
 		pfree(reader);
-		return NULL;
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid segment header at block %u", root_block),
+				 errdetail(
+						 "magic=0x%08X, expected 0x%08X",
+						 header->magic,
+						 TP_SEGMENT_MAGIC)));
 	}
 
 	reader->num_pages = header->num_pages;
 	reader->nblocks	  = nblocks;
-
-	elog(DEBUG1,
-		 "tp_segment_open: header read - num_pages=%u num_terms=%u "
-		 "num_docs=%u next_segment=%u",
-		 header->num_pages,
-		 header->num_terms,
-		 header->num_docs,
-		 header->next_segment);
 
 	/* Get page index location from header */
 	page_index_block = header->page_index;
@@ -245,29 +236,18 @@ tp_segment_open(Relation index, BlockNumber root_block)
 		/* Validate this is actually a page index page */
 		if (special->page_type != TP_PAGE_FILE_INDEX)
 		{
-			elog(WARNING,
-				 "tp_segment_open: page %u has wrong page_type=%u "
-				 "(expected %u), pages_loaded=%u num_pages=%u",
-				 page_index_block,
-				 special->page_type,
-				 TP_PAGE_FILE_INDEX,
-				 pages_loaded,
-				 reader->num_pages);
 			UnlockReleaseBuffer(index_buf);
 			ReleaseBuffer(reader->header_buffer);
 			pfree(reader->page_map);
 			pfree(reader->header);
 			pfree(reader);
-			return NULL;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("page %u has wrong page_type %u (expected %u)",
+							page_index_block,
+							special->page_type,
+							TP_PAGE_FILE_INDEX)));
 		}
-
-		elog(DEBUG1,
-			 "tp_segment_open: reading page_index block=%u num_entries=%u "
-			 "next_page=%u pages_loaded=%u",
-			 page_index_block,
-			 special->num_entries,
-			 special->next_page,
-			 pages_loaded);
 
 		/* Get pointer to page entries array */
 		page_entries = (BlockNumber *)((char *)index_page +
@@ -283,18 +263,19 @@ tp_segment_open(Relation index, BlockNumber root_block)
 			/* Validate block number is within relation bounds */
 			if (page_block >= nblocks)
 			{
-				elog(WARNING,
-					 "tp_segment_open: invalid page block %u in page_map "
-					 "entry %u (nblocks=%u)",
-					 page_block,
-					 pages_loaded,
-					 nblocks);
 				UnlockReleaseBuffer(index_buf);
 				ReleaseBuffer(reader->header_buffer);
 				pfree(reader->page_map);
 				pfree(reader->header);
 				pfree(reader);
-				return NULL;
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("invalid page block in segment page_map"),
+						 errdetail(
+								 "block %u at entry %u >= nblocks %u",
+								 page_block,
+								 pages_loaded,
+								 nblocks)));
 			}
 			reader->page_map[pages_loaded++] = page_block;
 		}
@@ -467,12 +448,6 @@ tp_segment_get_direct(
 	access->data	  = NULL;
 	access->available = 0;
 
-	/*
-	 * Disable zero-copy for now due to buffer lifecycle issues with
-	 * PostgreSQL 18 async I/O. Force fallback to tp_segment_read().
-	 */
-	return false;
-
 	/* Check if data spans pages - if so, can't do zero-copy */
 	if (page_offset + len > SEGMENT_DATA_PER_PAGE)
 		return false;
@@ -626,8 +601,6 @@ allocate_segment_page(Relation index)
 	/* The page should already be initialized by RBM_ZERO_AND_LOCK */
 	block = BufferGetBlockNumber(buffer);
 
-	elog(DEBUG2, "Allocated page at block %u", block);
-
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
 
@@ -657,8 +630,6 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 		}
 
 		writer->pages_capacity = new_capacity;
-
-		elog(DEBUG2, "Grew page array capacity to %u", new_capacity);
 	}
 }
 
@@ -679,11 +650,6 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	/* Add to our tracking array */
 	writer->pages[writer->pages_allocated] = new_page;
 	writer->pages_allocated++;
-
-	elog(DEBUG2,
-		 "Writer allocated page %u (total: %u)",
-		 new_page,
-		 writer->pages_allocated);
 
 	return new_page;
 }
@@ -709,26 +675,12 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
 							 entries_per_page;
 
-	elog(DEBUG2,
-		 "write_page_index: num_pages=%u entries_per_page=%u "
-		 "num_index_pages=%u sizeof(TpPageIndexSpecial)=%zu",
-		 num_pages,
-		 entries_per_page,
-		 num_index_pages,
-		 sizeof(TpPageIndexSpecial));
-
 	/* Allocate index pages incrementally */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
 	uint32		 i;
 
 	for (i = 0; i < num_index_pages; i++)
-	{
 		index_pages[i] = allocate_segment_page(index);
-		elog(DEBUG2,
-			 "write_page_index: allocated index_pages[%u] = %u",
-			 i,
-			 index_pages[i]);
-	}
 
 	/*
 	 * Write index pages in reverse order (so we can chain them).
@@ -749,15 +701,6 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 		start_idx		 = i * entries_per_page;
 		entries_to_write = Min(entries_per_page, num_pages - start_idx);
 
-		elog(DEBUG2,
-			 "write_page_index: writing page i=%d block=%u "
-			 "start_idx=%u entries_to_write=%u prev_block=%u",
-			 i,
-			 index_pages[i],
-			 start_idx,
-			 entries_to_write,
-			 prev_block);
-
 		buffer = ReadBuffer(index, index_pages[i]);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
@@ -772,37 +715,12 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 		special->num_entries = entries_to_write;
 		special->flags		 = 0;
 
-		elog(DEBUG2,
-			 "write_page_index: page %u special area at offset %lu, "
-			 "set next_page=%u page_type=%u num_entries=%u",
-			 index_pages[i],
-			 (unsigned long)((char *)special - (char *)page),
-			 special->next_page,
-			 special->page_type,
-			 special->num_entries);
-
 		/* Use the data area after the page header */
 		page_data = (BlockNumber *)((char *)page + SizeOfPageHeaderData);
 
 		/* Fill with page numbers from pages[start_idx..start_idx+entries-1] */
 		for (j = 0; j < entries_to_write; j++)
-		{
 			page_data[j] = pages[start_idx + j];
-		}
-
-		/* Log the last few data entries to check for overlap with special */
-		if (entries_to_write > 0)
-		{
-			uint32 last_idx = entries_to_write - 1;
-			elog(DEBUG2,
-				 "write_page_index: page %u data[%u]=%u at offset %lu "
-				 "(special starts at %lu)",
-				 index_pages[i],
-				 last_idx,
-				 page_data[last_idx],
-				 (unsigned long)(SizeOfPageHeaderData + last_idx * 4),
-				 (unsigned long)((char *)special - (char *)page));
-		}
 
 		MarkBufferDirty(buffer);
 		UnlockReleaseBuffer(buffer);
@@ -1445,10 +1363,6 @@ tp_dump_segment_to_output(
 void
 tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 {
-	elog(DEBUG2,
-		 "tp_segment_writer_init: Initializing writer for incremental "
-		 "allocation");
-
 	writer->index			= index;
 	writer->pages			= NULL;
 	writer->pages_allocated = 0;
@@ -1467,11 +1381,6 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 
 	/* Initialize first page */
 	PageInit((Page)writer->buffer, BLCKSZ, 0);
-
-	elog(DEBUG2,
-		 "tp_segment_writer_init: Writer initialized with first page, buffer "
-		 "at %p",
-		 writer->buffer);
 }
 
 void
@@ -1528,10 +1437,6 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 		return; /* Nothing to flush */
 
 	/* Write current buffer to disk */
-	elog(DEBUG2,
-		 "tp_segment_writer_flush: Flushing buffer_page %u to block %u",
-		 writer->buffer_page,
-		 writer->pages[writer->buffer_page]);
 	buffer = ReadBuffer(writer->index, writer->pages[writer->buffer_page]);
 	LockBuffer(
 			buffer, BUFFER_LOCK_EXCLUSIVE); /* Need exclusive lock to modify */
