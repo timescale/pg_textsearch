@@ -747,6 +747,14 @@ tp_rebuild_posting_lists_from_docids(
 			 "Recovery complete for tapir index %u: %u documents restored",
 			 index_rel->rd_id,
 			 local_state->shared->total_docs);
+
+		/*
+		 * Reset terms_added_this_xact to prevent bulk load spill from
+		 * triggering after recovery. Recovery re-adds all documents to the
+		 * memtable, which would otherwise count toward the bulk load
+		 * threshold and incorrectly trigger a segment write.
+		 */
+		local_state->terms_added_this_xact = 0;
 	}
 }
 

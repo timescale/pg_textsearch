@@ -155,6 +155,7 @@ typedef struct TpSegmentReader
 	/* Cached page map loaded from page index */
 	BlockNumber *page_map;
 	uint32		 num_pages;
+	BlockNumber	 nblocks; /* Relation size for validation */
 
 	/* Current data page */
 	Buffer current_buffer;

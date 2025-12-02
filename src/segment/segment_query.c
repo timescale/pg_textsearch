@@ -248,14 +248,28 @@ tp_process_term_in_segments(
 	TpSegmentReader			*reader	 = NULL;
 	TpSegmentPostingIterator iter;
 	TpSegmentPosting		*posting;
+	int						 segment_count = 0;
+
 	while (current != InvalidBlockNumber)
 	{
 		TpSegmentHeader *header;
+		uint32			 postings_processed = 0;
+
+		segment_count++;
+		elog(DEBUG2,
+			 "tp_process_term_in_segments: term='%s' segment=%d block=%u",
+			 term,
+			 segment_count,
+			 current);
 
 		/* Open segment */
 		reader = tp_segment_open(index, current);
 		if (!reader)
+		{
+			elog(DEBUG2,
+				 "tp_process_term_in_segments: failed to open segment");
 			break;
+		}
 
 		/* Initialize iterator for this term */
 		if (tp_segment_posting_iterator_init(&iter, reader, term))
@@ -279,6 +293,7 @@ tp_process_term_in_segments(
 						 "tp_process_term_in_segments: posting is NULL!");
 				}
 
+				postings_processed++;
 				tf = posting->frequency;
 
 				/* Copy ctid to avoid packed member alignment issues */
@@ -349,12 +364,40 @@ tp_process_term_in_segments(
 		}
 
 		/* Get next segment from header */
-		header	= reader->header;
+		header = reader->header;
+
+		elog(DEBUG2,
+			 "tp_process_term_in_segments: segment=%d done, "
+			 "postings=%u next_segment=%u",
+			 segment_count,
+			 postings_processed,
+			 header->next_segment);
+
 		current = header->next_segment;
 
 		/* Close this segment */
 		tp_segment_close(reader);
+
+		/*
+		 * Validate next_segment before trying to open it. If it's not
+		 * InvalidBlockNumber, it should be a reasonable block number.
+		 * Block numbers > 100 million are almost certainly corrupt data.
+		 */
+		if (current != InvalidBlockNumber && current > 100000000)
+		{
+			elog(WARNING,
+				 "tp_process_term_in_segments: corrupt next_segment=%u "
+				 "(> 100M), stopping traversal",
+				 current);
+			break;
+		}
 	}
+
+	elog(DEBUG2,
+		 "tp_process_term_in_segments: term='%s' finished, "
+		 "total_segments=%d",
+		 term,
+		 segment_count);
 }
 
 /*
@@ -364,14 +407,26 @@ uint32
 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term)
 {
-	BlockNumber		 current	 = first_segment;
-	TpSegmentReader *reader		 = NULL;
-	uint32			 doc_freq	 = 0;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
+	BlockNumber		 current	   = first_segment;
+	TpSegmentReader *reader		   = NULL;
+	uint32			 doc_freq	   = 0;
+	char			*term_buffer   = NULL;
+	uint32			 buffer_size   = 0;
+	int				 segment_count = 0;
+
+	elog(DEBUG2,
+		 "tp_segment_get_doc_freq: term='%s' first_segment=%u",
+		 term,
+		 first_segment);
 
 	while (current != InvalidBlockNumber)
 	{
+		segment_count++;
+		elog(DEBUG2,
+			 "tp_segment_get_doc_freq: term='%s' segment=%d block=%u",
+			 term,
+			 segment_count,
+			 current);
 		TpSegmentHeader *header;
 		TpDictionary	 dict_header;
 		int				 left, right;
@@ -458,9 +513,37 @@ tp_segment_get_doc_freq(
 			}
 		}
 
+		elog(DEBUG2,
+			 "tp_segment_get_doc_freq: term='%s' segment=%d done, "
+			 "next_segment=%u doc_freq_so_far=%u",
+			 term,
+			 segment_count,
+			 header->next_segment,
+			 doc_freq);
+
 		current = header->next_segment;
 		tp_segment_close(reader);
+
+		/*
+		 * Validate next_segment before trying to open it. If it's not
+		 * InvalidBlockNumber, it should be a reasonable block number.
+		 */
+		if (current != InvalidBlockNumber && current > 100000000)
+		{
+			elog(WARNING,
+				 "tp_segment_get_doc_freq: corrupt next_segment=%u "
+				 "(> 100M), stopping traversal",
+				 current);
+			break;
+		}
 	}
+
+	elog(DEBUG2,
+		 "tp_segment_get_doc_freq: term='%s' finished, "
+		 "total_segments=%d total_doc_freq=%u",
+		 term,
+		 segment_count,
+		 doc_freq);
 
 	if (term_buffer)
 		pfree(term_buffer);

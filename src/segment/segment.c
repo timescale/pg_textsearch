@@ -155,6 +155,24 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	BlockNumber		   *page_entries;
 	uint32				pages_loaded = 0;
 	uint32				i;
+	BlockNumber			nblocks;
+
+	elog(DEBUG1,
+		 "tp_segment_open: opening segment at root_block=%u for index %u",
+		 root_block,
+		 RelationGetRelid(index));
+
+	/* Check if root_block is valid before trying to read */
+	nblocks = RelationGetNumberOfBlocks(index);
+	if (root_block >= nblocks)
+	{
+		elog(DEBUG1,
+			 "tp_segment_open: root_block=%u is beyond relation end "
+			 "(nblocks=%u)",
+			 root_block,
+			 nblocks);
+		return NULL;
+	}
 
 	/* Allocate reader structure */
 	reader						 = palloc0(sizeof(TpSegmentReader));
@@ -174,8 +192,33 @@ tp_segment_open(Relation index, BlockNumber root_block)
 		   (char *)header_page + SizeOfPageHeaderData,
 		   sizeof(TpSegmentHeader));
 
-	header			  = reader->header;
+	header = reader->header;
+
+	/* Validate header magic number */
+	if (header->magic != TP_SEGMENT_MAGIC)
+	{
+		elog(WARNING,
+			 "tp_segment_open: invalid segment header at block %u "
+			 "(magic=0x%08X, expected 0x%08X)",
+			 root_block,
+			 header->magic,
+			 TP_SEGMENT_MAGIC);
+		UnlockReleaseBuffer(header_buf);
+		pfree(reader->header);
+		pfree(reader);
+		return NULL;
+	}
+
 	reader->num_pages = header->num_pages;
+	reader->nblocks	  = nblocks;
+
+	elog(DEBUG1,
+		 "tp_segment_open: header read - num_pages=%u num_terms=%u "
+		 "num_docs=%u next_segment=%u",
+		 header->num_pages,
+		 header->num_terms,
+		 header->num_docs,
+		 header->next_segment);
 
 	/* Get page index location from header */
 	page_index_block = header->page_index;
@@ -199,16 +242,61 @@ tp_segment_open(Relation index, BlockNumber root_block)
 		/* Get special area with page index metadata */
 		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
 
+		/* Validate this is actually a page index page */
+		if (special->page_type != TP_PAGE_FILE_INDEX)
+		{
+			elog(WARNING,
+				 "tp_segment_open: page %u has wrong page_type=%u "
+				 "(expected %u), pages_loaded=%u num_pages=%u",
+				 page_index_block,
+				 special->page_type,
+				 TP_PAGE_FILE_INDEX,
+				 pages_loaded,
+				 reader->num_pages);
+			UnlockReleaseBuffer(index_buf);
+			ReleaseBuffer(reader->header_buffer);
+			pfree(reader->page_map);
+			pfree(reader->header);
+			pfree(reader);
+			return NULL;
+		}
+
+		elog(DEBUG1,
+			 "tp_segment_open: reading page_index block=%u num_entries=%u "
+			 "next_page=%u pages_loaded=%u",
+			 page_index_block,
+			 special->num_entries,
+			 special->next_page,
+			 pages_loaded);
+
 		/* Get pointer to page entries array */
 		page_entries = (BlockNumber *)((char *)index_page +
 									   SizeOfPageHeaderData);
 
-		/* Copy page entries to our map */
+		/* Copy page entries to our map with validation */
 		for (i = 0;
 			 i < special->num_entries && pages_loaded < reader->num_pages;
 			 i++)
 		{
-			reader->page_map[pages_loaded++] = page_entries[i];
+			BlockNumber page_block = page_entries[i];
+
+			/* Validate block number is within relation bounds */
+			if (page_block >= nblocks)
+			{
+				elog(WARNING,
+					 "tp_segment_open: invalid page block %u in page_map "
+					 "entry %u (nblocks=%u)",
+					 page_block,
+					 pages_loaded,
+					 nblocks);
+				UnlockReleaseBuffer(index_buf);
+				ReleaseBuffer(reader->header_buffer);
+				pfree(reader->page_map);
+				pfree(reader->header);
+				pfree(reader);
+				return NULL;
+			}
+			reader->page_map[pages_loaded++] = page_block;
 		}
 
 		/* Move to next page in chain */
@@ -300,6 +388,20 @@ tp_segment_read(
 					 reader->num_pages);
 			}
 
+			/* Validate physical block number */
+			{
+				BlockNumber physical = reader->page_map[logical_page];
+				if (physical >= reader->nblocks)
+				{
+					elog(ERROR,
+						 "Invalid physical block %u for logical page %u "
+						 "(nblocks=%u)",
+						 physical,
+						 logical_page,
+						 reader->nblocks);
+				}
+			}
+
 			/* Read the physical page */
 			buf = ReadBuffer(reader->index, reader->page_map[logical_page]);
 
@@ -342,6 +444,9 @@ tp_segment_read(
  *
  * Unlike tp_segment_read() which unlocks immediately after copying, this
  * function keeps the buffer locked so the caller can safely access the data.
+ *
+ * NOTE: Currently disabled due to buffer lifecycle issues with PostgreSQL 18
+ * async I/O. Always returns false to force fallback to tp_segment_read().
  */
 bool
 tp_segment_get_direct(
@@ -361,6 +466,12 @@ tp_segment_get_direct(
 	access->page	  = NULL;
 	access->data	  = NULL;
 	access->available = 0;
+
+	/*
+	 * Disable zero-copy for now due to buffer lifecycle issues with
+	 * PostgreSQL 18 async I/O. Force fallback to tp_segment_read().
+	 */
+	return false;
 
 	/* Check if data spans pages - if so, can't do zero-copy */
 	if (page_offset + len > SEGMENT_DATA_PER_PAGE)
