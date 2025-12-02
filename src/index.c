@@ -161,6 +161,13 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	{
 		tp_clear_memtable(index_state);
 
+		/*
+		 * Clear docid pages since data is now in segment. This prevents
+		 * recovery from re-indexing documents already persisted in segments,
+		 * which would cause duplicate entries and slow recovery.
+		 */
+		tp_clear_docid_pages(index_rel);
+
 		/* Link new segment as chain head */
 		metabuf = ReadBuffer(index_rel, 0);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
