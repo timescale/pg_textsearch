@@ -65,9 +65,6 @@ struct TpPostingList
 	dsa_pointer entries_dp; /* DSA pointer to TpPostingEntry array */
 };
 
-/* GUC variables */
-extern int tp_index_memory_limit; /* Currently not enforced */
-
 /* Default hash table size */
 #define TP_DEFAULT_HASH_BUCKETS 1024
 

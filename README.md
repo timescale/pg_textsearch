@@ -201,12 +201,18 @@ SELECT bm25_dump_index('index_name');
 Optional settings in `postgresql.conf`:
 
 ```bash
-# Per-index memory limit (can be changed without restart)
-pg_textsearch.index_memory_limit = 64MB      # Memory limit per index, default 64MB
-
 # Query limit when no LIMIT clause detected
 pg_textsearch.default_limit = 1000           # default 1000
+
+# Auto-spill thresholds (set to 0 to disable)
+pg_textsearch.bulk_load_threshold = 100000   # terms per transaction
+pg_textsearch.memtable_spill_threshold = 800000  # posting entries (~8MB segments)
 ```
+
+The `memtable_spill_threshold` controls when the in-memory index spills to
+disk segments. When the memtable reaches this many posting entries, it
+automatically flushes to a segment at transaction commit. This keeps memory
+usage bounded while maintaining good query performance.
 
 ## Examples
 

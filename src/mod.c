@@ -78,20 +78,6 @@ _PG_init(void)
 	 * Define GUC parameters
 	 */
 	DefineCustomIntVariable(
-			"pg_textsearch.index_memory_limit",
-			"Per-index memory limit in MB",
-			"Controls the maximum memory each pg_textsearch index can use",
-			&tp_index_memory_limit,
-			TP_DEFAULT_INDEX_MEMORY_LIMIT, /* default 64MB */
-			1,							   /* min 1MB */
-			TP_MAX_INDEX_MEMORY_LIMIT,	   /* max 512MB */
-			PGC_SUSET,					   /* Superuser can change with SET */
-			0,
-			NULL,
-			NULL,
-			NULL);
-
-	DefineCustomIntVariable(
 			"pg_textsearch.default_limit",
 			"Default limit for BM25 queries when no LIMIT is detected",
 			"Controls the maximum number of documents to process when no "

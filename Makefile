@@ -10,7 +10,6 @@ DATA = sql/pg_textsearch--0.0.5-dev.sql \
 OBJS = \
 	src/mod.o \
 	src/memtable/memtable.o \
-	src/memory.o \
 	src/metapage.o \
 	src/memtable/posting.o \
 	src/index.o \
