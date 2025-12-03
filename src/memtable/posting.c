@@ -177,6 +177,15 @@ tp_add_document_to_posting_list(
 	posting_list->doc_count++;
 	posting_list->doc_freq	= posting_list->doc_count;
 	posting_list->is_sorted = false; /* New entry may break sort order */
+
+	/* Track total postings for spill threshold */
+	if (local_state->shared &&
+		DsaPointerIsValid(local_state->shared->memtable_dp))
+	{
+		TpMemtable *memtable = dsa_get_address(
+				local_state->dsa, local_state->shared->memtable_dp);
+		memtable->total_postings++;
+	}
 }
 
 /*

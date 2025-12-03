@@ -37,8 +37,9 @@
 #include "segment/segment.h"
 #include "state.h"
 
-/* External GUC from mod.c */
+/* External GUCs from mod.c */
 extern int tp_bulk_load_threshold;
+extern int tp_memtable_spill_threshold;
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
@@ -287,6 +288,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_terms		 = 0;
+	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -955,6 +957,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
 	 * as they represent the overall index state, not just the memtable */
 
+	/* Reset posting count for spill threshold tracking */
+	memtable->total_postings = 0;
+
 	/*
 	 * Aggressively try to reclaim empty DSA superblocks.
 	 * After destroying the hash tables, entire segments should be freeable.
@@ -970,23 +975,35 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	 * significantly, and we want auto-spill to trigger based on new growth.
 	 */
 	local_state->shared->last_spill_dsa_size = dsa_size_after;
+
+	/* Suppress unused variable warning (used for debug logging if needed) */
+	(void)dsa_size_before;
 }
 
 /*
- * Check if any index had a bulk load (many terms added) this transaction.
- * If so, spill to disk to prevent unbounded memory growth.
+ * Check if any index should spill to disk. Spill is triggered by either:
+ * 1. bulk_load_threshold: terms added this transaction exceeds threshold
+ * 2. memtable_spill_threshold: total postings in memtable exceeds threshold
  *
  * This is called at PRE_COMMIT via the transaction callback in mod.c.
- * The threshold is configurable via pg_textsearch.bulk_load_threshold GUC.
  */
 void
 tp_bulk_load_spill_check(void)
 {
 	HASH_SEQ_STATUS		  status;
 	LocalStateCacheEntry *entry;
+	bool				  bulk_load_enabled;
+	bool				  memtable_spill_enabled;
 
-	/* Nothing to do if cache not initialized or threshold is 0 (disabled) */
-	if (local_state_cache == NULL || tp_bulk_load_threshold == 0)
+	/* Nothing to do if cache not initialized */
+	if (local_state_cache == NULL)
+		return;
+
+	bulk_load_enabled	   = (tp_bulk_load_threshold > 0);
+	memtable_spill_enabled = (tp_memtable_spill_threshold > 0);
+
+	/* Nothing to do if both thresholds are disabled */
+	if (!bulk_load_enabled && !memtable_spill_enabled)
 		return;
 
 	/* Iterate through all cached local states */
@@ -994,25 +1011,49 @@ tp_bulk_load_spill_check(void)
 	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
 	{
 		TpLocalIndexState *local_state = entry->local_state;
+		TpMemtable		  *memtable;
 		Relation		   index_rel;
 		BlockNumber		   segment_root;
 		Buffer			   metabuf;
 		Page			   metapage;
 		TpIndexMetaPage	   metap;
+		bool			   bulk_load_triggered		= false;
+		bool			   memtable_spill_triggered = false;
 
 		if (!local_state || !local_state->shared)
 			continue;
 
-		/* Check if this index exceeded the bulk load threshold */
-		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
+		memtable = get_memtable(local_state);
+		if (!memtable)
 			continue;
 
-		elog(NOTICE,
-			 "Bulk load spill triggered for index %u: %ld terms added this "
-			 "transaction (threshold: %d)",
-			 local_state->shared->index_oid,
-			 (long)local_state->terms_added_this_xact,
-			 tp_bulk_load_threshold);
+		/* Check both thresholds */
+		if (bulk_load_enabled &&
+			local_state->terms_added_this_xact >= tp_bulk_load_threshold)
+			bulk_load_triggered = true;
+
+		if (memtable_spill_enabled &&
+			memtable->total_postings >= tp_memtable_spill_threshold)
+			memtable_spill_triggered = true;
+
+		/* Skip if neither threshold exceeded */
+		if (!bulk_load_triggered && !memtable_spill_triggered)
+			continue;
+
+		if (bulk_load_triggered)
+			elog(NOTICE,
+				 "Bulk load spill for index %u: %ld terms this xact "
+				 "(threshold: %d)",
+				 local_state->shared->index_oid,
+				 (long)local_state->terms_added_this_xact,
+				 tp_bulk_load_threshold);
+		else
+			elog(NOTICE,
+				 "Memtable spill for index %u: %ld posting entries "
+				 "(threshold: %d)",
+				 local_state->shared->index_oid,
+				 (long)memtable->total_postings,
+				 tp_memtable_spill_threshold);
 
 		/* Open the index relation */
 		PG_TRY();
