@@ -46,6 +46,9 @@
 #include "segment/segment.h"
 #include "vector.h"
 
+/* GUC variables defined in mod.c */
+extern int tp_memtable_spill_threshold;
+
 /* Local helper functions */
 static char *tp_get_qualified_index_name(Relation indexRelation);
 static void
@@ -91,12 +94,9 @@ tp_get_qualified_index_name(Relation indexRelation)
 }
 
 /*
- * Auto-spill memtable to disk segment when memory limit is exceeded.
+ * Auto-spill memtable to disk segment when posting count threshold exceeded.
  * This is called after each document insert to check if spill is needed.
- *
- * To avoid repeated spills at the same memory level (since DSA doesn't shrink
- * after clearing memtable), we track the DSA size at the last spill in the
- * shared state and only spill again if DSA has grown since then.
+ * The threshold is controlled by pg_textsearch.memtable_spill_threshold GUC.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
@@ -105,53 +105,28 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	Buffer			metabuf;
 	Page			metapage;
 	TpIndexMetaPage metap;
+	TpMemtable	   *memtable;
+	int64			total_postings;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
 
-	/* Check if memory limit is exceeded using DSA total size */
-	{
-		Size	   dsa_usage	= tp_get_dsa_memory_usage(index_state->dsa);
-		Size	   memory_limit = tp_get_memory_limit();
-		static int check_count	= 0;
+	/* Check if posting count threshold is exceeded */
+	if (tp_memtable_spill_threshold <= 0)
+		return;
 
-		check_count++;
-		/* Log every 10000 checks to avoid flooding logs */
-		if (check_count % 10000 == 0)
-		{
-			elog(DEBUG1,
-				 "Auto-spill check #%d: DSA usage=%zu bytes (%.2f MB), "
-				 "limit=%zu bytes (%.2f MB)",
-				 check_count,
-				 dsa_usage,
-				 (double)dsa_usage / (1024.0 * 1024.0),
-				 memory_limit,
-				 (double)memory_limit / (1024.0 * 1024.0));
-		}
+	memtable = get_memtable(index_state);
+	if (!memtable)
+		return;
 
-		if (dsa_usage < memory_limit)
-			return;
+	total_postings = memtable->total_postings;
+	if (total_postings < tp_memtable_spill_threshold)
+		return;
 
-		/*
-		 * Only spill if DSA has grown since last spill. This prevents
-		 * repeated spills at the same memory level, since DSA doesn't
-		 * shrink when we clear the memtable (it keeps allocated segments).
-		 * The last_spill_dsa_size is stored per-index in the shared state.
-		 */
-		if (dsa_usage <= index_state->shared->last_spill_dsa_size)
-			return;
-
-		elog(NOTICE,
-			 "Auto-spill triggered: DSA usage=%zu bytes (%.2f MB) >= "
-			 "limit=%zu bytes (%.2f MB)",
-			 dsa_usage,
-			 (double)dsa_usage / (1024.0 * 1024.0),
-			 memory_limit,
-			 (double)memory_limit / (1024.0 * 1024.0));
-
-		/* Record current DSA size to prevent repeated spills at this level */
-		index_state->shared->last_spill_dsa_size = dsa_usage;
-	}
+	elog(NOTICE,
+		 "Auto-spill triggered: %ld posting entries >= threshold %d",
+		 (long)total_postings,
+		 tp_memtable_spill_threshold);
 
 	/* Write the segment */
 	segment_root = tp_write_segment(index_state, index_rel);
