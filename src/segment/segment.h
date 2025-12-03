@@ -233,6 +233,10 @@ struct DumpOutput; /* Forward declaration */
 extern void tp_dump_segment_to_output(
 		Relation index, BlockNumber segment_root, struct DumpOutput *out);
 
+/* Page index writing (used by segment_merge.c) */
+extern BlockNumber
+write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
+
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */
 

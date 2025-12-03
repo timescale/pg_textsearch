@@ -35,6 +35,7 @@
 #include "metapage.h"
 #include "registry.h"
 #include "segment/segment.h"
+#include "segment/segment_merge.h"
 #include "state.h"
 
 /* External GUCs from mod.c */
@@ -1070,6 +1071,9 @@ tp_bulk_load_spill_check(void)
 				 "(L0 count: %u)",
 				 segment_root,
 				 metap->level_counts[0]);
+
+			/* Check if L0 needs compaction */
+			tp_maybe_compact_level(index_rel, 0);
 		}
 
 		index_close(index_rel, RowExclusiveLock);

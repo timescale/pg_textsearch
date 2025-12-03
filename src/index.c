@@ -44,6 +44,7 @@
 #include "operator.h"
 #include "query.h"
 #include "segment/segment.h"
+#include "segment/segment_merge.h"
 #include "vector.h"
 
 /* GUC variables defined in mod.c */
@@ -175,6 +176,9 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 			 "Auto-spilled memtable to segment at block %u (L0 count: %u)",
 			 segment_root,
 			 metap->level_counts[0]);
+
+		/* Check if L0 needs compaction */
+		tp_maybe_compact_level(index_rel, 0);
 	}
 }
 

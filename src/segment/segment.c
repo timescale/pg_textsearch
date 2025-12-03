@@ -648,9 +648,10 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 }
 
 /*
- * Write page index (chain of BlockNumbers)
+ * Write page index (chain of BlockNumbers).
+ * This function is also used by segment_merge.c for merged segments.
  */
-static BlockNumber
+BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
 	BlockNumber index_root = InvalidBlockNumber;
