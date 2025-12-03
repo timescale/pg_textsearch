@@ -737,7 +737,16 @@ write_segment_postings(
 		TermInfo		  *terms,
 		uint32			   num_terms)
 {
-	uint32 i;
+	TpMemtable	 *memtable		  = get_memtable(state);
+	dshash_table *doclength_table = NULL;
+	uint32		  i;
+
+	/* Attach to document length table for doc_length lookups */
+	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		doclength_table = tp_doclength_table_attach(
+				state->dsa, memtable->doc_lengths_handle);
+	}
 
 	for (i = 0; i < num_terms; i++)
 	{
@@ -771,9 +780,27 @@ write_segment_postings(
 			/* Convert all postings to segment format using reusable buffer */
 			for (j = 0; j < posting_list->doc_count; j++)
 			{
+				int32 doc_len = 0;
+
 				writer->posting_buffer[j].ctid = entries[j].ctid;
 				writer->posting_buffer[j].frequency =
 						(uint16)entries[j].frequency;
+
+				/* Look up doc_length from hash table */
+				if (doclength_table)
+				{
+					doc_len = tp_get_document_length_attached(
+							doclength_table, &entries[j].ctid);
+				}
+				if (doc_len <= 0)
+				{
+					elog(WARNING,
+						 "No doc_length found for ctid (%u,%u), using 1",
+						 ItemPointerGetBlockNumber(&entries[j].ctid),
+						 ItemPointerGetOffsetNumber(&entries[j].ctid));
+					doc_len = 1;
+				}
+				writer->posting_buffer[j].doc_length = (uint16)doc_len;
 			}
 
 			/* Write all postings in a single batch */
@@ -785,6 +812,10 @@ write_segment_postings(
 			/* Buffer is reused, not freed here */
 		}
 	}
+
+	/* Detach from document length table */
+	if (doclength_table)
+		dshash_detach(doclength_table);
 }
 
 /*

@@ -121,12 +121,14 @@ typedef struct TpDictEntry
 } __attribute__((aligned(4))) TpDictEntry;
 
 /*
- * Posting entry - 8 bytes, packed
+ * Posting entry - 10 bytes, packed
+ * Includes inline doc_length to avoid lookup during scoring
  */
 typedef struct TpSegmentPosting
 {
-	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID */
-	uint16			frequency; /* 2 bytes - term frequency */
+	ItemPointerData ctid;		/* 6 bytes - heap tuple ID */
+	uint16			frequency;	/* 2 bytes - term frequency */
+	uint16			doc_length; /* 2 bytes - document length */
 } __attribute__((packed)) TpSegmentPosting;
 
 /*

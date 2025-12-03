@@ -296,6 +296,7 @@ tp_score_documents(
 	int32				 total_docs;
 	int					 scored_count = 0;
 	dshash_table		*string_table;
+	dshash_table		*doclength_table = NULL;
 	TpMemtable			*memtable;
 	BlockNumber			 first_segment;
 	TpIndexMetaPage		 metap;
@@ -358,6 +359,13 @@ tp_score_documents(
 		string_table = NULL;
 	}
 
+	/* Attach to document length table for memtable scoring */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		doclength_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+	}
+
 	/* Sum doc_freq from memtable + segments for unified IDF */
 	uint32 *unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
 	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
@@ -385,19 +393,6 @@ tp_score_documents(
 	/* Calculate BM25 scores from memtable if available */
 	if (string_table)
 	{
-		dshash_table *doclength_table = NULL;
-
-		/*
-		 * Attach to document length table once for all lookups.
-		 * This eliminates per-document attach/detach overhead which was
-		 * a major bottleneck in query performance.
-		 */
-		if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-		{
-			doclength_table = tp_doclength_table_attach(
-					local_state->dsa, memtable->doc_lengths_handle);
-		}
-
 		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
 			const char	   *term = query_terms[term_idx];
@@ -434,23 +429,23 @@ tp_score_documents(
 				if (!ItemPointerIsValid(&entry->ctid))
 					continue;
 
-				/* Look up document length using pre-attached table */
-				if (doclength_table)
-				{
-					doc_len = (float4)tp_get_document_length_attached(
-							doclength_table, &entry->ctid);
-				}
-				else
-				{
-					doc_len = -1.0f;
-				}
-
-				if (doc_len <= 0.0f)
+				/* Look up document length from hash table */
+				if (!doclength_table)
 				{
 					elog(ERROR,
-						 "Failed to get document length for ctid (%u,%u)",
-						 BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
-						 entry->ctid.ip_posid);
+						 "Document length table not available for scoring");
+				}
+				{
+					int32 doc_len_int = tp_get_document_length_attached(
+							doclength_table, &entry->ctid);
+					if (doc_len_int <= 0)
+					{
+						elog(ERROR,
+							 "Failed to get document length for ctid (%u,%u)",
+							 BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
+							 entry->ctid.ip_posid);
+					}
+					doc_len = (float4)doc_len_int;
 				}
 
 				/* Calculate BM25 term score contribution */
@@ -487,12 +482,12 @@ tp_score_documents(
 			}
 		}
 
-		/* Detach from document length table */
-		if (doclength_table)
-			dshash_detach(doclength_table);
-
 		dshash_detach(string_table);
 	}
+
+	/* Detach from document length table after memtable scoring */
+	if (doclength_table)
+		dshash_detach(doclength_table);
 
 	/* Score documents from segments */
 	if (first_segment != InvalidBlockNumber)

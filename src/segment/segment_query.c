@@ -285,31 +285,11 @@ tp_process_term_in_segments(
 				/* Copy ctid to avoid packed member alignment issues */
 				local_ctid = posting->ctid;
 
-				/*
-				 * IMPORTANT: Release the direct access buffer BEFORE calling
-				 * tp_segment_get_document_length(). PostgreSQL buffer locks
-				 * are not re-entrant, so if the document length is on the same
-				 * page as the posting, we'd deadlock trying to SHARE lock an
-				 * already SHARE-locked buffer.
-				 */
-				if (iter.has_active_access)
-				{
-					tp_segment_release_direct(&iter.current_access);
-					iter.has_active_access = false;
-				}
-
-				/* Look up document length */
-				doc_len = (float4)
-						tp_segment_get_document_length(reader, &local_ctid);
+				/* Use inline document length from posting entry */
+				doc_len = (float4)posting->doc_length;
 
 				if (doc_len <= 0.0f)
-				{
-					/* Document not found in this segment, try memtable */
-					doc_len = (float4)tp_get_document_length(
-							local_state, index, &local_ctid);
-					if (doc_len <= 0.0f)
-						continue; /* Skip if still not found */
-				}
+					continue; /* Skip if doc_length is invalid */
 
 				/* Validate TID */
 				if (!ItemPointerIsValid(&local_ctid))
