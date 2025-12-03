@@ -18,7 +18,7 @@
 #define TP_DEFAULT_SEGMENT_THRESHOLD   10000
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
 #define TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD \
-	10000000 /* posting entries to trigger spill (~160MB) */
+	800000 /* posting entries to trigger spill (~8MB segments) */
 
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
