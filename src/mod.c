@@ -40,6 +40,9 @@ int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 /* Global variable for memtable spill threshold (0 = disabled) */
 int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
 
+/* Global variable for segments per level before compaction */
+int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
+
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -129,6 +132,21 @@ _PG_init(void)
 			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 1M */
 			0,									 /* min 0 (disabled) */
 			INT_MAX,							 /* max INT_MAX */
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.segments_per_level",
+			"Segments per level before compaction",
+			"When a level reaches this many segments, they are merged into "
+			"a single segment at the next level.",
+			&tp_segments_per_level,
+			TP_DEFAULT_SEGMENTS_PER_LEVEL, /* default 8 */
+			2,							   /* min 2 */
+			64,							   /* max 64 */
 			PGC_USERSET,
 			0,
 			NULL,

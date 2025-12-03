@@ -2,8 +2,12 @@
 
 /* Magic numbers and metadata */
 #define TP_MAGIC		  0x3A7F9B2E
-#define TP_VERSION		  2 /* Bumped for first_segment field in metapage */
+#define TP_VERSION		  3 /* Bumped for hierarchical segment levels */
 #define TP_METAPAGE_BLKNO 0
+
+/* Segment hierarchy configuration */
+#define TP_MAX_LEVELS				  8 /* Supports 8^8 = 16M segments */
+#define TP_DEFAULT_SEGMENTS_PER_LEVEL 8
 
 /* BM25 scoring constants */
 #define TP_DEFAULT_K1 1.2

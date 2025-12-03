@@ -470,7 +470,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		/* Get the metapage to extract text_config_oid */
 		metap			= tp_get_metapage(index_rel);
 		text_config_oid = metap->text_config_oid;
-		first_segment	= metap->first_segment;
+		first_segment	= metap->level_heads[0];
 
 		/* Get index state for corpus statistics */
 		index_state = tp_get_local_index_state(index_oid);

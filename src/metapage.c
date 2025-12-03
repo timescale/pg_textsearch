@@ -73,6 +73,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 {
 	TpIndexMetaPage metap;
 	PageHeader		phdr;
+	int				i;
 
 	/*
 	 * Initialize page with no special space - metapage uses page content area
@@ -88,7 +89,13 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->total_len		= 0;
 	metap->root_blkno		= InvalidBlockNumber;
 	metap->first_docid_page = InvalidBlockNumber;
-	metap->first_segment	= InvalidBlockNumber;
+
+	/* Initialize hierarchical segment levels */
+	for (i = 0; i < TP_MAX_LEVELS; i++)
+	{
+		metap->level_heads[i]  = InvalidBlockNumber;
+		metap->level_counts[i] = 0;
+	}
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;

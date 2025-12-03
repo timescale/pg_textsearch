@@ -408,65 +408,82 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	dump_printf(out, "  pages: %u\n", recovery_pages);
 	dump_printf(out, "  docids: %u\n", recovery_docids);
 
-	/* Segment summary */
+	/* Segment summary by level */
 	dump_printf(out, "\nSegments:\n");
-	if (metap && metap->first_segment != InvalidBlockNumber)
 	{
-		BlockNumber current_segment = metap->first_segment;
-		uint64		segment_pages	= 0;
+		int	   level;
+		uint64 segment_pages = 0;
+		bool   has_segments	 = false;
 
-		while (current_segment != InvalidBlockNumber)
+		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			TpSegmentReader *reader;
+			BlockNumber current_segment;
+			int			level_segment_count = 0;
 
-			CHECK_FOR_INTERRUPTS();
+			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+				continue;
 
-			reader = tp_segment_open(index_rel, current_segment);
-			if (reader && reader->header)
+			has_segments	= true;
+			current_segment = metap->level_heads[level];
+
+			while (current_segment != InvalidBlockNumber)
 			{
-				TpSegmentHeader *header = reader->header;
-				Size			 seg_size;
+				TpSegmentReader *reader;
 
-				segment_count++;
-				segment_terms += header->num_terms;
-				segment_docs += header->num_docs;
-				segment_tokens += header->total_tokens;
-				segment_pages += header->num_pages;
-				seg_size = (Size)header->num_pages * BLCKSZ;
+				CHECK_FOR_INTERRUPTS();
 
-				dump_printf(
-						out,
-						"  Segment %d: block=%u, pages=%u, size=%.1fMB, "
-						"terms=%u, docs=%u\n",
-						segment_count,
-						current_segment,
-						header->num_pages,
-						(double)seg_size / (1024.0 * 1024.0),
-						header->num_terms,
-						header->num_docs);
+				reader = tp_segment_open(index_rel, current_segment);
+				if (reader && reader->header)
+				{
+					TpSegmentHeader *header = reader->header;
+					Size			 seg_size;
 
-				current_segment = header->next_segment;
-				tp_segment_close(reader);
-			}
-			else
-			{
-				current_segment = InvalidBlockNumber;
+					segment_count++;
+					level_segment_count++;
+					segment_terms += header->num_terms;
+					segment_docs += header->num_docs;
+					segment_tokens += header->total_tokens;
+					segment_pages += header->num_pages;
+					seg_size = (Size)header->num_pages * BLCKSZ;
+
+					dump_printf(
+							out,
+							"  L%d Segment %d: block=%u, pages=%u, "
+							"size=%.1fMB, terms=%u, docs=%u\n",
+							level,
+							level_segment_count,
+							current_segment,
+							header->num_pages,
+							(double)seg_size / (1024.0 * 1024.0),
+							header->num_terms,
+							header->num_docs);
+
+					current_segment = header->next_segment;
+					tp_segment_close(reader);
+				}
+				else
+				{
+					current_segment = InvalidBlockNumber;
+				}
 			}
 		}
 
-		dump_printf(
-				out,
-				"  Total: %d segments, %lu pages (%.1fMB), "
-				"%u terms, %u docs\n",
-				segment_count,
-				segment_pages,
-				(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
-				segment_terms,
-				segment_docs);
-	}
-	else
-	{
-		dump_printf(out, "  (none)\n");
+		if (has_segments)
+		{
+			dump_printf(
+					out,
+					"  Total: %d segments, %lu pages (%.1fMB), "
+					"%u terms, %u docs\n",
+					segment_count,
+					segment_pages,
+					(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
+					segment_terms,
+					segment_docs);
+		}
+		else
+		{
+			dump_printf(out, "  (none)\n");
+		}
 	}
 
 	/* Index size */
@@ -613,68 +630,92 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "  No recovery pages\n");
 	}
 
-	/* Detailed segment dump (first 2 only) */
-	if (metap && metap->first_segment != InvalidBlockNumber)
+	/* Detailed segment dump (first 2 per level) */
 	{
-		BlockNumber current_segment = metap->first_segment;
-		int			dumped_count	= 0;
-		int			total_segments	= 0;
-		const int	max_dump		= 2;
+		int		  level;
+		int		  total_segments = 0;
+		int		  dumped_count	 = 0;
+		const int max_dump		 = 2;
+		bool	  has_segments	 = false;
 
-		/* First count total segments */
-		while (current_segment != InvalidBlockNumber)
+		/* First count total segments across all levels */
+		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			TpSegmentReader *reader;
+			BlockNumber current_segment;
 
-			reader = tp_segment_open(index_rel, current_segment);
-			if (reader && reader->header)
+			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+				continue;
+
+			has_segments	= true;
+			current_segment = metap->level_heads[level];
+
+			while (current_segment != InvalidBlockNumber)
 			{
-				total_segments++;
-				current_segment = reader->header->next_segment;
-				tp_segment_close(reader);
-			}
-			else
-			{
-				current_segment = InvalidBlockNumber;
+				TpSegmentReader *reader;
+
+				reader = tp_segment_open(index_rel, current_segment);
+				if (reader && reader->header)
+				{
+					total_segments++;
+					current_segment = reader->header->next_segment;
+					tp_segment_close(reader);
+				}
+				else
+				{
+					current_segment = InvalidBlockNumber;
+				}
 			}
 		}
 
-		/* Now dump first N segments */
-		current_segment = metap->first_segment;
-		while (current_segment != InvalidBlockNumber &&
-			   dumped_count < max_dump)
+		/* Now dump first N segments from each level */
+		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			TpSegmentReader *reader;
+			BlockNumber current_segment;
+			int			level_dumped = 0;
 
-			CHECK_FOR_INTERRUPTS();
+			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+				continue;
 
-			tp_dump_segment_to_output(index_rel, current_segment, out);
-			dumped_count++;
+			current_segment = metap->level_heads[level];
 
-			/* Read next_segment from header to traverse the chain */
-			reader = tp_segment_open(index_rel, current_segment);
-			if (reader && reader->header)
+			while (current_segment != InvalidBlockNumber &&
+				   level_dumped < max_dump)
 			{
-				current_segment = reader->header->next_segment;
-				tp_segment_close(reader);
-			}
-			else
-			{
-				current_segment = InvalidBlockNumber;
+				TpSegmentReader *reader;
+
+				CHECK_FOR_INTERRUPTS();
+
+				dump_printf(out, "\nL%d ", level);
+				tp_dump_segment_to_output(index_rel, current_segment, out);
+				dumped_count++;
+				level_dumped++;
+
+				/* Read next_segment from header to traverse the chain */
+				reader = tp_segment_open(index_rel, current_segment);
+				if (reader && reader->header)
+				{
+					current_segment = reader->header->next_segment;
+					tp_segment_close(reader);
+				}
+				else
+				{
+					current_segment = InvalidBlockNumber;
+				}
 			}
 		}
 
-		if (total_segments > max_dump)
+		if (total_segments > dumped_count)
 		{
 			dump_printf(
 					out,
 					"\n... %d more segments not shown\n",
-					total_segments - max_dump);
+					total_segments - dumped_count);
 		}
-	}
-	else
-	{
-		dump_printf(out, "\nNo segments written yet\n");
+
+		if (!has_segments)
+		{
+			dump_printf(out, "\nNo segments written yet\n");
+		}
 	}
 
 	/* Cleanup */

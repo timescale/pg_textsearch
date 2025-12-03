@@ -30,6 +30,12 @@ typedef struct TpLocalIndexState TpLocalIndexState;
  *
  * The metapage is stored on block 0 of every Tapir index and contains
  * configuration parameters and global statistics needed for BM25 scoring.
+ *
+ * Segment hierarchy: LSM-style tiered compaction with TP_MAX_LEVELS levels.
+ * Level 0 receives segments from memtable spills (~8MB each).
+ * When a level reaches segments_per_level segments, they are merged into
+ * a single segment at the next level. This provides exponentially larger
+ * segments at higher levels while bounding write amplification.
  */
 typedef struct TpIndexMetaPageData
 {
@@ -45,7 +51,11 @@ typedef struct TpIndexMetaPageData
 	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
 	BlockNumber first_docid_page; /* First page of docid chain for crash
 								   * recovery */
-	BlockNumber first_segment;	  /* First segment in the segment chain */
+
+	/* Hierarchical segment storage (LSM-style) */
+	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
+											 */
+	uint16 level_counts[TP_MAX_LEVELS];		/* Segment count per level */
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;

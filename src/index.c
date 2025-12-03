@@ -143,13 +143,13 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		 */
 		tp_clear_docid_pages(index_rel);
 
-		/* Link new segment as chain head */
+		/* Link new segment as L0 chain head */
 		metabuf = ReadBuffer(index_rel, 0);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metapage = BufferGetPage(metabuf);
 		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-		if (metap->first_segment != InvalidBlockNumber)
+		if (metap->level_heads[0] != InvalidBlockNumber)
 		{
 			/* Point new segment to old chain head */
 			Buffer			 seg_buf;
@@ -161,18 +161,20 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 			seg_page				 = BufferGetPage(seg_buf);
 			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
 											   SizeOfPageHeaderData);
-			seg_header->next_segment = metap->first_segment;
+			seg_header->next_segment = metap->level_heads[0];
 			MarkBufferDirty(seg_buf);
 			UnlockReleaseBuffer(seg_buf);
 		}
 
-		metap->first_segment = segment_root;
+		metap->level_heads[0] = segment_root;
+		metap->level_counts[0]++;
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 
 		elog(DEBUG1,
-			 "Auto-spilled memtable to segment at block %u",
-			 segment_root);
+			 "Auto-spilled memtable to segment at block %u (L0 count: %u)",
+			 segment_root,
+			 metap->level_counts[0]);
 	}
 }
 
@@ -2196,13 +2198,13 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 		tp_clear_memtable(index_state);
 
-		/* Link new segment as chain head */
+		/* Link new segment as L0 chain head */
 		metabuf = ReadBuffer(index_rel, 0);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metapage = BufferGetPage(metabuf);
 		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-		if (metap->first_segment != InvalidBlockNumber)
+		if (metap->level_heads[0] != InvalidBlockNumber)
 		{
 			/* Point new segment to old chain head */
 			Buffer			 seg_buf;
@@ -2214,12 +2216,13 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 			seg_page				 = BufferGetPage(seg_buf);
 			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
 											   SizeOfPageHeaderData);
-			seg_header->next_segment = metap->first_segment;
+			seg_header->next_segment = metap->level_heads[0];
 			MarkBufferDirty(seg_buf);
 			UnlockReleaseBuffer(seg_buf);
 		}
 
-		metap->first_segment = segment_root;
+		metap->level_heads[0] = segment_root;
+		metap->level_counts[0]++;
 		MarkBufferDirty(metabuf);
 
 		UnlockReleaseBuffer(metabuf);

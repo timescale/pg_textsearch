@@ -332,9 +332,9 @@ tp_score_documents(
 	if (total_docs <= 0)
 		return 0;
 
-	/* Get first_segment from metapage for segment querying */
+	/* Get first segment from L0 for segment querying */
 	metap		  = tp_get_metapage(index_relation);
-	first_segment = metap->first_segment;
+	first_segment = metap->level_heads[0];
 	pfree(metap);
 
 	/* If avg_doc_len is 0, all documents have zero length and
