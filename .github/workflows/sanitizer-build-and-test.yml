@@ -24,14 +24,20 @@ env:
 
 jobs:
   sanitizer:
-    name: PostgreSQL 17 Sanitizer ubuntu-22.04
+    name: PG${{ matrix.pg }} Sanitizer
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["17.2", "18.1"]
+
     steps:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y flex bison build-essential libssl-dev libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
+        sudo apt-get install -y flex bison build-essential libssl-dev \
+          libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -43,29 +49,41 @@ jobs:
       id: get-date
       run: echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
 
-    - name: Cache PostgreSQL
+    - name: Cache PostgreSQL ${{ matrix.pg }}
       id: cache-postgresql
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: "${{ env.name }}-postgresql-17-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+        key: "${{ env.name }}-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
 
-    - name: Build PostgreSQL with sanitizers
+    - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
       run: |
         wget -q -O postgresql.tar.bz2 \
-          https://ftp.postgresql.org/pub/source/v17.0/postgresql-17.0.tar.bz2
+          https://ftp.postgresql.org/pub/source/v${{ matrix.pg }}/postgresql-${{ matrix.pg }}.tar.bz2
         mkdir -p ~/$PG_SRC_DIR
         tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
-        # Add instrumentation to the Postgres memory contexts. For more details, see
-        # https://github.com/timescale/eng-database/wiki/Using-Address-Sanitizer#adding-more-instrumentation
-        patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+
+        # Add instrumentation to the Postgres memory contexts.
+        # PG18 moved stack_is_too_deep() to a different file, so we need
+        # different patches for PG17 vs PG18+.
+        # For more details, see:
+        # https://github.com/timescale/eng-database/wiki/Using-Address-Sanitizer
+        PG_MAJOR=$(echo "${{ matrix.pg }}" | sed -e 's![.].*!!')
+        if [ ${PG_MAJOR} -lt 18 ]; then
+          echo "Applying PG17 ASAN patch..."
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+        else
+          echo "Applying PG18+ ASAN patch..."
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
+        fi
+
         cd ~/$PG_SRC_DIR
         ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
           --with-openssl --without-readline --without-zlib --without-libxml
         make -j$(nproc)
 
-    - name: Install PostgreSQL
+    - name: Install PostgreSQL ${{ matrix.pg }}
       run: |
         cd ~/$PG_SRC_DIR
         make install
@@ -79,19 +97,11 @@ jobs:
         # Check if postgres binary contains sanitizer symbols
         echo "Checking for AddressSanitizer symbols..."
         if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
-          echo "✓ AddressSanitizer symbols found in postgres binary"
+          echo "AddressSanitizer symbols found in postgres binary"
         else
-          echo "✗ AddressSanitizer symbols NOT found in postgres binary"
+          echo "AddressSanitizer symbols NOT found in postgres binary"
           echo "This suggests PostgreSQL was not built with -fsanitize=address"
           exit 1
-        fi
-
-        # Check build flags were preserved
-        echo "Checking if postgres was built with sanitizer flags..."
-        if ldd ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
-          echo "✓ AddressSanitizer runtime library linked to postgres"
-        else
-          echo "⚠️  AddressSanitizer runtime library not found in ldd output"
         fi
 
         # Test that sanitizers are actually working by triggering a known issue
@@ -110,13 +120,13 @@ jobs:
         # Compile and run test - should fail with sanitizer error
         $CC $CFLAGS test_sanitizer.c -o test_sanitizer
         if ./test_sanitizer; then
-          echo "⚠️  WARNING: Sanitizer test did not catch buffer overflow!"
+          echo "WARNING: Sanitizer test did not catch buffer overflow!"
         else
-          echo "✓ Sanitizer correctly caught buffer overflow (exit code $?)"
+          echo "Sanitizer correctly caught buffer overflow (exit code $?)"
         fi
         rm -f test_sanitizer test_sanitizer.c
 
-    - name: Build and install Tapir
+    - name: Build and install pg_textsearch
       run: |
         export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
         make clean
@@ -169,7 +179,8 @@ jobs:
       if: always()
       run: |
         echo "Collecting all sanitizer logs..."
-        find ${{ github.workspace }}/sanitizer_logs -name "*.log*" -o -name "asan.*" -o -name "ubsan.*" | head -20 | while read file; do
+        find ${{ github.workspace }}/sanitizer_logs -type f 2>/dev/null | \
+          head -20 | while read file; do
           echo "=== $file ==="
           head -100 "$file" 2>/dev/null || echo "(file not readable or empty)"
           echo
@@ -179,7 +190,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: sanitizer-logs-and-results
+        name: sanitizer-logs-pg${{ matrix.pg }}
         path: |
           ${{ github.workspace }}/sanitizer_logs/
           test/regression.diffs
@@ -192,7 +203,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: sanitizer-failure-debug
+        name: sanitizer-failure-debug-pg${{ matrix.pg }}
         path: |
           tmp_sanitizer_test/
           test/scripts/tmp_*
