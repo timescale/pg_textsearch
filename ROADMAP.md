@@ -8,20 +8,11 @@
 | v0.0.2 | Oct 2025 | Bug fixes, stability improvements |
 | v0.0.3 | Nov 2025 | Crash recovery, concurrency fixes, string-based architecture |
 | v0.0.4 | Nov 2025 | BM25 score validation, PostgreSQL 18 support |
+| v0.0.5 | Dec 2025 | Segment infrastructure, auto-spill, hierarchical merging |
 
-## Current (v0.0.5)
+## Current (v0.0.6-dev)
 
-Naive segment implementation - scalable beyond main memory.
-
-| Feature | Status |
-|---------|--------|
-| Segment infrastructure (disk storage) | Done |
-| Segment query execution | Done |
-| Auto-spill memtable to segments | Done |
-| Segment chain traversal | Done |
-| Crash recovery for segments | Done |
-| Segment compaction | Not started |
-| DELETE/UPDATE propagation to segments | Not started |
+Development version - segment improvements in progress.
 
 ## Future
 
