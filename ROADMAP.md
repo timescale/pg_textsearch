@@ -9,7 +9,7 @@
 | v0.0.3 | Nov 2025 | Crash recovery, concurrency fixes, string-based architecture |
 | v0.0.4 | Nov 2025 | BM25 score validation, PostgreSQL 18 support |
 
-## Current (v0.0.5-dev)
+## Current (v0.0.5)
 
 Naive segment implementation - scalable beyond main memory.
 

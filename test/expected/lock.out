@@ -1,7 +1,7 @@
 -- Test lock upgrade from shared to exclusive within a single transaction
 -- This exercises the tp_acquire_index_lock upgrade path
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Create test table and index
 CREATE TABLE lock_upgrade_test (

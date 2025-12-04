@@ -1,4 +1,4 @@
--- Upgrade from 0.0.4 to 0.0.5-dev
+-- Upgrade from 0.0.4 to 0.0.5
 
 -- Function to force segment write (spill memtable to disk)
 CREATE OR REPLACE FUNCTION bm25_spill_index(index_name text)

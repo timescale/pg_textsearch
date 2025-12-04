@@ -1,7 +1,7 @@
 -- Test handling of empty and whitespace-only documents
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.5-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.5: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Create test table with various empty/whitespace content
 CREATE TABLE empty_docs (
