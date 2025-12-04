@@ -369,15 +369,16 @@ find_min_posting_source(TpPostingMergeSource *sources, int num_sources)
 /*
  * Stream-write postings for a term using N-way merge.
  * Writes directly to the segment writer without buffering.
- * Returns the number of unique postings written.
+ * Returns the number of postings written.
+ *
+ * Precondition: CTIDs are disjoint across segments. Each CTID appears in
+ * exactly one segment, so no deduplication is needed during merge.
  */
 static uint32
 stream_write_postings(
 		TpMergedTerm *term, TpMergeSource *sources, TpSegmentWriter *writer)
 {
 	TpPostingMergeSource *psources;
-	ItemPointerData		  last_ctid;
-	bool				  have_last = false;
 	int					  num_psources;
 	uint32				  i;
 	uint32				  count = 0;
@@ -396,90 +397,25 @@ stream_write_postings(
 		posting_source_init(&psources[i], source->reader, &ref->entry);
 	}
 
-	/* N-way merge and write */
+	/* N-way merge: find min, write, advance that source */
 	while (true)
 	{
 		int				 min_idx;
-		ItemPointerData	 ctid;
 		TpSegmentPosting out_posting;
-		uint16			 best_freq;
-		uint16			 doc_len;
 
 		min_idx = find_min_posting_source(psources, num_psources);
 		if (min_idx < 0)
 			break;
 
-		memcpy(&ctid,
-			   &psources[min_idx].current.ctid,
-			   sizeof(ItemPointerData));
-		best_freq = psources[min_idx].current.frequency;
-		doc_len	  = psources[min_idx].current.doc_length;
-
-		/* Check if this is a duplicate - if so, skip but track best freq */
-		if (have_last && ItemPointerEquals(&ctid, &last_ctid))
-		{
-			/* Just advance all sources with this CTID, don't write */
-			for (i = 0; i < (uint32)num_psources; i++)
-			{
-				ItemPointerData src_ctid;
-
-				if (psources[i].exhausted)
-					continue;
-
-				memcpy(&src_ctid,
-					   &psources[i].current.ctid,
-					   sizeof(ItemPointerData));
-				if (ItemPointerEquals(&src_ctid, &ctid))
-					posting_source_advance(&psources[i]);
-			}
-			continue;
-		}
-
-		/* Find best frequency among all sources with this CTID */
-		for (i = 0; i < (uint32)num_psources; i++)
-		{
-			ItemPointerData src_ctid;
-
-			if (psources[i].exhausted)
-				continue;
-
-			memcpy(&src_ctid,
-				   &psources[i].current.ctid,
-				   sizeof(ItemPointerData));
-			if (ItemPointerEquals(&src_ctid, &ctid))
-			{
-				if (psources[i].current.frequency > best_freq)
-				{
-					best_freq = psources[i].current.frequency;
-					doc_len	  = psources[i].current.doc_length;
-				}
-			}
-		}
-
-		/* Write this posting */
-		out_posting.ctid	   = ctid;
-		out_posting.frequency  = best_freq;
-		out_posting.doc_length = doc_len;
+		/* Write this posting directly */
+		out_posting.ctid	   = psources[min_idx].current.ctid;
+		out_posting.frequency  = psources[min_idx].current.frequency;
+		out_posting.doc_length = psources[min_idx].current.doc_length;
 		tp_segment_writer_write(writer, &out_posting, sizeof(out_posting));
 		count++;
 
-		memcpy(&last_ctid, &ctid, sizeof(ItemPointerData));
-		have_last = true;
-
-		/* Advance all sources that have this CTID */
-		for (i = 0; i < (uint32)num_psources; i++)
-		{
-			ItemPointerData src_ctid;
-
-			if (psources[i].exhausted)
-				continue;
-
-			memcpy(&src_ctid,
-				   &psources[i].current.ctid,
-				   sizeof(ItemPointerData));
-			if (ItemPointerEquals(&src_ctid, &ctid))
-				posting_source_advance(&psources[i]);
-		}
+		/* Advance only this source */
+		posting_source_advance(&psources[min_idx]);
 	}
 
 	pfree(psources);
