@@ -298,7 +298,6 @@ tp_score_documents(
 	dshash_table		*string_table;
 	dshash_table		*doclength_table = NULL;
 	TpMemtable			*memtable;
-	BlockNumber			 first_segment;
 	TpIndexMetaPage		 metap;
 
 	/* Basic sanity checks */
@@ -332,9 +331,11 @@ tp_score_documents(
 	if (total_docs <= 0)
 		return 0;
 
-	/* Get first segment from L0 for segment querying */
-	metap		  = tp_get_metapage(index_relation);
-	first_segment = metap->level_heads[0];
+	/* Get segment level heads for querying all levels */
+	BlockNumber level_heads[TP_MAX_LEVELS];
+	metap = tp_get_metapage(index_relation);
+	for (int i = 0; i < TP_MAX_LEVELS; i++)
+		level_heads[i] = metap->level_heads[i];
 	pfree(metap);
 
 	/* If avg_doc_len is 0, all documents have zero length and
@@ -381,12 +382,15 @@ tp_score_documents(
 				unified_doc_freqs[term_idx] = posting_list->doc_count;
 		}
 
-		/* Add doc_freq from segments */
-		if (first_segment != InvalidBlockNumber)
+		/* Add doc_freq from all segment levels */
+		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			uint32 segment_doc_freq = tp_segment_get_doc_freq(
-					index_relation, first_segment, term);
-			unified_doc_freqs[term_idx] += segment_doc_freq;
+			if (level_heads[level] != InvalidBlockNumber)
+			{
+				uint32 segment_doc_freq = tp_segment_get_doc_freq(
+						index_relation, level_heads[level], term);
+				unified_doc_freqs[term_idx] += segment_doc_freq;
+			}
 		}
 	}
 
@@ -489,16 +493,19 @@ tp_score_documents(
 	if (doclength_table)
 		dshash_detach(doclength_table);
 
-	/* Score documents from segments */
-	if (first_segment != InvalidBlockNumber)
+	/* Score documents from all segment levels */
+	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
+		if (level_heads[level] == InvalidBlockNumber)
+			continue;
+
 		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
 			float4 idf =
 					tp_calculate_idf(unified_doc_freqs[term_idx], total_docs);
 			tp_process_term_in_segments(
 					index_relation,
-					first_segment,
+					level_heads[level],
 					query_terms[term_idx],
 					idf,
 					(float4)query_frequencies[term_idx],

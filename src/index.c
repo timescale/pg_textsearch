@@ -2230,6 +2230,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 		MarkBufferDirty(metabuf);
 
 		UnlockReleaseBuffer(metabuf);
+
+		/* Check if L0 needs compaction */
+		tp_maybe_compact_level(index_rel, 0);
 	}
 
 	/* Release lock */

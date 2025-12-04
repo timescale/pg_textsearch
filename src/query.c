@@ -460,6 +460,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	int				   query_term_count;
 	QueryScoreCache	  *cache;
 	BlockNumber		   first_segment;
+	BlockNumber		   level_heads[TP_MAX_LEVELS];
 
 	/* Validate query and open index */
 	index_rel = validate_and_open_index(query, &index_name);
@@ -471,6 +472,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		metap			= tp_get_metapage(index_rel);
 		text_config_oid = metap->text_config_oid;
 		first_segment	= metap->level_heads[0];
+		for (int i = 0; i < TP_MAX_LEVELS; i++)
+			level_heads[i] = metap->level_heads[i];
 
 		/* Get index state for corpus statistics */
 		index_state = tp_get_local_index_state(index_oid);
@@ -586,10 +589,16 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 					if (posting_list && posting_list->doc_count > 0)
 						memtable_doc_freq = posting_list->doc_count;
 
-					if (first_segment != InvalidBlockNumber)
+					/* Get doc_freq from all segment levels */
+					for (int level = 0; level < TP_MAX_LEVELS; level++)
 					{
-						segment_doc_freq = tp_segment_get_doc_freq(
-								index_rel, first_segment, query_lexeme);
+						if (level_heads[level] != InvalidBlockNumber)
+						{
+							segment_doc_freq += tp_segment_get_doc_freq(
+									index_rel,
+									level_heads[level],
+									query_lexeme);
+						}
 					}
 
 					unified_doc_freq = memtable_doc_freq + segment_doc_freq;

@@ -26,7 +26,7 @@ struct TpLocalIndexState;
  *
  * This performs an N-way merge of all segments in the level's chain:
  * 1. Opens all segment readers for the level
- * 2. Merges term dictionaries using a min-heap
+ * 2. Merges term dictionaries using linear scan (O(n) per term)
  * 3. Combines posting lists for duplicate terms
  * 4. Writes merged segment at the next level
  * 5. Updates metapage to reflect the new structure

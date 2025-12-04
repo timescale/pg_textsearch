@@ -558,8 +558,6 @@ write_merged_segment(
 
 	tp_segment_writer_finish(&writer);
 
-	FlushRelationBuffers(index);
-
 	/* Update header on disk with final offsets */
 	header_buf = ReadBuffer(index, header_block);
 	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
@@ -579,8 +577,6 @@ write_merged_segment(
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
-
-	FlushRelationBuffers(index);
 
 	/* Cleanup */
 	pfree(string_offsets);
@@ -785,6 +781,13 @@ tp_merge_level_segments(Relation index, uint32 level)
 	}
 	pfree(sources);
 
+	/*
+	 * Now that all source segment readers are closed (no more pinned buffers),
+	 * flush dirty buffers to ensure merged segment is durable before updating
+	 * the metapage.
+	 */
+	FlushRelationBuffers(index);
+
 	MemoryContextSwitchTo(old_ctx);
 	MemoryContextDelete(merge_ctx);
 
@@ -793,7 +796,15 @@ tp_merge_level_segments(Relation index, uint32 level)
 		return InvalidBlockNumber;
 	}
 
-	/* Update metapage: clear source level, add to target level */
+	/*
+	 * Update metapage: clear source level, add to target level.
+	 *
+	 * TODO: The old source segment pages are not freed here - they remain
+	 * allocated in the relation but are no longer referenced. A future
+	 * improvement should track these orphaned pages and reclaim them via
+	 * VACUUM or a dedicated cleanup routine. For now, the space is wasted
+	 * until the index is rebuilt.
+	 */
 	metabuf = ReadBuffer(index, 0);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
