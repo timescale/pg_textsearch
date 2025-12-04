@@ -1,0 +1,2 @@
+-- Upgrade from 0.0.5 to 0.0.6-dev
+-- No schema changes in this version

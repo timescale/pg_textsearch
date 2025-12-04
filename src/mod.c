@@ -20,7 +20,7 @@
 #include "state.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "0.0.5");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "0.0.6-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
