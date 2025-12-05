@@ -1194,6 +1194,23 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 						 "tables")));
 	}
 
+	/*
+	 * Check for expression indexes - BM25 indexes must be on a direct column
+	 * reference, not an expression like lower(content).
+	 *
+	 * For expression indexes, ii_IndexAttrNumbers[0] is 0 because the index
+	 * is on an expression rather than a table column. Our tp_process_document
+	 * uses slot_getattr() which requires a valid attribute number >= 1.
+	 */
+	if (indexInfo->ii_IndexAttrNumbers[0] == 0)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BM25 indexes on expressions are not supported"),
+				 errhint("Create the index on a column directly, e.g., "
+						 "CREATE INDEX ... USING bm25(content)")));
+	}
+
 	/* Report initialization phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE,

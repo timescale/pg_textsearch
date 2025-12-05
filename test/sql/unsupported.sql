@@ -138,18 +138,15 @@ DROP INDEX docs_bm25_simple_idx;
 
 -- =============================================================================
 -- LIMITATION 5: Expression indexes
--- KNOWN BUG: Expression indexes (e.g., lower(content)) cause server crash
--- during index build. DO NOT test until this is fixed.
+-- Expression indexes (e.g., lower(content)) are not supported.
+-- The index build will fail with a clear error message.
 -- =============================================================================
 
-\echo 'Test: Expression index - SKIPPED (causes server crash)'
+\echo 'Test: Expression index - should fail with error'
 
--- The following would crash the server:
--- CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
---     WITH (text_config='simple');
---
--- This is a known limitation - expression indexes are not currently supported.
--- Attempting to create one will crash PostgreSQL.
+-- Expression indexes fail gracefully with an error
+CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
+    WITH (text_config='simple');
 
 -- =============================================================================
 -- LIMITATION 6: Cross-table JOINs with BM25 on multiple tables
@@ -192,10 +189,9 @@ DROP TABLE other_docs CASCADE;
 
 -- =============================================================================
 -- LIMITATION 7: UNION queries
--- BUG: When UNION uses index-ordered scans from multiple tables, scores are
--- computed correctly for the index scan but then the CTID cache returns
--- stale scores for subsequent rows. This causes all rows to show the same
--- score as the first result.
+-- The text <@> text operator requires the score cache populated by index scan.
+-- UNION queries use Merge Append which doesn't maintain cache context,
+-- so this properly errors.
 -- =============================================================================
 
 \echo 'Test: UNION with scores'
@@ -215,8 +211,9 @@ ORDER BY score
 LIMIT 5;
 
 -- Execute to see actual behavior
--- NOTE: All rows show -0.9808 even though only docs 1 and docs2.1 contain "database"
--- This is a known bug - the CTID cache returns stale scores
+-- The text <@> text operator requires the score cache populated by index scan.
+-- UNION queries use Merge Append which doesn't maintain cache context,
+-- so this properly errors.
 SELECT id, content,
        ROUND((content <@> 'database')::numeric, 4) as score,
        'docs' as source
@@ -233,16 +230,14 @@ DROP TABLE docs2 CASCADE;
 
 -- =============================================================================
 -- LIMITATION 8: Aggregate functions on scores
--- BUG: The WHERE clause with text <@> text uses the CTID cache, which may
--- contain stale scores from previous queries. This causes incorrect filtering.
--- In this example, all 3 rows pass the WHERE clause even though only 1
--- contains "database".
+-- The text <@> text operator requires the score cache populated by index scan.
+-- Aggregate queries typically use Seq Scan which doesn't maintain cache context,
+-- so this properly errors.
 -- =============================================================================
 
 \echo 'Test: Aggregate on scores'
 
--- NOTE: Returns 3 matching docs even though only doc 1 contains "database"
--- This is due to CTID cache returning stale scores from previous query
+-- This errors because the score cache is not populated without an index scan
 SELECT COUNT(*) as matching_docs,
        ROUND(AVG((content <@> 'database')::numeric), 4) as avg_score,
        ROUND(MIN((content <@> 'database')::numeric), 4) as best_score

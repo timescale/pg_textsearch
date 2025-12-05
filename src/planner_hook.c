@@ -30,6 +30,7 @@
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
+#include "operator.h"
 #include "planner_hook.h"
 #include "query.h"
 
@@ -132,7 +133,8 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum)
 	Relation	indexRelation;
 	SysScanDesc scan;
 	HeapTuple	indexTuple;
-	Oid			result = InvalidOid;
+	Oid			result		= InvalidOid;
+	int			index_count = 0;
 	ScanKeyData scanKey;
 
 	/* Initialize cached OIDs if needed */
@@ -183,9 +185,10 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum)
 				{
 					if (indexForm->indkey.values[i] == attnum)
 					{
-						result = indexOid;
-						ReleaseSysCache(classTuple);
-						goto done;
+						index_count++;
+						if (result == InvalidOid)
+							result = indexOid;
+						break;
 					}
 				}
 			}
@@ -193,9 +196,21 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum)
 		}
 	}
 
-done:
 	systable_endscan(scan);
 	table_close(indexRelation, AccessShareLock);
+
+	/*
+	 * Warn if multiple BM25 indexes exist on the same column.
+	 * The planner will use the first one found, which may not be
+	 * what the user intended.
+	 */
+	if (index_count > 1)
+	{
+		ereport(WARNING,
+				(errmsg("multiple BM25 indexes exist on the same column"),
+				 errhint("Use explicit to_bm25query('query', 'index_name') "
+						 "to specify which index to use.")));
+	}
 
 	return result;
 }
@@ -407,10 +422,32 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 		}
 
 		/*
-		 * Note: text <@> text operators are NOT transformed here.
-		 * They are handled directly by the opclass and index AM.
-		 * Transforming them would break pathkey matching for index ordering.
+		 * For text <@> text operators, check if multiple BM25 indexes
+		 * exist on the same column and warn the user. We don't transform
+		 * the expression (that would break pathkey matching), just warn.
 		 */
+		if (opexpr->opno == text_text_operator_oid &&
+			list_length(opexpr->args) == 2)
+		{
+			Node *left = linitial(opexpr->args);
+
+			if (IsA(left, Var))
+			{
+				Var		  *var = (Var *)left;
+				Oid		   relid;
+				AttrNumber attnum;
+
+				if (get_var_relation_and_attnum(
+							var, context->query, &relid, &attnum))
+				{
+					/*
+					 * Call find_bm25_index_for_column which will emit
+					 * WARNING if multiple indexes exist.
+					 */
+					(void)find_bm25_index_for_column(relid, attnum);
+				}
+			}
+		}
 	}
 
 	/* Recurse into child nodes */
@@ -474,6 +511,16 @@ tp_planner_hook(
 	elog(DEBUG1,
 		 "tp_planner_hook: entering for query type %d",
 		 parse->commandType);
+
+	/*
+	 * Clear the score cache at the start of each query to prevent stale
+	 * cached scores from leaking across queries. This fixes bugs where:
+	 * - UNION queries returned stale scores for non-matching rows
+	 * - Aggregate queries filtered incorrectly using stale scores
+	 * The score cache is a backend-local circular buffer used to pass
+	 * BM25 scores from tp_gettuple() to text_text_score().
+	 */
+	tp_clear_score_cache();
 
 	/* Try to resolve unresolved indexes before planning */
 	resolve_indexes_in_query(parse);
