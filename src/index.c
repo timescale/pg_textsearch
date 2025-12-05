@@ -60,8 +60,8 @@ static bool tp_search_posting_lists(
 		TpVector		  *query_vector,
 		TpIndexMetaPage	   metap);
 static void tp_rescan_cleanup_results(TpScanOpaque so);
-static void tp_rescan_validate_query_index(
-		const char *query_index_name, Relation indexRelation);
+static void
+tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation);
 static void tp_rescan_process_orderby(
 		IndexScanDesc	scan,
 		ScanKey			orderbys,
@@ -229,53 +229,23 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 }
 
 /*
- * Validate that the query index name matches the scan index
+ * Validate that the query index OID matches the scan index
  */
 static void
-tp_rescan_validate_query_index(
-		const char *query_index_name, Relation indexRelation)
+tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 {
-	const char *current_index_name = RelationGetRelationName(indexRelation);
-	bool		name_matches	   = false;
+	Oid scan_index_oid = RelationGetRelid(indexRelation);
 
-	/* First try exact match (for unqualified names) */
-	if (strcmp(query_index_name, current_index_name) == 0)
-	{
-		name_matches = true;
-	}
-	else if (strchr(query_index_name, '.') != NULL)
-	{
-		/*
-		 * Query specifies schema-qualified name. Extract the
-		 * relation name part and compare that.
-		 */
-		char *dot = strrchr(query_index_name, '.');
-		if (dot != NULL && strcmp(dot + 1, current_index_name) == 0)
-		{
-			/* Also verify the schema matches */
-			char *schema_name =
-					pnstrdup(query_index_name, dot - query_index_name);
-			Oid namespace_oid = get_namespace_oid(schema_name, true);
-
-			if (OidIsValid(namespace_oid) &&
-				namespace_oid == RelationGetNamespace(indexRelation))
-			{
-				name_matches = true;
-			}
-			pfree(schema_name);
-		}
-	}
-
-	if (!name_matches)
+	if (query_index_oid != scan_index_oid)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("tpquery index name mismatch"),
-				 errhint("Query specifies index "
-						 "\"%s\" but scan is on index "
-						 "\"%s\"",
-						 query_index_name,
-						 current_index_name)));
+				 errmsg("tpquery index mismatch"),
+				 errhint("Query specifies index OID %u but scan is on "
+						 "index \"%s\" (OID %u)",
+						 query_index_oid,
+						 RelationGetRelationName(indexRelation),
+						 scan_index_oid)));
 	}
 }
 
@@ -300,7 +270,6 @@ tp_rescan_process_orderby(
 		{
 			Datum	 query_datum = orderby->sk_argument;
 			TpQuery *query		 = (TpQuery *)DatumGetPointer(query_datum);
-			char	*index_name;
 			char	*query_cstr;
 
 			/* Validate it's a proper tpquery by checking varlena header */
@@ -312,12 +281,11 @@ tp_rescan_process_orderby(
 						 errmsg("invalid tpquery data")));
 			}
 
-			/* Validate index name if provided in query */
-			index_name = get_tpquery_index_name(query);
-			if (index_name)
+			/* Validate index OID if provided in query */
+			if (tpquery_has_index(query))
 			{
 				tp_rescan_validate_query_index(
-						index_name, scan->indexRelation);
+						get_tpquery_index_oid(query), scan->indexRelation);
 			}
 
 			/* Extract and store query text */

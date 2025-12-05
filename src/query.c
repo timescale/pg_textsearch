@@ -131,9 +131,9 @@ PG_FUNCTION_INFO_V1(tpquery_eq);
 /*
  * tpquery input function
  * Formats:
- *   "query_text" - simple query without index name
- *   "index_name:query_text" - query with embedded index name
- * Note: If query_text contains a colon, use to_bm25query() instead
+ *   "query_text" - simple query without index (InvalidOid)
+ *   "index_name:query_text" - query with index name (resolved to OID)
+ * Note: If query_text contains a colon, use to_tpquery() instead
  */
 Datum
 tpquery_in(PG_FUNCTION_ARGS)
@@ -155,14 +155,14 @@ tpquery_in(PG_FUNCTION_ARGS)
 		memcpy(index_name, str, index_name_len);
 		index_name[index_name_len] = '\0';
 
-		/* Create query with index name */
-		result = create_tpquery(query_text, index_name);
+		/* Create query with index name (resolves to OID) */
+		result = create_tpquery_from_name(query_text, index_name);
 		pfree(index_name);
 	}
 	else
 	{
-		/* No index name prefix - use the entire string as query text */
-		result = create_tpquery(str, NULL);
+		/* No index name prefix - create without index */
+		result = create_tpquery(str, InvalidOid);
 	}
 
 	PG_RETURN_POINTER(result);
@@ -170,6 +170,7 @@ tpquery_in(PG_FUNCTION_ARGS)
 
 /*
  * tpquery output function
+ * Converts OID back to index name for display
  */
 Datum
 tpquery_out(PG_FUNCTION_ARGS)
@@ -177,17 +178,22 @@ tpquery_out(PG_FUNCTION_ARGS)
 	TpQuery	  *tpquery = (TpQuery *)PG_GETARG_POINTER(0);
 	StringInfo str	   = makeStringInfo();
 
-	if (tpquery->index_name_len > 0)
+	if (OidIsValid(tpquery->index_oid))
 	{
 		/* Format with index name: "index_name:query_text" */
-		char *index_name = get_tpquery_index_name(tpquery);
+		char *index_name = get_rel_name(tpquery->index_oid);
 		char *query_text = get_tpquery_text(tpquery);
 
-		appendStringInfo(str, "%s:%s", index_name, query_text);
+		if (index_name)
+			appendStringInfo(str, "%s:%s", index_name, query_text);
+		else
+			/* Index was dropped - show OID for debugging */
+			appendStringInfo(
+					str, "[oid=%u]:%s", tpquery->index_oid, query_text);
 	}
 	else
 	{
-		/* Format without index name: just the query text */
+		/* Format without index: just the query text */
 		char *query_text = get_tpquery_text(tpquery);
 
 		appendStringInfo(str, "%s", query_text);
@@ -198,46 +204,31 @@ tpquery_out(PG_FUNCTION_ARGS)
 
 /*
  * tpquery receive function (binary input)
+ * Binary format: index_oid (4 bytes) + query_text_len (4 bytes) + query_text
  */
 Datum
 tpquery_recv(PG_FUNCTION_ARGS)
 {
 	StringInfo buf = (StringInfo)PG_GETARG_POINTER(0);
 	TpQuery	  *result;
-	int32	   index_name_len;
+	Oid		   index_oid;
 	int32	   query_text_len;
-	char	  *index_name = NULL;
 	char	  *query_text;
 
-	index_name_len = pq_getmsgint(buf, sizeof(int32));
+	index_oid	   = pq_getmsgint(buf, sizeof(Oid));
 	query_text_len = pq_getmsgint(buf, sizeof(int32));
 
-	/* Validate lengths to prevent unbounded memory allocation */
-	if (index_name_len < 0 || index_name_len > 1000000) /* 1MB limit */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid index name length: %d", index_name_len)));
-
+	/* Validate length to prevent unbounded memory allocation */
 	if (query_text_len < 0 || query_text_len > 1000000) /* 1MB limit */
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid query text length: %d", query_text_len)));
 
-	if (index_name_len > 0)
-	{
-		index_name = palloc(index_name_len + 1);
-		pq_copymsgbytes(buf, index_name, index_name_len);
-		index_name[index_name_len] = '\0';
-	}
-
 	query_text = palloc(query_text_len + 1);
 	pq_copymsgbytes(buf, query_text, query_text_len);
 	query_text[query_text_len] = '\0';
 
-	result = create_tpquery(query_text, index_name);
-
-	if (index_name)
-		pfree(index_name);
+	result = create_tpquery(query_text, index_oid);
 	pfree(query_text);
 
 	PG_RETURN_POINTER(result);
@@ -245,46 +236,40 @@ tpquery_recv(PG_FUNCTION_ARGS)
 
 /*
  * tpquery send function (binary output)
+ * Binary format: index_oid (4 bytes) + query_text_len (4 bytes) + query_text
  */
 Datum
 tpquery_send(PG_FUNCTION_ARGS)
 {
 	TpQuery	  *tpquery = (TpQuery *)PG_GETARG_POINTER(0);
 	StringInfo buf	   = makeStringInfo();
+	char	  *query_text;
 
-	pq_sendint32(buf, tpquery->index_name_len);
+	pq_sendint32(buf, tpquery->index_oid);
 	pq_sendint32(buf, tpquery->query_text_len);
 
-	if (tpquery->index_name_len > 0)
-	{
-		char *index_name = get_tpquery_index_name(tpquery);
-		pq_sendbytes(buf, index_name, tpquery->index_name_len);
-	}
-
-	{
-		char *query_text = get_tpquery_text(tpquery);
-		pq_sendbytes(buf, query_text, tpquery->query_text_len);
-	}
+	query_text = get_tpquery_text(tpquery);
+	pq_sendbytes(buf, query_text, tpquery->query_text_len);
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(buf));
 }
 
 /*
- * Create a tpquery from text (no index name)
+ * Create a tpquery from text (no index - InvalidOid)
  */
 Datum
 to_tpquery_text(PG_FUNCTION_ARGS)
 {
 	text	*input_text = PG_GETARG_TEXT_PP(0);
 	char	*query_text = text_to_cstring(input_text);
-	TpQuery *result		= create_tpquery(query_text, NULL);
+	TpQuery *result		= create_tpquery(query_text, InvalidOid);
 
 	pfree(query_text);
 	PG_RETURN_POINTER(result);
 }
 
 /*
- * Create a tpquery from text with index name
+ * Create a tpquery from text with index name (resolves to OID)
  */
 Datum
 to_tpquery_text_index(PG_FUNCTION_ARGS)
@@ -293,7 +278,7 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 	text	*index_text = PG_GETARG_TEXT_PP(1);
 	char	*query_text = text_to_cstring(input_text);
 	char	*index_name = text_to_cstring(index_text);
-	TpQuery *result		= create_tpquery(query_text, index_name);
+	TpQuery *result		= create_tpquery_from_name(query_text, index_name);
 
 	pfree(query_text);
 	pfree(index_name);
@@ -302,39 +287,29 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 
 /*
  * Helper: Validate query and get index
+ * Returns opened index relation, sets index_oid_out if provided
  */
 static Relation
-validate_and_open_index(TpQuery *query, char **index_name_out)
+validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 {
-	char	*index_name = get_tpquery_index_name(query);
-	Oid		 index_oid;
+	Oid		 index_oid = get_tpquery_index_oid(query);
 	Relation index_rel;
-
-	if (!index_name)
-	{
-		/* No index name - return ERROR as requested */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("text <@> tpquery operator requires index name"),
-				 errhint("Use to_tpquery(text, index_name) for standalone "
-						 "scoring")));
-	}
-
-	/* Get the index OID from index name */
-	index_oid = tp_resolve_index_name_shared(index_name);
 
 	if (!OidIsValid(index_oid))
 	{
+		/* No index resolved - return ERROR */
 		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("index \"%s\" not found", index_name)));
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("text <@> tpquery operator requires index"),
+				 errhint("Use to_tpquery(text, index_name) for standalone "
+						 "scoring")));
 	}
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
 
-	if (index_name_out)
-		*index_name_out = index_name;
+	if (index_oid_out)
+		*index_oid_out = index_oid;
 
 	return index_rel;
 }
@@ -436,9 +411,8 @@ calculate_term_score(
 Datum
 text_tpquery_score(PG_FUNCTION_ARGS)
 {
-	text	*text_arg = PG_GETARG_TEXT_PP(0);
-	TpQuery *query	  = (TpQuery *)PG_GETARG_POINTER(1);
-	char	*index_name;
+	text	*text_arg	= PG_GETARG_TEXT_PP(0);
+	TpQuery *query		= (TpQuery *)PG_GETARG_POINTER(1);
 	char	*query_text = get_tpquery_text(query);
 	Oid		 index_oid;
 
@@ -463,8 +437,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	BlockNumber		   level_heads[TP_MAX_LEVELS];
 
 	/* Validate query and open index */
-	index_rel = validate_and_open_index(query, &index_name);
-	index_oid = RelationGetRelid(index_rel);
+	index_rel = validate_and_open_index(query, &index_oid);
 
 	PG_TRY();
 	{
@@ -481,8 +454,8 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("could not get index state for \"%s\"",
-							index_name)));
+					 errmsg("could not get index state for index OID %u",
+							index_oid)));
 		}
 
 		total_docs	= index_state->shared->total_docs;
@@ -655,27 +628,13 @@ tpquery_eq(PG_FUNCTION_ARGS)
 	TpQuery *a = (TpQuery *)PG_GETARG_POINTER(0);
 	TpQuery *b = (TpQuery *)PG_GETARG_POINTER(1);
 
-	/* Compare sizes first */
-	if (VARSIZE(a) != VARSIZE(b))
-		PG_RETURN_BOOL(false);
-
-	/* Compare index name lengths */
-	if (a->index_name_len != b->index_name_len)
+	/* Compare index OIDs */
+	if (a->index_oid != b->index_oid)
 		PG_RETURN_BOOL(false);
 
 	/* Compare query text lengths */
 	if (a->query_text_len != b->query_text_len)
 		PG_RETURN_BOOL(false);
-
-	/* Compare index names if present */
-	if (a->index_name_len > 0)
-	{
-		char *index_name_a = get_tpquery_index_name(a);
-		char *index_name_b = get_tpquery_index_name(b);
-
-		if (strcmp(index_name_a, index_name_b) != 0)
-			PG_RETURN_BOOL(false);
-	}
 
 	/* Compare query texts */
 	{
@@ -690,55 +649,59 @@ tpquery_eq(PG_FUNCTION_ARGS)
 }
 
 /*
- * Utility function to create a tpquery
+ * Utility function to create a tpquery with resolved index OID
  */
 TpQuery *
-create_tpquery(const char *query_text, const char *index_name)
+create_tpquery(const char *query_text, Oid index_oid)
 {
 	TpQuery *result;
 	int		 query_text_len = strlen(query_text);
-	int		 index_name_len = index_name ? strlen(index_name) : 0;
 	int		 total_size;
-	char	*data_ptr;
 
-	/* Calculate total size */
-	total_size = VARHDRSZ + sizeof(int32) +
-				 sizeof(int32) + /* index_name_len, query_text_len */
-				 (index_name_len > 0 ? MAXALIGN(index_name_len + 1) : 0) +
-				 query_text_len + 1;
+	/* Calculate total size: header + oid + text_len + text + null */
+	total_size = offsetof(TpQuery, data) + query_text_len + 1;
 
 	result = (TpQuery *)palloc0(total_size);
 	SET_VARSIZE(result, total_size);
-	result->index_name_len = index_name_len;
+	result->index_oid	   = index_oid;
 	result->query_text_len = query_text_len;
 
-	data_ptr = result->data;
-
-	/* Copy index name if present */
-	if (index_name_len > 0)
-	{
-		memcpy(data_ptr, index_name, index_name_len);
-		data_ptr[index_name_len] = '\0';
-		data_ptr += MAXALIGN(index_name_len + 1);
-	}
-
 	/* Copy query text */
-	memcpy(data_ptr, query_text, query_text_len);
-	data_ptr[query_text_len] = '\0';
+	memcpy(result->data, query_text, query_text_len);
+	result->data[query_text_len] = '\0';
 
 	return result;
 }
 
 /*
- * Get index name from tpquery (returns NULL if none)
+ * Create a tpquery from index name (resolves name to OID)
  */
-char *
-get_tpquery_index_name(TpQuery *tpquery)
+TpQuery *
+create_tpquery_from_name(const char *query_text, const char *index_name)
 {
-	if (tpquery->index_name_len == 0)
-		return NULL;
+	Oid index_oid = InvalidOid;
 
-	return TPQUERY_INDEX_NAME_PTR(tpquery);
+	if (index_name != NULL)
+	{
+		index_oid = tp_resolve_index_name_shared(index_name);
+		if (!OidIsValid(index_oid))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("index \"%s\" does not exist", index_name)));
+		}
+	}
+
+	return create_tpquery(query_text, index_oid);
+}
+
+/*
+ * Get index OID from tpquery (returns InvalidOid if unresolved)
+ */
+Oid
+get_tpquery_index_oid(TpQuery *tpquery)
+{
+	return tpquery->index_oid;
 }
 
 /*
@@ -751,12 +714,12 @@ get_tpquery_text(TpQuery *tpquery)
 }
 
 /*
- * Check if tpquery has an index name
+ * Check if tpquery has a resolved index
  */
 bool
-tpquery_has_index_name(TpQuery *tpquery)
+tpquery_has_index(TpQuery *tpquery)
 {
-	return tpquery->index_name_len > 0;
+	return OidIsValid(tpquery->index_oid);
 }
 
 /*

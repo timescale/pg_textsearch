@@ -38,12 +38,12 @@ DROP INDEX dropped_idx;
 SELECT COUNT(*) AS after_drop
 FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
-ERROR:  index "dropped_idx" not found
+ERROR:  index "dropped_idx" does not exist
 -- Also test with a completely non-existent index name
 SELECT COUNT(*) AS nonexistent
 FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
-ERROR:  index "totally_fake_index" not found
+ERROR:  index "totally_fake_index" does not exist
 -- Clean up
 DROP TABLE dropped_idx_test;
 DROP EXTENSION pg_textsearch;

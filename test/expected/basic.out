@@ -48,11 +48,7 @@ SELECT to_bm25query('hello world');
 (1 row)
 
 SELECT to_bm25query('test query', 'my_index');
-    to_bm25query     
----------------------
- my_index:test query
-(1 row)
-
+ERROR:  index "my_index" does not exist
 -- Test bm25 access method exists
 SELECT amname FROM pg_am WHERE amname = 'bm25';
  amname 
@@ -94,14 +90,14 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.3863
  hello world example | -1.3862943649291992
 (1 row)
 
--- Test index name mismatch error in index scan context
+-- Test non-existent index error (now caught at tpquery creation time)
 \set VERBOSITY terse
 \set ON_ERROR_STOP off
 SELECT content
 FROM test_docs
 ORDER BY content <@> to_bm25query('hello', 'wrong_index')
 LIMIT 1;
-ERROR:  tpquery index name mismatch
+ERROR:  index "wrong_index" does not exist
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 -- Clean up

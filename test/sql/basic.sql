@@ -53,7 +53,7 @@ FROM test_docs
 ORDER BY score
 LIMIT 1;
 
--- Test index name mismatch error in index scan context
+-- Test non-existent index error (now caught at tpquery creation time)
 \set VERBOSITY terse
 \set ON_ERROR_STOP off
 SELECT content
