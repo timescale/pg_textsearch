@@ -97,6 +97,10 @@ FROM documents ORDER BY rank;
 - **B/C (Backend-local)**: Brittle if buffering occurs between scan and projection
 - **ParadeDB (PlaceHolderVar)**: Most robust, but requires custom scan + complex C
 
+**Recommended approach (Alternative D):** Start with CTID cache for simplicity.
+Syntax is finalized; implementation can upgrade to PlaceHolderVar later if users
+hit edge cases with complex JOINs.
+
 ---
 
 ## Alternative A: Column-Based Index Resolution
@@ -542,7 +546,7 @@ Combines the best elements from A and C:
 4. **Partition Support**: Planner resolves parent index, executor maps to
    partition index
 
-### Syntax
+### Syntax (Finalized)
 
 ```sql
 -- Standard usage: index inferred from column
@@ -564,6 +568,28 @@ ORDER BY score;
 The `<@>` operator appears once in SELECT. The ORDER BY references the alias.
 The operator is evaluated twice by PostgreSQL, but the second evaluation hits
 the CTID cache and returns immediately.
+
+### Implementation Strategy
+
+The syntax above is finalized and stable. The underlying implementation can
+evolve without changing user-facing behavior:
+
+**Initial Implementation: CTID Cache**
+- Simple backend-local cache keyed by CTID + query hash
+- Works with standard index AM (no custom scan needed)
+- Covers the common case: simple queries with ORDER BY and SELECT
+
+**Known Limitations:**
+- Complex JOINs with BM25 scores may see re-scoring if a Sort/Materialize
+  node separates the scan from the projection
+- CTEs and subqueries that reference scores outside their immediate context
+- These edge cases will compute scores twice (correct, but slower)
+
+**Future Option: PlaceHolderVar (if needed)**
+- If users hit limitations with CTID cache, we can upgrade to PlaceHolderVar
+- Requires implementing a custom scan node
+- More complex but handles all edge cases correctly
+- No syntax changes required - same SQL, better execution
 
 ---
 
@@ -590,6 +616,24 @@ the CTID cache and returns immediately.
 - Implement parent-to-partition index mapping
 - Test with various partition schemes (range, list, hash)
 
+### Future Phase: PlaceHolderVar (Optional)
+
+If users report performance issues with complex JOINs or subqueries due to
+re-scoring, consider upgrading to the PlaceHolderVar approach:
+
+1. **Custom Scan Node**: Implement a custom scan provider that intercepts
+   queries with `<@>` in ORDER BY
+2. **Support Function**: Register a planner support function for the `<@>`
+   operator that wraps scores in PlaceHolderVar
+3. **Const Injection**: During execution, store computed scores in Const nodes
+   within the PlaceHolderVar structure
+4. **Testing**: Verify scores survive Sort, Materialize, Hash Join, etc.
+
+This is a significant undertaking (see Appendix for ParadeDB implementation
+details) but provides the most robust score preservation. The key point is
+that **no syntax changes are needed** - the same SQL works with either
+implementation.
+
 ---
 
 ## Open Questions
@@ -602,16 +646,14 @@ the CTID cache and returns immediately.
    indexes? Each ORDER BY clause references a specific column, so this may
    resolve naturally.
 
-3. **Subqueries**: Can we resolve index in subquery context? The planner hook
-   should handle this, but needs testing.
+3. **Subqueries and CTEs**: Index resolution should work via planner hook.
+   However, CTID cache may not work correctly if score is referenced outside
+   the immediate scan context. Need testing to identify limitations.
 
 4. **Prepared statements**: How does index resolution interact with plan
    caching? If index OID is injected at plan time, this should work correctly.
 
-5. **Score function naming**: `bm25_score()` vs `score()` vs `rank()`?
-   Preference for `bm25_score()` to be explicit about the scoring algorithm.
-
-6. **Boolean filtering with ranked search**: See
+5. **Boolean filtering with ranked search**: See
    [DESIGN_FEATURE_GAPS.md](DESIGN_FEATURE_GAPS.md) for analysis of this common
    use case and how ParadeDB handles it. May require future syntax changes.
 
@@ -669,6 +711,13 @@ can be eliminated when placed under a JOIN.
 - Requires custom scan node (ParadeDB has one; we use standard index AM)
 - Complex C implementation of support functions and Const injection
 - Need to intercept execution at the right point to update the Const
+
+**Implications for our approach:**
+
+We start with CTID cache (simpler, works for common cases). If users report
+issues with complex JOINs or subqueries causing re-scoring, PlaceHolderVar
+becomes the upgrade path. The syntax remains unchanged - only the internal
+implementation would change.
 
 **Execution flow:**
 
