@@ -118,6 +118,45 @@ WHERE indrelid IN ('partition_2024'::regclass, 'partition_2025'::regclass);
                      2
 (1 row)
 
+-- Test implicit index resolution with <@> operator on partitioned table
+-- The planner hook should resolve partitioned_bm25_idx, and the executor
+-- should map it to the correct partition index at scan time
+SET enable_seqscan = off;
+-- Query partition_2024 - should use partition_2024_content_idx
+EXPLAIN (COSTS OFF)
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+                                                                              QUERY PLAN                                                                              
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using partition_2024_content_idx on partition_2024 partitioned_docs
+         Order By: (content <@> 'data'::text)
+         Filter: ((created_at >= 'Mon Jan 01 00:00:00 2024'::timestamp without time zone) AND (created_at < 'Wed Jan 01 00:00:00 2025'::timestamp without time zone))
+(4 rows)
+
+-- Actually execute to verify the query works
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+        content        
+-----------------------
+ Data in the partition
+(1 row)
+
+-- Query partition_2025 - should use partition_2025_content_idx
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'
+ORDER BY content <@> 'partition'
+LIMIT 1;
+          content           
+----------------------------
+ Data in the 2025 partition
+(1 row)
+
+SET enable_seqscan = on;
 -- Cleanup partitioned test
 DROP TABLE partitioned_docs CASCADE;
 -- Test 3: Regular tables (should work normally)

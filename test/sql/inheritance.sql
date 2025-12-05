@@ -93,6 +93,32 @@ SELECT COUNT(*) as num_partition_indexes
 FROM pg_index
 WHERE indrelid IN ('partition_2024'::regclass, 'partition_2025'::regclass);
 
+-- Test implicit index resolution with <@> operator on partitioned table
+-- The planner hook should resolve partitioned_bm25_idx, and the executor
+-- should map it to the correct partition index at scan time
+SET enable_seqscan = off;
+
+-- Query partition_2024 - should use partition_2024_content_idx
+EXPLAIN (COSTS OFF)
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Actually execute to verify the query works
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Query partition_2025 - should use partition_2025_content_idx
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'
+ORDER BY content <@> 'partition'
+LIMIT 1;
+
+SET enable_seqscan = on;
+
 -- Cleanup partitioned test
 DROP TABLE partitioned_docs CASCADE;
 

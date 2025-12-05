@@ -169,18 +169,11 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum)
 			if (classForm->relam == bm25_am_oid)
 			{
 				/*
-				 * Skip partitioned indexes - they don't have storage and
-				 * can't be used directly. The implicit resolution doesn't
-				 * work for partitioned tables yet.
+				 * For partitioned indexes (RELKIND_PARTITIONED_INDEX),
+				 * return the parent index OID. The executor will map this
+				 * to partition indexes at scan time via is_partition_of()
+				 * in tp_rescan_validate_query_index().
 				 */
-				if (classForm->relkind == RELKIND_PARTITIONED_INDEX)
-				{
-					elog(DEBUG1,
-						 "tp_planner_hook: skipping partitioned index %u",
-						 indexOid);
-					ReleaseSysCache(classTuple);
-					continue;
-				}
 
 				/* Check if the index covers our column */
 				int nkeys = indexForm->indnatts;
