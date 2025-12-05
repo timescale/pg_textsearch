@@ -65,7 +65,7 @@ init_cached_oids(void)
 			bm25_am_oid = ((Form_pg_am)GETSTRUCT(tuple))->oid;
 			ReleaseSysCache(tuple);
 		}
-		elog(DEBUG1, "tp_planner_hook: bm25_am_oid = %u", bm25_am_oid);
+		elog(DEBUG2, "tp_planner_hook: bm25_am_oid = %u", bm25_am_oid);
 	}
 
 	if (!OidIsValid(tpquery_type_oid))
@@ -86,7 +86,7 @@ init_cached_oids(void)
 					ObjectIdGetDatum(namespace_oid));
 		}
 
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "tp_planner_hook: tpquery_type_oid = %u",
 			 tpquery_type_oid);
 	}
@@ -99,7 +99,7 @@ init_cached_oids(void)
 		text_tpquery_operator_oid =
 				OpernameGetOprid(opname, TEXTOID, tpquery_type_oid);
 		list_free(opname);
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "tp_planner_hook: text_tpquery_operator_oid = %u",
 			 text_tpquery_operator_oid);
 	}
@@ -111,7 +111,7 @@ init_cached_oids(void)
 
 		text_text_operator_oid = OpernameGetOprid(opname, TEXTOID, TEXTOID);
 		list_free(opname);
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "tp_planner_hook: text_text_operator_oid = %u",
 			 text_text_operator_oid);
 	}
@@ -287,7 +287,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 
 		init_cached_oids();
 
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "tp_planner_hook: found OpExpr opno=%u, looking for=%u",
 			 opexpr->opno,
 			 text_tpquery_operator_oid);
@@ -298,7 +298,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 			Node *left	= linitial(opexpr->args);
 			Node *right = lsecond(opexpr->args);
 
-			elog(DEBUG1,
+			elog(DEBUG2,
 				 "tp_planner_hook: matched <@> operator, left=%d "
 				 "right=%d",
 				 nodeTag(left),
@@ -310,11 +310,11 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 			 */
 			if (IsA(right, FuncExpr))
 			{
-				elog(DEBUG1,
+				elog(DEBUG2,
 					 "tp_planner_hook: right is FuncExpr, trying "
 					 "eval_const_expressions");
 				right = eval_const_expressions(NULL, right);
-				elog(DEBUG1,
+				elog(DEBUG2,
 					 "tp_planner_hook: after eval, right=%d",
 					 nodeTag(right));
 			}
@@ -324,7 +324,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 			{
 				Const *constNode = (Const *)right;
 
-				elog(DEBUG1,
+				elog(DEBUG2,
 					 "tp_planner_hook: Const type=%u, expected=%u, "
 					 "isnull=%d",
 					 constNode->consttype,
@@ -337,14 +337,14 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 					TpQuery *tpquery = (TpQuery *)DatumGetPointer(
 							constNode->constvalue);
 
-					elog(DEBUG1,
+					elog(DEBUG2,
 						 "tp_planner_hook: tpquery index_oid=%u",
 						 tpquery->index_oid);
 
 					/* Check if unresolved (InvalidOid) */
 					if (!OidIsValid(tpquery->index_oid))
 					{
-						elog(DEBUG1,
+						elog(DEBUG2,
 							 "tp_planner_hook: index unresolved, "
 							 "trying to find from Var");
 
@@ -360,7 +360,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 							{
 								Oid index_oid;
 
-								elog(DEBUG1,
+								elog(DEBUG2,
 									 "tp_planner_hook: looking for "
 									 "bm25 index on rel=%u col=%d",
 									 relid,
@@ -369,7 +369,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 								index_oid = find_bm25_index_for_column(
 										relid, attnum);
 
-								elog(DEBUG1,
+								elog(DEBUG2,
 									 "tp_planner_hook: found "
 									 "index_oid=%u",
 									 index_oid);
@@ -381,7 +381,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 									OpExpr *new_opexpr;
 									Const  *new_const;
 
-									elog(DEBUG1,
+									elog(DEBUG2,
 										 "tp_planner_hook: creating "
 										 "resolved tpquery with oid=%u",
 										 index_oid);
@@ -399,14 +399,14 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 							}
 							else
 							{
-								elog(DEBUG1,
+								elog(DEBUG2,
 									 "tp_planner_hook: could not get "
 									 "relation/attnum from Var");
 							}
 						}
 						else
 						{
-							elog(DEBUG1,
+							elog(DEBUG2,
 								 "tp_planner_hook: left is not a Var "
 								 "(type=%d)",
 								 nodeTag(left));
@@ -414,7 +414,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 					}
 					else
 					{
-						elog(DEBUG1,
+						elog(DEBUG2,
 							 "tp_planner_hook: index already resolved");
 					}
 				}
@@ -508,7 +508,7 @@ tp_planner_hook(
 		int			  cursorOptions,
 		ParamListInfo boundParams)
 {
-	elog(DEBUG1,
+	elog(DEBUG2,
 		 "tp_planner_hook: entering for query type %d",
 		 parse->commandType);
 
@@ -540,7 +540,7 @@ tp_planner_hook(
 void
 tp_planner_hook_init(void)
 {
-	elog(DEBUG1, "tp_planner_hook_init: installing planner hook");
+	elog(DEBUG2, "tp_planner_hook_init: installing planner hook");
 	prev_planner_hook = planner_hook;
 	planner_hook	  = tp_planner_hook;
 }

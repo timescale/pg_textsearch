@@ -611,7 +611,7 @@ tp_cache_score(
 	entry->score	  = score;
 	entry->valid	  = true;
 
-	elog(DEBUG1,
+	elog(DEBUG2,
 		 "tp_cache_score: cached score %.4f for table %u ctid (%u,%u) hash %u",
 		 score,
 		 table_oid,
@@ -652,7 +652,7 @@ tp_get_cached_score(
 			entry->table_oid == table_oid && entry->query_hash == query_hash)
 		{
 			*found = true;
-			elog(DEBUG1,
+			elog(DEBUG2,
 				 "tp_get_cached_score: HIT for table %u ctid (%u,%u) hash %u, "
 				 "score %.4f",
 				 table_oid,
@@ -664,7 +664,7 @@ tp_get_cached_score(
 		}
 	}
 
-	elog(DEBUG1,
+	elog(DEBUG2,
 		 "tp_get_cached_score: MISS for table %u ctid (%u,%u) hash %u",
 		 table_oid,
 		 BlockIdGetBlockNumber(&ctid->ip_blkid),
@@ -715,7 +715,7 @@ tp_clear_score_cache(void)
 			score_cache[i].valid = false;
 		score_cache_next = 0;
 	}
-	elog(DEBUG1, "tp_clear_score_cache: cache cleared");
+	elog(DEBUG2, "tp_clear_score_cache: cache cleared");
 }
 
 /*

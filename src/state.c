@@ -1066,7 +1066,7 @@ tp_bulk_load_spill_check(void)
 			MarkBufferDirty(metabuf);
 			UnlockReleaseBuffer(metabuf);
 
-			elog(DEBUG1,
+			elog(DEBUG2,
 				 "Bulk load spilled memtable to segment at block %u "
 				 "(L0 count: %u)",
 				 segment_root,

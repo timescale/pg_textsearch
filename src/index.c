@@ -173,7 +173,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "Auto-spilled memtable to segment at block %u (L0 count: %u)",
 			 segment_root,
 			 metap->level_counts[0]);
@@ -291,7 +291,7 @@ tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 	if (get_rel_relkind(query_index_oid) == RELKIND_PARTITIONED_INDEX &&
 		is_partition_of(scan_index_oid, query_index_oid))
 	{
-		elog(DEBUG1,
+		elog(DEBUG2,
 			 "tp_rescan: partition index %u is child of partitioned "
 			 "index %u",
 			 scan_index_oid,

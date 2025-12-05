@@ -488,7 +488,7 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 
 			if (found)
 			{
-				elog(DEBUG1,
+				elog(DEBUG2,
 					 "text_tpquery_score: using cached score %.4f for "
 					 "partitioned index (table %u)",
 					 cached,
@@ -850,7 +850,7 @@ text_text_score(PG_FUNCTION_ARGS)
 
 		if (found)
 		{
-			elog(DEBUG1, "text_text_score: using cached score %.4f", cached);
+			elog(DEBUG2, "text_text_score: using cached score %.4f", cached);
 			PG_RETURN_FLOAT8((float8)cached);
 		}
 	}
