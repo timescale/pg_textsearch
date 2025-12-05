@@ -73,9 +73,9 @@ SET enable_seqscan = off;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx'))::numeric, 4) as score
+    ROUND((full_text <@> 'aerodynamic')::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_bm25query('aerodynamic', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> 'aerodynamic' ASC
 LIMIT 3;
 
 -- Validate single-term BM25 scoring
@@ -86,9 +86,9 @@ SELECT validate_bm25_scoring('aerodocs_documents', 'full_text', 'cranfield_tapir
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx'))::numeric, 4) as score
+    ROUND((full_text <@> 'aerodynamic flow')::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_bm25query('aerodynamic flow', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> 'aerodynamic flow' ASC
 LIMIT 5;
 
 -- Test 2: Multi-term search
@@ -96,9 +96,9 @@ LIMIT 5;
 SELECT
     doc_id,
     LEFT(title, 60) as title_preview,
-    ROUND((full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx'))::numeric, 4) as score
+    ROUND((full_text <@> 'boundary layer turbulent')::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_bm25query('boundary layer turbulent', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> 'boundary layer turbulent' ASC
 LIMIT 5;
 
 -- Test 3: Top-10 results for first query
@@ -139,9 +139,9 @@ ORDER BY q.query_id;
 SET jit = off;
 EXPLAIN (COSTS OFF)
 
-SELECT doc_id, ROUND((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx'))::numeric, 4) as score
+SELECT doc_id, ROUND((full_text <@> 'supersonic aircraft design')::numeric, 4) as score
 FROM aerodocs_documents
-ORDER BY full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_tapir_idx') ASC
+ORDER BY full_text <@> 'supersonic aircraft design' ASC
 LIMIT 10;
 
 -- Reset settings

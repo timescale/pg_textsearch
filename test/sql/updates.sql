@@ -37,7 +37,7 @@ RETURNING id, content;
 -- Test UPDATE matching multiple rows
 UPDATE update_test
 SET meta = meta || '{"updated": true}'::jsonb
-WHERE content <@> to_bm25query('database', 'idx_update_test_content') > -5;
+WHERE content <@> 'database' > -5;
 
 -- Test UPDATE with complex WHERE clause (similar to production crash)
 UPDATE update_test

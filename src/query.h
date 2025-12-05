@@ -36,6 +36,7 @@ Datum to_tpquery_text_index(PG_FUNCTION_ARGS);
 /* Operator functions */
 Datum text_tpquery_score(PG_FUNCTION_ARGS);
 Datum tp_distance(PG_FUNCTION_ARGS);
+Datum tp_distance_text_text(PG_FUNCTION_ARGS);
 Datum tpquery_eq(PG_FUNCTION_ARGS);
 
 /* Utility functions */

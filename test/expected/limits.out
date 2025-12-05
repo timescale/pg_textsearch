@@ -46,135 +46,89 @@ NOTICE:  BM25 index build completed: 20 documents, avg_length=6.60, text_config=
 -- Test 1: Basic LIMIT functionality
 -- Should detect and optimize for LIMIT 5
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> to_bm25query('database', 'limit_test_idx') as score
+SELECT title, content, content <@> 'database' as score
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-                              QUERY PLAN                              
-----------------------------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
-         Order By: (content <@> 'limit_test_idx:database'::bm25query)
+         Order By: (content <@> 'database'::text)
 (3 rows)
 
-SELECT title, content, ROUND((content <@> to_bm25query('database', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
 FROM limit_test
 ORDER BY 3
 LIMIT 5;
-         title         |                              content                               |  score  
------------------------+--------------------------------------------------------------------+---------
- Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
- Database Architecture | database system architecture with storage and indexing strategies  | -0.9394
- Database Performance  | database optimization strategies for improving query performance   | -0.9394
- Query Optimization    | query optimization techniques for efficient database operations    | -0.9394
- Database Security     | database security measures and access control mechanisms           | -0.9394
-(5 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
-SELECT title, ROUND((content <@> to_bm25query('search', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'search')::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-       title       |  score  
--------------------+---------
- Search Technology | -1.8610
-(1 row)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test LIMIT 3
-SELECT title, ROUND((content <@> to_bm25query('optimization', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'optimization')::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-        title         |  score  
-----------------------+---------
- Query Optimization   | -1.3915
- Database Performance | -1.3915
- Algorithm Design     | -1.3915
-(3 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test LIMIT 10
-SELECT title, ROUND((content <@> to_bm25query('algorithm', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'algorithm')::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 10;
-         title         |  score  
------------------------+---------
- Algorithm Design      | -1.3915
- Search Engines        | -1.3074
- Text Processing       | -1.3074
- Machine Learning      | -1.3074
- Search Algorithms     | -1.2328
- Distributed Systems   |  0.0000
- Database Architecture |  0.0000
- Query Optimization    |  0.0000
- Text Analytics        |  0.0000
- Information Systems   |  0.0000
-(10 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 3: LIMIT with WHERE clause (should prevent pushdown for safety)
 -- This should NOT use LIMIT pushdown due to additional WHERE clause
 EXPLAIN (COSTS OFF)
-SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-                                             QUERY PLAN                                             
-----------------------------------------------------------------------------------------------------
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
  Limit
    ->  Sort
-         Sort Key: (round(((content <@> 'limit_test_idx:database system'::bm25query))::numeric, 4))
+         Sort Key: (round(((content <@> 'database system'::text))::numeric, 4))
          ->  Index Scan using limit_test_pkey on limit_test
                Index Cond: (id > 5)
 (5 rows)
 
-SELECT title, ROUND((content <@> to_bm25query('database system', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
 ORDER BY 2
 LIMIT 7;
-         title         |  score  
------------------------+---------
- Database Theory       | -2.3309
- Database Architecture | -2.3309
- System Performance    | -1.3915
- Information Systems   | -1.3915
- Query Optimization    | -0.9394
- Database Performance  | -0.9394
- Database Security     | -0.9394
-(7 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 4: No LIMIT (should use default behavior)
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
 -- Test 5: LIMIT with OFFSET
-SELECT title, ROUND((content <@> to_bm25query('performance', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'performance')::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 5 OFFSET 2;
-         title         |  score  
------------------------+---------
- Algorithm Design      | -1.8610
- Information Retrieval |  0.0000
- Text Processing       |  0.0000
- Data Mining           |  0.0000
- Machine Learning      |  0.0000
-(5 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 6: Very small LIMIT (edge case)
-SELECT title, ROUND((content <@> to_bm25query('text', 'limit_test_idx'))::numeric, 4) as score
+SELECT title, ROUND((content <@> 'text')::numeric, 4) as score
 FROM limit_test
 ORDER BY 2
 LIMIT 1;
-      title      |  score  
------------------+---------
- Text Processing | -1.7484
-(1 row)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 7: Large LIMIT (should still use index optimization)
 SELECT COUNT(*) > 0 as has_results
 FROM (
-    SELECT title, content <@> to_bm25query('xyzabc123', 'limit_test_idx') as score
+    SELECT title, content <@> 'xyzabc123' as score
     FROM limit_test
     -- Test for non-matching terms (should return no results)
     ORDER BY 2
@@ -187,21 +141,17 @@ FROM (
 
 -- Test 8: LIMIT in subquery
 SELECT * FROM (
-    SELECT title, ROUND((content <@> to_bm25query('mining', 'limit_test_idx'))::numeric, 4) as score
+    SELECT title, ROUND((content <@> 'mining')::numeric, 4) as score
     FROM limit_test
     ORDER BY 2
     LIMIT 3
 ) sub WHERE score < 0;
-     title      |  score  
-----------------+---------
- Data Mining    | -2.0767
- Text Analytics | -2.0767
-(2 rows)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_bm25query('database', 'limit_test_idx')
+    ORDER BY content <@> 'database'
     LIMIT 2
 ) q1;
 NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
@@ -213,7 +163,7 @@ NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
 
 SELECT 'Query 2' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_bm25query('search', 'limit_test_idx')
+    ORDER BY content <@> 'search'
     LIMIT 8
 ) q2;
 NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-1.8610
@@ -226,7 +176,7 @@ NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.6487
 
 SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     SELECT title FROM limit_test
-    ORDER BY content <@> to_bm25query('algorithm', 'limit_test_idx')
+    ORDER BY content <@> 'algorithm'
     LIMIT 4
 ) q3;
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
@@ -243,15 +193,15 @@ NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
 -- Safe case: Simple ORDER BY with pg_textsearch score, no WHERE clause
 -- This SHOULD allow LIMIT pushdown
 EXPLAIN (COSTS OFF)
-SELECT title, content <@> to_bm25query('simple', 'limit_test_idx') as score
+SELECT title, content <@> 'simple' as score
 FROM limit_test
 ORDER BY 2
 LIMIT 3;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Limit
    ->  Index Scan using limit_test_idx on limit_test
-         Order By: (content <@> 'limit_test_idx:simple'::bm25query)
+         Order By: (content <@> 'simple'::text)
 (3 rows)
 
 -- Case: Multiple ORDER BY clauses
@@ -264,7 +214,7 @@ LIMIT 3;
 -- Test with safe pushdown case
 SELECT COUNT(*) as pushdown_safe_count
 FROM (
-    SELECT title, content <@> to_bm25query('pushdown_safe', 'limit_test_idx') as score
+    SELECT title, content <@> 'pushdown_safe' as score
     FROM limit_test
     ORDER BY 2
     LIMIT 2
@@ -277,7 +227,7 @@ FROM (
 -- Test with unsafe pushdown case (has WHERE clause)
 SELECT COUNT(*) as pushdown_unsafe_count
 FROM (
-    SELECT title, content <@> to_bm25query('pushdown_unsafe', 'limit_test_idx') as score
+    SELECT title, content <@> 'pushdown_unsafe' as score
     FROM limit_test
     WHERE id % 2 = 0
     ORDER BY 2
@@ -292,7 +242,7 @@ FROM (
 -- Very large LIMIT (should still use index optimization efficiently)
 SELECT COUNT(*) > 0 as large_limit_has_results
 FROM (
-    SELECT title, content <@> to_bm25query('qwertyuiop999', 'limit_test_idx') as score
+    SELECT title, content <@> 'qwertyuiop999' as score
     FROM limit_test
     -- Test with non-matching nonsense term
     ORDER BY 2
@@ -304,7 +254,7 @@ FROM (
 (1 row)
 
 -- LIMIT 0 edge case
-SELECT title, content <@> to_bm25query('zero_limit', 'limit_test_idx') as score
+SELECT title, content <@> 'zero_limit' as score
 FROM limit_test
 ORDER BY 2
 LIMIT 0;

@@ -9,6 +9,7 @@
 #include <access/table.h>
 #include <access/tableam.h>
 #include <catalog/namespace.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
@@ -229,28 +230,125 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 }
 
 /*
- * Validate that the query index OID matches the scan index
+ * Check if scan_index is a partition of query_index (parent-child relation)
+ * via pg_inherits.
+ */
+static bool
+is_partition_of(Oid scan_index_oid, Oid query_index_oid)
+{
+	Relation	inhrel;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+	bool		found = false;
+
+	inhrel = table_open(InheritsRelationId, AccessShareLock);
+
+	ScanKeyInit(
+			&key,
+			Anum_pg_inherits_inhrelid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(scan_index_oid));
+
+	scan = systable_beginscan(
+			inhrel, InheritsRelidSeqnoIndexId, true, NULL, 1, &key);
+
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
+
+		if (inhform->inhparent == query_index_oid)
+		{
+			found = true;
+			break;
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(inhrel, AccessShareLock);
+
+	return found;
+}
+
+/*
+ * Validate that the query index OID matches the scan index.
+ * Allows partitioned index queries to run on partition indexes.
  */
 static void
 tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 {
 	Oid scan_index_oid = RelationGetRelid(indexRelation);
 
-	if (query_index_oid != scan_index_oid)
+	/* Direct match - OK */
+	if (query_index_oid == scan_index_oid)
+		return;
+
+	/*
+	 * Check if query references a partitioned index and scan is on a
+	 * partition index (child of the partitioned index).
+	 */
+	if (get_rel_relkind(query_index_oid) == RELKIND_PARTITIONED_INDEX &&
+		is_partition_of(scan_index_oid, query_index_oid))
 	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("tpquery index mismatch"),
-				 errhint("Query specifies index OID %u but scan is on "
-						 "index \"%s\" (OID %u)",
-						 query_index_oid,
-						 RelationGetRelationName(indexRelation),
-						 scan_index_oid)));
+		elog(DEBUG1,
+			 "tp_rescan: partition index %u is child of partitioned "
+			 "index %u",
+			 scan_index_oid,
+			 query_index_oid);
+		return;
 	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("tpquery index mismatch"),
+			 errhint("Query specifies index OID %u but scan is on "
+					 "index \"%s\" (OID %u)",
+					 query_index_oid,
+					 RelationGetRelationName(indexRelation),
+					 scan_index_oid)));
+}
+
+/*
+ * Check if data looks like a valid TpQuery structure.
+ * TpQuery has: vl_len_ (4 bytes), index_oid (4 bytes), query_text_len (4
+ * bytes) followed by query_text (query_text_len bytes) and a null terminator.
+ * Minimum size is offsetof(TpQuery, data) + 1 (for at least null terminator).
+ */
+static bool
+tp_is_valid_tpquery(void *data)
+{
+	Size	 size;
+	TpQuery *maybe_query;
+
+	if (VARATT_IS_EXTENDED(data))
+		return false;
+
+	size = VARSIZE_ANY(data);
+	if (size < offsetof(TpQuery, data) + 1)
+		return false;
+
+	/*
+	 * Additional validation: check that query_text_len is reasonable.
+	 * create_tpquery allocates: offsetof(TpQuery, data) + query_text_len + 1
+	 * The +1 is for the null terminator.
+	 */
+	maybe_query = (TpQuery *)data;
+	if (maybe_query->query_text_len < 0)
+		return false;
+	if ((Size)(offsetof(TpQuery, data) + maybe_query->query_text_len + 1) !=
+		size)
+		return false;
+
+	return true;
 }
 
 /*
  * Process ORDER BY scan keys for <@> operator
+ *
+ * Handles both bm25query and plain text arguments to support:
+ * - ORDER BY content <@> 'query'::bm25query (explicit bm25query)
+ * - ORDER BY content <@> 'query' (plain text, implicit index resolution)
  */
 static void
 tp_rescan_process_orderby(
@@ -268,28 +366,40 @@ tp_rescan_process_orderby(
 		/* Check for <@> operator strategy */
 		if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 		{
-			Datum	 query_datum = orderby->sk_argument;
-			TpQuery *query		 = (TpQuery *)DatumGetPointer(query_datum);
-			char	*query_cstr;
+			Datum query_datum = orderby->sk_argument;
+			void *query_data  = DatumGetPointer(query_datum);
+			char *query_cstr;
+			Oid	  query_index_oid = InvalidOid;
 
-			/* Validate it's a proper tpquery by checking varlena header */
-			if (VARATT_IS_EXTENDED(query) ||
-				VARSIZE_ANY(query) < VARHDRSZ + sizeof(int32) + sizeof(int32))
+			/*
+			 * Determine if argument is a bm25query or plain text.
+			 * bm25query has a specific structure; plain text is a varlena.
+			 */
+			if (tp_is_valid_tpquery(query_data))
 			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("invalid tpquery data")));
-			}
+				/* It's a bm25query - extract query text and index OID */
+				TpQuery *query = (TpQuery *)query_data;
 
-			/* Validate index OID if provided in query */
-			if (tpquery_has_index(query))
+				query_cstr		= pstrdup(get_tpquery_text(query));
+				query_index_oid = get_tpquery_index_oid(query);
+
+				/* Validate index OID if provided in query */
+				if (tpquery_has_index(query))
+				{
+					tp_rescan_validate_query_index(
+							query_index_oid, scan->indexRelation);
+				}
+			}
+			else
 			{
-				tp_rescan_validate_query_index(
-						get_tpquery_index_oid(query), scan->indexRelation);
-			}
+				/*
+				 * It's plain text - use text directly.
+				 * Index OID will be the scan relation's OID.
+				 */
+				text *query_text = (text *)query_data;
 
-			/* Extract and store query text */
-			query_cstr = pstrdup(get_tpquery_text(query));
+				query_cstr = text_to_cstring(query_text);
+			}
 
 			/* Clear query vector since we're using text directly */
 			if (so->query_vector)
@@ -313,6 +423,21 @@ tp_rescan_process_orderby(
 						so->scan_context);
 				so->query_text = pstrdup(query_cstr);
 				MemoryContextSwitchTo(oldcontext);
+			}
+
+			/*
+			 * Store index OID and compute query hash for score caching.
+			 * Use the query's index OID (not the scan relation's) for the
+			 * hash so it matches what text_tpquery_score() will compute.
+			 * This is important for partitioned indexes where the query
+			 * stores the parent index OID but scan runs on partition index.
+			 */
+			so->index_oid = RelationGetRelid(scan->indexRelation);
+			{
+				Oid hash_index_oid = OidIsValid(query_index_oid)
+										   ? query_index_oid
+										   : so->index_oid;
+				so->query_hash	   = tp_hash_query(hash_index_oid, query_cstr);
 			}
 
 			/* Mark all docs as candidates for ORDER BY operation */
@@ -1823,6 +1948,24 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
 		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 		scan->xs_orderbynulls[0] = false;
+
+		/*
+		 * Cache the score for this CTID + table OID + query hash.
+		 * This allows text_tpquery_score() (called from SELECT list)
+		 * to return the cached score instead of recomputing it.
+		 * The table OID is needed to distinguish CTIDs from different
+		 * partitions. Also set the current row info for lookup.
+		 */
+		{
+			Oid table_oid = scan->heapRelation
+								  ? RelationGetRelid(scan->heapRelation)
+								  : InvalidOid;
+			tp_cache_score(
+					&scan->xs_heaptid, table_oid, so->query_hash, bm25_score);
+			tp_set_current_row_ctid(&scan->xs_heaptid);
+			tp_set_current_row_table_oid(table_oid);
+			tp_set_current_query_hash(so->query_hash);
+		}
 
 		/* Log BM25 score if enabled */
 		elog(tp_log_scores ? NOTICE : DEBUG1,

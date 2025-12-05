@@ -36,48 +36,46 @@ CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_confi
 -- Disable sequential scans to force index usage
 SET enable_seqscan = off;
 
--- Test 1: Basic text similarity search with LIMIT
+-- Test 1: Basic text similarity search with LIMIT (implicit index resolution)
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'articles_tapir_idx:database'::bm25query as score
+SELECT title, content, content <@> 'database' as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
+ORDER BY content <@> 'database'
 LIMIT 5;
 
-SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database'::bm25query)::numeric, 4) as score
-
+SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
 FROM articles
-ORDER BY content <@> 'articles_tapir_idx:database'::bm25query
+ORDER BY content <@> 'database'
 LIMIT 5;
 
--- Test 2: Multi-term search with ranking
+-- Test 2: Multi-term search with ranking (implicit index resolution)
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'articles_tapir_idx:machine learning'::bm25query as score
+SELECT title, content, content <@> 'machine learning' as score
 FROM articles
-ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
+ORDER BY content <@> 'machine learning'
 LIMIT 3;
 
-SELECT title, content, ROUND((content <@> 'articles_tapir_idx:machine learning'::bm25query)::numeric, 4) as score
-
+SELECT title, content, ROUND((content <@> 'machine learning')::numeric, 4) as score
 FROM articles
-ORDER BY content <@> to_bm25query('machine learning', 'articles_tapir_idx')
+ORDER BY content <@> 'machine learning'
 LIMIT 3;
 
--- Test 3: Category-filtered search
+-- Test 3: Category-filtered search (implicit index resolution)
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'articles_tapir_idx:search algorithms'::bm25query as score
+SELECT title, content, content <@> 'search algorithms' as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
+ORDER BY content <@> 'search algorithms'
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'articles_tapir_idx:search algorithms'::bm25query)::numeric, 4) as score
-
+SELECT title, content, ROUND((content <@> 'search algorithms')::numeric, 4) as score
 FROM articles
 WHERE category = 'technology'
-ORDER BY content <@> to_bm25query('search algorithms', 'articles_tapir_idx')
+ORDER BY content <@> 'search algorithms'
 LIMIT 10;
 
 -- Test 4: Find similar articles to a specific one (standalone scoring with explicit corpus)
+-- Note: This query uses explicit index name because of dynamic query text
 SELECT a2.title, a2.content, ROUND((a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx'))::numeric, 4) as score
 FROM articles a1, articles a2
 WHERE a1.id = 3  -- "Text Search Algorithms" article
@@ -85,23 +83,20 @@ WHERE a1.id = 3  -- "Text Search Algorithms" article
 ORDER BY a2.content <@> to_bm25query(a1.content, 'articles_tapir_idx')
 LIMIT 5;
 
--- Test 5: Top results with scoring
+-- Test 5: Top results with scoring (implicit index resolution)
 EXPLAIN (COSTS OFF)
-SELECT title, content, content <@> 'articles_tapir_idx:database optimization'::bm25query as score
+SELECT title, content, content <@> 'database optimization' as score
 FROM articles
-ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
+ORDER BY content <@> 'database optimization'
 LIMIT 10;
 
-SELECT title, content, ROUND((content <@> 'articles_tapir_idx:database optimization'::bm25query)::numeric, 4) as score
-
+SELECT title, content, ROUND((content <@> 'database optimization')::numeric, 4) as score
 FROM articles
-ORDER BY content <@> to_bm25query('database optimization', 'articles_tapir_idx')
+ORDER BY content <@> 'database optimization'
 LIMIT 10;
 
 -- Test 6: Batch search with different queries
--- Note: In PG18, queries without index names fail due to eager evaluation
--- This test uses the index name to work correctly
--- The CROSS JOIN here intentionally doesn't use the index (tests scoring computation)
+-- Note: Uses explicit index name because query text comes from a subquery
 EXPLAIN (COSTS OFF)
 WITH search_terms AS (
     SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
@@ -111,18 +106,19 @@ FROM search_terms s
 CROSS JOIN articles a
 ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
 
--- Test scoring consistency for multi-term query
+-- Test scoring consistency for multi-term query (implicit index resolution)
+-- Note: standalone_results uses explicit index name since it has a WHERE clause
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
 WITH order_by_results AS (
     SELECT id, title,
-           ROUND((content <@> 'articles_tapir_idx:machine learning algorithm'::bm25query)::numeric, 6) as order_by_score
+           ROUND((content <@> 'machine learning algorithm')::numeric, 6) as order_by_score
     FROM articles
-    ORDER BY content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx')
+    ORDER BY content <@> 'machine learning algorithm'
     LIMIT 2
 ),
 standalone_results AS (
     SELECT id, title,
-           ROUND((content <@> 'articles_tapir_idx:machine learning algorithm'::bm25query)::numeric, 6) as standalone_score
+           ROUND((content <@> to_bm25query('machine learning algorithm', 'articles_tapir_idx'))::numeric, 6) as standalone_score
     FROM articles
     WHERE id IN (SELECT id FROM order_by_results)
 )

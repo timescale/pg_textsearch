@@ -125,7 +125,9 @@ PG_FUNCTION_INFO_V1(tpquery_send);
 PG_FUNCTION_INFO_V1(to_tpquery_text);
 PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(text_tpquery_score);
+PG_FUNCTION_INFO_V1(text_text_score);
 PG_FUNCTION_INFO_V1(tp_distance);
+PG_FUNCTION_INFO_V1(tp_distance_text_text);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 
 /*
@@ -288,12 +290,18 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 /*
  * Helper: Validate query and get index
  * Returns opened index relation, sets index_oid_out if provided
+ *
+ * For partitioned indexes (created on partitioned tables), this function
+ * will error out because partitioned indexes don't have storage - each
+ * partition has its own index. The index scan path handles this correctly
+ * by using per-partition indexes, but the standalone operator cannot.
  */
 static Relation
 validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 {
 	Oid		 index_oid = get_tpquery_index_oid(query);
 	Relation index_rel;
+	char	 relkind;
 
 	if (!OidIsValid(index_oid))
 	{
@@ -303,6 +311,26 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 				 errmsg("text <@> tpquery operator requires index"),
 				 errhint("Use to_tpquery(text, index_name) for standalone "
 						 "scoring")));
+	}
+
+	/*
+	 * Check if this is a partitioned index. Partitioned indexes don't have
+	 * storage - they're just templates. Each partition has its own actual
+	 * index. We can't use a partitioned index for standalone scoring.
+	 */
+	relkind = get_rel_relkind(index_oid);
+	if (relkind == RELKIND_PARTITIONED_INDEX)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BM25 scoring on partitioned tables requires "
+						"ORDER BY clause"),
+				 errdetail(
+						 "The index \"%s\" is a partitioned index. "
+						 "Partitioned indexes don't have storage.",
+						 get_rel_name(index_oid)),
+				 errhint("Use ORDER BY content <@> to_bm25query(...) to "
+						 "score documents in partitioned tables.")));
 	}
 
 	/* Open the index relation */
@@ -436,7 +464,57 @@ text_tpquery_score(PG_FUNCTION_ARGS)
 	BlockNumber		   first_segment;
 	BlockNumber		   level_heads[TP_MAX_LEVELS];
 
-	/* Validate query and open index */
+	/* Get index OID from query */
+	index_oid = get_tpquery_index_oid(query);
+
+	/*
+	 * For partitioned indexes, we cannot open the index directly (no storage).
+	 * Instead, use the score cache populated by tp_gettuple during index scan.
+	 * This works because the ORDER BY clause triggers the index scan which
+	 * computes and caches scores before the projection phase.
+	 */
+	if (OidIsValid(index_oid) &&
+		get_rel_relkind(index_oid) == RELKIND_PARTITIONED_INDEX)
+	{
+		ItemPointer current_ctid	  = tp_get_current_row_ctid();
+		Oid			current_table_oid = tp_get_current_row_table_oid();
+
+		if (current_ctid && ItemPointerIsValid(current_ctid))
+		{
+			uint32 query_hash = tp_hash_query(index_oid, query_text);
+			bool   found	  = false;
+			float4 cached	  = tp_get_cached_score(
+					current_ctid, current_table_oid, query_hash, &found);
+
+			if (found)
+			{
+				elog(DEBUG1,
+					 "text_tpquery_score: using cached score %.4f for "
+					 "partitioned index (table %u)",
+					 cached,
+					 current_table_oid);
+				PG_RETURN_FLOAT8((float8)cached);
+			}
+		}
+
+		/*
+		 * No cached score found for partitioned index. This happens when
+		 * using the operator without ORDER BY, which doesn't trigger index
+		 * scan. Return a clear error.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BM25 scoring on partitioned tables requires "
+						"ORDER BY clause"),
+				 errdetail(
+						 "The index \"%s\" is a partitioned index. "
+						 "Partitioned indexes don't have storage.",
+						 get_rel_name(index_oid)),
+				 errhint("Use ORDER BY content <@> to_bm25query(...) to "
+						 "score documents in partitioned tables.")));
+	}
+
+	/* Validate query and open index (for non-partitioned indexes) */
 	index_rel = validate_and_open_index(query, &index_oid);
 
 	PG_TRY();
@@ -675,6 +753,9 @@ create_tpquery(const char *query_text, Oid index_oid)
 
 /*
  * Create a tpquery from index name (resolves name to OID)
+ *
+ * Partitioned indexes are allowed - they will be resolved to the
+ * appropriate partition index at scan time.
  */
 TpQuery *
 create_tpquery_from_name(const char *query_text, const char *index_name)
@@ -731,6 +812,76 @@ tp_distance(PG_FUNCTION_ARGS)
 	/* Arguments are required by function signature but not used for costing */
 	(void)PG_GETARG_TEXT_PP(0); /* text argument */
 	(void)PG_GETARG_POINTER(1); /* tpquery argument */
+
+	/*
+	 * Return hardcoded cost estimate for planning.
+	 * Value indicates this operation has some cost but is generally efficient.
+	 */
+	PG_RETURN_FLOAT8(1.0);
+}
+
+/*
+ * BM25 scoring function for text <@> text operations
+ *
+ * This function is called when evaluating text <@> 'query' expressions.
+ * For index-ordered scans, the score was already computed by the index AM
+ * and cached. We retrieve the cached score here.
+ *
+ * For non-index-scan contexts (e.g., WHERE clause without ORDER BY),
+ * we return an error since we don't know which index to use.
+ */
+Datum
+text_text_score(PG_FUNCTION_ARGS)
+{
+	ItemPointer current_ctid	  = tp_get_current_row_ctid();
+	Oid			current_table_oid = tp_get_current_row_table_oid();
+	bool		hash_valid		  = false;
+	uint32		query_hash		  = tp_get_current_query_hash(&hash_valid);
+
+	/*
+	 * During an index-ordered scan, the index AM computes and caches scores.
+	 * Look up the cached score using the current row's CTID and query hash.
+	 */
+	if (current_ctid && ItemPointerIsValid(current_ctid) && hash_valid)
+	{
+		bool   found  = false;
+		float4 cached = tp_get_cached_score(
+				current_ctid, current_table_oid, query_hash, &found);
+
+		if (found)
+		{
+			elog(DEBUG1, "text_text_score: using cached score %.4f", cached);
+			PG_RETURN_FLOAT8((float8)cached);
+		}
+	}
+
+	/*
+	 * No cached score found. This happens when using the operator outside
+	 * of an index-ordered scan context.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("text <@> text operator requires ORDER BY clause"),
+			 errhint("Use ORDER BY content <@> 'query' to enable BM25 "
+					 "scoring, or use to_bm25query('query', 'index_name') "
+					 "to specify an index explicitly.")));
+
+	PG_RETURN_NULL(); /* never reached */
+}
+
+/*
+ * Distance function for text <@> text operations (FUNCTION 8 in opclass)
+ *
+ * Returns a hardcoded cost estimate for planning purposes.
+ * Like tp_distance, this is used for path costing - the actual
+ * BM25 scores are computed by the index AM during ordered scans.
+ */
+Datum
+tp_distance_text_text(PG_FUNCTION_ARGS)
+{
+	/* Arguments are required by function signature but not used for costing */
+	(void)PG_GETARG_TEXT_PP(0); /* text column argument */
+	(void)PG_GETARG_TEXT_PP(1); /* text query argument */
 
 	/*
 	 * Return hardcoded cost estimate for planning.

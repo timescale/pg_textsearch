@@ -1,0 +1,138 @@
+-- Test implicit index resolution via planner hook
+-- Tests that to_bm25query() without an index name automatically finds the BM25 index
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.6-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+-- Create test table with BM25 index
+CREATE TABLE implicit_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE INDEX implicit_docs_idx ON implicit_docs USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation implicit_docs_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert test documents
+INSERT INTO implicit_docs (content) VALUES
+    ('hello world example'),
+    ('database system design'),
+    ('hello database world');
+-- Test 1: Explicit index name works (baseline)
+SELECT id, content, ROUND((content <@> to_bm25query('hello', 'implicit_docs_idx'))::numeric, 4) as score
+FROM implicit_docs
+WHERE content <@> to_bm25query('hello', 'implicit_docs_idx') < 0
+ORDER BY score, id;
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
+
+-- Test 2: Implicit index resolution (main feature being tested)
+SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
+FROM implicit_docs
+WHERE content <@> to_bm25query('hello') < 0
+ORDER BY score, id;
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
+
+-- Test 3: Implicit resolution works with different query terms
+SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
+FROM implicit_docs
+WHERE content <@> to_bm25query('database') < 0
+ORDER BY score, id;
+ id |        content         |  score  
+----+------------------------+---------
+  2 | database system design | -0.4700
+  3 | hello database world   | -0.4700
+(2 rows)
+
+-- Test 4: Works with ORDER BY only (no WHERE clause)
+SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
+FROM implicit_docs
+ORDER BY content <@> to_bm25query('database'), id
+LIMIT 3;
+ id |        content         |  score  
+----+------------------------+---------
+  2 | database system design | -0.4700
+  3 | hello database world   | -0.4700
+(2 rows)
+
+-- Test 5: Multiple BM25 indexes on different columns - should pick correct one
+CREATE TABLE multi_col_docs (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    body TEXT
+);
+CREATE INDEX multi_col_title_idx ON multi_col_docs USING bm25(title)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation multi_col_title_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+CREATE INDEX multi_col_body_idx ON multi_col_docs USING bm25(body)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation multi_col_body_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+INSERT INTO multi_col_docs (title, body) VALUES
+    ('hello title', 'goodbye body content'),
+    ('goodbye title', 'hello body content'),
+    ('neutral title', 'neutral body content');
+-- Query on title column should use title index
+SELECT id, title, ROUND((title <@> to_bm25query('hello'))::numeric, 4) as score
+FROM multi_col_docs
+WHERE title <@> to_bm25query('hello') < 0
+ORDER BY score, id;
+ id |    title    |  score  
+----+-------------+---------
+  1 | hello title | -0.9808
+(1 row)
+
+-- Query on body column should use body index
+SELECT id, body, ROUND((body <@> to_bm25query('hello'))::numeric, 4) as score
+FROM multi_col_docs
+WHERE body <@> to_bm25query('hello') < 0
+ORDER BY score, id;
+ id |        body        |  score  
+----+--------------------+---------
+  2 | hello body content | -0.9808
+(1 row)
+
+-- Test 6: Schema-qualified table still works with implicit resolution
+CREATE SCHEMA implicit_schema;
+CREATE TABLE implicit_schema.schema_docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE INDEX schema_docs_idx ON implicit_schema.schema_docs USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation schema_docs_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+INSERT INTO implicit_schema.schema_docs (content) VALUES
+    ('hello from schema'),
+    ('goodbye from schema');
+-- Implicit resolution should work even with schema-qualified tables
+SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
+FROM implicit_schema.schema_docs
+WHERE content <@> to_bm25query('hello') < 0
+ORDER BY score, id;
+ id |      content      |  score  
+----+-------------------+---------
+  1 | hello from schema | -0.6931
+(1 row)
+
+-- Cleanup
+DROP TABLE implicit_schema.schema_docs CASCADE;
+DROP SCHEMA implicit_schema CASCADE;
+DROP TABLE multi_col_docs CASCADE;
+DROP TABLE implicit_docs CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

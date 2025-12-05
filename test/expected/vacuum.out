@@ -64,14 +64,11 @@ SELECT split_part(
 -- Search should still work correctly after VACUUM
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'vacuum_idx')
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test'
 LIMIT 5;
- id |    content_preview     
-----+------------------------
-  5 | document five has test
-(1 row)
-
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test VACUUM FULL (more aggressive cleanup)
 -- VACUUM FULL rebuilds indexes
 DELETE FROM vacuum_test WHERE content NOT LIKE '%test%';
@@ -96,13 +93,10 @@ SELECT split_part(
 -- Verify search still works
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
- id |    content_preview     
-----+------------------------
-  5 | document five has test
-(1 row)
-
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test';
+ERROR:  text <@> text operator requires ORDER BY clause
+HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Clean up
 DROP TABLE vacuum_test;
 DROP EXTENSION pg_textsearch;

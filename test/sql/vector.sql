@@ -54,15 +54,16 @@ SELECT to_bm25vector('test text', 'nonexistent_index');
 \set ON_ERROR_STOP on
 \set VERBOSITY default
 
--- Test pg_textsearch scoring using standalone text <@> bm25query operations
+-- Test pg_textsearch scoring using text <@> bm25query operations
+-- Note: Uses to_bm25query since ORDER BY is on alias not directly on operator
 SELECT
-
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
 ORDER BY score;
 
 -- Test different query terms with standalone text <@> bm25query operations
+-- Note: Uses explicit index name because ORDER BY is on sum of two operators
 SELECT
 
     content,
@@ -93,9 +94,9 @@ SELECT
 
     id,
     content,
-    ROUND((content <@> to_bm25query('quick fox', 'docs_vector_idx'))::numeric, 4) as relevance
+    ROUND((content <@> 'quick fox')::numeric, 4) as relevance
 FROM test_docs
-ORDER BY content <@> to_bm25query('quick fox', 'docs_vector_idx')  -- BM25 scoring for ranking
+ORDER BY content <@> 'quick fox'  -- BM25 scoring for ranking
 LIMIT 3;
 
 -- Test with another index using simple config

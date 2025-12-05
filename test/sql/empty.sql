@@ -29,8 +29,8 @@ WITH (text_config = 'english');
 -- Try searching - should return no results without warnings
 SELECT id, content
 FROM empty_docs
-WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'empty_docs_idx') DESC
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test' DESC
 LIMIT 5;
 
 -- Add a document with actual content
@@ -39,8 +39,8 @@ INSERT INTO empty_docs (content) VALUES ('test document with content');
 -- Search again - should find only the document with content
 SELECT id, substring(content, 1, 30) as content_preview
 FROM empty_docs
-WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'empty_docs_idx') DESC
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test' DESC
 LIMIT 5;
 
 -- Clean up

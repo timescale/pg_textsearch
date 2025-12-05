@@ -24,9 +24,9 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=2.33, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring5_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM scoring5_bulk
-ORDER BY content <@> to_bm25query('hello', 'scoring5_bulk_idx'), id;
+ORDER BY content <@> 'hello', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0417
  id |   content   |  score  
 ----+-------------+---------
@@ -41,9 +41,9 @@ SELECT validate_bm25_scoring('scoring5_bulk', 'content', 'scoring5_bulk_idx', 'h
 (1 row)
 
 -- Bulk mode query 2: 'cruel'
-SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring5_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'cruel')::numeric, 4) as score
 FROM scoring5_bulk
-ORDER BY content <@> to_bm25query('cruel', 'scoring5_bulk_idx'), id;
+ORDER BY content <@> 'cruel', id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8782
  id |       content       |  score  
 ----+---------------------+---------
@@ -58,9 +58,9 @@ SELECT validate_bm25_scoring('scoring5_bulk', 'content', 'scoring5_bulk_idx', 'c
 (1 row)
 
 -- Bulk mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring5_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'world')::numeric, 4) as score
 FROM scoring5_bulk
-ORDER BY content <@> to_bm25query('world', 'scoring5_bulk_idx'), id;
+ORDER BY content <@> 'world', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.4992
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4208
  id |       content       |  score  
@@ -77,9 +77,9 @@ SELECT validate_bm25_scoring('scoring5_bulk', 'content', 'scoring5_bulk_idx', 'w
 (1 row)
 
 -- Bulk mode query 4: 'goodbye'
-SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring5_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'goodbye')::numeric, 4) as score
 FROM scoring5_bulk
-ORDER BY content <@> to_bm25query('goodbye', 'scoring5_bulk_idx'), id;
+ORDER BY content <@> 'goodbye', id;
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4992
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4208
  id |       content       |  score  
@@ -112,9 +112,9 @@ INSERT INTO scoring5_incr (content) VALUES ('hello world');
 INSERT INTO scoring5_incr (content) VALUES ('goodbye cruel world');
 INSERT INTO scoring5_incr (content) VALUES ('goodbye nerds');
 -- Incremental mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring5_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM scoring5_incr
-ORDER BY content <@> to_bm25query('hello', 'scoring5_incr_idx'), id;
+ORDER BY content <@> 'hello', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0417
  id |   content   |  score  
 ----+-------------+---------
@@ -129,9 +129,9 @@ SELECT validate_bm25_scoring('scoring5_incr', 'content', 'scoring5_incr_idx', 'h
 (1 row)
 
 -- Incremental mode query 2: 'cruel'
-SELECT id, content, ROUND((content <@> to_bm25query('cruel', 'scoring5_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'cruel')::numeric, 4) as score
 FROM scoring5_incr
-ORDER BY content <@> to_bm25query('cruel', 'scoring5_incr_idx'), id;
+ORDER BY content <@> 'cruel', id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.8782
  id |       content       |  score  
 ----+---------------------+---------
@@ -146,9 +146,9 @@ SELECT validate_bm25_scoring('scoring5_incr', 'content', 'scoring5_incr_idx', 'c
 (1 row)
 
 -- Incremental mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring5_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'world')::numeric, 4) as score
 FROM scoring5_incr
-ORDER BY content <@> to_bm25query('world', 'scoring5_incr_idx'), id;
+ORDER BY content <@> 'world', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.4992
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4208
  id |       content       |  score  
@@ -165,9 +165,9 @@ SELECT validate_bm25_scoring('scoring5_incr', 'content', 'scoring5_incr_idx', 'w
 (1 row)
 
 -- Incremental mode query 4: 'goodbye'
-SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring5_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'goodbye')::numeric, 4) as score
 FROM scoring5_incr
-ORDER BY content <@> to_bm25query('goodbye', 'scoring5_incr_idx'), id;
+ORDER BY content <@> 'goodbye', id;
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4992
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.4208
  id |       content       |  score  

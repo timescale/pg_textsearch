@@ -26,19 +26,19 @@ CREATE INDEX scoring3_bulk_idx ON scoring3_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Bulk mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'quick')::numeric, 4) as score
 
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
+ORDER BY content <@> 'quick', id;
 
 -- Validate BM25 scoring for 'quick'
 SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'quick', 'english', 1.2, 0.75) as quick_bulk_valid;
 
 -- Bulk mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'sentence')::numeric, 4) as score
 
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
+ORDER BY content <@> 'sentence', id;
 
 -- Validate BM25 scoring for 'sentence'
 SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'sentence', 'english', 1.2, 0.75) as sentence_bulk_valid;
@@ -59,19 +59,19 @@ INSERT INTO scoring3_incr (content) VALUES ('a short sentence');
 INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence that contains several words');
 
 -- Incremental mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'quick')::numeric, 4) as score
 
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
+ORDER BY content <@> 'quick', id;
 
 -- Validate BM25 scoring for 'quick' (incremental)
 SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'quick', 'english', 1.2, 0.75) as quick_incr_valid;
 
 -- Incremental mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'sentence')::numeric, 4) as score
 
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
+ORDER BY content <@> 'sentence', id;
 
 -- Validate BM25 scoring for 'sentence' (incremental)
 SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'sentence', 'english', 1.2, 0.75) as sentence_incr_valid;

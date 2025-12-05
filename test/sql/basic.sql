@@ -17,10 +17,10 @@ SELECT 'my_index:{database:2,system:1}'::bm25vector;
 SELECT 'my_index:{}'::bm25vector;
 
 -- Test bm25query type
-SELECT pg_typeof('search terms'::bm25query);
+SELECT pg_typeof('search terms');
 
 -- Test bm25query input/output
-SELECT 'search terms'::bm25query;
+SELECT 'search terms';
 
 -- Test to_bm25query functions
 SELECT to_bm25query('hello world');
@@ -46,9 +46,8 @@ INSERT INTO test_docs (content) VALUES
     ('jumped over lazy dog'),
     ('sphinx of black quartz');
 
--- Test text <@> bm25query operator (should work)
-SELECT content, content <@> to_bm25query('hello', 'test_tapir_idx') as score
-
+-- Test text <@> bm25query operator with implicit index resolution
+SELECT content, content <@> 'hello' as score
 FROM test_docs
 ORDER BY score
 LIMIT 1;

@@ -540,3 +540,244 @@ tp_score_documents(
 
 	return scored_count;
 }
+
+/*
+ * CTID-based score cache implementation
+ *
+ * This is a backend-local cache that stores multiple scores keyed by
+ * CTID + query hash. PostgreSQL may fetch all rows from an index scan
+ * before projecting them, so we need to cache multiple entries.
+ *
+ * The cache uses a simple array with linear search. This is efficient
+ * for typical result sets (up to a few hundred rows). For larger result
+ * sets, cache misses will cause re-computation, which is acceptable.
+ */
+
+#define SCORE_CACHE_SIZE 256
+
+typedef struct ScoreCacheEntry
+{
+	ItemPointerData ctid;
+	Oid				table_oid; /* Table OID to distinguish partitions */
+	uint32			query_hash;
+	float4			score;
+	bool			valid;
+} ScoreCacheEntry;
+
+static ScoreCacheEntry score_cache[SCORE_CACHE_SIZE];
+static int			   score_cache_next = 0; /* Next slot to use (circular) */
+static bool			   score_cache_initialized = false;
+
+/*
+ * Initialize the score cache (lazy initialization)
+ */
+static void
+tp_init_score_cache(void)
+{
+	if (!score_cache_initialized)
+	{
+		for (int i = 0; i < SCORE_CACHE_SIZE; i++)
+			score_cache[i].valid = false;
+		score_cache_next		= 0;
+		score_cache_initialized = true;
+	}
+}
+
+/*
+ * Cache a score for a CTID + table OID + query hash
+ *
+ * Called by tp_gettuple() after returning a result from the index scan.
+ * The table_oid is needed to distinguish CTIDs from different partitions,
+ * since CTIDs are only unique within a single table.
+ */
+void
+tp_cache_score(
+		ItemPointer ctid, Oid table_oid, uint32 query_hash, float4 score)
+{
+	ScoreCacheEntry *entry;
+
+	if (!ItemPointerIsValid(ctid))
+		return;
+
+	tp_init_score_cache();
+
+	/* Use circular buffer for cache entries */
+	entry			 = &score_cache[score_cache_next];
+	score_cache_next = (score_cache_next + 1) % SCORE_CACHE_SIZE;
+
+	entry->ctid		  = *ctid;
+	entry->table_oid  = table_oid;
+	entry->query_hash = query_hash;
+	entry->score	  = score;
+	entry->valid	  = true;
+
+	elog(DEBUG1,
+		 "tp_cache_score: cached score %.4f for table %u ctid (%u,%u) hash %u",
+		 score,
+		 table_oid,
+		 BlockIdGetBlockNumber(&ctid->ip_blkid),
+		 ctid->ip_posid,
+		 query_hash);
+}
+
+/*
+ * Get a cached score for a CTID + table OID + query hash
+ *
+ * Returns the cached score if found, or 0.0 if not found.
+ * Sets *found to true if the cache hit, false otherwise.
+ *
+ * Called by text_tpquery_score() before recomputing the score.
+ * The table_oid is needed to distinguish CTIDs from different partitions.
+ */
+float4
+tp_get_cached_score(
+		ItemPointer ctid, Oid table_oid, uint32 query_hash, bool *found)
+{
+	*found = false;
+
+	if (!ItemPointerIsValid(ctid))
+		return 0.0f;
+
+	tp_init_score_cache();
+
+	/* Search cache for matching CTID + table OID + query hash */
+	for (int i = 0; i < SCORE_CACHE_SIZE; i++)
+	{
+		ScoreCacheEntry *entry = &score_cache[i];
+
+		if (!entry->valid)
+			continue;
+
+		if (ItemPointerEquals(&entry->ctid, ctid) &&
+			entry->table_oid == table_oid && entry->query_hash == query_hash)
+		{
+			*found = true;
+			elog(DEBUG1,
+				 "tp_get_cached_score: HIT for table %u ctid (%u,%u) hash %u, "
+				 "score %.4f",
+				 table_oid,
+				 BlockIdGetBlockNumber(&ctid->ip_blkid),
+				 ctid->ip_posid,
+				 query_hash,
+				 entry->score);
+			return entry->score;
+		}
+	}
+
+	elog(DEBUG1,
+		 "tp_get_cached_score: MISS for table %u ctid (%u,%u) hash %u",
+		 table_oid,
+		 BlockIdGetBlockNumber(&ctid->ip_blkid),
+		 ctid->ip_posid,
+		 query_hash);
+
+	return 0.0f;
+}
+
+/*
+ * Hash a query (index OID + query text) to generate a cache key
+ *
+ * Uses a simple djb2-style hash for efficiency.
+ */
+uint32
+tp_hash_query(Oid index_oid, const char *query_text)
+{
+	uint32 hash = 5381;
+	int	   c;
+
+	/* Mix in the index OID */
+	hash = ((hash << 5) + hash) ^ (index_oid & 0xFF);
+	hash = ((hash << 5) + hash) ^ ((index_oid >> 8) & 0xFF);
+	hash = ((hash << 5) + hash) ^ ((index_oid >> 16) & 0xFF);
+	hash = ((hash << 5) + hash) ^ ((index_oid >> 24) & 0xFF);
+
+	/* Mix in the query text */
+	if (query_text)
+	{
+		while ((c = *query_text++) != 0)
+			hash = ((hash << 5) + hash) ^ c;
+	}
+
+	return hash;
+}
+
+/*
+ * Clear the score cache
+ *
+ * Called at the end of a scan or when starting a new query.
+ */
+void
+tp_clear_score_cache(void)
+{
+	if (score_cache_initialized)
+	{
+		for (int i = 0; i < SCORE_CACHE_SIZE; i++)
+			score_cache[i].valid = false;
+		score_cache_next = 0;
+	}
+	elog(DEBUG1, "tp_clear_score_cache: cache cleared");
+}
+
+/*
+ * Current row CTID and table OID tracking
+ *
+ * These backend-local variables store the CTID and table OID of the row
+ * currently being processed. When tp_gettuple() returns a row, it sets these.
+ * When text_tpquery_score() is called during projection, it reads these
+ * to look up the cached score. The table OID is needed to distinguish CTIDs
+ * from different partitions.
+ */
+static ItemPointerData current_row_ctid;
+static bool			   current_row_ctid_valid	= false;
+static Oid			   current_row_table_oid	= InvalidOid;
+static uint32		   current_query_hash		= 0;
+static bool			   current_query_hash_valid = false;
+
+void
+tp_set_current_row_ctid(ItemPointer ctid)
+{
+	if (ItemPointerIsValid(ctid))
+	{
+		current_row_ctid	   = *ctid;
+		current_row_ctid_valid = true;
+	}
+	else
+	{
+		current_row_ctid_valid = false;
+	}
+}
+
+ItemPointer
+tp_get_current_row_ctid(void)
+{
+	if (current_row_ctid_valid)
+		return &current_row_ctid;
+	return NULL;
+}
+
+void
+tp_set_current_row_table_oid(Oid table_oid)
+{
+	current_row_table_oid = table_oid;
+}
+
+Oid
+tp_get_current_row_table_oid(void)
+{
+	return current_row_table_oid;
+}
+
+void
+tp_set_current_query_hash(uint32 hash)
+{
+	current_query_hash		 = hash;
+	current_query_hash_valid = true;
+}
+
+uint32
+tp_get_current_query_hash(bool *valid)
+{
+	if (valid)
+		*valid = current_query_hash_valid;
+	return current_query_hash;
+}

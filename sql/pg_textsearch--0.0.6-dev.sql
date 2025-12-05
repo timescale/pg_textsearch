@@ -129,6 +129,19 @@ CREATE OPERATOR <@> (
     PROCEDURE = text_bm25query_score
 );
 
+-- Function for text <@> text operator (planner hook rewrites to text <@> bm25query)
+CREATE FUNCTION text_text_score(text, text) RETURNS float8
+    AS 'MODULE_PATHNAME', 'text_text_score'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+-- <@> operator for text <@> text operations (implicit index resolution)
+-- The planner hook transforms this to text <@> bm25query when a BM25 index exists
+CREATE OPERATOR <@> (
+    LEFTARG = text,
+    RIGHTARG = text,
+    PROCEDURE = text_text_score
+);
+
 -- = operator for bm25query equality
 CREATE OPERATOR = (
     LEFTARG = bm25query,
@@ -143,11 +156,19 @@ CREATE FUNCTION bm25_distance(text, bm25query) RETURNS float8
     AS 'MODULE_PATHNAME', 'tp_distance'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- Support function for text <@> text distance (for opclass ordering)
+CREATE FUNCTION bm25_distance_text_text(text, text) RETURNS float8
+    AS 'MODULE_PATHNAME', 'tp_distance_text_text'
+    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- bm25 operator class for text columns
+-- Supports both explicit (text <@> bm25query) and implicit (text <@> text) syntax
 CREATE OPERATOR CLASS text_bm25_ops
 DEFAULT FOR TYPE text USING bm25 AS
     OPERATOR    1   <@> (text, bm25query) FOR ORDER BY float_ops,
-    FUNCTION    8   bm25_distance(text, bm25query);
+    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops,
+    FUNCTION    8   (text, bm25query)   bm25_distance(text, bm25query),
+    FUNCTION    8   (text, text)        bm25_distance_text_text(text, text);
 
 -- Debug function to dump index contents (memtable and segments)
 -- Single argument version returns truncated output as text

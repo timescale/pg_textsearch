@@ -24,9 +24,9 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'quick')::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
+ORDER BY content <@> 'quick', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
  id |                   content                   |  score  
 ----+---------------------------------------------+---------
@@ -41,9 +41,9 @@ SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'q
 (1 row)
 
 -- Bulk mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'sentence')::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
+ORDER BY content <@> 'sentence', id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
  id |                           content                            |  score  
@@ -76,9 +76,9 @@ INSERT INTO scoring3_incr (content) VALUES ('the quick brown fox jumps over the 
 INSERT INTO scoring3_incr (content) VALUES ('a short sentence');
 INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence that contains several words');
 -- Incremental mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'quick')::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
+ORDER BY content <@> 'quick', id;
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
  id |                   content                   |  score  
 ----+---------------------------------------------+---------
@@ -93,9 +93,9 @@ SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'q
 (1 row)
 
 -- Incremental mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'sentence')::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
+ORDER BY content <@> 'sentence', id;
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
  id |                           content                            |  score  

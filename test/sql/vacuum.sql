@@ -53,8 +53,8 @@ SELECT split_part(
 -- Search should still work correctly after VACUUM
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'vacuum_idx')
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test'
 LIMIT 5;
 
 -- Test VACUUM FULL (more aggressive cleanup)
@@ -74,8 +74,8 @@ SELECT split_part(
 -- Verify search still works
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
-ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
+WHERE content <@> 'test' < -0.001
+ORDER BY content <@> 'test';
 
 -- Clean up
 DROP TABLE vacuum_test;

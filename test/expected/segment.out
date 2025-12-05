@@ -284,11 +284,11 @@ SELECT COUNT(*) AS total_documents FROM segment_test;
 
 -- Show final scores for reference (not validated, just for visibility)
 SELECT id, content,
-       ROUND((content <@> to_bm25query('hello', 'segment_test_idx'))::numeric, 4)
+       ROUND((content <@> 'hello')::numeric, 4)
        AS hello_score
 FROM segment_test
-WHERE content <@> to_bm25query('hello', 'segment_test_idx') < 0
-ORDER BY content <@> to_bm25query('hello', 'segment_test_idx'), id;
+WHERE content <@> 'hello' < 0
+ORDER BY content <@> 'hello', id;
  id |      content       | hello_score 
 ----+--------------------+-------------
   8 | hello hello hello  |     -1.3468
