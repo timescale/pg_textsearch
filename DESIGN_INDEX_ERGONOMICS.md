@@ -298,9 +298,10 @@ implementation.
 4. **Prepared statements**: How does index resolution interact with plan
    caching? If index OID is injected at plan time, this should work correctly.
 
-5. **Boolean filtering with ranked search**: See
-   [DESIGN_FEATURE_GAPS.md](DESIGN_FEATURE_GAPS.md) for analysis of this common
-   use case and how ParadeDB handles it. May require future syntax changes.
+5. **Boolean filtering with ranked search**: Common pattern is "search + filter"
+   (e.g., BM25 ranking with `WHERE category = 'X'`). ParadeDB handles this via
+   custom scan that evaluates WHERE predicates against index results. May
+   require future syntax changes or custom scan implementation.
 
 ---
 
