@@ -103,431 +103,38 @@ hit edge cases with complex JOINs.
 
 ---
 
-## Alternative A: Column-Based Index Resolution
+## Alternatives Considered
 
-### Concept
+### Alternative A: Column-Based Index Resolution
 
-Instead of referencing the index by name, reference the **indexed column**.
-The system finds the appropriate BM25 index on that column automatically.
+Infer the BM25 index from the column reference rather than requiring explicit
+index names. Explored three sub-approaches for avoiding duplicate scoring:
 
-### Syntax
+- **A1 (Resjunk)**: Hide score in a resjunk column. Most robust but requires
+  custom scan node.
+- **A2 (CTID Cache)**: Cache score keyed by CTID + query hash. Simple, works
+  with standard index AM. **Adopted in Alternative D.**
+- **A3 (Query Rewrite)**: Rewrite SELECT to use `bm25_score()`. Doesn't solve
+  the fundamental score-passing problem.
 
+### Alternative B: Separate bm25_score() Function
+
+Use `bm25_score()` in SELECT instead of repeating the `<@>` operator:
 ```sql
--- Index inferred from column reference
-SELECT id, content <@> 'search terms' AS score
-FROM documents
-ORDER BY score;
-
--- Works with partitioned tables automatically
-SELECT id, content <@> 'search terms' AS score
-FROM partitioned_documents
-ORDER BY score;
-
--- Explicit index for edge cases (e.g., expression indexes)
-SELECT id, content <@> to_tpquery('specific_idx', 'search terms') AS score
-FROM documents
-ORDER BY score;
+SELECT id, bm25_score() FROM docs ORDER BY content <@> 'search';
 ```
 
-### The Duplicate Scoring Problem
+**Why not chosen**: Backend-local variable for passing scores is brittle if
+Sort/Materialize nodes appear between scan and projection. Also creates two
+different syntaxes for accessing scores.
 
-With the above syntax, PostgreSQL evaluates `content <@> 'search terms'` twice:
-1. **ORDER BY**: Index scan computes score via `amgettuple` → `xs_orderbyvals`
-2. **SELECT**: Projection calls the `<@>` operator function separately
+### Alternative C: OID-Based Query with Planner Hook
 
-PostgreSQL does not perform common subexpression elimination between ORDER BY
-and SELECT. The alias `AS score` only names the result; it doesn't prevent
-re-evaluation.
+Store index OID in tpquery and use planner hooks to resolve index from context.
+Similar to B but with OID storage instead of name strings.
 
-### Implementation
-
-#### Index Resolution (common to all sub-alternatives)
-
-```c
-typedef struct TpQuery
-{
-    int32 vl_len_;
-    Oid   index_oid;        /* Resolved index OID (0 if not yet resolved) */
-    int32 query_text_len;
-    char  data[FLEXIBLE_ARRAY_MEMBER];  /* query text only */
-} TpQuery;
-
-Oid
-tp_find_bm25_index_for_column(Oid relid, AttrNumber attnum)
-{
-    List *indexoidlist = RelationGetIndexList(relation);
-    foreach(lc, indexoidlist)
-    {
-        Oid indexoid = lfirst_oid(lc);
-        if (is_bm25_index(indexoid) && index_covers_column(indexoid, attnum))
-            return indexoid;
-    }
-    return InvalidOid;
-}
-```
-
-#### Partition Handling (common to all sub-alternatives)
-
-- Index resolution happens at plan time using parent relation
-- Each partition's local index inherits the same structure
-- Executor uses partition-specific index OID from inheritance
-
----
-
-### Sub-Alternative A1: Resjunk Column
-
-Add a hidden resjunk column to carry the score from index scan to projection.
-
-**Implementation:**
-1. Planner hook detects `<@>` in SELECT matching ORDER BY
-2. Adds resjunk target entry: `___bm25_score___`
-3. Index scan stores score in resjunk slot
-4. Modify operator to check for resjunk and return cached value
-
-```c
-/* In custom scan target list setup */
-TargetEntry *score_tle = makeTargetEntry(
-    (Expr *)makeVar(...),
-    resno,
-    "___bm25_score___",
-    true);  /* resjunk = true */
-```
-
-**Challenges:**
-- Requires custom scan node to inject resjunk column
-- Operator function needs access to tuple slot to read resjunk
-- Standard index AM doesn't support injecting extra columns
-
----
-
-### Sub-Alternative A2: CTID-Based Score Cache
-
-Cache the score in a backend-local hash table keyed by CTID + query hash.
-The operator checks the cache before recomputing.
-
-**Implementation:**
-
-```c
-typedef struct ScoreCacheEntry {
-    ItemPointerData ctid;
-    uint32          query_hash;
-    float4          score;
-} ScoreCacheEntry;
-
-static ScoreCacheEntry score_cache;
-
-/* Called by index scan after computing score */
-void
-tp_cache_score(ItemPointer ctid, uint32 query_hash, float4 score)
-{
-    ItemPointerCopy(ctid, &score_cache.ctid);
-    score_cache.query_hash = query_hash;
-    score_cache.score = score;
-}
-
-/* Called by operator function */
-float4
-tp_get_cached_score(ItemPointer ctid, uint32 query_hash, bool *found)
-{
-    if (ItemPointerEquals(ctid, &score_cache.ctid) &&
-        query_hash == score_cache.query_hash)
-    {
-        *found = true;
-        return score_cache.score;
-    }
-    *found = false;
-    return 0;
-}
-
-/* In operator function */
-Datum
-text_tpquery_score(PG_FUNCTION_ARGS)
-{
-    ...
-    bool found;
-    float4 cached = tp_get_cached_score(&ctid, query_hash, &found);
-    if (found)
-        PG_RETURN_FLOAT4(cached);
-
-    /* Cache miss - compute score */
-    ...
-}
-```
-
-**Advantages:**
-- Works with standard index AM (no custom scan needed)
-- Simple implementation
-- Handles the common case where SELECT and ORDER BY match
-
-**Limitations:**
-- Only caches one score at a time (sufficient for row-by-row processing)
-- Assumes projection happens immediately after tuple fetch
-- May not work correctly with Sort/Materialize nodes between scan and projection
-
----
-
-### Sub-Alternative A3: Query Rewriting to bm25_score()
-
-Use a planner hook to rewrite `content <@> 'query'` in SELECT to `bm25_score()`
-when it matches the ORDER BY expression.
-
-**Before rewrite:**
-```sql
-SELECT id, content <@> 'search' AS score FROM docs ORDER BY score;
-```
-
-**After rewrite:**
-```sql
-SELECT id, bm25_score() AS score FROM docs
-ORDER BY content <@> 'search';
-```
-
-**Challenges:**
-- `bm25_score()` still needs a way to retrieve the cached score
-- Same brittleness concerns as Alternative B (backend-local variable)
-- Adds complexity without solving the fundamental score-passing problem
-
----
-
-### Pros (Alternative A overall)
-
-- Clean syntax: no index name clutter
-- Natural partition support: column reference works across partitions
-- Follows Postgres convention (GIN/GiST don't require index names)
-
-### Cons (Alternative A overall)
-
-- Ambiguous if multiple BM25 indexes exist on same column (mainly expression
-  indexes - rare in practice)
-- Requires planner hooks for index resolution
-- Sub-alternatives have varying complexity/robustness tradeoffs
-
----
-
-## Alternative B: Separate Score Retrieval Function
-
-### Concept
-
-Keep the `<@>` operator for ORDER BY, but add a separate `bm25_score()` function
-to retrieve the score computed during the index scan. This eliminates the need
-to repeat the operator in the SELECT clause and avoids duplicate scoring.
-
-### Syntax
-
-```sql
--- Index inferred, score retrieved via function
-SELECT id, bm25_score() AS score
-FROM documents
-ORDER BY content <@> 'search terms';
-
--- Explicit index when needed (e.g., expression indexes)
-SELECT id, bm25_score() AS score
-FROM documents
-ORDER BY content <@> to_tpquery('specific_idx', 'search terms');
-
--- Partitioned table works automatically
-SELECT id, bm25_score() AS score
-FROM partitioned_docs
-ORDER BY content <@> 'search terms';
-```
-
-### Implementation
-
-#### 1. Score Storage During Index Scan
-
-The index scan already computes scores. Store them in a per-query context:
-
-```c
-/* In scan state */
-typedef struct TpScanOpaqueData
-{
-    ...
-    float4 current_score;  /* Score of current tuple */
-} TpScanOpaqueData;
-
-/* Set during amgettuple */
-so->current_score = computed_score;
-```
-
-#### 2. bm25_score() Function
-
-```c
-Datum
-tp_bm25_score(PG_FUNCTION_ARGS)
-{
-    /* Get score from current executor context */
-    float4 score = tp_get_current_scan_score();
-    if (score == INVALID_SCORE)
-        ereport(ERROR,
-                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                 errmsg("bm25_score() can only be used with BM25 index scan")));
-    PG_RETURN_FLOAT4(-score);  /* Return positive score */
-}
-```
-
-#### 3. Context Passing
-
-Use a backend-local static variable to pass the current scan's score to the
-`bm25_score()` function:
-
-```c
-/* Backend-local score context (one per Postgres process) */
-static float4 current_bm25_score = INVALID_SCORE;
-
-void tp_set_current_score(float4 score)
-{
-    current_bm25_score = score;
-}
-
-float4 tp_get_current_scan_score(void)
-{
-    return current_bm25_score;
-}
-```
-
-### Pros
-
-- Simple syntax: no operator repetition in SELECT
-- Single scoring path: score computed once in index scan
-- Clear separation: `<@>` for ordering, `bm25_score()` for retrieval
-- Easy to implement incrementally
-
-### Cons
-
-- `bm25_score()` only works within index scan context (not in subqueries, CTEs)
-- Requires careful context management for nested queries
-- Less flexible than ParadeDB's PlaceHolderVar approach for JOINs
-
----
-
-## Alternative C: OID-Based Query Type with Planner Integration
-
-### Concept
-
-Store index OID (not name) in the query type. Use planner hooks to resolve
-index from context and inject OID before execution. Combine with `bm25_score()`
-for score retrieval.
-
-### Syntax
-
-```sql
--- Simple syntax: index resolved from context
-SELECT id, bm25_score() AS score
-FROM documents
-ORDER BY content <@> 'search terms';
-
--- Explicit index syntax (for expression indexes)
-SELECT id, bm25_score() AS score
-FROM documents
-ORDER BY content <@> to_tpquery('specific_idx', 'search terms');
-```
-
-### Implementation
-
-#### 1. Modified Query Type
-
-```c
-typedef struct TpQuery
-{
-    int32 vl_len_;
-    Oid   index_oid;        /* 0 = unresolved, needs context */
-    int32 query_text_len;
-    char  data[FLEXIBLE_ARRAY_MEMBER];
-} TpQuery;
-```
-
-#### 2. Planner Hook for Index Resolution
-
-```c
-static PlannedStmt *
-tp_planner_hook(Query *parse, const char *query_string,
-                int cursorOptions, ParamListInfo boundParams)
-{
-    /* Walk query tree looking for <@> operators with unresolved index */
-    tp_resolve_indexes_in_query(parse);
-
-    /* Call standard planner */
-    return standard_planner(parse, query_string, cursorOptions, boundParams);
-}
-
-static void
-tp_resolve_indexes_in_query(Query *parse)
-{
-    /* For each RTE (range table entry) */
-    foreach(lc, parse->rtable)
-    {
-        RangeTblEntry *rte = lfirst(lc);
-        if (rte->relkind == RELKIND_RELATION ||
-            rte->relkind == RELKIND_PARTITIONED_TABLE)
-        {
-            Oid bm25_index = tp_find_bm25_index(rte->relid);
-            /* Inject into any tpquery constants in ORDER BY */
-            tp_inject_index_oid(parse, rte->relid, bm25_index);
-        }
-    }
-}
-```
-
-#### 3. Partition-Aware Index Mapping
-
-```c
-Oid
-tp_get_partition_index(Oid parent_index, Oid partition_relid)
-{
-    /* Get index info from parent */
-    HeapTuple parent_idx_tup = SearchSysCache1(INDEXRELID, parent_index);
-    Form_pg_index parent_idx = (Form_pg_index)GETSTRUCT(parent_idx_tup);
-
-    /* Find equivalent index on partition */
-    List *part_indexes = RelationGetIndexList(partition_rel);
-    foreach(lc, part_indexes)
-    {
-        Oid part_idx = lfirst_oid(lc);
-        if (indexes_are_equivalent(parent_index, part_idx))
-            return part_idx;
-    }
-    return InvalidOid;
-}
-```
-
-#### 4. Score Passing via xs_orderbyvals
-
-Leverage existing ORDER BY infrastructure:
-
-```c
-/* In amgettuple - already implemented */
-scan->xs_orderbyvals[0] = Float4GetDatum(-score);
-scan->xs_orderbynulls[0] = false;
-scan->xs_recheckorderby = false;  /* Trust the score */
-```
-
-For SELECT clause access, add a `bm25_score()` function that retrieves
-from current scan context:
-
-```c
-Datum
-tp_bm25_score(PG_FUNCTION_ARGS)
-{
-    /* Get score from current index scan context */
-    float4 score = tp_get_current_scan_score();
-    if (score == INVALID_SCORE)
-        ereport(ERROR, "bm25_score() only valid in BM25 index scan context");
-    PG_RETURN_FLOAT4(score);
-}
-```
-
-### Pros
-
-- OID storage more efficient than name strings
-- Reuses existing ORDER BY score mechanism
-- Natural partition support via index equivalence
-- Planner hook enables implicit index resolution
-
-### Cons
-
-- Planner hook adds implementation complexity
-- `bm25_score()` function has limited applicability (only in index scan context)
-- Complex queries (JOINs, subqueries) may need additional work
+**Why not chosen**: Same brittleness issues as B for score passing. The OID
+storage and planner hook ideas were incorporated into Alternative D.
 
 ---
 
@@ -590,6 +197,40 @@ evolve without changing user-facing behavior:
 - Requires implementing a custom scan node
 - More complex but handles all edge cases correctly
 - No syntax changes required - same SQL, better execution
+
+### Key Implementation Details
+
+**CTID Score Cache:**
+```c
+typedef struct ScoreCacheEntry {
+    ItemPointerData ctid;
+    uint32          query_hash;
+    float4          score;
+} ScoreCacheEntry;
+
+static ScoreCacheEntry score_cache;
+
+/* Called by index scan after computing score */
+void tp_cache_score(ItemPointer ctid, uint32 query_hash, float4 score);
+
+/* Called by operator - returns cached score or computes fresh */
+float4 tp_get_cached_score(ItemPointer ctid, uint32 query_hash, bool *found);
+```
+
+**Index Resolution:**
+```c
+Oid tp_find_bm25_index_for_column(Oid relid, AttrNumber attnum)
+{
+    List *indexoidlist = RelationGetIndexList(relation);
+    foreach(lc, indexoidlist)
+    {
+        Oid indexoid = lfirst_oid(lc);
+        if (is_bm25_index(indexoid) && index_covers_column(indexoid, attnum))
+            return indexoid;
+    }
+    return InvalidOid;
+}
+```
 
 ---
 
