@@ -62,7 +62,7 @@ FROM docs d
 JOIN categories c ON d.id = c.doc_id
 ORDER BY d.content <@> 'database'
 LIMIT 5;
- id |            content             |  category  |  score
+ id |            content             |  category  |  score  
 ----+--------------------------------+------------+---------
   1 | postgresql database management | technology | -0.9808
 (1 row)
@@ -82,7 +82,7 @@ SELECT * FROM (
     LIMIT 10
 ) sub
 WHERE score < 0;
-                       QUERY PLAN                      
+                      QUERY PLAN                       
 -------------------------------------------------------
  Subquery Scan on sub
    Filter: (sub.score < '0'::double precision)
@@ -100,7 +100,7 @@ SELECT * FROM (
     LIMIT 10
 ) sub
 WHERE score < 0;
- id |           content           |  score
+ id |           content           |  score  
 ----+-----------------------------+---------
   2 | machine learning algorithms | -0.9808
 (1 row)
@@ -138,7 +138,7 @@ WITH ranked_docs AS (
     LIMIT 10
 )
 SELECT * FROM ranked_docs WHERE score < -0.5;
- id |          content          |  score
+ id |          content          |  score  
 ----+---------------------------+---------
   3 | text search and retrieval | -0.9808
 (1 row)
@@ -166,7 +166,7 @@ ORDER BY content <@> 'database'
 LIMIT 3;
 WARNING:  multiple BM25 indexes exist on the same column
 HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
-                      QUERY PLAN                     
+                     QUERY PLAN                      
 -----------------------------------------------------
  Limit
    ->  Index Scan using docs_bm25_simple_idx on docs
@@ -245,7 +245,7 @@ SELECT d.id as doc_id, o.id as other_id,
 FROM docs d, other_docs o
 ORDER BY d.content <@> 'database'
 LIMIT 5;
- doc_id | other_id | doc_score | other_score
+ doc_id | other_id | doc_score | other_score 
 --------+----------+-----------+-------------
       1 |        1 |   -0.9808 |     -0.9808
       1 |        2 |   -0.9808 |     -0.9808
@@ -276,7 +276,7 @@ SELECT id, content, content <@> 'database' as score, 'docs2' as source
 FROM docs2
 ORDER BY score
 LIMIT 5;
-                        QUERY PLAN                       
+                       QUERY PLAN                        
 ---------------------------------------------------------
  Limit
    ->  Merge Append
@@ -349,7 +349,7 @@ SELECT id, content,
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 5;
- id |            content             |  score  | rank
+ id |            content             |  score  | rank 
 ----+--------------------------------+---------+------
   1 | postgresql database management | -0.9808 |    1
 (1 row)
@@ -367,7 +367,7 @@ FROM docs d
 JOIN categories c ON d.id = c.doc_id
 ORDER BY d.content <@> to_bm25query('database', 'docs_bm25_idx')
 LIMIT 5;
- id |            content             |  category  |  score
+ id |            content             |  category  |  score  
 ----+--------------------------------+------------+---------
   1 | postgresql database management | technology | -0.9808
 (1 row)
