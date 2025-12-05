@@ -51,6 +51,8 @@ tp_create_doc_scores_hash(int max_results, int32 total_docs)
 {
 	HASHCTL hash_ctl;
 
+	(void)max_results; /* reserved for future use */
+
 	/* Initialize hash control structure */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize   = sizeof(ItemPointerData);
@@ -151,92 +153,6 @@ tp_extract_and_sort_documents(
 }
 
 /*
- * Scan docid pages to find all documents in the index
- * Returns an array of CTIDs and the count
- *
- * TODO: Refactor to use a callback function instead of allocating
- * and returning an array. This would avoid memory allocation and
- * allow the caller to process CTIDs as they're discovered.
- */
-static ItemPointer
-tp_scan_docid_pages(Relation index_relation, int *total_ctids)
-{
-	Buffer			   metabuf, docid_buf;
-	Page			   metapage, docid_page;
-	TpIndexMetaPage	   metap;
-	TpDocidPageHeader *docid_header;
-	ItemPointer		   docids, all_ctids;
-	BlockNumber		   current_page;
-	int				   capacity = 100; /* Initial capacity */
-	int				   count	= 0;
-
-	/* Initialize output */
-	*total_ctids = 0;
-
-	/* Allocate initial array */
-	all_ctids = (ItemPointer)palloc(capacity * sizeof(ItemPointerData));
-
-	/* Get the metapage to find the first docid page */
-	metabuf = ReadBuffer(index_relation, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	current_page = metap->first_docid_page;
-	UnlockReleaseBuffer(metabuf);
-
-	if (current_page == InvalidBlockNumber)
-	{
-		pfree(all_ctids);
-		return NULL;
-	}
-
-	/* Iterate through all docid pages */
-	while (current_page != InvalidBlockNumber)
-	{
-		docid_buf = ReadBuffer(index_relation, current_page);
-		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-		docid_page	 = BufferGetPage(docid_buf);
-		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-		/* Validate page magic */
-		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
-		{
-			elog(WARNING,
-				 "Invalid docid page magic on block %u, stopping scan",
-				 current_page);
-			UnlockReleaseBuffer(docid_buf);
-			break;
-		}
-
-		/* Get docids from this page */
-		docids = (ItemPointer)((char *)docid_header +
-							   MAXALIGN(sizeof(TpDocidPageHeader)));
-
-		/* Expand array if needed */
-		if (count + docid_header->num_docids > capacity)
-		{
-			capacity  = count + docid_header->num_docids + 100;
-			all_ctids = (ItemPointer)
-					repalloc(all_ctids, capacity * sizeof(ItemPointerData));
-		}
-
-		/* Copy docids from this page */
-		for (int i = 0; i < docid_header->num_docids; i++)
-		{
-			all_ctids[count++] = docids[i];
-		}
-
-		/* Move to next page */
-		current_page = docid_header->next_page;
-		UnlockReleaseBuffer(docid_buf);
-	}
-
-	*total_ctids = count;
-	return all_ctids;
-}
-
-/*
  * Copy results to output arrays
  */
 static void
@@ -299,6 +215,11 @@ tp_score_documents(
 	dshash_table		*doclength_table = NULL;
 	TpMemtable			*memtable;
 	TpIndexMetaPage		 metap;
+	BlockNumber			 level_heads[TP_MAX_LEVELS];
+	uint32				*unified_doc_freqs;
+	int					 i;
+	int					 term_idx;
+	int					 level;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -332,9 +253,8 @@ tp_score_documents(
 		return 0;
 
 	/* Get segment level heads for querying all levels */
-	BlockNumber level_heads[TP_MAX_LEVELS];
 	metap = tp_get_metapage(index_relation);
-	for (int i = 0; i < TP_MAX_LEVELS; i++)
+	for (i = 0; i < TP_MAX_LEVELS; i++)
 		level_heads[i] = metap->level_heads[i];
 	pfree(metap);
 
@@ -368,8 +288,8 @@ tp_score_documents(
 	}
 
 	/* Sum doc_freq from memtable + segments for unified IDF */
-	uint32 *unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
-	for (int term_idx = 0; term_idx < query_term_count; term_idx++)
+	unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
+	for (term_idx = 0; term_idx < query_term_count; term_idx++)
 	{
 		const char *term = query_terms[term_idx];
 
@@ -383,7 +303,7 @@ tp_score_documents(
 		}
 
 		/* Add doc_freq from all segment levels */
-		for (int level = 0; level < TP_MAX_LEVELS; level++)
+		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			if (level_heads[level] != InvalidBlockNumber)
 			{
