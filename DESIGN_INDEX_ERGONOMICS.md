@@ -110,8 +110,12 @@ hit edge cases with complex JOINs.
 Infer the BM25 index from the column reference rather than requiring explicit
 index names. Explored three sub-approaches for avoiding duplicate scoring:
 
-- **A1 (Resjunk)**: Hide score in a resjunk column. Most robust but requires
-  custom scan node.
+- **A1 (Resjunk)**: Add a hidden "resjunk" target entry to carry the score from
+  index scan to projection. Resjunk columns are PostgreSQL's mechanism for
+  passing data through plan nodes without exposing it in results (used
+  internally for ORDER BY, UPDATE targets, etc.). Most robust approach, but
+  requires a custom scan node to inject the resjunk column - standard index AM
+  can't add extra columns to the scan output.
 - **A2 (CTID Cache)**: Cache score keyed by CTID + query hash. Simple, works
   with standard index AM. **Adopted in Alternative D.**
 - **A3 (Query Rewrite)**: Rewrite SELECT to use `bm25_score()`. Doesn't solve
