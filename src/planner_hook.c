@@ -48,7 +48,8 @@ static Oid text_text_operator_oid	 = InvalidOid;
  */
 typedef struct ResolveIndexContext
 {
-	Query *query; /* The query being processed */
+	Query *query;			/* The query being processed */
+	bool   in_orderby_expr; /* True if inside ORDER BY expression */
 } ResolveIndexContext;
 
 /*
@@ -272,6 +273,69 @@ create_resolved_tpquery_const(Const *original, Oid index_oid)
 }
 
 /*
+ * Transform a text <@> text expression to text <@> bm25query
+ *
+ * This enables standalone scoring (without ORDER BY) by converting the text
+ * query to a bm25query with the resolved index OID.
+ *
+ * Returns a new OpExpr if transformation succeeds, or NULL if it can't be
+ * transformed (non-constant query text, etc.).
+ */
+static Node *
+transform_text_text_to_text_tpquery(
+		OpExpr *opexpr, Node *left, Node *right, Oid index_oid)
+{
+	OpExpr	*new_opexpr;
+	Const	*tpquery_const;
+	char	*query_text;
+	TpQuery *tpquery;
+	Const	*text_const;
+
+	/* Can only transform constant query text */
+	if (!IsA(right, Const))
+		return NULL;
+
+	text_const = (Const *)right;
+	if (text_const->consttype != TEXTOID || text_const->constisnull)
+		return NULL;
+
+	query_text = TextDatumGetCString(text_const->constvalue);
+
+	/* Create a bm25query with the resolved index OID */
+	tpquery = create_tpquery(query_text, index_oid);
+
+	/* Create new Const node of type bm25query */
+	tpquery_const = makeConst(
+			tpquery_type_oid,
+			-1,			/* typmod */
+			InvalidOid, /* collation */
+			VARSIZE(tpquery),
+			PointerGetDatum(tpquery),
+			false,	/* constisnull */
+			false); /* constbyval */
+
+	/* Create new OpExpr with text <@> bm25query operator */
+	new_opexpr				 = makeNode(OpExpr);
+	new_opexpr->opno		 = text_tpquery_operator_oid;
+	new_opexpr->opfuncid	 = get_opcode(text_tpquery_operator_oid);
+	new_opexpr->opresulttype = FLOAT8OID;
+	new_opexpr->opretset	 = false;
+	new_opexpr->opcollid	 = InvalidOid;
+	new_opexpr->inputcollid	 = InvalidOid;
+	new_opexpr->args		 = list_make2(copyObject(left), tpquery_const);
+	new_opexpr->location	 = opexpr->location;
+
+	pfree(query_text);
+
+	elog(DEBUG2,
+		 "tp_planner_hook: transformed text <@> text to text <@> bm25query "
+		 "with index_oid=%u",
+		 index_oid);
+
+	return (Node *)new_opexpr;
+}
+
+/*
  * Mutator function to resolve unresolved tpquery constants
  */
 static Node *
@@ -422,14 +486,20 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 		}
 
 		/*
-		 * For text <@> text operators, check if multiple BM25 indexes
-		 * exist on the same column and warn the user. We don't transform
-		 * the expression (that would break pathkey matching), just warn.
+		 * For text <@> text operators, try to transform to text <@> bm25query
+		 * by resolving the BM25 index from the left operand's column.
+		 * This enables standalone scoring without ORDER BY.
+		 *
+		 * IMPORTANT: We only transform expressions that are NOT used in ORDER
+		 * BY. Transforming ORDER BY expressions would break pathkey matching
+		 * and prevent the planner from using an index scan for ordered
+		 * retrieval.
 		 */
 		if (opexpr->opno == text_text_operator_oid &&
-			list_length(opexpr->args) == 2)
+			list_length(opexpr->args) == 2 && !context->in_orderby_expr)
 		{
-			Node *left = linitial(opexpr->args);
+			Node *left	= linitial(opexpr->args);
+			Node *right = lsecond(opexpr->args);
 
 			if (IsA(left, Var))
 			{
@@ -440,11 +510,19 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 				if (get_var_relation_and_attnum(
 							var, context->query, &relid, &attnum))
 				{
-					/*
-					 * Call find_bm25_index_for_column which will emit
-					 * WARNING if multiple indexes exist.
-					 */
-					(void)find_bm25_index_for_column(relid, attnum);
+					Oid index_oid = find_bm25_index_for_column(relid, attnum);
+
+					if (OidIsValid(index_oid))
+					{
+						/* Try to transform text <@> text to text <@> bm25query
+						 */
+						Node *transformed =
+								transform_text_text_to_text_tpquery(
+										opexpr, left, right, index_oid);
+
+						if (transformed != NULL)
+							return transformed;
+					}
 				}
 			}
 		}
@@ -455,14 +533,42 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 }
 
 /*
- * Walk the query tree and resolve unresolved tpquery indexes
+ * Check if a target entry's ressortgroupref is used in the sort clause.
+ * Returns true if the target entry is referenced by ORDER BY.
+ */
+static bool
+is_sort_target_entry(Query *query, Index ressortgroupref)
+{
+	ListCell *lc;
+
+	if (ressortgroupref == 0)
+		return false;
+
+	foreach (lc, query->sortClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *)lfirst(lc);
+
+		if (sgc->tleSortGroupRef == ressortgroupref)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Walk the query tree and resolve unresolved tpquery indexes.
+ *
+ * Key behavior: We do NOT transform text <@> text expressions that appear
+ * in ORDER BY clauses. Transforming them would break pathkey matching
+ * and prevent the planner from using index scans for ordered retrieval.
  */
 static void
 resolve_indexes_in_query(Query *query)
 {
 	ResolveIndexContext context;
 
-	context.query = query;
+	context.query			= query;
+	context.in_orderby_expr = false;
 
 	/* Process the target list (SELECT expressions) */
 	if (query->targetList)
@@ -473,25 +579,29 @@ resolve_indexes_in_query(Query *query)
 		{
 			TargetEntry *tle = (TargetEntry *)lfirst(lc);
 
+			/*
+			 * Check if this target entry is referenced by ORDER BY.
+			 * If so, don't transform text <@> text within it.
+			 */
+			context.in_orderby_expr =
+					is_sort_target_entry(query, tle->ressortgroupref);
+
 			tle->expr = (Expr *)
 					resolve_index_mutator((Node *)tle->expr, &context);
 		}
+
+		/* Reset for subsequent processing */
+		context.in_orderby_expr = false;
 	}
 
-	/* Process ORDER BY clauses */
-	if (query->sortClause)
-	{
-		/* Sort clause references target list entries, already processed */
-	}
-
-	/* Process WHERE clause */
+	/* Process WHERE clause - never in ORDER BY context */
 	if (query->jointree && query->jointree->quals)
 	{
 		query->jointree->quals =
 				resolve_index_mutator(query->jointree->quals, &context);
 	}
 
-	/* Process HAVING clause */
+	/* Process HAVING clause - never in ORDER BY context */
 	if (query->havingQual)
 	{
 		query->havingQual = resolve_index_mutator(query->havingQual, &context);

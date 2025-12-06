@@ -33,8 +33,10 @@ FROM empty_docs
 WHERE content <@> 'test' < -0.001
 ORDER BY content <@> 'test' DESC
 LIMIT 5;
-ERROR:  text <@> text operator requires ORDER BY clause
-HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
+ id | content 
+----+---------
+(0 rows)
+
 -- Add a document with actual content
 INSERT INTO empty_docs (content) VALUES ('test document with content');
 -- Search again - should find only the document with content

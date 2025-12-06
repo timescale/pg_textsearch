@@ -165,8 +165,6 @@ SELECT id, content <@> 'database' as score
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 3;
-WARNING:  multiple BM25 indexes exist on the same column
-HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
                      QUERY PLAN                      
 -----------------------------------------------------
  Limit
@@ -249,8 +247,8 @@ ORDER BY d.content <@> 'database'
 LIMIT 5;
  doc_id | other_id | doc_score | other_score 
 --------+----------+-----------+-------------
-      1 |        1 |   -0.9808 |     -0.9808
-      1 |        2 |   -0.9808 |     -0.9808
+      1 |        1 |   -0.9808 |     -0.6931
+      1 |        2 |   -0.9808 |      0.0000
 (2 rows)
 
 DROP TABLE other_docs CASCADE;
@@ -321,8 +319,11 @@ SELECT COUNT(*) as matching_docs,
        ROUND(MIN((content <@> 'database')::numeric), 4) as best_score
 FROM docs
 WHERE content <@> 'database' < 0;
-ERROR:  text <@> text operator requires ORDER BY clause
-HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
+ matching_docs | avg_score | best_score 
+---------------+-----------+------------
+             1 |   -0.9808 |    -0.9808
+(1 row)
+
 -- =============================================================================
 -- LIMITATION 9: Window functions with scores
 -- Window functions may evaluate score multiple times or at wrong time

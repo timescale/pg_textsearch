@@ -42,8 +42,6 @@ RETURNING id, content;
 UPDATE update_test
 SET meta = meta || '{"updated": true}'::jsonb
 WHERE content <@> 'database' > -5;
-ERROR:  text <@> text operator requires ORDER BY clause
-HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
 -- Test UPDATE with complex WHERE clause (similar to production crash)
 UPDATE update_test
 SET

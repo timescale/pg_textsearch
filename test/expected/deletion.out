@@ -60,8 +60,10 @@ FROM deletion_test
 WHERE content <@> 'test' < -0.001
 ORDER BY content <@> 'test' DESC
 LIMIT 5;
-ERROR:  text <@> text operator requires ORDER BY clause
-HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
+ id | content_preview 
+----+-----------------
+(0 rows)
+
 -- Insert new documents after deletions
 INSERT INTO deletion_test (content) VALUES
     ('new document with test keyword'),
