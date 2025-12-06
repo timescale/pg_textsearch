@@ -468,12 +468,13 @@ tp_score_documents(
  * CTID + query hash. PostgreSQL may fetch all rows from an index scan
  * before projecting them, so we need to cache multiple entries.
  *
- * The cache uses a simple array with linear search. This is efficient
- * for typical result sets (up to a few hundred rows). For larger result
- * sets, cache misses will cause re-computation, which is acceptable.
+ * The cache uses a simple array with linear search. The cache size limits
+ * the maximum number of concurrent index scans (e.g., in a Merge Append
+ * with UNION ALL queries or partitioned tables). Each concurrent scan
+ * needs one cache entry. 16 entries supports up to 16-way merges.
  */
 
-#define SCORE_CACHE_SIZE 256
+#define SCORE_CACHE_SIZE 16
 
 typedef struct ScoreCacheEntry
 {
@@ -485,7 +486,6 @@ typedef struct ScoreCacheEntry
 } ScoreCacheEntry;
 
 static ScoreCacheEntry score_cache[SCORE_CACHE_SIZE];
-static int			   score_cache_next = 0; /* Next slot to use (circular) */
 static bool			   score_cache_initialized = false;
 
 /*
@@ -498,7 +498,6 @@ tp_init_score_cache(void)
 	{
 		for (int i = 0; i < SCORE_CACHE_SIZE; i++)
 			score_cache[i].valid = false;
-		score_cache_next		= 0;
 		score_cache_initialized = true;
 	}
 }
@@ -514,16 +513,63 @@ void
 tp_cache_score(
 		ItemPointer ctid, Oid table_oid, uint32 query_hash, float4 score)
 {
-	ScoreCacheEntry *entry;
+	ScoreCacheEntry *entry		   = NULL;
+	int				 slot		   = -1;
+	int				 first_invalid = -1;
 
 	if (!ItemPointerIsValid(ctid))
 		return;
 
 	tp_init_score_cache();
 
-	/* Use circular buffer for cache entries */
-	entry			 = &score_cache[score_cache_next];
-	score_cache_next = (score_cache_next + 1) % SCORE_CACHE_SIZE;
+	/*
+	 * Search for an existing entry from the same index scan (same table_oid
+	 * + query_hash). Each scan produces one tuple at a time, so we can reuse
+	 * that slot. Also track the first invalid slot as a fallback.
+	 */
+	for (int i = 0; i < SCORE_CACHE_SIZE; i++)
+	{
+		if (!score_cache[i].valid)
+		{
+			if (first_invalid < 0)
+				first_invalid = i;
+			continue;
+		}
+
+		/* Found existing entry from same scan - reuse this slot */
+		if (score_cache[i].table_oid == table_oid &&
+			score_cache[i].query_hash == query_hash)
+		{
+			slot  = i;
+			entry = &score_cache[i];
+			break;
+		}
+	}
+
+	/* No existing entry found - use first invalid slot */
+	if (slot < 0 && first_invalid >= 0)
+	{
+		slot  = first_invalid;
+		entry = &score_cache[first_invalid];
+	}
+
+	/* Check if cache is full (too many concurrent scans from different
+	 * tables) */
+	if (slot < 0)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("BM25 score cache overflow: too many concurrent "
+						"index scans"),
+				 errdetail(
+						 "The query requires more than %d concurrent BM25 "
+						 "index scans (e.g., from UNION ALL or partitioned "
+						 "tables).",
+						 SCORE_CACHE_SIZE),
+				 errhint("Reduce the number of tables in your UNION ALL "
+						 "query, or reduce the number of partitions being "
+						 "scanned.")));
+	}
 
 	entry->ctid		  = *ctid;
 	entry->table_oid  = table_oid;
@@ -571,7 +617,17 @@ tp_get_cached_score(
 		if (ItemPointerEquals(&entry->ctid, ctid) &&
 			entry->table_oid == table_oid && entry->query_hash == query_hash)
 		{
+			float4 score = entry->score;
+
 			*found = true;
+
+			/*
+			 * Note: We do NOT invalidate the entry here. The same score may
+			 * be looked up multiple times per row (e.g., ORDER BY and SELECT
+			 * list both contain content <@> 'query'). Entries are reused
+			 * when the cache fills up or explicitly cleared at query end.
+			 */
+
 			elog(DEBUG2,
 				 "tp_get_cached_score: HIT for table %u ctid (%u,%u) hash %u, "
 				 "score %.4f",
@@ -579,8 +635,8 @@ tp_get_cached_score(
 				 BlockIdGetBlockNumber(&ctid->ip_blkid),
 				 ctid->ip_posid,
 				 query_hash,
-				 entry->score);
-			return entry->score;
+				 score);
+			return score;
 		}
 	}
 
@@ -633,7 +689,6 @@ tp_clear_score_cache(void)
 	{
 		for (int i = 0; i < SCORE_CACHE_SIZE; i++)
 			score_cache[i].valid = false;
-		score_cache_next = 0;
 	}
 	elog(DEBUG2, "tp_clear_score_cache: cache cleared");
 }
