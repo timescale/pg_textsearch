@@ -335,7 +335,7 @@ SELECT id, content,
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 5;
-                       QUERY PLAN
+                       QUERY PLAN                       
 --------------------------------------------------------
  Limit
    ->  WindowAgg
