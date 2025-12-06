@@ -53,7 +53,8 @@ LIMIT 5;
                Order By: (content <@> 'database'::text)
          ->  Materialize
                ->  Seq Scan on categories c
-(7 rows)
+                     Disabled: true
+(8 rows)
 
 -- Execute to verify behavior (may show incorrect scores or zeros)
 SELECT d.id, d.content, c.category,
@@ -164,8 +165,6 @@ SELECT id, content <@> 'database' as score
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 3;
-WARNING:  multiple BM25 indexes exist on the same column
-HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
                      QUERY PLAN                      
 -----------------------------------------------------
  Limit
@@ -236,7 +235,8 @@ LIMIT 5;
                Order By: (content <@> 'database'::text)
          ->  Materialize
                ->  Seq Scan on other_docs o
-(6 rows)
+                     Disabled: true
+(7 rows)
 
 -- Execute to verify both scores work
 SELECT d.id as doc_id, o.id as other_id,
@@ -247,8 +247,8 @@ ORDER BY d.content <@> 'database'
 LIMIT 5;
  doc_id | other_id | doc_score | other_score 
 --------+----------+-----------+-------------
-      1 |        1 |   -0.9808 |     -0.9808
-      1 |        2 |   -0.9808 |     -0.9808
+      1 |        1 |   -0.9808 |     -0.6931
+      1 |        2 |   -0.9808 |      0.0000
 (2 rows)
 
 DROP TABLE other_docs CASCADE;
@@ -319,8 +319,11 @@ SELECT COUNT(*) as matching_docs,
        ROUND(MIN((content <@> 'database')::numeric), 4) as best_score
 FROM docs
 WHERE content <@> 'database' < 0;
-ERROR:  text <@> text operator requires ORDER BY clause
-HINT:  Use ORDER BY content <@> 'query' to enable BM25 scoring, or use to_bm25query('query', 'index_name') to specify an index explicitly.
+ matching_docs | avg_score | best_score 
+---------------+-----------+------------
+             1 |   -0.9808 |    -0.9808
+(1 row)
+
 -- =============================================================================
 -- LIMITATION 9: Window functions with scores
 -- Window functions may evaluate score multiple times or at wrong time
@@ -334,13 +337,14 @@ SELECT id, content,
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 5;
-                       QUERY PLAN                       
---------------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Limit
    ->  WindowAgg
+         Window: w1 AS (ORDER BY (content <@> 'database'::text) ROWS UNBOUNDED PRECEDING)
          ->  Index Scan using docs_bm25_idx on docs
                Order By: (content <@> 'database'::text)
-(4 rows)
+(5 rows)
 
 -- Execute to verify behavior
 SELECT id, content,
