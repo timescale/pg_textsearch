@@ -53,8 +53,7 @@ LIMIT 5;
                Order By: (content <@> 'database'::text)
          ->  Materialize
                ->  Seq Scan on categories c
-                     Disabled: true
-(8 rows)
+(7 rows)
 
 -- Execute to verify behavior (may show incorrect scores or zeros)
 SELECT d.id, d.content, c.category,
@@ -235,8 +234,7 @@ LIMIT 5;
                Order By: (content <@> 'database'::text)
          ->  Materialize
                ->  Seq Scan on other_docs o
-                     Disabled: true
-(7 rows)
+(6 rows)
 
 -- Execute to verify both scores work
 SELECT d.id as doc_id, o.id as other_id,
@@ -337,14 +335,13 @@ SELECT id, content,
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 5;
-                                        QUERY PLAN                                        
-------------------------------------------------------------------------------------------
+                       QUERY PLAN
+--------------------------------------------------------
  Limit
    ->  WindowAgg
-         Window: w1 AS (ORDER BY (content <@> 'database'::text) ROWS UNBOUNDED PRECEDING)
          ->  Index Scan using docs_bm25_idx on docs
                Order By: (content <@> 'database'::text)
-(5 rows)
+(4 rows)
 
 -- Execute to verify behavior
 SELECT id, content,
