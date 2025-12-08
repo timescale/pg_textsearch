@@ -109,10 +109,14 @@ CREATE OPERATOR = (
 
 
 -- BM25 scoring function for text <@> bm25query operations
+--
+-- COST 1000: Standalone scoring is expensive. Each call parses document text
+-- with to_tsvector (~14μs per doc), opens the index, looks up IDF values, and
+-- calculates BM25 scores. High cost helps planner prefer index scans.
 CREATE FUNCTION text_bm25query_score(left_text text, right_query bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'text_tpquery_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
 
 -- bm25query equality function
 CREATE FUNCTION bm25query_eq(bm25query, bm25query)
