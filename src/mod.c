@@ -16,6 +16,7 @@
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "planner.h"
 #include "registry.h"
 #include "state.h"
 
@@ -197,6 +198,9 @@ _PG_init(void)
 	/* Register transaction callback to release index locks at transaction end
 	 */
 	RegisterXactCallback(tp_xact_callback, NULL);
+
+	/* Install planner hook for implicit index resolution */
+	tp_planner_hook_init();
 }
 
 /*

@@ -1,0 +1,134 @@
+-- Test cases for queries that are NOT YET fully supported
+-- These document known limitations of the current implicit index resolution
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.0.6-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+-- Setup test tables
+CREATE TABLE docs (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE TABLE categories (
+    id SERIAL PRIMARY KEY,
+    doc_id INT REFERENCES docs(id),
+    category TEXT
+);
+INSERT INTO docs (content) VALUES
+    ('postgresql database management'),
+    ('machine learning algorithms'),
+    ('text search and retrieval');
+INSERT INTO categories (doc_id, category) VALUES
+    (1, 'technology'),
+    (2, 'science'),
+    (3, 'technology');
+CREATE INDEX docs_bm25_idx ON docs USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation docs_bm25_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 3 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+SET enable_seqscan = off;
+-- =============================================================================
+-- LIMITATION 1: JOINs with score in SELECT require explicit to_bm25query()
+-- Implicit text <@> text only works for ORDER BY, not score projection.
+-- =============================================================================
+\echo 'Test: JOIN with implicit score projection - should error'
+Test: JOIN with implicit score projection - should error
+SELECT d.id, d.content, c.category,
+       ROUND((d.content <@> 'database')::numeric, 4) as score
+FROM docs d
+JOIN categories c ON d.id = c.doc_id
+ORDER BY d.content <@> 'database'
+LIMIT 5;
+ id |            content             |  category  |  score  
+----+--------------------------------+------------+---------
+  1 | postgresql database management | technology | -0.9808
+  2 | machine learning algorithms    | science    |  0.0000
+  3 | text search and retrieval      | technology |  0.0000
+(3 rows)
+
+-- The workaround is to use explicit to_bm25query() for score projection
+\echo 'Test: JOIN with explicit to_bm25query - works correctly'
+Test: JOIN with explicit to_bm25query - works correctly
+SELECT d.id, d.content, c.category,
+       ROUND((d.content <@> to_bm25query('database', 'docs_bm25_idx'))::numeric, 4) as score
+FROM docs d
+JOIN categories c ON d.id = c.doc_id
+ORDER BY d.content <@> to_bm25query('database', 'docs_bm25_idx')
+LIMIT 5;
+ id |            content             |  category  |  score  
+----+--------------------------------+------------+---------
+  1 | postgresql database management | technology | -0.9808
+(1 row)
+
+-- =============================================================================
+-- LIMITATION 2: Multiple BM25 indexes on same column
+-- The planner hook picks the first matching index. Use explicit to_bm25query()
+-- for control over which index is used.
+-- =============================================================================
+\echo 'Test: Multiple BM25 indexes on same column'
+Test: Multiple BM25 indexes on same column
+CREATE INDEX docs_bm25_simple_idx ON docs USING bm25(content)
+    WITH (text_config='simple');
+NOTICE:  BM25 index build started for relation docs_bm25_simple_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='simple' (k1=1.20, b=0.75)
+-- Implicit resolution picks first index found
+-- Note: Score projection requires explicit index, so just use ORDER BY
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM docs
+ORDER BY content <@> 'database'
+LIMIT 3;
+WARNING:  multiple BM25 indexes exist on the same column
+HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: ((content <@> 'docs_bm25_idx:database'::bm25query))
+         ->  Seq Scan on docs
+(4 rows)
+
+-- Explicit index selection gives user control
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> to_bm25query('database', 'docs_bm25_simple_idx') as score
+FROM docs
+ORDER BY content <@> to_bm25query('database', 'docs_bm25_simple_idx')
+LIMIT 3;
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using docs_bm25_simple_idx on docs
+         Order By: (content <@> 'docs_bm25_simple_idx:database'::bm25query)
+(3 rows)
+
+DROP INDEX docs_bm25_simple_idx;
+-- =============================================================================
+-- LIMITATION 3: Expression indexes are not supported
+-- =============================================================================
+\echo 'Test: Expression index - should fail with error'
+Test: Expression index - should fail with error
+CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
+    WITH (text_config='simple');
+NOTICE:  BM25 index build started for relation docs_lower_idx
+ERROR:  BM25 indexes on expressions are not supported
+HINT:  Create the index on a column directly, e.g., CREATE INDEX ... USING bm25(content)
+-- =============================================================================
+-- LIMITATION 4: Aggregate functions on scores require explicit to_bm25query()
+-- =============================================================================
+\echo 'Test: Aggregate on scores with explicit index'
+Test: Aggregate on scores with explicit index
+SELECT COUNT(*) as matching_docs,
+       ROUND(AVG((content <@> to_bm25query('database', 'docs_bm25_idx'))::numeric), 4) as avg_score
+FROM docs
+WHERE content <@> to_bm25query('database', 'docs_bm25_idx') < 0;
+ matching_docs | avg_score 
+---------------+-----------
+             1 |   -0.9808
+(1 row)
+
+-- Cleanup
+DROP TABLE categories CASCADE;
+DROP TABLE docs CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

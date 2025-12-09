@@ -76,27 +76,28 @@ Get the most relevant documents using the `<@>` operator
 
 ```sql
 SELECT * FROM documents
-ORDER BY content <@> to_bm25query('database system', 'docs_idx')
+ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
 Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` order index scans on operators. Lower scores indicate better matches.
 
-For WHERE clause queries, use bm25query with index name:
+The index is automatically detected from the column. For explicit index specification:
 ```sql
 SELECT * FROM documents
 WHERE content <@> to_bm25query('database system', 'docs_idx') < -1.0;
 ```
 
 Supported operations:
-- `text <@> bm25query` - Score text against a query
+- `text <@> 'query'` - Score text against a query (index auto-detected)
+- `text <@> bm25query` - Score text with explicit index specification
 
 ### Verifying Index Usage
 
 Check query plan with EXPLAIN:
 ```sql
 EXPLAIN SELECT * FROM documents
-ORDER BY content <@> to_bm25query('database system', 'docs_idx')
+ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
@@ -227,10 +228,10 @@ INSERT INTO articles (title, content) VALUES
     ('Search Technology', 'Full text search enables finding relevant documents quickly'),
     ('Information Retrieval', 'BM25 is a ranking function used in search engines');
 
--- Find relevant documents
+-- Find relevant documents (index auto-detected from column)
 SELECT title, content <@> to_bm25query('database search', 'articles_idx') as score
 FROM articles
-ORDER BY content <@> to_bm25query('database search', 'articles_idx');
+ORDER BY content <@> 'database search';
 ```
 
 Also supports different languages and custom parameters:
@@ -247,6 +248,43 @@ CREATE INDEX custom_idx ON documents USING bm25(content)
 
 
 ## Limitations
+
+### Partitioned Tables
+
+BM25 indexes on partitioned tables use **partition-local statistics**. Each
+partition maintains its own:
+- Document count (`total_docs`)
+- Average document length (`avg_doc_len`)
+- Per-term document frequencies for IDF calculation
+
+This means:
+- Queries targeting a single partition compute accurate BM25 scores using that
+  partition's statistics
+- Queries spanning multiple partitions return scores computed independently per
+  partition, which may not be directly comparable across partitions
+
+**Example**: If partition A has 1000 documents and partition B has 10 documents,
+the term "database" would have different IDF values in each partition. Results
+from both partitions would have scores on different scales.
+
+**Recommendations**:
+- For time-partitioned data, query individual partitions when score comparability
+  matters
+- Use partitioning schemes where queries naturally target single partitions
+- Consider this behavior when designing partition strategies for search workloads
+
+```sql
+-- Query single partition (scores are accurate within partition)
+SELECT * FROM docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+
+-- Cross-partition query (scores computed per-partition)
+SELECT * FROM docs
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+```
 
 ### Word Length Limit
 

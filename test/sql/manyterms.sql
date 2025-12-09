@@ -35,7 +35,7 @@ SELECT id, content FROM manyterms_test WHERE content = 'alpha' ORDER BY id LIMIT
 SELECT id, content FROM manyterms_test WHERE content = 'omega' ORDER BY id LIMIT 1;
 
 -- Test BM25 scoring still works after hash table resize
-SELECT id, content, ROUND((content <@> to_bm25query('fifty', 'manyterms_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'fifty')::numeric, 4) as score
 FROM manyterms_test
 WHERE content = 'fifty'
 ORDER BY score

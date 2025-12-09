@@ -27,8 +27,7 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
 ORDER BY content <@> to_bm25query('hello', 'articles_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.5235
-ERROR:  index "articles_idx" not found
+ERROR:  index "articles_idx" does not exist
 -- Test 2: Schema-qualified index name works correctly
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'docs.articles_idx'))::numeric, 4) as score
 FROM docs.articles

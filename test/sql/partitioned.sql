@@ -1,0 +1,308 @@
+-- Test BM25 index behavior with partitioned tables
+--
+-- IMPORTANT: BM25 indexes on partitioned tables use PARTITION-LOCAL STATISTICS.
+-- Each partition maintains its own:
+--   - Document count (total_docs)
+--   - Average document length (avg_doc_len)
+--   - Per-term document frequencies for IDF calculation
+--
+-- This means:
+--   - Queries targeting a single partition compute accurate BM25 scores using
+--     that partition's statistics
+--   - Queries spanning multiple partitions return scores computed independently
+--     per partition, which may not be directly comparable across partitions
+--
+-- This test validates that per-partition scores are computed correctly using
+-- partition-local statistics.
+
+-- Load pg_textsearch extension
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+-- Load validation functions
+\set ECHO none
+\i test/sql/validation.sql
+\set ECHO all
+
+SET enable_seqscan = off;
+
+-- =============================================================================
+-- Test 1: Basic partitioned table with BM25 index
+-- When creating an index on a partitioned table, PostgreSQL automatically
+-- creates indexes on all existing partitions. The parent partitioned table
+-- itself doesn't call our index build functions, only the partitions do.
+-- =============================================================================
+CREATE TABLE partitioned_docs (
+    id SERIAL,
+    content TEXT,
+    created_at TIMESTAMP
+) PARTITION BY RANGE (created_at);
+
+-- Create a partition first
+CREATE TABLE partition_2024 PARTITION OF partitioned_docs
+    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+
+-- Insert data into partition
+INSERT INTO partition_2024 (content, created_at) VALUES
+    ('Data in the partition', '2024-06-15');
+
+-- Creating index on partitioned table will automatically create it on partitions
+-- This creates an index with auto-generated name like partition_2024_content_idx
+CREATE INDEX partitioned_bm25_idx ON partitioned_docs USING bm25(content)
+    WITH (text_config='english');
+
+-- Verify the auto-created partition index works (using the generated name)
+SELECT indexrelid::regclass as index_name
+FROM pg_index
+WHERE indrelid = 'partition_2024'::regclass
+  AND indexrelid::regclass::text LIKE '%content%';
+
+-- Create another partition after index exists
+CREATE TABLE partition_2025 PARTITION OF partitioned_docs
+    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+-- Insert data into new partition
+INSERT INTO partition_2025 (content, created_at) VALUES
+    ('Data in the 2025 partition', '2025-06-15');
+
+-- Verify the auto-created index on new partition
+SELECT COUNT(*) as num_partition_indexes
+FROM pg_index
+WHERE indrelid IN ('partition_2024'::regclass, 'partition_2025'::regclass);
+
+-- =============================================================================
+-- Test 2: Implicit index resolution with <@> operator on partitioned table
+-- The planner hook should resolve partitioned_bm25_idx, and the executor
+-- should map it to the correct partition index at scan time
+-- =============================================================================
+
+-- Query partition_2024 - should use partition_2024_content_idx
+EXPLAIN (COSTS OFF)
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Actually execute to verify the query works
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Query partition_2025 - should use partition_2025_content_idx
+SELECT content FROM partitioned_docs
+WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'
+ORDER BY content <@> 'partition'
+LIMIT 1;
+
+-- Cleanup first test
+DROP TABLE partitioned_docs CASCADE;
+
+-- =============================================================================
+-- Test 3: Sub-partitioned table (multi-level partition hierarchy)
+-- Tests that is_partition_of() correctly walks up the inheritance chain
+-- =============================================================================
+CREATE TABLE subpart_docs (
+    id SERIAL,
+    content TEXT,
+    region TEXT,
+    created_at TIMESTAMP
+) PARTITION BY LIST (region);
+
+-- Create sub-partitioned partition
+CREATE TABLE subpart_docs_us PARTITION OF subpart_docs
+    FOR VALUES IN ('us')
+    PARTITION BY RANGE (created_at);
+
+-- Create leaf partition
+CREATE TABLE subpart_docs_us_2024 PARTITION OF subpart_docs_us
+    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+
+-- Create another region partition (not sub-partitioned)
+CREATE TABLE subpart_docs_eu PARTITION OF subpart_docs
+    FOR VALUES IN ('eu');
+
+-- Insert test data
+INSERT INTO subpart_docs_us_2024 (content, region, created_at) VALUES
+    ('US data from 2024', 'us', '2024-06-15');
+INSERT INTO subpart_docs_eu (content, region, created_at) VALUES
+    ('EU data', 'eu', '2024-06-15');
+
+-- Create index on top-level partitioned table
+CREATE INDEX subpart_bm25_idx ON subpart_docs USING bm25(content)
+    WITH (text_config='english');
+
+-- Verify indexes were created at all levels
+SELECT c.relname, c.relkind
+FROM pg_class c
+JOIN pg_index i ON c.oid = i.indexrelid
+WHERE i.indrelid IN (
+    'subpart_docs'::regclass,
+    'subpart_docs_us'::regclass,
+    'subpart_docs_us_2024'::regclass,
+    'subpart_docs_eu'::regclass
+)
+ORDER BY c.relname;
+
+-- Query that hits leaf partition (3-level: top -> sub -> leaf)
+-- This tests is_partition_of() walking up multiple levels
+SELECT content FROM subpart_docs
+WHERE region = 'us' AND created_at >= '2024-01-01' AND created_at < '2025-01-01'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Query that hits non-sub-partitioned partition (2-level: top -> leaf)
+SELECT content FROM subpart_docs
+WHERE region = 'eu'
+ORDER BY content <@> 'data'
+LIMIT 1;
+
+-- Cleanup
+DROP TABLE subpart_docs CASCADE;
+
+-- =============================================================================
+-- Test 4: Partition-local BM25 score validation
+--
+-- This test validates that BM25 scores are computed correctly using
+-- PARTITION-LOCAL statistics, not global statistics across all partitions.
+--
+-- We create two partitions with different corpus characteristics:
+--   - partition_small: 3 documents
+--   - partition_large: 10 documents
+--
+-- The same term will have different IDF values in each partition because
+-- IDF = ln(1 + (N - df + 0.5) / (df + 0.5)) depends on partition-local N and df.
+--
+-- We validate scores by querying each partition's table directly and comparing
+-- against pure SQL BM25 computation using that partition's statistics.
+-- =============================================================================
+
+CREATE TABLE partitioned_scoring (
+    id SERIAL,
+    content TEXT,
+    partition_key INT
+) PARTITION BY LIST (partition_key);
+
+-- Create small partition (3 docs)
+CREATE TABLE partition_small PARTITION OF partitioned_scoring
+    FOR VALUES IN (1);
+
+-- Create large partition (10 docs)
+CREATE TABLE partition_large PARTITION OF partitioned_scoring
+    FOR VALUES IN (2);
+
+-- Insert documents into small partition
+INSERT INTO partition_small (content, partition_key) VALUES
+    ('database search query', 1),
+    ('full text search engine', 1),
+    ('postgresql database system', 1);
+
+-- Insert documents into large partition (with different term distribution)
+INSERT INTO partition_large (content, partition_key) VALUES
+    ('database management system', 2),
+    ('search engine optimization', 2),
+    ('web application development', 2),
+    ('cloud computing services', 2),
+    ('machine learning algorithms', 2),
+    ('data analysis tools', 2),
+    ('software engineering practices', 2),
+    ('network security protocols', 2),
+    ('mobile app development', 2),
+    ('database query optimization', 2);
+
+-- Create index on partitioned table
+CREATE INDEX scoring_bm25_idx ON partitioned_scoring USING bm25(content)
+    WITH (text_config='english');
+
+-- Get the auto-generated partition index names
+SELECT
+    i.indrelid::regclass as partition_table,
+    i.indexrelid::regclass as partition_index
+FROM pg_index i
+JOIN pg_class c ON i.indexrelid = c.oid
+WHERE i.indrelid IN ('partition_small'::regclass, 'partition_large'::regclass)
+ORDER BY i.indrelid::regclass::text;
+
+-- Validate scoring on SMALL partition (3 docs)
+-- The validation function computes expected BM25 using partition-local statistics
+SELECT validate_bm25_scoring(
+    'partition_small',
+    'content',
+    'partition_small_content_idx',
+    'database',
+    'english',
+    1.2,
+    0.75
+) as small_partition_database_valid;
+
+SELECT validate_bm25_scoring(
+    'partition_small',
+    'content',
+    'partition_small_content_idx',
+    'search',
+    'english',
+    1.2,
+    0.75
+) as small_partition_search_valid;
+
+-- Validate scoring on LARGE partition (10 docs)
+SELECT validate_bm25_scoring(
+    'partition_large',
+    'content',
+    'partition_large_content_idx',
+    'database',
+    'english',
+    1.2,
+    0.75
+) as large_partition_database_valid;
+
+SELECT validate_bm25_scoring(
+    'partition_large',
+    'content',
+    'partition_large_content_idx',
+    'development',
+    'english',
+    1.2,
+    0.75
+) as large_partition_development_valid;
+
+-- Show that the same query produces DIFFERENT IDF values in each partition
+-- because N (total docs) differs: 3 vs 10
+-- For 'database': df=2 in small (2/3 docs), df=2 in large (2/10 docs)
+--   Small IDF = ln(1 + (3 - 2 + 0.5) / (2 + 0.5)) = ln(1 + 1.5/2.5) = ln(1.6) ≈ 0.47
+--   Large IDF = ln(1 + (10 - 2 + 0.5) / (2 + 0.5)) = ln(1 + 8.5/2.5) = ln(4.4) ≈ 1.48
+--
+-- This demonstrates partition-local statistics in action:
+
+-- Show actual scores from small partition
+SELECT 'small' as partition, content,
+       ROUND((content <@> to_bm25query('database', 'partition_small_content_idx'))::numeric, 4) as score
+FROM partition_small
+WHERE content <@> to_bm25query('database', 'partition_small_content_idx') < 0
+ORDER BY score;
+
+-- Show actual scores from large partition
+SELECT 'large' as partition, content,
+       ROUND((content <@> to_bm25query('database', 'partition_large_content_idx'))::numeric, 4) as score
+FROM partition_large
+WHERE content <@> to_bm25query('database', 'partition_large_content_idx') < 0
+ORDER BY score;
+
+-- Validate index scan vs standalone scoring consistency per partition
+SELECT validate_index_vs_standalone(
+    'partition_small',
+    'content',
+    'partition_small_content_idx',
+    'database'
+) as small_partition_modes_match;
+
+SELECT validate_index_vs_standalone(
+    'partition_large',
+    'content',
+    'partition_large_content_idx',
+    'database'
+) as large_partition_modes_match;
+
+-- Cleanup
+SET enable_seqscan = on;
+DROP TABLE partitioned_scoring CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

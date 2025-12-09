@@ -23,14 +23,14 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_bm25query('hello', 'scoring6_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7549
- id |    content    |  score  
-----+---------------+---------
-  1 | hello, world! | -0.7549
-(1 row)
+ORDER BY content <@> 'hello', id;
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.7549
+  2 | goodbye cruel world... |  0.0000
+(2 rows)
 
 -- Validate BM25 scoring for 'hello'
 SELECT validate_bm25_scoring('scoring6_bulk', 'content', 'scoring6_bulk_idx', 'hello', 'english', 1.2, 0.75) as hello_bulk_valid;
@@ -40,14 +40,14 @@ SELECT validate_bm25_scoring('scoring6_bulk', 'content', 'scoring6_bulk_idx', 'h
 (1 row)
 
 -- Bulk mode query 2: 'goodbye'
-SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'goodbye')::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_bm25query('goodbye', 'scoring6_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6407
+ORDER BY content <@> 'goodbye', id;
  id |        content         |  score  
 ----+------------------------+---------
   2 | goodbye cruel world... | -0.6407
-(1 row)
+  1 | hello, world!          |  0.0000
+(2 rows)
 
 -- Validate BM25 scoring for 'goodbye'
 SELECT validate_bm25_scoring('scoring6_bulk', 'content', 'scoring6_bulk_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_bulk_valid;
@@ -57,11 +57,9 @@ SELECT validate_bm25_scoring('scoring6_bulk', 'content', 'scoring6_bulk_idx', 'g
 (1 row)
 
 -- Bulk mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'world')::numeric, 4) as score
 FROM scoring6_bulk
-ORDER BY content <@> to_bm25query('world', 'scoring6_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1986
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1685
+ORDER BY content <@> 'world', id;
  id |        content         |  score  
 ----+------------------------+---------
   1 | hello, world!          | -0.1986
@@ -91,14 +89,14 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='
 INSERT INTO scoring6_incr (content) VALUES ('hello, world!');
 INSERT INTO scoring6_incr (content) VALUES ('goodbye cruel world...');
 -- Incremental mode query 1: 'hello'
-SELECT id, content, ROUND((content <@> to_bm25query('hello', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_bm25query('hello', 'scoring6_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7549
- id |    content    |  score  
-----+---------------+---------
-  1 | hello, world! | -0.7549
-(1 row)
+ORDER BY content <@> 'hello', id;
+ id |        content         |  score  
+----+------------------------+---------
+  1 | hello, world!          | -0.7549
+  2 | goodbye cruel world... |  0.0000
+(2 rows)
 
 -- Validate BM25 scoring for 'hello' (incremental)
 SELECT validate_bm25_scoring('scoring6_incr', 'content', 'scoring6_incr_idx', 'hello', 'english', 1.2, 0.75) as hello_incr_valid;
@@ -108,14 +106,14 @@ SELECT validate_bm25_scoring('scoring6_incr', 'content', 'scoring6_incr_idx', 'h
 (1 row)
 
 -- Incremental mode query 2: 'goodbye'
-SELECT id, content, ROUND((content <@> to_bm25query('goodbye', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'goodbye')::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_bm25query('goodbye', 'scoring6_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6407
+ORDER BY content <@> 'goodbye', id;
  id |        content         |  score  
 ----+------------------------+---------
   2 | goodbye cruel world... | -0.6407
-(1 row)
+  1 | hello, world!          |  0.0000
+(2 rows)
 
 -- Validate BM25 scoring for 'goodbye' (incremental)
 SELECT validate_bm25_scoring('scoring6_incr', 'content', 'scoring6_incr_idx', 'goodbye', 'english', 1.2, 0.75) as goodbye_incr_valid;
@@ -125,11 +123,9 @@ SELECT validate_bm25_scoring('scoring6_incr', 'content', 'scoring6_incr_idx', 'g
 (1 row)
 
 -- Incremental mode query 3: 'world'
-SELECT id, content, ROUND((content <@> to_bm25query('world', 'scoring6_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> 'world')::numeric, 4) as score
 FROM scoring6_incr
-ORDER BY content <@> to_bm25query('world', 'scoring6_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.1986
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.1685
+ORDER BY content <@> 'world', id;
  id |        content         |  score  
 ----+------------------------+---------
   1 | hello, world!          | -0.1986

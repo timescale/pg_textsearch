@@ -45,17 +45,17 @@ CREATE INDEX long_strings_idx ON long_string_docs USING bm25(content)
 
 -- Test 1: Search for URL components
 SELECT id, LEFT(content, 80) || '...' as content_preview,
-       ROUND((content <@> to_bm25query('https website', 'long_strings_idx'))::numeric, 4) as score
+       ROUND((content <@> 'https website')::numeric, 4) as score
 FROM long_string_docs
-ORDER BY content <@> to_bm25query('https website', 'long_strings_idx')
+ORDER BY content <@> 'https website'
 LIMIT 5;
 
 -- Test 2: Search for technical terms
 SELECT * FROM (
     SELECT id, category,
-           ROUND((content <@> to_bm25query('postgresql extension', 'long_strings_idx'))::numeric, 4) as score
+           ROUND((content <@> 'postgresql extension')::numeric, 4) as score
     FROM long_string_docs
-    ORDER BY content <@> to_bm25query('postgresql extension', 'long_strings_idx')
+    ORDER BY content <@> 'postgresql extension'
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
@@ -63,9 +63,9 @@ ORDER BY score, id;
 -- Test 3: Search for long path components
 SELECT * FROM (
     SELECT id, LEFT(content, 60) || '...' as content_preview,
-           ROUND((content <@> to_bm25query('file log error', 'long_strings_idx'))::numeric, 4) as score
+           ROUND((content <@> 'file log error')::numeric, 4) as score
     FROM long_string_docs
-    ORDER BY content <@> to_bm25query('file log error', 'long_strings_idx')
+    ORDER BY content <@> 'file log error'
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
@@ -78,9 +78,9 @@ SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopic
 
 -- Test 6: Test mixed long and short terms
 SELECT * FROM (
-    SELECT id, ROUND((content <@> to_bm25query('algorithm bm25', 'long_strings_idx'))::numeric, 4) as score
+    SELECT id, ROUND((content <@> 'algorithm bm25')::numeric, 4) as score
     FROM long_string_docs
-    ORDER BY content <@> to_bm25query('algorithm bm25', 'long_strings_idx')
+    ORDER BY content <@> 'algorithm bm25'
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
@@ -90,9 +90,9 @@ SELECT * FROM (
     SELECT
         id,
         category,
-        ROUND((content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx'))::numeric, 4) as multi_term_score
+        ROUND((content <@> 'postgresql pg_textsearch extension search')::numeric, 4) as multi_term_score
     FROM long_string_docs
-    ORDER BY content <@> to_bm25query('postgresql pg_textsearch extension search', 'long_strings_idx')
+    ORDER BY content <@> 'postgresql pg_textsearch extension search'
     LIMIT 10
 ) AS subquery
 ORDER BY multi_term_score, id;
@@ -112,9 +112,9 @@ INSERT INTO long_string_docs (content, category) VALUES
 -- Verify the stress test document was indexed
 SELECT * FROM (
     SELECT id, LEFT(content, 50) || '...' as preview,
-           ROUND((content <@> to_bm25query('document ridiculously long', 'long_strings_idx'))::numeric, 4) as score
+           ROUND((content <@> 'document ridiculously long')::numeric, 4) as score
     FROM long_string_docs
-    ORDER BY content <@> to_bm25query('document ridiculously long', 'long_strings_idx')
+    ORDER BY content <@> 'document ridiculously long'
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
@@ -148,10 +148,10 @@ SELECT
         WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
         ELSE 'Heap allocation likely'
     END as allocation_type,
-    ROUND((content <@> to_bm25query('term allocation', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> 'term allocation')::numeric, 4) as score
 FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
-    AND content <@> to_bm25query('term allocation', 'long_strings_idx') < 0
+    AND content <@> 'term allocation' < 0
 ORDER BY content_length;
 
 -- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
@@ -162,10 +162,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 SELECT
     'Extreme length test' as test_name,
     LENGTH(content) as total_length,
-    ROUND((content <@> to_bm25query('extreme testing', 'long_strings_idx'))::numeric, 4) as score
+    ROUND((content <@> 'extreme testing')::numeric, 4) as score
 FROM long_string_docs
 WHERE category = 'extreme'
-    AND content <@> to_bm25query('extreme testing', 'long_strings_idx') < 0;
+    AND content <@> 'extreme testing' < 0;
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;

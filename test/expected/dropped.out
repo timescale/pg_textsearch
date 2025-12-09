@@ -26,7 +26,7 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=3.00, text_config='
 -- Query should work with index
 SELECT COUNT(*) AS with_index
 FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+WHERE content <@> 'test' < -0.001;
  with_index 
 ------------
           5
@@ -37,13 +37,15 @@ DROP INDEX dropped_idx;
 -- Query should ERROR when index doesn't exist
 SELECT COUNT(*) AS after_drop
 FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
-ERROR:  index "dropped_idx" not found
+WHERE content <@> 'test' < -0.001;
+ERROR:  no BM25 index found for text <@> text expression
+DETAIL:  Create a BM25 index on the column.
+HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
 -- Also test with a completely non-existent index name
 SELECT COUNT(*) AS nonexistent
 FROM dropped_idx_test
 WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
-ERROR:  index "totally_fake_index" not found
+ERROR:  index "totally_fake_index" does not exist
 -- Clean up
 DROP TABLE dropped_idx_test;
 DROP EXTENSION pg_textsearch;

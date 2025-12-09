@@ -41,7 +41,7 @@ RETURNING id, content;
 -- Test UPDATE matching multiple rows
 UPDATE update_test
 SET meta = meta || '{"updated": true}'::jsonb
-WHERE content <@> to_bm25query('database', 'idx_update_test_content') > -5;
+WHERE content <@> 'database' > -5;
 -- Test UPDATE with complex WHERE clause (similar to production crash)
 UPDATE update_test
 SET
@@ -132,7 +132,9 @@ EXCEPTION
 END;
 $$;
 NOTICE:  BM25 index build started for relation idx_update_parent_content
-NOTICE:  Expected error: BM25 indexes are not supported on tables with inheritance, including TimescaleDB hypertables
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Clean up
 DROP TABLE IF EXISTS update_child;
 DROP TABLE IF EXISTS update_parent;

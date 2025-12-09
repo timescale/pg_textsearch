@@ -28,7 +28,7 @@ BEGIN;
 -- First operation: SELECT acquires shared lock via index scan
 SELECT id, content
 FROM lock_upgrade_test
-ORDER BY content <@> to_bm25query('database', 'lock_upgrade_idx')
+ORDER BY content <@> 'database'
 LIMIT 5;
 
 -- Second operation: INSERT in same transaction should upgrade to exclusive lock
@@ -46,8 +46,8 @@ SELECT COUNT(*) FROM lock_upgrade_test;
 -- Test that subsequent operations work normally
 SELECT id, content
 FROM lock_upgrade_test
-WHERE content <@> to_bm25query('database concurrency', 'lock_upgrade_idx') < -0.001
-ORDER BY content <@> to_bm25query('database concurrency', 'lock_upgrade_idx')
+WHERE content <@> 'database concurrency' < -0.001
+ORDER BY content <@> 'database concurrency'
 LIMIT 5;
 
 -- Clean up

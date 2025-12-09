@@ -24,14 +24,16 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=4.67, text_config='english' (k1=1.20, b=0.75)
 -- Bulk mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('quick',
+'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('quick', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
- id |                   content                   |  score  
-----+---------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog | -0.8782
-(1 row)
+ORDER BY content <@> 'quick', id;
+ id |                           content                            |  score  
+----+--------------------------------------------------------------+---------
+  1 | the quick brown fox jumps over the lazy dog                  | -0.8782
+  2 | a short sentence                                             |  0.0000
+  3 | this is a medium length sentence that contains several words |  0.0000
+(3 rows)
 
 -- Validate BM25 scoring for 'quick'
 SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'quick', 'english', 1.2, 0.75) as quick_bulk_valid;
@@ -41,16 +43,16 @@ SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'q
 (1 row)
 
 -- Bulk mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_bulk_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('sentence',
+'scoring3_bulk_idx'))::numeric, 4) as score
 FROM scoring3_bulk
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_bulk_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
+ORDER BY content <@> 'sentence', id;
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   2 | a short sentence                                             | -0.6134
   3 | this is a medium length sentence that contains several words | -0.4208
-(2 rows)
+  1 | the quick brown fox jumps over the lazy dog                  |  0.0000
+(3 rows)
 
 -- Validate BM25 scoring for 'sentence'
 SELECT validate_bm25_scoring('scoring3_bulk', 'content', 'scoring3_bulk_idx', 'sentence', 'english', 1.2, 0.75) as sentence_bulk_valid;
@@ -76,14 +78,16 @@ INSERT INTO scoring3_incr (content) VALUES ('the quick brown fox jumps over the 
 INSERT INTO scoring3_incr (content) VALUES ('a short sentence');
 INSERT INTO scoring3_incr (content) VALUES ('this is a medium length sentence that contains several words');
 -- Incremental mode query 1: 'quick'
-SELECT id, content, ROUND((content <@> to_bm25query('quick', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('quick',
+'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('quick', 'scoring3_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8782
- id |                   content                   |  score  
-----+---------------------------------------------+---------
-  1 | the quick brown fox jumps over the lazy dog | -0.8782
-(1 row)
+ORDER BY content <@> 'quick', id;
+ id |                           content                            |  score  
+----+--------------------------------------------------------------+---------
+  1 | the quick brown fox jumps over the lazy dog                  | -0.8782
+  2 | a short sentence                                             |  0.0000
+  3 | this is a medium length sentence that contains several words |  0.0000
+(3 rows)
 
 -- Validate BM25 scoring for 'quick' (incremental)
 SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'quick', 'english', 1.2, 0.75) as quick_incr_valid;
@@ -93,16 +97,16 @@ SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'q
 (1 row)
 
 -- Incremental mode query 2: 'sentence'
-SELECT id, content, ROUND((content <@> to_bm25query('sentence', 'scoring3_incr_idx'))::numeric, 4) as score
+SELECT id, content, ROUND((content <@> to_bm25query('sentence',
+'scoring3_incr_idx'))::numeric, 4) as score
 FROM scoring3_incr
-ORDER BY content <@> to_bm25query('sentence', 'scoring3_incr_idx'), id;
-NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-0.6134
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.4208
+ORDER BY content <@> 'sentence', id;
  id |                           content                            |  score  
 ----+--------------------------------------------------------------+---------
   2 | a short sentence                                             | -0.6134
   3 | this is a medium length sentence that contains several words | -0.4208
-(2 rows)
+  1 | the quick brown fox jumps over the lazy dog                  |  0.0000
+(3 rows)
 
 -- Validate BM25 scoring for 'sentence' (incremental)
 SELECT validate_bm25_scoring('scoring3_incr', 'content', 'scoring3_incr_idx', 'sentence', 'english', 1.2, 0.75) as sentence_incr_valid;

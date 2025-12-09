@@ -26,6 +26,7 @@ typedef struct TpScanOpaqueData
 	/* Query processing state */
 	char	 *query_text;	/* Search query text */
 	TpVector *query_vector; /* Original query vector from ORDER BY */
+	Oid		  index_oid;	/* Index OID */
 
 	/* Scan results state */
 	ItemPointer result_ctids;  /* Array of matching CTIDs */

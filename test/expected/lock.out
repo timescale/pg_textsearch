@@ -27,17 +27,18 @@ BEGIN;
 -- First operation: SELECT acquires shared lock via index scan
 SELECT id, content
 FROM lock_upgrade_test
-ORDER BY content <@> to_bm25query('database', 'lock_upgrade_idx')
+ORDER BY content <@> 'database'
 LIMIT 5;
  id |                content                 
 ----+----------------------------------------
   1 | database systems and concurrent access
-(1 row)
+  2 | full text search indexing
+  3 | query optimization techniques
+(3 rows)
 
 -- Second operation: INSERT in same transaction should upgrade to exclusive lock
 INSERT INTO lock_upgrade_test (content) VALUES
     ('new document about database concurrency');
-WARNING:  Upgrading index lock from shared to exclusive - potential deadlock risk
 -- Verify the insert worked
 SELECT COUNT(*) FROM lock_upgrade_test;
  count 
@@ -56,8 +57,8 @@ SELECT COUNT(*) FROM lock_upgrade_test;
 -- Test that subsequent operations work normally
 SELECT id, content
 FROM lock_upgrade_test
-WHERE content <@> to_bm25query('database concurrency', 'lock_upgrade_idx') < -0.001
-ORDER BY content <@> to_bm25query('database concurrency', 'lock_upgrade_idx')
+WHERE content <@> 'database concurrency' < -0.001
+ORDER BY content <@> 'database concurrency'
 LIMIT 5;
  id |                 content                 
 ----+-----------------------------------------

@@ -9,6 +9,8 @@
 #include <access/table.h>
 #include <access/tableam.h>
 #include <catalog/namespace.h>
+#include <catalog/pg_am.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
@@ -60,14 +62,13 @@ static bool tp_search_posting_lists(
 		TpVector		  *query_vector,
 		TpIndexMetaPage	   metap);
 static void tp_rescan_cleanup_results(TpScanOpaque so);
-static void tp_rescan_validate_query_index(
-		const char *query_index_name, Relation indexRelation);
+static void
+tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation);
 static void tp_rescan_process_orderby(
 		IndexScanDesc	scan,
 		ScanKey			orderbys,
 		int				norderbys,
 		TpIndexMetaPage metap);
-static bool tp_has_child_tables(Relation heap);
 
 /*
  * Get the appropriate index name for the given index relation.
@@ -229,58 +230,314 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 }
 
 /*
- * Validate that the query index name matches the scan index
+ * Check if scan_index is a descendant of query_index via pg_inherits.
+ * Walks up the inheritance chain to handle multi-level partitions
+ * (sub-partitions).
+ *
+ * For example, with a 3-level hierarchy:
+ *   top_idx -> sub_idx -> leaf_idx
+ * is_partition_of(leaf_idx, top_idx) returns true by walking:
+ *   leaf_idx -> sub_idx -> top_idx (found!)
  */
-static void
-tp_rescan_validate_query_index(
-		const char *query_index_name, Relation indexRelation)
+static bool
+is_partition_of(Oid scan_index_oid, Oid query_index_oid)
 {
-	const char *current_index_name = RelationGetRelationName(indexRelation);
-	bool		name_matches	   = false;
+	Relation inhrel;
+	Oid		 current_oid = scan_index_oid;
+	bool	 found		 = false;
 
-	/* First try exact match (for unqualified names) */
-	if (strcmp(query_index_name, current_index_name) == 0)
+	/*
+	 * Limit iterations to prevent infinite loops in case of catalog
+	 * corruption. 32 levels should be more than enough for any real
+	 * partition hierarchy.
+	 */
+	int max_depth = 32;
+
+	inhrel = table_open(InheritsRelationId, AccessShareLock);
+
+	while (max_depth-- > 0)
 	{
-		name_matches = true;
-	}
-	else if (strchr(query_index_name, '.') != NULL)
-	{
-		/*
-		 * Query specifies schema-qualified name. Extract the
-		 * relation name part and compare that.
-		 */
-		char *dot = strrchr(query_index_name, '.');
-		if (dot != NULL && strcmp(dot + 1, current_index_name) == 0)
+		SysScanDesc scan;
+		ScanKeyData key;
+		HeapTuple	tuple;
+		Oid			parent_oid = InvalidOid;
+
+		ScanKeyInit(
+				&key,
+				Anum_pg_inherits_inhrelid,
+				BTEqualStrategyNumber,
+				F_OIDEQ,
+				ObjectIdGetDatum(current_oid));
+
+		scan = systable_beginscan(
+				inhrel, InheritsRelidSeqnoIndexId, true, NULL, 1, &key);
+
+		tuple = systable_getnext(scan);
+		if (HeapTupleIsValid(tuple))
 		{
-			/* Also verify the schema matches */
-			char *schema_name =
-					pnstrdup(query_index_name, dot - query_index_name);
-			Oid namespace_oid = get_namespace_oid(schema_name, true);
+			Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
+			parent_oid				 = inhform->inhparent;
+		}
 
-			if (OidIsValid(namespace_oid) &&
-				namespace_oid == RelationGetNamespace(indexRelation))
-			{
-				name_matches = true;
-			}
-			pfree(schema_name);
+		systable_endscan(scan);
+
+		if (!OidIsValid(parent_oid))
+			break; /* Reached top of hierarchy, not found */
+
+		if (parent_oid == query_index_oid)
+		{
+			found = true;
+			break;
+		}
+
+		/* Move up the hierarchy */
+		current_oid = parent_oid;
+	}
+
+	table_close(inhrel, AccessShareLock);
+
+	return found;
+}
+
+/*
+ * Check if scan_table is a descendant of query_table via pg_inherits.
+ * Similar to is_partition_of but for tables, not indexes.
+ */
+static bool
+table_inherits_from(Oid scan_table_oid, Oid query_table_oid)
+{
+	Relation inhrel;
+	Oid		 current_oid = scan_table_oid;
+	bool	 found		 = false;
+	int		 max_depth	 = 32;
+
+	if (scan_table_oid == query_table_oid)
+		return true;
+
+	inhrel = table_open(InheritsRelationId, AccessShareLock);
+
+	while (max_depth-- > 0)
+	{
+		SysScanDesc scan;
+		ScanKeyData key;
+		HeapTuple	tuple;
+		Oid			parent_oid = InvalidOid;
+
+		ScanKeyInit(
+				&key,
+				Anum_pg_inherits_inhrelid,
+				BTEqualStrategyNumber,
+				F_OIDEQ,
+				ObjectIdGetDatum(current_oid));
+
+		scan = systable_beginscan(
+				inhrel, InheritsRelidSeqnoIndexId, true, NULL, 1, &key);
+
+		tuple = systable_getnext(scan);
+		if (HeapTupleIsValid(tuple))
+		{
+			Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
+			parent_oid				 = inhform->inhparent;
+		}
+
+		systable_endscan(scan);
+
+		if (!OidIsValid(parent_oid))
+			break;
+
+		if (parent_oid == query_table_oid)
+		{
+			found = true;
+			break;
+		}
+
+		current_oid = parent_oid;
+	}
+
+	table_close(inhrel, AccessShareLock);
+
+	return found;
+}
+
+/*
+ * Check if two BM25 indexes match by attribute (Sven's approach for
+ * hypertables).
+ *
+ * This handles cases where chunk indexes don't have pg_inherits relationships
+ * to the parent index (e.g., TimescaleDB hypertables). Instead we check:
+ * 1. Both indexes use the BM25 access method
+ * 2. The scan index's table inherits from the query index's table
+ * 3. Both indexes are on the same column attribute number
+ */
+static bool
+indexes_match_by_attribute(Oid scan_index_oid, Oid query_index_oid)
+{
+	HeapTuple  scan_idx_tuple;
+	HeapTuple  query_idx_tuple;
+	HeapTuple  scan_class_tuple;
+	HeapTuple  query_class_tuple;
+	Oid		   scan_heap_oid;
+	Oid		   query_heap_oid;
+	Oid		   bm25_am_oid;
+	bool	   result = false;
+	AttrNumber scan_attnum;
+	AttrNumber query_attnum;
+	HeapTuple  am_tuple;
+
+	/* Look up bm25 access method OID */
+	am_tuple = SearchSysCache1(AMNAME, CStringGetDatum("bm25"));
+	if (!HeapTupleIsValid(am_tuple))
+		return false;
+	bm25_am_oid = ((Form_pg_am)GETSTRUCT(am_tuple))->oid;
+	ReleaseSysCache(am_tuple);
+
+	/* Get pg_index entries for both indexes */
+	scan_idx_tuple =
+			SearchSysCache1(INDEXRELID, ObjectIdGetDatum(scan_index_oid));
+	if (!HeapTupleIsValid(scan_idx_tuple))
+		return false;
+
+	query_idx_tuple =
+			SearchSysCache1(INDEXRELID, ObjectIdGetDatum(query_index_oid));
+	if (!HeapTupleIsValid(query_idx_tuple))
+	{
+		ReleaseSysCache(scan_idx_tuple);
+		return false;
+	}
+
+	/* Get heap OIDs from pg_index */
+	scan_heap_oid  = ((Form_pg_index)GETSTRUCT(scan_idx_tuple))->indrelid;
+	query_heap_oid = ((Form_pg_index)GETSTRUCT(query_idx_tuple))->indrelid;
+
+	/* Get attribute numbers (assume single-column BM25 indexes) */
+	scan_attnum = ((Form_pg_index)GETSTRUCT(scan_idx_tuple))->indkey.values[0];
+	query_attnum =
+			((Form_pg_index)GETSTRUCT(query_idx_tuple))->indkey.values[0];
+
+	/* Check if both indexes use BM25 access method */
+	scan_class_tuple =
+			SearchSysCache1(RELOID, ObjectIdGetDatum(scan_index_oid));
+	query_class_tuple =
+			SearchSysCache1(RELOID, ObjectIdGetDatum(query_index_oid));
+
+	if (HeapTupleIsValid(scan_class_tuple) &&
+		HeapTupleIsValid(query_class_tuple))
+	{
+		Oid scan_am	 = ((Form_pg_class)GETSTRUCT(scan_class_tuple))->relam;
+		Oid query_am = ((Form_pg_class)GETSTRUCT(query_class_tuple))->relam;
+
+		if (scan_am == bm25_am_oid && query_am == bm25_am_oid &&
+			scan_attnum == query_attnum &&
+			table_inherits_from(scan_heap_oid, query_heap_oid))
+		{
+			result = true;
 		}
 	}
 
-	if (!name_matches)
+	/* Cleanup */
+	if (HeapTupleIsValid(scan_class_tuple))
+		ReleaseSysCache(scan_class_tuple);
+	if (HeapTupleIsValid(query_class_tuple))
+		ReleaseSysCache(query_class_tuple);
+	ReleaseSysCache(scan_idx_tuple);
+	ReleaseSysCache(query_idx_tuple);
+
+	return result;
+}
+
+/*
+ * Validate that the query index OID matches the scan index.
+ * Allows partitioned index queries to run on partition indexes.
+ */
+static void
+tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
+{
+	Oid scan_index_oid = RelationGetRelid(indexRelation);
+
+	/* Direct match - OK */
+	if (query_index_oid == scan_index_oid)
+		return;
+
+	/*
+	 * Check if query references a partitioned index and scan is on a
+	 * partition index (child of the partitioned index).
+	 */
+	if (get_rel_relkind(query_index_oid) == RELKIND_PARTITIONED_INDEX &&
+		is_partition_of(scan_index_oid, query_index_oid))
 	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("tpquery index name mismatch"),
-				 errhint("Query specifies index "
-						 "\"%s\" but scan is on index "
-						 "\"%s\"",
-						 query_index_name,
-						 current_index_name)));
+		elog(DEBUG2,
+			 "tp_rescan: partition index %u is child of partitioned "
+			 "index %u",
+			 scan_index_oid,
+			 query_index_oid);
+		return;
 	}
+
+	/*
+	 * Attribute-based matching for TimescaleDB hypertables and other cases
+	 * where chunk indexes don't have pg_inherits relationships to the parent.
+	 * Check if the scan index's table inherits from the query index's table
+	 * and both are BM25 indexes on the same column.
+	 */
+	if (indexes_match_by_attribute(scan_index_oid, query_index_oid))
+	{
+		elog(DEBUG2,
+			 "tp_rescan: index %u matches %u by attribute (hypertable/child)",
+			 scan_index_oid,
+			 query_index_oid);
+		return;
+	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("tpquery index mismatch"),
+			 errhint("Query specifies index OID %u but scan is on "
+					 "index \"%s\" (OID %u)",
+					 query_index_oid,
+					 RelationGetRelationName(indexRelation),
+					 scan_index_oid)));
+}
+
+/*
+ * Check if data looks like a valid TpQuery structure.
+ * TpQuery has: vl_len_ (4 bytes), index_oid (4 bytes), query_text_len (4
+ * bytes) followed by query_text (query_text_len bytes) and a null terminator.
+ * Minimum size is offsetof(TpQuery, data) + 1 (for at least null terminator).
+ */
+static bool
+tp_is_valid_tpquery(void *data)
+{
+	Size	 size;
+	TpQuery *maybe_query;
+
+	if (VARATT_IS_EXTENDED(data))
+		return false;
+
+	size = VARSIZE_ANY(data);
+	if (size < offsetof(TpQuery, data) + 1)
+		return false;
+
+	/*
+	 * Additional validation: check that query_text_len is reasonable.
+	 * create_tpquery allocates: offsetof(TpQuery, data) + query_text_len + 1
+	 * The +1 is for the null terminator.
+	 */
+	maybe_query = (TpQuery *)data;
+	if (maybe_query->query_text_len < 0)
+		return false;
+	if ((Size)(offsetof(TpQuery, data) + maybe_query->query_text_len + 1) !=
+		size)
+		return false;
+
+	return true;
 }
 
 /*
  * Process ORDER BY scan keys for <@> operator
+ *
+ * Handles both bm25query and plain text arguments to support:
+ * - ORDER BY content <@> 'query'::bm25query (explicit bm25query)
+ * - ORDER BY content <@> 'query' (plain text, implicit index resolution)
  */
 static void
 tp_rescan_process_orderby(
@@ -298,30 +555,40 @@ tp_rescan_process_orderby(
 		/* Check for <@> operator strategy */
 		if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 		{
-			Datum	 query_datum = orderby->sk_argument;
-			TpQuery *query		 = (TpQuery *)DatumGetPointer(query_datum);
-			char	*index_name;
-			char	*query_cstr;
+			Datum query_datum = orderby->sk_argument;
+			void *query_data  = DatumGetPointer(query_datum);
+			char *query_cstr;
+			Oid	  query_index_oid = InvalidOid;
 
-			/* Validate it's a proper tpquery by checking varlena header */
-			if (VARATT_IS_EXTENDED(query) ||
-				VARSIZE_ANY(query) < VARHDRSZ + sizeof(int32) + sizeof(int32))
+			/*
+			 * Determine if argument is a bm25query or plain text.
+			 * bm25query has a specific structure; plain text is a varlena.
+			 */
+			if (tp_is_valid_tpquery(query_data))
 			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("invalid tpquery data")));
-			}
+				/* It's a bm25query - extract query text and index OID */
+				TpQuery *query = (TpQuery *)query_data;
 
-			/* Validate index name if provided in query */
-			index_name = get_tpquery_index_name(query);
-			if (index_name)
+				query_cstr		= pstrdup(get_tpquery_text(query));
+				query_index_oid = get_tpquery_index_oid(query);
+
+				/* Validate index OID if provided in query */
+				if (tpquery_has_index(query))
+				{
+					tp_rescan_validate_query_index(
+							query_index_oid, scan->indexRelation);
+				}
+			}
+			else
 			{
-				tp_rescan_validate_query_index(
-						index_name, scan->indexRelation);
-			}
+				/*
+				 * It's plain text - use text directly.
+				 * Index OID will be the scan relation's OID.
+				 */
+				text *query_text = (text *)query_data;
 
-			/* Extract and store query text */
-			query_cstr = pstrdup(get_tpquery_text(query));
+				query_cstr = text_to_cstring(query_text);
+			}
 
 			/* Clear query vector since we're using text directly */
 			if (so->query_vector)
@@ -346,6 +613,9 @@ tp_rescan_process_orderby(
 				so->query_text = pstrdup(query_cstr);
 				MemoryContextSwitchTo(oldcontext);
 			}
+
+			/* Store index OID for this scan */
+			so->index_oid = RelationGetRelid(scan->indexRelation);
 
 			/* Mark all docs as candidates for ORDER BY operation */
 			if (metap && metap->total_docs > 0)
@@ -403,80 +673,6 @@ tp_resolve_index_name_shared(const char *index_name)
 	}
 
 	return index_oid;
-}
-
-/*
- * Check if a relation has child tables (uses table inheritance)
- *
- * This checks both:
- * 1. Regular PostgreSQL table inheritance (pg_inherits)
- * 2. Partitioned tables (relkind = 'p')
- *
- * BM25 indexes don't work correctly with inheritance because they only
- * index rows directly in the table, not rows inherited from child tables.
- */
-static bool
-tp_has_child_tables(Relation heap)
-{
-	bool		  has_children = false;
-	Oid			  heap_oid	   = RelationGetRelid(heap);
-	int			  spi_result;
-	SPIPlanPtr	  plan = NULL;
-	Datum		  values[1];
-	char		 *nulls			= " "; /* No nulls */
-	volatile bool spi_connected = false;
-
-	/* First check if it's a partitioned table (quick check) */
-	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		return true;
-
-	/* Check for table inheritance using pg_inherits */
-	PG_TRY();
-	{
-		spi_result	  = SPI_connect();
-		spi_connected = (spi_result == SPI_OK_CONNECT);
-
-		if (!spi_connected)
-			elog(ERROR, "SPI_connect failed");
-
-		/* Query to check if this table has any children */
-		const char *query = "SELECT 1 FROM pg_catalog.pg_inherits "
-							"WHERE inhparent = $1 LIMIT 1";
-
-		/* Prepare the plan */
-		Oid argtypes[1] = {OIDOID};
-		plan			= SPI_prepare(query, 1, argtypes);
-
-		if (plan == NULL)
-			elog(ERROR, "SPI_prepare failed");
-
-		values[0] = ObjectIdGetDatum(heap_oid);
-
-		/* Execute the query */
-		spi_result = SPI_execute_plan(plan, values, nulls, true, 1);
-
-		if (spi_result == SPI_OK_SELECT && SPI_processed > 0)
-			has_children = true;
-
-		/* Clean up SPI */
-		if (plan)
-			SPI_freeplan(plan);
-		SPI_finish();
-		spi_connected = false;
-	}
-	PG_CATCH();
-	{
-		/* Make sure to finish SPI connection if it was established */
-		if (spi_connected)
-		{
-			SPI_finish();
-		}
-		/* Re-throw the error */
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	return has_children;
 }
 
 /*
@@ -1090,15 +1286,21 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 */
 	tp_invalidate_docid_cache();
 
-	/* Check if the heap uses table inheritance */
-	if (tp_has_child_tables(heap))
+	/*
+	 * Check for expression indexes - BM25 indexes must be on a direct column
+	 * reference, not an expression like lower(content).
+	 *
+	 * For expression indexes, ii_IndexAttrNumbers[0] is 0 because the index
+	 * is on an expression rather than a table column. Our tp_process_document
+	 * uses slot_getattr() which requires a valid attribute number >= 1.
+	 */
+	if (indexInfo->ii_IndexAttrNumbers[0] == 0)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on tables with "
-						"inheritance, including TimescaleDB hypertables"),
-				 errhint("BM25 indexes can only be created on regular "
-						 "tables")));
+				 errmsg("BM25 indexes on expressions are not supported"),
+				 errhint("Create the index on a column directly, e.g., "
+						 "CREATE INDEX ... USING bm25(content)")));
 	}
 
 	/* Report initialization phase */
@@ -1229,24 +1431,6 @@ tp_buildempty(Relation index)
 	TpIndexMetaPage metap;
 	char		   *text_config_name = NULL;
 	Oid				text_config_oid	 = InvalidOid;
-	Relation		heap;
-
-	/* Get the heap relation to check if it uses inheritance */
-	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-
-	/* Check if the heap uses table inheritance */
-	if (tp_has_child_tables(heap))
-	{
-		table_close(heap, AccessShareLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes are not supported on tables with "
-						"inheritance, including TimescaleDB hypertables"),
-				 errhint("BM25 indexes can only be created on regular "
-						 "tables")));
-	}
-
-	table_close(heap, AccessShareLock);
 
 	/* Extract options from index */
 	options = (TpOptions *)index->rd_options;

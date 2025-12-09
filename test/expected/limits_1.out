@@ -56,8 +56,7 @@ LIMIT 5;
    ->  Sort
          Sort Key: ((content <@> 'limit_test_idx:database'::bm25query))
          ->  Seq Scan on limit_test
-               Disabled: true
-(5 rows)
+(4 rows)
 
 SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
 FROM limit_test
@@ -257,8 +256,7 @@ LIMIT 3;
    ->  Sort
          Sort Key: ((content <@> 'limit_test_idx:simple'::bm25query))
          ->  Seq Scan on limit_test
-               Disabled: true
-(5 rows)
+(4 rows)
 
 -- Case: Multiple ORDER BY clauses
 -- Tapir requires exactly one ORDER BY, so not using the index here is correct behavior
