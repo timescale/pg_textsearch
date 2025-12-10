@@ -119,3 +119,12 @@ extern bool tp_log_scores;
 
 /* IDF sum calculation for average IDF */
 extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);
+
+/*
+ * Backend-local score cache for text <@> text operator support.
+ * When Index Scan returns a tuple, it stores the score here.
+ * The text_text_score function can retrieve it.
+ */
+extern void tp_store_current_score(ItemPointer tid, float8 score);
+extern bool tp_get_current_score(ItemPointer tid, float8 *score);
+extern void tp_clear_current_score(void);

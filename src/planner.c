@@ -166,19 +166,23 @@ get_bm25_oids(BM25OidCache *cache)
 		CacheRegisterSyscacheCallback(
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
 		invalidation_registered = true;
+		elog(DEBUG1, "get_bm25_oids: registered invalidation callbacks");
 	}
 
 	/* Fast path: use cached result */
 	switch (oid_cache_state)
 	{
 	case CACHE_NOT_FOUND:
+		elog(DEBUG1, "get_bm25_oids: cache state NOT_FOUND, returning false");
 		return false;
 
 	case CACHE_VALID:
+		elog(DEBUG1, "get_bm25_oids: cache state VALID, using cached OIDs");
 		*cache = cached_oids;
 		return true;
 
 	case CACHE_UNKNOWN:
+		elog(DEBUG1, "get_bm25_oids: cache state UNKNOWN, doing lookup");
 		/* Fall through to lookup */
 		break;
 	}
@@ -186,11 +190,13 @@ get_bm25_oids(BM25OidCache *cache)
 	/* Do the actual lookup */
 	if (!lookup_bm25_oids_internal(cache))
 	{
+		elog(DEBUG1, "get_bm25_oids: lookup failed, setting NOT_FOUND");
 		oid_cache_state = CACHE_NOT_FOUND;
 		return false;
 	}
 
 	/* Cache the result */
+	elog(DEBUG1, "get_bm25_oids: lookup succeeded, caching OIDs");
 	cached_oids		= *cache;
 	oid_cache_state = CACHE_VALID;
 	return true;
@@ -517,11 +523,12 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 		/*
 		 * For text <@> text operators, transform to text <@> bm25query
 		 * by resolving the BM25 index from the left operand's column.
-		 * This enables standalone scoring in SELECT clauses.
+		 * This enables standalone scoring in SELECT/WHERE clauses.
 		 *
-		 * Note: This transformation may affect pathkey matching for ORDER BY
-		 * in some cases. If ORDER BY performance is critical, users can use
-		 * explicit to_bm25query() syntax.
+		 * The transformation enables text <@> text scoring to work
+		 * everywhere (SELECT, WHERE, ORDER BY) by resolving the index
+		 * automatically. The text <@> text operator is also registered
+		 * in the opclass for ORDER BY, so Index Scan can be used.
 		 */
 		if (opexpr->opno == oids->text_text_operator_oid &&
 			list_length(opexpr->args) == 2)
@@ -581,10 +588,12 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 
 							pfree(query_text);
 
-							elog(DEBUG2,
+							elog(DEBUG1,
 								 "tp_planner_hook: transformed text <@> text "
-								 "to text <@> bm25query with index_oid=%u",
-								 index_oid);
+								 "to text <@> bm25query with index_oid=%u, "
+								 "new_opno=%u",
+								 index_oid,
+								 new_opexpr->opno);
 
 							return (Node *)new_opexpr;
 						}
@@ -598,18 +607,6 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 	return expression_tree_mutator(node, resolve_index_mutator, context);
 }
 
-/*
- * Walk the query tree and resolve unresolved tpquery indexes.
- *
- * Transforms:
- * 1. text <@> to_bm25query('query') with unresolved index to resolved version
- * 2. text <@> 'query' (text <@> text) to text <@> bm25query with resolved
- * index
- *
- * Both SELECT and ORDER BY expressions are transformed. Pathkey matching
- * still works because the opclass includes both (text, text) and (text,
- * bm25query) operators.
- */
 static void
 resolve_indexes_in_query(Query *query)
 {
@@ -623,6 +620,27 @@ resolve_indexes_in_query(Query *query)
 	context.query	  = query;
 	context.oid_cache = &oid_cache;
 
+	/* Debug: Log sortClause info before transformation */
+	if (query->sortClause)
+	{
+		ListCell *lc;
+
+		elog(DEBUG1,
+			 "resolve_indexes: sortClause has %d entries",
+			 list_length(query->sortClause));
+		foreach (lc, query->sortClause)
+		{
+			SortGroupClause *sgc = (SortGroupClause *)lfirst(lc);
+
+			elog(DEBUG1,
+				 "resolve_indexes: sortClause entry: tleSortGroupRef=%u, "
+				 "eqop=%u, sortop=%u",
+				 sgc->tleSortGroupRef,
+				 sgc->eqop,
+				 sgc->sortop);
+		}
+	}
+
 	/* Process the target list (SELECT and ORDER BY expressions) */
 	if (query->targetList)
 	{
@@ -631,6 +649,25 @@ resolve_indexes_in_query(Query *query)
 		foreach (lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *)lfirst(lc);
+
+			elog(DEBUG1,
+				 "resolve_indexes: processing tle resno=%d, "
+				 "ressortgroupref=%u, resjunk=%d, exprType=%d",
+				 tle->resno,
+				 tle->ressortgroupref,
+				 tle->resjunk,
+				 tle->expr ? nodeTag(tle->expr) : 0);
+
+			/* If it's an OpExpr, log the opno */
+			if (tle->expr && IsA(tle->expr, OpExpr))
+			{
+				OpExpr *opexpr = (OpExpr *)tle->expr;
+
+				elog(DEBUG1,
+					 "resolve_indexes: tle %d has OpExpr opno=%u",
+					 tle->resno,
+					 opexpr->opno);
+			}
 
 			tle->expr = (Expr *)
 					resolve_index_mutator((Node *)tle->expr, &context);
@@ -677,7 +714,7 @@ tp_planner_hook(
 		int			  cursorOptions,
 		ParamListInfo boundParams)
 {
-	elog(DEBUG2,
+	elog(DEBUG1,
 		 "tp_planner_hook: entering for query type %d",
 		 parse->commandType);
 

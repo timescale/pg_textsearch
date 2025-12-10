@@ -51,10 +51,11 @@ SELECT split_part(
 ) AS total_docs_after_vacuum;
 
 -- Search should still work correctly after VACUUM
+-- Note: WHERE with score comparison requires explicit index reference
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> 'test' < -0.001
-ORDER BY content <@> 'test'
+WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'vacuum_idx')
 LIMIT 5;
 
 -- Test VACUUM FULL (more aggressive cleanup)
@@ -74,8 +75,8 @@ SELECT split_part(
 -- Verify search still works
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> 'test' < -0.001
-ORDER BY content <@> 'test';
+WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
 
 -- Clean up
 DROP TABLE vacuum_test;

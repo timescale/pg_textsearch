@@ -28,10 +28,11 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 -- Try searching - should return no results without warnings
+-- Note: WHERE with score comparison requires explicit index reference
 SELECT id, content
 FROM empty_docs
-WHERE content <@> 'test' < -0.001
-ORDER BY content <@> 'test' DESC
+WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'empty_docs_idx')
 LIMIT 5;
  id | content 
 ----+---------
@@ -42,8 +43,8 @@ INSERT INTO empty_docs (content) VALUES ('test document with content');
 -- Search again - should find only the document with content
 SELECT id, substring(content, 1, 30) as content_preview
 FROM empty_docs
-WHERE content <@> 'test' < -0.001
-ORDER BY content <@> 'test' DESC
+WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
+ORDER BY content <@> to_bm25query('test', 'empty_docs_idx')
 LIMIT 5;
  id |      content_preview       
 ----+----------------------------

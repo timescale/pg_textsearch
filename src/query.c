@@ -1047,25 +1047,38 @@ tp_distance(PG_FUNCTION_ARGS)
 }
 
 /*
- * Fallback scoring function for text <@> text operations.
+ * Scoring function for text <@> text operations.
  *
- * Normally the planner hook transforms text <@> text to text <@> bm25query
- * before this function is ever called. This function only executes when
- * the planner couldn't find a BM25 index for the column.
+ * When used with an Index Scan (ORDER BY content <@> 'query'), the score
+ * is computed by the index AM and cached for retrieval here. This avoids
+ * recomputing the score during SELECT evaluation.
+ *
+ * Falls back to error if no cached score is available (e.g., no BM25 index).
  */
 Datum
 text_text_score(PG_FUNCTION_ARGS)
 {
+	float8 score;
+
 	/*
-	 * This function is only called when the planner hook couldn't resolve
-	 * a BM25 index for the column. Common causes:
+	 * Try to get the score from the index scan cache.
+	 * When Index Scan is used with ORDER BY, tp_gettuple caches the score.
+	 */
+	if (tp_get_current_score(NULL, &score))
+	{
+		PG_RETURN_FLOAT8(score);
+	}
+
+	/*
+	 * No cached score available. This happens when:
 	 * - No BM25 index exists on the column
+	 * - Index Scan is not being used (e.g., Seq Scan path)
 	 * - Column reference is ambiguous (e.g., complex subquery)
 	 */
 	ereport(ERROR,
 			(errcode(ERRCODE_UNDEFINED_OBJECT),
 			 errmsg("no BM25 index found for text <@> text expression"),
-			 errdetail("Create a BM25 index on the column."),
+			 errdetail("Create a BM25 index on the column or use ORDER BY."),
 			 errhint("SELECT col <@> to_bm25query('q', 'idx') AS score")));
 
 	PG_RETURN_NULL(); /* never reached */
