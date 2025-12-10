@@ -1049,32 +1049,13 @@ tp_distance(PG_FUNCTION_ARGS)
 /*
  * Scoring function for text <@> text operations.
  *
- * When used with an Index Scan (ORDER BY content <@> 'query'), the score
- * is computed by the index AM and cached for retrieval here. This avoids
- * recomputing the score during SELECT evaluation.
- *
- * Falls back to error if no cached score is available (e.g., no BM25 index).
+ * This function should never actually be called because the planner hook
+ * transforms all `text <@> text` expressions to `text <@> bm25query`.
+ * We keep this as a fallback that errors with a helpful message.
  */
 Datum
 text_text_score(PG_FUNCTION_ARGS)
 {
-	float8 score;
-
-	/*
-	 * Try to get the score from the index scan cache.
-	 * When Index Scan is used with ORDER BY, tp_gettuple caches the score.
-	 */
-	if (tp_get_current_score(NULL, &score))
-	{
-		PG_RETURN_FLOAT8(score);
-	}
-
-	/*
-	 * No cached score available. This happens when:
-	 * - No BM25 index exists on the column
-	 * - Index Scan is not being used (e.g., Seq Scan path)
-	 * - Column reference is ambiguous (e.g., complex subquery)
-	 */
 	ereport(ERROR,
 			(errcode(ERRCODE_UNDEFINED_OBJECT),
 			 errmsg("no BM25 index found for text <@> text expression"),

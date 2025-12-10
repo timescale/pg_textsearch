@@ -702,6 +702,22 @@ resolve_indexes_in_query(Query *query)
 			}
 		}
 	}
+
+	/* Process subqueries in FROM clause */
+	if (query->rtable)
+	{
+		ListCell *lc;
+
+		foreach (lc, query->rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *)lfirst(lc);
+
+			if (rte->rtekind == RTE_SUBQUERY && rte->subquery)
+			{
+				resolve_indexes_in_query(rte->subquery);
+			}
+		}
+	}
 }
 
 /*

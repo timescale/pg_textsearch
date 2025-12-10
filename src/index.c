@@ -52,103 +52,6 @@
 /* GUC variables defined in mod.c */
 extern int tp_memtable_spill_threshold;
 
-/*
- * Backend-local score cache for text <@> text operator support.
- *
- * When Index Scan returns tuples via tp_gettuple, we store the (TID, score)
- * pair here. The text_text_score function in query.c retrieves the cached
- * score rather than erroring out.
- *
- * This approach allows `ORDER BY content <@> 'hello'` to:
- * 1. Use Index Scan (because text <@> text operator is in opclass)
- * 2. Return correct scores (from this cache) when SELECT evaluates the expr
- *
- * We store the most recent scores in a circular buffer to handle cases
- * where multiple tuples might be fetched before expression evaluation.
- */
-#define TP_SCORE_CACHE_SIZE 16
-
-typedef struct TpScoreCacheEntry
-{
-	ItemPointerData tid;
-	float8			score;
-	bool			valid;
-} TpScoreCacheEntry;
-
-static TpScoreCacheEntry tp_score_cache[TP_SCORE_CACHE_SIZE];
-static int				 tp_score_cache_next = 0;
-
-/* Most recent score for cases where TID lookup is not possible */
-static float8 tp_most_recent_score = 0.0;
-static bool	  tp_most_recent_valid = false;
-
-/*
- * Store a score for the given TID in the cache.
- * Called by tp_gettuple when returning each result.
- */
-void
-tp_store_current_score(ItemPointer tid, float8 score)
-{
-	TpScoreCacheEntry *entry = &tp_score_cache[tp_score_cache_next];
-
-	ItemPointerCopy(tid, &entry->tid);
-	entry->score = score;
-	entry->valid = true;
-
-	tp_score_cache_next = (tp_score_cache_next + 1) % TP_SCORE_CACHE_SIZE;
-
-	/* Also store as most recent for simple retrieval */
-	tp_most_recent_score = score;
-	tp_most_recent_valid = true;
-}
-
-/*
- * Retrieve a cached score for the given TID.
- * If tid is NULL, returns the most recently stored score.
- * Returns true if found, false otherwise.
- * Called by text_text_score in query.c.
- */
-bool
-tp_get_current_score(ItemPointer tid, float8 *score)
-{
-	/* If no TID provided, return most recent score */
-	if (tid == NULL)
-	{
-		if (tp_most_recent_valid)
-		{
-			*score = tp_most_recent_score;
-			return true;
-		}
-		return false;
-	}
-
-	/* Search cache by TID */
-	for (int i = 0; i < TP_SCORE_CACHE_SIZE; i++)
-	{
-		TpScoreCacheEntry *entry = &tp_score_cache[i];
-
-		if (entry->valid && ItemPointerEquals(&entry->tid, tid))
-		{
-			*score = entry->score;
-			return true;
-		}
-	}
-	return false;
-}
-
-/*
- * Clear all entries in the score cache.
- * Called at start of new scans.
- */
-void
-tp_clear_current_score(void)
-{
-	for (int i = 0; i < TP_SCORE_CACHE_SIZE; i++)
-		tp_score_cache[i].valid = false;
-	tp_score_cache_next	 = 0;
-	tp_most_recent_valid = false;
-}
-
 /* Local helper functions */
 static char *tp_get_qualified_index_name(Relation indexRelation);
 static void
@@ -2143,9 +2046,6 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
 			 scan->xs_heaptid.ip_posid,
 			 bm25_score);
-
-		/* Cache score for text <@> text operator evaluation in SELECT */
-		tp_store_current_score(&scan->xs_heaptid, (float8)bm25_score);
 	}
 
 	/* Move to next position */

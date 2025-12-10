@@ -64,11 +64,19 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-3.4064
- id | category |  score  
-----+----------+---------
-  6 | config   | -3.4064
-(1 row)
+ id |  category  |  score  
+----+------------+---------
+  6 | config     | -3.4064
+  1 | web        |  0.0000
+  2 | api        |  0.0000
+  3 | docs       |  0.0000
+  4 | system     |  0.0000
+  5 | logs       |  0.0000
+  7 | technical  |  0.0000
+  8 | mixed      |  0.0000
+  9 | scientific |  0.0000
+ 10 | json       |  0.0000
+(10 rows)
 
 -- Test 3: Search for long path components
 SELECT * FROM (
@@ -79,13 +87,19 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-4.9159
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-4.4319
  id |                         content_preview                         |  score  
 ----+-----------------------------------------------------------------+---------
   5 | Log file: /var/log/postgresql/tapir-extension/performance-mo... | -4.9159
   4 | Error in file /usr/local/lib/postgresql/extensions/tapir/src... | -4.4319
-(2 rows)
+  1 | Visit our website at https://www.example-company.com/product... |  0.0000
+  2 | API endpoint: https://api.search-service.example.org/v2/docu... |  0.0000
+  3 | Documentation available at https://docs.postgresql-extension... |  0.0000
+  6 | PostgreSQL extension configuration parameter shared_preload_... |  0.0000
+  7 | Function name: tp_calculate_bm25_relevance_score_with_term_f... |  0.0000
+  8 | Our advanced information retrieval system uses BM25 scoring ... |  0.0000
+  9 | The antidisestablishmentarianism movement was characterized ... |  0.0000
+ 10 | Configuration: {"search_engine":"tapir","algorithms":{"prima... |  0.0000
+(10 rows)
 
 -- Test 4: Test vectorization of very long URLs
 SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
@@ -109,11 +123,6 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.6423
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3640
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.7705
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.5925
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.5925
  id |  score  
 ----+---------
   8 | -1.6423
@@ -121,7 +130,12 @@ NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.5925
   1 | -0.7705
   6 | -0.5925
   7 | -0.5925
-(5 rows)
+  2 |  0.0000
+  3 |  0.0000
+  4 |  0.0000
+  5 |  0.0000
+  9 |  0.0000
+(10 rows)
 
 -- Test 7: Performance test with multiple long term queries
 SELECT * FROM (
@@ -134,15 +148,19 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY multi_term_score, id;
-NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-4.3853
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.8648
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.7182
- id | category | multi_term_score 
-----+----------+------------------
-  6 | config   |          -4.3853
-  8 | mixed    |          -0.8648
- 10 | json     |          -0.7182
-(3 rows)
+ id |  category  | multi_term_score 
+----+------------+------------------
+  6 | config     |          -4.3853
+  8 | mixed      |          -0.8648
+ 10 | json       |          -0.7182
+  1 | web        |           0.0000
+  2 | api        |           0.0000
+  3 | docs       |           0.0000
+  4 | system     |           0.0000
+  5 | logs       |           0.0000
+  7 | technical  |           0.0000
+  9 | scientific |           0.0000
+(10 rows)
 
 -- Test 8: Test URL tokenization specifics
 SELECT
@@ -168,15 +186,19 @@ SELECT * FROM (
     LIMIT 10
 ) AS subquery
 ORDER BY score, id;
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-5.5076
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.5699
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.5143
  id |                        preview                        |  score  
 ----+-------------------------------------------------------+---------
  11 | This document contains a ridiculously long compoun... | -5.5076
   3 | Documentation available at https://docs.postgresql... | -1.5699
   7 | Function name: tp_calculate_bm25_relevance_score_w... | -1.5143
-(3 rows)
+  1 | Visit our website at https://www.example-company.c... |  0.0000
+  2 | API endpoint: https://api.search-service.example.o... |  0.0000
+  5 | Log file: /var/log/postgresql/tapir-extension/perf... |  0.0000
+  6 | PostgreSQL extension configuration parameter share... |  0.0000
+  8 | Our advanced information retrieval system uses BM2... |  0.0000
+  9 | The antidisestablishmentarianism movement was char... |  0.0000
+ 10 | Configuration: {"search_engine":"tapir","algorithm... |  0.0000
+(10 rows)
 
 -- Test 10: Memory usage statistics after indexing long strings
 SELECT
