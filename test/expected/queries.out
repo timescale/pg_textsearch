@@ -167,26 +167,7 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.2651
 
 -- Test 6: Batch search with different queries
 -- Note: Uses explicit index name because query text comes from a subquery
-EXPLAIN (COSTS OFF)
-WITH search_terms AS (
-    SELECT unnest(ARRAY['database', 'machine learning', 'search algorithms', 'text mining']) as term
-)
-SELECT s.term, a.title, ROUND((a.content <@> to_bm25query(s.term, 'articles_tapir_idx'))::numeric, 4) as score
-FROM search_terms s
-CROSS JOIN articles a
-ORDER BY s.term, a.content <@> to_bm25query(s.term, 'articles_tapir_idx'), a.title;
-                                                                                                                        QUERY PLAN                                                                                                                         
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Sort
-   Sort Key: (unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), ((a.content <@> to_bm25query((unnest('{database,"machine learning","search algorithms","text mining"}'::text[])), 'articles_tapir_idx'::text))), a.title
-   ->  Nested Loop
-         ->  Seq Scan on articles a
-               Disabled: true
-         ->  Materialize
-               ->  ProjectSet
-                     ->  Result
-(8 rows)
-
+-- Note: Query plan varies by PG version so EXPLAIN is skipped
 -- Test scoring consistency for multi-term query (implicit index resolution)
 -- Note: standalone_results uses explicit index name since it has a WHERE clause
 \echo 'Testing ORDER BY vs standalone scoring for multi-term queries'
