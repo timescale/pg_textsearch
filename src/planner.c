@@ -131,14 +131,6 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	cache->text_text_operator_oid = OpernameGetOprid(opname, TEXTOID, TEXTOID);
 	list_free(opname);
 
-	elog(DEBUG2,
-		 "tp_planner_hook: bm25_am=%u, tpquery_type=%u, "
-		 "text_tpquery_op=%u, text_text_op=%u",
-		 cache->bm25_am_oid,
-		 cache->tpquery_type_oid,
-		 cache->text_tpquery_operator_oid,
-		 cache->text_text_operator_oid);
-
 	return true;
 }
 
@@ -415,11 +407,6 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 											copyObject(left), new_const);
 									new_opexpr->location = opexpr->location;
 
-									elog(DEBUG2,
-										 "tp_planner: resolved tpquery "
-										 "index_oid=%u",
-										 index_oid);
-
 									return (Node *)new_opexpr;
 								}
 							}
@@ -496,11 +483,6 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 							new_opexpr->location = opexpr->location;
 
 							pfree(query_text);
-
-							elog(DEBUG2,
-								 "tp_planner: transformed text <@> text "
-								 "to text <@> bm25query, index_oid=%u",
-								 index_oid);
 
 							return (Node *)new_opexpr;
 						}
@@ -615,7 +597,6 @@ tp_planner_hook(
 void
 tp_planner_hook_init(void)
 {
-	elog(DEBUG2, "tp_planner_hook_init: installing planner hook");
 	prev_planner_hook = planner_hook;
 	planner_hook	  = tp_planner_hook;
 }

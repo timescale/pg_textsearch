@@ -403,14 +403,7 @@ tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 	 */
 	if (get_rel_relkind(query_index_oid) == RELKIND_PARTITIONED_INDEX &&
 		oid_inherits_from(scan_index_oid, query_index_oid))
-	{
-		elog(DEBUG2,
-			 "tp_rescan: partition index %u is child of partitioned "
-			 "index %u",
-			 scan_index_oid,
-			 query_index_oid);
 		return;
-	}
 
 	/*
 	 * Attribute-based matching for TimescaleDB hypertables and other cases
@@ -419,13 +412,7 @@ tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 	 * and both are BM25 indexes on the same column.
 	 */
 	if (indexes_match_by_attribute(scan_index_oid, query_index_oid))
-	{
-		elog(DEBUG2,
-			 "tp_rescan: index %u matches %u by attribute (hypertable/child)",
-			 scan_index_oid,
-			 query_index_oid);
 		return;
-	}
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1977,11 +1964,6 @@ tp_costestimate(
 	GenericCosts	costs;
 	TpIndexMetaPage metap;
 	double			num_tuples = TP_DEFAULT_TUPLE_ESTIMATE;
-
-	elog(DEBUG1,
-		 "tp_costestimate: called for index %u, indexorderbys=%d",
-		 path->indexinfo->indexoid,
-		 path->indexorderbys ? list_length(path->indexorderbys) : -1);
 
 	/* Never use index without ORDER BY clause */
 	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
