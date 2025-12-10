@@ -230,93 +230,32 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 }
 
 /*
- * Check if scan_index is a descendant of query_index via pg_inherits.
- * Walks up the inheritance chain to handle multi-level partitions
- * (sub-partitions).
- *
- * For example, with a 3-level hierarchy:
- *   top_idx -> sub_idx -> leaf_idx
- * is_partition_of(leaf_idx, top_idx) returns true by walking:
- *   leaf_idx -> sub_idx -> top_idx (found!)
+ * Maximum depth for walking inheritance hierarchies.
+ * Prevents infinite loops in case of catalog corruption.
+ * 32 levels is more than enough for any real partition hierarchy.
  */
-static bool
-is_partition_of(Oid scan_index_oid, Oid query_index_oid)
-{
-	Relation inhrel;
-	Oid		 current_oid = scan_index_oid;
-	bool	 found		 = false;
-
-	/*
-	 * Limit iterations to prevent infinite loops in case of catalog
-	 * corruption. 32 levels should be more than enough for any real
-	 * partition hierarchy.
-	 */
-	int max_depth = 32;
-
-	inhrel = table_open(InheritsRelationId, AccessShareLock);
-
-	while (max_depth-- > 0)
-	{
-		SysScanDesc scan;
-		ScanKeyData key;
-		HeapTuple	tuple;
-		Oid			parent_oid = InvalidOid;
-
-		ScanKeyInit(
-				&key,
-				Anum_pg_inherits_inhrelid,
-				BTEqualStrategyNumber,
-				F_OIDEQ,
-				ObjectIdGetDatum(current_oid));
-
-		scan = systable_beginscan(
-				inhrel, InheritsRelidSeqnoIndexId, true, NULL, 1, &key);
-
-		tuple = systable_getnext(scan);
-		if (HeapTupleIsValid(tuple))
-		{
-			Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
-			parent_oid				 = inhform->inhparent;
-		}
-
-		systable_endscan(scan);
-
-		if (!OidIsValid(parent_oid))
-			break; /* Reached top of hierarchy, not found */
-
-		if (parent_oid == query_index_oid)
-		{
-			found = true;
-			break;
-		}
-
-		/* Move up the hierarchy */
-		current_oid = parent_oid;
-	}
-
-	table_close(inhrel, AccessShareLock);
-
-	return found;
-}
+#define MAX_INHERITANCE_DEPTH 32
 
 /*
- * Check if scan_table is a descendant of query_table via pg_inherits.
- * Similar to is_partition_of but for tables, not indexes.
+ * Check if child_oid inherits from ancestor_oid via pg_inherits.
+ * Walks up the inheritance chain to handle multi-level partitions.
+ *
+ * Works for both indexes (partition indexes) and tables (inheritance).
  */
 static bool
-table_inherits_from(Oid scan_table_oid, Oid query_table_oid)
+oid_inherits_from(Oid child_oid, Oid ancestor_oid)
 {
 	Relation inhrel;
-	Oid		 current_oid = scan_table_oid;
+	Oid		 current_oid = child_oid;
 	bool	 found		 = false;
-	int		 max_depth	 = 32;
+	int		 depth		 = MAX_INHERITANCE_DEPTH;
 
-	if (scan_table_oid == query_table_oid)
+	if (child_oid == ancestor_oid)
 		return true;
 
 	inhrel = table_open(InheritsRelationId, AccessShareLock);
 
-	while (max_depth-- > 0)
+	while (depth-- > 0)
 	{
 		SysScanDesc scan;
 		ScanKeyData key;
@@ -343,9 +282,9 @@ table_inherits_from(Oid scan_table_oid, Oid query_table_oid)
 		systable_endscan(scan);
 
 		if (!OidIsValid(parent_oid))
-			break;
+			break; /* Reached top of hierarchy */
 
-		if (parent_oid == query_table_oid)
+		if (parent_oid == ancestor_oid)
 		{
 			found = true;
 			break;
@@ -428,7 +367,7 @@ indexes_match_by_attribute(Oid scan_index_oid, Oid query_index_oid)
 
 		if (scan_am == bm25_am_oid && query_am == bm25_am_oid &&
 			scan_attnum == query_attnum &&
-			table_inherits_from(scan_heap_oid, query_heap_oid))
+			oid_inherits_from(scan_heap_oid, query_heap_oid))
 		{
 			result = true;
 		}
@@ -463,7 +402,7 @@ tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 	 * partition index (child of the partitioned index).
 	 */
 	if (get_rel_relkind(query_index_oid) == RELKIND_PARTITIONED_INDEX &&
-		is_partition_of(scan_index_oid, query_index_oid))
+		oid_inherits_from(scan_index_oid, query_index_oid))
 	{
 		elog(DEBUG2,
 			 "tp_rescan: partition index %u is child of partitioned "

@@ -18,6 +18,7 @@
 #include <catalog/pg_opclass.h>
 #include <catalog/pg_type.h>
 #include <catalog/pg_type_d.h>
+#include <commands/defrem.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <optimizer/optimizer.h>
@@ -95,7 +96,6 @@ static bool
 lookup_bm25_oids_internal(BM25OidCache *cache)
 {
 	HeapTuple tuple;
-	Oid		  namespace_oid;
 	List	 *opname;
 
 	memset(cache, 0, sizeof(BM25OidCache));
@@ -112,18 +112,10 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 		return false;
 
 	/*
-	 * Look up bm25query type in public schema (where our extension creates
-	 * it).
+	 * Look up bm25query type using the search path. This handles cases where
+	 * the extension is installed in a non-public schema.
 	 */
-	namespace_oid = get_namespace_oid("public", true);
-	if (OidIsValid(namespace_oid))
-	{
-		cache->tpquery_type_oid = GetSysCacheOid2(
-				TYPENAMENSP,
-				Anum_pg_type_oid,
-				CStringGetDatum("bm25query"),
-				ObjectIdGetDatum(namespace_oid));
-	}
+	cache->tpquery_type_oid = TypenameGetTypid("bm25query");
 
 	if (!OidIsValid(cache->tpquery_type_oid))
 		return false;
@@ -166,23 +158,19 @@ get_bm25_oids(BM25OidCache *cache)
 		CacheRegisterSyscacheCallback(
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
 		invalidation_registered = true;
-		elog(DEBUG1, "get_bm25_oids: registered invalidation callbacks");
 	}
 
 	/* Fast path: use cached result */
 	switch (oid_cache_state)
 	{
 	case CACHE_NOT_FOUND:
-		elog(DEBUG1, "get_bm25_oids: cache state NOT_FOUND, returning false");
 		return false;
 
 	case CACHE_VALID:
-		elog(DEBUG1, "get_bm25_oids: cache state VALID, using cached OIDs");
 		*cache = cached_oids;
 		return true;
 
 	case CACHE_UNKNOWN:
-		elog(DEBUG1, "get_bm25_oids: cache state UNKNOWN, doing lookup");
 		/* Fall through to lookup */
 		break;
 	}
@@ -190,13 +178,11 @@ get_bm25_oids(BM25OidCache *cache)
 	/* Do the actual lookup */
 	if (!lookup_bm25_oids_internal(cache))
 	{
-		elog(DEBUG1, "get_bm25_oids: lookup failed, setting NOT_FOUND");
 		oid_cache_state = CACHE_NOT_FOUND;
 		return false;
 	}
 
 	/* Cache the result */
-	elog(DEBUG1, "get_bm25_oids: lookup succeeded, caching OIDs");
 	cached_oids		= *cache;
 	oid_cache_state = CACHE_VALID;
 	return true;
@@ -249,7 +235,7 @@ find_bm25_index_for_column_internal(
 				/*
 				 * For partitioned indexes (RELKIND_PARTITIONED_INDEX),
 				 * return the parent index OID. The executor will map this
-				 * to partition indexes at scan time via is_partition_of()
+				 * to partition indexes at scan time via oid_inherits_from()
 				 * in tp_rescan_validate_query_index().
 				 */
 
@@ -298,15 +284,7 @@ find_bm25_index_for_column_internal(
 Oid
 tp_find_bm25_index_for_column(Oid relid, AttrNumber attnum)
 {
-	HeapTuple tuple;
-	Oid		  bm25_am_oid = InvalidOid;
-
-	tuple = SearchSysCache1(AMNAME, CStringGetDatum("bm25"));
-	if (HeapTupleIsValid(tuple))
-	{
-		bm25_am_oid = ((Form_pg_am)GETSTRUCT(tuple))->oid;
-		ReleaseSysCache(tuple);
-	}
+	Oid bm25_am_oid = get_am_oid("bm25", true);
 
 	return find_bm25_index_for_column_internal(relid, attnum, bm25_am_oid);
 }
@@ -383,49 +361,23 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 	{
 		OpExpr *opexpr = (OpExpr *)node;
 
-		elog(DEBUG2,
-			 "tp_planner_hook: found OpExpr opno=%u, looking for=%u",
-			 opexpr->opno,
-			 oids->text_tpquery_operator_oid);
-
 		if (opexpr->opno == oids->text_tpquery_operator_oid &&
 			list_length(opexpr->args) == 2)
 		{
 			Node *left	= linitial(opexpr->args);
 			Node *right = lsecond(opexpr->args);
 
-			elog(DEBUG2,
-				 "tp_planner_hook: matched <@> operator, left=%d "
-				 "right=%d",
-				 nodeTag(left),
-				 nodeTag(right));
-
 			/*
 			 * If the right arg is a function call (e.g., to_bm25query()),
 			 * try to simplify it to a constant first.
 			 */
 			if (IsA(right, FuncExpr))
-			{
-				elog(DEBUG2,
-					 "tp_planner_hook: right is FuncExpr, trying "
-					 "eval_const_expressions");
 				right = eval_const_expressions(NULL, right);
-				elog(DEBUG2,
-					 "tp_planner_hook: after eval, right=%d",
-					 nodeTag(right));
-			}
 
 			/* Check if right arg is a tpquery constant */
 			if (IsA(right, Const))
 			{
 				Const *constNode = (Const *)right;
-
-				elog(DEBUG2,
-					 "tp_planner_hook: Const type=%u, expected=%u, "
-					 "isnull=%d",
-					 constNode->consttype,
-					 oids->tpquery_type_oid,
-					 constNode->constisnull);
 
 				if (constNode->consttype == oids->tpquery_type_oid &&
 					!constNode->constisnull)
@@ -433,17 +385,9 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 					TpQuery *tpquery = (TpQuery *)DatumGetPointer(
 							constNode->constvalue);
 
-					elog(DEBUG2,
-						 "tp_planner_hook: tpquery index_oid=%u",
-						 tpquery->index_oid);
-
 					/* Check if unresolved (InvalidOid) */
 					if (!OidIsValid(tpquery->index_oid))
 					{
-						elog(DEBUG2,
-							 "tp_planner_hook: index unresolved, "
-							 "trying to find from Var");
-
 						/* Try to find index from left operand */
 						if (IsA(left, Var))
 						{
@@ -454,24 +398,11 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 							if (get_var_relation_and_attnum(
 										var, context->query, &relid, &attnum))
 							{
-								Oid index_oid;
-
-								elog(DEBUG2,
-									 "tp_planner_hook: looking for "
-									 "bm25 index on rel=%u col=%d",
-									 relid,
-									 attnum);
-
-								index_oid =
+								Oid index_oid =
 										find_bm25_index_for_column_internal(
 												relid,
 												attnum,
 												oids->bm25_am_oid);
-
-								elog(DEBUG2,
-									 "tp_planner_hook: found "
-									 "index_oid=%u",
-									 index_oid);
 
 								if (OidIsValid(index_oid))
 								{
@@ -480,41 +411,31 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 									OpExpr *new_opexpr;
 									Const  *new_const;
 
-									elog(DEBUG2,
-										 "tp_planner_hook: creating "
-										 "resolved tpquery with oid=%u",
-										 index_oid);
-
 									new_const = create_resolved_tpquery_const(
 											constNode, index_oid);
 
-									new_opexpr = makeNode(OpExpr);
-									memcpy(new_opexpr, opexpr, sizeof(OpExpr));
+									new_opexpr			 = makeNode(OpExpr);
+									new_opexpr->opno	 = opexpr->opno;
+									new_opexpr->opfuncid = opexpr->opfuncid;
+									new_opexpr->opresulttype =
+											opexpr->opresulttype;
+									new_opexpr->opretset = opexpr->opretset;
+									new_opexpr->opcollid = opexpr->opcollid;
+									new_opexpr->inputcollid =
+											opexpr->inputcollid;
 									new_opexpr->args = list_make2(
 											copyObject(left), new_const);
+									new_opexpr->location = opexpr->location;
+
+									elog(DEBUG2,
+										 "tp_planner: resolved tpquery "
+										 "index_oid=%u",
+										 index_oid);
 
 									return (Node *)new_opexpr;
 								}
 							}
-							else
-							{
-								elog(DEBUG2,
-									 "tp_planner_hook: could not get "
-									 "relation/attnum from Var");
-							}
 						}
-						else
-						{
-							elog(DEBUG2,
-								 "tp_planner_hook: left is not a Var "
-								 "(type=%d)",
-								 nodeTag(left));
-						}
-					}
-					else
-					{
-						elog(DEBUG2,
-							 "tp_planner_hook: index already resolved");
 					}
 				}
 			}
@@ -588,12 +509,10 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 
 							pfree(query_text);
 
-							elog(DEBUG1,
-								 "tp_planner_hook: transformed text <@> text "
-								 "to text <@> bm25query with index_oid=%u, "
-								 "new_opno=%u",
-								 index_oid,
-								 new_opexpr->opno);
+							elog(DEBUG2,
+								 "tp_planner: transformed text <@> text "
+								 "to text <@> bm25query, index_oid=%u",
+								 index_oid);
 
 							return (Node *)new_opexpr;
 						}
@@ -620,27 +539,6 @@ resolve_indexes_in_query(Query *query)
 	context.query	  = query;
 	context.oid_cache = &oid_cache;
 
-	/* Debug: Log sortClause info before transformation */
-	if (query->sortClause)
-	{
-		ListCell *lc;
-
-		elog(DEBUG1,
-			 "resolve_indexes: sortClause has %d entries",
-			 list_length(query->sortClause));
-		foreach (lc, query->sortClause)
-		{
-			SortGroupClause *sgc = (SortGroupClause *)lfirst(lc);
-
-			elog(DEBUG1,
-				 "resolve_indexes: sortClause entry: tleSortGroupRef=%u, "
-				 "eqop=%u, sortop=%u",
-				 sgc->tleSortGroupRef,
-				 sgc->eqop,
-				 sgc->sortop);
-		}
-	}
-
 	/* Process the target list (SELECT and ORDER BY expressions) */
 	if (query->targetList)
 	{
@@ -649,25 +547,6 @@ resolve_indexes_in_query(Query *query)
 		foreach (lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *)lfirst(lc);
-
-			elog(DEBUG1,
-				 "resolve_indexes: processing tle resno=%d, "
-				 "ressortgroupref=%u, resjunk=%d, exprType=%d",
-				 tle->resno,
-				 tle->ressortgroupref,
-				 tle->resjunk,
-				 tle->expr ? nodeTag(tle->expr) : 0);
-
-			/* If it's an OpExpr, log the opno */
-			if (tle->expr && IsA(tle->expr, OpExpr))
-			{
-				OpExpr *opexpr = (OpExpr *)tle->expr;
-
-				elog(DEBUG1,
-					 "resolve_indexes: tle %d has OpExpr opno=%u",
-					 tle->resno,
-					 opexpr->opno);
-			}
 
 			tle->expr = (Expr *)
 					resolve_index_mutator((Node *)tle->expr, &context);
@@ -730,10 +609,6 @@ tp_planner_hook(
 		int			  cursorOptions,
 		ParamListInfo boundParams)
 {
-	elog(DEBUG1,
-		 "tp_planner_hook: entering for query type %d",
-		 parse->commandType);
-
 	/* Try to resolve unresolved indexes before planning */
 	resolve_indexes_in_query(parse);
 

@@ -95,13 +95,28 @@ lookup_cached_idf(QueryScoreCache *cache, const char *term, uint32 *doc_freq)
 
 /*
  * Add a term's IDF to the cache.
+ * Warns once per query if the cache limit is exceeded.
  */
 static void
 cache_term_idf(
 		QueryScoreCache *cache, const char *term, uint32 doc_freq, float4 idf)
 {
-	if (!cache || cache->num_terms >= MAX_CACHED_TERMS)
+	if (!cache)
 		return;
+
+	if (cache->num_terms >= MAX_CACHED_TERMS)
+	{
+		/* Warn once when limit is first exceeded */
+		if (cache->num_terms == MAX_CACHED_TERMS)
+		{
+			ereport(WARNING,
+					(errmsg("BM25 IDF cache limit exceeded (%d terms), "
+							"additional terms will not be cached",
+							MAX_CACHED_TERMS)));
+			cache->num_terms++; /* Prevent repeated warnings */
+		}
+		return;
+	}
 
 	strlcpy(cache->terms[cache->num_terms].term, term, NAMEDATALEN);
 	cache->terms[cache->num_terms].doc_freq = doc_freq;
