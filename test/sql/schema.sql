@@ -67,7 +67,7 @@ CREATE TABLE bar.baz(content TEXT NOT NULL);
 CREATE INDEX ON bar.baz USING bm25(content)
   WITH (text_config='english');
 
--- This INSERT should work but currently fails with "index not found"
+-- INSERTs work correctly with schema-qualified tables
 INSERT INTO bar.baz VALUES('really');
 INSERT INTO bar.baz VALUES('testing schemas');
 INSERT INTO bar.baz VALUES('another document');

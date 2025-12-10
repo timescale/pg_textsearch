@@ -30,11 +30,13 @@ CREATE INDEX docs_bm25_idx ON docs USING bm25(content) WITH (text_config='englis
 SET enable_seqscan = off;
 
 -- =============================================================================
--- LIMITATION 1: JOINs with score in SELECT require explicit to_bm25query()
--- Implicit text <@> text only works for ORDER BY, not score projection.
+-- LIMITATION 1: JOINs with implicit scoring don't use the index
+-- The query works but falls back to seq scan + standalone scoring.
+-- This means it returns all documents (non-matching get score 0) vs explicit
+-- to_bm25query() which uses the index and only returns matching documents.
 -- =============================================================================
 
-\echo 'Test: JOIN with implicit score projection - should error'
+\echo 'Test: JOIN with implicit score - works but returns all docs (no index)'
 SELECT d.id, d.content, c.category,
        ROUND((d.content <@> 'database')::numeric, 4) as score
 FROM docs d
