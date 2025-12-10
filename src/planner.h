@@ -23,9 +23,3 @@ PlannedStmt *tp_planner_hook(
 		const char	 *query_string,
 		int			  cursorOptions,
 		ParamListInfo boundParams);
-
-/*
- * Find a BM25 index on a specific column of a relation.
- * Returns the index OID, or InvalidOid if no suitable index found.
- */
-Oid tp_find_bm25_index_for_column(Oid relid, AttrNumber attnum);

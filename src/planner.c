@@ -278,18 +278,6 @@ find_bm25_index_for_column_internal(
 }
 
 /*
- * Public API: Find a BM25 index on a specific column of a relation.
- * Looks up bm25_am_oid fresh to handle DROP/CREATE EXTENSION cycles.
- */
-Oid
-tp_find_bm25_index_for_column(Oid relid, AttrNumber attnum)
-{
-	Oid bm25_am_oid = get_am_oid("bm25", true);
-
-	return find_bm25_index_for_column_internal(relid, attnum, bm25_am_oid);
-}
-
-/*
  * Extract the relation OID and attribute number from a Var node,
  * handling range table entries.
  */
