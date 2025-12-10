@@ -44,9 +44,7 @@ LIMIT 5;
  id |            content             |  category  |  score  
 ----+--------------------------------+------------+---------
   1 | postgresql database management | technology | -0.9808
-  2 | machine learning algorithms    | science    |  0.0000
-  3 | text search and retrieval      | technology |  0.0000
-(3 rows)
+(1 row)
 
 -- The workaround is to use explicit to_bm25query() for score projection
 \echo 'Test: JOIN with explicit to_bm25query - works correctly'
@@ -84,13 +82,12 @@ ORDER BY content <@> 'database'
 LIMIT 3;
 WARNING:  multiple BM25 indexes exist on the same column
 HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
-                              QUERY PLAN                               
------------------------------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'docs_bm25_idx:database'::bm25query))
-         ->  Seq Scan on docs
-(4 rows)
+   ->  Index Scan using docs_bm25_simple_idx on docs
+         Order By: (content <@> 'docs_bm25_idx:database'::bm25query)
+(3 rows)
 
 -- Explicit index selection gives user control
 EXPLAIN (COSTS OFF)
@@ -144,13 +141,12 @@ SELECT id, content <@> 'database' as score
 FROM docs
 ORDER BY content <@> 'database'
 LIMIT 3;
-                              QUERY PLAN                               
------------------------------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'docs_bm25_idx:database'::bm25query))
-         ->  Seq Scan on docs
-(4 rows)
+   ->  Index Scan using docs_bm25_idx on docs
+         Order By: (content <@> 'docs_bm25_idx:database'::bm25query)
+(3 rows)
 
 -- to_bm25query(): properly uses index scan
 EXPLAIN (COSTS OFF)

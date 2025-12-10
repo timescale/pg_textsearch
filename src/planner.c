@@ -1,9 +1,15 @@
 /*
- * planner_hook.c - Planner hook for implicit BM25 index resolution
+ * planner.c - Parse analysis hook for implicit BM25 index resolution
  *
  * When a query uses the <@> operator with an unresolved tpquery (index_oid
  * is InvalidOid), this hook identifies the column being scored and finds
  * a suitable BM25 index to use.
+ *
+ * We use post_parse_analyze_hook rather than planner_hook because:
+ * 1. The transformation must happen BEFORE path generation in the planner
+ * 2. post_parse_analyze_hook runs right after parsing, before planning
+ * 3. This allows the planner to see the transformed expressions and use
+ *    index scans for ORDER BY with the <@> operator
  */
 
 #include <postgres.h>
@@ -22,7 +28,7 @@
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <optimizer/optimizer.h>
-#include <optimizer/planner.h>
+#include <parser/analyze.h>
 #include <parser/parse_oper.h>
 #include <parser/parsetree.h>
 #include <utils/builtins.h>
@@ -37,8 +43,8 @@
 #include "planner.h"
 #include "query.h"
 
-/* Previous planner hook in chain */
-static planner_hook_type prev_planner_hook = NULL;
+/* Previous post_parse_analyze hook in chain */
+static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 
 /*
  * Structure to hold looked-up OIDs for a query
@@ -465,7 +471,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 									oids->tpquery_type_oid,
 									-1,
 									InvalidOid,
-									VARSIZE(tpquery),
+									-1, /* varlena type */
 									PointerGetDatum(tpquery),
 									false,
 									false);
@@ -477,7 +483,7 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 							new_opexpr->opresulttype = FLOAT8OID;
 							new_opexpr->opretset	 = false;
 							new_opexpr->opcollid	 = InvalidOid;
-							new_opexpr->inputcollid	 = InvalidOid;
+							new_opexpr->inputcollid	 = opexpr->inputcollid;
 							new_opexpr->args		 = list_make2(
 									copyObject(left), tpquery_const);
 							new_opexpr->location = opexpr->location;
@@ -570,25 +576,24 @@ resolve_indexes_in_query(Query *query)
 }
 
 /*
- * Main planner hook function
+ * Post parse analysis hook function
+ *
+ * This hook runs immediately after parsing and semantic analysis, before any
+ * planning occurs. By transforming text <@> text to text <@> bm25query here,
+ * the planner sees the transformed expressions and can generate index paths.
  */
-PlannedStmt *
-tp_planner_hook(
-		Query		 *parse,
-		const char	 *query_string,
-		int			  cursorOptions,
-		ParamListInfo boundParams)
+static void
+tp_post_parse_analyze_hook(
+		ParseState *pstate	pg_attribute_unused(),
+		Query			   *query,
+		JumbleState *jstate pg_attribute_unused())
 {
 	/* Try to resolve unresolved indexes before planning */
-	resolve_indexes_in_query(parse);
+	resolve_indexes_in_query(query);
 
-	/* Call previous hook or standard planner */
-	if (prev_planner_hook)
-		return prev_planner_hook(
-				parse, query_string, cursorOptions, boundParams);
-	else
-		return standard_planner(
-				parse, query_string, cursorOptions, boundParams);
+	/* Call previous hook if exists */
+	if (prev_post_parse_analyze_hook)
+		prev_post_parse_analyze_hook(pstate, query, jstate);
 }
 
 /*
@@ -597,6 +602,6 @@ tp_planner_hook(
 void
 tp_planner_hook_init(void)
 {
-	prev_planner_hook = planner_hook;
-	planner_hook	  = tp_planner_hook;
+	prev_post_parse_analyze_hook = post_parse_analyze_hook;
+	post_parse_analyze_hook		 = tp_post_parse_analyze_hook;
 }

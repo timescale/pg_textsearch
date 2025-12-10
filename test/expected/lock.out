@@ -32,13 +32,12 @@ LIMIT 5;
  id |                content                 
 ----+----------------------------------------
   1 | database systems and concurrent access
-  2 | full text search indexing
-  3 | query optimization techniques
-(3 rows)
+(1 row)
 
 -- Second operation: INSERT in same transaction should upgrade to exclusive lock
 INSERT INTO lock_upgrade_test (content) VALUES
     ('new document about database concurrency');
+WARNING:  Upgrading index lock from shared to exclusive - potential deadlock risk
 -- Verify the insert worked
 SELECT COUNT(*) FROM lock_upgrade_test;
  count 

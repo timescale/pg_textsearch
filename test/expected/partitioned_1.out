@@ -86,14 +86,13 @@ SELECT content FROM partitioned_docs
 WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
 ORDER BY content <@> 'data'
 LIMIT 1;
-                                                                                 QUERY PLAN                                                                                 
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                              QUERY PLAN                                                                              
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((partitioned_docs.content <@> 'partitioned_bm25_idx:data'::bm25query))
-         ->  Seq Scan on partition_2024 partitioned_docs
-               Filter: ((created_at >= 'Mon Jan 01 00:00:00 2024'::timestamp without time zone) AND (created_at < 'Wed Jan 01 00:00:00 2025'::timestamp without time zone))
-(5 rows)
+   ->  Index Scan using partition_2024_content_idx on partition_2024 partitioned_docs
+         Order By: (content <@> 'partitioned_bm25_idx:data'::bm25query)
+         Filter: ((created_at >= 'Mon Jan 01 00:00:00 2024'::timestamp without time zone) AND (created_at < 'Wed Jan 01 00:00:00 2025'::timestamp without time zone))
+(4 rows)
 
 -- Actually execute to verify the query works
 SELECT content FROM partitioned_docs

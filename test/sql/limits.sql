@@ -50,35 +50,31 @@ CREATE INDEX limit_test_idx ON limit_test USING bm25(content) WITH (text_config=
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'database' as score
 FROM limit_test
-ORDER BY 3
+ORDER BY content <@> 'database'
 LIMIT 5;
 
 SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 3
+ORDER BY content <@> 'database'
 LIMIT 5;
 
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
 SELECT title, ROUND((content <@> 'search')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'search'
 LIMIT 1;
 
 -- Test LIMIT 3
 SELECT title, ROUND((content <@> 'optimization')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'optimization'
 LIMIT 3;
 
 -- Test LIMIT 10
 SELECT title, ROUND((content <@> 'algorithm')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'algorithm'
 LIMIT 10;
 
 -- Test 3: LIMIT with WHERE clause (should prevent pushdown for safety)
@@ -87,14 +83,13 @@ EXPLAIN (COSTS OFF)
 SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
-ORDER BY 2
+ORDER BY content <@> 'database system'
 LIMIT 7;
 
 SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
-
 FROM limit_test
 WHERE id > 5
-ORDER BY 2
+ORDER BY content <@> 'database system'
 LIMIT 7;
 
 -- Test 4: No LIMIT (should use default behavior)
@@ -102,16 +97,14 @@ LIMIT 7;
 
 -- Test 5: LIMIT with OFFSET
 SELECT title, ROUND((content <@> 'performance')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'performance'
 LIMIT 5 OFFSET 2;
 
 -- Test 6: Very small LIMIT (edge case)
 SELECT title, ROUND((content <@> 'text')::numeric, 4) as score
-
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'text'
 LIMIT 1;
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -159,7 +152,7 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> 'simple' as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'simple'
 LIMIT 3;
 
 -- Case: Multiple ORDER BY clauses

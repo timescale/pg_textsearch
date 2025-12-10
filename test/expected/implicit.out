@@ -152,20 +152,18 @@ LIMIT 3;
 ----+------------------------
   2 | database system design
   3 | hello database world
-  1 | hello world example
-(3 rows)
+(2 rows)
 
 -- Test 9: Combining implicit text <@> text scoring with ORDER BY
 SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM implicit_docs
 ORDER BY content <@> 'hello', id
 LIMIT 3;
- id |        content         |  score  
-----+------------------------+---------
-  1 | hello world example    | -0.4700
-  3 | hello database world   | -0.4700
-  2 | database system design |  0.0000
-(3 rows)
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
 
 -- Test 10: Prepared statements require explicit index name
 -- Implicit resolution doesn't work because to_bm25query($1) can't be

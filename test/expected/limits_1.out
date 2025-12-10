@@ -48,35 +48,40 @@ NOTICE:  BM25 index build completed: 20 documents, avg_length=6.60, text_config=
 EXPLAIN (COSTS OFF)
 SELECT title, content, content <@> 'database' as score
 FROM limit_test
-ORDER BY 3
+ORDER BY content <@> 'database'
 LIMIT 5;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'limit_test_idx:database'::bm25query))
-         ->  Seq Scan on limit_test
-(4 rows)
+   ->  Index Scan using limit_test_idx on limit_test
+         Order By: (content <@> 'limit_test_idx:database'::bm25query)
+(3 rows)
 
 SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
 FROM limit_test
-ORDER BY 3
+ORDER BY content <@> 'database'
 LIMIT 5;
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
- Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
  Database Architecture | database system architecture with storage and indexing strategies  | -0.9394
  Database Performance  | database optimization strategies for improving query performance   | -0.9394
- Query Optimization    | query optimization techniques for efficient database operations    | -0.9394
  Database Security     | database security measures and access control mechanisms           | -0.9394
+ Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
+ Query Optimization    | query optimization techniques for efficient database operations    | -0.9394
 (5 rows)
 
 -- Test 2: Different LIMIT values
 -- Test LIMIT 1 (should be highly optimized)
 SELECT title, ROUND((content <@> 'search')::numeric, 4) as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'search'
 LIMIT 1;
+NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-1.8610
        title       |  score  
 -------------------+---------
  Search Technology | -1.8610
@@ -85,33 +90,36 @@ LIMIT 1;
 -- Test LIMIT 3
 SELECT title, ROUND((content <@> 'optimization')::numeric, 4) as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'optimization'
 LIMIT 3;
-        title         |  score  
-----------------------+---------
- Query Optimization   | -1.3915
- Database Performance | -1.3915
- Algorithm Design     | -1.3915
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
+       title        |  score  
+--------------------+---------
+ Query Optimization | -1.3915
+ Algorithm Design   | -1.3915
+ System Performance | -1.3915
 (3 rows)
 
 -- Test LIMIT 10
 SELECT title, ROUND((content <@> 'algorithm')::numeric, 4) as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'algorithm'
 LIMIT 10;
-         title         |  score  
------------------------+---------
- Algorithm Design      | -1.3915
- Search Engines        | -1.3074
- Text Processing       | -1.3074
- Machine Learning      | -1.3074
- Search Algorithms     | -1.2328
- Distributed Systems   |  0.0000
- Database Architecture |  0.0000
- Query Optimization    |  0.0000
- Text Analytics        |  0.0000
- Information Systems   |  0.0000
-(10 rows)
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3074
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.2328
+       title       |  score  
+-------------------+---------
+ Algorithm Design  | -1.3915
+ Search Engines    | -1.3074
+ Machine Learning  | -1.3074
+ Text Processing   | -1.3074
+ Search Algorithms | -1.2328
+(5 rows)
 
 -- Test 3: LIMIT with WHERE clause (should prevent pushdown for safety)
 -- This should NOT use LIMIT pushdown due to additional WHERE clause
@@ -119,57 +127,62 @@ EXPLAIN (COSTS OFF)
 SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
-ORDER BY 2
+ORDER BY content <@> 'database system'
 LIMIT 7;
-                                             QUERY PLAN                                             
-----------------------------------------------------------------------------------------------------
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: (round(((content <@> 'limit_test_idx:database system'::bm25query))::numeric, 4))
-         ->  Index Scan using limit_test_pkey on limit_test
-               Index Cond: (id > 5)
-(5 rows)
+   ->  Index Scan using limit_test_idx on limit_test
+         Order By: (content <@> 'limit_test_idx:database system'::bm25query)
+         Filter: (id > 5)
+(4 rows)
 
 SELECT title, ROUND((content <@> 'database system')::numeric, 4) as score
 FROM limit_test
 WHERE id > 5
-ORDER BY 2
+ORDER BY content <@> 'database system'
 LIMIT 7;
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-2.3309
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-2.3309
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,14), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.1663
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
          title         |  score  
 -----------------------+---------
- Database Theory       | -2.3309
  Database Architecture | -2.3309
+ Database Theory       | -2.3309
  System Performance    | -1.3915
  Information Systems   | -1.3915
- Query Optimization    | -0.9394
- Database Performance  | -0.9394
  Database Security     | -0.9394
-(7 rows)
+ Query Optimization    | -0.9394
+(6 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
 -- Note: Query plan varies by PG version - not testing EXPLAIN here
 -- Test 5: LIMIT with OFFSET
 SELECT title, ROUND((content <@> 'performance')::numeric, 4) as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'performance'
 LIMIT 5 OFFSET 2;
-         title         |  score  
------------------------+---------
- Algorithm Design      | -1.8610
- Information Retrieval |  0.0000
- Text Processing       |  0.0000
- Data Mining           |  0.0000
- Machine Learning      |  0.0000
-(5 rows)
+NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.8610
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.8610
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.8610
+        title         |  score  
+----------------------+---------
+ Database Performance | -1.8610
+(1 row)
 
 -- Test 6: Very small LIMIT (edge case)
 SELECT title, ROUND((content <@> 'text')::numeric, 4) as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'text'
 LIMIT 1;
-      title      |  score  
------------------+---------
- Text Processing | -1.7484
+NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-1.7484
+     title      |  score  
+----------------+---------
+ Text Analytics | -1.7484
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -248,15 +261,14 @@ NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
 EXPLAIN (COSTS OFF)
 SELECT title, content <@> 'simple' as score
 FROM limit_test
-ORDER BY 2
+ORDER BY content <@> 'simple'
 LIMIT 3;
-                              QUERY PLAN                              
-----------------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Limit
-   ->  Sort
-         Sort Key: ((content <@> 'limit_test_idx:simple'::bm25query))
-         ->  Seq Scan on limit_test
-(4 rows)
+   ->  Index Scan using limit_test_idx on limit_test
+         Order By: (content <@> 'limit_test_idx:simple'::bm25query)
+(3 rows)
 
 -- Case: Multiple ORDER BY clauses
 -- Tapir requires exactly one ORDER BY, so not using the index here is correct behavior
