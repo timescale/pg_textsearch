@@ -499,40 +499,6 @@ tp_rescan_validate_query_index(Oid query_index_oid, Relation indexRelation)
 }
 
 /*
- * Check if data looks like a valid TpQuery structure.
- * TpQuery has: vl_len_ (4 bytes), index_oid (4 bytes), query_text_len (4
- * bytes) followed by query_text (query_text_len bytes) and a null terminator.
- * Minimum size is offsetof(TpQuery, data) + 1 (for at least null terminator).
- */
-static bool
-tp_is_valid_tpquery(void *data)
-{
-	Size	 size;
-	TpQuery *maybe_query;
-
-	if (VARATT_IS_EXTENDED(data))
-		return false;
-
-	size = VARSIZE_ANY(data);
-	if (size < offsetof(TpQuery, data) + 1)
-		return false;
-
-	/*
-	 * Additional validation: check that query_text_len is reasonable.
-	 * create_tpquery allocates: offsetof(TpQuery, data) + query_text_len + 1
-	 * The +1 is for the null terminator.
-	 */
-	maybe_query = (TpQuery *)data;
-	if (maybe_query->query_text_len < 0)
-		return false;
-	if ((Size)(offsetof(TpQuery, data) + maybe_query->query_text_len + 1) !=
-		size)
-		return false;
-
-	return true;
-}
-
-/*
  * Process ORDER BY scan keys for <@> operator
  *
  * Handles both bm25query and plain text arguments to support:
@@ -556,18 +522,29 @@ tp_rescan_process_orderby(
 		if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 		{
 			Datum query_datum = orderby->sk_argument;
-			void *query_data  = DatumGetPointer(query_datum);
 			char *query_cstr;
 			Oid	  query_index_oid = InvalidOid;
 
 			/*
-			 * Determine if argument is a bm25query or plain text.
-			 * bm25query has a specific structure; plain text is a varlena.
+			 * Use sk_subtype to determine the argument type.
+			 * sk_subtype contains the right-hand operand's type OID:
+			 * - TEXTOID for text <@> text
+			 * - bm25query type OID for text <@> bm25query
+			 *
+			 * The planner hook transforms text <@> text to text <@> bm25query,
+			 * so in practice we should always receive bm25query here.
 			 */
-			if (tp_is_valid_tpquery(query_data))
+			if (orderby->sk_subtype == TEXTOID)
 			{
-				/* It's a bm25query - extract query text and index OID */
-				TpQuery *query = (TpQuery *)query_data;
+				/* Plain text - use text directly */
+				text *query_text = (text *)DatumGetPointer(query_datum);
+
+				query_cstr = text_to_cstring(query_text);
+			}
+			else
+			{
+				/* bm25query - extract query text and index OID */
+				TpQuery *query = (TpQuery *)DatumGetPointer(query_datum);
 
 				query_cstr		= pstrdup(get_tpquery_text(query));
 				query_index_oid = get_tpquery_index_oid(query);
@@ -578,16 +555,6 @@ tp_rescan_process_orderby(
 					tp_rescan_validate_query_index(
 							query_index_oid, scan->indexRelation);
 				}
-			}
-			else
-			{
-				/*
-				 * It's plain text - use text directly.
-				 * Index OID will be the scan relation's OID.
-				 */
-				text *query_text = (text *)query_data;
-
-				query_cstr = text_to_cstring(query_text);
 			}
 
 			/* Clear query vector since we're using text directly */
