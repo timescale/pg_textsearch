@@ -130,6 +130,41 @@ WHERE content <@> to_bm25query('database', 'docs_bm25_idx') < 0;
              1 |   -0.9808
 (1 row)
 
+-- =============================================================================
+-- LIMITATION 5: text <@> text operator doesn't use index scans
+-- The planner hook transforms text <@> text to text <@> bm25query, but the
+-- transformed expression doesn't match for index ordered scans.
+-- Workaround: Use to_bm25query() function (with or without index name).
+-- =============================================================================
+\echo 'Test: text <@> text operator vs to_bm25query()'
+Test: text <@> text operator vs to_bm25query()
+-- text <@> text: planner transforms but doesn't use index scan
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> 'database' as score
+FROM docs
+ORDER BY content <@> 'database'
+LIMIT 3;
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: ((content <@> 'docs_bm25_idx:database'::bm25query))
+         ->  Seq Scan on docs
+(4 rows)
+
+-- to_bm25query(): properly uses index scan
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> to_bm25query('database') as score
+FROM docs
+ORDER BY content <@> to_bm25query('database')
+LIMIT 3;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Limit
+   ->  Index Scan using docs_bm25_idx on docs
+         Order By: (content <@> 'docs_bm25_idx:database'::bm25query)
+(3 rows)
+
 -- Cleanup
 DROP TABLE categories CASCADE;
 DROP TABLE docs CASCADE;

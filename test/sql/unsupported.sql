@@ -101,6 +101,29 @@ SELECT COUNT(*) as matching_docs,
 FROM docs
 WHERE content <@> to_bm25query('database', 'docs_bm25_idx') < 0;
 
+-- =============================================================================
+-- LIMITATION 5: text <@> text operator doesn't use index scans
+-- The planner hook transforms text <@> text to text <@> bm25query, but the
+-- transformed expression doesn't match for index ordered scans.
+-- Workaround: Use to_bm25query() function (with or without index name).
+-- =============================================================================
+
+\echo 'Test: text <@> text operator vs to_bm25query()'
+
+-- text <@> text: planner transforms but doesn't use index scan
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> 'database' as score
+FROM docs
+ORDER BY content <@> 'database'
+LIMIT 3;
+
+-- to_bm25query(): properly uses index scan
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> to_bm25query('database') as score
+FROM docs
+ORDER BY content <@> to_bm25query('database')
+LIMIT 3;
+
 -- Cleanup
 DROP TABLE categories CASCADE;
 DROP TABLE docs CASCADE;
