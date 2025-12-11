@@ -153,7 +153,6 @@ PG_FUNCTION_INFO_V1(to_tpquery_text);
 PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(bm25_text_bm25query_score);
 PG_FUNCTION_INFO_V1(bm25_text_text_score);
-PG_FUNCTION_INFO_V1(tp_distance);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 
 /*
@@ -1041,23 +1040,6 @@ bool
 tpquery_has_index(TpQuery *tpquery)
 {
 	return OidIsValid(tpquery->index_oid);
-}
-
-/*
- * Returns a hardcoded positive cost estimate for planning purposes.
- */
-Datum
-tp_distance(PG_FUNCTION_ARGS)
-{
-	/* Arguments are required by function signature but not used for costing */
-	(void)PG_GETARG_TEXT_PP(0); /* text argument */
-	(void)PG_GETARG_POINTER(1); /* tpquery argument */
-
-	/*
-	 * Return hardcoded cost estimate for planning.
-	 * Value indicates this operation has some cost but is generally efficient.
-	 */
-	PG_RETURN_FLOAT8(1.0);
 }
 
 /*
