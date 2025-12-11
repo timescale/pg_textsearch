@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ */
+
+/*
  * planner.c - Parse analysis hook for implicit BM25 index resolution
  *
  * When a query uses the <@> operator with an unresolved tpquery (index_oid

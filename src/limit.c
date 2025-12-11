@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ */
+
+/*
  * limits.c - Tapir Query LIMIT Optimization
  *
  * This module implements LIMIT pushdown optimization for Tapir BM25 queries.
