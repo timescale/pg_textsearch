@@ -17,10 +17,10 @@ SELECT 'my_index:{database:2,system:1}'::bm25vector;
 SELECT 'my_index:{}'::bm25vector;
 
 -- Test bm25query type
-SELECT pg_typeof('search terms');
+SELECT pg_typeof('search terms'::bm25query);
 
 -- Test bm25query input/output
-SELECT 'search terms';
+SELECT 'search terms'::bm25query;
 
 -- Test to_bm25query functions
 SELECT to_bm25query('hello world');

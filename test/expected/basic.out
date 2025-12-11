@@ -27,15 +27,15 @@ SELECT 'my_index:{}'::bm25vector;
 (1 row)
 
 -- Test bm25query type
-SELECT pg_typeof('search terms');
+SELECT pg_typeof('search terms'::bm25query);
  pg_typeof 
 -----------
- unknown
+ bm25query
 (1 row)
 
 -- Test bm25query input/output
-SELECT 'search terms';
-   ?column?   
+SELECT 'search terms'::bm25query;
+  bm25query   
 --------------
  search terms
 (1 row)
