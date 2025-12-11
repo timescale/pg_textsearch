@@ -192,9 +192,6 @@ CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='englis
 SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
 FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text ~ 'pg_textsearch';
-
--- Debug index internal structure (shows term dictionary and posting lists)
-SELECT bm25_dump_index('index_name');
 ```
 
 ### Configuration
@@ -377,6 +374,32 @@ Available configurations depend on your Postgres installation:
 (29 rows)
 ```
 Further language support is available via extensions such as [zhparser](https://github.com/amutu/zhparser).
+
+### Development Functions
+
+These functions are for debugging and development use only. Their interface may
+change in future releases without notice.
+
+Function | Description
+--- | ---
+bm25_dump_index(index_name) → text | Dump internal index structure (truncated)
+bm25_dump_index(index_name, file_path) → text | Dump full index structure to file
+bm25_summarize_index(index_name) → text | Show index statistics without content
+bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
+
+```sql
+-- Quick overview of index statistics
+SELECT bm25_summarize_index('docs_idx');
+
+-- Detailed dump for debugging (truncated output)
+SELECT bm25_dump_index('docs_idx');
+
+-- Full dump to file (includes hex data)
+SELECT bm25_dump_index('docs_idx', '/tmp/docs_idx_dump.txt');
+
+-- Force spill to disk (returns number of entries spilled)
+SELECT bm25_spill_index('docs_idx');
+```
 
 ## Development
 

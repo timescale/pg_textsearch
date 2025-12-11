@@ -33,27 +33,6 @@ CREATE INDEX docs_vector_idx ON test_docs USING bm25(content) WITH (text_config=
 SELECT 'docs_vector_idx:{hello:2,world:1}'::bm25vector;
 SELECT 'docs_vector_idx:{}'::bm25vector;
 
--- Test to_bm25vector function
-SELECT to_bm25vector('hello world', 'docs_vector_idx');
-SELECT to_bm25vector('postgresql search', 'docs_vector_idx');
-
--- Test to_bm25vector edge cases
-SELECT to_bm25vector('', 'docs_vector_idx');  -- empty text
-SELECT to_bm25vector('hello, world! How are you? I''m fine.', 'docs_vector_idx');  -- punctuation
-SELECT to_bm25vector('Testing 123 with numbers and text', 'docs_vector_idx');  -- numbers
-
--- Test that different queries create different vectors
-SELECT to_bm25vector('hello', 'docs_vector_idx') = to_bm25vector('world', 'docs_vector_idx');
-
--- Test error cases (bm25vector <@> bm25vector operator removed for consistency)
-
--- Test nonexistent index error
-\set VERBOSITY terse
-\set ON_ERROR_STOP off
-SELECT to_bm25vector('test text', 'nonexistent_index');
-\set ON_ERROR_STOP on
-\set VERBOSITY default
-
 -- Test pg_textsearch scoring using text <@> bm25query operations
 -- Note: Uses to_bm25query since ORDER BY is on alias not directly on operator
 SELECT
@@ -73,19 +52,7 @@ FROM test_docs
 ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
          (content <@> to_bm25query('search', 'docs_vector_idx'))::float8;
 
--- Test vector serialization/deserialization
-SELECT to_bm25vector('hello', 'docs_vector_idx')::text;
-SELECT to_bm25vector('test word', 'docs_vector_idx')::text;
-
--- Test with longer text
-SELECT to_bm25vector('this is a longer test with multiple words and repetitions test test', 'docs_vector_idx');
-
 -- Test bm25vector equality operator
-SELECT
-    to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('hello world', 'docs_vector_idx') as should_be_true,
-    to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('world hello', 'docs_vector_idx') as depends_on_order;
-
--- Test direct bm25vector equality (including order-independence fix)
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello:1,world:2}'::bm25vector;
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{world:2,hello:1}'::bm25vector;
 
@@ -101,12 +68,6 @@ LIMIT 3;
 
 -- Test with another index using simple config
 CREATE INDEX docs_simple_idx ON test_docs USING bm25(content) WITH (text_config='simple');
-
--- Compare stemmed vs non-stemmed
-SELECT
-    'running' as query,
-    to_bm25vector('running runner runs', 'docs_vector_idx') as english_stemmed,
-    to_bm25vector('running runner runs', 'docs_simple_idx') as simple_no_stem;
 
 -- Test scoring consistency: ORDER BY vs standalone scoring
 \echo 'Testing ORDER BY vs standalone scoring consistency'

@@ -43,12 +43,6 @@ CREATE TYPE bm25vector (
     ALIGNMENT = int4
 );
 
--- Convert text to a bm25vector, using specified index
-CREATE FUNCTION to_bm25vector(input_text text, index_name text)
-RETURNS bm25vector
-AS 'MODULE_PATHNAME', 'to_tpvector'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
 -- bm25query type
 
 CREATE FUNCTION bm25query_in(cstring)

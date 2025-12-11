@@ -70,13 +70,7 @@ SELECT * FROM (
 ) AS subquery
 ORDER BY score, id;
 
--- Test 4: Test vectorization of very long URLs
-SELECT to_bm25vector('https://www.very-long-domain-name-for-testing-url-tokenization.example.com/extremely/long/path/with/many/segments/and/parameters?param1=value1&param2=value2&param3=value3', 'long_strings_idx');
-
--- Test 5: Test extremely long single term handling
-SELECT to_bm25vector('supercalifragilisticexpialidociouspneumonoultramicroscopicsilicovolcanoconiosisantidisestablishmentarianism', 'long_strings_idx');
-
--- Test 6: Test mixed long and short terms
+-- Test 4: Test mixed long and short terms
 SELECT * FROM (
     SELECT id, ROUND((content <@> 'algorithm bm25')::numeric, 4) as score
     FROM long_string_docs
@@ -85,7 +79,7 @@ SELECT * FROM (
 ) AS subquery
 ORDER BY score, id;
 
--- Test 7: Performance test with multiple long term queries
+-- Test 5: Performance test with multiple long term queries
 SELECT * FROM (
     SELECT
         id,
@@ -97,12 +91,7 @@ SELECT * FROM (
 ) AS subquery
 ORDER BY multi_term_score, id;
 
--- Test 8: Test URL tokenization specifics
-SELECT
-    'URL components' as test_type,
-    to_bm25vector('https://example.com/path?param=value', 'long_strings_idx') as url_vector;
-
--- Test 9: Test that very long terms don't cause memory issues
+-- Test 6: Test that very long terms don't cause memory issues
 INSERT INTO long_string_docs (content, category) VALUES
     ('This document contains a ridiculously long compound word: ' ||
      'antidisestablishmentarianismpneumonoultramicroscopicsilicovolcanoconiosis' ||
@@ -119,7 +108,7 @@ SELECT * FROM (
 ) AS subquery
 ORDER BY score, id;
 
--- Test 10: Memory usage statistics after indexing long strings
+-- Test 7: Memory usage statistics after indexing long strings
 SELECT
     COUNT(*) as total_documents,
     AVG(LENGTH(content)) as avg_content_length,
@@ -128,7 +117,7 @@ SELECT
     COUNT(CASE WHEN LENGTH(content) > 500 THEN 1 END) as very_long_documents
 FROM long_string_docs;
 
--- Test 11: Test stack/heap threshold boundary (1KB limit for alloca)
+-- Test 8: Test stack/heap threshold boundary (1KB limit for alloca)
 INSERT INTO long_string_docs (content, category) VALUES
     -- Just under 1KB threshold (should use stack allocation)
     ('Short term: ' || REPEAT('stackallocation', 40), 'stack_test'),
@@ -154,7 +143,7 @@ WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
     AND content <@> 'term allocation' < 0
 ORDER BY content_length;
 
--- Test 12: Extreme length document (tests PostgreSQL's text limit handling)
+-- Test 9: Extreme length document (tests PostgreSQL's text limit handling)
 INSERT INTO long_string_docs (content, category) VALUES
     ('Extreme test: ' || REPEAT('This is a very long repeated phrase for testing PostgreSQL text limits and our hybrid stack heap allocation strategy. ', 200), 'extreme');
 

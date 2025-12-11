@@ -43,19 +43,6 @@ Not-null constraints:
 
 -- Test basic index operations
 INSERT INTO test_docs (content) VALUES ('new document for testing');
--- Test that to_bm25vector works with our indexes
-SELECT to_bm25vector('test document content', 'docs_english_idx');
-                 to_bm25vector                  
-------------------------------------------------
- docs_english_idx:{content:1,document:1,test:1}
-(1 row)
-
-SELECT to_bm25vector('test document content', 'docs_simple_idx');
-                 to_bm25vector                 
------------------------------------------------
- docs_simple_idx:{content:1,document:1,test:1}
-(1 row)
-
 -- Test that index options are correctly stored and retrievable
 SELECT
     i.relname as index_name,
@@ -71,23 +58,6 @@ ORDER BY i.relname;
  docs_english_idx | has_options
  docs_simple_idx  | has_options
 (2 rows)
-
--- Test vectorization with both indexes
-SELECT
-    'docs_english_idx' as index_name,
-    to_bm25vector('postgresql database system', 'docs_english_idx') as vector;
-    index_name    |                       vector                       
-------------------+----------------------------------------------------
- docs_english_idx | docs_english_idx:{databas:1,postgresql:1,system:1}
-(1 row)
-
-SELECT
-    'docs_simple_idx' as index_name,
-    to_bm25vector('postgresql database system', 'docs_simple_idx') as vector;
-   index_name    |                       vector                       
------------------+----------------------------------------------------
- docs_simple_idx | docs_simple_idx:{database:1,postgresql:1,system:1}
-(1 row)
 
 -- Cleanup
 DROP INDEX docs_english_idx;

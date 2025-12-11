@@ -41,53 +41,6 @@ SELECT 'docs_vector_idx:{}'::bm25vector;
  docs_vector_idx:{}
 (1 row)
 
--- Test to_bm25vector function
-SELECT to_bm25vector('hello world', 'docs_vector_idx');
-           to_bm25vector           
------------------------------------
- docs_vector_idx:{hello:1,world:1}
-(1 row)
-
-SELECT to_bm25vector('postgresql search', 'docs_vector_idx');
-              to_bm25vector              
------------------------------------------
- docs_vector_idx:{postgresql:1,search:1}
-(1 row)
-
--- Test to_bm25vector edge cases
-SELECT to_bm25vector('', 'docs_vector_idx');  -- empty text
-   to_bm25vector    
---------------------
- docs_vector_idx:{}
-(1 row)
-
-SELECT to_bm25vector('hello, world! How are you? I''m fine.', 'docs_vector_idx');  -- punctuation
-                to_bm25vector                 
-----------------------------------------------
- docs_vector_idx:{fine:1,hello:1,m:1,world:1}
-(1 row)
-
-SELECT to_bm25vector('Testing 123 with numbers and text', 'docs_vector_idx');  -- numbers
-                 to_bm25vector                  
-------------------------------------------------
- docs_vector_idx:{123:1,number:1,test:1,text:1}
-(1 row)
-
--- Test that different queries create different vectors
-SELECT to_bm25vector('hello', 'docs_vector_idx') = to_bm25vector('world', 'docs_vector_idx');
- ?column? 
-----------
- f
-(1 row)
-
--- Test error cases (bm25vector <@> bm25vector operator removed for consistency)
--- Test nonexistent index error
-\set VERBOSITY terse
-\set ON_ERROR_STOP off
-SELECT to_bm25vector('test text', 'nonexistent_index');
-ERROR:  index "nonexistent_index" not found
-\set ON_ERROR_STOP on
-\set VERBOSITY default
 -- Test pg_textsearch scoring using text <@> bm25query operations
 -- Note: Uses to_bm25query since ORDER BY is on alias not directly on operator
 SELECT
@@ -122,36 +75,7 @@ ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
  hello world example         |           0.0000 |       0.0000
 (5 rows)
 
--- Test vector serialization/deserialization
-SELECT to_bm25vector('hello', 'docs_vector_idx')::text;
-       to_bm25vector       
----------------------------
- docs_vector_idx:{hello:1}
-(1 row)
-
-SELECT to_bm25vector('test word', 'docs_vector_idx')::text;
-          to_bm25vector          
----------------------------------
- docs_vector_idx:{test:1,word:1}
-(1 row)
-
--- Test with longer text
-SELECT to_bm25vector('this is a longer test with multiple words and repetitions test test', 'docs_vector_idx');
-                        to_bm25vector                         
---------------------------------------------------------------
- docs_vector_idx:{longer:1,multipl:1,repetit:1,test:3,word:1}
-(1 row)
-
 -- Test bm25vector equality operator
-SELECT
-    to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('hello world', 'docs_vector_idx') as should_be_true,
-    to_bm25vector('hello world', 'docs_vector_idx') = to_bm25vector('world hello', 'docs_vector_idx') as depends_on_order;
- should_be_true | depends_on_order 
-----------------+------------------
- t              | t
-(1 row)
-
--- Test direct bm25vector equality (including order-independence fix)
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello:1,world:2}'::bm25vector;
  ?column? 
 ----------
@@ -184,16 +108,6 @@ NOTICE:  BM25 index build started for relation docs_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=4.00, text_config='simple' (k1=1.20, b=0.75)
--- Compare stemmed vs non-stemmed
-SELECT
-    'running' as query,
-    to_bm25vector('running runner runs', 'docs_vector_idx') as english_stemmed,
-    to_bm25vector('running runner runs', 'docs_simple_idx') as simple_no_stem;
-  query  |         english_stemmed          |               simple_no_stem                
----------+----------------------------------+---------------------------------------------
- running | docs_vector_idx:{run:2,runner:1} | docs_simple_idx:{runner:1,running:1,runs:1}
-(1 row)
-
 -- Test scoring consistency: ORDER BY vs standalone scoring
 \echo 'Testing ORDER BY vs standalone scoring consistency'
 Testing ORDER BY vs standalone scoring consistency
