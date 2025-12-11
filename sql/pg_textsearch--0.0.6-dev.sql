@@ -163,19 +163,13 @@ CREATE FUNCTION bm25_distance(text, bm25query) RETURNS float8
     AS 'MODULE_PATHNAME', 'tp_distance'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
--- Support function for text <@> text distance (for opclass ordering)
-CREATE FUNCTION bm25_distance_text_text(text, text) RETURNS float8
-    AS 'MODULE_PATHNAME', 'tp_distance_text_text'
-    LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
-
 -- bm25 operator class for text columns
--- Supports both explicit (text <@> bm25query) and implicit (text <@> text) syntax
+-- The planner hook rewrites text <@> text to text <@> bm25query, so we only
+-- need to register the bm25query operator and support function here.
 CREATE OPERATOR CLASS text_bm25_ops
 DEFAULT FOR TYPE text USING bm25 AS
     OPERATOR    1   <@> (text, bm25query) FOR ORDER BY float_ops,
-    OPERATOR    1   <@> (text, text) FOR ORDER BY float_ops,
-    FUNCTION    8   (text, bm25query)   bm25_distance(text, bm25query),
-    FUNCTION    8   (text, text)        bm25_distance_text_text(text, text);
+    FUNCTION    8   (text, bm25query)   bm25_distance(text, bm25query);
 
 -- Debug function to dump index contents (memtable and segments)
 -- Single argument version returns truncated output as text

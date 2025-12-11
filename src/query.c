@@ -154,7 +154,6 @@ PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(text_tpquery_score);
 PG_FUNCTION_INFO_V1(text_text_score);
 PG_FUNCTION_INFO_V1(tp_distance);
-PG_FUNCTION_INFO_V1(tp_distance_text_text);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 
 /*
@@ -1078,25 +1077,4 @@ text_text_score(PG_FUNCTION_ARGS)
 			 errhint("SELECT col <@> to_bm25query('q', 'idx') AS score")));
 
 	PG_RETURN_NULL(); /* never reached */
-}
-
-/*
- * Distance function for text <@> text operations (FUNCTION 8 in opclass)
- *
- * Returns a hardcoded cost estimate for planning purposes.
- * Like tp_distance, this is used for path costing - the actual
- * BM25 scores are computed by the index AM during ordered scans.
- */
-Datum
-tp_distance_text_text(PG_FUNCTION_ARGS)
-{
-	/* Arguments are required by function signature but not used for costing */
-	(void)PG_GETARG_TEXT_PP(0); /* text column argument */
-	(void)PG_GETARG_TEXT_PP(1); /* text query argument */
-
-	/*
-	 * Return hardcoded cost estimate for planning.
-	 * Value indicates this operation has some cost but is generally efficient.
-	 */
-	PG_RETURN_FLOAT8(1.0);
 }
