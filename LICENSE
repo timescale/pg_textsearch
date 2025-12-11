@@ -1,16 +1,17 @@
-Source code in this repository is variously licensed under the Apache License
-Version 2.0, an Apache compatible license, or the Timescale License.
+The PostgreSQL License
 
-All source code should have information at the beginning of its respective file
-which specifies its licensing information.
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose, without fee, and without a written agreement
+is hereby granted, provided that the above copyright notice and this paragraph
+and the following two paragraphs appear in all copies.
 
-* Outside of the "tsl" directory, source code in a given file is licensed
-  under the Apache License Version 2.0, unless otherwise noted (e.g., an
-  Apache-compatible license).
+IN NO EVENT SHALL TIGER DATA BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT,
+SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING
+OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF TIGER DATA HAS
+BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-* Within the "tsl" folder, source code in a given file is licensed under the
-  Timescale License, unless otherwise noted.
-
-When built, separate shared object files are generated for the Apache-licensed
-source code and the Timescale-licensed source code. The shared object binaries
-that contain `-tsl` in their name are licensed under the Timescale License.
+TIGER DATA SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND TIGER DATA HAS NO
+OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
+MODIFICATIONS.
