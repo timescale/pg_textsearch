@@ -151,8 +151,8 @@ PG_FUNCTION_INFO_V1(tpquery_recv);
 PG_FUNCTION_INFO_V1(tpquery_send);
 PG_FUNCTION_INFO_V1(to_tpquery_text);
 PG_FUNCTION_INFO_V1(to_tpquery_text_index);
-PG_FUNCTION_INFO_V1(text_tpquery_score);
-PG_FUNCTION_INFO_V1(text_text_score);
+PG_FUNCTION_INFO_V1(bm25_text_bm25query_score);
+PG_FUNCTION_INFO_V1(bm25_text_text_score);
 PG_FUNCTION_INFO_V1(tp_distance);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 
@@ -627,14 +627,14 @@ calculate_term_score(
 }
 
 /*
- * BM25 scoring function for text <@> tpquery operations
+ * BM25 scoring function for text <@> bm25query operations
  *
  * This operator is called per-row when scoring documents, so we use fn_extra
  * to cache IDF values across rows. Without caching, each row would require
  * opening all segments for each query term - catastrophic for large indexes.
  */
 Datum
-text_tpquery_score(PG_FUNCTION_ARGS)
+bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 {
 	text	*text_arg	= PG_GETARG_TEXT_PP(0);
 	TpQuery *query		= (TpQuery *)PG_GETARG_POINTER(1);
@@ -1068,7 +1068,7 @@ tp_distance(PG_FUNCTION_ARGS)
  * We keep this as a fallback that errors with a helpful message.
  */
 Datum
-text_text_score(PG_FUNCTION_ARGS)
+bm25_text_text_score(PG_FUNCTION_ARGS)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_UNDEFINED_OBJECT),

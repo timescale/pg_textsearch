@@ -113,9 +113,9 @@ CREATE OPERATOR = (
 -- COST 1000: Standalone scoring is expensive. Each call parses document text
 -- with to_tsvector (~14μs per doc), opens the index, looks up IDF values, and
 -- calculates BM25 scores. High cost helps planner prefer index scans.
-CREATE FUNCTION text_bm25query_score(left_text text, right_query bm25query)
+CREATE FUNCTION bm25_text_bm25query_score(left_text text, right_query bm25query)
 RETURNS float8
-AS 'MODULE_PATHNAME', 'text_tpquery_score'
+AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
 
 -- bm25query equality function
@@ -130,15 +130,15 @@ LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = bm25query,
-    PROCEDURE = text_bm25query_score
+    PROCEDURE = bm25_text_bm25query_score
 );
 
 -- Function for text <@> text operator (planner hook rewrites to text <@> bm25query)
 -- COST 1000: High cost makes planner prefer index scans over seq scan + sort.
 -- In practice, this function errors without index scan context, but the cost
 -- helps the planner choose the right path before execution.
-CREATE FUNCTION text_text_score(text, text) RETURNS float8
-    AS 'MODULE_PATHNAME', 'text_text_score'
+CREATE FUNCTION bm25_text_text_score(text, text) RETURNS float8
+    AS 'MODULE_PATHNAME', 'bm25_text_text_score'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
 
 -- <@> operator for text <@> text operations (implicit index resolution)
@@ -146,7 +146,7 @@ CREATE FUNCTION text_text_score(text, text) RETURNS float8
 CREATE OPERATOR <@> (
     LEFTARG = text,
     RIGHTARG = text,
-    PROCEDURE = text_text_score
+    PROCEDURE = bm25_text_text_score
 );
 
 -- = operator for bm25query equality
