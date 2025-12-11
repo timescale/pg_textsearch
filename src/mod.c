@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * mod.c - Extension initialization and GUC registration
+ */
 #include <postgres.h>
 
 #include <access/relation.h>

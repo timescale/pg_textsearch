@@ -1,18 +1,9 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * registry.c
- *	  Tapir global registry implementation
- *
- * This module manages a global registry that maps index OIDs to their
- * TpSharedIndexState structures. The registry itself is stored in regular
- * PostgreSQL shared memory and is accessible to all backends.
- *
- * IDENTIFICATION
- *	  src/registry.c
- *
- *-------------------------------------------------------------------------
+ * registry.c - Global registry mapping index OIDs to shared state
  */
-
 #include <postgres.h>
 
 #include <miscadmin.h>

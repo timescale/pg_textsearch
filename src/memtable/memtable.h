@@ -1,12 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable.h
- *	  Tapir in-memory table structures and function declarations
- *
- * IDENTIFICATION
- *	  src/memtable.h
- *
- *-------------------------------------------------------------------------
+ * memtable.h - In-memory inverted index structures
  */
 #pragma once
 

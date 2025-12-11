@@ -12,11 +12,15 @@
 
 ## Current (v0.0.6-dev)
 
-Development version - segment improvements in progress.
+Development version with syntax ergonomics and partitioned table support.
+
+- **Implicit index resolution**: Index automatically detected from column
+- **Partitioned tables**: BM25 indexes work with partition-local statistics
+- **Simplified syntax**: `content <@> 'search terms'` without explicit index
 
 ## Future
 
-### v0.0.6 - Optimized Segments
+### v0.0.7 - Optimized Segments
 
 Performance and space efficiency improvements.
 
@@ -25,13 +29,12 @@ Performance and space efficiency improvements.
 - **Tombstones**: Proper DELETE support with compaction cleanup
 - **Block-Max WAND**: Early termination for top-k queries
 
-### v0.0.7 - Background Compaction
+### v0.0.8 - Background Compaction
 
 Move compaction off the critical path.
 
-- **Background worker**: Async segment merging via pg_cron
-- **Level-based compaction**: 8 segments at level N merge to 1 at level N+1
-- **GUCs**: `max_segments_per_level`, compaction thresholds
+- **Background worker**: Async segment merging
+- **Level-based compaction**: Configurable segments per level
 - **Observability**: Progress tracking, statistics
 
 ### v0.1 - Production Ready
@@ -39,8 +42,7 @@ Move compaction off the critical path.
 First production-quality release.
 
 - Bug fixes, performance tuning, polish
-- Benchmarks validated (Slack corpus, IR datasets)
-- Documentation and blog post
+- Benchmark validation
 - Backwards compatibility commitments begin
 
 ### Future (Post v0.1)
@@ -49,7 +51,3 @@ First production-quality release.
 - **Phrase queries**: Position-aware matching
 - **Faceted search**: Term aggregations
 - **Hybrid search**: Integration with pgvector
-
----
-
-*See [DESIGN.md](DESIGN.md) for technical details.*

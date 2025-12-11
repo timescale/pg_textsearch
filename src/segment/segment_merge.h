@@ -1,15 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment/segment_merge.h
- *    Segment merge operations for LSM-style compaction
- *
- * This module provides functions to merge multiple segments at one level
- * into a single segment at the next level (N-way merge).
- *
- * IDENTIFICATION
- *    src/segment/segment_merge.h
- *
- *-------------------------------------------------------------------------
+ * segment_merge.h - Segment merge for LSM-style compaction
  */
 #ifndef SEGMENT_MERGE_H
 #define SEGMENT_MERGE_H

@@ -1,18 +1,12 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * metapage.c
- *	  Tapir index metapage operations
+ * metapage.c - Index metapage operations
  *
- * This module implements metapage initialization, reading, and management
- * for Tapir indexes. The metapage stores index configuration, global
- * statistics, and crash recovery state.
- *
- * IDENTIFICATION
- *	  src/metapage.c
- *
- *-------------------------------------------------------------------------
+ * Handles metapage initialization, reading, and management. The metapage
+ * stores index configuration, statistics, and crash recovery state.
  */
-
 #include <postgres.h>
 
 #include <access/heapam.h>

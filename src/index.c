@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * index.c - BM25 index access method implementation
+ */
 #include <postgres.h>
 
 #include <access/amapi.h>

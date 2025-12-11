@@ -1,14 +1,9 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * posting.c
- *	  Simplified posting list management for new architecture
- *
- * IDENTIFICATION
- *	  src/posting.c
- *
- *-------------------------------------------------------------------------
+ * posting.c - Posting list management for in-memory indexes
  */
-
 #include <postgres.h>
 
 #include <lib/dshash.h>

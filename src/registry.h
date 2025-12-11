@@ -1,16 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * registry.h
- *	  Tapir global registry for shared index states
- *
- * The registry provides a mapping from index OIDs to TpSharedIndexState
- * structures stored in DSA. It uses regular PostgreSQL shared memory
- * to ensure all backends can access the registry.
- *
- * IDENTIFICATION
- *	  src/registry.h
- *
- *-------------------------------------------------------------------------
+ * registry.h - Global registry for shared index states
  */
 #pragma once
 

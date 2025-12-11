@@ -1,15 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * state.h
- *	  Index state management structures and functions
- *
- * This header defines TpSharedIndexState and TpLocalIndexState structures
- * for managing Tapir index state across backends.
- *
- * IDENTIFICATION
- *	  src/state.h
- *
- *-------------------------------------------------------------------------
+ * state.h - Index state management structures
  */
 #pragma once
 

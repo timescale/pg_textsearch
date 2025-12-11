@@ -1,16 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * metapage.h
- *	  Tapir index metapage structures and operations
- *
- * This module defines the metapage structure and provides functions
- * for initializing, reading, and managing Tapir index metapages.
- * The metapage stores index configuration and statistics.
- *
- * IDENTIFICATION
- *	  src/metapage.h
- *
- *-------------------------------------------------------------------------
+ * metapage.h - Index metapage structures and operations
  */
 #pragma once
 

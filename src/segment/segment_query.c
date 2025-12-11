@@ -1,16 +1,8 @@
-/*-------------------------------------------------------------------------
+/*
+ * Copyright (c) 2025 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment_query.c
- *    Zero-copy query execution for segments
- *
- * This file implements direct, allocation-free query processing for
- * segments, allowing queries to iterate through posting lists without
- * copying data.
- *
- * IDENTIFICATION
- *    src/segment/segment_query.c
- *
- *-------------------------------------------------------------------------
+ * segment_query.c - Zero-copy query execution for segments
  */
 #include <postgres.h>
 
