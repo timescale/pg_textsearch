@@ -1,6 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * index.h - BM25 index access method interface
  */
 #pragma once
 

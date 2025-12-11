@@ -1,17 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*-------------------------------------------------------------------------
  *
- * segment/segment.c
- *    Segment implementation for pg_textsearch
- *
- * IDENTIFICATION
- *    src/segment/segment.c
- *
- *-------------------------------------------------------------------------
+ * segment.c - Disk-based segment implementation
  */
 #include <stdio.h>
 #include <unistd.h>

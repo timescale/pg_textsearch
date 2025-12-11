@@ -1,21 +1,12 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * limit.c - Query LIMIT optimization
+ *
+ * Implements LIMIT pushdown for BM25 queries. When queries have LIMIT
+ * clauses with ORDER BY BM25 scores, we compute only the top N results.
  */
-
-/*
- * limits.c - Tapir Query LIMIT Optimization
- *
- * This module implements LIMIT pushdown optimization for Tapir BM25 queries.
- * When PostgreSQL queries have LIMIT clauses with ORDER BY BM25 scores,
- * we can optimize by computing only the top N results.
- *
- * IDENTIFICATION
- *	  src/limits.c
- *
- *-------------------------------------------------------------------------
- */
-
 #include <postgres.h>
 
 #include <access/xact.h>

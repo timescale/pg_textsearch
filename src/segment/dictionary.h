@@ -1,17 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*-------------------------------------------------------------------------
  *
- * segment/dictionary.h
- *    Dictionary building for segments
- *
- * IDENTIFICATION
- *    src/segment/dictionary.h
- *
- *-------------------------------------------------------------------------
+ * dictionary.h - Term dictionary for disk segments
  */
 #ifndef DICTIONARY_H
 #define DICTIONARY_H

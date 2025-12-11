@@ -1,22 +1,12 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*
- * planner.c - Parse analysis hook for implicit BM25 index resolution
  *
- * When a query uses the <@> operator with an unresolved tpquery (index_oid
- * is InvalidOid), this hook identifies the column being scored and finds
- * a suitable BM25 index to use.
+ * planner.c - Parse analysis hook for implicit index resolution
  *
- * We use post_parse_analyze_hook rather than planner_hook because:
- * 1. The transformation must happen BEFORE path generation in the planner
- * 2. post_parse_analyze_hook runs right after parsing, before planning
- * 3. This allows the planner to see the transformed expressions and use
- *    index scans for ORDER BY with the <@> operator
+ * When queries use the <@> operator without an explicit index, this hook
+ * identifies the column being scored and finds a suitable BM25 index.
  */
-
 #include <postgres.h>
 
 #include <access/genam.h>

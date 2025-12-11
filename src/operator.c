@@ -1,22 +1,9 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * operator.c - BM25 scoring operators
  */
-
-/*-------------------------------------------------------------------------
- *
- * operator.c
- *	  BM25 scoring and query operations for Tapir
- *
- * This module contains the top-level scoring functions that coordinate
- * between memtable, stringtable, and posting list components.
- *
- * IDENTIFICATION
- *	  src/operator.c
- *
- *-------------------------------------------------------------------------
- */
-
 #include <postgres.h>
 
 #include <math.h>

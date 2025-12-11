@@ -1,24 +1,12 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * stringtable.c - String interning hash table using dshash
+ *
+ * Provides efficient string storage with concurrent access. Strings are
+ * stored in DSA memory and referenced by dsa_pointer keys.
  */
-
-/*-------------------------------------------------------------------------
- *
- * stringtable.c
- *	  String interning hash table using PostgreSQL's dshash
- *	  Provides efficient string storage with concurrent access
- *
- * This implementation uses dshash for the hash table structure while
- * maintaining the original API. Strings are stored in DSA memory and
- * referenced by dsa_pointer keys in the hash table.
- *
- * IDENTIFICATION
- *	  src/stringtable.c
- *
- *-------------------------------------------------------------------------
- */
-
 #include <postgres.h>
 
 #include <lib/dshash.h>

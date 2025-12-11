@@ -1,17 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*-------------------------------------------------------------------------
  *
- * segment.h
- *    Disk-based segment structures for pg_textsearch
- *
- * IDENTIFICATION
- *    src/segment/segment.h
- *
- *-------------------------------------------------------------------------
+ * segment.h - Disk-based segment structures
  */
 #ifndef SEGMENT_H
 #define SEGMENT_H

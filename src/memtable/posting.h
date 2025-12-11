@@ -1,15 +1,9 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*
- * posting.h - Tapir In-Memory Posting Lists
  *
- * This module implements in-memory posting lists for Tapir indexes.  These
- * are used to buffer updates until the index is flushed to disk.
+ * posting.h - In-memory posting list structures
  */
-
 #pragma once
 
 #include <postgres.h>

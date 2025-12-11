@@ -1,17 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*-------------------------------------------------------------------------
  *
- * segment/dictionary.c
- *    Dictionary building for segments
- *
- * IDENTIFICATION
- *    src/segment/dictionary.c
- *
- *-------------------------------------------------------------------------
+ * dictionary.c - Term dictionary for disk segments
  */
 #include "../memtable/memtable.h"
 #include "../memtable/posting.h"

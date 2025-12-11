@@ -1,6 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * limit.h - Query LIMIT optimization interface
  */
 #pragma once
 
@@ -12,7 +14,7 @@
 #include "constants.h"
 
 /*
- * Tapir Query LIMIT Optimization
+ * Query LIMIT Optimization
  *
  * This module handles query LIMIT pushdown optimization for Tapir indexes.
  * When a query has a LIMIT clause and uses ORDER BY with a BM25 score,

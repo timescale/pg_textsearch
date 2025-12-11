@@ -1,22 +1,12 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * state.c - Index state management
+ *
+ * Manages TpLocalIndexState and TpSharedIndexState structures for
+ * coordinating index state across backends.
  */
-
-/*-------------------------------------------------------------------------
- *
- * state.c
- *	  Index state management for Tapir
- *
- * This module manages the TpLocalIndexState and TpSharedIndexState
- * structures, providing functions to get, create, and release index states.
- *
- * IDENTIFICATION
- *	  src/state.c
- *
- *-------------------------------------------------------------------------
- */
-
 #include <postgres.h>
 
 #include <access/genam.h>

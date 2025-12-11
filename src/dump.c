@@ -1,17 +1,8 @@
 /*
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
- */
-
-/*-------------------------------------------------------------------------
  *
- * dump.c
- *    Unified index dump functionality for pg_textsearch
- *
- * IDENTIFICATION
- *    src/dump.c
- *
- *-------------------------------------------------------------------------
+ * dump.c - Index dump and debugging utilities
  */
 #include <postgres.h>
 
