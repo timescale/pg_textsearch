@@ -54,16 +54,15 @@ typedef TpIndexMetaPageData *TpIndexMetaPage;
 
 /*
  * Document ID page structure for crash recovery
- * Stores ItemPointerData (ctid) entries for documents in the index
+ * Stores ItemPointerData (ctid) entries for documents in the index.
+ * Magic and version constants are defined in constants.h.
  */
-#define TP_DOCID_PAGE_MAGIC 0x54504449 /* "TPDI" in hex */
-
 typedef struct TpDocidPageHeader
 {
-	uint32		magic;		/* Magic number for validation */
+	uint32		magic;		/* TP_DOCID_PAGE_MAGIC */
+	uint32		version;	/* TP_DOCID_PAGE_VERSION */
 	uint32		num_docids; /* Number of docids stored on this page */
 	BlockNumber next_page;	/* Next page in chain, or InvalidBlockNumber */
-	uint32		reserved;	/* Reserved for future use */
 } TpDocidPageHeader;
 
 /*

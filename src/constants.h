@@ -6,9 +6,26 @@
  */
 #pragma once
 
-/* Magic numbers and metadata */
-#define TP_MAGIC		  0x3A7F9B2E
-#define TP_VERSION		  3 /* Bumped for hierarchical segment levels */
+/*
+ * Page magic numbers - unique identifiers for each page type.
+ * These are used to validate page contents and detect corruption.
+ */
+#define TP_METAPAGE_MAGIC	0x5450494D /* "TPIM" - Tapir Index Metapage */
+#define TP_DOCID_PAGE_MAGIC 0x54504944 /* "TPID" - Tapir Docid Page */
+#define TP_SEGMENT_MAGIC	0x54505347 /* "TPSG" - Tapir Segment */
+#define TP_PAGE_INDEX_MAGIC 0x54505049 /* "TPPI" - Tapir Page Index */
+
+/*
+ * Page format versions - bump when on-disk format changes.
+ * Each page type has its own version for independent evolution.
+ */
+#define TP_METAPAGE_VERSION                                                   \
+	4							/* Bumped for consistent magic/version naming \
+								 */
+#define TP_DOCID_PAGE_VERSION 1 /* Initial version */
+#define TP_SEGMENT_VERSION	  1 /* Segment format version */
+#define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
+
 #define TP_METAPAGE_BLKNO 0
 
 /* Segment hierarchy configuration */

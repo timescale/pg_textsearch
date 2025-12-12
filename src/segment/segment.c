@@ -222,8 +222,9 @@ tp_segment_open(Relation index, BlockNumber root_block)
 		/* Get special area with page index metadata */
 		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
 
-		/* Validate this is actually a page index page */
-		if (special->page_type != TP_PAGE_FILE_INDEX)
+		/* Validate magic number and page type */
+		if (special->magic != TP_PAGE_INDEX_MAGIC ||
+			special->page_type != TP_PAGE_FILE_INDEX)
 		{
 			UnlockReleaseBuffer(index_buf);
 			ReleaseBuffer(reader->header_buffer);
@@ -232,10 +233,15 @@ tp_segment_open(Relation index, BlockNumber root_block)
 			pfree(reader);
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("page %u has wrong page_type %u (expected %u)",
-							page_index_block,
-							special->page_type,
-							TP_PAGE_FILE_INDEX)));
+					 errmsg("invalid page index at block %u",
+							page_index_block),
+					 errdetail(
+							 "magic=0x%08X (expected 0x%08X), "
+							 "page_type=%u (expected %u)",
+							 special->magic,
+							 TP_PAGE_INDEX_MAGIC,
+							 special->page_type,
+							 TP_PAGE_FILE_INDEX)));
 		}
 
 		/* Get pointer to page entries array */
@@ -700,8 +706,10 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 
 		/* Set up special area */
 		special			   = (TpPageIndexSpecial *)PageGetSpecialPointer(page);
-		special->next_page = prev_block;
+		special->magic	   = TP_PAGE_INDEX_MAGIC;
+		special->version   = TP_PAGE_INDEX_VERSION;
 		special->page_type = TP_PAGE_FILE_INDEX;
+		special->next_page = prev_block;
 		special->num_entries = entries_to_write;
 		special->flags		 = 0;
 

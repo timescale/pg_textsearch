@@ -75,8 +75,8 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	PageInit(page, BLCKSZ, 0);
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
-	metap->magic			= TP_MAGIC;
-	metap->version			= TP_VERSION;
+	metap->magic			= TP_METAPAGE_MAGIC;
+	metap->version			= TP_METAPAGE_VERSION;
 	metap->text_config_oid	= text_config_oid;
 	metap->total_docs		= 0;
 	metap->total_terms		= 0;
@@ -132,7 +132,7 @@ tp_get_metapage(Relation index)
 	}
 
 	/* Validate magic number */
-	if (metap->magic != TP_MAGIC)
+	if (metap->magic != TP_METAPAGE_MAGIC)
 	{
 		UnlockReleaseBuffer(buf);
 		elog(ERROR,
@@ -140,12 +140,12 @@ tp_get_metapage(Relation index)
 			 "magic "
 			 "0x%08X, found 0x%08X",
 			 RelationGetRelationName(index),
-			 TP_MAGIC,
+			 TP_METAPAGE_MAGIC,
 			 metap->magic);
 	}
 
 	/* Check version compatibility */
-	if (metap->version != TP_VERSION)
+	if (metap->version != TP_METAPAGE_VERSION)
 	{
 		UnlockReleaseBuffer(buf);
 		elog(ERROR,
@@ -153,7 +153,7 @@ tp_get_metapage(Relation index)
 			 "expected %d. Please drop and recreate the index.",
 			 RelationGetRelationName(index),
 			 metap->version,
-			 TP_VERSION);
+			 TP_METAPAGE_VERSION);
 	}
 
 	/* Copy metapage data to avoid buffer issues */
@@ -245,9 +245,9 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 
 			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 			docid_header->magic		 = TP_DOCID_PAGE_MAGIC;
+			docid_header->version	 = TP_DOCID_PAGE_VERSION;
 			docid_header->num_docids = 0;
 			docid_header->next_page	 = InvalidBlockNumber;
-			docid_header->reserved	 = 0;
 
 			MarkBufferDirty(docid_buf);
 
@@ -313,9 +313,9 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 
 		new_header = (TpDocidPageHeader *)PageGetContents(new_docid_page);
 		new_header->magic	   = TP_DOCID_PAGE_MAGIC;
+		new_header->version	   = TP_DOCID_PAGE_VERSION;
 		new_header->num_docids = 0;
 		new_header->next_page  = InvalidBlockNumber;
-		new_header->reserved   = 0;
 
 		MarkBufferDirty(new_buf);
 

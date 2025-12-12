@@ -497,7 +497,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/* Validate that this is actually our metapage and not stale data */
-	if (metap->magic != TP_MAGIC)
+	if (metap->magic != TP_METAPAGE_MAGIC)
 	{
 		index_close(index_rel, AccessShareLock);
 		pfree(metap);
@@ -505,7 +505,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 			 "Invalid magic number in metapage for index %u: expected 0x%08X, "
 			 "found 0x%08X",
 			 index_oid,
-			 TP_MAGIC,
+			 TP_METAPAGE_MAGIC,
 			 metap->magic);
 		return NULL;
 	}
