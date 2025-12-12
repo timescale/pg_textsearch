@@ -9,7 +9,7 @@
 -- Known issue: Query code only searches L0 segments (level_heads[0]).
 -- After merge, data in L1 won't be found until this is fixed.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.6-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.6: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 \set ECHO none
 SET pg_textsearch.log_scores = false;

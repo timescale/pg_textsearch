@@ -1,7 +1,7 @@
 -- Test cases for queries that are NOT YET fully supported
 -- These document known limitations of the current implicit index resolution
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.6-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.0.6: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Setup test tables
 CREATE TABLE docs (

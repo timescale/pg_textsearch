@@ -9,14 +9,11 @@
 | v0.0.3 | Nov 2025 | Crash recovery, concurrency fixes, string-based architecture |
 | v0.0.4 | Nov 2025 | BM25 score validation, PostgreSQL 18 support |
 | v0.0.5 | Dec 2025 | Segment infrastructure, auto-spill, hierarchical merging |
+| v0.0.6 | Dec 2025 | Implicit index resolution, partitioned table support |
 
-## Current (v0.0.6-dev)
+## Current (v0.0.7-dev)
 
-Development version with syntax ergonomics and partitioned table support.
-
-- **Implicit index resolution**: Index automatically detected from column
-- **Partitioned tables**: BM25 indexes work with partition-local statistics
-- **Simplified syntax**: `content <@> 'search terms'` without explicit index
+Development version targeting segment optimizations.
 
 ## Future
 
@@ -26,7 +23,6 @@ Performance and space efficiency improvements.
 
 - **Compression**: Delta encoding for posting lists, bitpacking
 - **Skip lists**: Fast intersection for multi-term queries
-- **Tombstones**: Proper DELETE support with compaction cleanup
 - **Block-Max WAND**: Early termination for top-k queries
 
 ### v0.0.8 - Background Compaction
@@ -34,7 +30,6 @@ Performance and space efficiency improvements.
 Move compaction off the critical path.
 
 - **Background worker**: Async segment merging
-- **Level-based compaction**: Configurable segments per level
 - **Observability**: Progress tracking, statistics
 
 ### v0.1 - Production Ready
@@ -48,6 +43,4 @@ First production-quality release.
 ### Future (Post v0.1)
 
 - **Boolean queries**: AND/OR/NOT via `@@` operator
-- **Phrase queries**: Position-aware matching
-- **Faceted search**: Term aggregations
-- **Hybrid search**: Integration with pgvector
+- YOUR IDEA HERE

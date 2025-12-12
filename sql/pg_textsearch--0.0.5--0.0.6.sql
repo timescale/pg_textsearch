@@ -1,4 +1,4 @@
--- Upgrade from 0.0.5 to 0.0.6-dev
+-- Upgrade from 0.0.5 to 0.0.6
 
 -- Create the new scoring functions with bm25_ prefix
 CREATE FUNCTION bm25_text_bm25query_score(left_text text, right_query bm25query)

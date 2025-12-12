@@ -1,18 +1,21 @@
 # pg_textsearch
 
-![Tapir and Friends](images/tapir_and_friends.png)
-
 [![CI](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml)
 
-Open-source full-text search for Postgres.
-Supports:
+Modern ranked text search for Postgres.
 
+- Simple syntax: `ORDER BY content <@> 'search terms'`
 - BM25 ranking with configurable parameters (k1, b)
-- PostgreSQL text search configurations (english, french, german, etc.)
-- bm25 index and bm25query data type for fast ranked searches
+- Works with Postgres text search configurations (english, french, german, etc.)
+- Supports partitioned tables
+- Goal: state-of-the-art performance and scalability
 
-🚀 **Development Status**: v0.0.6-dev - Memtable-based
-implementation is in place and working. This is prerelease software and should not be used in production.
+🎉 **Now Open Source!** We're excited to share pg_textsearch with the community.
+
+🚀 **Status**: v0.0.6 (prerelease) - Feature-complete but not yet optimized.
+Not recommended for production use.
+
+![Tapir and Friends](images/tapir_and_friends.png)
 
 ## Historical note
 
@@ -34,9 +37,13 @@ pg_textsearch supports:
 
 ## Installation
 
-### Linux and Mac
+### Pre-built Binaries
 
-Compile and install the extension (requires PostgreSQL 17 or 18)
+Download pre-built binaries from the
+[Releases page](https://github.com/timescale/pg_textsearch/releases).
+Available for Linux and macOS (amd64 and arm64), PostgreSQL 17 and 18.
+
+### Build from Source
 
 ```sh
 cd /tmp
@@ -401,48 +408,11 @@ SELECT bm25_dump_index('docs_idx', '/tmp/docs_idx_dump.txt');
 SELECT bm25_spill_index('docs_idx');
 ```
 
-## Development
+## Contributing
 
-### Building and Testing
-
-```sh
-make                   # build extension
-make install           # install to PostgreSQL
-make installcheck      # run regression tests
-make test-concurrency  # run concurrency stress tests
-test/scripts/recovery.sh    # run crash recovery tests
-
-# Code formatting
-make format            # format all source files with clang-format
-make lint-format       # check formatting without changing files
-
-# Install pre-commit hooks (optional)
-brew install pre-commit && pre-commit install  # macOS
-# pip install pre-commit && pre-commit install  # Linux
-```
-
-### Code Style
-
-- 79-character line limit, tab indentation
-- Opening braces on new lines (Allman style)
-- Consecutive alignment for variables and macros
-- 2 spaces before trailing comments
-- Multiline function prototypes followed by blank line
-- PostgreSQL naming conventions (snake_case)
-- Format with: `make format`
-
-## Bug Reports & Feature Requests
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and
+how to submit pull requests.
 
 - **Bug Reports**: [Create an issue](https://github.com/timescale/pg_textsearch/issues/new?labels=bug&template=bug_report.md)
 - **Feature Requests**: [Request a feature](https://github.com/timescale/pg_textsearch/issues/new?labels=enhancement&template=feature_request.md)
 - **General Discussion**: [Start a discussion](https://github.com/timescale/pg_textsearch/discussions)
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Ensure `make installcheck` and `make test-concurrency` pass
-5. Submit a pull request
-
-All pull requests are automatically tested against PostgreSQL 17 and 18.
