@@ -219,6 +219,9 @@ disk segments. When the memtable reaches this many posting entries, it
 automatically flushes to a segment at transaction commit. This keeps memory
 usage bounded while maintaining good query performance.
 
+**Crash recovery**: The memtable is rebuilt from the heap on startup, so no
+data is lost if Postgres crashes before spilling to disk.
+
 ## Examples
 
 ### Basic Search
@@ -232,10 +235,10 @@ INSERT INTO articles (title, content) VALUES
     ('Search Technology', 'Full text search enables finding relevant documents quickly'),
     ('Information Retrieval', 'BM25 is a ranking function used in search engines');
 
--- Find relevant documents (index auto-detected from column)
-SELECT title, content <@> to_bm25query('database search', 'articles_idx') as score
+-- Find relevant documents
+SELECT title, content <@> 'database search' as score
 FROM articles
-ORDER BY content <@> 'database search';
+ORDER BY score;
 ```
 
 Also supports different languages and custom parameters:
