@@ -1,0 +1,2 @@
+-- pg_textsearch extension upgrade from version 0.0.1 to 0.0.2
+-- No schema changes required between these versions
