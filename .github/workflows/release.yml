@@ -6,6 +6,7 @@ on:
       - 'v*'
   release:
     types: [published]
+  workflow_dispatch:  # Allow manual testing
 
 permissions:
   contents: write  # Needed to upload assets to releases
@@ -59,8 +60,9 @@ jobs:
         # Run regression tests using pg_regress directly
         /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pgxs/src/makefiles/../../src/test/regress/pg_regress \
           --inputdir=test --outputdir=test --dbname=contrib_regression \
-          aerodocs basic deletion dropped empty index limits manyterms mixed queries \
-          schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 strings vector
+          aerodocs basic deletion vacuum dropped empty implicit index inheritance limits lock \
+          manyterms memory merge mixed partitioned queries schema scoring1 scoring2 scoring3 \
+          scoring4 scoring5 scoring6 segment strings unsupported updates vector
         # Run concurrency tests directly
         cd test/scripts && TEST_SIZE_MULTIPLIER=3.0 ./concurrency.sh
 
@@ -71,9 +73,7 @@ jobs:
 
         # Copy extension files
         cp pg_textsearch.control dist/pg${{ matrix.pg_version }}/
-        cp sql/pg_textsearch--0.0.4.sql dist/pg${{ matrix.pg_version }}/
-        # Copy migration files for upgrades
-        cp sql/pg_textsearch--0.0.3--0.0.4.sql dist/pg${{ matrix.pg_version }}/
+        cp sql/pg_textsearch--*.sql dist/pg${{ matrix.pg_version }}/
 
         # Copy built library with version info
         PG_LIB_DIR=$(pg_config --pkglibdir)
@@ -91,7 +91,7 @@ jobs:
         Commit: ${{ github.sha }}
 
         Installation:
-        1. Copy pg_textsearch.control and pg_textsearch--0.0.4.sql to your PostgreSQL extension directory
+        1. Copy pg_textsearch.control and pg_textsearch--*.sql to your PostgreSQL extension directory
         2. Copy the library file to your PostgreSQL library directory
         3. Run: CREATE EXTENSION pg_textsearch;
 
