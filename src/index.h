@@ -9,6 +9,7 @@
 #include <postgres.h>
 
 #include <access/amapi.h>
+#include <access/reloptions.h>
 #include <storage/block.h>
 #include <storage/bufpage.h>
 
@@ -120,8 +121,8 @@ extern bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
-/* GUC variable for logging BM25 scores */
-extern bool tp_log_scores;
+/* Relation options kind - initialized in mod.c */
+extern relopt_kind tp_relopt_kind;
 
 /* IDF sum calculation for average IDF */
 extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);

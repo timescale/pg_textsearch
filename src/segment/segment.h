@@ -4,8 +4,7 @@
  *
  * segment.h - Disk-based segment structures
  */
-#ifndef SEGMENT_H
-#define SEGMENT_H
+#pragma once
 
 #include "../constants.h"
 #include "access/htup_details.h"
@@ -257,5 +256,3 @@ extern void tp_process_term_in_segments(
 /* Look up doc_freq for a term from segments (for operator scoring) */
 extern uint32 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term);
-
-#endif /* SEGMENT_H */

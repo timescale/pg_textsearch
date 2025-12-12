@@ -49,11 +49,19 @@ pip install pre-commit && pre-commit install
 
 ### Code Style
 
+We follow PostgreSQL coding conventions. Key points:
+
 - **Line limit**: 79 characters
 - **Indentation**: Tabs
 - **Brace style**: Allman (opening braces on new lines)
-- **Naming**: PostgreSQL conventions (snake_case)
+- **Naming**: snake_case for functions and variables
 - **Comments**: 2 spaces before trailing comments
+- **Headers**: Use `#pragma once` instead of include guards
+- **Includes**: `postgres.h` must be the first include, followed by standard
+  library headers (with `<>`), then project headers (with `""`)
+
+See the [PostgreSQL coding conventions](https://www.postgresql.org/docs/current/source-format.html)
+for more details.
 
 Format your code before committing:
 ```sh

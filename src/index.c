@@ -55,8 +55,8 @@
 #include "segment/segment_merge.h"
 #include "vector.h"
 
-/* GUC variables defined in mod.c */
-extern int tp_memtable_spill_threshold;
+/* Relation options - initialized in mod.c */
+extern relopt_kind tp_relopt_kind;
 
 /* Local helper functions */
 static char *tp_get_qualified_index_name(Relation indexRelation);
@@ -588,9 +588,6 @@ typedef struct TpOptions
 	double k1;				   /* BM25 k1 parameter */
 	double b;				   /* BM25 b parameter */
 } TpOptions;
-
-/* Relation options - initialized in mod.c */
-extern relopt_kind tp_relopt_kind;
 
 /* Helper functions for tp_build */
 static void
@@ -1295,7 +1292,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (OidIsValid(text_config_oid))
 	{
 		elog(NOTICE,
-			 "BM25 index build completed: %lu documents, avg_length=%.2f, "
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f, "
 			 "text_config='%s' (k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1306,7 +1304,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	else
 	{
 		elog(NOTICE,
-			 "BM25 index build completed: %lu documents, avg_length=%.2f "
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f "
 			 "(text_config=%s, k1=%.2f, b=%.2f)",
 			 total_docs,
 			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
@@ -1928,13 +1927,15 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	/* Set ORDER BY distance value */
 	if (scan->numberOfOrderBys > 0)
 	{
+		float4 raw_score;
+
 		Assert(scan->numberOfOrderBys == 1);
 		Assert(scan->xs_orderbyvals != NULL);
 		Assert(scan->xs_orderbynulls != NULL);
 		Assert(so->result_scores != NULL);
 
 		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
-		float4 raw_score		 = so->result_scores[so->current_pos];
+		raw_score				 = so->result_scores[so->current_pos];
 		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
 		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
 		scan->xs_orderbynulls[0] = false;
@@ -2044,9 +2045,10 @@ tp_options(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] =
 			{{"text_config",
 			  RELOPT_TYPE_STRING,
-			  offsetof(TpOptions, text_config_offset)},
-			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1)},
-			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b)}};
+			  offsetof(TpOptions, text_config_offset),
+			  0},
+			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1), 0},
+			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b), 0}};
 
 	return (bytea *)build_reloptions(
 			reloptions,

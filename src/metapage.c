@@ -39,7 +39,7 @@ typedef struct TpDocidWriterState
 {
 	Oid			index_oid;	/* Index this state is for */
 	BlockNumber last_page;	/* Last docid page written to */
-	int			num_docids; /* Number of docids on that page */
+	uint32		num_docids; /* Number of docids on that page */
 	bool		valid;		/* Is this cache entry valid? */
 } TpDocidWriterState;
 
@@ -428,7 +428,6 @@ tp_recover_from_docid_pages(Relation index)
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
-	int				   total_recovered = 0;
 
 	/* Get the metapage to find the first docid page */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -464,7 +463,7 @@ tp_recover_from_docid_pages(Relation index)
 		docids = (ItemPointer)((char *)docid_header +
 							   sizeof(TpDocidPageHeader));
 
-		for (int i = 0; i < docid_header->num_docids; i++)
+		for (uint32 i = 0; i < docid_header->num_docids; i++)
 		{
 			ItemPointer		   ctid = &docids[i];
 			Relation		   heap_rel;
@@ -569,7 +568,6 @@ tp_recover_from_docid_pages(Relation index)
 						}
 						pfree(terms);
 						pfree(frequencies);
-						total_recovered++;
 					}
 
 					/* Free the vector */

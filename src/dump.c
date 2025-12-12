@@ -247,7 +247,6 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	int				   segment_count   = 0;
 	uint32			   segment_terms   = 0;
 	uint32			   segment_docs	   = 0;
-	uint64			   segment_tokens  = 0;
 	uint32			   recovery_pages  = 0;
 	uint32			   recovery_docids = 0;
 
@@ -438,7 +437,6 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 					level_segment_count++;
 					segment_terms += header->num_terms;
 					segment_docs += header->num_docs;
-					segment_tokens += header->total_tokens;
 					segment_pages += header->num_pages;
 					seg_size = (Size)header->num_pages * BLCKSZ;
 
@@ -468,7 +466,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 		{
 			dump_printf(
 					out,
-					"  Total: %d segments, %lu pages (%.1fMB), "
+					"  Total: %d segments, " UINT64_FORMAT " pages (%.1fMB), "
 					"%u terms, %u docs\n",
 					segment_count,
 					segment_pages,

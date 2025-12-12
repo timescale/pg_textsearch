@@ -4,19 +4,18 @@
  *
  * segment_merge.c - Segment merge for LSM-style compaction
  */
+#include <postgres.h>
+
+#include <access/relation.h>
+#include <miscadmin.h>
+#include <storage/bufmgr.h>
+#include <utils/memutils.h>
+#include <utils/timestamp.h>
+
 #include "../constants.h"
 #include "../metapage.h"
-#include "access/relation.h"
-#include "miscadmin.h"
-#include "postgres.h"
 #include "segment.h"
 #include "segment_merge.h"
-#include "storage/bufmgr.h"
-#include "utils/memutils.h"
-#include "utils/timestamp.h"
-
-/* External GUC from mod.c */
-extern int tp_segments_per_level;
 
 /*
  * Merge source state - tracks current position in each source segment

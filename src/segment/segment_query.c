@@ -225,16 +225,16 @@ tp_segment_posting_iterator_next(
  */
 void
 tp_process_term_in_segments(
-		Relation		   index,
-		BlockNumber		   first_segment,
-		const char		  *term,
-		float4			   idf,
-		float4			   query_frequency,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		void			  *doc_scores_hash,
-		TpLocalIndexState *local_state)
+		Relation					   index,
+		BlockNumber					   first_segment,
+		const char					  *term,
+		float4						   idf,
+		float4						   query_frequency,
+		float4						   k1,
+		float4						   b,
+		float4						   avg_doc_len,
+		void						  *doc_scores_hash,
+		TpLocalIndexState *local_state pg_attribute_unused())
 {
 	BlockNumber				 current = first_segment;
 	TpSegmentReader			*reader	 = NULL;

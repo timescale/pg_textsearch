@@ -4,8 +4,7 @@
  *
  * dictionary.h - Term dictionary for disk segments
  */
-#ifndef DICTIONARY_H
-#define DICTIONARY_H
+#pragma once
 
 #include "postgres.h"
 #include "utils/dsa.h"
@@ -28,5 +27,3 @@ typedef struct TermInfo
 extern TermInfo *
 tp_build_dictionary(struct TpLocalIndexState *state, uint32 *num_terms);
 extern void tp_free_dictionary(TermInfo *terms, uint32 num_terms);
-
-#endif /* DICTIONARY_H */
