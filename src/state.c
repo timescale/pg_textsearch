@@ -24,6 +24,7 @@
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
 
+#include "constants.h"
 #include "index.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -32,9 +33,6 @@
 #include "segment/segment.h"
 #include "segment/segment_merge.h"
 #include "state.h"
-
-/* External GUCs from mod.c */
-extern int tp_bulk_load_threshold;
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;

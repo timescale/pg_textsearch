@@ -4,8 +4,7 @@
  *
  * segment_merge.h - Segment merge for LSM-style compaction
  */
-#ifndef SEGMENT_MERGE_H
-#define SEGMENT_MERGE_H
+#pragma once
 
 #include "postgres.h"
 #include "storage/block.h"
@@ -50,5 +49,3 @@ extern BlockNumber tp_merge_level_segments(Relation index, uint32 level);
  *   level - The level to check (0 = L0, 1 = L1, etc.)
  */
 extern void tp_maybe_compact_level(Relation index, uint32 level);
-
-#endif /* SEGMENT_MERGE_H */

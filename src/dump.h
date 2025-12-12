@@ -4,8 +4,7 @@
  *
  * dump.h - Index dump and debugging utilities
  */
-#ifndef DUMP_H
-#define DUMP_H
+#pragma once
 
 #include <postgres.h>
 
@@ -24,7 +23,7 @@ typedef struct DumpOutput
 
 /* Initialize for string output (SQL return) */
 static inline void
-dump_init_string(DumpOutput *out, StringInfo str)
+pg_attribute_unused() dump_init_string(DumpOutput *out, StringInfo str)
 {
 	out->str	   = str;
 	out->fp		   = NULL;
@@ -33,7 +32,7 @@ dump_init_string(DumpOutput *out, StringInfo str)
 
 /* Initialize for file output */
 static inline void
-dump_init_file(DumpOutput *out, FILE *fp)
+pg_attribute_unused() dump_init_file(DumpOutput *out, FILE *fp)
 {
 	out->str	   = NULL;
 	out->fp		   = fp;
@@ -41,11 +40,12 @@ dump_init_file(DumpOutput *out, FILE *fp)
 }
 
 /* Printf-style output */
-static inline void dump_printf(DumpOutput *out, const char *fmt, ...)
-		pg_attribute_printf(2, 3);
+static inline void pg_attribute_unused()
+		dump_printf(DumpOutput *out, const char *fmt, ...)
+				pg_attribute_printf(2, 3);
 
 static inline void
-dump_printf(DumpOutput *out, const char *fmt, ...)
+pg_attribute_unused() dump_printf(DumpOutput *out, const char *fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
@@ -77,7 +77,7 @@ dump_printf(DumpOutput *out, const char *fmt, ...)
 
 /* Check if we should truncate output (only in string mode) */
 static inline bool
-dump_should_truncate(DumpOutput *out, size_t limit)
+pg_attribute_unused() dump_should_truncate(DumpOutput *out, size_t limit)
 {
 	if (out->full_dump)
 		return false;
@@ -92,5 +92,3 @@ extern void tp_dump_index_to_output(const char *index_name, DumpOutput *out);
 /* Summarize index function - declared in dump.c */
 extern void
 tp_summarize_index_to_output(const char *index_name, DumpOutput *out);
-
-#endif /* DUMP_H */

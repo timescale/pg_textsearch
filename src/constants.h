@@ -57,3 +57,13 @@
 #define TP_TRANCHE_POSTING	   1002
 #define TP_TRANCHE_CORPUS	   1003
 #define TP_TRANCHE_DOC_LENGTHS 1004
+
+/*
+ * Global GUC variables declared in mod.c
+ * Note: tp_relopt_kind is declared in index.c as it requires
+ * access/reloptions.h
+ */
+extern bool tp_log_scores;
+extern int	tp_bulk_load_threshold;
+extern int	tp_memtable_spill_threshold;
+extern int	tp_segments_per_level;

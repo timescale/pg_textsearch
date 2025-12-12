@@ -20,6 +20,7 @@
 #include <utils/inval.h>
 
 #include "constants.h"
+#include "index.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "planner.h"
