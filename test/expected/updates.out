@@ -2,7 +2,7 @@
 -- This test reproduces the NULL index_state crash reported in production
 -- Install the extension if not already installed
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.0.6: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.1.0: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Test basic UPDATE operations
 CREATE TABLE update_test (

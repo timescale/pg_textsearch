@@ -1,6 +1,8 @@
 # Changelog
 
-## v0.0.6
+## v0.1.0
+
+First open-source release!
 
 ### New Features
 
