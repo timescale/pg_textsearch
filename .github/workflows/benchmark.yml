@@ -67,17 +67,21 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         rm -rf tmp_bench
-        mkdir -p tmp_bench
+        mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
         echo "shared_buffers = 128MB" >> tmp_bench/data/postgresql.conf
         echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_bench/socket'" >> tmp_bench/data/postgresql.conf
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
           echo "PostgreSQL failed to start. Log:"
           cat tmp_bench/postgres.log
           exit 1
         fi
+        export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
         psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        # Export for subsequent steps
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Run Cranfield benchmark
       run: |
