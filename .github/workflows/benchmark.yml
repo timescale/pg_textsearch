@@ -69,10 +69,15 @@ jobs:
         rm -rf tmp_bench
         mkdir -p tmp_bench
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
-        echo "shared_buffers = 256MB" >> tmp_bench/data/postgresql.conf
+        echo "shared_buffers = 128MB" >> tmp_bench/data/postgresql.conf
         echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
-        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
         createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
 
     - name: Run Cranfield benchmark
       run: |
