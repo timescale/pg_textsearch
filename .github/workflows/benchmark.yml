@@ -89,10 +89,11 @@ jobs:
         export PGDATABASE=bench_test
 
         echo "Loading Cranfield dataset..."
-        psql -f benchmarks/sql/cranfield/01-load.sql
+        cd benchmarks/sql/cranfield
+        psql -f 01-load.sql
 
         echo "Running query benchmarks..."
-        psql -f benchmarks/sql/cranfield/02-queries.sql
+        psql -f 02-queries.sql
 
     - name: Cleanup
       if: always()
