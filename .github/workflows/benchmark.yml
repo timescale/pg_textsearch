@@ -28,6 +28,16 @@ on:
           - '100K'
           - '1M'
           - 'full'
+      msmarco_size:
+        description: 'MS MARCO subset size (passages)'
+        required: false
+        default: '1M'
+        type: choice
+        options:
+          - '100K'
+          - '500K'
+          - '1M'
+          - 'full'
 
   # Run Cranfield on PRs for quick validation
   pull_request:
@@ -111,6 +121,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Free disk space
+      run: |
+        echo "Initial disk space:"
+        df -h /
+        # Remove unnecessary packages
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        echo "After cleanup:"
+        df -h /
+
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -170,10 +192,12 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
+          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
-          # Weekly schedule: run all
+          # Weekly schedule: run all with moderate sizes
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
+          echo "msmarco_size=1M" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
@@ -181,7 +205,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh
+        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
 
     - name: Download Wikipedia dataset
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
