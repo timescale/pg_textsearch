@@ -136,25 +136,33 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         rm -rf tmp_bench
-        mkdir -p tmp_bench
+        mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
         # Tune for benchmarking
-        cat >> tmp_bench/data/postgresql.conf << 'EOF'
-        shared_buffers = 2GB
-        effective_cache_size = 4GB
-        maintenance_work_mem = 512MB
-        work_mem = 256MB
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 1GB
+        effective_cache_size = 2GB
+        maintenance_work_mem = 256MB
+        work_mem = 128MB
         max_connections = 20
         checkpoint_completion_target = 0.9
         wal_buffers = 64MB
         random_page_cost = 1.1
         effective_io_concurrency = 200
-        pg_textsearch.index_memory_limit = 1GB
+        pg_textsearch.index_memory_limit = 512MB
         EOF
 
-        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
+        export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Determine datasets to run
       id: datasets
@@ -191,25 +199,23 @@ jobs:
         echo "=== Cranfield Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
 
-        time psql -f benchmarks/sql/cranfield/01-load.sql 2>&1 | \
-            tee -a benchmark_results.txt
-        time psql -f benchmarks/sql/cranfield/02-queries.sql 2>&1 | \
-            tee -a benchmark_results.txt
+        cd benchmarks/sql/cranfield
+        time psql -f 01-load.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        time psql -f 02-queries.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
 
-        echo "End: $(date)" | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
 
     - name: Run MS MARCO benchmark
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
         echo "=== MS MARCO Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
 
-        DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
-        time psql -v data_dir="'$DATA_DIR'" \
-            -f benchmarks/datasets/msmarco/load.sql 2>&1 | \
+        time psql -f benchmarks/datasets/msmarco/load.sql 2>&1 | \
             tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
             tee -a benchmark_results.txt
@@ -221,13 +227,12 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
 
         echo "=== Wikipedia Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
 
-        DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
-        time psql -v data_dir="'$DATA_DIR'" \
-            -f benchmarks/datasets/wikipedia/load.sql 2>&1 | \
+        time psql -f benchmarks/datasets/wikipedia/load.sql 2>&1 | \
             tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/wikipedia/queries.sql 2>&1 | \
             tee -a benchmark_results.txt
