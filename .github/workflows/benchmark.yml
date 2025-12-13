@@ -1,0 +1,261 @@
+name: Benchmarks
+
+on:
+  # Weekly full benchmark
+  schedule:
+    - cron: '0 6 * * 0'  # Every Sunday at 6 AM UTC
+
+  # Manual trigger with options
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Dataset to benchmark'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - cranfield
+          - msmarco
+          - wikipedia
+          - all
+      wikipedia_size:
+        description: 'Wikipedia subset size'
+        required: false
+        default: '100K'
+        type: choice
+        options:
+          - '10K'
+          - '100K'
+          - '1M'
+          - 'full'
+
+  # Run Cranfield on PRs for quick validation
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Makefile'
+      - 'benchmarks/**'
+
+jobs:
+  # Quick benchmark on every PR
+  pr-benchmark:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 17
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build and install extension
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean && make && sudo make install
+
+    - name: Start PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+        echo "shared_buffers = 256MB" >> tmp_bench/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        createdb bench_test
+
+    - name: Run Cranfield benchmark
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "Loading Cranfield dataset..."
+        psql -f benchmarks/sql/cranfield/01-load.sql
+
+        echo "Running query benchmarks..."
+        psql -f benchmarks/sql/cranfield/02-queries.sql
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
+  # Full benchmark suite (weekly or manual)
+  full-benchmark:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max for full Wikipedia
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc python3-pip
+        pip3 install wikiextractor
+
+        # PostgreSQL
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension (release mode)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        CFLAGS="-O3 -DNDEBUG" make
+        sudo make install
+
+    - name: Configure PostgreSQL for benchmarks
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        # Tune for benchmarking
+        cat >> tmp_bench/data/postgresql.conf << 'EOF'
+        shared_buffers = 2GB
+        effective_cache_size = 4GB
+        maintenance_work_mem = 512MB
+        work_mem = 256MB
+        max_connections = 20
+        checkpoint_completion_target = 0.9
+        wal_buffers = 64MB
+        random_page_cost = 1.1
+        effective_io_concurrency = 200
+        pg_textsearch.index_memory_limit = 1GB
+        EOF
+
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        createdb bench_test
+
+    - name: Determine datasets to run
+      id: datasets
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
+          echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
+        else
+          # Weekly schedule: run all
+          echo "dataset=all" >> $GITHUB_OUTPUT
+          echo "wiki_size=100K" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download MS MARCO dataset
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh
+
+    - name: Download Wikipedia dataset
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/wikipedia
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.wiki_size }}
+
+    - name: Run Cranfield benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+
+        time psql -f benchmarks/sql/cranfield/01-load.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        time psql -f benchmarks/sql/cranfield/02-queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run MS MARCO benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== MS MARCO Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+
+        DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+        time psql -v data_dir="'$DATA_DIR'" \
+            -f benchmarks/datasets/msmarco/load.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run Wikipedia benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Wikipedia Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+
+        DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+        time psql -v data_dir="'$DATA_DIR'" \
+            -f benchmarks/datasets/wikipedia/load.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/wikipedia/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Generate summary
+      run: |
+        echo "# Benchmark Summary" > benchmark_summary.md
+        echo "" >> benchmark_summary.md
+        echo "**Date:** $(date -u)" >> benchmark_summary.md
+        echo "**Commit:** ${{ github.sha }}" >> benchmark_summary.md
+        echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
+        echo "" >> benchmark_summary.md
+
+        # Extract timing info
+        echo "## Timing" >> benchmark_summary.md
+        grep -E "^(real|user|sys|Time:)" benchmark_results.txt >> benchmark_summary.md || true
+
+        echo "" >> benchmark_summary.md
+        echo "## Full Results" >> benchmark_summary.md
+        echo '```' >> benchmark_summary.md
+        tail -500 benchmark_results.txt >> benchmark_summary.md
+        echo '```' >> benchmark_summary.md
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results-${{ github.run_id }}
+        path: |
+          benchmark_results.txt
+          benchmark_summary.md
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench

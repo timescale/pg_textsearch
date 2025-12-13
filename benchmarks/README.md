@@ -1,125 +1,179 @@
-# Tapir Benchmarks
+# pg_textsearch Benchmarks
 
-This directory contains benchmark tests for the Tapir PostgreSQL extension.
+Performance benchmarks for the pg_textsearch BM25 full-text search extension.
 
-## Available Benchmarks
+## Quick Start
 
-### Memory Stress Test (`memory_stress.sql`)
-
-Tests the extension's behavior under memory pressure by creating a large dataset and attempting to index it.
-
-**Purpose**:
-- Identify memory limits and exhaustion behavior
-- Test performance with large document collections
-- Validate error handling under resource constraints
-
-**Features**:
-- Generates 100K documents with varied, realistic content
-- Creates complex documents with different vocabulary patterns
-- Tests index creation and query performance under load
-- Demonstrates memory allocation patterns
-
-**Usage**:
 ```bash
-# Run with default settings (64MB shared memory)
-./run_memory_stress.sh
+# Run Cranfield benchmark (quick validation, ~1400 docs)
+./runner/run_benchmark.sh cranfield
 
-# Or run directly with psql
-psql -f sql/memory_stress.sql
+# Run MS MARCO benchmark (8.8M passages) - requires download
+./runner/run_benchmark.sh msmarco --download --load --query
+
+# Run Wikipedia benchmark
+./runner/run_benchmark.sh wikipedia --download --load --query
+
+# Run all benchmarks
+./runner/run_benchmark.sh all
 ```
 
-**To test with minimal memory**:
-1. Add to `postgresql.conf`: `tapir.shared_memory_size = 1`
-2. Restart PostgreSQL
-3. Run the benchmark
+## Datasets
 
-**Expected Behavior**:
-- With sufficient memory: Index creation succeeds, queries complete
-- With insufficient memory: Index creation fails with memory errors
-- Shows actual memory usage patterns and limits
+### Cranfield Collection (Quick Validation)
+- **Size:** 1,400 aerodynamics abstracts, 225 queries
+- **Purpose:** Quick validation of BM25 correctness and basic performance
+- **Time:** ~1-2 minutes total
 
-### Cranfield Collection Benchmark (`cranfield/`)
+### MS MARCO Passage Ranking (Full Scale)
+- **Size:** 8.8 million passages, 6,980 dev queries with relevance judgments
+- **Purpose:** Large-scale performance benchmarking, search quality evaluation
+- **Source:** [Microsoft MS MARCO](https://microsoft.github.io/msmarco/)
+- **Download:** ~2GB compressed
+- **Time:** Index build may take 30+ minutes depending on hardware
 
-Standard information retrieval test collection with 1400 aerodynamics abstracts and 225 queries.
+### Wikipedia (Real-World Content)
+- **Size:** Configurable (10K, 100K, 1M, or full ~6M articles)
+- **Purpose:** Real-world document lengths and vocabulary
+- **Source:** [Wikimedia Dumps](https://dumps.wikimedia.org/)
+- **Time:** Varies significantly by size
 
-**Purpose**:
-- Validate BM25 implementation quality against standard IR benchmark
-- Performance testing with realistic document collection
-- Search quality evaluation using expected relevance rankings
+## Benchmark Runner
 
-**Usage**:
+The main runner script is `runner/run_benchmark.sh`:
+
 ```bash
-# Run complete benchmark (data loading + queries)
-./run_cranfield.sh
+./runner/run_benchmark.sh [dataset] [options]
 
-# Or run phases individually
-cd sql/cranfield/
-psql -f 01-load.sql    # Load 1400 documents + create index
-psql -f 02-queries.sql  # Run 225 queries with timing
+# Datasets:
+#   msmarco     - MS MARCO Passage Ranking (8.8M passages)
+#   wikipedia   - Wikipedia articles
+#   cranfield   - Cranfield collection (1,400 docs)
+#   all         - Run all benchmarks
+
+# Options:
+#   --download  - Download dataset if not present
+#   --load      - Load data and create index (drops existing)
+#   --query     - Run query benchmarks only
+#   --report    - Generate markdown report
+#   --port PORT - Postgres port (default: 5433 for release build)
 ```
-
-**Expected Performance**:
-- Data loading: 10-60 seconds (includes index creation)
-- Query execution: 30-120 seconds (225 queries)
-- Memory usage: Scales with tapir.shared_memory_size setting
 
 ## Running Benchmarks
 
-**Memory Stress Test**:
+### Prerequisites
+
+1. PostgreSQL with pg_textsearch installed
+2. For Wikipedia: `pip install wikiextractor`
+3. For best results, use a release build of Postgres (port 5433)
+
+### Download Data
+
 ```bash
-./run_memory_stress.sh
-# Or directly: psql -f sql/memory_stress.sql
+# MS MARCO
+cd datasets/msmarco && ./download.sh
+
+# Wikipedia (full)
+cd datasets/wikipedia && ./download.sh full
+
+# Wikipedia (subset for testing)
+cd datasets/wikipedia && ./download.sh 100K
 ```
 
-**Cranfield Benchmark**:
+### Load and Index
+
 ```bash
-./run_cranfield.sh
-# Or directly: cd sql/cranfield/ && psql -f 01-load.sql && psql -f 02-queries.sql
+# Using psql directly
+psql -p 5433 -v data_dir="'$PWD/datasets/msmarco/data'" \
+    -f datasets/msmarco/load.sql
+
+# Or use the runner
+./runner/run_benchmark.sh msmarco --load --port 5433
 ```
+
+### Run Query Benchmarks
+
+```bash
+psql -p 5433 -f datasets/msmarco/queries.sql
+```
+
+## Metrics Collected
+
+### Index Build
+- Total time to build BM25 index
+- Memory usage during index build
+
+### Query Performance
+- Single query latency (p50, p95, p99)
+- Batch query throughput (QPS)
+- Query latency by query type:
+  - Single-word queries
+  - Multi-word queries
+  - Question-style queries
+  - Rare term queries
+
+### Search Quality (MS MARCO)
+- MRR@10 (Mean Reciprocal Rank)
+- Comparison with known relevance judgments
+
+## CI Integration
+
+Benchmarks run automatically:
+- **On PR:** Cranfield only (quick validation)
+- **Nightly:** MS MARCO subset
+- **Weekly:** Full benchmark suite
+
+See `.github/workflows/benchmark.yml` for configuration.
+
+## Results
+
+Historical results are stored in `results/` (gitignored).
+
+Each run produces:
+- `benchmark_[dataset]_[timestamp].md` - Markdown report
+- `[dataset]_load_[timestamp].log` - Load phase logs
+- `[dataset]_queries_[timestamp].log` - Query benchmark logs
+- `metrics_[timestamp].env` - Machine-readable metrics
 
 ## Interpreting Results
 
-### Memory Stress Test
+### Index Build Time
 
-**Success indicators**:
-- Index creation completes
-- All queries return results
-- No memory allocation failures
+| Dataset | Expected Time (Release Build) |
+|---------|------------------------------|
+| Cranfield | < 5 seconds |
+| MS MARCO | 15-60 minutes |
+| Wikipedia (100K) | 2-10 minutes |
+| Wikipedia (full) | 1-4 hours |
 
-**Stress indicators**:
-- Slow index creation (>30 seconds for 100K docs)
-- Query timeouts or errors
-- Memory allocation warnings in PostgreSQL logs
+### Query Latency
 
-**Failure indicators**:
-- "out of memory" errors during index creation
-- Index creation aborts
-- Connection drops due to memory exhaustion
+For a well-tuned system with sufficient memory:
+- Top-10 queries: < 100ms
+- Batch throughput: 10-100 QPS (depending on query complexity)
 
-### Performance Expectations
+### Memory Requirements
 
-With 64MB shared memory (default):
-- 100K documents should index successfully
-- Index creation: ~10-60 seconds
-- Simple queries: <1 second
-- Complex queries: 1-5 seconds
+- Cranfield: < 64MB
+- MS MARCO: 1-4GB (depending on index memory limit)
+- Wikipedia: 512MB-8GB (depending on size)
 
-With 1MB shared memory:
-- Should fail or show severe memory pressure
-- Demonstrates extension limits
+## Adding New Benchmarks
 
-## Customization
+To add a new dataset:
 
-Modify document count in `memory_stress.sql`:
-```sql
-FROM generate_series(1, 200000) AS i;  -- 200K for more stress
-```
+1. Create directory: `datasets/[name]/`
+2. Add scripts:
+   - `download.sh` - Download and prepare data
+   - `load.sql` - Load data and create index
+   - `queries.sql` - Query benchmarks
+3. Update this README
 
-Adjust content complexity by modifying the CASE statements that generate document content.
+## Comparison with Other Systems
 
-## Notes
+For competitive benchmarks, you can run the same queries against:
+- Native Postgres `ts_rank` (built-in full-text search)
+- ParadeDB `pg_search` (Tantivy-based)
+- External systems (Elasticsearch, Meilisearch)
 
-- `tapir.shared_memory_size` is a PGC_POSTMASTER parameter requiring PostgreSQL restart
-- Large datasets require sufficient disk space for the test table
-- Monitor system memory usage during benchmarks
-- Clean up is automatic but can be done manually: `DROP TABLE stress_docs;`
+See `datasets/[name]/queries_native.sql` for native Postgres equivalents.

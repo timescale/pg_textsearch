@@ -1,0 +1,8 @@
+# Benchmark results (local only)
+results/
+
+# Downloaded datasets
+datasets/*/data/
+
+# macOS
+.DS_Store
