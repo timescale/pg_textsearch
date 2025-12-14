@@ -1,5 +1,6 @@
 -- MS MARCO Passage Ranking - Query Benchmarks
 -- Runs various query workloads against the indexed MS MARCO collection
+-- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
@@ -7,132 +8,148 @@
 \echo '=== MS MARCO Query Benchmarks ==='
 \echo ''
 
--- Warm up: ensure index is in memory
+-- Warm up: run a few queries to ensure index is cached
 \echo 'Warming up index...'
-SELECT COUNT(*) FROM msmarco_passages
-WHERE passage_text <@> to_bm25query('test query', 'msmarco_bm25_idx') < 0;
-
--- Benchmark 1: Single query latency (sample of dev queries)
-\echo ''
-\echo '=== Benchmark 1: Top-10 Query Latency (10 sample queries) ==='
-\echo 'Running 10 queries from the dev set, returning top 10 results each'
-
-\timing on
-
--- Query 1
-SELECT p.passage_id,
-       p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx') as score
-FROM msmarco_passages p, msmarco_queries q
-WHERE q.query_id = 1048585
-ORDER BY score
+SELECT passage_id FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('test', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('test', 'msmarco_bm25_idx')
 LIMIT 10;
 
--- Query 2
-SELECT p.passage_id,
-       p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx') as score
-FROM msmarco_passages p, msmarco_queries q
-WHERE q.query_id = 1048586
-ORDER BY score
+SELECT passage_id FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('example query', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('example query', 'msmarco_bm25_idx')
 LIMIT 10;
 
--- Query 3
-SELECT p.passage_id,
-       p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx') as score
-FROM msmarco_passages p, msmarco_queries q
-WHERE q.query_id = 1048587
-ORDER BY score
-LIMIT 10;
-
--- Benchmark 2: Batch query throughput
+-- ============================================================
+-- Benchmark 1: Single Query Latency (using BM25 index scan)
+-- ============================================================
 \echo ''
-\echo '=== Benchmark 2: Batch Query Processing (100 queries) ==='
-\echo 'Processing 100 queries, counting matching documents'
-
-SELECT
-    q.query_id,
-    LEFT(q.query_text, 40) as query_preview,
-    COUNT(*) FILTER (
-        WHERE p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx') < 0
-    ) as matching_docs
-FROM msmarco_queries q
-CROSS JOIN LATERAL (
-    SELECT passage_id, passage_text
-    FROM msmarco_passages
-    LIMIT 10000  -- Sample for throughput test
-) p
-WHERE q.query_id IN (
-    SELECT query_id FROM msmarco_queries ORDER BY query_id LIMIT 100
-)
-GROUP BY q.query_id, q.query_text
-ORDER BY q.query_id
-LIMIT 20;
-
--- Benchmark 3: Relevance evaluation (MRR@10)
+\echo '=== Benchmark 1: Single Query Latency (BM25 Index Scan) ==='
+\echo 'Running top-10 queries using the BM25 index'
 \echo ''
-\echo '=== Benchmark 3: Search Quality - MRR@10 ==='
-\echo 'Computing Mean Reciprocal Rank for queries with known relevant passages'
 
-WITH ranked_results AS (
-    SELECT
-        q.query_id,
-        p.passage_id,
-        p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx') as score,
-        ROW_NUMBER() OVER (
-            PARTITION BY q.query_id
-            ORDER BY p.passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
-        ) as rank
-    FROM msmarco_queries q
-    CROSS JOIN msmarco_passages p
-    WHERE q.query_id IN (SELECT query_id FROM msmarco_qrels LIMIT 100)
-),
-top10_results AS (
-    SELECT * FROM ranked_results WHERE rank <= 10
-),
-reciprocal_ranks AS (
-    SELECT
-        t.query_id,
-        MIN(CASE WHEN qr.passage_id IS NOT NULL THEN 1.0 / t.rank END) as rr
-    FROM top10_results t
-    LEFT JOIN msmarco_qrels qr
-        ON t.query_id = qr.query_id AND t.passage_id = qr.passage_id
-    GROUP BY t.query_id
-)
-SELECT
-    'MRR@10' as metric,
-    ROUND(AVG(COALESCE(rr, 0))::numeric, 4) as value,
-    COUNT(*) as num_queries
-FROM reciprocal_ranks;
-
--- Benchmark 4: Common query patterns
-\echo ''
-\echo '=== Benchmark 4: Common Query Patterns ==='
-
-\echo 'Short query (1-2 words):'
-EXPLAIN ANALYZE
-SELECT passage_id, passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx') as score
-FROM msmarco_passages
-ORDER BY score
-LIMIT 10;
-
-\echo ''
-\echo 'Medium query (3-5 words):'
-EXPLAIN ANALYZE
-SELECT passage_id, passage_text <@> to_bm25query('how to make coffee', 'msmarco_bm25_idx') as score
-FROM msmarco_passages
-ORDER BY score
-LIMIT 10;
-
-\echo ''
-\echo 'Long query (question):'
-EXPLAIN ANALYZE
+-- Short query (1 word)
+\echo 'Query 1: Short query (1 word) - "coffee"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
 SELECT passage_id,
-       passage_text <@> to_bm25query(
-           'what is the best way to brew coffee at home',
-           'msmarco_bm25_idx'
-       ) as score
+       passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx') as score
 FROM msmarco_passages
-ORDER BY score
+WHERE passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx')
 LIMIT 10;
+
+\echo ''
+\echo 'Query 2: Medium query (3 words) - "how to cook"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT passage_id,
+       passage_text <@> to_bm25query('how to cook', 'msmarco_bm25_idx') as score
+FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('how to cook', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('how to cook', 'msmarco_bm25_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 3: Long query (question) - "what is the capital of france"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT passage_id,
+       passage_text <@> to_bm25query('what is the capital of france',
+                                     'msmarco_bm25_idx') as score
+FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('what is the capital of france',
+                                    'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('what is the capital of france',
+                                       'msmarco_bm25_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 4: Common term - "the"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT passage_id,
+       passage_text <@> to_bm25query('the', 'msmarco_bm25_idx') as score
+FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('the', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('the', 'msmarco_bm25_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 5: Rare term - "cryptocurrency blockchain"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT passage_id,
+       passage_text <@> to_bm25query('cryptocurrency blockchain',
+                                     'msmarco_bm25_idx') as score
+FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('cryptocurrency blockchain',
+                                    'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('cryptocurrency blockchain',
+                                       'msmarco_bm25_idx')
+LIMIT 10;
+
+-- ============================================================
+-- Benchmark 2: Query Throughput (batch of queries)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 2: Query Throughput (20 queries) ==='
+\echo 'Running 20 sequential top-10 queries'
+
+-- Time 20 queries in sequence
+DO $$
+DECLARE
+    queries text[] := ARRAY[
+        'weather forecast', 'stock market', 'recipe chicken',
+        'python programming', 'machine learning', 'climate change',
+        'health benefits', 'travel destinations', 'movie reviews',
+        'sports scores', 'music history', 'science experiments',
+        'cooking tips', 'fitness exercises', 'book recommendations',
+        'technology news', 'financial advice', 'home improvement',
+        'garden plants', 'pet care'
+    ];
+    q text;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric := 0;
+    cnt int;
+BEGIN
+    start_time := clock_timestamp();
+    FOREACH q IN ARRAY queries LOOP
+        PERFORM passage_id FROM msmarco_passages
+        WHERE passage_text <@> to_bm25query(q, 'msmarco_bm25_idx') < 0
+        ORDER BY passage_text <@> to_bm25query(q, 'msmarco_bm25_idx')
+        LIMIT 10;
+    END LOOP;
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in %.2f ms (avg %.2f ms/query)',
+        total_ms, total_ms / 20;
+END $$;
+
+-- ============================================================
+-- Benchmark 3: Index Statistics
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 3: Index Statistics ==='
+
+SELECT
+    'msmarco_bm25_idx' as index_name,
+    pg_size_pretty(pg_relation_size('msmarco_bm25_idx')) as index_size,
+    pg_size_pretty(pg_relation_size('msmarco_passages')) as table_size,
+    (SELECT COUNT(*) FROM msmarco_passages) as num_documents;
+
+-- ============================================================
+-- Summary: Extract key metrics for historical tracking
+-- ============================================================
+\echo ''
+\echo '=== BENCHMARK SUMMARY (for historical tracking) ==='
+\echo 'Format: METRIC_NAME: value unit'
+
+-- Re-run key queries and extract execution time only
+\echo ''
+\o /dev/null
+SELECT passage_id FROM msmarco_passages
+WHERE passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx') < 0
+ORDER BY passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx')
+LIMIT 10;
+\o
+\echo 'See EXPLAIN ANALYZE output above for per-query latencies'
 
 \echo ''
 \echo '=== MS MARCO Query Benchmarks Complete ==='

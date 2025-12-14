@@ -263,7 +263,7 @@ jobs:
 
         echo "End: $(date)" | tee -a benchmark_results.txt
 
-    - name: Generate summary
+    - name: Generate summary and metrics
       run: |
         echo "# Benchmark Summary" > benchmark_summary.md
         echo "" >> benchmark_summary.md
@@ -272,14 +272,37 @@ jobs:
         echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
         echo "" >> benchmark_summary.md
 
+        # Extract structured metrics
+        chmod +x benchmarks/runner/extract_metrics.sh
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json || true
+
+        # Add metrics to summary
+        echo "## Key Metrics" >> benchmark_summary.md
+        if [ -f benchmark_metrics.json ]; then
+          echo '```json' >> benchmark_summary.md
+          cat benchmark_metrics.json >> benchmark_summary.md
+          echo '```' >> benchmark_summary.md
+        fi
+
         # Extract timing info
+        echo "" >> benchmark_summary.md
         echo "## Timing" >> benchmark_summary.md
         grep -E "^(real|user|sys|Time:)" benchmark_results.txt >> benchmark_summary.md || true
 
+        # Extract query latencies from EXPLAIN ANALYZE
         echo "" >> benchmark_summary.md
-        echo "## Full Results" >> benchmark_summary.md
+        echo "## Query Latencies" >> benchmark_summary.md
+        grep -E "Execution Time:" benchmark_results.txt >> benchmark_summary.md || true
+
+        # Extract throughput
+        echo "" >> benchmark_summary.md
+        echo "## Throughput" >> benchmark_summary.md
+        grep -E "THROUGHPUT_RESULT:" benchmark_results.txt >> benchmark_summary.md || true
+
+        echo "" >> benchmark_summary.md
+        echo "## Full Results (last 300 lines)" >> benchmark_summary.md
         echo '```' >> benchmark_summary.md
-        tail -500 benchmark_results.txt >> benchmark_summary.md
+        tail -300 benchmark_results.txt >> benchmark_summary.md
         echo '```' >> benchmark_summary.md
 
     - name: Upload benchmark results
@@ -289,8 +312,25 @@ jobs:
         path: |
           benchmark_results.txt
           benchmark_summary.md
+          benchmark_metrics.json
           tmp_bench/postgres.log
         retention-days: 90
+
+    - name: Post benchmark summary to job
+      if: always()
+      run: |
+        if [ -f benchmark_metrics.json ]; then
+          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Short Query | $(jq -r '.metrics.query_latencies_ms.short_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Medium Query | $(jq -r '.metrics.query_latencies_ms.medium_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+        fi
 
     - name: Cleanup
       if: always()
