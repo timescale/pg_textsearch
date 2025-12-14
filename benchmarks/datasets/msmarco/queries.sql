@@ -118,8 +118,8 @@ BEGIN
     END LOOP;
     end_time := clock_timestamp();
     total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
-    RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in %.2f ms (avg %.2f ms/query)',
-        total_ms, total_ms / 20;
+    RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in % ms (avg % ms/query)',
+        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
 END $$;
 
 -- ============================================================

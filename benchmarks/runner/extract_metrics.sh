@@ -22,13 +22,13 @@ INDEX_SIZE=""
 TABLE_SIZE=""
 declare -a QUERY_LATENCIES
 
-# Extract index build time (from CREATE INDEX timing)
-INDEX_BUILD_MS=$(grep -E "CREATE INDEX.*Time:" "$LOG_FILE" 2>/dev/null | \
-    grep -oE "[0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
+# Extract index build time (from CREATE INDEX timing - format: "Time: 63073.468 ms")
+INDEX_BUILD_MS=$(grep -E "CREATE INDEX" "$LOG_FILE" -A 1 2>/dev/null | \
+    grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
-# Extract data load time (COPY statements)
-LOAD_TIME_MS=$(grep -E "^COPY [0-9]+.*Time:" "$LOG_FILE" 2>/dev/null | \
-    head -1 | grep -oE "[0-9]+\.[0-9]+ ms" | grep -oE "[0-9]+\.[0-9]+" || echo "")
+# Extract data load time (COPY statements - format: "Time: 11235.512 ms")
+LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
+    grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
 # Extract document count from index build notice
 NUM_DOCUMENTS=$(grep -E "BM25 index build completed:" "$LOG_FILE" 2>/dev/null | \
