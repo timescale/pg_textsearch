@@ -31,7 +31,7 @@ on:
       msmarco_size:
         description: 'MS MARCO subset size (passages)'
         required: false
-        default: '1M'
+        default: 'full'
         type: choice
         options:
           - '100K'
@@ -194,10 +194,10 @@ jobs:
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
           echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
-          # Weekly schedule: run all with moderate sizes
+          # Weekly schedule: run all with full MS MARCO
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
-          echo "msmarco_size=1M" >> $GITHUB_OUTPUT
+          echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
