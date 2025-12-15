@@ -8,9 +8,90 @@ on:
 
 permissions:
   contents: write  # Needed to upload assets to releases
+  deployments: write  # Needed for benchmark tracking
 
 jobs:
+  # Performance regression check before release
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 17
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc jq
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension (optimized)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        CFLAGS="-O3 -DNDEBUG" make
+        sudo make install
+
+    - name: Start PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+        echo "shared_buffers = 256MB" >> tmp_bench/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_bench/socket'" >> tmp_bench/data/postgresql.conf
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Run Cranfield benchmark
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        cd benchmarks/sql/cranfield
+        psql -f 01-load.sql 2>&1 | tee "$GITHUB_WORKSPACE/benchmark_results.txt"
+        psql -f 02-queries.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Extract and format metrics
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        chmod +x benchmarks/runner/format_for_action.sh
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json
+        jq '.dataset = "cranfield"' benchmark_metrics.json > tmp.json && mv tmp.json benchmark_metrics.json
+        ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
+
+    - name: Check for performance regression
+      if: hashFiles('benchmark_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'Cranfield Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: benchmark_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        alert-threshold: '120%'
+        fail-on-alert: true
+        comment-on-alert: true
+        save-data-file: false
+        benchmark-data-dir-path: 'benchmarks'
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
   build-and-test:
+    needs: benchmark-gate
     runs-on: ubuntu-latest
     strategy:
       matrix:

@@ -146,6 +146,31 @@ cd benchmarks
 | MS MARCO | 8.8M | Microsoft passage ranking dataset |
 | Wikipedia | Configurable | Wikipedia article extracts |
 
+### Performance Dashboard
+
+Historical benchmark results are tracked and published to GitHub Pages:
+
+**Dashboard URL**: https://timescale.github.io/pg_textsearch/benchmarks/
+
+The dashboard shows:
+- **Index Build Time** - Time to build the BM25 index
+- **Query Latencies** - Per-query execution times (short, medium, long queries)
+- **Average Throughput** - Mean latency across 20 representative queries
+
+### Regression Alerts
+
+Performance is automatically monitored:
+
+- **PRs**: Cranfield benchmarks run on every PR touching `src/` or `benchmarks/`.
+  Results are posted as PR comments comparing against the baseline.
+- **Weekly**: Full MS MARCO benchmarks run every Sunday, updating the baseline.
+- **Releases**: A benchmark gate runs before each release with a stricter 120%
+  threshold. Releases are blocked if performance regresses significantly.
+
+Alert thresholds:
+- **PRs and weekly**: 150% of baseline (warn but don't fail)
+- **Releases**: 120% of baseline (blocks release)
+
 ### Commit Guidelines
 
 - Write clear, concise commit messages

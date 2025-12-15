@@ -1,5 +1,9 @@
 name: Benchmarks
 
+permissions:
+  contents: write
+  deployments: write
+
 on:
   # Weekly full benchmark
   schedule:
@@ -60,7 +64,7 @@ jobs:
     - name: Install PostgreSQL 17
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential bc
+        sudo apt-get install -y wget ca-certificates build-essential bc jq
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
             sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
@@ -100,10 +104,34 @@ jobs:
 
         echo "Loading Cranfield dataset..."
         cd benchmarks/sql/cranfield
-        psql -f 01-load.sql
+        psql -f 01-load.sql 2>&1 | tee "$GITHUB_WORKSPACE/benchmark_results.txt"
 
         echo "Running query benchmarks..."
-        psql -f 02-queries.sql
+        psql -f 02-queries.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Extract and format metrics
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        chmod +x benchmarks/runner/format_for_action.sh
+        # Override dataset name for Cranfield
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json
+        # Set dataset to cranfield in the JSON
+        jq '.dataset = "cranfield"' benchmark_metrics.json > tmp.json && mv tmp.json benchmark_metrics.json
+        ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
+
+    - name: Compare PR benchmark against baseline
+      if: hashFiles('benchmark_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'Cranfield Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: benchmark_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        comment-always: true
+        save-data-file: false
+        alert-threshold: '150%'
+        fail-on-alert: false
+        benchmark-data-dir-path: 'benchmarks'
 
     - name: Cleanup
       if: always()
@@ -331,6 +359,28 @@ jobs:
           echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
         fi
+
+    - name: Format metrics for benchmark tracking
+      if: always()
+      run: |
+        if [ -f benchmark_metrics.json ]; then
+          chmod +x benchmarks/runner/format_for_action.sh
+          ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
+        fi
+
+    - name: Store benchmark results for tracking
+      if: always() && hashFiles('benchmark_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'MS MARCO Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: benchmark_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+        benchmark-data-dir-path: 'benchmarks'
 
     - name: Cleanup
       if: always()

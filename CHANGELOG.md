@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.1-dev (unreleased)
+
+### New Features
+
+- **Benchmark tracking**: Historical performance graphs published to GitHub
+  Pages with regression alerts on PRs and release gates
+
 ## v0.1.0
 
 First open-source release!
