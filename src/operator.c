@@ -42,8 +42,15 @@ static HTAB *
 tp_create_doc_scores_hash(int max_results, int32 total_docs)
 {
 	HASHCTL hash_ctl;
+	int		initial_size;
 
-	(void)max_results; /* reserved for future use */
+	/*
+	 * Size hash table reasonably - it will grow if needed. Avoid sizing for
+	 * total_docs which could be tens of millions.
+	 */
+	initial_size = Max(max_results * 10, 1000);
+	if (initial_size > total_docs)
+		initial_size = total_docs;
 
 	/* Initialize hash control structure */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
@@ -52,7 +59,10 @@ tp_create_doc_scores_hash(int max_results, int32 total_docs)
 
 	/* Create hash table */
 	return hash_create(
-			"Document Scores", total_docs, &hash_ctl, HASH_ELEM | HASH_BLOBS);
+			"Document Scores",
+			initial_size,
+			&hash_ctl,
+			HASH_ELEM | HASH_BLOBS);
 }
 
 /*
