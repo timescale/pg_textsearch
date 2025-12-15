@@ -82,6 +82,7 @@ jobs:
         comment-on-alert: true
         save-data-file: false
         benchmark-data-dir-path: 'benchmarks'
+        skip-fetch-gh-pages: true
 
     - name: Cleanup
       if: always()

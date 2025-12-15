@@ -132,6 +132,7 @@ jobs:
         alert-threshold: '150%'
         fail-on-alert: false
         benchmark-data-dir-path: 'benchmarks'
+        skip-fetch-gh-pages: true
 
     - name: Cleanup
       if: always()
