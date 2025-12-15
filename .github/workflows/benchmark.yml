@@ -5,11 +5,11 @@ permissions:
   deployments: write
 
 on:
-  # Weekly full benchmark
+  # Weekly benchmark (only if there are new commits)
   schedule:
     - cron: '0 6 * * 0'  # Every Sunday at 6 AM UTC
 
-  # Manual trigger with options
+  # Manual trigger
   workflow_dispatch:
     inputs:
       dataset:
@@ -43,114 +43,36 @@ on:
           - '1M'
           - 'full'
 
-  # Run Cranfield on PRs for quick validation
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'Makefile'
-      - 'benchmarks/**'
-
 jobs:
-  # Quick benchmark on every PR
-  pr-benchmark:
-    if: github.event_name == 'pull_request'
+  # Check for new commits (scheduled runs only)
+  check-commits:
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for commits in last 7 days
+        id: check
+        run: |
+          COMMITS=$(git log --oneline --since="7 days ago" | wc -l)
+          if [ "$COMMITS" -gt 0 ]; then
+            echo "Found $COMMITS commits in last 7 days"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "No commits in last 7 days, skipping benchmark"
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
 
-    - name: Install PostgreSQL 17
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential bc jq
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-            sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
-            sudo tee /etc/apt/sources.list.d/pgdg.list
-        sudo apt-get update
-        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
-
-    - name: Build and install extension
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        make clean && make && sudo make install
-
-    - name: Start PostgreSQL
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        rm -rf tmp_bench
-        mkdir -p tmp_bench/socket
-        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
-        echo "shared_buffers = 128MB" >> tmp_bench/data/postgresql.conf
-        echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
-        echo "unix_socket_directories = '$PWD/tmp_bench/socket'" >> tmp_bench/data/postgresql.conf
-        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
-          echo "PostgreSQL failed to start. Log:"
-          cat tmp_bench/postgres.log
-          exit 1
-        fi
-        export PGHOST="$PWD/tmp_bench/socket"
-        createdb bench_test
-        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
-        # Export for subsequent steps
-        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
-
-    - name: Run Cranfield benchmark
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        export PGDATABASE=bench_test
-
-        echo "Loading Cranfield dataset..."
-        cd benchmarks/sql/cranfield
-        psql -f 01-load.sql 2>&1 | tee "$GITHUB_WORKSPACE/benchmark_results.txt"
-
-        echo "Running query benchmarks..."
-        psql -f 02-queries.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
-
-    - name: Extract and format metrics
-      run: |
-        chmod +x benchmarks/runner/extract_metrics.sh
-        chmod +x benchmarks/runner/format_for_action.sh
-        # Override dataset name for Cranfield
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json
-        # Set dataset to cranfield in the JSON
-        jq '.dataset = "cranfield"' benchmark_metrics.json > tmp.json && mv tmp.json benchmark_metrics.json
-        ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
-
-    - name: Download benchmark baseline
-      uses: actions/cache@v4
-      with:
-        path: ./cache
-        key: benchmark-baseline-cranfield
-        restore-keys: |
-          benchmark-baseline-cranfield
-
-    - name: Compare PR benchmark against baseline
-      if: hashFiles('benchmark_action.json') != ''
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        name: 'Cranfield Benchmarks'
-        tool: 'customSmallerIsBetter'
-        output-file-path: benchmark_action.json
-        external-data-json-path: ./cache/benchmark-data.json
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        comment-always: true
-        save-data-file: false
-        alert-threshold: '150%'
-        fail-on-alert: false
-
-    - name: Cleanup
-      if: always()
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        pg_ctl stop -D tmp_bench/data || true
-        rm -rf tmp_bench
-
-  # Full benchmark suite (weekly or manual)
+  # Full benchmark suite
   full-benchmark:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [check-commits]
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'schedule' && needs.check-commits.outputs.should_run == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours max for full Wikipedia
 
