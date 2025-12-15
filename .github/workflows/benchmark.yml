@@ -91,11 +91,16 @@ jobs:
         echo "After cleanup:"
         df -h /
 
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential bc python3-pip
-        pip3 install wikiextractor
+        sudo apt-get install -y wget ca-certificates build-essential bc
+        pip install wikiextractor
 
         # PostgreSQL
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
