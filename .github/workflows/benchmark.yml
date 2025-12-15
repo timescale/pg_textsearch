@@ -119,6 +119,14 @@ jobs:
         jq '.dataset = "cranfield"' benchmark_metrics.json > tmp.json && mv tmp.json benchmark_metrics.json
         ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
 
+    - name: Download benchmark baseline
+      uses: actions/cache@v4
+      with:
+        path: ./cache
+        key: benchmark-baseline-cranfield
+        restore-keys: |
+          benchmark-baseline-cranfield
+
     - name: Compare PR benchmark against baseline
       if: hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
@@ -126,13 +134,12 @@ jobs:
         name: 'Cranfield Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: benchmark_action.json
+        external-data-json-path: ./cache/benchmark-data.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         comment-always: true
         save-data-file: false
         alert-threshold: '150%'
         fail-on-alert: false
-        benchmark-data-dir-path: 'benchmarks'
-        skip-fetch-gh-pages: true
 
     - name: Cleanup
       if: always()
@@ -369,6 +376,15 @@ jobs:
           ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
         fi
 
+    - name: Download benchmark baseline
+      if: always()
+      uses: actions/cache@v4
+      with:
+        path: ./cache
+        key: benchmark-baseline-msmarco-${{ github.run_id }}
+        restore-keys: |
+          benchmark-baseline-msmarco
+
     - name: Store benchmark results for tracking
       if: always() && hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
@@ -376,12 +392,19 @@ jobs:
         name: 'MS MARCO Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: benchmark_action.json
+        external-data-json-path: ./cache/benchmark-data.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
+        save-data-file: true
         alert-threshold: '150%'
         comment-on-alert: true
         fail-on-alert: false
-        benchmark-data-dir-path: 'benchmarks'
+
+    - name: Save benchmark baseline
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: ./cache
+        key: benchmark-baseline-msmarco-${{ github.run_id }}
 
     - name: Cleanup
       if: always()

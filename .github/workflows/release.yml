@@ -69,6 +69,14 @@ jobs:
         jq '.dataset = "cranfield"' benchmark_metrics.json > tmp.json && mv tmp.json benchmark_metrics.json
         ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
 
+    - name: Download benchmark baseline
+      uses: actions/cache@v4
+      with:
+        path: ./cache
+        key: benchmark-baseline-cranfield
+        restore-keys: |
+          benchmark-baseline-cranfield
+
     - name: Check for performance regression
       if: hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
@@ -76,13 +84,12 @@ jobs:
         name: 'Cranfield Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: benchmark_action.json
+        external-data-json-path: ./cache/benchmark-data.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         alert-threshold: '120%'
         fail-on-alert: true
         comment-on-alert: true
         save-data-file: false
-        benchmark-data-dir-path: 'benchmarks'
-        skip-fetch-gh-pages: true
 
     - name: Cleanup
       if: always()
