@@ -1,103 +1,175 @@
 -- Cranfield Collection BM25 Benchmark - Query Performance
--- This benchmark tests BM25 query performance and validates results
--- Timing: Query execution timed, results validated against expected output
--- Tests search quality using standard Cranfield information retrieval collection
+-- Tests BM25 index scan performance using the standard Cranfield IR collection
+-- Outputs structured timing data for regression detection
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo 'Cranfield BM25 Benchmark - Query Phase'
-\echo '====================================='
+\echo '=== Cranfield BM25 Benchmark - Query Phase ==='
+\echo ''
 
--- For now, disable index scans since our index doesn't support result retrieval
--- The <@> operator works correctly with sequential scans
-SET enable_indexscan = off;
-SET enable_bitmapscan = off;
-
--- Benchmark 1: Single-term search performance
-\echo 'Benchmark 1: Single-term search'
-SELECT
-    q.query_id,
-    LEFT(q.query_text, 50) || '...' as query_preview,
-    d.doc_id,
-    LEFT(d.title, 60) as title_preview,
-    d.full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') as score
-FROM cranfield_full_queries q, cranfield_full_documents d
-WHERE q.query_id IN (1, 10, 50)  -- Sample queries
-ORDER BY q.query_id, score
-LIMIT 15;
-
--- Benchmark 2: Multi-term search performance
-\echo 'Benchmark 2: Multi-term search'
-SELECT
-    doc_id,
-    LEFT(title, 60) as title_preview,
-    full_text <@> to_bm25query('aerodynamic flow boundary layer', 'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-ORDER BY score
+-- Warm up: run a few queries to ensure index is cached
+\echo 'Warming up index...'
+SELECT doc_id FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx')
 LIMIT 10;
 
--- Benchmark 3: Batch query performance (measure throughput)
-\echo 'Benchmark 3: Batch query performance'
-SELECT
-    q.query_id,
-    LEFT(q.query_text, 40) || '...' as query_preview,
-    COUNT(d.doc_id) as total_docs,
-    COUNT(CASE WHEN d.full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') > 0 THEN 1 END) as matching_docs
-FROM cranfield_full_queries q
-CROSS JOIN cranfield_full_documents d
-WHERE q.query_id <= 5  -- Test first 5 queries
-GROUP BY q.query_id, q.query_text
-ORDER BY q.query_id;
+SELECT doc_id FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('heat transfer', 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('heat transfer', 'cranfield_full_tapir_idx')
+LIMIT 10;
 
--- Benchmark 4: Precision test against reference rankings
-\echo 'Benchmark 4: Search quality validation (Query 1)'
-WITH bm25_results AS (
+-- ============================================================
+-- Benchmark 1: Single Query Latency (using BM25 index scan)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 1: Single Query Latency (BM25 Index Scan) ==='
+\echo 'Running top-10 queries using the BM25 index'
+\echo ''
+
+-- Short query (2 words)
+\echo 'Query 1: Short query (2 words) - "boundary layer"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT doc_id,
+       full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') as score
+FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 2: Medium query (4 words) - "supersonic flow heat transfer"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT doc_id,
+       full_text <@> to_bm25query('supersonic flow heat transfer',
+                                  'cranfield_full_tapir_idx') as score
+FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('supersonic flow heat transfer',
+                                 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('supersonic flow heat transfer',
+                                    'cranfield_full_tapir_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 3: Long query (from Cranfield query 1)'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT doc_id,
+       full_text <@> to_bm25query(
+           'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
+           'cranfield_full_tapir_idx') as score
+FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query(
+    'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
+    'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query(
+    'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
+    'cranfield_full_tapir_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 4: Common terms - "flow pressure"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT doc_id,
+       full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx') as score
+FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx')
+LIMIT 10;
+
+\echo ''
+\echo 'Query 5: Specific terms - "magnetohydrodynamic viscosity"'
+EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
+SELECT doc_id,
+       full_text <@> to_bm25query('magnetohydrodynamic viscosity',
+                                  'cranfield_full_tapir_idx') as score
+FROM cranfield_full_documents
+WHERE full_text <@> to_bm25query('magnetohydrodynamic viscosity',
+                                 'cranfield_full_tapir_idx') < 0
+ORDER BY full_text <@> to_bm25query('magnetohydrodynamic viscosity',
+                                    'cranfield_full_tapir_idx')
+LIMIT 10;
+
+-- ============================================================
+-- Benchmark 2: Query Throughput (all 225 Cranfield queries)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 2: Query Throughput (225 Cranfield queries) ==='
+\echo 'Running all standard Cranfield queries sequentially'
+
+DO $$
+DECLARE
+    q RECORD;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric := 0;
+    query_count int := 0;
+BEGIN
+    start_time := clock_timestamp();
+    FOR q IN SELECT query_id, query_text FROM cranfield_full_queries ORDER BY query_id LOOP
+        PERFORM doc_id FROM cranfield_full_documents
+        WHERE full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') < 0
+        ORDER BY full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx')
+        LIMIT 10;
+        query_count := query_count + 1;
+    END LOOP;
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    RAISE NOTICE 'THROUGHPUT_RESULT: % queries in % ms (avg % ms/query)',
+        query_count, round(total_ms::numeric, 2), round((total_ms / query_count)::numeric, 2);
+END $$;
+
+-- ============================================================
+-- Benchmark 3: Index Statistics
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 3: Index Statistics ==='
+
+SELECT
+    'cranfield_full_tapir_idx' as index_name,
+    pg_size_pretty(pg_relation_size('cranfield_full_tapir_idx')) as index_size,
+    pg_size_pretty(pg_relation_size('cranfield_full_documents')) as table_size,
+    (SELECT COUNT(*) FROM cranfield_full_documents) as num_documents;
+
+-- ============================================================
+-- Benchmark 4: Search Quality Validation (Precision@10)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 4: Search Quality Validation ==='
+\echo 'Checking precision@10 against Cranfield relevance judgments'
+
+WITH query_results AS (
     SELECT
-        doc_id,
-        full_text <@> to_bm25query((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx') as bm25_score,
-        ROW_NUMBER() OVER (ORDER BY full_text <@> to_bm25query((SELECT query_text FROM cranfield_full_queries WHERE query_id = 1), 'cranfield_full_tapir_idx')) as bm25_rank
-    FROM cranfield_full_documents
+        q.query_id,
+        d.doc_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY q.query_id
+            ORDER BY d.full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx')
+        ) as rank
+    FROM cranfield_full_queries q
+    CROSS JOIN LATERAL (
+        SELECT doc_id, full_text
+        FROM cranfield_full_documents
+        WHERE full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') < 0
+        ORDER BY full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx')
+        LIMIT 10
+    ) d
+    WHERE q.query_id <= 10  -- Sample first 10 queries for validation
 ),
-reference_results AS (
-    SELECT doc_id, rank as expected_rank, bm25_score as expected_score
-    FROM cranfield_full_expected_rankings
-    WHERE query_id = 1 AND rank <= 10
+precision_calc AS (
+    SELECT
+        qr.query_id,
+        COUNT(CASE WHEN er.doc_id IS NOT NULL THEN 1 END)::float / 10.0 as precision_at_10
+    FROM query_results qr
+    LEFT JOIN cranfield_full_expected_rankings er
+        ON qr.query_id = er.query_id AND qr.doc_id = er.doc_id
+    WHERE qr.rank <= 10
+    GROUP BY qr.query_id
 )
 SELECT
-    br.bm25_rank,
-    br.doc_id,
-    rr.expected_rank,
-    ROUND(br.bm25_score::numeric, 4) as actual_score,
-    ROUND(rr.expected_score::numeric, 4) as expected_score,
-    CASE WHEN rr.doc_id IS NOT NULL THEN 'MATCH' ELSE 'NEW' END as status,
-    LEFT(d.title, 50) as title_preview
-FROM bm25_results br
-LEFT JOIN reference_results rr ON br.doc_id = rr.doc_id
-JOIN cranfield_full_documents d ON br.doc_id = d.doc_id
-WHERE br.bm25_rank <= 10
-ORDER BY br.bm25_rank;
+    'Mean Precision@10 (queries 1-10)' as metric,
+    round(avg(precision_at_10)::numeric, 4) as value
+FROM precision_calc;
 
--- Benchmark 5: Query plan verification with EXPLAIN
-\echo 'Benchmark 5: Query plan verification'
-EXPLAIN
-SELECT doc_id, full_text <@> to_bm25query('wing design aerodynamic', 'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-ORDER BY 2
-LIMIT 10;
-
--- Benchmark 6: Complex query performance
-\echo 'Benchmark 6: Complex query patterns'
-SELECT
-    COUNT(*) as total_results,
-    ROUND(AVG((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as avg_score,
-    ROUND(MIN((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as min_score,
-    ROUND(MAX((full_text <@> to_bm25query('supersonic aircraft design', 'cranfield_full_tapir_idx'))::numeric), 4) as max_score
-FROM cranfield_full_documents;
-
--- Reset settings
-SET enable_indexscan = on;
-SET enable_bitmapscan = on;
-
-\echo 'Cranfield BM25 benchmark completed.'
-\echo 'Performance and quality results validated against standard IR collection.'
+\echo ''
+\echo '=== Cranfield BM25 Benchmark Complete ==='
