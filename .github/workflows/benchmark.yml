@@ -298,35 +298,20 @@ jobs:
           ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
         fi
 
-    - name: Download benchmark baseline
-      if: always()
-      uses: actions/cache@v4
-      with:
-        path: ./cache
-        key: benchmark-baseline-msmarco-${{ github.run_id }}
-        restore-keys: |
-          benchmark-baseline-msmarco
-
-    - name: Store benchmark results for tracking
+    - name: Store and publish benchmark results
       if: always() && hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'MS MARCO Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: benchmark_action.json
-        external-data-json-path: ./cache/benchmark-data.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
-        save-data-file: true
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
         alert-threshold: '150%'
         comment-on-alert: true
         fail-on-alert: false
-
-    - name: Save benchmark baseline
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ./cache
-        key: benchmark-baseline-msmarco-${{ github.run_id }}
 
     - name: Cleanup
       if: always()
