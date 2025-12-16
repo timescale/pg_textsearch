@@ -57,33 +57,56 @@ INDEX_SIZE=$(grep -E "msmarco_bm25_idx.*[0-9]+ [MG]B" "$LOG_FILE" 2>/dev/null | 
 TABLE_SIZE=$(grep -E "table_size.*[0-9]+ [MG]B" "$LOG_FILE" 2>/dev/null | \
     grep -oE "[0-9]+ [MG]B" | head -1 || echo "")
 
-# Build JSON output
-cat > "$OUTPUT_FILE" << EOF
-{
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "commit": "${GITHUB_SHA:-unknown}",
-  "dataset": "${DATASET_NAME}",
-  "metrics": {
-    "load_time_ms": ${LOAD_TIME_MS:-null},
-    "index_build_time_ms": ${INDEX_BUILD_MS:-null},
-    "num_documents": ${NUM_DOCUMENTS:-null},
-    "index_size": "${INDEX_SIZE:-unknown}",
-    "table_size": "${TABLE_SIZE:-unknown}",
-    "query_latencies_ms": {
-      "short_query": ${EXEC_TIMES[0]:-null},
-      "medium_query": ${EXEC_TIMES[1]:-null},
-      "long_query": ${EXEC_TIMES[2]:-null},
-      "common_term": ${EXEC_TIMES[3]:-null},
-      "rare_term": ${EXEC_TIMES[4]:-null}
-    },
-    "throughput": {
-      "num_queries": 20,
-      "total_ms": ${THROUGHPUT_TOTAL_MS:-null},
-      "avg_ms_per_query": ${THROUGHPUT_AVG_MS:-null}
-    }
-  }
+# Helper to output number or null
+num_or_null() {
+    if [ -n "$1" ] && [[ "$1" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+        echo "$1"
+    else
+        echo "null"
+    fi
 }
-EOF
+
+# Build JSON output using jq for proper formatting
+jq -n \
+  --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg commit "${GITHUB_SHA:-unknown}" \
+  --arg dataset "$DATASET_NAME" \
+  --argjson load_time "$(num_or_null "$LOAD_TIME_MS")" \
+  --argjson index_build "$(num_or_null "$INDEX_BUILD_MS")" \
+  --argjson num_docs "$(num_or_null "$NUM_DOCUMENTS")" \
+  --arg index_size "${INDEX_SIZE:-unknown}" \
+  --arg table_size "${TABLE_SIZE:-unknown}" \
+  --argjson short_query "$(num_or_null "${EXEC_TIMES[0]}")" \
+  --argjson medium_query "$(num_or_null "${EXEC_TIMES[1]}")" \
+  --argjson long_query "$(num_or_null "${EXEC_TIMES[2]}")" \
+  --argjson common_term "$(num_or_null "${EXEC_TIMES[3]}")" \
+  --argjson rare_term "$(num_or_null "${EXEC_TIMES[4]}")" \
+  --argjson throughput_total "$(num_or_null "$THROUGHPUT_TOTAL_MS")" \
+  --argjson throughput_avg "$(num_or_null "$THROUGHPUT_AVG_MS")" \
+  '{
+    timestamp: $timestamp,
+    commit: $commit,
+    dataset: $dataset,
+    metrics: {
+      load_time_ms: $load_time,
+      index_build_time_ms: $index_build,
+      num_documents: $num_docs,
+      index_size: $index_size,
+      table_size: $table_size,
+      query_latencies_ms: {
+        short_query: $short_query,
+        medium_query: $medium_query,
+        long_query: $long_query,
+        common_term: $common_term,
+        rare_term: $rare_term
+      },
+      throughput: {
+        num_queries: 20,
+        total_ms: $throughput_total,
+        avg_ms_per_query: $throughput_avg
+      }
+    }
+  }' > "$OUTPUT_FILE"
 
 echo "Metrics extracted to $OUTPUT_FILE"
 cat "$OUTPUT_FILE"
