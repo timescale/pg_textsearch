@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765916949334,
+  "lastUpdate": 1765916950514,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -219,6 +219,65 @@ window.BENCHMARK_DATA = {
           {
             "name": "all - Rare Term Query",
             "value": 2.333,
+            "unit": "ms"
+          }
+        ]
+      }
+    ],
+    "msmarco Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c80221e1ec07cfcfb80ea12afe6ac77a2776d12f",
+          "message": "Extract and publish metrics per-dataset when running all benchmarks (#75)\n\n## Summary\n- When running `dataset=all`, metrics are now extracted separately for\neach dataset\n- Each dataset (Cranfield, MS MARCO, Wikipedia) gets its own benchmark\nchart\n- Previously, only the first dataset's results were captured\n\n## Changes\n- `extract_metrics.sh` now accepts optional section parameter to extract\nfrom log sections\n- Workflow runs extract_metrics.sh once per dataset when running \"all\"\n- Separate benchmark-action publish steps for each dataset\n\n## Testing\nTrigger a benchmark run with `dataset=all` to verify all three datasets\nappear separately in the results.",
+          "timestamp": "2025-12-16T17:18:32Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c80221e1ec07cfcfb80ea12afe6ac77a2776d12f"
+        },
+        "date": 1765916950288,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco - Index Build Time",
+            "value": 593036.256,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Short Query (1 word)",
+            "value": 5.436,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Medium Query (3 words)",
+            "value": 7.082,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Long Query (question)",
+            "value": 11.716,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Common Term Query",
+            "value": 0.045,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Rare Term Query",
+            "value": 9.326,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Avg Query Latency (20 queries)",
+            "value": 18.56,
             "unit": "ms"
           }
         ]
