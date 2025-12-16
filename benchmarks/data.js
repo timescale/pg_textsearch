@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765926062264,
+  "lastUpdate": 1765926063551,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -632,6 +632,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia - Rare Term Query",
             "value": 3.494,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Index Size",
+            "value": 158.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b423ca362f278eedc868953d940a15a4ee6ea0e",
+          "message": "Improve benchmark configuration and add index size tracking (#76)\n\n## Summary\n\n- Tune Postgres settings for ubuntu-latest runner (4 vCPUs, 16GB RAM):\n  - `shared_buffers`: 1GB → 4GB (25% of RAM)\n  - `effective_cache_size`: 2GB → 12GB (75% of RAM)\n  - `maintenance_work_mem`: 256MB → 512MB\n- Add more aggressive disk cleanup (swift, powershell, ghcup) to free\n~10GB additional space\n- Add index and table size reporting to all benchmark datasets with\nstandardized output\n- Track index size over time in benchmark dashboard (displayed in MB)\n- Show index/table sizes in GitHub job summary\n\n## Testing\n\n- [ ] Manually trigger benchmark workflow to verify new metrics are\ncaptured",
+          "timestamp": "2025-12-16T22:14:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b423ca362f278eedc868953d940a15a4ee6ea0e"
+        },
+        "date": 1765926063229,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia - Index Build Time",
+            "value": 19545.088,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Short Query (1 word)",
+            "value": 3.623,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Medium Query (3 words)",
+            "value": 1.259,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Long Query (question)",
+            "value": 1.152,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Common Term Query",
+            "value": 2.822,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Rare Term Query",
+            "value": 3.512,
             "unit": "ms"
           },
           {
