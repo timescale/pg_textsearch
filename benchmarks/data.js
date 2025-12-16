@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765924502219,
+  "lastUpdate": 1765926060908,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -170,6 +170,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield - Avg Query Latency (20 queries)",
             "value": 3.99,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b423ca362f278eedc868953d940a15a4ee6ea0e",
+          "message": "Improve benchmark configuration and add index size tracking (#76)\n\n## Summary\n\n- Tune Postgres settings for ubuntu-latest runner (4 vCPUs, 16GB RAM):\n  - `shared_buffers`: 1GB → 4GB (25% of RAM)\n  - `effective_cache_size`: 2GB → 12GB (75% of RAM)\n  - `maintenance_work_mem`: 256MB → 512MB\n- Add more aggressive disk cleanup (swift, powershell, ghcup) to free\n~10GB additional space\n- Add index and table size reporting to all benchmark datasets with\nstandardized output\n- Track index size over time in benchmark dashboard (displayed in MB)\n- Show index/table sizes in GitHub job summary\n\n## Testing\n\n- [ ] Manually trigger benchmark workflow to verify new metrics are\ncaptured",
+          "timestamp": "2025-12-16T22:14:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b423ca362f278eedc868953d940a15a4ee6ea0e"
+        },
+        "date": 1765926060457,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield - Index Build Time",
+            "value": 243.511,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Short Query (1 word)",
+            "value": 3.105,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Medium Query (3 words)",
+            "value": 4.189,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Long Query (question)",
+            "value": 3.432,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Common Term Query",
+            "value": 3.149,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Rare Term Query",
+            "value": 2.324,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield - Avg Query Latency (20 queries)",
+            "value": 4,
             "unit": "ms"
           },
           {
