@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765926060908,
+  "lastUpdate": 1765926062264,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -459,6 +459,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco - Avg Query Latency (20 queries)",
             "value": 20.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Index Size",
+            "value": 7697.38,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b423ca362f278eedc868953d940a15a4ee6ea0e",
+          "message": "Improve benchmark configuration and add index size tracking (#76)\n\n## Summary\n\n- Tune Postgres settings for ubuntu-latest runner (4 vCPUs, 16GB RAM):\n  - `shared_buffers`: 1GB → 4GB (25% of RAM)\n  - `effective_cache_size`: 2GB → 12GB (75% of RAM)\n  - `maintenance_work_mem`: 256MB → 512MB\n- Add more aggressive disk cleanup (swift, powershell, ghcup) to free\n~10GB additional space\n- Add index and table size reporting to all benchmark datasets with\nstandardized output\n- Track index size over time in benchmark dashboard (displayed in MB)\n- Show index/table sizes in GitHub job summary\n\n## Testing\n\n- [ ] Manually trigger benchmark workflow to verify new metrics are\ncaptured",
+          "timestamp": "2025-12-16T22:14:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b423ca362f278eedc868953d940a15a4ee6ea0e"
+        },
+        "date": 1765926061959,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco - Index Build Time",
+            "value": 578715.942,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Short Query (1 word)",
+            "value": 5.454,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Medium Query (3 words)",
+            "value": 7.062,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Long Query (question)",
+            "value": 11.707,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Common Term Query",
+            "value": 0.052,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Rare Term Query",
+            "value": 9.24,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Avg Query Latency (20 queries)",
+            "value": 19.4,
             "unit": "ms"
           },
           {
