@@ -58,5 +58,17 @@ LIMIT 5;
 CREATE INDEX wikipedia_bm25_idx ON wikipedia_articles
     USING bm25(content) WITH (text_config='english');
 
+-- Report index and table sizes
+\echo ''
+\echo '=== Index Size Report ==='
+SELECT
+    'INDEX_SIZE:' as label,
+    pg_size_pretty(pg_relation_size('wikipedia_bm25_idx')) as index_size,
+    pg_relation_size('wikipedia_bm25_idx') as index_bytes;
+SELECT
+    'TABLE_SIZE:' as label,
+    pg_size_pretty(pg_total_relation_size('wikipedia_articles')) as table_size,
+    pg_total_relation_size('wikipedia_articles') as table_bytes;
+
 \echo ''
 \echo '=== Wikipedia Load Complete ==='

@@ -81,6 +81,15 @@ jq --arg dataset "$DATASET" '[
             unit: "ms",
             value: .metrics.throughput.avg_ms_per_query
         }
+    else empty end),
+
+    # Index size (in MB for readability)
+    (if .metrics.index_size_bytes != null then
+        {
+            name: "\($dataset) - Index Size",
+            unit: "MB",
+            value: ((.metrics.index_size_bytes / 1048576 * 100 | floor) / 100)
+        }
     else empty end)
 ]' "$INPUT_FILE" > "$OUTPUT_FILE"
 

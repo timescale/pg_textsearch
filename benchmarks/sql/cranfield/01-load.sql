@@ -70,4 +70,16 @@ SELECT
 FROM cranfield_full_expected_rankings
 ORDER BY metric;
 
+-- Report index and table sizes
+\echo ''
+\echo '=== Index Size Report ==='
+SELECT
+    'INDEX_SIZE:' as label,
+    pg_size_pretty(pg_relation_size('cranfield_full_tapir_idx')) as index_size,
+    pg_relation_size('cranfield_full_tapir_idx') as index_bytes;
+SELECT
+    'TABLE_SIZE:' as label,
+    pg_size_pretty(pg_total_relation_size('cranfield_full_documents')) as table_size,
+    pg_total_relation_size('cranfield_full_documents') as table_bytes;
+
 \echo 'Load phase completed. Index ready for queries.'

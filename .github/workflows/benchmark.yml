@@ -61,6 +61,9 @@ jobs:
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
         sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/share/swift
+        sudo rm -rf /usr/local/share/powershell
+        sudo rm -rf /usr/local/.ghcup
         echo "After cleanup:"
         df -h /
 
@@ -97,12 +100,12 @@ jobs:
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
-        # Tune for benchmarking
+        # Tune for benchmarking (ubuntu-latest: 4 vCPUs, 16GB RAM)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
-        shared_buffers = 1GB
-        effective_cache_size = 2GB
-        maintenance_work_mem = 256MB
+        shared_buffers = 4GB
+        effective_cache_size = 12GB
+        maintenance_work_mem = 512MB
         work_mem = 128MB
         max_connections = 20
         checkpoint_completion_target = 0.9
@@ -282,6 +285,8 @@ jobs:
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
           echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Table Size | $(jq -r '.metrics.table_size // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
           echo "| Short Query | $(jq -r '.metrics.query_latencies_ms.short_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Medium Query | $(jq -r '.metrics.query_latencies_ms.medium_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
