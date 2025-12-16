@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pg_textsearch Benchmarks</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; }
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        canvas { max-height: 400px; }
+    </style>
+</head>
+<body>
+    <h1>pg_textsearch Benchmarks</h1>
+    <div id="charts"></div>
+
+    <script src="./data.js"></script>
+    <script>
+        const colors = [
+            'rgb(54, 162, 235)',
+            'rgb(255, 99, 132)',
+            'rgb(75, 192, 192)',
+            'rgb(255, 159, 64)',
+            'rgb(153, 102, 255)',
+            'rgb(255, 205, 86)',
+        ];
+
+        function formatDate(timestamp) {
+            const d = new Date(timestamp);
+            return d.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: '2-digit'
+            });
+        }
+
+        function formatCommit(hash) {
+            return hash ? hash.substring(0, 7) : '';
+        }
+
+        function createChart(container, benchName, benchData) {
+            // Group data by metric name
+            const metrics = {};
+            benchData.forEach(run => {
+                run.benches.forEach(bench => {
+                    if (!metrics[bench.name]) {
+                        metrics[bench.name] = [];
+                    }
+                    metrics[bench.name].push({
+                        x: run.date,
+                        y: bench.value,
+                        commit: run.commit.id,
+                        date: run.date
+                    });
+                });
+            });
+
+            // Create a chart for each metric
+            Object.entries(metrics).forEach(([metricName, data], idx) => {
+                const div = document.createElement('div');
+                div.className = 'chart-container';
+
+                const canvas = document.createElement('canvas');
+                div.appendChild(canvas);
+                container.appendChild(div);
+
+                new Chart(canvas, {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: metricName,
+                            data: data,
+                            borderColor: colors[idx % colors.length],
+                            backgroundColor: colors[idx % colors.length] + '33',
+                            fill: true,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: metricName,
+                                font: { size: 16 }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    title: (items) => {
+                                        const item = items[0];
+                                        const date = formatDate(item.raw.date);
+                                        const commit = formatCommit(item.raw.commit);
+                                        return `${date} (${commit})`;
+                                    },
+                                    label: (item) => {
+                                        return `${item.dataset.label}: ${item.raw.y.toFixed(2)} ms`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'day',
+                                    displayFormats: {
+                                        day: 'MMM d'
+                                    }
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Date'
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: {
+                                    display: true,
+                                    text: 'Time (ms)'
+                                }
+                            }
+                        },
+                        onClick: (event, elements) => {
+                            if (elements.length > 0) {
+                                const idx = elements[0].index;
+                                const commit = data[idx].commit;
+                                if (commit) {
+                                    window.open(
+                                        `https://github.com/timescale/pg_textsearch/commit/${commit}`,
+                                        '_blank'
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        // Render charts for each benchmark suite
+        if (typeof window.BENCHMARK_DATA !== 'undefined') {
+            const container = document.getElementById('charts');
+            Object.entries(window.BENCHMARK_DATA.entries).forEach(([name, data]) => {
+                const header = document.createElement('h2');
+                header.textContent = name;
+                container.appendChild(header);
+                createChart(container, name, data);
+            });
+        } else {
+            document.getElementById('charts').innerHTML =
+                '<p>No benchmark data available yet. Run a benchmark workflow to generate data.</p>';
+        }
+    </script>
+</body>
+</html>
