@@ -5,9 +5,9 @@ permissions:
   deployments: write
 
 on:
-  # Weekly benchmark (only if there are new commits)
+  # Nightly benchmark
   schedule:
-    - cron: '0 6 * * 0'  # Every Sunday at 6 AM UTC
+    - cron: '0 6 * * *'  # Every day at 6 AM UTC
 
   # Manual trigger
   workflow_dispatch:
@@ -44,35 +44,8 @@ on:
           - 'full'
 
 jobs:
-  # Check for new commits (scheduled runs only)
-  check-commits:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Check for commits in last 7 days
-        id: check
-        run: |
-          COMMITS=$(git log --oneline --since="7 days ago" | wc -l)
-          if [ "$COMMITS" -gt 0 ]; then
-            echo "Found $COMMITS commits in last 7 days"
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          else
-            echo "No commits in last 7 days, skipping benchmark"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          fi
-
   # Full benchmark suite
   full-benchmark:
-    needs: [check-commits]
-    if: |
-      always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'schedule' && needs.check-commits.outputs.should_run == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours max for full Wikipedia
 
