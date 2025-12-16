@@ -19,11 +19,35 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
-# Extract dataset name from input (default to "Benchmark")
+# Extract dataset name and document count from input
 DATASET=$(jq -r '.dataset // "Benchmark"' "$INPUT_FILE")
+NUM_DOCS=$(jq -r '.metrics.num_documents // empty' "$INPUT_FILE")
+
+# Format document count (e.g., 1400 -> "1.4K", 8841823 -> "8.8M")
+format_docs() {
+    local n=$1
+    if [ -z "$n" ] || [ "$n" = "null" ]; then
+        echo ""
+        return
+    fi
+    if [ "$n" -ge 1000000 ]; then
+        printf "%.1fM" "$(echo "scale=1; $n / 1000000" | bc)"
+    elif [ "$n" -ge 1000 ]; then
+        printf "%.1fK" "$(echo "scale=1; $n / 1000" | bc)"
+    else
+        echo "$n"
+    fi
+}
+
+DOCS_LABEL=$(format_docs "$NUM_DOCS")
+if [ -n "$DOCS_LABEL" ]; then
+    DATASET_LABEL="$DATASET ($DOCS_LABEL docs)"
+else
+    DATASET_LABEL="$DATASET"
+fi
 
 # Build the output array using jq
-jq --arg dataset "$DATASET" '[
+jq --arg dataset "$DATASET_LABEL" '[
     # Index build time
     (if .metrics.index_build_time_ms != null then
         {
