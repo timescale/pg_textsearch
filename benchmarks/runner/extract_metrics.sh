@@ -1,11 +1,14 @@
 #!/bin/bash
 # Extract benchmark metrics from log output and create JSON summary
 #
-# Usage: ./extract_metrics.sh <benchmark_log> <output_json> [dataset_name]
+# Usage: ./extract_metrics.sh <log> <output_json> [dataset_name] [section]
+#
+# If section is specified (e.g., "Cranfield", "MS MARCO", "Wikipedia"),
+# only extracts metrics from that section of the log file.
 #
 # Parses benchmark output to extract:
 # - Index build time
-# - Query latencies (from EXPLAIN ANALYZE)
+# - Query latencies
 # - Throughput metrics
 # - Index/table sizes
 
@@ -14,6 +17,22 @@ set -e
 LOG_FILE="${1:-benchmark_results.txt}"
 OUTPUT_FILE="${2:-benchmark_metrics.json}"
 DATASET_NAME="${3:-unknown}"
+SECTION="${4:-}"
+
+# If section specified, extract only that section from log
+if [ -n "$SECTION" ]; then
+    TEMP_LOG=$(mktemp)
+    # Extract lines between "=== $SECTION Benchmark ===" and next "=== * Benchmark ==="
+    awk -v section="$SECTION" '
+        /^=== .* Benchmark ===/ {
+            if (index($0, section) > 0) { capture = 1 }
+            else if (capture) { exit }
+        }
+        capture { print }
+    ' "$LOG_FILE" > "$TEMP_LOG"
+    LOG_FILE="$TEMP_LOG"
+    trap "rm -f $TEMP_LOG" EXIT
+fi
 
 # Initialize metrics
 INDEX_BUILD_MS=""
@@ -23,7 +42,7 @@ INDEX_SIZE=""
 TABLE_SIZE=""
 declare -a QUERY_LATENCIES
 
-# Extract index build time (from CREATE INDEX timing - format: "Time: 63073.468 ms")
+# Extract index build time (from CREATE INDEX timing)
 INDEX_BUILD_MS=$(grep -E "CREATE INDEX" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 

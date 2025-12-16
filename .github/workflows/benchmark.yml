@@ -208,24 +208,43 @@ jobs:
         echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
         echo "" >> benchmark_summary.md
 
-        # Extract structured metrics (pass dataset name)
         chmod +x benchmarks/runner/extract_metrics.sh
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json "${{ steps.datasets.outputs.dataset }}" || true
+
+        # Extract metrics per dataset when running "all"
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+        if [ "$DATASET" = "all" ]; then
+          # Extract each dataset separately
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              cranfield_metrics.json "cranfield" "Cranfield" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              msmarco_metrics.json "msmarco" "MS MARCO" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              wikipedia_metrics.json "wikipedia" "Wikipedia" || true
+          # Also create combined for summary
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              benchmark_metrics.json "all" || true
+        else
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              benchmark_metrics.json "$DATASET" || true
+        fi
 
         # Add metrics to summary
         echo "## Key Metrics" >> benchmark_summary.md
-        if [ -f benchmark_metrics.json ]; then
-          echo '```json' >> benchmark_summary.md
-          cat benchmark_metrics.json >> benchmark_summary.md
-          echo '```' >> benchmark_summary.md
-        fi
+        for f in *_metrics.json; do
+          if [ -f "$f" ]; then
+            echo "### $f" >> benchmark_summary.md
+            echo '```json' >> benchmark_summary.md
+            cat "$f" >> benchmark_summary.md
+            echo '```' >> benchmark_summary.md
+          fi
+        done
 
         # Extract timing info
         echo "" >> benchmark_summary.md
         echo "## Timing" >> benchmark_summary.md
         grep -E "^(real|user|sys|Time:)" benchmark_results.txt >> benchmark_summary.md || true
 
-        # Extract query latencies from EXPLAIN ANALYZE
+        # Extract query latencies
         echo "" >> benchmark_summary.md
         echo "## Query Latencies" >> benchmark_summary.md
         grep -E "Execution Time:" benchmark_results.txt >> benchmark_summary.md || true
@@ -248,7 +267,8 @@ jobs:
         path: |
           benchmark_results.txt
           benchmark_summary.md
-          benchmark_metrics.json
+          *_metrics.json
+          *_action.json
           tmp_bench/postgres.log
         retention-days: 90
 
@@ -272,16 +292,74 @@ jobs:
       if: always()
       id: format_metrics
       run: |
-        if [ -f benchmark_metrics.json ]; then
-          chmod +x benchmarks/runner/format_for_action.sh
-          ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
-          # Extract dataset name for benchmark label
-          DATASET=$(jq -r '.dataset // "unknown"' benchmark_metrics.json)
-          echo "dataset=$DATASET" >> $GITHUB_OUTPUT
+        chmod +x benchmarks/runner/format_for_action.sh
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+
+        if [ "$DATASET" = "all" ]; then
+          # Format each dataset separately
+          for name in cranfield msmarco wikipedia; do
+            if [ -f "${name}_metrics.json" ]; then
+              ./benchmarks/runner/format_for_action.sh \
+                  "${name}_metrics.json" "${name}_action.json"
+            fi
+          done
+          echo "is_all=true" >> $GITHUB_OUTPUT
+        else
+          if [ -f benchmark_metrics.json ]; then
+            ./benchmarks/runner/format_for_action.sh \
+                benchmark_metrics.json benchmark_action.json
+            echo "dataset=$DATASET" >> $GITHUB_OUTPUT
+          fi
+          echo "is_all=false" >> $GITHUB_OUTPUT
         fi
 
-    - name: Store and publish benchmark results
-      if: always() && hashFiles('benchmark_action.json') != ''
+    - name: Publish Cranfield benchmark
+      if: always() && hashFiles('cranfield_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO benchmark
+      if: always() && hashFiles('msmarco_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia benchmark
+      if: always() && hashFiles('wikipedia_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish single dataset benchmark
+      if: always() && steps.format_metrics.outputs.is_all == 'false' && hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: '${{ steps.format_metrics.outputs.dataset }} Benchmarks'
