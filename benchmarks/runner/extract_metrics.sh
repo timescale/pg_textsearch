@@ -35,10 +35,11 @@ LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
 NUM_DOCUMENTS=$(grep -E "BM25 index build completed:" "$LOG_FILE" 2>/dev/null | \
     grep -oE "[0-9]+ documents" | grep -oE "[0-9]+" || echo "")
 
-# Extract Execution Time from EXPLAIN ANALYZE outputs
-# Format: "Execution Time: 123.456 ms"
+# Extract Execution Time from benchmark query outputs
+# Format: "Execution Time: 123.456 ms (min=..., max=...)"
+# We extract only the first number (median) from each line
 mapfile -t EXEC_TIMES < <(grep -E "Execution Time:" "$LOG_FILE" 2>/dev/null | \
-    grep -oE "[0-9]+\.[0-9]+" || true)
+    sed -E 's/.*Execution Time: ([0-9]+\.[0-9]+).*/\1/' || true)
 
 # Extract throughput result
 THROUGHPUT_LINE=$(grep -E "THROUGHPUT_RESULT:" "$LOG_FILE" 2>/dev/null || echo "")

@@ -21,74 +21,67 @@ ORDER BY full_text <@> to_bm25query('heat transfer', 'cranfield_full_tapir_idx')
 LIMIT 10;
 
 -- ============================================================
--- Benchmark 1: Single Query Latency (using BM25 index scan)
+-- Benchmark 1: Query Latency (10 iterations each, median reported)
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 1: Single Query Latency (BM25 Index Scan) ==='
+\echo '=== Benchmark 1: Query Latency (10 iterations each) ==='
 \echo 'Running top-10 queries using the BM25 index'
 \echo ''
 
+-- Helper function to run a query multiple times and return median execution time
+CREATE OR REPLACE FUNCTION benchmark_query(query_text text, iterations int DEFAULT 10)
+RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
+DECLARE
+    i int;
+    start_ts timestamp;
+    end_ts timestamp;
+    times numeric[];
+    sorted_times numeric[];
+BEGIN
+    times := ARRAY[]::numeric[];
+    FOR i IN 1..iterations LOOP
+        start_ts := clock_timestamp();
+        EXECUTE 'SELECT doc_id FROM cranfield_full_documents
+                 WHERE full_text <@> to_bm25query($1, ''cranfield_full_tapir_idx'') < 0
+                 ORDER BY full_text <@> to_bm25query($1, ''cranfield_full_tapir_idx'')
+                 LIMIT 10' USING query_text;
+        end_ts := clock_timestamp();
+        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+    END LOOP;
+    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
+    median_ms := sorted_times[(iterations + 1) / 2];
+    min_ms := sorted_times[1];
+    max_ms := sorted_times[iterations];
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Short query (2 words)
 \echo 'Query 1: Short query (2 words) - "boundary layer"'
-EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
-SELECT doc_id,
-       full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') < 0
-ORDER BY full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx')
-LIMIT 10;
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query('boundary layer');
 
 \echo ''
 \echo 'Query 2: Medium query (4 words) - "supersonic flow heat transfer"'
-EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
-SELECT doc_id,
-       full_text <@> to_bm25query('supersonic flow heat transfer',
-                                  'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('supersonic flow heat transfer',
-                                 'cranfield_full_tapir_idx') < 0
-ORDER BY full_text <@> to_bm25query('supersonic flow heat transfer',
-                                    'cranfield_full_tapir_idx')
-LIMIT 10;
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query('supersonic flow heat transfer');
 
 \echo ''
 \echo 'Query 3: Long query (from Cranfield query 1)'
-EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
-SELECT doc_id,
-       full_text <@> to_bm25query(
-           'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
-           'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query(
-    'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
-    'cranfield_full_tapir_idx') < 0
-ORDER BY full_text <@> to_bm25query(
-    'what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft',
-    'cranfield_full_tapir_idx')
-LIMIT 10;
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query('what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft');
 
 \echo ''
 \echo 'Query 4: Common terms - "flow pressure"'
-EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
-SELECT doc_id,
-       full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx') < 0
-ORDER BY full_text <@> to_bm25query('flow pressure', 'cranfield_full_tapir_idx')
-LIMIT 10;
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query('flow pressure');
 
 \echo ''
 \echo 'Query 5: Specific terms - "magnetohydrodynamic viscosity"'
-EXPLAIN (ANALYZE, TIMING, FORMAT TEXT)
-SELECT doc_id,
-       full_text <@> to_bm25query('magnetohydrodynamic viscosity',
-                                  'cranfield_full_tapir_idx') as score
-FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('magnetohydrodynamic viscosity',
-                                 'cranfield_full_tapir_idx') < 0
-ORDER BY full_text <@> to_bm25query('magnetohydrodynamic viscosity',
-                                    'cranfield_full_tapir_idx')
-LIMIT 10;
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query('magnetohydrodynamic viscosity');
+
+DROP FUNCTION benchmark_query;
 
 -- ============================================================
 -- Benchmark 2: Query Throughput (all 225 Cranfield queries)
