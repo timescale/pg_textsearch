@@ -235,9 +235,9 @@ jobs:
         echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
         echo "" >> benchmark_summary.md
 
-        # Extract structured metrics
+        # Extract structured metrics (pass dataset name)
         chmod +x benchmarks/runner/extract_metrics.sh
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json || true
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt benchmark_metrics.json "${{ steps.datasets.outputs.dataset }}" || true
 
         # Add metrics to summary
         echo "## Key Metrics" >> benchmark_summary.md
@@ -297,17 +297,21 @@ jobs:
 
     - name: Format metrics for benchmark tracking
       if: always()
+      id: format_metrics
       run: |
         if [ -f benchmark_metrics.json ]; then
           chmod +x benchmarks/runner/format_for_action.sh
           ./benchmarks/runner/format_for_action.sh benchmark_metrics.json benchmark_action.json
+          # Extract dataset name for benchmark label
+          DATASET=$(jq -r '.dataset // "unknown"' benchmark_metrics.json)
+          echo "dataset=$DATASET" >> $GITHUB_OUTPUT
         fi
 
     - name: Store and publish benchmark results
       if: always() && hashFiles('benchmark_action.json') != ''
       uses: benchmark-action/github-action-benchmark@v1
       with:
-        name: 'MS MARCO Benchmarks'
+        name: '${{ steps.format_metrics.outputs.dataset }} Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: benchmark_action.json
         github-token: ${{ secrets.GITHUB_TOKEN }}

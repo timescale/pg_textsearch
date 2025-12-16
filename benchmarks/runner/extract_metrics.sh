@@ -1,7 +1,7 @@
 #!/bin/bash
 # Extract benchmark metrics from log output and create JSON summary
 #
-# Usage: ./extract_metrics.sh <benchmark_log> <output_json>
+# Usage: ./extract_metrics.sh <benchmark_log> <output_json> [dataset_name]
 #
 # Parses benchmark output to extract:
 # - Index build time
@@ -13,6 +13,7 @@ set -e
 
 LOG_FILE="${1:-benchmark_results.txt}"
 OUTPUT_FILE="${2:-benchmark_metrics.json}"
+DATASET_NAME="${3:-unknown}"
 
 # Initialize metrics
 INDEX_BUILD_MS=""
@@ -61,7 +62,7 @@ cat > "$OUTPUT_FILE" << EOF
 {
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "commit": "${GITHUB_SHA:-unknown}",
-  "dataset": "msmarco",
+  "dataset": "${DATASET_NAME}",
   "metrics": {
     "load_time_ms": ${LOAD_TIME_MS:-null},
     "index_build_time_ms": ${INDEX_BUILD_MS:-null},
