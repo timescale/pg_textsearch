@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765916950514,
+  "lastUpdate": 1765916951734,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -278,6 +278,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco - Avg Query Latency (20 queries)",
             "value": 18.56,
+            "unit": "ms"
+          }
+        ]
+      }
+    ],
+    "wikipedia Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c80221e1ec07cfcfb80ea12afe6ac77a2776d12f",
+          "message": "Extract and publish metrics per-dataset when running all benchmarks (#75)\n\n## Summary\n- When running `dataset=all`, metrics are now extracted separately for\neach dataset\n- Each dataset (Cranfield, MS MARCO, Wikipedia) gets its own benchmark\nchart\n- Previously, only the first dataset's results were captured\n\n## Changes\n- `extract_metrics.sh` now accepts optional section parameter to extract\nfrom log sections\n- Workflow runs extract_metrics.sh once per dataset when running \"all\"\n- Separate benchmark-action publish steps for each dataset\n\n## Testing\nTrigger a benchmark run with `dataset=all` to verify all three datasets\nappear separately in the results.",
+          "timestamp": "2025-12-16T17:18:32Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c80221e1ec07cfcfb80ea12afe6ac77a2776d12f"
+        },
+        "date": 1765916951504,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia - Index Build Time",
+            "value": 20422.556,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Short Query (1 word)",
+            "value": 3.578,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Medium Query (3 words)",
+            "value": 1.488,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Long Query (question)",
+            "value": 1.316,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Common Term Query",
+            "value": 2.971,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia - Rare Term Query",
+            "value": 3.492,
             "unit": "ms"
           }
         ]
