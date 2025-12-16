@@ -71,11 +71,16 @@ if [ -n "$THROUGHPUT_LINE" ]; then
         grep -oE "avg [0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
 
-# Extract index and table sizes
-INDEX_SIZE=$(grep -E "msmarco_bm25_idx.*[0-9]+ [MG]B" "$LOG_FILE" 2>/dev/null | \
-    grep -oE "[0-9]+ [MG]B" | head -1 || echo "")
-TABLE_SIZE=$(grep -E "table_size.*[0-9]+ [MG]B" "$LOG_FILE" 2>/dev/null | \
-    grep -oE "[0-9]+ [MG]B" | head -1 || echo "")
+# Extract index and table sizes from standardized output format
+# Format: INDEX_SIZE: | 123 MB | 128974848
+INDEX_SIZE=$(grep -E "INDEX_SIZE:" "$LOG_FILE" 2>/dev/null | \
+    grep -oE "[0-9]+ [kMGT]?B" | head -1 || echo "")
+INDEX_SIZE_BYTES=$(grep -E "INDEX_SIZE:" "$LOG_FILE" 2>/dev/null | \
+    awk '{print $NF}' | grep -E "^[0-9]+$" | head -1 || echo "")
+TABLE_SIZE=$(grep -E "TABLE_SIZE:" "$LOG_FILE" 2>/dev/null | \
+    grep -oE "[0-9]+ [kMGT]?B" | head -1 || echo "")
+TABLE_SIZE_BYTES=$(grep -E "TABLE_SIZE:" "$LOG_FILE" 2>/dev/null | \
+    awk '{print $NF}' | grep -E "^[0-9]+$" | head -1 || echo "")
 
 # Helper to output number or null
 num_or_null() {
@@ -95,7 +100,9 @@ jq -n \
   --argjson index_build "$(num_or_null "$INDEX_BUILD_MS")" \
   --argjson num_docs "$(num_or_null "$NUM_DOCUMENTS")" \
   --arg index_size "${INDEX_SIZE:-unknown}" \
+  --argjson index_size_bytes "$(num_or_null "$INDEX_SIZE_BYTES")" \
   --arg table_size "${TABLE_SIZE:-unknown}" \
+  --argjson table_size_bytes "$(num_or_null "$TABLE_SIZE_BYTES")" \
   --argjson short_query "$(num_or_null "${EXEC_TIMES[0]}")" \
   --argjson medium_query "$(num_or_null "${EXEC_TIMES[1]}")" \
   --argjson long_query "$(num_or_null "${EXEC_TIMES[2]}")" \
@@ -112,7 +119,9 @@ jq -n \
       index_build_time_ms: $index_build,
       num_documents: $num_docs,
       index_size: $index_size,
+      index_size_bytes: $index_size_bytes,
       table_size: $table_size,
+      table_size_bytes: $table_size_bytes,
       query_latencies_ms: {
         short_query: $short_query,
         medium_query: $medium_query,

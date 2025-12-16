@@ -96,6 +96,18 @@ LIMIT 5;
 CREATE INDEX msmarco_bm25_idx ON msmarco_passages
     USING bm25(passage_text) WITH (text_config='english');
 
+-- Report index and table sizes
+\echo ''
+\echo '=== Index Size Report ==='
+SELECT
+    'INDEX_SIZE:' as label,
+    pg_size_pretty(pg_relation_size('msmarco_bm25_idx')) as index_size,
+    pg_relation_size('msmarco_bm25_idx') as index_bytes;
+SELECT
+    'TABLE_SIZE:' as label,
+    pg_size_pretty(pg_total_relation_size('msmarco_passages')) as table_size,
+    pg_total_relation_size('msmarco_passages') as table_bytes;
+
 \echo ''
 \echo '=== MS MARCO Load Complete ==='
 \echo 'Ready for query benchmarks'
