@@ -2,7 +2,7 @@
 
 **Status**: Draft for review
 **Author**: Todd J. Green @ Tiger Data
-**Last updated**: 2025-12-16
+**Last updated**: 2025-12-17
 
 ---
 
@@ -310,10 +310,20 @@ Skip Index Entry (16 bytes per block):
 │ reserved: 3 bytes    - Future use                      │
 └────────────────────────────────────────────────────────┘
 
-Posting Block Data (variable size, at posting_offset):
+Posting Block Data - Uncompressed (8 bytes per posting):
+┌────────────────────────────────────────────────────────┐
+│ TpBlockPosting[doc_count]:                             │
+│   doc_id: u32      - Segment-local document ID         │
+│   frequency: u16   - Term frequency in document        │
+│   fieldnorm: u8    - Quantized document length         │
+│   reserved: u8     - Padding for alignment             │
+└────────────────────────────────────────────────────────┘
+
+Posting Block Data - Compressed (variable size):
 ┌────────────────────────────────────────────────────────┐
 │ [doc_id deltas...][frequencies...]                     │
 │ (compressed with FOR/PFOR, see Phase 3)                │
+│ (fieldnorms in separate table, not inline)             │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -345,12 +355,12 @@ blocks, then only decompress posting data for blocks that pass the threshold.
 │   - 16 bytes per block, enables binary search           │
 │   - Frequently accessed during BMW, benefits from cache │
 ├─────────────────────────────────────────────────────────┤
-│ Posting Blocks (compressed posting data)                │
-│   - Variable-size, accessed only when block passes      │
+│ Posting Blocks (uncompressed or compressed)             │
+│   - See "Fieldnorm Storage" below for format details    │
 ├─────────────────────────────────────────────────────────┤
-│ Fieldnorm Table (1 byte per doc)                        │
-│   - Quantized document lengths for BM25                 │
-│   - Shared across all terms                             │
+│ Fieldnorm Table (compressed formats only)               │
+│   - 1 byte per doc, quantized document lengths          │
+│   - Omitted in uncompressed format (inline in postings) │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -366,14 +376,9 @@ log-scale mapping. This:
 - Enables compact block-max metadata
 - Has negligible impact on ranking quality
 
-**Storage**: Fieldnorms are stored **per-segment** in a dedicated section (see
-segment layout above). Each segment is self-contained with its own fieldnorm
-table. This matches Lucene's design where norms are stored in per-segment .nvd
-files. See [Lucene80NormsFormat](https://lucene.apache.org/core/8_0_0/core/org/apache/lucene/codecs/lucene80/Lucene80NormsFormat.html).
-
-We might as well use Lucene's quantization scheme (SmallFloat.intToByte4). Both
-Lucene and Tantivy independently converged on this same approach, which is
-reasonable evidence for its effectiveness.
+We use Lucene's quantization scheme (SmallFloat.intToByte4). Both Lucene and
+Tantivy independently converged on this same approach, which is reasonable
+evidence for its effectiveness.
 
 Key properties:
 - Document lengths 0-39 stored **exactly** (covers most short documents)
@@ -400,6 +405,41 @@ uint32 decode_fieldnorm(uint8 norm_id) {
     return FIELDNORM_TABLE[norm_id];
 }
 ```
+
+#### 1.4 Fieldnorm Storage Strategy
+
+Fieldnorm storage differs between uncompressed and compressed posting formats
+due to a space/performance tradeoff:
+
+**Uncompressed format (V2)**: Fieldnorms are stored **inline** in each posting
+entry. The `TpBlockPosting` structure has 2 bytes of padding for alignment,
+which can hold the 1-byte fieldnorm at zero additional cost:
+
+```c
+typedef struct TpBlockPosting {
+    uint32 doc_id;      // 4 bytes - segment-local document ID
+    uint16 frequency;   // 2 bytes - term frequency
+    uint8  fieldnorm;   // 1 byte  - quantized document length
+    uint8  reserved;    // 1 byte  - padding for alignment
+} TpBlockPosting;       // 8 bytes total
+```
+
+This eliminates per-posting fieldnorm lookups entirely, which is important
+because we have observed high overhead from fieldnorm lookups in a separate
+table. Each lookup requires a buffer manager round-trip (hash lookup, pin/unpin,
+LWLock acquire/release), adding ~300-500ns per posting even when pages are
+cached in shared_buffers. For queries touching millions of postings, this
+overhead dominates query time.
+
+**Compressed format (future)**: Inline storage is not viable because fieldnorms
+are per-document, not per-posting. A document appearing in 100 posting lists
+would have its fieldnorm stored 100 times, inflating posting data by 40-80%.
+Instead, compressed formats use a **separate fieldnorm table** (1 byte per
+document) with a caching scheme to amortize buffer manager overhead.
+
+The skip index already stores `block_max_norm` (the fieldnorm of the
+highest-scoring document in each block), so BMW block-skipping decisions don't
+require per-posting fieldnorm access—only scoring of candidate documents does.
 
 ---
 ### Phase 2: Block-Based Query Executor
