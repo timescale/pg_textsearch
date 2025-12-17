@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766008355978,
+  "lastUpdate": 1766008358288,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -836,6 +836,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2807.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "b82dea59ef6d9c20c88742ce904acb4a94388246",
+          "message": "Implement V2 segment format with block storage for BMW optimization\n\nThis implements Phase 1 of the block storage optimization plan:\n\nV2 segment format changes:\n- Block-based posting storage: 128 docs per block with TpBlockPosting (8 bytes)\n- Skip index with TpSkipEntry (16 bytes) enabling BMW block skipping\n- Fieldnorm table using Lucene SmallFloat encoding (1 byte per doc)\n- CTID map for segment-local doc_id → heap tuple lookup\n- TpDictEntryV2 (12 bytes) with skip_index_offset + block_count\n\nNew infrastructure:\n- docmap.c/h: Document ID mapping with CTID hash table\n- fieldnorm.h: Lucene SmallFloat encode/decode with precomputed table\n- segment_query.c: V2 query iterator with block-based iteration\n\nKey changes:\n- All segment writers switched from V1 to V2 (index build, spill, merge)\n- Merge completely rewritten to read V2 sources and write V2 output\n- Dump function updated to display V2 format details\n- Metapage version bumped to 5 (breaking change)\n\nThe V2 format reduces storage (posting: 14→8 bytes) and enables\nfuture BMW optimization by providing block-level statistics for\nearly termination during top-k queries.\n\nV1 code retained but unused - will be removed in future cleanup.",
+          "timestamp": "2025-12-17T21:26:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b82dea59ef6d9c20c88742ce904acb4a94388246"
+        },
+        "date": 1766008357664,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 928284.074,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 5.215,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 8.037,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 12.953,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.053,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 8.495,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 17.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2551.58,
             "unit": "MB"
           }
         ]
