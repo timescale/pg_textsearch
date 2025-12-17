@@ -332,13 +332,22 @@ tp_segment_open(Relation index, BlockNumber root_block)
 
 	/*
 	 * For V2 segments, preload fieldnorm and CTID tables into memory.
-	 * This avoids per-posting I/O during iteration, providing major speedup.
+	 * This avoids per-posting I/O during iteration, providing major speedup
+	 * for small-to-medium segments.
+	 *
+	 * For large segments (>100K docs), caching is counterproductive because:
+	 * - Loading 700KB+ of data upfront is expensive
+	 * - Top-k queries only access a tiny fraction of documents
+	 * - PostgreSQL's buffer cache handles per-posting reads efficiently
 	 */
 	reader->cached_fieldnorms = NULL;
 	reader->cached_ctids	  = NULL;
 	reader->cached_num_docs	  = 0;
 
+#define TP_SEGMENT_CACHE_THRESHOLD 100000 /* Max docs to cache */
+
 	if (header->version >= TP_SEGMENT_FORMAT_V2 && header->num_docs > 0 &&
+		header->num_docs <= TP_SEGMENT_CACHE_THRESHOLD &&
 		header->fieldnorm_offset > 0 && header->ctid_map_offset > 0)
 	{
 		reader->cached_num_docs = header->num_docs;
