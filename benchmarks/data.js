@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766011819092,
+  "lastUpdate": 1766011821016,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -955,6 +955,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 17.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2551.58,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "227818c762af2137ec92daf47c591c04b48fe196",
+          "message": "Cache fieldnorm and CTID tables at segment open for faster iteration\n\nV2 segment queries were slow because the iterator performed per-posting\nI/O to look up CTIDs and fieldnorms. This change preloads both tables\ninto memory when opening a V2 segment reader.\n\nPerformance improvement on 50K document benchmark:\n- Common term queries: 2.1-2.6x faster\n- Buffer hits reduced by 23-34x (e.g., 30K → 900)\n\nMemory overhead per segment reader:\n- Fieldnorm: 1 byte per document\n- CTID map: 6 bytes per document\n- Total: ~7 bytes per document (e.g., 700KB for 100K docs)\n\nThe caching remains beneficial with BMW optimization since we still\nneed CTIDs for result output and fieldnorms for scoring on blocks\nthat aren't skipped.",
+          "timestamp": "2025-12-17T22:23:28Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/227818c762af2137ec92daf47c591c04b48fe196"
+        },
+        "date": 1766011820405,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 995733.065,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 27.662,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 36.254,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 64.646,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.042,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 61.796,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 65.39,
             "unit": "ms"
           },
           {
