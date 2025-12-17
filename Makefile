@@ -27,6 +27,7 @@ OBJS = \
 	src/segment/dictionary.o \
 	src/segment/segment_query.o \
 	src/segment/segment_merge.o \
+	src/segment/docmap.o \
 	src/planner.o
 
 # Shared library target

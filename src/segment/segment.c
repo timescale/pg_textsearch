@@ -19,6 +19,8 @@
 #include "catalog/namespace.h"
 #include "catalog/storage.h"
 #include "dictionary.h"
+#include "docmap.h"
+#include "fieldnorm.h"
 #include "lib/dshash.h"
 #include "miscadmin.h"
 #include "postgres.h"
@@ -133,6 +135,35 @@ read_dict_entry(
 	entry_offset = header->entries_offset + offset_increment;
 
 	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
+}
+
+/*
+ * Helper function to read a V2 dictionary entry at a given index
+ */
+static void
+read_dict_entry_v2(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		TpDictEntryV2	*entry)
+{
+	uint32 offset_increment;
+	uint32 entry_offset;
+
+	if (index > UINT32_MAX / sizeof(TpDictEntryV2))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("dictionary entry index overflow")));
+
+	offset_increment = index * sizeof(TpDictEntryV2);
+
+	if (offset_increment > UINT32_MAX - header->entries_offset)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("dictionary entry offset overflow")));
+
+	entry_offset = header->entries_offset + offset_increment;
+	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntryV2));
 }
 
 /*
@@ -1180,6 +1211,477 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 }
 
 /*
+ * V2 Segment Writer - Block-based storage with skip index
+ *
+ * The V2 format organizes posting lists into fixed-size blocks of 128 docs,
+ * with a skip index that enables efficient skipping during query execution.
+ *
+ * Layout:
+ *   Header -> Dictionary -> Strings -> DictEntriesV2 ->
+ *   SkipIndex -> PostingBlocks -> Fieldnorms -> CTIDMap
+ */
+
+/*
+ * Build docmap from memtable's document lengths.
+ * Returns the docmap builder which must be freed by caller.
+ */
+static TpDocMapBuilder *
+build_docmap_from_memtable(TpLocalIndexState *state)
+{
+	TpMemtable		 *memtable = get_memtable(state);
+	TpDocMapBuilder	 *docmap;
+	dshash_table	 *doc_lengths_hash;
+	dshash_seq_status seq_status;
+	TpDocLengthEntry *doc_entry;
+	dshash_parameters doc_lengths_params;
+
+	docmap = tp_docmap_create();
+
+	if (!memtable || memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+		return docmap;
+
+	/* Setup parameters for doc lengths hash table */
+	memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
+	doc_lengths_params.key_size			= sizeof(ItemPointerData);
+	doc_lengths_params.entry_size		= sizeof(TpDocLengthEntry);
+	doc_lengths_params.hash_function	= dshash_memhash;
+	doc_lengths_params.compare_function = dshash_memcmp;
+
+	/* Attach to document lengths hash table */
+	doc_lengths_hash = dshash_attach(
+			state->dsa,
+			&doc_lengths_params,
+			memtable->doc_lengths_handle,
+			NULL);
+
+	/* Iterate through all documents and add to docmap */
+	dshash_seq_init(&seq_status, doc_lengths_hash, false);
+	while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(&seq_status)) !=
+		   NULL)
+	{
+		tp_docmap_add(docmap, &doc_entry->ctid, (uint16)doc_entry->doc_length);
+	}
+	dshash_seq_term(&seq_status);
+	dshash_detach(doc_lengths_hash);
+
+	/* Finalize to build output arrays */
+	tp_docmap_finalize(docmap);
+
+	return docmap;
+}
+
+/*
+ * Per-term block information built during first pass.
+ */
+typedef struct TermBlockInfo
+{
+	uint32 skip_index_offset; /* Offset to this term's skip entries */
+	uint16 block_count;		  /* Number of blocks for this term */
+	uint32 posting_offset;	  /* Offset to this term's posting blocks */
+	uint32 doc_freq;		  /* Document frequency */
+} TermBlockInfo;
+
+/*
+ * Write V2 segment from memtable with block-based posting storage.
+ */
+BlockNumber
+tp_write_segment_v2(TpLocalIndexState *state, Relation index)
+{
+	TermInfo		*terms;
+	uint32			 num_terms;
+	BlockNumber		 header_block;
+	BlockNumber		 page_index_root;
+	TpSegmentWriter	 writer;
+	TpSegmentHeader	 header;
+	TpDictionary	 dict;
+	TpDocMapBuilder *docmap;
+
+	uint32			*string_offsets;
+	uint32			 string_pos;
+	uint32			 i;
+	Buffer			 header_buf;
+	Page			 header_page;
+	TpSegmentHeader *existing_header;
+	TermBlockInfo	*term_blocks;
+
+	/* Initialize the writer to avoid garbage values */
+	memset(&writer, 0, sizeof(TpSegmentWriter));
+
+	/* Build docmap from memtable */
+	docmap = build_docmap_from_memtable(state);
+
+	/* Build sorted dictionary */
+	terms = tp_build_dictionary(state, &num_terms);
+
+	if (num_terms == 0)
+	{
+		tp_free_dictionary(terms, num_terms);
+		tp_docmap_destroy(docmap);
+		return InvalidBlockNumber;
+	}
+
+	/* Initialize writer with incremental page allocation */
+	tp_segment_writer_init(&writer, index);
+
+	if (writer.pages_allocated > 0)
+	{
+		header_block = writer.pages[0];
+	}
+	else
+	{
+		elog(ERROR, "tp_write_segment_v2: Failed to allocate first page");
+	}
+
+	/* Initialize header */
+	memset(&header, 0, sizeof(TpSegmentHeader));
+	header.magic		= TP_SEGMENT_MAGIC;
+	header.version		= TP_SEGMENT_FORMAT_V2;
+	header.created_at	= GetCurrentTimestamp();
+	header.num_pages	= 0;
+	header.num_terms	= num_terms;
+	header.level		= 0;
+	header.next_segment = InvalidBlockNumber;
+
+	/* Dictionary immediately follows header */
+	header.dictionary_offset = sizeof(TpSegmentHeader);
+
+	/* Get corpus statistics from shared state */
+	header.num_docs		= state->shared->total_docs;
+	header.total_tokens = state->shared->total_len;
+
+	/* Write placeholder header */
+	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
+
+	/* Write dictionary section */
+	dict.num_terms = num_terms;
+	tp_segment_writer_write(
+			&writer, &dict, offsetof(TpDictionary, string_offsets));
+
+	/* Build string offsets */
+	string_offsets = palloc0(num_terms * sizeof(uint32));
+	string_pos	   = 0;
+	for (i = 0; i < num_terms; i++)
+	{
+		string_offsets[i] = string_pos;
+		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+	}
+
+	/* Write string offsets array */
+	tp_segment_writer_write(
+			&writer, string_offsets, num_terms * sizeof(uint32));
+
+	/* Write string pool */
+	header.strings_offset = writer.current_offset;
+	for (i = 0; i < num_terms; i++)
+	{
+		uint32 length	   = terms[i].term_len;
+		uint32 dict_offset = i * sizeof(TpDictEntryV2);
+
+		tp_segment_writer_write(&writer, &length, sizeof(uint32));
+		tp_segment_writer_write(&writer, terms[i].term, length);
+		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
+	}
+
+	/* Record entries offset - will write V2 entries after calculating offsets
+	 */
+	header.entries_offset = writer.current_offset;
+
+	/*
+	 * First pass: calculate skip index and posting block sizes for each term.
+	 * We need this to know where each term's skip entries and postings go.
+	 */
+	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+
+	{
+		uint32 skip_offset	  = 0;
+		uint32 posting_offset = 0;
+
+		for (i = 0; i < num_terms; i++)
+		{
+			TpPostingList *posting_list = NULL;
+			uint32		   doc_count	= 0;
+			uint32		   num_blocks;
+
+			if (terms[i].posting_list_dp != InvalidDsaPointer)
+			{
+				posting_list = (TpPostingList *)
+						dsa_get_address(state->dsa, terms[i].posting_list_dp);
+				if (posting_list)
+					doc_count = posting_list->doc_count;
+			}
+
+			/* Calculate number of blocks (ceiling division) */
+			num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+			if (num_blocks == 0 && doc_count > 0)
+				num_blocks = 1;
+
+			term_blocks[i].skip_index_offset = skip_offset;
+			term_blocks[i].block_count		 = (uint16)num_blocks;
+			term_blocks[i].posting_offset	 = posting_offset;
+			term_blocks[i].doc_freq = posting_list ? posting_list->doc_freq
+												   : 0;
+
+			/* Advance offsets */
+			skip_offset += num_blocks * sizeof(TpSkipEntry);
+			posting_offset += doc_count * sizeof(TpBlockPosting);
+		}
+	}
+
+	/*
+	 * Calculate absolute offsets for skip index and postings.
+	 * Skip index comes after dict entries.
+	 */
+	header.skip_index_offset = header.entries_offset +
+							   (num_terms * sizeof(TpDictEntryV2));
+
+	{
+		uint32 total_skip_size = 0;
+		for (i = 0; i < num_terms; i++)
+			total_skip_size += term_blocks[i].block_count *
+							   sizeof(TpSkipEntry);
+
+		/* V1 postings_offset is reused for V2 posting blocks */
+		header.postings_offset = header.skip_index_offset + total_skip_size;
+	}
+
+	/* Write dictionary entries V2 */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpDictEntryV2 entry;
+
+		entry.skip_index_offset = header.skip_index_offset +
+								  term_blocks[i].skip_index_offset;
+		entry.block_count = term_blocks[i].block_count;
+		entry.reserved	  = 0;
+		entry.doc_freq	  = term_blocks[i].doc_freq;
+
+		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntryV2));
+	}
+
+	/* Verify we're at the expected skip index position */
+	Assert(writer.current_offset == header.skip_index_offset);
+
+	/*
+	 * Second pass: Write skip index entries and posting blocks.
+	 * We need to process each term's postings, convert to doc_ids,
+	 * and write both skip entries and posting data.
+	 */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpPostingList  *posting_list = NULL;
+		TpPostingEntry *entries		 = NULL;
+		uint32			doc_count	 = 0;
+		uint32			block_idx;
+		TpSkipEntry	   *skip_entries   = NULL;
+		TpBlockPosting *block_postings = NULL;
+
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
+		{
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
+			if (posting_list && posting_list->doc_count > 0)
+			{
+				entries = (TpPostingEntry *)
+						dsa_get_address(state->dsa, posting_list->entries_dp);
+				doc_count = posting_list->doc_count;
+			}
+		}
+
+		if (doc_count == 0)
+			continue;
+
+		/* Allocate temporary arrays for this term */
+		skip_entries = palloc0(
+				term_blocks[i].block_count * sizeof(TpSkipEntry));
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+
+		/* Convert postings to doc_id format and build skip entries */
+		for (block_idx = 0; block_idx < term_blocks[i].block_count;
+			 block_idx++)
+		{
+			uint32 block_start	 = block_idx * TP_BLOCK_SIZE;
+			uint32 block_end	 = Min(block_start + TP_BLOCK_SIZE, doc_count);
+			uint32 docs_in_block = block_end - block_start;
+			uint32 j;
+			uint16 max_tf	   = 0;
+			uint8  max_norm	   = 0;
+			uint32 last_doc_id = 0;
+
+			for (j = block_start; j < block_end; j++)
+			{
+				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+
+				if (doc_id == UINT32_MAX)
+				{
+					elog(WARNING,
+						 "CTID (%u,%u) not found in docmap, using 0",
+						 ItemPointerGetBlockNumber(&entries[j].ctid),
+						 ItemPointerGetOffsetNumber(&entries[j].ctid));
+					doc_id = 0;
+				}
+
+				block_postings[j].doc_id	= doc_id;
+				block_postings[j].frequency = (uint16)entries[j].frequency;
+				block_postings[j].reserved	= 0;
+
+				/* Track block max stats */
+				if (entries[j].frequency > max_tf)
+					max_tf = (uint16)entries[j].frequency;
+
+				/* Get fieldnorm for this doc */
+				{
+					uint8 norm = tp_docmap_get_fieldnorm(docmap, doc_id);
+					if (norm > max_norm)
+						max_norm = norm;
+				}
+
+				last_doc_id = doc_id;
+			}
+
+			/* Fill in skip entry */
+			skip_entries[block_idx].last_doc_id	   = last_doc_id;
+			skip_entries[block_idx].doc_count	   = (uint8)docs_in_block;
+			skip_entries[block_idx].block_max_tf   = max_tf;
+			skip_entries[block_idx].block_max_norm = max_norm;
+			skip_entries[block_idx].posting_offset =
+					header.postings_offset + term_blocks[i].posting_offset +
+					(block_start * sizeof(TpBlockPosting));
+			skip_entries[block_idx].flags		= TP_BLOCK_FLAG_UNCOMPRESSED;
+			skip_entries[block_idx].reserved[0] = 0;
+			skip_entries[block_idx].reserved[1] = 0;
+			skip_entries[block_idx].reserved[2] = 0;
+		}
+
+		/* Write skip entries for this term */
+		tp_segment_writer_write(
+				&writer,
+				skip_entries,
+				term_blocks[i].block_count * sizeof(TpSkipEntry));
+
+		pfree(skip_entries);
+		pfree(block_postings);
+	}
+
+	/* Now write all posting blocks */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpPostingList  *posting_list = NULL;
+		TpPostingEntry *entries		 = NULL;
+		uint32			doc_count	 = 0;
+		TpBlockPosting *block_postings;
+		uint32			j;
+
+		if (terms[i].posting_list_dp != InvalidDsaPointer)
+		{
+			posting_list = (TpPostingList *)
+					dsa_get_address(state->dsa, terms[i].posting_list_dp);
+			if (posting_list && posting_list->doc_count > 0)
+			{
+				entries = (TpPostingEntry *)
+						dsa_get_address(state->dsa, posting_list->entries_dp);
+				doc_count = posting_list->doc_count;
+			}
+		}
+
+		if (doc_count == 0)
+			continue;
+
+		/* Convert postings to block format */
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+		for (j = 0; j < doc_count; j++)
+		{
+			uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+			if (doc_id == UINT32_MAX)
+				doc_id = 0;
+
+			block_postings[j].doc_id	= doc_id;
+			block_postings[j].frequency = (uint16)entries[j].frequency;
+			block_postings[j].reserved	= 0;
+		}
+
+		/* Write posting blocks for this term */
+		tp_segment_writer_write(
+				&writer, block_postings, doc_count * sizeof(TpBlockPosting));
+
+		pfree(block_postings);
+	}
+
+	/* Write fieldnorm table */
+	header.fieldnorm_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+	}
+
+	/* Write CTID map */
+	header.ctid_map_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		/* Write CTIDs directly - they're already in order by doc_id */
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_map,
+				docmap->num_docs * sizeof(ItemPointerData));
+	}
+
+	/* Update num_docs to actual count from this segment */
+	header.num_docs = docmap->num_docs;
+
+	/* V1 doc_lengths_offset not used in V2, set to 0 */
+	header.doc_lengths_offset = 0;
+
+	/* Write page index */
+	tp_segment_writer_flush(&writer);
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
+	header.page_index = page_index_root;
+
+	/* Update header with actual values */
+	header.data_size = writer.current_offset;
+	header.num_pages = writer.pages_allocated;
+
+	tp_segment_writer_finish(&writer);
+
+	/* Flush to disk */
+	FlushRelationBuffers(index);
+
+	/* Update header on disk */
+	header_buf = ReadBuffer(index, header_block);
+	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+	header_page = BufferGetPage(header_buf);
+
+	existing_header					= (TpSegmentHeader *)((char *)header_page +
+										  SizeOfPageHeaderData);
+	existing_header->strings_offset = header.strings_offset;
+	existing_header->entries_offset = header.entries_offset;
+	existing_header->postings_offset	= header.postings_offset;
+	existing_header->skip_index_offset	= header.skip_index_offset;
+	existing_header->fieldnorm_offset	= header.fieldnorm_offset;
+	existing_header->ctid_map_offset	= header.ctid_map_offset;
+	existing_header->doc_lengths_offset = header.doc_lengths_offset;
+	existing_header->num_docs			= header.num_docs;
+	existing_header->data_size			= header.data_size;
+	existing_header->num_pages			= header.num_pages;
+	existing_header->page_index			= header.page_index;
+
+	MarkBufferDirty(header_buf);
+	UnlockReleaseBuffer(header_buf);
+
+	FlushRelationBuffers(index);
+
+	/* Clean up */
+	tp_free_dictionary(terms, num_terms);
+	pfree(string_offsets);
+	pfree(term_blocks);
+	tp_docmap_destroy(docmap);
+	if (writer.pages)
+		pfree(writer.pages);
+
+	return header_block;
+}
+
+/*
  * Collect all pages belonging to a segment for later freeing.
  * This includes data pages (from page_map) and page index pages.
  *
@@ -1366,8 +1868,19 @@ tp_dump_segment_to_output(
 	dump_printf(out, "Dictionary offset: %u\n", header.dictionary_offset);
 	dump_printf(out, "Strings offset: %u\n", header.strings_offset);
 	dump_printf(out, "Entries offset: %u\n", header.entries_offset);
-	dump_printf(out, "Postings offset: %u\n", header.postings_offset);
-	dump_printf(out, "Doc lengths offset: %u\n", header.doc_lengths_offset);
+	if (header.version == TP_SEGMENT_FORMAT_V2)
+	{
+		dump_printf(out, "Skip index offset: %u\n", header.skip_index_offset);
+		dump_printf(out, "Postings offset: %u\n", header.postings_offset);
+		dump_printf(out, "Fieldnorm offset: %u\n", header.fieldnorm_offset);
+		dump_printf(out, "CTID map offset: %u\n", header.ctid_map_offset);
+	}
+	else
+	{
+		dump_printf(out, "Postings offset: %u\n", header.postings_offset);
+		dump_printf(
+				out, "Doc lengths offset: %u\n", header.doc_lengths_offset);
+	}
 
 	/* Page layout summary */
 	if (header.data_size > 0)
@@ -1447,8 +1960,7 @@ tp_dump_segment_to_output(
 
 		for (i = 0; i < terms_to_show; i++)
 		{
-			char	   *term_text;
-			TpDictEntry dict_entry;
+			char *term_text;
 
 			term_text = read_term_at_index(reader, &header, i, string_offsets);
 
@@ -1459,53 +1971,142 @@ tp_dump_segment_to_output(
 				continue;
 			}
 
-			read_dict_entry(reader, &header, i, &dict_entry);
-
-			dump_printf(
-					out,
-					"  [%04u] '%-30s' (docs=%4u, postings=%4u)\n",
-					i,
-					term_text,
-					dict_entry.doc_freq,
-					dict_entry.posting_count);
-
-			/* Show postings in full mode or for first few terms */
-			if ((out->full_dump || i < 5) && dict_entry.posting_count > 0)
+			if (header.version == TP_SEGMENT_FORMAT_V2)
 			{
-				TpSegmentPosting *postings;
-				uint32			  j;
-				uint32			  postings_to_show = out->full_dump
-														   ? dict_entry.posting_count
-														   : Min(dict_entry.posting_count,
-														 5);
+				/* V2 format: block-based storage */
+				TpDictEntryV2 entry_v2;
+				read_dict_entry_v2(reader, &header, i, &entry_v2);
 
-				postings = palloc(sizeof(TpSegmentPosting) * postings_to_show);
-				/* posting_offset is already absolute (includes postings base)
-				 */
-				tp_segment_read(
-						reader,
-						dict_entry.posting_offset,
-						postings,
-						sizeof(TpSegmentPosting) * postings_to_show);
+				dump_printf(
+						out,
+						"  [%04u] '%-30s' (docs=%4u, blocks=%4u)\n",
+						i,
+						term_text,
+						entry_v2.doc_freq,
+						entry_v2.block_count);
 
-				dump_printf(out, "         Postings: ");
-				for (j = 0; j < postings_to_show; j++)
+				/* Show blocks in full mode or for first few terms */
+				if ((out->full_dump || i < 5) && entry_v2.block_count > 0)
 				{
-					dump_printf(
-							out,
-							"(%u,%u):%u ",
-							ItemPointerGetBlockNumber(&postings[j].ctid),
-							ItemPointerGetOffsetNumber(&postings[j].ctid),
-							postings[j].frequency);
-				}
-				if (dict_entry.posting_count > postings_to_show)
-					dump_printf(
-							out,
-							"... (%u more)",
-							dict_entry.posting_count - postings_to_show);
-				dump_printf(out, "\n");
+					uint32 j;
+					uint32 blocks_to_show = out->full_dump
+												  ? entry_v2.block_count
+												  : Min(entry_v2.block_count,
+														3);
 
-				pfree(postings);
+					for (j = 0; j < blocks_to_show; j++)
+					{
+						TpSkipEntry skip;
+						uint32		skip_off;
+						uint32		k;
+						uint32		postings_to_show;
+
+						skip_off = entry_v2.skip_index_offset +
+								   j * sizeof(TpSkipEntry);
+						tp_segment_read(
+								reader, skip_off, &skip, sizeof(TpSkipEntry));
+
+						dump_printf(
+								out,
+								"         Block %u: docs=%u, "
+								"last_doc=%u, max_tf=%u, "
+								"offset=%u\n",
+								j,
+								skip.doc_count,
+								skip.last_doc_id,
+								skip.block_max_tf,
+								skip.posting_offset);
+
+						/* Show some postings from this block */
+						postings_to_show = out->full_dump
+												 ? skip.doc_count
+												 : Min(skip.doc_count, 3);
+						if (postings_to_show > 0)
+						{
+							TpBlockPosting *block_postings;
+							block_postings = palloc(
+									sizeof(TpBlockPosting) * postings_to_show);
+							tp_segment_read(
+									reader,
+									skip.posting_offset,
+									block_postings,
+									sizeof(TpBlockPosting) * postings_to_show);
+
+							dump_printf(out, "                  Postings: ");
+							for (k = 0; k < postings_to_show; k++)
+							{
+								dump_printf(
+										out,
+										"doc%u:%u ",
+										block_postings[k].doc_id,
+										block_postings[k].frequency);
+							}
+							if (skip.doc_count > postings_to_show)
+								dump_printf(
+										out,
+										"... (%u more)",
+										skip.doc_count - postings_to_show);
+							dump_printf(out, "\n");
+							pfree(block_postings);
+						}
+					}
+					if (entry_v2.block_count > blocks_to_show)
+						dump_printf(
+								out,
+								"         ... (%u more blocks)\n",
+								entry_v2.block_count - blocks_to_show);
+				}
+			}
+			else
+			{
+				/* V1 format: flat posting lists */
+				TpDictEntry dict_entry;
+				read_dict_entry(reader, &header, i, &dict_entry);
+
+				dump_printf(
+						out,
+						"  [%04u] '%-30s' (docs=%4u, postings=%4u)\n",
+						i,
+						term_text,
+						dict_entry.doc_freq,
+						dict_entry.posting_count);
+
+				/* Show postings in full mode or for first few terms */
+				if ((out->full_dump || i < 5) && dict_entry.posting_count > 0)
+				{
+					TpSegmentPosting *postings;
+					uint32			  j;
+					uint32			  postings_to_show =
+							   out->full_dump ? dict_entry.posting_count
+													  : Min(dict_entry.posting_count, 5);
+
+					postings = palloc(
+							sizeof(TpSegmentPosting) * postings_to_show);
+					tp_segment_read(
+							reader,
+							dict_entry.posting_offset,
+							postings,
+							sizeof(TpSegmentPosting) * postings_to_show);
+
+					dump_printf(out, "         Postings: ");
+					for (j = 0; j < postings_to_show; j++)
+					{
+						dump_printf(
+								out,
+								"(%u,%u):%u ",
+								ItemPointerGetBlockNumber(&postings[j].ctid),
+								ItemPointerGetOffsetNumber(&postings[j].ctid),
+								postings[j].frequency);
+					}
+					if (dict_entry.posting_count > postings_to_show)
+						dump_printf(
+								out,
+								"... (%u more)",
+								dict_entry.posting_count - postings_to_show);
+					dump_printf(out, "\n");
+
+					pfree(postings);
+				}
 			}
 
 			pfree(term_text);
@@ -1520,6 +2121,77 @@ tp_dump_segment_to_output(
 		}
 
 		pfree(string_offsets);
+		tp_segment_close(reader);
+	}
+
+	/* V2-specific: dump fieldnorm table and CTID map */
+	if (header.version == TP_SEGMENT_FORMAT_V2 && header.num_docs > 0)
+	{
+		TpSegmentReader *reader;
+		uint32			 docs_to_show;
+		uint32			 i;
+
+		reader = tp_segment_open(index, segment_root);
+
+		/* Fieldnorm table */
+		dump_printf(
+				out, "\n=== FIELDNORM TABLE (%u docs) ===\n", header.num_docs);
+		docs_to_show = out->full_dump ? header.num_docs
+									  : Min(header.num_docs, 10);
+		if (header.fieldnorm_offset > 0)
+		{
+			uint8 *fieldnorms = palloc(docs_to_show);
+			tp_segment_read(
+					reader, header.fieldnorm_offset, fieldnorms, docs_to_show);
+
+			dump_printf(out, "  Doc ID -> Length (encoded -> decoded):\n");
+			for (i = 0; i < docs_to_show; i++)
+			{
+				dump_printf(
+						out,
+						"  [%04u] %3u -> %u\n",
+						i,
+						fieldnorms[i],
+						decode_fieldnorm(fieldnorms[i]));
+			}
+			if (header.num_docs > docs_to_show)
+				dump_printf(
+						out,
+						"  ... and %u more docs\n",
+						header.num_docs - docs_to_show);
+			pfree(fieldnorms);
+		}
+
+		/* CTID map */
+		dump_printf(out, "\n=== CTID MAP (%u docs) ===\n", header.num_docs);
+		if (header.ctid_map_offset > 0)
+		{
+			ItemPointerData *ctids = palloc(
+					sizeof(ItemPointerData) * docs_to_show);
+			tp_segment_read(
+					reader,
+					header.ctid_map_offset,
+					ctids,
+					sizeof(ItemPointerData) * docs_to_show);
+
+			dump_printf(out, "  Doc ID -> CTID:\n");
+			for (i = 0; i < docs_to_show; i++)
+			{
+				dump_printf(
+						out,
+						"  [%04u] (%u,%u)\n",
+						i,
+						ItemPointerGetBlockNumber(&ctids[i]),
+						ItemPointerGetOffsetNumber(&ctids[i]));
+			}
+			if (header.num_docs > docs_to_show)
+				dump_printf(
+						out,
+						"  ... and %u more docs\n",
+						header.num_docs - docs_to_show);
+			pfree(ctids);
+		}
+
 		tp_segment_close(reader);
 	}
 

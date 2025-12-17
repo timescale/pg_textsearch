@@ -1024,7 +1024,7 @@ tp_bulk_load_spill_check(void)
 		PG_END_TRY();
 
 		/* Write the segment */
-		segment_root = tp_write_segment(local_state, index_rel);
+		segment_root = tp_write_segment_v2(local_state, index_rel);
 
 		/* Clear memtable and update metapage if spill succeeded */
 		if (segment_root != InvalidBlockNumber)

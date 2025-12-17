@@ -39,28 +39,40 @@ typedef struct TpPageIndexSpecial
 } TpPageIndexSpecial;
 
 /*
+ * Segment format versions
+ */
+#define TP_SEGMENT_FORMAT_V1 1 /* Original: flat posting lists */
+#define TP_SEGMENT_FORMAT_V2 2 /* Block storage with skip index */
+
+/*
  * Segment header - stored on the first page
+ *
+ * V2 format adds: skip_index_offset, fieldnorm_offset, ctid_map_offset
  */
 typedef struct TpSegmentHeader
 {
 	/* Metadata */
 	uint32		magic;		/* TP_SEGMENT_MAGIC */
-	uint32		version;	/* Format version */
+	uint32		version;	/* Format version (V1 or V2) */
 	TimestampTz created_at; /* Creation time */
 	uint32		num_pages;	/* Total pages in segment */
 	uint32		data_size;	/* Total data bytes */
 
 	/* Segment management */
 	uint32		level;		  /* Storage level (0 for memtable flush) */
-	BlockNumber next_segment; /* Next segment in chain (for multi-segment
-								 support) */
+	BlockNumber next_segment; /* Next segment in chain */
 
-	/* Section offsets in logical file */
+	/* Section offsets in logical file (V1 format) */
 	uint32 dictionary_offset;  /* Offset to TpDictionary */
 	uint32 strings_offset;	   /* Offset to string pool */
 	uint32 entries_offset;	   /* Offset to TpDictEntry array */
-	uint32 postings_offset;	   /* Offset to posting lists */
-	uint32 doc_lengths_offset; /* Offset to document lengths */
+	uint32 postings_offset;	   /* Offset to posting data */
+	uint32 doc_lengths_offset; /* Offset to document lengths (V1) */
+
+	/* V2 block storage offsets */
+	uint32 skip_index_offset; /* Offset to skip index (TpSkipEntry arrays) */
+	uint32 fieldnorm_offset;  /* Offset to fieldnorm table (1 byte/doc) */
+	uint32 ctid_map_offset;	  /* Offset to doc ID -> CTID mapping */
 
 	/* Corpus statistics */
 	uint32 num_terms;	 /* Total unique terms */
@@ -105,14 +117,32 @@ typedef struct TpStringEntry
 } TpStringEntry;
 
 /*
- * Dictionary entry - 12 bytes, compact without string info
+ * Dictionary entry V1 - 12 bytes, flat posting lists
  */
-typedef struct TpDictEntry
+typedef struct TpDictEntryV1
 {
 	uint32 posting_offset; /* Logical offset to posting list */
 	uint32 posting_count;  /* Number of postings */
 	uint32 doc_freq;	   /* Document frequency for IDF */
-} __attribute__((aligned(4))) TpDictEntry;
+} __attribute__((aligned(4))) TpDictEntryV1;
+
+/*
+ * Dictionary entry V2 - 12 bytes, block-based storage
+ *
+ * Points to skip index instead of raw postings. The skip index
+ * contains block_count TpSkipEntry structures, each pointing to
+ * a block of up to TP_BLOCK_SIZE postings.
+ */
+typedef struct TpDictEntryV2
+{
+	uint32 skip_index_offset; /* Offset to TpSkipEntry array for this term */
+	uint16 block_count;		  /* Number of blocks (and skip entries) */
+	uint16 reserved;		  /* Padding */
+	uint32 doc_freq;		  /* Document frequency for IDF */
+} __attribute__((aligned(4))) TpDictEntryV2;
+
+/* Alias for current version */
+typedef TpDictEntryV1 TpDictEntry;
 
 /*
  * Posting entry - 10 bytes, packed
@@ -124,6 +154,59 @@ typedef struct TpSegmentPosting
 	uint16			frequency;	/* 2 bytes - term frequency */
 	uint16			doc_length; /* 2 bytes - document length */
 } __attribute__((packed)) TpSegmentPosting;
+
+/*
+ * Block storage constants
+ */
+#define TP_BLOCK_SIZE 128 /* Documents per block (matches Tantivy) */
+
+/*
+ * Skip index entry - 16 bytes per block
+ *
+ * Stored separately from posting data for cache efficiency during BMW.
+ * The skip index is a dense array of these entries, one per block.
+ */
+typedef struct TpSkipEntry
+{
+	uint32 last_doc_id;	   /* Last segment-local doc ID in block */
+	uint8  doc_count;	   /* Number of docs in block (1-128) */
+	uint16 block_max_tf;   /* Max term frequency in block (for BMW) */
+	uint8  block_max_norm; /* Fieldnorm ID of max-scoring doc (for BMW) */
+	uint32 posting_offset; /* Byte offset from segment start to block data */
+	uint8  flags;		   /* Compression type, etc. */
+	uint8  reserved[3];	   /* Future use, ensures 16-byte alignment */
+} __attribute__((packed)) TpSkipEntry;
+
+/* Skip entry flags */
+#define TP_BLOCK_FLAG_UNCOMPRESSED 0x00 /* Raw doc IDs and frequencies */
+#define TP_BLOCK_FLAG_DELTA		   0x01 /* Delta-encoded doc IDs */
+#define TP_BLOCK_FLAG_FOR		   0x02 /* Frame-of-reference (Phase 3) */
+#define TP_BLOCK_FLAG_PFOR		   0x03 /* Patched FOR (Phase 3) */
+
+/*
+ * Block posting entry - 8 bytes, used in uncompressed blocks
+ *
+ * Unlike TpSegmentPosting, uses segment-local doc ID instead of CTID.
+ * CTID lookup happens via the doc ID -> CTID mapping table.
+ */
+typedef struct TpBlockPosting
+{
+	uint32 doc_id;	  /* Segment-local document ID */
+	uint16 frequency; /* Term frequency in document */
+	uint16 reserved;  /* Padding for alignment */
+} TpBlockPosting;
+
+/*
+ * CTID map entry - 6 bytes per document (V2 format)
+ *
+ * Maps segment-local doc IDs to heap CTIDs. This enables using
+ * compact 4-byte doc IDs in posting lists while still being able
+ * to look up the actual heap tuple.
+ */
+typedef struct TpCtidMapEntry
+{
+	ItemPointerData ctid; /* 6 bytes - heap tuple location */
+} __attribute__((packed)) TpCtidMapEntry;
 
 /*
  * Document length - 12 bytes (padded to 16)
@@ -186,7 +269,9 @@ struct TpLocalIndexState;
 
 /* Writer functions */
 extern BlockNumber
-			tp_write_segment(struct TpLocalIndexState *state, Relation index);
+tp_write_segment(struct TpLocalIndexState *state, Relation index);
+extern BlockNumber
+tp_write_segment_v2(struct TpLocalIndexState *state, Relation index);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);

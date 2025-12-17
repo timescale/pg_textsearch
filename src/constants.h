@@ -19,11 +19,11 @@
  * Page format versions - bump when on-disk format changes.
  * Each page type has its own version for independent evolution.
  */
-#define TP_METAPAGE_VERSION                                                   \
-	4							/* Bumped for consistent magic/version naming \
-								 */
+#define TP_METAPAGE_VERSION \
+	5 /* Bumped for V2 segment format (block storage) */
 #define TP_DOCID_PAGE_VERSION 1 /* Initial version */
-#define TP_SEGMENT_VERSION	  1 /* Segment format version */
+#define TP_SEGMENT_VERSION \
+	1 /* Current segment format version (used by V1 writer) */
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
 
 #define TP_METAPAGE_BLKNO 0

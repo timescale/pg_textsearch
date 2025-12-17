@@ -15,11 +15,14 @@
 
 #include "../constants.h"
 #include "../metapage.h"
+#include "docmap.h"
+#include "fieldnorm.h"
 #include "segment.h"
 #include "segment_merge.h"
 
 /*
  * Merge source state - tracks current position in each source segment
+ * Updated for V2 segment format.
  */
 typedef struct TpMergeSource
 {
@@ -27,7 +30,7 @@ typedef struct TpMergeSource
 	uint32			 current_idx;	 /* Current term index in dictionary */
 	uint32			 num_terms;		 /* Total terms in this segment */
 	char			*current_term;	 /* Current term text (palloc'd) */
-	TpDictEntry		 current_entry;	 /* Current dictionary entry */
+	TpDictEntryV2	 current_entry;	 /* V2 dictionary entry */
 	bool			 exhausted;		 /* True if no more terms */
 	uint32			*string_offsets; /* Cached string offsets array */
 } TpMergeSource;
@@ -38,8 +41,8 @@ typedef struct TpMergeSource
  */
 typedef struct TpTermSegmentRef
 {
-	int			segment_idx; /* Index into sources array */
-	TpDictEntry entry;		 /* Dict entry from that segment */
+	int			  segment_idx; /* Index into sources array */
+	TpDictEntryV2 entry;	   /* V2 dict entry from that segment */
 } TpTermSegmentRef;
 
 /*
@@ -60,16 +63,22 @@ typedef struct TpMergedTerm
 
 /*
  * Posting merge source - tracks position in one segment's posting list
- * for streaming N-way merge.
+ * for streaming N-way merge. Updated for V2 block-based format.
  */
 typedef struct TpPostingMergeSource
 {
-	TpSegmentReader *reader;		 /* Segment reader */
-	uint32			 posting_idx;	 /* Current posting index */
-	uint32			 posting_count;	 /* Total postings for this term */
-	uint32			 posting_offset; /* Base offset in segment */
-	TpSegmentPosting current;		 /* Current posting (cached) */
-	bool			 exhausted;		 /* No more postings */
+	TpSegmentReader *reader;	/* Segment reader */
+	TpSegmentPosting current;	/* Current posting (output format) */
+	bool			 exhausted; /* No more postings */
+
+	/* V2 block iteration state */
+	uint32			skip_index_offset; /* Offset to skip entries */
+	uint16			block_count;	   /* Total blocks */
+	uint32			current_block;	   /* Current block index */
+	uint32			current_in_block;  /* Position within current block */
+	TpSkipEntry		skip_entry;		   /* Current block's skip entry */
+	TpBlockPosting *block_postings;	   /* Cached postings for current block */
+	uint32			block_capacity;	   /* Allocated size of block_postings */
 } TpPostingMergeSource;
 
 /* Data bytes per segment page (consistent with segment.c) */
@@ -134,13 +143,13 @@ merge_source_advance(TpMergeSource *source)
 	source->current_term =
 			merge_read_term_at_index(source, source->current_idx);
 
-	/* Read the dictionary entry */
+	/* Read the V2 dictionary entry */
 	tp_segment_read(
 			source->reader,
 			header->entries_offset +
-					(source->current_idx * sizeof(TpDictEntry)),
+					(source->current_idx * sizeof(TpDictEntryV2)),
 			&source->current_entry,
-			sizeof(TpDictEntry));
+			sizeof(TpDictEntryV2));
 
 	return true;
 }
@@ -261,7 +270,7 @@ merge_find_min_source(TpMergeSource *sources, int num_sources)
  */
 static void
 merged_term_add_segment_ref(
-		TpMergedTerm *term, int segment_idx, TpDictEntry *entry)
+		TpMergedTerm *term, int segment_idx, TpDictEntryV2 *entry)
 {
 	/* Grow array if needed */
 	if (term->num_segment_refs >= term->segment_refs_capacity)
@@ -285,22 +294,116 @@ merged_term_add_segment_ref(
 }
 
 /*
- * Initialize a posting merge source for streaming.
+ * Load a block of postings for V2 merge source.
+ */
+static bool
+posting_source_load_block(TpPostingMergeSource *ps)
+{
+	uint32 skip_offset;
+
+	if (ps->current_block >= ps->block_count)
+		return false;
+
+	/* Read skip entry for current block */
+	skip_offset = ps->skip_index_offset +
+				  (ps->current_block * sizeof(TpSkipEntry));
+	tp_segment_read(
+			ps->reader, skip_offset, &ps->skip_entry, sizeof(TpSkipEntry));
+
+	/* Ensure we have enough buffer space */
+	if (ps->skip_entry.doc_count > ps->block_capacity)
+	{
+		if (ps->block_postings)
+			pfree(ps->block_postings);
+		ps->block_postings = palloc(
+				ps->skip_entry.doc_count * sizeof(TpBlockPosting));
+		ps->block_capacity = ps->skip_entry.doc_count;
+	}
+
+	/* Read posting data for this block */
+	tp_segment_read(
+			ps->reader,
+			ps->skip_entry.posting_offset,
+			ps->block_postings,
+			ps->skip_entry.doc_count * sizeof(TpBlockPosting));
+
+	ps->current_in_block = 0;
+	return true;
+}
+
+/*
+ * Convert current block posting to output format.
+ */
+static void
+posting_source_convert_current(TpPostingMergeSource *ps)
+{
+	TpSegmentHeader *header = ps->reader->header;
+	TpBlockPosting	*bp		= &ps->block_postings[ps->current_in_block];
+	ItemPointerData	 ctid;
+	uint8			 fieldnorm;
+
+	/* Look up CTID from ctid_map */
+	tp_segment_read(
+			ps->reader,
+			header->ctid_map_offset + (bp->doc_id * sizeof(ItemPointerData)),
+			&ctid,
+			sizeof(ItemPointerData));
+
+	/* Look up fieldnorm */
+	tp_segment_read(
+			ps->reader,
+			header->fieldnorm_offset + bp->doc_id,
+			&fieldnorm,
+			sizeof(uint8));
+
+	/* Build output posting */
+	ps->current.ctid	   = ctid;
+	ps->current.frequency  = bp->frequency;
+	ps->current.doc_length = (uint16)decode_fieldnorm(fieldnorm);
+}
+
+/*
+ * Initialize a posting merge source for V2 streaming.
  */
 static void
 posting_source_init(
-		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry)
+		TpPostingMergeSource *ps,
+		TpSegmentReader		 *reader,
+		TpDictEntryV2		 *entry)
 {
-	ps->reader		   = reader;
-	ps->posting_idx	   = 0;
-	ps->posting_count  = entry->posting_count;
-	ps->posting_offset = entry->posting_offset;
-	ps->exhausted	   = (entry->posting_count == 0);
+	memset(ps, 0, sizeof(TpPostingMergeSource));
+	ps->reader			  = reader;
+	ps->skip_index_offset = entry->skip_index_offset;
+	ps->block_count		  = entry->block_count;
+	ps->current_block	  = 0;
+	ps->current_in_block  = 0;
+	ps->block_postings	  = NULL;
+	ps->block_capacity	  = 0;
+	ps->exhausted		  = (entry->block_count == 0);
 
 	if (!ps->exhausted)
 	{
-		tp_segment_read(
-				reader, ps->posting_offset, &ps->current, sizeof(ps->current));
+		if (posting_source_load_block(ps))
+		{
+			posting_source_convert_current(ps);
+		}
+		else
+		{
+			ps->exhausted = true;
+		}
+	}
+}
+
+/*
+ * Free posting merge source resources.
+ */
+static void
+posting_source_free(TpPostingMergeSource *ps)
+{
+	if (ps->block_postings)
+	{
+		pfree(ps->block_postings);
+		ps->block_postings = NULL;
 	}
 }
 
@@ -313,18 +416,25 @@ posting_source_advance(TpPostingMergeSource *ps)
 	if (ps->exhausted)
 		return false;
 
-	ps->posting_idx++;
-	if (ps->posting_idx >= ps->posting_count)
+	ps->current_in_block++;
+
+	/* Move to next block if current exhausted */
+	while (ps->current_in_block >= ps->skip_entry.doc_count)
 	{
-		ps->exhausted = true;
-		return false;
+		ps->current_block++;
+		if (ps->current_block >= ps->block_count)
+		{
+			ps->exhausted = true;
+			return false;
+		}
+		if (!posting_source_load_block(ps))
+		{
+			ps->exhausted = true;
+			return false;
+		}
 	}
 
-	tp_segment_read(
-			ps->reader,
-			ps->posting_offset + (ps->posting_idx * sizeof(TpSegmentPosting)),
-			&ps->current,
-			sizeof(ps->current));
+	posting_source_convert_current(ps);
 	return true;
 }
 
@@ -360,24 +470,83 @@ find_min_posting_source(TpPostingMergeSource *sources, int num_sources)
 }
 
 /*
- * Stream-write postings for a term using N-way merge.
- * Writes directly to the segment writer without buffering.
- * Returns the number of postings written.
- *
- * Precondition: CTIDs are disjoint across segments. Each CTID appears in
- * exactly one segment, so no deduplication is needed during merge.
+ * Build merged docmap from source segment ctid_maps.
  */
-static uint32
-stream_write_postings(
-		TpMergedTerm *term, TpMergeSource *sources, TpSegmentWriter *writer)
+static TpDocMapBuilder *
+build_merged_docmap(TpMergeSource *sources, int num_sources)
+{
+	TpDocMapBuilder *docmap = tp_docmap_create();
+	int				 i;
+
+	for (i = 0; i < num_sources; i++)
+	{
+		TpSegmentHeader *header = sources[i].reader->header;
+		uint32			 num_docs;
+		uint32			 j;
+
+		if (header->ctid_map_offset == 0)
+			continue;
+
+		num_docs = header->num_docs;
+		for (j = 0; j < num_docs; j++)
+		{
+			ItemPointerData ctid;
+			uint8			fieldnorm;
+			uint32			doc_length;
+
+			/* Read CTID from source */
+			tp_segment_read(
+					sources[i].reader,
+					header->ctid_map_offset + (j * sizeof(ItemPointerData)),
+					&ctid,
+					sizeof(ItemPointerData));
+
+			/* Read fieldnorm to get doc length */
+			tp_segment_read(
+					sources[i].reader,
+					header->fieldnorm_offset + j,
+					&fieldnorm,
+					sizeof(uint8));
+			doc_length = decode_fieldnorm(fieldnorm);
+
+			/* Add to merged docmap */
+			tp_docmap_add(docmap, &ctid, (uint16)doc_length);
+		}
+	}
+
+	tp_docmap_finalize(docmap);
+	return docmap;
+}
+
+/*
+ * Collected posting for V2 output.
+ */
+typedef struct CollectedPosting
+{
+	ItemPointerData ctid;
+	uint16			frequency;
+	uint16			doc_length;
+} CollectedPosting;
+
+/*
+ * Collect postings for a term using N-way merge.
+ * Returns array of collected postings and sets *count.
+ */
+static CollectedPosting *
+collect_term_postings(
+		TpMergedTerm *term, TpMergeSource *sources, uint32 *count)
 {
 	TpPostingMergeSource *psources;
 	int					  num_psources;
 	uint32				  i;
-	uint32				  count = 0;
+	CollectedPosting	 *postings;
+	uint32				  capacity = 64;
+	uint32				  num	   = 0;
+
+	*count = 0;
 
 	if (term->num_segment_refs == 0)
-		return 0;
+		return NULL;
 
 	/* Initialize posting sources */
 	psources = palloc(sizeof(TpPostingMergeSource) * term->num_segment_refs);
@@ -390,46 +559,56 @@ stream_write_postings(
 		posting_source_init(&psources[i], source->reader, &ref->entry);
 	}
 
-	/* N-way merge: find min, write, advance that source */
+	postings = palloc(sizeof(CollectedPosting) * capacity);
+
+	/* N-way merge: find min, collect, advance */
 	while (true)
 	{
-		int				 min_idx;
-		TpSegmentPosting out_posting;
-
-		min_idx = find_min_posting_source(psources, num_psources);
+		int min_idx = find_min_posting_source(psources, num_psources);
 		if (min_idx < 0)
 			break;
 
-		/* Write this posting directly */
-		out_posting.ctid	   = psources[min_idx].current.ctid;
-		out_posting.frequency  = psources[min_idx].current.frequency;
-		out_posting.doc_length = psources[min_idx].current.doc_length;
-		tp_segment_writer_write(writer, &out_posting, sizeof(out_posting));
-		count++;
+		/* Grow array if needed */
+		if (num >= capacity)
+		{
+			capacity *= 2;
+			postings = repalloc(postings, sizeof(CollectedPosting) * capacity);
+		}
 
-		/* Advance only this source */
+		postings[num].ctid		 = psources[min_idx].current.ctid;
+		postings[num].frequency	 = psources[min_idx].current.frequency;
+		postings[num].doc_length = psources[min_idx].current.doc_length;
+		num++;
+
 		posting_source_advance(&psources[min_idx]);
 	}
 
+	/* Free posting sources */
+	for (i = 0; i < term->num_segment_refs; i++)
+		posting_source_free(&psources[i]);
 	pfree(psources);
-	return count;
+
+	*count = num;
+	return postings;
 }
 
 /*
- * Write a merged segment from an array of merged terms.
+ * Per-term block info for V2 merge output.
+ */
+typedef struct MergeTermBlockInfo
+{
+	uint32 skip_index_offset; /* Relative offset within skip index section */
+	uint16 block_count;
+	uint32 posting_offset; /* Relative offset within postings section */
+	uint32 doc_freq;
+} MergeTermBlockInfo;
+
+/*
+ * Write a merged segment in V2 format from an array of merged terms.
  *
- * Uses single-pass streaming: writes postings first (recording offset/count
- * for each term), then writes dictionary section. This avoids a separate
- * counting pass and saves I/O.
- *
- * Segment format (in write order):
- *   Header (placeholder, updated at end)
- *   Postings section (all posting lists concatenated)
- *   Dictionary section:
- *     - TpDictionary header (num_terms + string_offsets array)
- *     - String pool (term strings with lengths)
- *     - TpDictEntry array (posting_offset, posting_count, doc_freq)
- *   (no doc_lengths section - info is inline in postings)
+ * Uses two passes:
+ * 1. Collect postings per term and build docmap
+ * 2. Write V2 format segment with block storage
  */
 static BlockNumber
 write_merged_segment(
@@ -437,24 +616,43 @@ write_merged_segment(
 		TpMergedTerm  *terms,
 		uint32		   num_terms,
 		TpMergeSource *sources,
+		int			   num_sources,
 		uint32		   target_level,
-		uint32		   total_docs,
 		uint64		   total_tokens)
 {
-	TpSegmentWriter	 writer;
-	TpSegmentHeader	 header;
-	TpDictionary	 dict;
-	uint32			*string_offsets;
-	uint32			 string_pos;
-	uint32			 i;
-	BlockNumber		 header_block;
-	BlockNumber		 page_index_root;
-	Buffer			 header_buf;
-	Page			 header_page;
-	TpSegmentHeader *existing_header;
+	TpSegmentWriter		writer;
+	TpSegmentHeader		header;
+	TpDictionary		dict;
+	TpDocMapBuilder	   *docmap;
+	MergeTermBlockInfo *term_blocks;
+	uint32			   *string_offsets;
+	uint32				string_pos;
+	uint32				i;
+	BlockNumber			header_block;
+	BlockNumber			page_index_root;
+	Buffer				header_buf;
+	Page				header_page;
+	TpSegmentHeader	   *existing_header;
+
+	/* Per-term collected postings (for V2 block output) */
+	CollectedPosting **term_postings;
+	uint32			  *term_posting_counts;
 
 	if (num_terms == 0)
 		return InvalidBlockNumber;
+
+	/* Build docmap from source segments */
+	docmap = build_merged_docmap(sources, num_sources);
+
+	/* Collect postings for each term */
+	term_postings		= palloc0(num_terms * sizeof(CollectedPosting *));
+	term_posting_counts = palloc0(num_terms * sizeof(uint32));
+
+	for (i = 0; i < num_terms; i++)
+	{
+		term_postings[i] = collect_term_postings(
+				&terms[i], sources, &term_posting_counts[i]);
+	}
 
 	/* Initialize writer */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
@@ -464,37 +662,22 @@ write_merged_segment(
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
 	header.magic		= TP_SEGMENT_MAGIC;
-	header.version		= TP_SEGMENT_VERSION;
+	header.version		= TP_SEGMENT_FORMAT_V2;
 	header.created_at	= GetCurrentTimestamp();
 	header.num_pages	= 0;
 	header.num_terms	= num_terms;
 	header.level		= target_level;
 	header.next_segment = InvalidBlockNumber;
-	header.num_docs		= total_docs;
+	header.num_docs		= docmap->num_docs;
 	header.total_tokens = total_tokens;
 
 	/* Write placeholder header */
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
 
-	/*
-	 * Write postings section first (single pass).
-	 * Record offset and count for each term as we write.
-	 */
-	header.postings_offset = writer.current_offset;
-	for (i = 0; i < num_terms; i++)
-	{
-		terms[i].posting_offset = writer.current_offset;
-		terms[i].posting_count =
-				stream_write_postings(&terms[i], sources, &writer);
-	}
-
-	/*
-	 * Now write dictionary section.
-	 * We know posting counts, so we can write dict entries correctly.
-	 */
+	/* Dictionary immediately follows header */
 	header.dictionary_offset = writer.current_offset;
 
-	/* Write dictionary header: num_terms */
+	/* Write dictionary header */
 	dict.num_terms = num_terms;
 	tp_segment_writer_write(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
@@ -517,27 +700,150 @@ write_merged_segment(
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
+		uint32 dict_offset = i * sizeof(TpDictEntryV2);
 
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
 		tp_segment_writer_write(&writer, terms[i].term, length);
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
-	/* Write dictionary entries (now we have accurate posting counts) */
+	/* Calculate block info for each term */
 	header.entries_offset = writer.current_offset;
-	for (i = 0; i < num_terms; i++)
+	term_blocks			  = palloc0(num_terms * sizeof(MergeTermBlockInfo));
+
 	{
-		TpDictEntry entry;
+		uint32 skip_offset	  = 0;
+		uint32 posting_offset = 0;
 
-		entry.posting_offset = terms[i].posting_offset;
-		entry.posting_count	 = terms[i].posting_count;
-		entry.doc_freq = terms[i].posting_count; /* doc_freq = unique docs */
+		for (i = 0; i < num_terms; i++)
+		{
+			uint32 doc_count  = term_posting_counts[i];
+			uint32 num_blocks = (doc_count + TP_BLOCK_SIZE - 1) /
+								TP_BLOCK_SIZE;
+			if (num_blocks == 0 && doc_count > 0)
+				num_blocks = 1;
 
-		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntry));
+			term_blocks[i].skip_index_offset = skip_offset;
+			term_blocks[i].block_count		 = (uint16)num_blocks;
+			term_blocks[i].posting_offset	 = posting_offset;
+			term_blocks[i].doc_freq			 = doc_count;
+
+			skip_offset += num_blocks * sizeof(TpSkipEntry);
+			posting_offset += doc_count * sizeof(TpBlockPosting);
+		}
 	}
 
-	/* No doc_lengths section needed for merged segments - info is inline */
+	/* Calculate absolute offsets */
+	header.skip_index_offset = header.entries_offset +
+							   (num_terms * sizeof(TpDictEntryV2));
+
+	{
+		uint32 total_skip_size = 0;
+		for (i = 0; i < num_terms; i++)
+			total_skip_size += term_blocks[i].block_count *
+							   sizeof(TpSkipEntry);
+
+		header.postings_offset = header.skip_index_offset + total_skip_size;
+	}
+
+	/* Write V2 dictionary entries */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpDictEntryV2 entry;
+
+		entry.skip_index_offset = header.skip_index_offset +
+								  term_blocks[i].skip_index_offset;
+		entry.block_count = term_blocks[i].block_count;
+		entry.reserved	  = 0;
+		entry.doc_freq	  = term_blocks[i].doc_freq;
+
+		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntryV2));
+	}
+
+	/* Write skip index entries and posting blocks */
+	for (i = 0; i < num_terms; i++)
+	{
+		CollectedPosting *postings	= term_postings[i];
+		uint32			  doc_count = term_posting_counts[i];
+		uint32			  j;
+		uint32			  block_idx;
+
+		if (doc_count == 0)
+			continue;
+
+		/* Write skip entries for this term */
+		for (block_idx = 0; block_idx < term_blocks[i].block_count;
+			 block_idx++)
+		{
+			TpSkipEntry skip;
+			uint32		block_start = block_idx * TP_BLOCK_SIZE;
+			uint32 block_end   = Min(block_start + TP_BLOCK_SIZE, doc_count);
+			uint16 max_tf	   = 0;
+			uint32 last_doc_id = 0;
+
+			for (j = block_start; j < block_end; j++)
+			{
+				uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
+				if (doc_id > last_doc_id)
+					last_doc_id = doc_id;
+				if (postings[j].frequency > max_tf)
+					max_tf = postings[j].frequency;
+			}
+
+			skip.last_doc_id	= last_doc_id;
+			skip.doc_count		= (uint8)(block_end - block_start);
+			skip.block_max_tf	= max_tf;
+			skip.block_max_norm = 0; /* Could compute from fieldnorms */
+			skip.posting_offset = header.postings_offset +
+								  term_blocks[i].posting_offset +
+								  (block_start * sizeof(TpBlockPosting));
+			skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			tp_segment_writer_write(&writer, &skip, sizeof(TpSkipEntry));
+		}
+	}
+
+	/* Write posting blocks */
+	for (i = 0; i < num_terms; i++)
+	{
+		CollectedPosting *postings	= term_postings[i];
+		uint32			  doc_count = term_posting_counts[i];
+		uint32			  j;
+
+		for (j = 0; j < doc_count; j++)
+		{
+			TpBlockPosting bp;
+			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
+			if (doc_id == UINT32_MAX)
+				doc_id = 0;
+
+			bp.doc_id	 = doc_id;
+			bp.frequency = postings[j].frequency;
+			bp.reserved	 = 0;
+
+			tp_segment_writer_write(&writer, &bp, sizeof(TpBlockPosting));
+		}
+	}
+
+	/* Write fieldnorm table */
+	header.fieldnorm_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+	}
+
+	/* Write CTID map */
+	header.ctid_map_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_map,
+				docmap->num_docs * sizeof(ItemPointerData));
+	}
+
 	header.doc_lengths_offset = writer.current_offset;
 
 	/* Flush and write page index */
@@ -562,6 +868,9 @@ write_merged_segment(
 	existing_header->strings_offset		= header.strings_offset;
 	existing_header->entries_offset		= header.entries_offset;
 	existing_header->postings_offset	= header.postings_offset;
+	existing_header->skip_index_offset	= header.skip_index_offset;
+	existing_header->fieldnorm_offset	= header.fieldnorm_offset;
+	existing_header->ctid_map_offset	= header.ctid_map_offset;
 	existing_header->doc_lengths_offset = header.doc_lengths_offset;
 	existing_header->num_docs			= header.num_docs;
 	existing_header->data_size			= header.data_size;
@@ -573,6 +882,15 @@ write_merged_segment(
 
 	/* Cleanup */
 	pfree(string_offsets);
+	pfree(term_blocks);
+	for (i = 0; i < num_terms; i++)
+	{
+		if (term_postings[i])
+			pfree(term_postings[i]);
+	}
+	pfree(term_postings);
+	pfree(term_posting_counts);
+	tp_docmap_destroy(docmap);
 	if (writer.pages)
 		pfree(writer.pages);
 
@@ -597,7 +915,6 @@ tp_merge_level_segments(Relation index, uint32 level)
 	TpMergedTerm   *merged_terms	 = NULL;
 	uint32			num_merged_terms = 0;
 	uint32			merged_capacity	 = 0;
-	uint32			total_docs		 = 0;
 	uint64			total_tokens	 = 0;
 	BlockNumber		new_segment;
 	MemoryContext	merge_ctx;
@@ -657,7 +974,6 @@ tp_merge_level_segments(Relation index, uint32 level)
 	{
 		TpSegmentReader *reader;
 		BlockNumber		 next;
-		uint32			 seg_docs;
 		uint64			 seg_tokens;
 
 		reader = tp_segment_open(index, current);
@@ -665,7 +981,6 @@ tp_merge_level_segments(Relation index, uint32 level)
 		{
 			/* Get stats and next pointer, then close this reader */
 			next	   = reader->header->next_segment;
-			seg_docs   = reader->header->num_docs;
 			seg_tokens = reader->header->total_tokens;
 			tp_segment_close(reader);
 
@@ -690,7 +1005,6 @@ tp_merge_level_segments(Relation index, uint32 level)
 			if (merge_source_init(&sources[num_sources], index, current))
 			{
 				/* Accumulate corpus statistics only for successful inits */
-				total_docs += seg_docs;
 				total_tokens += seg_tokens;
 				num_sources++;
 			}
@@ -788,8 +1102,8 @@ tp_merge_level_segments(Relation index, uint32 level)
 				merged_terms,
 				num_merged_terms,
 				sources,
+				num_sources,
 				level + 1,
-				total_docs,
 				total_tokens);
 
 		/* Free merged terms data */

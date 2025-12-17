@@ -137,7 +137,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		 tp_memtable_spill_threshold);
 
 	/* Write the segment */
-	segment_root = tp_write_segment(index_state, index_rel);
+	segment_root = tp_write_segment_v2(index_state, index_rel);
 
 	/* Clear memtable and update metapage if spill succeeded */
 	if (segment_root != InvalidBlockNumber)
@@ -2279,7 +2279,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 	/* Write the segment */
-	segment_root = tp_write_segment(index_state, index_rel);
+	segment_root = tp_write_segment_v2(index_state, index_rel);
 
 	/* Clear the memtable after successful spilling */
 	if (segment_root != InvalidBlockNumber)
