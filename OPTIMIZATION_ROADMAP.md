@@ -41,15 +41,36 @@ below for empirical performance data.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│                    Index Structure                      │
+├─────────────────────────────────────────────────────────┤
+│  Memtable (shared memory)                               │
+│    - Small, write-optimized cache for recent inserts    │
+│    - Linear posting lists (no block structure needed)   │
+│    - Spills to segment when threshold exceeded          │
+│    - Locked for exclusive access during updates         │
+│                                                         │
+│  Segments (disk pages)                                  │
+│    - Immutable, created by memtable spill or merge      │
+│    - Each doc ID exists in exactly ONE location         │
+│      (either memtable or one segment)                   │
+│    - Self-contained: own term dictionary, fieldnorms    │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
 │                      Query Flow                         │
 ├─────────────────────────────────────────────────────────┤
 │  1. Parse query terms                                   │
 │  2. For each term: linear scan of posting list          │
+│     (memtable + all segments)                           │
 │  3. Accumulate scores in hash table (ALL matching docs) │
 │  4. qsort() all scores                                  │
 │  5. Return top $k$                                      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**Corpus statistics**: avgdl (average document length) is computed at query time
+from `total_len / total_docs` counters maintained per-index in shared memory.
+These are updated during inserts and preserved across restarts via the metapage.
 
 **Posting list format** (segments):
 ```c
@@ -68,31 +89,58 @@ typedef struct TpSegmentPosting {
 
 ---
 
-## Proposed Solution: Block-Max WAND
+## Proposed Solution: Block-Based Query Optimization
 
-### Why Block-Max WAND?
+### Why Block-Based Query Optimization?
 
-Block-Max WAND (BMW) is the industry standard for top-$k$ retrieval:
-- **Lucene**: `BlockMaxConjunctionScorer` (since Lucene 8)
-- **Tantivy**: `block_wand.rs`
+Block-based algorithms (BMW, MAXSCORE) are the industry standard for top-$k$:
+- **Lucene**: Block-Max MAXSCORE (switched from BMW in July 2022)
+- **Tantivy/PISA**: Block-Max WAND
 - **Elasticsearch/OpenSearch**: Built on Lucene's implementation
 
-The algorithm maintains a score threshold (the $k$-th best score seen so far)
-and skips any block where the maximum possible score is below the threshold.
+Both algorithms maintain a score threshold (the $k$-th best score seen so far)
+and skip blocks where the maximum possible score is below the threshold. They
+require the same underlying data structures (block storage, per-block max
+scores), differing only in the query executor logic.
 
 **Complexity**: Naive exhaustive evaluation is $O(mn)$ where $m$ = query terms,
-$n$ = matching docs. BMW achieves sub-linear time in practice by skipping
-blocks whose max scores fall below the evolving threshold. Formal complexity
-bounds remain an open question (Ding & Suel [1], Section 8: "It would also be
-interesting to provide some analysis, say of the optimal number of pointer
-movements and document evaluations"). Per-iteration overhead is $O(m \log m)$
-for sorting scorers, reducible to $O(m)$ with a heap.
+$n$ = matching docs. Block-based algorithms achieve sub-linear time in practice
+by skipping blocks whose max scores fall below the evolving threshold. Formal
+complexity bounds remain an open question (Ding & Suel [1], Section 8).
 
 **Empirical results** from Ding & Suel [1] on TREC GOV2 (25.2M documents):
 - Exhaustive OR: 3.8M docs evaluated, 225ms/query
 - WAND: 178K docs evaluated (4.7%), 77ms/query (2.9x faster)
 - BMW: 22K docs evaluated (0.6%), 28ms/query (8x faster than exhaustive)
 - With docID reassignment: BMW achieves 8.9ms/query (25x faster)
+
+**Note on effectiveness**: Speedup depends on score distribution skew. Web
+corpora exhibit power-law term frequencies, causing the threshold to rise
+quickly. For uniform score distributions, fewer blocks are skipped.
+
+### WAND vs MAXSCORE
+
+Two algorithms share the same block storage but differ in query execution:
+
+| Algorithm | Docs evaluated | Per-doc overhead | Best for |
+|-----------|---------------|------------------|----------|
+| Block-Max WAND | Fewer | Higher | Few terms, low k |
+| Block-Max MAXSCORE | More | Lower | Many terms, high k |
+
+**WAND** re-evaluates which terms are "essential" per document, enabling more
+aggressive skipping but with O(m log m) overhead per iteration.
+
+**MAXSCORE** partitions terms into essential/non-essential per block, with
+lower overhead but less fine-grained skipping.
+
+Lucene switched to MAXSCORE in 2022 because WAND's overhead exceeds its benefit
+on complex queries. From [Elastic's analysis][7]: "WAND typically evaluates
+fewer hits than MAXSCORE but with a higher per-hit overhead." For queries with
+8+ terms, exhaustive evaluation can outperform both.
+
+**Our approach**: Implement block storage first (Phase 1), then choose between
+WAND and MAXSCORE based on our workload characteristics (Phase 2). The storage
+format supports either algorithm.
 
 ### Algorithm Overview
 
@@ -126,6 +174,28 @@ To enable BMW, we need:
 3. **Skip pointers** for $O(\log n)$ block seeking
    - Why not a tree? See Zobel & Moffat [6] for analysis of skip pointer
      trade-offs in inverted indexes.
+
+### Multi-Segment Query Execution
+
+The BMW algorithm above assumes a unified doc ID space, but we have segment-local
+doc IDs (each segment's IDs start at 0). Following Lucene/Tantivy's design, we
+run BMW **independently per segment** and merge results:
+
+```
+Query Execution:
+1. For each segment: run BMW with segment-local doc IDs, collect top-k
+2. For memtable: exhaustive scan (small, no blocks), collect top-k
+3. Merge all results by score, return global top-k
+```
+
+This avoids doc ID unification complexity. The minor downside is that each
+segment computes a full top-k even when the global threshold would have pruned
+earlier, but this is acceptable given the simplicity benefit.
+
+**IDF computation**: BM25 needs global IDF = log(N / df). Term dictionaries
+store per-segment df, so we sum df across all segments at query time to compute
+global df. This matches Lucene's approach and ensures scores are comparable
+across segments.
 
 ---
 
@@ -169,28 +239,22 @@ However:
 - FST lookup is $O(|term|)$ character-by-character traversal (branchy), while
   hash tables are $O(1)$
 
-**Alternative: On-disk hash table**
+**Solution: On-disk hash table**
 
 Since segments are immutable, we know the exact term count at creation time.
-This enables a statically-sized hash table stored in Postgres pages:
+This enables a statically-sized hash table stored in Postgres pages with O(1)
+lookup (1-2 page accesses with linear probing at 75% load factor).
 
-| Approach | Page accesses | Buffer mgr calls | Shared memory |
-|----------|---------------|------------------|---------------|
-| Sorted array + binary search | $O(\log t)$ | $O(\log t)$ | None |
-| On-disk hash table | 1-2 | 1-2 | None |
-| Sorted array + shmem cache | 1 (cache miss) | 1 (cache miss) | Hash table |
+Why on-disk hash table over alternatives:
+- **vs. sorted array + binary search**: O(1) vs O(log t) page accesses
+- **vs. shared memory cache**: No cache management complexity; Postgres buffer
+  manager already caches pages effectively
+- **vs. auxiliary files (FST/mmap)**: Maintains transactional consistency;
+  works with Postgres backup/restore, replication, pg_upgrade
 
-**On-disk hash trade-offs**:
-- Pro: No shared memory management complexity
-- Pro: Works naturally with Postgres buffer manager and page cache
-- Pro: Postgres has hash index infrastructure we could study/reuse
-- Con: Still 1-2 buffer manager calls per lookup (pin/unpin overhead)
-- Con: Hash collisions may cause extra page accesses
-- Con: Larger on-disk footprint than sorted array (~50% load factor typical)
-
-**Recommendation**: Use an on-disk hash table. It's simple, works naturally with
-Postgres infrastructure, and reduces lookups from $O(\log t)$ to 1-2 page
-accesses.
+The ~5x buffer manager overhead vs in-memory hash (see benchmark below) is
+acceptable: a 10-term query adds only ~3μs total lookup overhead, negligible
+compared to posting list traversal.
 
 ```
 On-disk Hash Table Layout (linear probing, no indirection):
@@ -204,8 +268,8 @@ Page 0: Header
 
 Pages 1..S: Slot array (dense, fixed-size entries)
 ┌─────────────────────────────────────────┐
-│ Slot 0: term_hash, term_offset, term_len,     │
-│         doc_freq, posting_offset, block_count │
+│ Slot 0: term_hash, term_offset, term_len,       │
+│         doc_freq, skip_index_offset, block_count│
 │ Slot 1: ...                                   │
 │ ...                                           │
 │ (empty slots: term_offset = INVALID)          │
@@ -230,22 +294,31 @@ page accesses (one for slot, possibly one for string pool to verify term).
 
 #### 1.1 Block Structure
 
+Each term's posting list is divided into blocks of up to 128 documents. For
+cache efficiency, block **headers** (skip index) are stored separately from
+block **data** (posting blocks):
+
 ```
+Skip Index Entry (16 bytes per block):
 ┌────────────────────────────────────────────────────────┐
-│ Block Header (16 bytes)                                │
-├────────────────────────────────────────────────────────┤
 │ last_doc_id: u32     - Last doc ID in block            │
 │ doc_count: u8        - Number of docs (1-128)          │
 │ block_max_tf: u16    - Max term frequency in block     │
 │ block_max_norm: u8   - Fieldnorm ID of max-scoring doc │
-│ posting_offset: u32  - Byte offset to posting data     │
+│ posting_offset: u32  - Byte offset from segment start  │
 │ flags: u8            - Compression type, etc.          │
 │ reserved: 3 bytes    - Future use                      │
-├────────────────────────────────────────────────────────┤
-│ Posting Data (variable size)                           │
-│ [doc_id deltas...][frequencies...][doc_lengths...]     │
+└────────────────────────────────────────────────────────┘
+
+Posting Block Data (variable size, at posting_offset):
+┌────────────────────────────────────────────────────────┐
+│ [doc_id deltas...][frequencies...]                     │
+│ (compressed with FOR/PFOR, see Phase 3)                │
 └────────────────────────────────────────────────────────┘
 ```
+
+During BMW, we scan skip index entries (small, cacheable) to find candidate
+blocks, then only decompress posting data for blocks that pass the threshold.
 
 **Block size choice**: 128 documents
 - Tantivy uses 128, Lucene uses 256
@@ -261,18 +334,19 @@ page accesses (one for slot, possibly one for string pool to verify term).
 ┌─────────────────────────────────────────────────────────┐
 │ Segment Header                                          │
 ├─────────────────────────────────────────────────────────┤
-│ Term Dictionary (sorted array)                          │
-│   - term -> (posting_offset, doc_freq, block_count)     │
+│ Term Dictionary (on-disk hash table)                    │
+│   - term -> (skip_index_offset, doc_freq, block_count)  │
+│   - O(1) lookup via linear probing (see design below)   │
 ├─────────────────────────────────────────────────────────┤
 │ Doc ID → CTID Mapping (6 bytes per doc)                 │
 │   - Maps segment-local doc IDs back to heap tuples      │
 ├─────────────────────────────────────────────────────────┤
-│ Skip Index (dense array of block headers)               │
-│   - Enables binary search over blocks                   │
-│   - Separate from posting data for cache efficiency     │
+│ Skip Index (per-term arrays of block headers)           │
+│   - 16 bytes per block, enables binary search           │
+│   - Frequently accessed during BMW, benefits from cache │
 ├─────────────────────────────────────────────────────────┤
-│ Posting Blocks                                          │
-│   - Block-aligned, potentially compressed               │
+│ Posting Blocks (compressed posting data)                │
+│   - Variable-size, accessed only when block passes      │
 ├─────────────────────────────────────────────────────────┤
 │ Fieldnorm Table (1 byte per doc)                        │
 │   - Quantized document lengths for BM25                 │
@@ -291,6 +365,11 @@ log-scale mapping. This:
 - Reduces storage (1 byte vs 2-4 bytes per doc per term)
 - Enables compact block-max metadata
 - Has negligible impact on ranking quality
+
+**Storage**: Fieldnorms are stored **per-segment** in a dedicated section (see
+segment layout above). Each segment is self-contained with its own fieldnorm
+table. This matches Lucene's design where norms are stored in per-segment .nvd
+files. See [Lucene80NormsFormat](https://lucene.apache.org/core/8_0_0/core/org/apache/lucene/codecs/lucene80/Lucene80NormsFormat.html).
 
 We might as well use Lucene's quantization scheme (SmallFloat.intToByte4). Both
 Lucene and Tantivy independently converged on this same approach, which is
@@ -323,7 +402,7 @@ uint32 decode_fieldnorm(uint8 norm_id) {
 ```
 
 ---
-### Phase 2: Block-Max WAND Query Executor
+### Phase 2: Block-Based Query Executor
 
 #### 2.1 Term Scorer Interface
 
@@ -482,8 +561,23 @@ When a few values don't fit the common bit width:
 2. Store exceptions: (index, high_bits) pairs
 3. Patch during decode
 
-Tantivy uses this; Lucene uses a variant. See Lemire et al. [5] for detailed
-performance analysis of PFOR vs alternatives.
+Tantivy uses this; Lucene uses a variant (Lucene 4.6+ uses a scheme derived
+from FastPFOR). See Lemire et al. [5] for detailed performance analysis.
+
+#### 3.4 SIMD Decoding
+
+Modern implementations use SIMD instructions (SSE2/AVX2) for decoding, achieving
+4+ billion integers/second per core. Key techniques from Lemire et al. [5]:
+
+- **SIMD-BP128**: Bit-packing with 128-bit SIMD registers, ~2x faster than
+  scalar PFOR while saving 2 bits/integer
+- **SIMD-FastPFOR**: Vectorized patched frame-of-reference, 30%+ faster than
+  scalar PFOR with 10% better compression
+- **Vectorized delta decoding**: SIMD prefix sum is 2x faster than scalar
+
+The [FastPFor library](https://github.com/lemire/FastPFor) provides reference
+implementations. For portability, we can use scalar code initially and add
+SIMD paths with runtime detection for x86-64.
 
 ---
 
@@ -569,27 +663,10 @@ implement. The block storage format we need anyway.
 
 ## Migration and Compatibility
 
-### Segment Format Versioning
-
-Add format version to segment header:
-```c
-#define TP_SEGMENT_FORMAT_V1 1  // Current: uncompressed, no blocks
-#define TP_SEGMENT_FORMAT_V2 2  // Phase 1: block storage
-#define TP_SEGMENT_FORMAT_V3 3  // Phase 3: compressed blocks
-```
-
-### Upgrade Path
-
-1. New segments written in new format
-2. Old segments readable until compacted
-3. Full compaction migrates all data to new format
-4. No in-place migration (immutable segments)
-
-### Backward Compatibility
-
-- Readers support all format versions
-- Writers always use latest format
-- `pg_upgrade` just works (segment files copied as-is)
+Format changes require `REINDEX`. At this stage of development, we don't
+support reading old segment formats—users must rebuild indexes after upgrades
+that change the on-disk format. This keeps the implementation simple and avoids
+carrying compatibility code for formats that may never see production use.
 
 ---
 
@@ -603,17 +680,13 @@ Add format version to segment header:
 - [ ] Basic block-aware seek operation
 - [ ] Fieldnorm quantization table
 
-**Estimated scope**: ~1500 LOC, 2-3 weeks
-
-### v0.0.5: Block-Max WAND
+### v0.0.5: Block-Based Query Executor
 - [ ] Block max score storage (max_tf, fieldnorm_id)
 - [ ] Block max score computation at query time
-- [ ] BMW executor for multi-term queries
-- [ ] Single-term BMW optimization
+- [ ] Query executor (WAND or MAXSCORE based on benchmarks)
+- [ ] Single-term optimization path
 - [ ] Threshold-based block skipping
 - [ ] Benchmarks comparing old vs new query path
-
-**Estimated scope**: ~1000 LOC, 2 weeks
 
 ### v0.0.6: Compression
 - [ ] Delta encoding for doc IDs
@@ -621,17 +694,13 @@ Add format version to segment header:
 - [ ] PFOR encoding for outlier blocks
 - [ ] VInt fallback for last block
 - [ ] Frequency compression
-- [ ] Decode benchmarks
-
-**Estimated scope**: ~800 LOC, 1-2 weeks
+- [ ] Decode benchmarks (scalar first, SIMD later)
 
 ### v0.0.7: Polish
 - [ ] Multi-level skip list (optional, for very long lists)
 - [ ] Segment-level pruning
 - [ ] Roaring bitmaps for deleted docs
 - [ ] Performance tuning based on benchmarks
-
-**Estimated scope**: ~600 LOC, 1-2 weeks
 
 ---
 
@@ -648,61 +717,76 @@ Add format version to segment header:
 
 ## Prototype: Buffer Manager Overhead Test
 
-Before committing to the on-disk hash table, validate that 1-2 buffer manager
-calls per term lookup is acceptable.
+Before committing to the on-disk hash table, we validated that buffer manager
+overhead is acceptable by implementing C benchmark functions directly in
+pg_textsearch.
 
-**Setup:**
+### Benchmark Functions
+
 ```sql
--- Simulate hash table structure: fixed-size slots with term data
-CREATE TABLE term_lookup_bench (
-    slot_id int PRIMARY KEY,
-    term_hash int,
-    term_offset int,
-    term_len smallint,
-    doc_freq int,
-    posting_offset int,
-    block_count smallint
-);
+-- Buffer manager: random page accesses (ReadBuffer/LockBuffer/ReleaseBuffer)
+SELECT bm25_bench_buffer_lookup('table_name', iterations);
 
--- Fill with ~100K entries (realistic term dictionary size)
-INSERT INTO term_lookup_bench
-SELECT
-    i,
-    hashtext('term' || i),
-    i * 20,  -- simulated string pool offset
-    10 + (i % 20),
-    1 + (i % 10000),
-    i * 100,
-    1 + (i % 50)
-FROM generate_series(0, 133333) i;  -- 100K terms at 75% load factor
-
--- Ensure data is in buffer cache
-SELECT count(*) FROM term_lookup_bench;
+-- Baseline: in-memory hash table lookup (Postgres dynahash)
+SELECT bm25_bench_hash_lookup(num_entries, iterations);
 ```
 
-**Benchmark:**
-```sql
--- Measure: random lookups by slot_id (simulates hash probe)
--- Run 10K lookups, measure total time
-\timing on
-DO $$
-DECLARE
-    r record;
-    target_slot int;
-BEGIN
-    FOR i IN 1..10000 LOOP
-        target_slot := (hashtext('query_term' || i) % 133333);
-        SELECT * INTO r FROM term_lookup_bench WHERE slot_id = target_slot;
-    END LOOP;
-END $$;
-```
+### Results (PG18, Apple M1, all data in buffer cache)
 
-**Compare to baseline:**
-- Current pg_textsearch term lookup (shared memory string interning)
-- Raw hash table lookup in C (no buffer manager)
+| Method | 1M ops (ms) | ns/op | Overhead ratio |
+|--------|-------------|-------|----------------|
+| Buffer manager | 346 | 330 | 4.7x |
+| In-memory hash (100k entries) | 74 | 75 | 1.0x (baseline) |
 
-**Success criteria:** If buffer manager lookups are within 2-3x of shared memory
-lookups, on-disk hash is viable. If 10x+ slower, we need shared memory caching.
+**Variance**: Buffer manager: 32-34ms per 100k ops (consistent).
+In-memory hash: 7-10ms per 100k ops.
+
+**Scaling with hash size**:
+- 10k entries: 6.6ms/100k lookups
+- 100k entries: 8.4ms/100k lookups
+- 500k entries: 18.7ms/100k lookups
+
+### Analysis
+
+The ~5x overhead is **acceptable** for the on-disk hash table design:
+
+1. **Per-query impact is small**: A 10-term query adds ~3.3μs of buffer manager
+   overhead (10 × 330ns). This is negligible compared to posting list traversal.
+
+2. **Best case measured**: These results are with all pages in shared buffers.
+   Real workloads will see similar performance for warm caches.
+
+3. **Transactional consistency is worth it**: The alternative (auxiliary files
+   or shared memory caches) would save ~250ns per lookup but add significant
+   complexity and break ACID guarantees.
+
+4. **Linear probing averages 1-2 page accesses**: With 75% load factor,
+   expected probe length is ~2. So typical lookups: 1 page for slot +
+   possibly 1 page for string pool verification = 2 buffer manager calls
+   = ~660ns per term. Still fast.
+
+**Conclusion**: Proceed with on-disk hash table. The buffer manager overhead is
+a constant factor that doesn't affect our asymptotic improvements from BMW.
+
+---
+
+## DELETE Handling
+
+Currently, we punt on explicit DELETE tracking in the index:
+
+1. **Visibility**: Postgres handles visibility checking for rows returned by
+   queries, so we never return a DELETEd row to the user.
+
+2. **Statistics skew**: IDF and document frequency statistics can become stale
+   after deletes, but this only affects ranking quality in pathological cases
+   (mass deletion of documents containing specific terms).
+
+3. **Result count**: We may return fewer tuples than LIMIT specifies after
+   filtering deleted tuples. This is a known limitation.
+
+4. **Future work**: Roaring bitmaps for deleted doc IDs (Phase 4) will enable
+   skipping deleted docs during BMW iteration, improving both correctness of
+   result counts and query performance.
 
 ---
 
@@ -713,19 +797,13 @@ lookups, on-disk hash is viable. If 10x+ slower, we need shared memory caching.
 2. **Compression library**: Implement FOR/PFOR ourselves, or use existing
    library (e.g., simdcomp, TurboPFor)?
 
-3. **Memtable integration**: Should memtable also use block structure, or
-   keep it simple (linear) since it spills to segments anyway?
+3. **Memtable block structure**: The memtable stays linear (no blocks) since
+   it's small and write-optimized. BMW only applies to segments.
 
 4. **Roaring scope**: Just deleted docs, or also filter caching?
 
 5. **Benchmark suite**: What queries/datasets best represent our target
    workload?
-
-6. **Term dictionary caching**: How aggressively should we cache term
-   dictionaries in shared memory? Options:
-   - Cache entire dictionary on first segment access (simple, uses more memory)
-   - LRU cache of recently-used terms (complex, memory-bounded)
-   - Hybrid: cache small segments fully, LRU for large segments
 
 ---
 
@@ -748,3 +826,10 @@ lookups, on-disk hash is viable. If 10x+ slower, we need shared memory caching.
 
 6. Zobel & Moffat, "Inverted Files for Text Search Engines"
    ACM Computing Surveys, 2006. https://doi.org/10.1145/1132956.1132959
+
+7. Elastic, "MAXSCORE & block-max MAXSCORE: Improving the algorithm"
+   https://www.elastic.co/search-labs/blog/more-skipping-with-bm-maxscore
+
+8. Grand et al., "From MAXSCORE to Block-Max WAND: The Story of How Lucene
+   Significantly Improved Query Evaluation Performance" ECIR 2020.
+   https://cs.uwaterloo.ca/~jimmylin/publications/Grand_etal_ECIR2020_preprint.pdf
