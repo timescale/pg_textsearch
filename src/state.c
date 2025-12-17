@@ -1002,7 +1002,7 @@ tp_bulk_load_spill_check(void)
 		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
 			continue;
 
-		elog(NOTICE,
+		elog(DEBUG1,
 			 "Bulk load spill for index %u: %ld terms this xact "
 			 "(threshold: %d)",
 			 local_state->shared->index_oid,

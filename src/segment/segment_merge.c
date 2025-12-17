@@ -9,6 +9,7 @@
 #include <access/relation.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
+#include <storage/indexfsm.h>
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
@@ -602,6 +603,12 @@ tp_merge_level_segments(Relation index, uint32 level)
 	MemoryContext	merge_ctx;
 	MemoryContext	old_ctx;
 
+	/* Page reclamation tracking (allocated outside merge context) */
+	BlockNumber **segment_pages		   = NULL; /* Array of page arrays */
+	uint32		 *segment_page_counts  = NULL; /* Count for each segment */
+	uint32		  num_segments_tracked = 0;
+	uint32		  total_pages_to_free  = 0;
+
 	if (level >= TP_MAX_LEVELS - 1)
 	{
 		elog(WARNING,
@@ -626,7 +633,14 @@ tp_merge_level_segments(Relation index, uint32 level)
 		return InvalidBlockNumber;
 	}
 
-	elog(NOTICE, "Merging %u segments at level %u", segment_count, level);
+	elog(DEBUG1, "Merging %u segments at level %u", segment_count, level);
+
+	/*
+	 * Allocate page tracking arrays in current context (not merge context)
+	 * so they survive the merge context deletion.
+	 */
+	segment_pages		= palloc0(sizeof(BlockNumber *) * segment_count);
+	segment_page_counts = palloc0(sizeof(uint32) * segment_count);
 
 	/* Create memory context for merge operation */
 	merge_ctx = AllocSetContextCreate(
@@ -655,6 +669,23 @@ tp_merge_level_segments(Relation index, uint32 level)
 			seg_tokens = reader->header->total_tokens;
 			tp_segment_close(reader);
 
+			/*
+			 * Collect pages from this segment for later freeing.
+			 * Allocate in parent context so it survives merge context delete.
+			 */
+			{
+				MemoryContext save_ctx = MemoryContextSwitchTo(old_ctx);
+				uint32		  page_count;
+
+				page_count = tp_segment_collect_pages(
+						index, current, &segment_pages[num_segments_tracked]);
+				segment_page_counts[num_segments_tracked] = page_count;
+				total_pages_to_free += page_count;
+				num_segments_tracked++;
+
+				MemoryContextSwitchTo(save_ctx);
+			}
+
 			/* Now init merge source (which opens its own reader) */
 			if (merge_source_init(&sources[num_sources], index, current))
 			{
@@ -676,6 +707,16 @@ tp_merge_level_segments(Relation index, uint32 level)
 	{
 		MemoryContextSwitchTo(old_ctx);
 		MemoryContextDelete(merge_ctx);
+
+		/* Clean up page tracking arrays */
+		for (i = 0; i < (int)num_segments_tracked; i++)
+		{
+			if (segment_pages[i])
+				pfree(segment_pages[i]);
+		}
+		pfree(segment_pages);
+		pfree(segment_page_counts);
+
 		return InvalidBlockNumber;
 	}
 
@@ -785,17 +826,20 @@ tp_merge_level_segments(Relation index, uint32 level)
 
 	if (new_segment == InvalidBlockNumber)
 	{
+		/* Clean up page tracking arrays on failure */
+		for (i = 0; i < (int)num_segments_tracked; i++)
+		{
+			if (segment_pages[i])
+				pfree(segment_pages[i]);
+		}
+		pfree(segment_pages);
+		pfree(segment_page_counts);
+
 		return InvalidBlockNumber;
 	}
 
 	/*
 	 * Update metapage: clear source level, add to target level.
-	 *
-	 * TODO: The old source segment pages are not freed here - they remain
-	 * allocated in the relation but are no longer referenced. A future
-	 * improvement should track these orphaned pages and reclaim them via
-	 * VACUUM or a dedicated cleanup routine. For now, the space is wasted
-	 * until the index is rebuilt.
 	 */
 	metabuf = ReadBuffer(index, 0);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
@@ -830,14 +874,44 @@ tp_merge_level_segments(Relation index, uint32 level)
 	MarkBufferDirty(metabuf);
 	UnlockReleaseBuffer(metabuf);
 
-	elog(NOTICE,
+	/*
+	 * Free pages from merged source segments. Now that the metapage no longer
+	 * references these segments, their pages can be recycled via the FSM.
+	 */
+	for (i = 0; i < (int)num_segments_tracked; i++)
+	{
+		if (segment_pages[i] && segment_page_counts[i] > 0)
+		{
+			tp_segment_free_pages(
+					index, segment_pages[i], segment_page_counts[i]);
+		}
+	}
+
+	/*
+	 * Update FSM upper-level pages so searches can find the freed pages.
+	 * Without this, RecordFreeIndexPage only updates leaf pages, but
+	 * GetFreeIndexPage searches from the root down.
+	 */
+	IndexFreeSpaceMapVacuum(index);
+
+	elog(DEBUG1,
 		 "Merged %u segments from L%u into L%u segment at block %u "
-		 "(%u terms)",
+		 "(%u terms, freed %u pages)",
 		 segment_count,
 		 level,
 		 level + 1,
 		 new_segment,
-		 num_merged_terms);
+		 num_merged_terms,
+		 total_pages_to_free);
+
+	/* Clean up page tracking arrays */
+	for (i = 0; i < (int)num_segments_tracked; i++)
+	{
+		if (segment_pages[i])
+			pfree(segment_pages[i]);
+	}
+	pfree(segment_pages);
+	pfree(segment_page_counts);
 
 	return new_segment;
 }

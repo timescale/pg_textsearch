@@ -131,7 +131,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (total_postings < tp_memtable_spill_threshold)
 		return;
 
-	elog(NOTICE,
+	elog(DEBUG1,
 		 "Auto-spill triggered: %ld posting entries >= threshold %d",
 		 (long)total_postings,
 		 tp_memtable_spill_threshold);
@@ -1313,6 +1313,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 k1,
 			 b);
 	}
+
+	/* Report FSM page reuse statistics */
+	tp_report_fsm_stats();
 
 	return result;
 }

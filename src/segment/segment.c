@@ -25,6 +25,7 @@
 #include "segment.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/indexfsm.h"
 #include "storage/lock.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -580,8 +581,13 @@ tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid)
 	return -1;
 }
 
+/* Track FSM reuse statistics for debugging */
+static uint32 fsm_pages_reused = 0;
+static uint32 pages_extended   = 0;
+
 /*
- * Allocate a single page for segment
+ * Allocate a single page for segment.
+ * First checks the free space map for recycled pages, then extends if needed.
  */
 static BlockNumber
 allocate_segment_page(Relation index)
@@ -589,7 +595,25 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/* Use RBM_ZERO_AND_LOCK to get a new zero-filled page */
+	/* First, try to get a free page from FSM (recycled from compaction) */
+	block = GetFreeIndexPage(index);
+	if (block != InvalidBlockNumber)
+	{
+		/* Reuse a previously freed page */
+		buffer = ReadBuffer(index, block);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		/* Initialize the recycled page */
+		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+
+		fsm_pages_reused++;
+		return block;
+	}
+
+	/* No free pages available, extend the relation */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 
@@ -599,7 +623,26 @@ allocate_segment_page(Relation index)
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
 
+	pages_extended++;
 	return block;
+}
+
+/*
+ * Report FSM reuse statistics (called at end of index build)
+ */
+void
+tp_report_fsm_stats(void)
+{
+	if (fsm_pages_reused > 0 || pages_extended > 0)
+	{
+		elog(DEBUG1,
+			 "Page allocation stats: %u reused from FSM, %u extended",
+			 fsm_pages_reused,
+			 pages_extended);
+	}
+	/* Reset for next build */
+	fsm_pages_reused = 0;
+	pages_extended	 = 0;
 }
 
 /*
@@ -1134,6 +1177,102 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		pfree(writer.pages);
 
 	return header_block;
+}
+
+/*
+ * Collect all pages belonging to a segment for later freeing.
+ * This includes data pages (from page_map) and page index pages.
+ *
+ * Returns the total number of pages collected.
+ * The caller must pfree the returned pages array when done.
+ */
+uint32
+tp_segment_collect_pages(
+		Relation index, BlockNumber root_block, BlockNumber **pages_out)
+{
+	TpSegmentReader *reader;
+	BlockNumber		*all_pages;
+	uint32			 num_pages;
+	uint32			 capacity;
+	BlockNumber		 page_index_block;
+	uint32			 i;
+
+	*pages_out = NULL;
+
+	reader = tp_segment_open(index, root_block);
+	if (!reader)
+		return 0;
+
+	/* Start with capacity for data pages + some extra for page index */
+	capacity  = reader->num_pages + 16;
+	all_pages = palloc(sizeof(BlockNumber) * capacity);
+	num_pages = 0;
+
+	/* Collect all data pages from the page map */
+	for (i = 0; i < reader->num_pages; i++)
+	{
+		all_pages[num_pages++] = reader->page_map[i];
+	}
+
+	/* Traverse and collect page index chain */
+	page_index_block = reader->header->page_index;
+	while (page_index_block != InvalidBlockNumber)
+	{
+		Buffer				index_buf;
+		Page				index_page;
+		TpPageIndexSpecial *special;
+
+		/* Grow array if needed */
+		if (num_pages >= capacity)
+		{
+			capacity *= 2;
+			all_pages = repalloc(all_pages, sizeof(BlockNumber) * capacity);
+		}
+
+		/* Add this page index page */
+		all_pages[num_pages++] = page_index_block;
+
+		/* Read the page to get next pointer */
+		index_buf = ReadBuffer(index, page_index_block);
+		LockBuffer(index_buf, BUFFER_LOCK_SHARE);
+		index_page = BufferGetPage(index_buf);
+
+		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
+
+		/* Validate this is a page index page */
+		if (special->magic != TP_PAGE_INDEX_MAGIC)
+		{
+			UnlockReleaseBuffer(index_buf);
+			break;
+		}
+
+		page_index_block = special->next_page;
+		UnlockReleaseBuffer(index_buf);
+	}
+
+	tp_segment_close(reader);
+
+	*pages_out = all_pages;
+	return num_pages;
+}
+
+/*
+ * Free pages belonging to a segment by recording them in the FSM.
+ * Call this after the segment is no longer referenced (metapage updated).
+ */
+void
+tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages)
+{
+	uint32 i;
+
+	for (i = 0; i < num_pages; i++)
+	{
+		/* Skip the metapage (block 0) - should never happen but be safe */
+		if (pages[i] == 0)
+			continue;
+
+		RecordFreeIndexPage(index, pages[i]);
+	}
 }
 
 /*

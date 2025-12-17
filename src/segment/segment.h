@@ -231,6 +231,15 @@ extern void tp_dump_segment_to_output(
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
 
+/* Page reclamation for segment compaction */
+extern uint32 tp_segment_collect_pages(
+		Relation index, BlockNumber root_block, BlockNumber **pages_out);
+extern void
+tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages);
+
+/* FSM statistics reporting (for debugging) */
+extern void tp_report_fsm_stats(void);
+
 /* Zero-copy query execution - defined in segment_query.c */
 struct TpLocalIndexState; /* Forward declaration */
 

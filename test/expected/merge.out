@@ -79,8 +79,6 @@ INSERT INTO merge_test (content) VALUES ('goodbye database friend');
 -- Second spill creates segment 2 in L0, which triggers merge to L1
 -- After merge: L0 is empty (cleared), L1 has merged segment
 SELECT bm25_spill_index('merge_test_idx') IS NOT NULL AS second_spill;
-NOTICE:  Merging 2 segments at level 0
-NOTICE:  Merged 2 segments from L0 into L1 segment at block 6 (15 terms)
  second_spill 
 --------------
  t
