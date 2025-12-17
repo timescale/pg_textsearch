@@ -1203,16 +1203,17 @@ tp_segment_collect_pages(
 	if (!reader)
 		return 0;
 
-	/* Start with capacity for data pages + some extra for page index */
+	/*
+	 * Start with capacity for data pages. The +16 is just an optimization to
+	 * reduce reallocs for page index pages; the array grows dynamically below.
+	 */
 	capacity  = reader->num_pages + 16;
 	all_pages = palloc(sizeof(BlockNumber) * capacity);
 	num_pages = 0;
 
 	/* Collect all data pages from the page map */
 	for (i = 0; i < reader->num_pages; i++)
-	{
 		all_pages[num_pages++] = reader->page_map[i];
-	}
 
 	/* Traverse and collect page index chain */
 	page_index_block = reader->header->page_index;
@@ -1267,9 +1268,8 @@ tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages)
 
 	for (i = 0; i < num_pages; i++)
 	{
-		/* Skip the metapage (block 0) - should never happen but be safe */
 		if (pages[i] == 0)
-			continue;
+			elog(ERROR, "attempted to free metapage (block 0)");
 
 		RecordFreeIndexPage(index, pages[i]);
 	}
