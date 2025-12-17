@@ -330,6 +330,37 @@ tp_segment_open(Relation index, BlockNumber root_block)
 				 errhint("The index may be corrupted and should be rebuilt")));
 	}
 
+	/*
+	 * For V2 segments, preload fieldnorm and CTID tables into memory.
+	 * This avoids per-posting I/O during iteration, providing major speedup.
+	 */
+	reader->cached_fieldnorms = NULL;
+	reader->cached_ctids	  = NULL;
+	reader->cached_num_docs	  = 0;
+
+	if (header->version >= TP_SEGMENT_FORMAT_V2 && header->num_docs > 0 &&
+		header->fieldnorm_offset > 0 && header->ctid_map_offset > 0)
+	{
+		reader->cached_num_docs = header->num_docs;
+
+		/* Load fieldnorm table (1 byte per doc) */
+		reader->cached_fieldnorms = palloc(header->num_docs);
+		tp_segment_read(
+				reader,
+				header->fieldnorm_offset,
+				reader->cached_fieldnorms,
+				header->num_docs);
+
+		/* Load CTID map (6 bytes per doc) */
+		reader->cached_ctids = palloc(
+				header->num_docs * sizeof(ItemPointerData));
+		tp_segment_read(
+				reader,
+				header->ctid_map_offset,
+				reader->cached_ctids,
+				header->num_docs * sizeof(ItemPointerData));
+	}
+
 	return reader;
 }
 
@@ -350,6 +381,13 @@ tp_segment_close(TpSegmentReader *reader)
 
 	if (reader->page_map)
 		pfree(reader->page_map);
+
+	/* Free V2 caches */
+	if (reader->cached_fieldnorms)
+		pfree(reader->cached_fieldnorms);
+
+	if (reader->cached_ctids)
+		pfree(reader->cached_ctids);
 
 	pfree(reader);
 }

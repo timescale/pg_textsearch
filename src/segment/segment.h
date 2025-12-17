@@ -239,6 +239,11 @@ typedef struct TpSegmentReader
 	/* Current data page */
 	Buffer current_buffer;
 	uint32 current_logical_page;
+
+	/* V2 format caches - loaded at open time for fast iteration */
+	uint8			*cached_fieldnorms; /* Fieldnorm table (1 byte/doc) */
+	ItemPointerData *cached_ctids;		/* CTID map (6 bytes/doc) */
+	uint32			 cached_num_docs;	/* Number of docs cached */
 } TpSegmentReader;
 
 /*

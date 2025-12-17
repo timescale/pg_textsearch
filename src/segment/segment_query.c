@@ -452,22 +452,35 @@ tp_segment_posting_iterator_next_v2(
 	bp	   = &iter->block_postings[iter->current_in_block];
 	doc_id = bp->doc_id;
 
-	/* Look up CTID from ctid_map */
-	tp_segment_read(
-			iter->reader,
-			header->ctid_map_offset + (doc_id * sizeof(ItemPointerData)),
-			&ctid_entry,
-			sizeof(TpCtidMapEntry));
+	/*
+	 * Look up CTID and fieldnorm from cached arrays (fast path) or
+	 * fall back to per-posting reads if caches aren't available.
+	 */
+	if (iter->reader->cached_ctids && iter->reader->cached_fieldnorms &&
+		doc_id < iter->reader->cached_num_docs)
+	{
+		/* Fast path: use cached arrays */
+		iter->output_posting.ctid = iter->reader->cached_ctids[doc_id];
+		fieldnorm				  = iter->reader->cached_fieldnorms[doc_id];
+	}
+	else
+	{
+		/* Slow path: per-posting reads (shouldn't happen for V2 segments) */
+		tp_segment_read(
+				iter->reader,
+				header->ctid_map_offset + (doc_id * sizeof(ItemPointerData)),
+				&ctid_entry,
+				sizeof(TpCtidMapEntry));
+		iter->output_posting.ctid = ctid_entry.ctid;
 
-	/* Look up fieldnorm and decode to approximate doc length */
-	tp_segment_read(
-			iter->reader,
-			header->fieldnorm_offset + doc_id,
-			&fieldnorm,
-			sizeof(uint8));
+		tp_segment_read(
+				iter->reader,
+				header->fieldnorm_offset + doc_id,
+				&fieldnorm,
+				sizeof(uint8));
+	}
 
 	/* Build output posting in V1 format */
-	iter->output_posting.ctid		= ctid_entry.ctid;
 	iter->output_posting.frequency	= bp->frequency;
 	iter->output_posting.doc_length = (uint16)decode_fieldnorm(fieldnorm);
 
