@@ -14,7 +14,7 @@ Modern ranked text search for Postgres.
 🎉 **Now Open Source!** We're excited to share pg_textsearch with the community.
 
 🚀 **Status**: v0.1.1-dev (prerelease) - Feature-complete but not yet optimized.
-Not recommended for production use. See [ROADMAP.md](ROADMAP.md) for what's next.
+Not yet recommended for production use. See [ROADMAP.md](ROADMAP.md) for what's next.
 
 ![Tapir and Friends](images/tapir_and_friends.png)
 
