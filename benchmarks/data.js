@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766014875276,
+  "lastUpdate": 1766014876657,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1079,6 +1079,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 65.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2551.58,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "8a1344956d99e719a1d323e0754b1343625bf175",
+          "message": "Limit V2 cache to segments with <=100K docs\n\nThe unconditional caching caused severe regression on large segments\n(MS MARCO 8.8M docs was 5-7x slower) because:\n- Loading 60MB of cache data upfront is expensive\n- Top-k queries only access a small fraction of documents\n- PostgreSQL's buffer cache efficiently handles sparse access patterns\n\nWith 100K threshold:\n- Small segments (flush, early compaction): cached for fast iteration\n- Large segments (late compaction): use per-posting reads via buffer cache",
+          "timestamp": "2025-12-17T23:16:28Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8a1344956d99e719a1d323e0754b1343625bf175"
+        },
+        "date": 1766014876334,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 906908.842,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 5.354,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 7.946,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 13.115,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.054,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 8.973,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 16.7,
             "unit": "ms"
           },
           {
