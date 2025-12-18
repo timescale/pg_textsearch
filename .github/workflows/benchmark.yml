@@ -159,18 +159,91 @@ jobs:
           sudo kill -INT $PERF_PID 2>/dev/null || true
           sleep 2
 
-          # Generate perf report
-          sudo perf report -i perf.data --stdio --no-children > profile_report.txt 2>&1 || true
+          # Generate perf report for indexing
+          sudo perf report -i perf.data --stdio --no-children > index_profile.txt 2>&1 || true
 
-          # Generate flamegraph
+          # Generate flamegraph for indexing
           sudo perf script -i perf.data > perf.script 2>/dev/null || true
           if [ -s perf.script ]; then
-            ./FlameGraph/stackcollapse-perf.pl perf.script > perf.folded
-            ./FlameGraph/flamegraph.pl perf.folded > flamegraph.svg
-            echo "Flamegraph generated successfully"
+            ./FlameGraph/stackcollapse-perf.pl perf.script > index_perf.folded
+            ./FlameGraph/flamegraph.pl --title "Index Build CPU Profile" index_perf.folded > index_flamegraph.svg
+            echo "Index flamegraph generated successfully"
           fi
         else
           echo "Could not find postgres backend PID"
+          wait $PSQL_PID || true
+        fi
+
+    - name: Profile queries with perf
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        # Create a query script that runs many iterations for profiling
+        cat > /tmp/profile_queries.sql << 'EOSQL'
+        -- Run queries repeatedly to get meaningful profile samples
+        \timing off
+        DO $$
+        DECLARE
+          i INT;
+          dummy RECORD;
+        BEGIN
+          FOR i IN 1..100 LOOP
+            -- Short query
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage <@> 'search engine'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Medium query
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage <@> 'machine learning algorithms'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Long query
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage <@> 'what is the best way to learn programming'::bm25query LIMIT 10
+            LOOP END LOOP;
+          END LOOP;
+        END $$;
+        EOSQL
+
+        # Start queries in background
+        psql -f /tmp/profile_queries.sql &
+        PSQL_PID=$!
+
+        sleep 1
+
+        # Find the postgres backend process
+        PG_PID=$(pgrep -f "postgres.*bench_test" | head -1)
+        echo "Profiling query PID: $PG_PID"
+
+        if [ -n "$PG_PID" ]; then
+          # Record profile for query duration (up to 10 min)
+          sudo perf record -F 499 -p $PG_PID -g --call-graph dwarf -o query_perf.data -- sleep 600 &
+          PERF_PID=$!
+
+          # Wait for queries to complete
+          wait $PSQL_PID || true
+
+          # Stop perf recording
+          sudo kill -INT $PERF_PID 2>/dev/null || true
+          sleep 2
+
+          # Generate perf report for queries
+          sudo perf report -i query_perf.data --stdio --no-children > query_profile.txt 2>&1 || true
+
+          # Generate flamegraph for queries
+          sudo perf script -i query_perf.data > query_perf.script 2>/dev/null || true
+          if [ -s query_perf.script ]; then
+            ./FlameGraph/stackcollapse-perf.pl query_perf.script > query_perf.folded
+            ./FlameGraph/flamegraph.pl --title "Query CPU Profile" query_perf.folded > query_flamegraph.svg
+            echo "Query flamegraph generated successfully"
+          fi
+        else
+          echo "Could not find postgres backend PID for queries"
           wait $PSQL_PID || true
         fi
 
@@ -184,27 +257,44 @@ jobs:
         echo "**Dataset:** MS MARCO ${{ github.event.inputs.msmarco_size }}" >> profile_summary.md
         echo "" >> profile_summary.md
 
-        if [ -f profile_report.txt ]; then
-          echo "## Top Functions (by overhead)" >> profile_summary.md
+        echo "## Index Build Profile" >> profile_summary.md
+        if [ -f index_profile.txt ]; then
           echo '```' >> profile_summary.md
-          head -100 profile_report.txt >> profile_summary.md
+          head -80 index_profile.txt >> profile_summary.md
           echo '```' >> profile_summary.md
+        else
+          echo "Index profiling failed" >> profile_summary.md
+        fi
+
+        echo "" >> profile_summary.md
+        echo "## Query Profile" >> profile_summary.md
+        if [ -f query_profile.txt ]; then
+          echo '```' >> profile_summary.md
+          head -80 query_profile.txt >> profile_summary.md
+          echo '```' >> profile_summary.md
+        else
+          echo "Query profiling failed" >> profile_summary.md
         fi
 
         echo "" >> profile_summary.md
         echo "## Artifacts" >> profile_summary.md
-        echo "- flamegraph.svg - Interactive CPU flamegraph" >> profile_summary.md
-        echo "- profile_report.txt - Full perf report" >> profile_summary.md
+        echo "- index_flamegraph.svg - Index build CPU flamegraph" >> profile_summary.md
+        echo "- query_flamegraph.svg - Query execution CPU flamegraph" >> profile_summary.md
+        echo "- index_profile.txt - Index build perf report" >> profile_summary.md
+        echo "- query_profile.txt - Query execution perf report" >> profile_summary.md
 
     - name: Upload profile artifacts
       uses: actions/upload-artifact@v4
       with:
         name: cpu-profile-${{ github.run_id }}
         path: |
-          flamegraph.svg
-          profile_report.txt
+          index_flamegraph.svg
+          query_flamegraph.svg
+          index_profile.txt
+          query_profile.txt
           profile_summary.md
-          perf.folded
+          index_perf.folded
+          query_perf.folded
         retention-days: 30
 
     - name: Post profile summary
@@ -212,13 +302,24 @@ jobs:
       run: |
         echo "### CPU Profile Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        if [ -f profile_report.txt ]; then
-          echo "Top 20 functions by CPU overhead:" >> $GITHUB_STEP_SUMMARY
+
+        echo "#### Index Build Profile" >> $GITHUB_STEP_SUMMARY
+        if [ -f index_profile.txt ]; then
           echo '```' >> $GITHUB_STEP_SUMMARY
-          head -50 profile_report.txt >> $GITHUB_STEP_SUMMARY
+          head -40 index_profile.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         else
-          echo "Profile collection failed - check logs" >> $GITHUB_STEP_SUMMARY
+          echo "Index profiling failed - check logs" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### Query Profile" >> $GITHUB_STEP_SUMMARY
+        if [ -f query_profile.txt ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -40 query_profile.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Query profiling failed - check logs" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Cleanup
