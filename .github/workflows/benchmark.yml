@@ -42,16 +42,27 @@ on:
           - '500K'
           - '1M'
           - 'full'
+      enable_profile:
+        description: 'Enable CPU profiling (generates flamegraph)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
   profile:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120  # Allow 2 hours for full dataset profiling
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.enable_profile == 'true'
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
+        df -h /
 
     - name: Install dependencies
       run: |
@@ -87,9 +98,9 @@ jobs:
 
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
-        shared_buffers = 2GB
-        maintenance_work_mem = 256MB
-        pg_textsearch.index_memory_limit = 256MB
+        shared_buffers = 4GB
+        maintenance_work_mem = 512MB
+        pg_textsearch.index_memory_limit = 512MB
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
@@ -98,11 +109,11 @@ jobs:
         psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
-    - name: Download MS MARCO dataset (100K subset for profiling)
+    - name: Download MS MARCO dataset
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh 100K
+        ./download.sh ${{ github.event.inputs.msmarco_size }}
 
     - name: Load data (without index)
       run: |
@@ -137,8 +148,8 @@ jobs:
         echo "Profiling PID: $PG_PID"
 
         if [ -n "$PG_PID" ]; then
-          # Record profile for duration of index build (up to 5 min)
-          sudo perf record -F 99 -p $PG_PID -g --call-graph dwarf -o perf.data -- sleep 300 &
+          # Record profile for duration of index build (up to 60 min for full dataset)
+          sudo perf record -F 99 -p $PG_PID -g --call-graph dwarf -o perf.data -- sleep 3600 &
           PERF_PID=$!
 
           # Wait for index creation to complete
@@ -170,6 +181,7 @@ jobs:
         echo "**Date:** $(date -u)" >> profile_summary.md
         echo "**Commit:** ${{ github.sha }}" >> profile_summary.md
         echo "**Branch:** ${{ github.ref_name }}" >> profile_summary.md
+        echo "**Dataset:** MS MARCO ${{ github.event.inputs.msmarco_size }}" >> profile_summary.md
         echo "" >> profile_summary.md
 
         if [ -f profile_report.txt ]; then
