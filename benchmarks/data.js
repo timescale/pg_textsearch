@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766030720728,
+  "lastUpdate": 1766030811484,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1518,6 +1518,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (999.9K docs) - Index Size",
             "value": 347.31,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "618da0aff4bf0a160db91f7866bbc208d3c15bb8",
+          "message": "Add profile links when clicking graph data points\n\nClicking a data point now shows a popup menu with:\n- View Commit (GitHub)\n- Profile (main) - link to main branch profile\n- Profile (block-storage-phase1) - link to dev branch profile\n- Browse all profiles - link to profiles index\n\nIf a profile doesn't exist for that commit, user gets a 404\nwhich is expected (not all commits have profiles).",
+          "timestamp": "2025-12-18T04:06:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/618da0aff4bf0a160db91f7866bbc208d3c15bb8"
+        },
+        "date": 1766030811052,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (499.9K docs) - Index Build Time",
+            "value": 42988.292,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Short Query (1 word)",
+            "value": 1.283,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Medium Query (3 words)",
+            "value": 1.564,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Long Query (question)",
+            "value": 1.707,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Common Term Query",
+            "value": 0.041,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Rare Term Query",
+            "value": 1.241,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Avg Query Latency (20 queries)",
+            "value": 2.25,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (499.9K docs) - Index Size",
+            "value": 209.25,
             "unit": "MB"
           }
         ]
