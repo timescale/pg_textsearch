@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766023470975,
+  "lastUpdate": 1766030166123,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1270,6 +1270,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2551.58,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7c521e9303c6a3cd8c1f70885dfb1f4b793fb1b2",
+          "message": "Profile at full dataset scale with opt-in toggle\n\n- Add enable_profile input (default: false) to opt-in to profiling\n- Use selected msmarco_size for profiling (not hardcoded 100K)\n- Increase timeout to 2 hours for full dataset profiling\n- Increase perf recording duration to 60 minutes\n- Increase memory settings for larger datasets\n- Add disk space cleanup for full MS MARCO download\n- Show dataset size in profile summary",
+          "timestamp": "2025-12-18T03:55:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7c521e9303c6a3cd8c1f70885dfb1f4b793fb1b2"
+        },
+        "date": 1766030165332,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (99.9K docs) - Index Build Time",
+            "value": 5803.728,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Short Query (1 word)",
+            "value": 1.197,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Medium Query (3 words)",
+            "value": 1.203,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Long Query (question)",
+            "value": 1.432,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Common Term Query",
+            "value": 0.03,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Rare Term Query",
+            "value": 1.336,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Avg Query Latency (20 queries)",
+            "value": 1.83,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Index Size",
+            "value": 30.05,
             "unit": "MB"
           }
         ]
