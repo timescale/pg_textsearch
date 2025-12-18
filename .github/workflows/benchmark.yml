@@ -122,8 +122,8 @@ jobs:
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
         # Load data using the standard load script, but stop before index creation
-        # Create a modified load script that skips index creation
-        head -n 75 benchmarks/datasets/msmarco/load.sql > /tmp/load_data_only.sql
+        # Line 91 is after sample queries, before index creation (line 96)
+        head -n 91 benchmarks/datasets/msmarco/load.sql > /tmp/load_data_only.sql
         psql -f /tmp/load_data_only.sql
         psql -c "SELECT COUNT(*) as num_rows FROM msmarco_passages"
 
