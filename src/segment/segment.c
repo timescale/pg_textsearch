@@ -1555,13 +1555,10 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 				uint8  norm;
 
 				if (doc_id == UINT32_MAX)
-				{
-					elog(WARNING,
-						 "CTID (%u,%u) not found in docmap, using 0",
+					elog(ERROR,
+						 "CTID (%u,%u) not found in docmap",
 						 ItemPointerGetBlockNumber(&entries[j].ctid),
 						 ItemPointerGetOffsetNumber(&entries[j].ctid));
-					doc_id = 0;
-				}
 
 				norm = tp_docmap_get_fieldnorm(docmap, doc_id);
 

@@ -778,13 +778,10 @@ write_merged_segment(
 		{
 			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
 			if (doc_id == UINT32_MAX)
-			{
-				elog(WARNING,
-					 "CTID (%u,%u) not found in docmap during merge, using 0",
+				elog(ERROR,
+					 "CTID (%u,%u) not found in docmap during merge",
 					 ItemPointerGetBlockNumber(&postings[j].ctid),
 					 ItemPointerGetOffsetNumber(&postings[j].ctid));
-				doc_id = 0;
-			}
 
 			block_postings[j].doc_id	= doc_id;
 			block_postings[j].frequency = postings[j].frequency;
