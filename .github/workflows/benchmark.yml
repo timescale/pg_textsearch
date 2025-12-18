@@ -121,10 +121,10 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        # Load data but skip index creation
-        psql -c "DROP TABLE IF EXISTS msmarco_passages CASCADE"
-        psql -c "CREATE TABLE msmarco_passages (id BIGINT PRIMARY KEY, passage TEXT)"
-        psql -c "\\COPY msmarco_passages FROM '$DATA_DIR/collection.tsv'"
+        # Load data using the standard load script, but stop before index creation
+        # Create a modified load script that skips index creation
+        head -n 75 benchmarks/datasets/msmarco/load.sql > /tmp/load_data_only.sql
+        psql -f /tmp/load_data_only.sql
         psql -c "SELECT COUNT(*) as num_rows FROM msmarco_passages"
 
     - name: Profile index creation with perf
@@ -137,7 +137,7 @@ jobs:
         echo 0 | sudo tee /proc/sys/kernel/kptr_restrict || true
 
         # Start index creation in background
-        psql -c "CREATE INDEX msmarco_bm25_idx ON msmarco_passages USING bm25(passage) WITH (text_config='english')" &
+        psql -c "CREATE INDEX msmarco_bm25_idx ON msmarco_passages USING bm25(passage_text) WITH (text_config='english')" &
         PSQL_PID=$!
 
         # Wait a moment for the backend to start
@@ -192,19 +192,19 @@ jobs:
             -- Short query
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
-              ORDER BY passage <@> 'search engine'::bm25query LIMIT 10
+              ORDER BY passage_text <@> 'search engine'::bm25query LIMIT 10
             LOOP END LOOP;
 
             -- Medium query
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
-              ORDER BY passage <@> 'machine learning algorithms'::bm25query LIMIT 10
+              ORDER BY passage_text <@> 'machine learning algorithms'::bm25query LIMIT 10
             LOOP END LOOP;
 
             -- Long query
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
-              ORDER BY passage <@> 'what is the best way to learn programming'::bm25query LIMIT 10
+              ORDER BY passage_text <@> 'what is the best way to learn programming'::bm25query LIMIT 10
             LOOP END LOOP;
           END LOOP;
         END $$;
