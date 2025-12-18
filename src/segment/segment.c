@@ -331,34 +331,25 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	}
 
 	/*
-	 * For V2 segments, preload fieldnorm and CTID tables into memory.
-	 * This avoids per-posting I/O during iteration, providing major speedup
-	 * for small-to-medium segments.
+	 * For V2 segments, preload CTID table into memory for result lookup.
+	 * Fieldnorms are now stored inline in TpBlockPosting, so no fieldnorm
+	 * cache is needed.
 	 *
 	 * For large segments (>100K docs), caching is counterproductive because:
-	 * - Loading 700KB+ of data upfront is expensive
-	 * - Top-k queries only access a tiny fraction of documents
-	 * - PostgreSQL's buffer cache handles per-posting reads efficiently
+	 * - Loading 600KB+ of data upfront is expensive
+	 * - Top-k queries only access a small fraction of documents
+	 * - PostgreSQL's buffer cache handles per-doc reads efficiently
 	 */
-	reader->cached_fieldnorms = NULL;
-	reader->cached_ctids	  = NULL;
-	reader->cached_num_docs	  = 0;
+	reader->cached_ctids	= NULL;
+	reader->cached_num_docs = 0;
 
 #define TP_SEGMENT_CACHE_THRESHOLD 100000 /* Max docs to cache */
 
 	if (header->version >= TP_SEGMENT_FORMAT_V2 && header->num_docs > 0 &&
 		header->num_docs <= TP_SEGMENT_CACHE_THRESHOLD &&
-		header->fieldnorm_offset > 0 && header->ctid_map_offset > 0)
+		header->ctid_map_offset > 0)
 	{
 		reader->cached_num_docs = header->num_docs;
-
-		/* Load fieldnorm table (1 byte per doc) */
-		reader->cached_fieldnorms = palloc(header->num_docs);
-		tp_segment_read(
-				reader,
-				header->fieldnorm_offset,
-				reader->cached_fieldnorms,
-				header->num_docs);
 
 		/* Load CTID map (6 bytes per doc) */
 		reader->cached_ctids = palloc(
@@ -391,10 +382,7 @@ tp_segment_close(TpSegmentReader *reader)
 	if (reader->page_map)
 		pfree(reader->page_map);
 
-	/* Free V2 caches */
-	if (reader->cached_fieldnorms)
-		pfree(reader->cached_fieldnorms);
-
+	/* Free V2 CTID cache (fieldnorm is inline in postings, no cache needed) */
 	if (reader->cached_ctids)
 		pfree(reader->cached_ctids);
 
@@ -1643,6 +1631,7 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 
 			block_postings[j].doc_id	= doc_id;
 			block_postings[j].frequency = (uint16)entries[j].frequency;
+			block_postings[j].fieldnorm = docmap->fieldnorms[doc_id];
 			block_postings[j].reserved	= 0;
 		}
 

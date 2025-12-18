@@ -340,7 +340,6 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 	TpSegmentHeader *header = ps->reader->header;
 	TpBlockPosting	*bp		= &ps->block_postings[ps->current_in_block];
 	ItemPointerData	 ctid;
-	uint8			 fieldnorm;
 
 	/* Look up CTID from ctid_map */
 	tp_segment_read(
@@ -349,17 +348,10 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 			&ctid,
 			sizeof(ItemPointerData));
 
-	/* Look up fieldnorm */
-	tp_segment_read(
-			ps->reader,
-			header->fieldnorm_offset + bp->doc_id,
-			&fieldnorm,
-			sizeof(uint8));
-
-	/* Build output posting */
+	/* Build output posting (fieldnorm is inline in block posting) */
 	ps->current.ctid	   = ctid;
 	ps->current.frequency  = bp->frequency;
-	ps->current.doc_length = (uint16)decode_fieldnorm(fieldnorm);
+	ps->current.doc_length = (uint16)decode_fieldnorm(bp->fieldnorm);
 }
 
 /*
@@ -820,6 +812,7 @@ write_merged_segment(
 
 			bp.doc_id	 = doc_id;
 			bp.frequency = postings[j].frequency;
+			bp.fieldnorm = docmap->fieldnorms[doc_id];
 			bp.reserved	 = 0;
 
 			tp_segment_writer_write(&writer, &bp, sizeof(TpBlockPosting));

@@ -188,12 +188,18 @@ typedef struct TpSkipEntry
  *
  * Unlike TpSegmentPosting, uses segment-local doc ID instead of CTID.
  * CTID lookup happens via the doc ID -> CTID mapping table.
+ *
+ * Fieldnorm is stored inline (using former padding bytes) to avoid
+ * per-posting buffer manager lookups during scoring. This is critical
+ * for performance: each buffer manager access adds ~300-500ns even when
+ * pages are cached, which dominates query time for large posting lists.
  */
 typedef struct TpBlockPosting
 {
 	uint32 doc_id;	  /* Segment-local document ID */
 	uint16 frequency; /* Term frequency in document */
-	uint16 reserved;  /* Padding for alignment */
+	uint8  fieldnorm; /* Quantized document length (Lucene SmallFloat) */
+	uint8  reserved;  /* Padding for alignment */
 } TpBlockPosting;
 
 /*
@@ -240,10 +246,9 @@ typedef struct TpSegmentReader
 	Buffer current_buffer;
 	uint32 current_logical_page;
 
-	/* V2 format caches - loaded at open time for fast iteration */
-	uint8			*cached_fieldnorms; /* Fieldnorm table (1 byte/doc) */
-	ItemPointerData *cached_ctids;		/* CTID map (6 bytes/doc) */
-	uint32			 cached_num_docs;	/* Number of docs cached */
+	/* V2 format: CTID cache for result lookup (fieldnorm is inline) */
+	ItemPointerData *cached_ctids;	  /* CTID map (6 bytes/doc) */
+	uint32			 cached_num_docs; /* Number of docs cached */
 } TpSegmentReader;
 
 /*
