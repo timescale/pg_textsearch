@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766030512863,
+  "lastUpdate": 1766030619254,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1389,6 +1389,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (999.9K docs) - Avg Query Latency (20 queries)",
             "value": 3.42,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Index Size",
+            "value": 347.31,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "bc804353f438144c40bcf88ebee673298c94a69d",
+          "message": "Publish flamegraphs to GitHub Pages\n\nFlamegraphs are now published to gh-pages at:\n  /benchmarks/profiles/<branch>/<commit-sha>/\n\nEach profile directory contains:\n- index_flamegraph.svg (interactive)\n- query_flamegraph.svg (interactive)\n- index_profile.txt\n- query_profile.txt\n- index.html (links to all files)\n\nA master index at /benchmarks/profiles/ lists all profiles\norganized by branch and commit.\n\nThe job summary now includes a direct link to the published\nflamegraphs on GitHub Pages.",
+          "timestamp": "2025-12-18T04:01:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/bc804353f438144c40bcf88ebee673298c94a69d"
+        },
+        "date": 1766030618380,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (999.9K docs) - Index Build Time",
+            "value": 83433.209,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Short Query (1 word)",
+            "value": 1.948,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Medium Query (3 words)",
+            "value": 2.291,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Long Query (question)",
+            "value": 2.776,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Common Term Query",
+            "value": 0.046,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Rare Term Query",
+            "value": 2.269,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (999.9K docs) - Avg Query Latency (20 queries)",
+            "value": 3.56,
             "unit": "ms"
           },
           {
