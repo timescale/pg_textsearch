@@ -297,10 +297,108 @@ jobs:
           query_perf.folded
         retention-days: 30
 
+    - name: Publish flamegraphs to GitHub Pages
+      if: always()
+      run: |
+        # Only publish if we have flamegraphs
+        if [ ! -f index_flamegraph.svg ] && [ ! -f query_flamegraph.svg ]; then
+          echo "No flamegraphs to publish"
+          exit 0
+        fi
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git fetch origin gh-pages
+
+        # Create a temporary directory for gh-pages content
+        mkdir -p /tmp/gh-pages
+        git worktree add /tmp/gh-pages gh-pages
+
+        # Create profiles directory structure: profiles/<branch>/<short-sha>/
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        PROFILE_DIR="/tmp/gh-pages/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}"
+        mkdir -p "$PROFILE_DIR"
+
+        # Copy flamegraphs
+        [ -f index_flamegraph.svg ] && cp index_flamegraph.svg "$PROFILE_DIR/"
+        [ -f query_flamegraph.svg ] && cp query_flamegraph.svg "$PROFILE_DIR/"
+        [ -f index_profile.txt ] && cp index_profile.txt "$PROFILE_DIR/"
+        [ -f query_profile.txt ] && cp query_profile.txt "$PROFILE_DIR/"
+
+        # Create an index.html for this profile
+        cat > "$PROFILE_DIR/index.html" << EOF
+        <!DOCTYPE html>
+        <html>
+        <head><title>CPU Profiles - ${SHORT_SHA}</title></head>
+        <body>
+        <h1>CPU Profiles for ${{ github.ref_name }} @ ${SHORT_SHA}</h1>
+        <p>Dataset: MS MARCO ${{ github.event.inputs.msmarco_size }}</p>
+        <p>Date: $(date -u)</p>
+        <h2>Flamegraphs</h2>
+        <ul>
+        $([ -f index_flamegraph.svg ] && echo "<li><a href='index_flamegraph.svg'>Index Build Flamegraph</a></li>")
+        $([ -f query_flamegraph.svg ] && echo "<li><a href='query_flamegraph.svg'>Query Flamegraph</a></li>")
+        </ul>
+        <h2>Text Reports</h2>
+        <ul>
+        $([ -f index_profile.txt ] && echo "<li><a href='index_profile.txt'>Index Build Profile</a></li>")
+        $([ -f query_profile.txt ] && echo "<li><a href='query_profile.txt'>Query Profile</a></li>")
+        </ul>
+        </body>
+        </html>
+        EOF
+
+        # Update profiles index
+        cat > /tmp/gh-pages/benchmarks/profiles/index.html << 'INDEXEOF'
+        <!DOCTYPE html>
+        <html>
+        <head><title>CPU Profiles</title></head>
+        <body>
+        <h1>CPU Profiles</h1>
+        <p>Browse by branch and commit:</p>
+        <ul>
+        INDEXEOF
+
+        # List all profile directories
+        for branch_dir in /tmp/gh-pages/benchmarks/profiles/*/; do
+          [ -d "$branch_dir" ] || continue
+          branch=$(basename "$branch_dir")
+          [ "$branch" = "index.html" ] && continue
+          echo "<li><b>$branch</b><ul>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+          for commit_dir in "$branch_dir"*/; do
+            [ -d "$commit_dir" ] || continue
+            commit=$(basename "$commit_dir")
+            echo "<li><a href='$branch/$commit/'>$commit</a></li>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+          done
+          echo "</ul></li>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+        done
+
+        echo "</ul></body></html>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+
+        # Commit and push
+        cd /tmp/gh-pages
+        git add benchmarks/profiles/
+        if ! git diff --cached --quiet; then
+          git commit -m "Add CPU profiles for ${{ github.ref_name }}@${SHORT_SHA}"
+          git push origin gh-pages
+          echo "Flamegraphs published to: https://timescale.github.io/pg_textsearch/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}/"
+        else
+          echo "No changes to publish"
+        fi
+
+        # Cleanup worktree
+        cd "$GITHUB_WORKSPACE"
+        git worktree remove /tmp/gh-pages --force || true
+
     - name: Post profile summary
       if: always()
       run: |
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        PROFILE_URL="https://timescale.github.io/pg_textsearch/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}/"
+
         echo "### CPU Profile Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**[View Flamegraphs on GitHub Pages](${PROFILE_URL})**" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
         echo "#### Index Build Profile" >> $GITHUB_STEP_SUMMARY
