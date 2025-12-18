@@ -502,7 +502,7 @@ build_merged_docmap(TpMergeSource *sources, int num_sources)
 			doc_length = decode_fieldnorm(fieldnorm);
 
 			/* Add to merged docmap */
-			tp_docmap_add(docmap, &ctid, (uint16)doc_length);
+			tp_docmap_add(docmap, &ctid, doc_length);
 		}
 	}
 
@@ -752,18 +752,48 @@ write_merged_segment(
 		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntryV2));
 	}
 
-	/* Write skip index entries and posting blocks */
+	/*
+	 * Write skip index entries and posting blocks.
+	 * We convert postings to block format once, storing for reuse.
+	 */
+	TpBlockPosting **all_block_postings;
+
+	all_block_postings = palloc0(num_terms * sizeof(TpBlockPosting *));
+
+	/* First pass: build block_postings and write skip entries */
 	for (i = 0; i < num_terms; i++)
 	{
 		CollectedPosting *postings	= term_postings[i];
 		uint32			  doc_count = term_posting_counts[i];
 		uint32			  j;
 		uint32			  block_idx;
+		TpBlockPosting	 *block_postings;
 
 		if (doc_count == 0)
 			continue;
 
-		/* Write skip entries for this term */
+		/* Convert all postings to block format first */
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+		for (j = 0; j < doc_count; j++)
+		{
+			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
+			if (doc_id == UINT32_MAX)
+			{
+				elog(WARNING,
+					 "CTID (%u,%u) not found in docmap during merge, using 0",
+					 ItemPointerGetBlockNumber(&postings[j].ctid),
+					 ItemPointerGetOffsetNumber(&postings[j].ctid));
+				doc_id = 0;
+			}
+
+			block_postings[j].doc_id	= doc_id;
+			block_postings[j].frequency = postings[j].frequency;
+			block_postings[j].fieldnorm = docmap->fieldnorms[doc_id];
+			block_postings[j].reserved	= 0;
+		}
+		all_block_postings[i] = block_postings;
+
+		/* Write skip entries using converted block_postings */
 		for (block_idx = 0; block_idx < term_blocks[i].block_count;
 			 block_idx++)
 		{
@@ -771,21 +801,23 @@ write_merged_segment(
 			uint32		block_start = block_idx * TP_BLOCK_SIZE;
 			uint32 block_end   = Min(block_start + TP_BLOCK_SIZE, doc_count);
 			uint16 max_tf	   = 0;
+			uint8  max_norm	   = 0;
 			uint32 last_doc_id = 0;
 
 			for (j = block_start; j < block_end; j++)
 			{
-				uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
-				if (doc_id > last_doc_id)
-					last_doc_id = doc_id;
-				if (postings[j].frequency > max_tf)
-					max_tf = postings[j].frequency;
+				if (block_postings[j].doc_id > last_doc_id)
+					last_doc_id = block_postings[j].doc_id;
+				if (block_postings[j].frequency > max_tf)
+					max_tf = block_postings[j].frequency;
+				if (block_postings[j].fieldnorm > max_norm)
+					max_norm = block_postings[j].fieldnorm;
 			}
 
 			skip.last_doc_id	= last_doc_id;
 			skip.doc_count		= (uint8)(block_end - block_start);
 			skip.block_max_tf	= max_tf;
-			skip.block_max_norm = 0; /* Could compute from fieldnorms */
+			skip.block_max_norm = max_norm;
 			skip.posting_offset = header.postings_offset +
 								  term_blocks[i].posting_offset +
 								  (block_start * sizeof(TpBlockPosting));
@@ -796,28 +828,23 @@ write_merged_segment(
 		}
 	}
 
-	/* Write posting blocks */
+	/* Second pass: write posting blocks (reusing stored block_postings) */
 	for (i = 0; i < num_terms; i++)
 	{
-		CollectedPosting *postings	= term_postings[i];
-		uint32			  doc_count = term_posting_counts[i];
-		uint32			  j;
+		uint32 doc_count = term_posting_counts[i];
 
-		for (j = 0; j < doc_count; j++)
-		{
-			TpBlockPosting bp;
-			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
-			if (doc_id == UINT32_MAX)
-				doc_id = 0;
+		if (all_block_postings[i] == NULL || doc_count == 0)
+			continue;
 
-			bp.doc_id	 = doc_id;
-			bp.frequency = postings[j].frequency;
-			bp.fieldnorm = docmap->fieldnorms[doc_id];
-			bp.reserved	 = 0;
+		tp_segment_writer_write(
+				&writer,
+				all_block_postings[i],
+				doc_count * sizeof(TpBlockPosting));
 
-			tp_segment_writer_write(&writer, &bp, sizeof(TpBlockPosting));
-		}
+		pfree(all_block_postings[i]);
 	}
+
+	pfree(all_block_postings);
 
 	/* Write fieldnorm table */
 	header.fieldnorm_offset = writer.current_offset;

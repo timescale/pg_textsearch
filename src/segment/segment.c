@@ -1294,7 +1294,7 @@ build_docmap_from_memtable(TpLocalIndexState *state)
 	while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(&seq_status)) !=
 		   NULL)
 	{
-		tp_docmap_add(docmap, &doc_entry->ctid, (uint16)doc_entry->doc_length);
+		tp_docmap_add(docmap, &doc_entry->ctid, (uint32)doc_entry->doc_length);
 	}
 	dshash_seq_term(&seq_status);
 	dshash_detach(doc_lengths_hash);
@@ -1497,10 +1497,17 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	Assert(writer.current_offset == header.skip_index_offset);
 
 	/*
-	 * Second pass: Write skip index entries and posting blocks.
-	 * We need to process each term's postings, convert to doc_ids,
-	 * and write both skip entries and posting data.
+	 * Second pass: Build and write skip index entries and posting blocks.
+	 * We convert postings to doc_ids once, storing block_postings for each
+	 * term. Skip entries are written first (all terms), then posting blocks.
 	 */
+	TpBlockPosting **all_block_postings;
+	uint32			*all_doc_counts;
+
+	all_block_postings = palloc0(num_terms * sizeof(TpBlockPosting *));
+	all_doc_counts	   = palloc0(num_terms * sizeof(uint32));
+
+	/* First: build skip entries and block_postings, write skip entries */
 	for (i = 0; i < num_terms; i++)
 	{
 		TpPostingList  *posting_list = NULL;
@@ -1545,6 +1552,7 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 			for (j = block_start; j < block_end; j++)
 			{
 				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+				uint8  norm;
 
 				if (doc_id == UINT32_MAX)
 				{
@@ -1555,20 +1563,18 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 					doc_id = 0;
 				}
 
+				norm = tp_docmap_get_fieldnorm(docmap, doc_id);
+
 				block_postings[j].doc_id	= doc_id;
 				block_postings[j].frequency = (uint16)entries[j].frequency;
+				block_postings[j].fieldnorm = norm;
 				block_postings[j].reserved	= 0;
 
 				/* Track block max stats */
 				if (entries[j].frequency > max_tf)
 					max_tf = (uint16)entries[j].frequency;
-
-				/* Get fieldnorm for this doc */
-				{
-					uint8 norm = tp_docmap_get_fieldnorm(docmap, doc_id);
-					if (norm > max_norm)
-						max_norm = norm;
-				}
+				if (norm > max_norm)
+					max_norm = norm;
 
 				last_doc_id = doc_id;
 			}
@@ -1594,53 +1600,29 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 				term_blocks[i].block_count * sizeof(TpSkipEntry));
 
 		pfree(skip_entries);
-		pfree(block_postings);
+
+		/* Store block_postings for writing after all skip entries */
+		all_block_postings[i] = block_postings;
+		all_doc_counts[i]	  = doc_count;
 	}
 
-	/* Now write all posting blocks */
+	/* Second: write all posting blocks (reusing stored block_postings) */
 	for (i = 0; i < num_terms; i++)
 	{
-		TpPostingList  *posting_list = NULL;
-		TpPostingEntry *entries		 = NULL;
-		uint32			doc_count	 = 0;
-		TpBlockPosting *block_postings;
-		uint32			j;
-
-		if (terms[i].posting_list_dp != InvalidDsaPointer)
-		{
-			posting_list = (TpPostingList *)
-					dsa_get_address(state->dsa, terms[i].posting_list_dp);
-			if (posting_list && posting_list->doc_count > 0)
-			{
-				entries = (TpPostingEntry *)
-						dsa_get_address(state->dsa, posting_list->entries_dp);
-				doc_count = posting_list->doc_count;
-			}
-		}
-
-		if (doc_count == 0)
+		if (all_block_postings[i] == NULL || all_doc_counts[i] == 0)
 			continue;
-
-		/* Convert postings to block format */
-		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
-		for (j = 0; j < doc_count; j++)
-		{
-			uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
-			if (doc_id == UINT32_MAX)
-				doc_id = 0;
-
-			block_postings[j].doc_id	= doc_id;
-			block_postings[j].frequency = (uint16)entries[j].frequency;
-			block_postings[j].fieldnorm = docmap->fieldnorms[doc_id];
-			block_postings[j].reserved	= 0;
-		}
 
 		/* Write posting blocks for this term */
 		tp_segment_writer_write(
-				&writer, block_postings, doc_count * sizeof(TpBlockPosting));
+				&writer,
+				all_block_postings[i],
+				all_doc_counts[i] * sizeof(TpBlockPosting));
 
-		pfree(block_postings);
+		pfree(all_block_postings[i]);
 	}
+
+	pfree(all_block_postings);
+	pfree(all_doc_counts);
 
 	/* Write fieldnorm table */
 	header.fieldnorm_offset = writer.current_offset;

@@ -70,7 +70,7 @@ tp_docmap_create(void)
 }
 
 uint32
-tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint16 doc_length)
+tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length)
 {
 	TpDocMapEntry *entry;
 	bool		   found;

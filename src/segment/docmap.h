@@ -25,7 +25,7 @@ typedef struct TpDocMapEntry
 {
 	ItemPointerData ctid;		/* Key: heap tuple location */
 	uint32			doc_id;		/* Value: segment-local doc ID */
-	uint16			doc_length; /* Document length (for fieldnorm) */
+	uint32			doc_length; /* Document length (for fieldnorm) */
 } TpDocMapEntry;
 
 /*
@@ -55,7 +55,7 @@ extern TpDocMapBuilder *tp_docmap_create(void);
  * doc_length is stored for fieldnorm encoding.
  */
 extern uint32
-tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint16 doc_length);
+tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length);
 
 /*
  * Look up doc_id for a CTID.
