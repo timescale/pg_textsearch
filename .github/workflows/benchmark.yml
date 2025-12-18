@@ -44,6 +44,178 @@ on:
           - 'full'
 
 jobs:
+  # CPU profiling job (separate from timing benchmarks)
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc \
+            linux-tools-common linux-tools-generic linux-tools-$(uname -r) || true
+        # Install FlameGraph for visualization
+        git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
+
+        # PostgreSQL
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17 \
+            postgresql-17-dbgsym || sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension (release with debug symbols)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        # Release optimization but keep frame pointers for profiling
+        CFLAGS="-O2 -fno-omit-frame-pointer -g" make
+        sudo make install
+
+    - name: Configure PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 2GB
+        maintenance_work_mem = 256MB
+        pg_textsearch.index_memory_limit = 256MB
+        EOF
+
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Download MS MARCO dataset (100K subset for profiling)
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh 100K
+
+    - name: Load data (without index)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        # Load data but skip index creation
+        psql -c "DROP TABLE IF EXISTS msmarco_passages CASCADE"
+        psql -c "CREATE TABLE msmarco_passages (id BIGINT PRIMARY KEY, passage TEXT)"
+        psql -c "\\COPY msmarco_passages FROM '$DATA_DIR/collection.tsv'"
+        psql -c "SELECT COUNT(*) as num_rows FROM msmarco_passages"
+
+    - name: Profile index creation with perf
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        # Enable perf for non-root (may fail on some systems)
+        echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid || true
+        echo 0 | sudo tee /proc/sys/kernel/kptr_restrict || true
+
+        # Start index creation in background
+        psql -c "CREATE INDEX msmarco_bm25_idx ON msmarco_passages USING bm25(passage) WITH (text_config='english')" &
+        PSQL_PID=$!
+
+        # Wait a moment for the backend to start
+        sleep 2
+
+        # Find the postgres backend process
+        PG_PID=$(pgrep -f "postgres.*bench_test" | head -1)
+        echo "Profiling PID: $PG_PID"
+
+        if [ -n "$PG_PID" ]; then
+          # Record profile for duration of index build (up to 5 min)
+          sudo perf record -F 99 -p $PG_PID -g --call-graph dwarf -o perf.data -- sleep 300 &
+          PERF_PID=$!
+
+          # Wait for index creation to complete
+          wait $PSQL_PID || true
+
+          # Stop perf recording
+          sudo kill -INT $PERF_PID 2>/dev/null || true
+          sleep 2
+
+          # Generate perf report
+          sudo perf report -i perf.data --stdio --no-children > profile_report.txt 2>&1 || true
+
+          # Generate flamegraph
+          sudo perf script -i perf.data > perf.script 2>/dev/null || true
+          if [ -s perf.script ]; then
+            ./FlameGraph/stackcollapse-perf.pl perf.script > perf.folded
+            ./FlameGraph/flamegraph.pl perf.folded > flamegraph.svg
+            echo "Flamegraph generated successfully"
+          fi
+        else
+          echo "Could not find postgres backend PID"
+          wait $PSQL_PID || true
+        fi
+
+    - name: Generate profile summary
+      run: |
+        echo "# CPU Profile Summary" > profile_summary.md
+        echo "" >> profile_summary.md
+        echo "**Date:** $(date -u)" >> profile_summary.md
+        echo "**Commit:** ${{ github.sha }}" >> profile_summary.md
+        echo "**Branch:** ${{ github.ref_name }}" >> profile_summary.md
+        echo "" >> profile_summary.md
+
+        if [ -f profile_report.txt ]; then
+          echo "## Top Functions (by overhead)" >> profile_summary.md
+          echo '```' >> profile_summary.md
+          head -100 profile_report.txt >> profile_summary.md
+          echo '```' >> profile_summary.md
+        fi
+
+        echo "" >> profile_summary.md
+        echo "## Artifacts" >> profile_summary.md
+        echo "- flamegraph.svg - Interactive CPU flamegraph" >> profile_summary.md
+        echo "- profile_report.txt - Full perf report" >> profile_summary.md
+
+    - name: Upload profile artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cpu-profile-${{ github.run_id }}
+        path: |
+          flamegraph.svg
+          profile_report.txt
+          profile_summary.md
+          perf.folded
+        retention-days: 30
+
+    - name: Post profile summary
+      if: always()
+      run: |
+        echo "### CPU Profile Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f profile_report.txt ]; then
+          echo "Top 20 functions by CPU overhead:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -50 profile_report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Profile collection failed - check logs" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
   # Full benchmark suite
   full-benchmark:
     runs-on: ubuntu-latest
