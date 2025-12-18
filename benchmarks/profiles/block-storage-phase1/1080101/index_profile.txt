@@ -1,0 +1,2069 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 75K of event 'task-clock:ppp'
+# Event count (approx.): 758818174230
+#
+# Overhead  Command   Shared Object      Symbol                                          
+# ........  ........  .................  ................................................
+#
+    13.28%  postgres  postgres           [.] hash_search_with_hash_value
+            |
+            ---hash_search_with_hash_value
+               |          
+               |--10.73%--tp_docmap_lookup
+               |          |          
+               |          |--6.51%--write_merged_segment
+               |          |          tp_merge_level_segments
+               |          |          tp_maybe_compact_level
+               |          |          |          
+               |          |          |--4.21%--tp_maybe_compact_level
+               |          |          |          tp_auto_spill_if_needed
+               |          |          |          tp_process_document_text
+               |          |          |          tp_process_document
+               |          |          |          tp_build
+               |          |          |          index_build
+               |          |          |          index_create
+               |          |          |          DefineIndex
+               |          |          |          ProcessUtilitySlow.isra.0
+               |          |          |          standard_ProcessUtility
+               |          |          |          PortalRunUtility
+               |          |          |          PortalRunMulti
+               |          |          |          PortalRun
+               |          |          |          exec_simple_query.lto_priv.0
+               |          |          |          PostgresMain
+               |          |          |          BackendMain
+               |          |          |          postmaster_child_launch.part.0
+               |          |          |          ServerLoop.isra.0
+               |          |          |          0xffffffffffffffff
+               |          |          |          
+               |          |           --2.30%--tp_auto_spill_if_needed
+               |          |                     tp_process_document_text
+               |          |                     tp_process_document
+               |          |                     tp_build
+               |          |                     index_build
+               |          |                     index_create
+               |          |                     DefineIndex
+               |          |                     ProcessUtilitySlow.isra.0
+               |          |                     standard_ProcessUtility
+               |          |                     PortalRunUtility
+               |          |                     PortalRunMulti
+               |          |                     PortalRun
+               |          |                     exec_simple_query.lto_priv.0
+               |          |                     PostgresMain
+               |          |                     BackendMain
+               |          |                     postmaster_child_launch.part.0
+               |          |                     ServerLoop.isra.0
+               |          |                     0xffffffffffffffff
+               |          |          
+               |           --4.21%--tp_write_segment_v2
+               |                     |          
+               |                      --4.21%--tp_auto_spill_if_needed
+               |                                tp_process_document_text
+               |                                tp_process_document
+               |                                tp_build
+               |                                index_build
+               |                                index_create
+               |                                DefineIndex
+               |                                ProcessUtilitySlow.isra.0
+               |                                standard_ProcessUtility
+               |                                PortalRunUtility
+               |                                PortalRunMulti
+               |                                PortalRun
+               |                                exec_simple_query.lto_priv.0
+               |                                PostgresMain
+               |                                BackendMain
+               |                                postmaster_child_launch.part.0
+               |                                ServerLoop.isra.0
+               |                                0xffffffffffffffff
+               |          
+               |--1.49%--StartReadBuffer
+               |          |          
+               |           --1.49%--ReadBufferExtended
+               |                     |          
+               |                      --1.40%--tp_segment_read
+               |                                |          
+               |                                 --1.13%--posting_source_convert_current
+               |                                           |          
+               |                                            --1.03%--posting_source_advance
+               |                                                      collect_term_postings
+               |                                                      write_merged_segment
+               |                                                      tp_merge_level_segments
+               |                                                      tp_maybe_compact_level
+               |                                                      |          
+               |                                                       --0.57%--tp_maybe_compact_level
+               |                                                                 tp_auto_spill_if_needed
+               |                                                                 tp_process_document_text
+               |                                                                 tp_process_document
+               |                                                                 tp_build
+               |                                                                 index_build
+               |                                                                 index_create
+               |                                                                 DefineIndex
+               |                                                                 ProcessUtilitySlow.isra.0
+               |                                                                 standard_ProcessUtility
+               |                                                                 PortalRunUtility
+               |                                                                 PortalRunMulti
+               |                                                                 PortalRun
+               |                                                                 exec_simple_query.lto_priv.0
+               |                                                                 PostgresMain
+               |                                                                 BackendMain
+               |                                                                 postmaster_child_launch.part.0
+               |                                                                 ServerLoop.isra.0
+               |                                                                 0xffffffffffffffff
+               |          
+                --0.60%--GetPrivateRefCountEntry.lto_priv.0
+                          |          
+                           --0.60%--PinBuffer.lto_priv.0
+                                     StartReadBuffer
+                                     ReadBufferExtended
+                                     |          
+                                      --0.57%--tp_segment_read
+
+     5.71%  postgres  postgres           [.] TParserGet.part.0.lto_priv.0
+            |
+            ---TParserGet.part.0.lto_priv.0
+               prsd_nexttoken
+               |          
+                --5.69%--FunctionCall3Coll
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     4.19%  postgres  postgres           [.] p_iseqC.lto_priv.0
+            |
+            ---p_iseqC.lto_priv.0
+               TParserGet.part.0.lto_priv.0
+               prsd_nexttoken
+               FunctionCall3Coll
+               parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     3.18%  postgres  postgres           [.] pg_qsort
+            |
+            ---pg_qsort
+               |          
+               |--1.83%--pg_qsort
+               |          |          
+               |          |--0.87%--make_tsvector
+               |          |          to_tsvector_byid
+               |          |          DirectFunctionCall2Coll
+               |          |          tp_process_document_text
+               |          |          tp_process_document
+               |          |          tp_build
+               |          |          index_build
+               |          |          index_create
+               |          |          DefineIndex
+               |          |          ProcessUtilitySlow.isra.0
+               |          |          standard_ProcessUtility
+               |          |          PortalRunUtility
+               |          |          PortalRunMulti
+               |          |          PortalRun
+               |          |          exec_simple_query.lto_priv.0
+               |          |          PostgresMain
+               |          |          BackendMain
+               |          |          postmaster_child_launch.part.0
+               |          |          ServerLoop.isra.0
+               |          |          0xffffffffffffffff
+               |          |          
+               |           --0.85%--pg_qsort
+               |                     |          
+               |                      --0.55%--pg_qsort
+               |          
+                --1.23%--make_tsvector
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          |          
+                           --1.22%--0xffffffffffffffff
+
+     2.72%  postgres  postgres           [.] AllocSetFree
+            |
+            ---AllocSetFree
+               |          
+                --0.57%--LexizeExec
+                          |          
+                           --0.54%--parsetext
+                                     to_tsvector_byid
+                                     DirectFunctionCall2Coll
+                                     tp_process_document_text
+                                     tp_process_document
+                                     tp_build
+                                     index_build
+                                     index_create
+                                     DefineIndex
+                                     ProcessUtilitySlow.isra.0
+                                     standard_ProcessUtility
+                                     PortalRunUtility
+                                     PortalRunMulti
+                                     PortalRun
+                                     exec_simple_query.lto_priv.0
+                                     PostgresMain
+                                     BackendMain
+                                     postmaster_child_launch.part.0
+                                     ServerLoop.isra.0
+                                     0xffffffffffffffff
+
+     2.39%  postgres  postgres           [.] AllocSetAlloc
+            |
+            ---AllocSetAlloc
+
+     2.32%  postgres  dict_snowball.so   [.] find_among_b
+            |
+            ---find_among_b
+               english_UTF_8_stem
+               |          
+                --2.31%--dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     2.31%  postgres  dict_snowball.so   [.] in_grouping_U
+            |
+            ---in_grouping_U
+               english_UTF_8_stem
+               |          
+                --2.29%--dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     1.69%  postgres  dict_snowball.so   [.] english_UTF_8_stem
+            |
+            ---english_UTF_8_stem
+               dsnowball_lexize
+               FunctionCall4Coll
+               LexizeExec
+               parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     1.69%  postgres  libc.so.6          [.] towlower
+            |
+            ---towlower
+               lowerstr_with_len.part.0
+               |          
+                --1.61%--dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     1.63%  postgres  postgres           [.] LexizeExec
+            |
+            ---LexizeExec
+               parsetext
+               |          
+                --1.62%--to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     1.61%  postgres  libc.so.6          [.] 0x0000000000188a99
+            |
+            ---0x7fd6ae588a99
+               |          
+                --1.43%--tp_segment_read
+                          |          
+                           --1.40%--posting_source_convert_current
+                                     |          
+                                      --1.28%--posting_source_advance
+                                                collect_term_postings
+                                                write_merged_segment
+                                                tp_merge_level_segments
+                                                tp_maybe_compact_level
+                                                |          
+                                                 --0.85%--tp_maybe_compact_level
+                                                           tp_auto_spill_if_needed
+                                                           tp_process_document_text
+                                                           tp_process_document
+                                                           tp_build
+                                                           index_build
+                                                           index_create
+                                                           DefineIndex
+                                                           ProcessUtilitySlow.isra.0
+                                                           standard_ProcessUtility
+                                                           PortalRunUtility
+                                                           PortalRunMulti
+                                                           PortalRun
+                                                           exec_simple_query.lto_priv.0
+                                                           PostgresMain
+                                                           BackendMain
+                                                           postmaster_child_launch.part.0
+                                                           ServerLoop.isra.0
+                                                           0xffffffffffffffff
+
+     1.46%  postgres  postgres           [.] searchstoplist
+            |
+            ---searchstoplist
+               |          
+                --1.46%--dsnowball_lexize
+                          |          
+                           --1.45%--FunctionCall4Coll
+                                     LexizeExec
+                                     parsetext
+                                     to_tsvector_byid
+                                     DirectFunctionCall2Coll
+                                     tp_process_document_text
+                                     tp_process_document
+                                     tp_build
+                                     index_build
+                                     index_create
+                                     DefineIndex
+                                     ProcessUtilitySlow.isra.0
+                                     standard_ProcessUtility
+                                     PortalRunUtility
+                                     PortalRunMulti
+                                     PortalRun
+                                     exec_simple_query.lto_priv.0
+                                     PostgresMain
+                                     BackendMain
+                                     postmaster_child_launch.part.0
+                                     ServerLoop.isra.0
+                                     0xffffffffffffffff
+
+     1.23%  postgres  pg_textsearch.so   [.] tp_segment_read
+            |
+            ---tp_segment_read
+               |          
+                --0.84%--posting_source_convert_current
+                          |          
+                           --0.78%--posting_source_advance
+                                     collect_term_postings
+                                     write_merged_segment
+                                     tp_merge_level_segments
+                                     tp_maybe_compact_level
+
+     1.21%  postgres  postgres           [.] p_isasclet.lto_priv.0
+            |
+            ---p_isasclet.lto_priv.0
+               TParserGet.part.0.lto_priv.0
+               |          
+                --0.92%--prsd_nexttoken
+                          FunctionCall3Coll
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     1.19%  postgres  postgres           [.] hash_bytes
+            |
+            ---hash_bytes
+               |          
+                --0.79%--StartReadBuffer
+                          ReadBufferExtended
+                          |          
+                           --0.77%--tp_segment_read
+                                     |          
+                                      --0.56%--posting_source_convert_current
+                                                |          
+                                                 --0.52%--posting_source_advance
+                                                           collect_term_postings
+                                                           write_merged_segment
+                                                           tp_merge_level_segments
+                                                           tp_maybe_compact_level
+
+     1.14%  postgres  postgres           [.] p_isalpha.lto_priv.0
+            |
+            ---p_isalpha.lto_priv.0
+               |          
+                --0.75%--p_isasclet.lto_priv.0
+
+     1.12%  postgres  postgres           [.] compareWORD
+            |
+            ---compareWORD
+               |          
+                --1.06%--pg_qsort
+                          |          
+                           --0.62%--pg_qsort
+
+     1.07%  postgres  libc.so.6          [.] iswalpha
+            |
+            ---iswalpha
+               |          
+                --0.80%--p_isasclet.lto_priv.0
+                          TParserGet.part.0.lto_priv.0
+                          prsd_nexttoken
+                          FunctionCall3Coll
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     1.04%  postgres  pg_textsearch.so   [.] write_merged_segment
+            |
+            ---write_merged_segment
+               tp_merge_level_segments
+               tp_maybe_compact_level
+               |          
+                --0.57%--tp_auto_spill_if_needed
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.99%  postgres  postgres           [.] LWLockRelease
+            |
+            ---LWLockRelease
+
+     0.98%  postgres  postgres           [.] parsetext
+            |
+            ---parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     0.96%  postgres  pg_textsearch.so   [.] tp_add_document_to_posting_list
+            |
+            ---tp_add_document_to_posting_list
+               tp_add_document_terms
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.89%  postgres  postgres           [.] p_isspecial.lto_priv.0
+            |
+            ---p_isspecial.lto_priv.0
+               TParserGet.part.0.lto_priv.0
+               prsd_nexttoken
+               FunctionCall3Coll
+               parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     0.86%  postgres  postgres           [.] pg_utf_mblen_private
+            |
+            ---pg_utf_mblen_private
+               TParserGet.part.0.lto_priv.0
+               |          
+                --0.86%--prsd_nexttoken
+                          FunctionCall3Coll
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.86%  postgres  postgres           [.] LWLockAttemptLock
+            |
+            ---LWLockAttemptLock
+               LWLockAcquire
+
+     0.79%  postgres  postgres           [.] StartReadBuffer
+            |
+            ---StartReadBuffer
+               ReadBufferExtended
+               |          
+                --0.74%--tp_segment_read
+                          |          
+                           --0.55%--posting_source_convert_current
+                                     |          
+                                      --0.52%--posting_source_advance
+                                                collect_term_postings
+                                                write_merged_segment
+                                                tp_merge_level_segments
+                                                tp_maybe_compact_level
+
+     0.79%  postgres  libc.so.6          [.] 0x000000000018aff3
+            |
+            ---0x7fd6ae58aff3
+
+     0.72%  postgres  dict_snowball.so   [.] out_grouping_U
+            |
+            ---out_grouping_U
+               english_UTF_8_stem
+               dsnowball_lexize
+               FunctionCall4Coll
+               LexizeExec
+               parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     0.72%  postgres  postgres           [.] make_tsvector
+            |
+            ---make_tsvector
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               PostmasterMain
+               |          
+                --0.72%--0xffffffffffffffff
+
+     0.72%  postgres  dict_snowball.so   [.] replace_s
+            |
+            ---replace_s
+               |          
+                --0.55%--dsnowball_lexize
+                          |          
+                           --0.54%--FunctionCall4Coll
+                                     LexizeExec
+                                     parsetext
+                                     to_tsvector_byid
+                                     DirectFunctionCall2Coll
+                                     tp_process_document_text
+                                     tp_process_document
+                                     tp_build
+                                     index_build
+                                     index_create
+                                     DefineIndex
+                                     ProcessUtilitySlow.isra.0
+                                     standard_ProcessUtility
+                                     PortalRunUtility
+                                     PortalRunMulti
+                                     PortalRun
+                                     exec_simple_query.lto_priv.0
+                                     PostgresMain
+                                     BackendMain
+                                     postmaster_child_launch.part.0
+                                     ServerLoop.isra.0
+                                     0xffffffffffffffff
+
+     0.71%  postgres  dict_snowball.so   [.] find_among
+            |
+            ---find_among
+               english_UTF_8_stem
+               |          
+                --0.71%--dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.70%  postgres  libc.so.6          [.] 0x000000000018b00b
+            |
+            ---0x7fd6ae58b00b
+               |          
+                --0.59%--searchstoplist
+                          dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.69%  postgres  postgres           [.] p_isdigit.lto_priv.0
+            |
+            ---p_isdigit.lto_priv.0
+               TParserGet.part.0.lto_priv.0
+               |          
+                --0.54%--prsd_nexttoken
+                          FunctionCall3Coll
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.66%  postgres  postgres           [.] prsd_nexttoken
+            |
+            ---prsd_nexttoken
+               FunctionCall3Coll
+               |          
+                --0.65%--parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.66%  postgres  postgres           [.] LWLockAcquire
+            |
+            ---LWLockAcquire
+
+     0.66%  postgres  postgres           [.] dsa_get_address
+            |
+            ---dsa_get_address
+
+     0.65%  postgres  libc.so.6          [.] 0x000000000018afef
+            |
+            ---0x7fd6ae58afef
+
+     0.64%  postgres  libc.so.6          [.] 0x000000000018b001
+            |
+            ---0x7fd6ae58b001
+
+     0.64%  postgres  pg_textsearch.so   [.] BlockIdGetBlockNumber.lto_priv.6
+            |
+            ---BlockIdGetBlockNumber (inlined)
+               ItemPointerGetBlockNumberNoCheck (inlined)
+               ItemPointerGetBlockNumber (inlined)
+               ctid_hash
+               hash_search
+               |          
+                --0.63%--tp_docmap_lookup
+
+     0.63%  postgres  postgres           [.] p_isEOF.lto_priv.0
+            |
+            ---p_isEOF.lto_priv.0
+               TParserGet.part.0.lto_priv.0
+               prsd_nexttoken
+               FunctionCall3Coll
+               parsetext
+               to_tsvector_byid
+               DirectFunctionCall2Coll
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               0xffffffffffffffff
+
+     0.61%  postgres  pg_textsearch.so   [.] tp_get_key_str
+            |
+            ---tp_get_key_str
+               |          
+                --0.57%--tp_string_compare_function
+                          |          
+                           --0.57%--dshash_find
+                                     tp_string_table_lookup
+                                     tp_get_or_create_posting_list
+                                     tp_add_document_terms
+                                     tp_process_document_text
+                                     tp_process_document
+                                     tp_build
+                                     index_build
+                                     index_create
+                                     DefineIndex
+                                     ProcessUtilitySlow.isra.0
+                                     standard_ProcessUtility
+                                     PortalRunUtility
+                                     PortalRunMulti
+                                     PortalRun
+                                     exec_simple_query.lto_priv.0
+                                     PostgresMain
+                                     BackendMain
+                                     postmaster_child_launch.part.0
+                                     ServerLoop.isra.0
+                                     0xffffffffffffffff
+
+     0.59%  postgres  postgres           [.] palloc0
+            |
+            ---palloc0
+               |          
+                --0.58%--dsnowball_lexize
+                          FunctionCall4Coll
+                          LexizeExec
+                          parsetext
+                          to_tsvector_byid
+                          DirectFunctionCall2Coll
+                          tp_process_document_text
+                          tp_process_document
+                          tp_build
+                          index_build
+                          index_create
+                          DefineIndex
+                          ProcessUtilitySlow.isra.0
+                          standard_ProcessUtility
+                          PortalRunUtility
+                          PortalRunMulti
+                          PortalRun
+                          exec_simple_query.lto_priv.0
+                          PostgresMain
+                          BackendMain
+                          postmaster_child_launch.part.0
+                          ServerLoop.isra.0
+                          0xffffffffffffffff
+
+     0.59%  postgres  pg_textsearch.so   [.] find_min_posting_source
+            |
+            ---find_min_posting_source
+               collect_term_postings
+               |          
+                --0.58%--write_merged_segment
+                          tp_merge_level_segments
+                          tp_maybe_compact_level
+
+     0.58%  postgres  libc.so.6          [.] wcsrtombs
+            |
+            ---wcsrtombs
+               wcstombs
+               |          
+                --0.56%--lowerstr_with_len.part.0
+                          |          
+                           --0.54%--dsnowball_lexize
+                                     FunctionCall4Coll
+                                     LexizeExec
+                                     parsetext
+                                     to_tsvector_byid
+                                     DirectFunctionCall2Coll
+                                     tp_process_document_text
+                                     tp_process_document
+                                     tp_build
+                                     index_build
+                                     index_create
+                                     DefineIndex
+                                     ProcessUtilitySlow.isra.0
+                                     standard_ProcessUtility
+                                     PortalRunUtility
+                                     PortalRunMulti
+                                     PortalRun
+                                     exec_simple_query.lto_priv.0
+                                     PostgresMain
+                                     BackendMain
+                                     postmaster_child_launch.part.0
+                                     ServerLoop.isra.0
+                                     0xffffffffffffffff
+
+     0.58%  postgres  postgres           [.] dshash_find
+            |
+            ---dshash_find
+               tp_string_table_lookup
+               tp_get_or_create_posting_list
+               tp_add_document_terms
+               tp_process_document_text
+               tp_process_document
+               tp_build
+               index_build
+               index_create
+               DefineIndex
+               ProcessUtilitySlow.isra.0
+               standard_ProcessUtility
+               PortalRunUtility
+               PortalRunMulti
+               PortalRun
+               exec_simple_query.lto_priv.0
+               PostgresMain
+               BackendMain
+               postmaster_child_launch.part.0
+               ServerLoop.isra.0
+               PostmasterMain
+               0xffffffffffffffff
+
+     0.55%  postgres  postgres           [.] PinBuffer.lto_priv.0
+            |
+            ---PinBuffer.lto_priv.0
+               StartReadBuffer
+               |          
+                --0.54%--ReadBufferExtended
+                          |          
+                           --0.52%--tp_segment_read
+
+     0.51%  postgres  postgres           [.] GetPrivateRefCountEntry.lto_priv.0
+            |
+            ---GetPrivateRefCountEntry.lto_priv.0
+
+     0.51%  postgres  pg_textsearch.so   [.] collect_term_postings
+            |
+            ---collect_term_postings
+               write_merged_segment
+               |          
+                --0.51%--tp_merge_level_segments
+                          tp_maybe_compact_level
+
+     0.46%  postgres  postgres           [.] dshash_attach
+     0.46%  postgres  dict_snowball.so   [.] dsnowball_lexize
+     0.44%  postgres  postgres           [.] lowerstr_with_len.part.0
+     0.42%  postgres  [kernel.kallsyms]  [k] clear_page_erms
+     0.41%  postgres  pg_textsearch.so   [.] docmap_entry_cmp
+     0.40%  postgres  libc.so.6          [.] 0x00000000001885e3
+     0.38%  postgres  pg_textsearch.so   [.] posting_source_advance
+     0.38%  postgres  postgres           [.] FunctionCall3Coll
+     0.37%  postgres  postgres           [.] ItemPointerCompare
+     0.37%  postgres  pg_textsearch.so   [.] ctid_match
+     0.36%  postgres  pg_textsearch.so   [.] ctid_hash
+     0.36%  postgres  pg_textsearch.so   [.] tp_write_segment_v2
+     0.35%  postgres  libc.so.6          [.] 0x0000000000031c11
+     0.35%  postgres  pg_textsearch.so   [.] posting_source_convert_current
+     0.33%  postgres  pg_textsearch.so   [.] tp_docmap_get_fieldnorm
+     0.32%  postgres  libc.so.6          [.] 0x00000000001885dd
+     0.32%  postgres  pg_textsearch.so   [.] tp_extract_terms_from_tsvector
+     0.31%  postgres  libc.so.6          [.] 0x000000000018b007
+     0.31%  postgres  postgres           [.] UnpinBufferNoOwner.lto_priv.0
+     0.30%  postgres  postgres           [.] AllocSetRealloc
+     0.30%  postgres  postgres           [.] pfree
+     0.29%  postgres  [kernel.kallsyms]  [k] do_user_addr_fault
+     0.27%  postgres  dict_snowball.so   [.] get_utf8.part.0
+     0.27%  postgres  postgres           [.] uint32_hash
+     0.26%  postgres  pg_textsearch.so   [.] tp_docmap_lookup
+     0.26%  postgres  dict_snowball.so   [.] out_grouping_b_U
+     0.25%  postgres  postgres           [.] dshash_seq_next
+     0.25%  postgres  postgres           [.] p_isalnum.lto_priv.0
+     0.25%  postgres  pg_textsearch.so   [.] tp_string_compare_function
+     0.24%  postgres  libc.so.6          [.] 0x00000000001883c8
+     0.24%  postgres  libc.so.6          [.] 0x0000000000030d70
+     0.24%  postgres  pg_textsearch.so   [.] tp_string_hash_function
+     0.23%  postgres  libc.so.6          [.] 0x000000000018b7a1
+     0.23%  postgres  postgres           [.] ReadBufferExtended
+     0.23%  postgres  postgres           [.] p_isignore.lto_priv.0
+     0.22%  postgres  pg_textsearch.so   [.] BufferGetBlock.lto_priv.4
+     0.21%  postgres  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     0.21%  postgres  libc.so.6          [.] 0x0000000000188ac5
+     0.21%  postgres  libc.so.6          [.] iswalnum
+     0.21%  postgres  libc.so.6          [.] mbstowcs
+     0.21%  postgres  libc.so.6          [.] 0x000000000018b7a7
+     0.21%  postgres  postgres           [.] char2wchar
+     0.20%  postgres  libc.so.6          [.] 0x0000000000031d3b
+     0.19%  postgres  libc.so.6          [.] iswdigit
+     0.19%  postgres  libc.so.6          [.] 0x0000000000031c19
+     0.19%  postgres  postgres           [.] FunctionCall4Coll
+     0.18%  postgres  libc.so.6          [.] 0x000000000018b315
+     0.18%  postgres  postgres           [.] ResourceOwnerForget
+     0.17%  postgres  pg_textsearch.so   [.] BufferGetPage.lto_priv.4
+     0.17%  postgres  pg_textsearch.so   [.] ItemPointerGetOffsetNumberNoCheck.lto_priv.2
+     0.17%  postgres  postgres           [.] dshash_find_or_insert
+     0.17%  postgres  postgres           [.] pg_utf_dsplen.lto_priv.0
+     0.15%  postgres  libc.so.6          [.] mbsrtowcs
+     0.15%  postgres  libc.so.6          [.] 0x000000000018b00f
+     0.15%  postgres  libc.so.6          [.] 0x00000000001885d9
+     0.14%  postgres  libc.so.6          [.] 0x0000000000031bf2
+     0.14%  postgres  postgres           [.] LockBuffer
+     0.14%  postgres  postgres           [.] p_isnotalnum.lto_priv.0
+     0.13%  postgres  pg_textsearch.so   [.] tp_get_posting_entries
+     0.13%  postgres  pg_textsearch.so   [.] term_info_cmp
+     0.13%  postgres  pg_textsearch.so   [.] tp_segment_writer_write
+     0.13%  postgres  libc.so.6          [.] 0x000000000018afe0
+     0.13%  postgres  libc.so.6          [.] 0x0000000000188aa6
+     0.13%  postgres  postgres           [.] pnstrdup
+     0.12%  postgres  postgres           [.] ResourceOwnerEnlarge
+     0.12%  postgres  postgres           [.] dsa_allocate_extended
+     0.12%  postgres  libc.so.6          [.] 0x00000000000c9f8f
+     0.12%  postgres  pg_textsearch.so   [.] tp_get_or_create_posting_list
+     0.12%  postgres  postgres           [.] FlushRelationBuffers
+     0.11%  postgres  postgres           [.] dsa_free
+     0.11%  postgres  [kernel.kallsyms]  [k] copy_page_from_iter_atomic
+     0.11%  postgres  libc.so.6          [.] 0x000000000018affb
+     0.10%  postgres  postgres           [.] lookup_ts_dictionary_cache
+     0.10%  postgres  pg_textsearch.so   [.] tp_merge_level_segments
+     0.10%  postgres  libc.so.6          [.] wcstombs
+     0.10%  postgres  pg_textsearch.so   [.] tp_add_document_terms
+     0.10%  postgres  postgres           [.] ReservePrivateRefCountEntry.lto_priv.0
+     0.10%  postgres  libc.so.6          [.] 0x000000000018afdd
+     0.10%  postgres  libc.so.6          [.] 0x000000000018b011
+     0.10%  postgres  libc.so.6          [.] 0x00000000000c9f50
+     0.09%  postgres  postgres           [.] ReleaseBuffer
+     0.09%  postgres  pg_textsearch.so   [.] get_memtable
+     0.09%  postgres  libc.so.6          [.] 0x0000000000188a82
+     0.09%  postgres  postgres           [.] hash_seq_search
+     0.09%  postgres  libc.so.6          [.] 0x00000000000c9f62
+     0.08%  postgres  pg_textsearch.so   [.] ItemPointerGetBlockNumber.lto_priv.3
+     0.08%  postgres  libc.so.6          [.] 0x00000000001883ce
+     0.08%  postgres  postgres           [.] strcmp@plt
+     0.08%  postgres  pg_textsearch.so   [.] merge_find_min_source
+     0.08%  postgres  libc.so.6          [.] 0x0000000000031c05
+     0.08%  postgres  libc.so.6          [.] 0x0000000000188603
+     0.07%  postgres  libc.so.6          [.] 0x0000000000188a51
+     0.07%  postgres  [kernel.kallsyms]  [k] shmem_add_to_page_cache
+     0.07%  postgres  libc.so.6          [.] 0x00000000000c9f42
+     0.07%  postgres  libc.so.6          [.] 0x000000000018950a
+     0.07%  postgres  postgres           [.] tag_hash
+     0.07%  postgres  libc.so.6          [.] 0x00000000000c9f8a
+     0.07%  postgres  libc.so.6          [.] 0x00000000001885e8
+     0.07%  postgres  libc.so.6          [.] 0x000000000018d3b4
+     0.07%  postgres  pg_textsearch.so   [.] tp_free_posting_list
+     0.07%  postgres  dict_snowball.so   [.] in_grouping_b_U
+     0.06%  postgres  postgres           [.] hash_search
+     0.06%  postgres  postgres           [.] pg_qsort_med3
+     0.06%  postgres  libc.so.6          [.] 0x0000000000188a86
+     0.06%  postgres  libc.so.6          [.] 0x000000000018afe5
+     0.06%  postgres  pg_textsearch.so   [.] tp_string_table_attach
+     0.06%  postgres  postgres           [.] dshash_destroy
+     0.06%  postgres  libc.so.6          [.] 0x00000000000ca091
+     0.06%  postgres  libc.so.6          [.] 0x00000000001882e8
+     0.06%  postgres  libc.so.6          [.] 0x0000000000188a9b
+     0.06%  postgres  libc.so.6          [.] 0x00000000001885f0
+     0.06%  postgres  libc.so.6          [.] 0x000000000018b3b6
+     0.06%  postgres  libc.so.6          [.] 0x000000000003207a
+     0.06%  postgres  libc.so.6          [.] 0x0000000000188ce4
+     0.06%  postgres  pg_textsearch.so   [.] decode_fieldnorm.lto_priv.2
+     0.06%  postgres  postgres           [.] LockBufHdr
+     0.05%  postgres  libc.so.6          [.] 0x000000000018b339
+     0.05%  postgres  libc.so.6          [.] 0x0000000000031d40
+     0.05%  postgres  [kernel.kallsyms]  [k] filemap_remove_folio
+     0.05%  postgres  [kernel.kallsyms]  [k] handle_mm_fault
+     0.05%  postgres  libc.so.6          [.] 0x000000000018b7ad
+     0.05%  postgres  pg_textsearch.so   [.] tp_string_table_lookup
+     0.05%  postgres  libc.so.6          [.] 0x0000000000030d58
+     0.05%  postgres  libc.so.6          [.] 0x00000000001883c0
+     0.05%  postgres  libc.so.6          [.] 0x00000000001883cc
+     0.05%  postgres  libc.so.6          [.] 0x0000000000188d47
+     0.05%  postgres  libc.so.6          [.] _dl_mcount_wrapper_check
+     0.05%  postgres  pg_textsearch.so   [.] BufferIsValid.lto_priv.1
+     0.05%  postgres  postgres           [.] repalloc
+     0.04%  postgres  postgres           [.] iswalpha@plt
+     0.04%  postgres  postgres           [.] newTParserPosition.lto_priv.0
+     0.04%  postgres  [kernel.kallsyms]  [k] do_anonymous_page
+     0.04%  postgres  libc.so.6          [.] 0x000000000018d3b8
+     0.04%  postgres  pg_textsearch.so   [.] ItemPointerGetBlockNumberNoCheck.lto_priv.3
+     0.04%  postgres  dict_snowball.so   [.] slice_del
+     0.04%  postgres  libc.so.6          [.] 0x0000000000188bb1
+     0.04%  postgres  libc.so.6          [.] 0x0000000000031d43
+     0.04%  postgres  pg_textsearch.so   [.] merge_read_term_at_index
+     0.04%  postgres  [kernel.kallsyms]  [k] __alloc_pages_noprof
+     0.04%  postgres  [kernel.kallsyms]  [k] blk_cgroup_congested
+     0.04%  postgres  pg_textsearch.so   [.] ItemPointerGetOffsetNumber.lto_priv.2
+     0.04%  postgres  pg_textsearch.so   [.] dsa_get_address@plt
+     0.04%  postgres  postgres           [.] wchar2char
+     0.04%  postgres  [kernel.kallsyms]  [k] __handle_mm_fault
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a9f
+     0.03%  postgres  [kernel.kallsyms]  [k] __mem_cgroup_charge
+     0.03%  postgres  libc.so.6          [.] 0x00000000001882e0
+     0.03%  postgres  libc.so.6          [.] 0x000000000018c8b4
+     0.03%  postgres  pg_textsearch.so   [.] merge_source_advance
+     0.03%  postgres  postgres           [.] get_segment_by_index.lto_priv.0
+     0.03%  postgres  [kernel.kallsyms]  [k] ext4_block_write_begin
+     0.03%  postgres  libc.so.6          [.] 0x0000000000031122
+     0.03%  postgres  libc.so.6          [.] 0x000000000003206f
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188617
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a8d
+     0.03%  postgres  libc.so.6          [.] 0x000000000018d389
+     0.03%  postgres  postgres           [.] dshash_release_lock
+     0.03%  postgres  dict_snowball.so   [.] get_b_utf8.part.0
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a4b
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a78
+     0.03%  postgres  libc.so.6          [.] 0x000000000018afd4
+     0.03%  postgres  pg_textsearch.so   [.] ReleaseBuffer@plt
+     0.03%  postgres  dict_snowball.so   [.] lowerstr_with_len@plt
+     0.03%  postgres  libc.so.6          [.] 0x0000000000030d55
+     0.03%  postgres  libc.so.6          [.] 0x00000000000ca06d
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a44
+     0.03%  postgres  libc.so.6          [.] 0x0000000000188a47
+     0.03%  postgres  pg_textsearch.so   [.] tp_add_docid_to_pages
+     0.03%  postgres  postgres           [.] palloc
+     0.03%  postgres  postgres           [.] prsd_start
+     0.03%  postgres  libc.so.6          [.] 0x00000000000a9ae3
+     0.03%  postgres  libc.so.6          [.] 0x00000000001885ee
+     0.03%  postgres  libc.so.6          [.] 0x000000000018b39c
+     0.03%  postgres  libc.so.6          [.] 0x000000000018fd95
+     0.03%  postgres  postgres           [.] dshash_detach
+     0.03%  postgres  [kernel.kallsyms]  [k] rmqueue
+     0.03%  postgres  libc.so.6          [.] 0x00000000000c9fa2
+     0.03%  postgres  libc.so.6          [.] 0x00000000001886c3
+     0.03%  postgres  pg_textsearch.so   [.] posting_source_init
+     0.03%  postgres  pg_textsearch.so   [.] posting_source_load_block
+     0.03%  postgres  [kernel.kallsyms]  [k] get_mem_cgroup_from_mm
+     0.03%  postgres  [kernel.kallsyms]  [k] get_page_from_freelist
+     0.03%  postgres  libc.so.6          [.] 0x00000000000c9fd1
+     0.03%  postgres  libc.so.6          [.] 0x000000000018b32e
+     0.03%  postgres  postgres           [.] ReadBuffer
+     0.02%  postgres  [kernel.kallsyms]  [k] _copy_to_iter
+     0.02%  postgres  libc.so.6          [.] 0x00000000001885ce
+     0.02%  postgres  libc.so.6          [.] 0x000000000018d36c
+     0.02%  postgres  pg_textsearch.so   [.] merged_term_add_segment_ref
+     0.02%  postgres  pg_textsearch.so   [.] tp_string_copy_function
+     0.02%  postgres  postgres           [.] tts_heap_getsomeattrs.lto_priv.0
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031b05
+     0.02%  postgres  libc.so.6          [.] 0x00000000000c9f81
+     0.02%  postgres  libc.so.6          [.] 0x00000000001883c4
+     0.02%  postgres  [kernel.kallsyms]  [k] __lruvec_stat_mod_folio
+     0.02%  postgres  libc.so.6          [.] 0x00000000000ac54c
+     0.02%  postgres  libc.so.6          [.] 0x0000000000188a40
+     0.02%  postgres  libc.so.6          [.] 0x000000000018fd89
+     0.02%  postgres  pg_textsearch.so   [.] tp_free_terms_array
+     0.02%  postgres  [kernel.kallsyms]  [k] folio_add_lru
+     0.02%  postgres  [kernel.kallsyms]  [k] mas_walk
+     0.02%  postgres  [kernel.kallsyms]  [k] shmem_alloc_and_add_folio
+     0.02%  postgres  [kernel.kallsyms]  [k] zap_present_ptes
+     0.02%  postgres  dict_snowball.so   [.] r_shortv
+     0.02%  postgres  dict_snowball.so   [.] slice_from_s
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030d6c
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031aef
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031ea4
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031eee
+     0.02%  postgres  libc.so.6          [.] 0x00000000000ab035
+     0.02%  postgres  libc.so.6          [.] 0x00000000000ac098
+     0.02%  postgres  libc.so.6          [.] 0x0000000000188a94
+     0.02%  postgres  libc.so.6          [.] 0x000000000018b35a
+     0.02%  postgres  pg_textsearch.so   [.] memcpy@plt
+     0.02%  postgres  pg_textsearch.so   [.] tp_doclength_copy_function
+     0.02%  postgres  pg_textsearch.so   [.] tp_docmap_finalize
+     0.02%  postgres  [kernel.kallsyms]  [k] __filemap_add_folio
+     0.02%  postgres  [kernel.kallsyms]  [k] alloc_anon_folio
+     0.02%  postgres  [kernel.kallsyms]  [k] do_syscall_64
+     0.02%  postgres  [kernel.kallsyms]  [k] filemap_get_entry
+     0.02%  postgres  [kernel.kallsyms]  [k] folio_add_new_anon_rmap
+     0.02%  postgres  [kernel.kallsyms]  [k] srso_alias_safe_ret
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030d78
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030e7c
+     0.02%  postgres  libc.so.6          [.] 0x0000000000188a73
+     0.02%  postgres  libc.so.6          [.] 0x000000000018b355
+     0.02%  postgres  libc.so.6          [.] 0x000000000018b368
+     0.02%  postgres  libc.so.6          [.] 0x000000000018b789
+     0.02%  postgres  pg_textsearch.so   [.] ItemPointerCompare@plt
+     0.02%  postgres  pg_textsearch.so   [.] tp_alloc_string_dsa
+     0.02%  postgres  postgres           [.] HeapTupleSatisfiesVisibility
+     0.02%  postgres  [kernel.kallsyms]  [k] handle_pte_fault
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030c5d
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030e7e
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031c17
+     0.02%  postgres  libc.so.6          [.] 0x00000000000a9afb
+     0.02%  postgres  libc.so.6          [.] 0x00000000000ca064
+     0.02%  postgres  postgres           [.] ExtendBufferedRelCommon.lto_priv.0
+     0.02%  postgres  postgres           [.] delete_item.lto_priv.0
+     0.02%  postgres  [kernel.kallsyms]  [k] __cond_resched
+     0.02%  postgres  [kernel.kallsyms]  [k] __mod_memcg_lruvec_state
+     0.02%  postgres  [kernel.kallsyms]  [k] alloc_pages_mpol_noprof
+     0.02%  postgres  [kernel.kallsyms]  [k] try_charge_memcg
+     0.02%  postgres  libc.so.6          [.] 0x0000000000030d41
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031b6c
+     0.02%  postgres  libc.so.6          [.] 0x0000000000031ef3
+     0.02%  postgres  libc.so.6          [.] 0x0000000000032073
+     0.02%  postgres  libc.so.6          [.] 0x00000000000c9f30
+     0.02%  postgres  libc.so.6          [.] 0x00000000000ca0c1
+     0.02%  postgres  libc.so.6          [.] 0x0000000000188a92
+     0.02%  postgres  libc.so.6          [.] 0x000000000018c8a4
+     0.02%  postgres  pg_textsearch.so   [.] LockBuffer@plt
+     0.02%  postgres  pg_textsearch.so   [.] tp_auto_spill_if_needed
+     0.02%  postgres  pg_textsearch.so   [.] tp_process_document
+     0.02%  postgres  pg_textsearch.so   [.] tp_process_document_text
+     0.02%  postgres  pg_textsearch.so   [.] tp_store_document_length
+     0.02%  postgres  postgres           [.] strlen@plt
+     0.01%  postgres  [kernel.kallsyms]  [k] _raw_spin_lock
+     0.01%  postgres  [kernel.kallsyms]  [k] free_unref_folios
+     0.01%  postgres  [kernel.kallsyms]  [k] xas_load
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bc2
+     0.01%  postgres  libc.so.6          [.] 0x00000000001885c7
+     0.01%  postgres  libc.so.6          [.] 0x00000000001885d3
+     0.01%  postgres  libc.so.6          [.] 0x0000000000189544
+     0.01%  postgres  libc.so.6          [.] 0x000000000018c885
+     0.01%  postgres  libc.so.6          [.] 0x000000000018c8bd
+     0.01%  postgres  libc.so.6          [.] 0x000000000018fd9f
+     0.01%  postgres  pg_textsearch.so   [.] build_merged_docmap
+     0.01%  postgres  pg_textsearch.so   [.] posting_source_free
+     0.01%  postgres  pg_textsearch.so   [.] table_scan_getnextslot
+     0.01%  postgres  pg_textsearch.so   [.] tp_acquire_index_lock
+     0.01%  postgres  postgres           [.] ensure_active_superblock
+     0.01%  postgres  [kernel.kallsyms]  [k] generic_perform_write
+     0.01%  postgres  libc.so.6          [.] malloc
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030c8c
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d66
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030e82
+     0.01%  postgres  libc.so.6          [.] 0x000000000003111b
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ac532
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca002
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca05a
+     0.01%  postgres  libc.so.6          [.] 0x00000000001885c3
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188629
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188a7d
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188aa1
+     0.01%  postgres  libc.so.6          [.] 0x000000000018afd0
+     0.01%  postgres  pg_textsearch.so   [.] strcmp@plt
+     0.01%  postgres  pg_textsearch.so   [.] tp_docmap_add
+     0.01%  postgres  postgres           [.] MemoryContextStrdup
+     0.01%  postgres  postgres           [.] to_tsvector_byid
+     0.01%  postgres  postgres           [.] towlower@plt
+     0.01%  postgres  [kernel.kallsyms]  [k] __dquot_alloc_space
+     0.01%  postgres  [kernel.kallsyms]  [k] balance_dirty_pages_ratelimited_flags
+     0.01%  postgres  [kernel.kallsyms]  [k] queued_spin_unlock
+     0.01%  postgres  dict_snowball.so   [.] pfree@plt
+     0.01%  postgres  libc.so.6          [.] __libc_pwrite
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030c28
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030cd9
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d18
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d89
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031b22
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031ead
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca013
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0a9
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b31d
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b396
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3e1
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b797
+     0.01%  postgres  pg_textsearch.so   [.] encode_fieldnorm
+     0.01%  postgres  pg_textsearch.so   [.] tp_alloc_posting_list
+     0.01%  postgres  postgres           [.] memcpy@plt
+     0.01%  postgres  [kernel.kallsyms]  [k] __next_zones_zonelist
+     0.01%  postgres  [kernel.kallsyms]  [k] __raw_callee_save___pv_queued_spin_unlock
+     0.01%  postgres  [kernel.kallsyms]  [k] __rmqueue_pcplist
+     0.01%  postgres  [kernel.kallsyms]  [k] finish_fault
+     0.01%  postgres  [kernel.kallsyms]  [k] folio_mark_dirty
+     0.01%  postgres  [kernel.kallsyms]  [k] lock_vma_under_rcu
+     0.01%  postgres  [kernel.kallsyms]  [k] percpu_counter_add_batch
+     0.01%  postgres  [kernel.kallsyms]  [k] pte_offset_map_nolock
+     0.01%  postgres  [kernel.kallsyms]  [k] rcu_all_qs
+     0.01%  postgres  [kernel.kallsyms]  [k] shmem_inode_acct_blocks
+     0.01%  postgres  dict_snowball.so   [.] palloc0@plt
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030cdd
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030cf4
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d09
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d44
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030e63
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bac
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bfb
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031c08
+     0.01%  postgres  libc.so.6          [.] 0x00000000000abc0f
+     0.01%  postgres  libc.so.6          [.] 0x00000000000abcc1
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca03e
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca057
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0fd
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188648
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188ab0
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188ab6
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188bee
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b342
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b398
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3be
+     0.01%  postgres  libc.so.6          [.] 0x000000000018cc26
+     0.01%  postgres  libc.so.6          [.] 0x000000000018d371
+     0.01%  postgres  libc.so.6          [.] 0x000000000018fd64
+     0.01%  postgres  [kernel.kallsyms]  [k] __folio_throttle_swaprate
+     0.01%  postgres  [kernel.kallsyms]  [k] ext4_da_write_end
+     0.01%  postgres  [kernel.kallsyms]  [k] free_unref_page_commit
+     0.01%  postgres  [kernel.kallsyms]  [k] get_vma_policy
+     0.01%  postgres  [kernel.kallsyms]  [k] vfs_write
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d15
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d68
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d92
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030e6c
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030e83
+     0.01%  postgres  libc.so.6          [.] 0x000000000018861b
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188652
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188acb
+     0.01%  postgres  libc.so.6          [.] 0x000000000018aff7
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b792
+     0.01%  postgres  pg_textsearch.so   [.] PageGetContents.lto_priv.0
+     0.01%  postgres  pg_textsearch.so   [.] tp_string_table_insert
+     0.01%  postgres  postgres           [.] AllocSetAllocLarge
+     0.01%  postgres  postgres           [.] fsm_readbuf
+     0.01%  postgres  postgres           [.] heapgettup_pagemode
+     0.01%  postgres  postgres           [.] memcmp@plt
+     0.01%  postgres  [kernel.kallsyms]  [k] down_write
+     0.01%  postgres  [kernel.kallsyms]  [k] ext4_es_lookup_extent
+     0.01%  postgres  [kernel.kallsyms]  [k] fault_in_readable
+     0.01%  postgres  [kernel.kallsyms]  [k] folio_zero_user
+     0.01%  postgres  [kernel.kallsyms]  [k] handle_softirqs
+     0.01%  postgres  [kernel.kallsyms]  [k] shmem_get_folio_gfp
+     0.01%  postgres  libc.so.6          [.] wcsnlen@plt
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030cd3
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d62
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031b19
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031b91
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031c21
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ab8a3
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0bf
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0e6
+     0.01%  postgres  libc.so.6          [.] 0x000000000018860d
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188ad0
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188b1b
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b324
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3a5
+     0.01%  postgres  libc.so.6          [.] 0x000000000018c860
+     0.01%  postgres  libc.so.6          [.] 0x000000000018c889
+     0.01%  postgres  libc.so.6          [.] 0x000000000018d364
+     0.01%  postgres  libc.so.6          [.] 0x000000000018fd71
+     0.01%  postgres  pg_textsearch.so   [.] pfree@plt
+     0.01%  postgres  pg_textsearch.so   [.] slot_getattr
+     0.01%  postgres  pg_textsearch.so   [.] tp_build
+     0.01%  postgres  pg_textsearch.so   [.] tp_build_dictionary
+     0.01%  postgres  postgres           [.] DirectFunctionCall2Coll
+     0.01%  postgres  postgres           [.] heap_getnextslot
+     0.01%  postgres  postgres           [.] heap_prepare_pagescan
+     0.01%  postgres  postgres           [.] text_to_cstring
+     0.01%  postgres  [kernel.kallsyms]  [k] __block_commit_write
+     0.01%  postgres  [kernel.kallsyms]  [k] __fdget
+     0.01%  postgres  [kernel.kallsyms]  [k] __filemap_get_folio
+     0.01%  postgres  [kernel.kallsyms]  [k] __memcg_slab_post_alloc_hook
+     0.01%  postgres  [kernel.kallsyms]  [k] __pte_offset_map_lock
+     0.01%  postgres  [kernel.kallsyms]  [k] _raw_spin_trylock
+     0.01%  postgres  [kernel.kallsyms]  [k] apparmor_file_permission
+     0.01%  postgres  [kernel.kallsyms]  [k] cgroup_rstat_updated
+     0.01%  postgres  [kernel.kallsyms]  [k] ext4_buffered_write_iter
+     0.01%  postgres  [kernel.kallsyms]  [k] ext4_da_write_begin
+     0.01%  postgres  [kernel.kallsyms]  [k] ext4_es_insert_delayed_extent
+     0.01%  postgres  [kernel.kallsyms]  [k] folios_put_refs
+     0.01%  postgres  [kernel.kallsyms]  [k] policy_nodemask
+     0.01%  postgres  [kernel.kallsyms]  [k] set_pte_range
+     0.01%  postgres  [kernel.kallsyms]  [k] shmem_recalc_inode
+     0.01%  postgres  [kernel.kallsyms]  [k] truncate_cleanup_folio
+     0.01%  postgres  dict_snowball.so   [.] searchstoplist@plt
+     0.01%  postgres  dict_snowball.so   [.] strlen@plt
+     0.01%  postgres  libc.so.6          [.] cfree
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030c85
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d03
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d84
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d98
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d9e
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031b9d
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bd5
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bf5
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031eb6
+     0.01%  postgres  libc.so.6          [.] 0x0000000000032089
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ab7d5
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca043
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0ab
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca0b0
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188645
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188655
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188a61
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188ad7
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188be9
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188c18
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3a8
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3e5
+     0.01%  postgres  libc.so.6          [.] 0x000000000018ccec
+     0.01%  postgres  libc.so.6          [.] 0x000000000018fdd4
+     0.01%  postgres  pg_textsearch.so   [.] dshash_detach@plt
+     0.01%  postgres  pg_textsearch.so   [.] dshash_find@plt
+     0.01%  postgres  postgres           [.] AllocSetAllocFromNewBlock
+     0.01%  postgres  postgres           [.] ForwardSyncRequest
+     0.01%  postgres  postgres           [.] dsimple_lexize
+     0.01%  postgres  postgres           [.] strnlen@plt
+     0.01%  postgres  postgres           [.] transfer_first_span
+     0.01%  postgres  [kernel.kallsyms]  [k] __memcpy
+     0.01%  postgres  [kernel.kallsyms]  [k] __memset
+     0.01%  postgres  [kernel.kallsyms]  [k] __mod_node_page_state
+     0.01%  postgres  [kernel.kallsyms]  [k] __radix_tree_lookup
+     0.01%  postgres  [kernel.kallsyms]  [k] do_shared_fault
+     0.01%  postgres  [kernel.kallsyms]  [k] down_read_trylock
+     0.01%  postgres  [kernel.kallsyms]  [k] fault_dirty_shared_page
+     0.01%  postgres  [kernel.kallsyms]  [k] file_update_time
+     0.01%  postgres  [kernel.kallsyms]  [k] folio_remove_rmap_ptes
+     0.01%  postgres  [kernel.kallsyms]  [k] get_pfnblock_flags_mask
+     0.01%  postgres  [kernel.kallsyms]  [k] inode_needs_update_time
+     0.01%  postgres  [kernel.kallsyms]  [k] node_dirty_ok
+     0.01%  postgres  [kernel.kallsyms]  [k] noop_dirty_folio
+     0.01%  postgres  [kernel.kallsyms]  [k] post_alloc_hook
+     0.01%  postgres  [kernel.kallsyms]  [k] security_file_permission
+     0.01%  postgres  [kernel.kallsyms]  [k] shmem_alloc_folio
+     0.01%  postgres  [kernel.kallsyms]  [k] uncharge_folio
+     0.01%  postgres  [kernel.kallsyms]  [k] vma_alloc_folio_noprof
+     0.01%  postgres  [kernel.kallsyms]  [k] xas_start
+     0.01%  postgres  dict_snowball.so   [.] insert_s
+     0.01%  postgres  libc.so.6          [.] llseek
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030c3e
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d2e
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030d8c
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030e7a
+     0.01%  postgres  libc.so.6          [.] 0x0000000000030f99
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031aec
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bc8
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031bf8
+     0.01%  postgres  libc.so.6          [.] 0x0000000000031e97
+     0.01%  postgres  libc.so.6          [.] 0x0000000000032068
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ac1ac
+     0.01%  postgres  libc.so.6          [.] 0x00000000000c9f93
+     0.01%  postgres  libc.so.6          [.] 0x00000000000ca039
+     0.01%  postgres  libc.so.6          [.] 0x00000000001885c9
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188608
+     0.01%  postgres  libc.so.6          [.] 0x000000000018862f
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188642
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188aac
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188bf3
+     0.01%  postgres  libc.so.6          [.] 0x0000000000188bfb
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b362
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3c1
+     0.01%  postgres  libc.so.6          [.] 0x000000000018b3f4
+     0.01%  postgres  libc.so.6          [.] 0x000000000018c8a8
+     0.01%  postgres  libc.so.6          [.] 0x000000000018cc43
+     0.01%  postgres  libc.so.6          [.] 0x000000000018d38d
+     0.01%  postgres  libc.so.6          [.] 0x000000000018d391
+     0.01%  postgres  pg_textsearch.so   [.] BufferGetBlock.lto_priv.0
+     0.01%  postgres  pg_textsearch.so   [.] hash_search@plt
+     0.01%  postgres  pg_textsearch.so   [.] strlen@plt
+     0.01%  postgres  pg_textsearch.so   [.] tp_free_dictionary
+     0.01%  postgres  postgres           [.] FileZero
+     0.01%  postgres  postgres           [.] heap_page_prune_opt
+     0.01%  postgres  postgres           [.] lookup_ts_config_cache
+     0.01%  postgres  postgres           [.] lowerstr_with_len
+     0.01%  postgres  postgres           [.] mbstowcs@plt
+     0.01%  postgres  postgres           [.] strncmp@plt
+     0.00%  postgres  [kernel.kallsyms]  [k] __es_insert_extent
+     0.00%  postgres  [kernel.kallsyms]  [k] __es_tree_search.isra.0
+     0.00%  postgres  [kernel.kallsyms]  [k] __mem_cgroup_uncharge_folios
+     0.00%  postgres  [kernel.kallsyms]  [k] __tlb_remove_folio_pages
+     0.00%  postgres  [kernel.kallsyms]  [k] __vmf_anon_prepare
+     0.00%  postgres  [kernel.kallsyms]  [k] balance_dirty_pages_ratelimited
+     0.00%  postgres  [kernel.kallsyms]  [k] create_empty_buffers
+     0.00%  postgres  [kernel.kallsyms]  [k] do_fault
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_da_do_write_end
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_da_get_block_prep
+     0.00%  postgres  [kernel.kallsyms]  [k] filemap_add_folio
+     0.00%  postgres  [kernel.kallsyms]  [k] find_lock_entries
+     0.00%  postgres  [kernel.kallsyms]  [k] folio_alloc_mpol_noprof
+     0.00%  postgres  [kernel.kallsyms]  [k] free_tail_page_prepare
+     0.00%  postgres  [kernel.kallsyms]  [k] perf_event_mmap_output
+     0.00%  postgres  [kernel.kallsyms]  [k] perf_output_copy
+     0.00%  postgres  [kernel.kallsyms]  [k] shmem_fault
+     0.00%  postgres  [kernel.kallsyms]  [k] timestamp_truncate
+     0.00%  postgres  [kernel.kallsyms]  [k] up_write
+     0.00%  postgres  [kernel.kallsyms]  [k] zap_pte_range
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c25
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c37
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c59
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c6a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030d7b
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030d80
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030e80
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030e9e
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b12
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b44
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031c15
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031d49
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031e9b
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031eb8
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031ebb
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab104
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac51a
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ad185
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f59
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9fff
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca066
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca0d5
+     0.00%  postgres  libc.so.6          [.] 0x00000000001883d1
+     0.00%  postgres  libc.so.6          [.] 0x000000000018861f
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188632
+     0.00%  postgres  libc.so.6          [.] 0x000000000018864a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188665
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886da
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188be4
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c0a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c3f
+     0.00%  postgres  libc.so.6          [.] 0x000000000018afd9
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b3db
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b784
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c8ae
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc5b
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d36e
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d413
+     0.00%  postgres  pg_textsearch.so   [.] slot_getsomeattrs
+     0.00%  postgres  pg_textsearch.so   [.] tp_doclength_compare_function
+     0.00%  postgres  postgres           [.] MarkBufferDirty
+     0.00%  postgres  postgres           [.] _mdfd_getseg
+     0.00%  postgres  postgres           [.] fsm_set_avail
+     0.00%  postgres  postgres           [.] mdwritev
+     0.00%  postgres  postgres           [.] mdzeroextend
+     0.00%  postgres  postgres           [.] p_isstophost.lto_priv.0
+     0.00%  postgres  postgres           [.] slot_getsomeattrs_int
+     0.00%  postgres  postgres           [.] unlink_span.lto_priv.0
+     0.00%  postgres  postgres           [.] wcstombs@plt
+     0.00%  postgres  [kernel.kallsyms]  [k] __folio_mod_stat
+     0.00%  postgres  [kernel.kallsyms]  [k] __vm_enough_memory
+     0.00%  postgres  [kernel.kallsyms]  [k] __x64_sys_pwrite64
+     0.00%  postgres  [kernel.kallsyms]  [k] __x86_indirect_thunk_rax
+     0.00%  postgres  [kernel.kallsyms]  [k] _find_first_bit
+     0.00%  postgres  [kernel.kallsyms]  [k] alloc_buffer_head
+     0.00%  postgres  [kernel.kallsyms]  [k] block_write_end
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_da_map_blocks.constprop.0
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_llseek
+     0.00%  postgres  [kernel.kallsyms]  [k] fault_in_iov_iter_readable
+     0.00%  postgres  [kernel.kallsyms]  [k] file_remove_privs_flags
+     0.00%  postgres  [kernel.kallsyms]  [k] finish_task_switch.isra.0
+     0.00%  postgres  [kernel.kallsyms]  [k] folio_add_lru_vma
+     0.00%  postgres  [kernel.kallsyms]  [k] folio_unlock
+     0.00%  postgres  [kernel.kallsyms]  [k] free_pages_and_swap_cache
+     0.00%  postgres  [kernel.kallsyms]  [k] generic_write_check_limits
+     0.00%  postgres  [kernel.kallsyms]  [k] inode_to_bdi
+     0.00%  postgres  [kernel.kallsyms]  [k] inode_update_timestamps
+     0.00%  postgres  [kernel.kallsyms]  [k] mark_buffer_dirty
+     0.00%  postgres  [kernel.kallsyms]  [k] mas_prev
+     0.00%  postgres  [kernel.kallsyms]  [k] page_counter_try_charge
+     0.00%  postgres  [kernel.kallsyms]  [k] perf_event_mmap_event
+     0.00%  postgres  [kernel.kallsyms]  [k] read_pages
+     0.00%  postgres  [kernel.kallsyms]  [k] shmem_allowable_huge_orders
+     0.00%  postgres  [kernel.kallsyms]  [k] timer_expire_remote
+     0.00%  postgres  [kernel.kallsyms]  [k] truncate_inode_folio
+     0.00%  postgres  [kernel.kallsyms]  [k] uncharge_batch
+     0.00%  postgres  [kernel.kallsyms]  [k] wp_page_copy
+     0.00%  postgres  [kernel.kallsyms]  [k] x64_sys_call
+     0.00%  postgres  [kernel.kallsyms]  [k] 0x0000209000016003
+     0.00%  postgres  dict_snowball.so   [.] memmove@plt
+     0.00%  postgres  dict_snowball.so   [.] repalloc@plt
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c2c
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030cc6
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030d3d
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030d4d
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031126
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031afe
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b2e
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b8d
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031c0e
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031d53
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031eb1
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031eb2
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031eba
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031eec
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031ef0
+     0.00%  postgres  libc.so.6          [.] 0x00000000000a9b01
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aafa5
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab040
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab1d9
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab2bd
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab757
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abb04
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abc9d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abcb4
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac081
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac0dc
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac121
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac20c
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f31
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f5d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca019
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca079
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca080
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca0fa
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188638
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188687
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886ae
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886c8
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188a88
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188ac8
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b29
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b2e
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b34
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b54
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b8b
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188bab
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188bb7
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188bc4
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188bca
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c00
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c05
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c1d
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c52
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c6a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c73
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c81
+     0.00%  postgres  libc.so.6          [.] 0x0000000000189487
+     0.00%  postgres  libc.so.6          [.] 0x0000000000189525
+     0.00%  postgres  libc.so.6          [.] 0x000000000018afff
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b345
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b3a2
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b3cd
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b43a
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b43e
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b442
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b786
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b7a5
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c864
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c87b
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c891
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c8b9
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc4c
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d395
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d436
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d4e8
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fda2
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fdb7
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fdf4
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fdf8
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fe24
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fe36
+     0.00%  postgres  libc.so.6          [.] 0x0000000000190014
+     0.00%  postgres  libc.so.6          [.] 0x0000000000190017
+     0.00%  postgres  pg_textsearch.so   [.] ItemPointerIsValid.lto_priv.0
+     0.00%  postgres  pg_textsearch.so   [.] dsa_free@plt
+     0.00%  postgres  pg_textsearch.so   [.] palloc@plt
+     0.00%  postgres  pg_textsearch.so   [.] slot_getallattrs
+     0.00%  postgres  pg_textsearch.so   [.] tp_doclength_table_attach
+     0.00%  postgres  postgres           [.] ExecStoreBufferHeapTuple
+     0.00%  postgres  postgres           [.] FlushBuffer.part.0.lto_priv.0
+     0.00%  postgres  postgres           [.] FreePageManagerGetInternal.lto_priv.0
+     0.00%  postgres  postgres           [.] PageSetChecksumCopy
+     0.00%  postgres  postgres           [.] SpecialHyphen.lto_priv.0
+     0.00%  postgres  postgres           [.] StrategyGetBuffer
+     0.00%  postgres  postgres           [.] UnlockReleaseBuffer
+     0.00%  postgres  postgres           [.] dshash_delete_current
+     0.00%  postgres  postgres           [.] fsm_search_avail
+     0.00%  postgres  postgres           [.] get_best_segment.lto_priv.0
+     0.00%  postgres  postgres           [.] lookup_ts_parser_cache
+     0.00%  postgres  postgres           [.] mdnblocks
+     0.00%  postgres  postgres           [.] pg_pwrite_zeros
+     0.00%  postgres  postgres           [.] prsd_end
+     0.00%  postgres  postgres           [.] tts_buffer_heap_getsomeattrs.lto_priv.0
+     0.00%  postgres  [kernel.kallsyms]  [k] __d_lookup_rcu
+     0.00%  postgres  [kernel.kallsyms]  [k] __do_fault
+     0.00%  postgres  [kernel.kallsyms]  [k] __do_huge_pmd_anonymous_page
+     0.00%  postgres  [kernel.kallsyms]  [k] __do_sys_brk
+     0.00%  postgres  [kernel.kallsyms]  [k] __es_remove_extent
+     0.00%  postgres  [kernel.kallsyms]  [k] __fdget_pos
+     0.00%  postgres  [kernel.kallsyms]  [k] __get_user_8
+     0.00%  postgres  [kernel.kallsyms]  [k] __lookup_mnt
+     0.00%  postgres  [kernel.kallsyms]  [k] __mark_inode_dirty
+     0.00%  postgres  [kernel.kallsyms]  [k] __percpu_counter_limited_add
+     0.00%  postgres  [kernel.kallsyms]  [k] __pte_offset_map
+     0.00%  postgres  [kernel.kallsyms]  [k] __shmem_huge_global_enabled
+     0.00%  postgres  [kernel.kallsyms]  [k] __task_pid_nr_ns
+     0.00%  postgres  [kernel.kallsyms]  [k] __x64_sys_pread64
+     0.00%  postgres  [kernel.kallsyms]  [k] blk_mq_rq_ctx_init.isra.0
+     0.00%  postgres  [kernel.kallsyms]  [k] check_brk_limits
+     0.00%  postgres  [kernel.kallsyms]  [k] cond_accept_memory
+     0.00%  postgres  [kernel.kallsyms]  [k] do_mmap
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_da_reserve_space
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_dirty_inode
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_file_write_iter
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_fill_raw_inode
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_finish_bio
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_get_reserved_space
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_has_free_clusters
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_inode_csum
+     0.00%  postgres  [kernel.kallsyms]  [k] ext4_nonda_switch
+     0.00%  postgres  [kernel.kallsyms]  [k] file_modified
+     0.00%  postgres  [kernel.kallsyms]  [k] filemap_get_read_batch
+     0.00%  postgres  [kernel.kallsyms]  [k] filemap_read
+     0.00%  postgres  [kernel.kallsyms]  [k] flush_tlb_mm_range
+     0.00%  postgres  [kernel.kallsyms]  [k] folio_add_file_rmap_ptes
+     0.00%  postgres  [kernel.kallsyms]  [k] folio_mapping
+     0.00%  postgres  [kernel.kallsyms]  [k] free_p4d_range
+     0.00%  postgres  [kernel.kallsyms]  [k] generic_permission
+     0.00%  postgres  [kernel.kallsyms]  [k] get_random_u32
+     0.00%  postgres  [kernel.kallsyms]  [k] get_task_policy
+     0.00%  postgres  [kernel.kallsyms]  [k] inode_add_bytes
+     0.00%  postgres  [kernel.kallsyms]  [k] inode_maybe_inc_iversion
+     0.00%  postgres  [kernel.kallsyms]  [k] kmem_cache_alloc_noprof
+     0.00%  postgres  [kernel.kallsyms]  [k] kmem_cache_size
+     0.00%  postgres  [kernel.kallsyms]  [k] kthread_blkcg
+     0.00%  postgres  [kernel.kallsyms]  [k] ktime_get_coarse_real_ts64
+     0.00%  postgres  [kernel.kallsyms]  [k] lru_gen_refault
+     0.00%  postgres  [kernel.kallsyms]  [k] mas_find
+     0.00%  postgres  [kernel.kallsyms]  [k] mas_next_slot
+     0.00%  postgres  [kernel.kallsyms]  [k] mas_prev_slot
+     0.00%  postgres  [kernel.kallsyms]  [k] mas_wr_walk
+     0.00%  postgres  [kernel.kallsyms]  [k] mem_cgroup_handle_over_high
+     0.00%  postgres  [kernel.kallsyms]  [k] mempool_free_slab
+     0.00%  postgres  [kernel.kallsyms]  [k] open_last_lookups
+     0.00%  postgres  [kernel.kallsyms]  [k] page_cache_ra_unbounded
+     0.00%  postgres  [kernel.kallsyms]  [k] perf_iterate_ctx
+     0.00%  postgres  [kernel.kallsyms]  [k] pmd_install
+     0.00%  postgres  [kernel.kallsyms]  [k] prep_compound_page
+     0.00%  postgres  [kernel.kallsyms]  [k] pte_mkwrite
+     0.00%  postgres  [kernel.kallsyms]  [k] set_root
+     0.00%  postgres  [kernel.kallsyms]  [k] shmem_fallocate
+     0.00%  postgres  [kernel.kallsyms]  [k] shmem_undo_range
+     0.00%  postgres  [kernel.kallsyms]  [k] shuffle_freelist
+     0.00%  postgres  [kernel.kallsyms]  [k] srso_alias_return_thunk
+     0.00%  postgres  [kernel.kallsyms]  [k] strnlen
+     0.00%  postgres  [kernel.kallsyms]  [k] syscall_exit_to_user_mode
+     0.00%  postgres  [kernel.kallsyms]  [k] vm_normal_page
+     0.00%  postgres  [kernel.kallsyms]  [k] vma_prepare
+     0.00%  postgres  [kernel.kallsyms]  [k] zap_huge_pmd
+     0.00%  postgres  libc.so.6          [.] brk
+     0.00%  postgres  libc.so.6          [.] iswspace
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c20
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c24
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c2a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c41
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c56
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c64
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030c97
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030cdf
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030cf0
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030eb8
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030ef8
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030f93
+     0.00%  postgres  libc.so.6          [.] 0x0000000000030f9c
+     0.00%  postgres  libc.so.6          [.] 0x000000000003142b
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031afa
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b08
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b35
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031b87
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031bcb
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031c42
+     0.00%  postgres  libc.so.6          [.] 0x0000000000031c55
+     0.00%  postgres  libc.so.6          [.] 0x000000000003207d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000a9ad1
+     0.00%  postgres  libc.so.6          [.] 0x00000000000a9adf
+     0.00%  postgres  libc.so.6          [.] 0x00000000000a9aee
+     0.00%  postgres  libc.so.6          [.] 0x00000000000a9b26
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aab08
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aab20
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aab49
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aaf90
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aafc9
+     0.00%  postgres  libc.so.6          [.] 0x00000000000aafe9
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab044
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab080
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab0a8
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab0db
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab100
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab57a
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab57d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab5a7
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab7ae
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab800
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab825
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab88a
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ab89b
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abaf7
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abbdb
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abc13
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abc16
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abc8a
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abcca
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abcd3
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abce4
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abcf3
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abd00
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abd14
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abd5c
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abe35
+     0.00%  postgres  libc.so.6          [.] 0x00000000000abe3e
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac094
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac1b6
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac1e1
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac1fe
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac25a
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac51e
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac528
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac52e
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac542
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac57d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ac76d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ad0c5
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f28
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f2c
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f3f
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f49
+     0.00%  postgres  libc.so.6          [.] 0x00000000000c9f73
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca04d
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca074
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca0dd
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca0f4
+     0.00%  postgres  libc.so.6          [.] 0x00000000000ca0f8
+     0.00%  postgres  libc.so.6          [.] 0x00000000001882e4
+     0.00%  postgres  libc.so.6          [.] 0x00000000001885e1
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886b7
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886cc
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886d8
+     0.00%  postgres  libc.so.6          [.] 0x00000000001886de
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188ae1
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188ae6
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b07
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b14
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b3a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b4a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b6b
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188b98
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c22
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c2a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c65
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c7c
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c8a
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188c8e
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188d44
+     0.00%  postgres  libc.so.6          [.] 0x0000000000188d54
+     0.00%  postgres  libc.so.6          [.] 0x000000000018947a
+     0.00%  postgres  libc.so.6          [.] 0x000000000018948d
+     0.00%  postgres  libc.so.6          [.] 0x0000000000189492
+     0.00%  postgres  libc.so.6          [.] 0x00000000001894a8
+     0.00%  postgres  libc.so.6          [.] 0x00000000001894c4
+     0.00%  postgres  libc.so.6          [.] 0x00000000001894d3
+     0.00%  postgres  libc.so.6          [.] 0x000000000018954a
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b32c
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b350
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b3d2
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b450
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b780
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b804
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b809
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b8d4
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b8d9
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b8e2
+     0.00%  postgres  libc.so.6          [.] 0x000000000018b8ee
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c86f
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c873
+     0.00%  postgres  libc.so.6          [.] 0x000000000018c876
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc2d
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc33
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc61
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cc6f
+     0.00%  postgres  libc.so.6          [.] 0x000000000018cce0
+     0.00%  postgres  libc.so.6          [.] 0x000000000018ccf4
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d360
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d37f
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d404
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d420
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d449
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d467
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d46e
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d478
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d481
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d485
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d48f
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d4d4
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d4f6
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d534
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d559
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d583
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d5f4
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d5f9
+     0.00%  postgres  libc.so.6          [.] 0x000000000018d624
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fd7a
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fdbb
+     0.00%  postgres  libc.so.6          [.] 0x000000000018fe4c
+     0.00%  postgres  libc.so.6          [.] 0x0000000000190020
+     0.00%  postgres  pg_textsearch.so   [.] DatumGetPointer.lto_priv.1
+     0.00%  postgres  pg_textsearch.so   [.] DatumGetTSVector.lto_priv.0
+     0.00%  postgres  pg_textsearch.so   [.] ObjectIdGetDatum.lto_priv.0
+     0.00%  postgres  pg_textsearch.so   [.] build_docmap_from_memtable
+     0.00%  postgres  pg_textsearch.so   [.] dshash_attach@plt
+     0.00%  postgres  pg_textsearch.so   [.] dshash_seq_next@plt
+     0.00%  postgres  pg_textsearch.so   [.] tp_segment_writer_allocate_page
+     0.00%  postgres  postgres           [.] AllocSetReset
+     0.00%  postgres  postgres           [.] BufferGetBlockNumber
+     0.00%  postgres  postgres           [.] ConditionVariableBroadcast
+     0.00%  postgres  postgres           [.] FreePageBtreeSearch
+     0.00%  postgres  postgres           [.] FreePageManagerPutInternal
+     0.00%  postgres  postgres           [.] FreePagePushSpanLeader
+     0.00%  postgres  postgres           [.] FunctionCall2Coll
+     0.00%  postgres  postgres           [.] GetFreeIndexPage
+     0.00%  postgres  postgres           [.] MarkBufferDirtyHint
+     0.00%  postgres  postgres           [.] StartReadBuffers
+     0.00%  postgres  postgres           [.] XLogFlush
+     0.00%  postgres  postgres           [.] dsm_impl_op
+     0.00%  postgres  postgres           [.] element_alloc
+     0.00%  postgres  postgres           [.] fsm_search.lto_priv.0
+     0.00%  postgres  postgres           [.] p_isurlchar.lto_priv.0
+     0.00%  postgres  postgres           [.] pg_detoast_datum
+     0.00%  postgres  postgres           [.] read_stream_next_buffer
+     0.00%  postgres  postgres           [.] unlink_segment
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -1,0 +1,2345 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 129  of event 'task-clock:ppp'
+# Event count (approx.): 258517032
+#
+# Overhead  Command   Shared Object      Symbol                                   
+# ........  ........  .................  .........................................
+#
+     7.75%  postgres  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+            |
+            ---_raw_spin_unlock_irqrestore
+               |          
+               |--3.88%--mark_buffer_dirty
+               |          __block_commit_write
+               |          block_write_end
+               |          ext4_da_do_write_end
+               |          ext4_da_write_end
+               |          generic_perform_write
+               |          ext4_buffered_write_iter
+               |          ext4_file_write_iter
+               |          vfs_write
+               |          __x64_sys_pwrite64
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          __libc_pwrite
+               |          FileWriteV
+               |          mdwritev
+               |          FlushBuffer.part.0.lto_priv.0
+               |          GetVictimBuffer.lto_priv.0
+               |          StartReadBuffer
+               |          ReadBufferExtended
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          __libc_start_main
+               |          0xffffffffffffffff
+               |          
+               |--2.33%--folio_add_lru
+               |          filemap_add_folio
+               |          page_cache_ra_unbounded
+               |          page_cache_ra_order
+               |          page_cache_async_ra
+               |          filemap_get_pages
+               |          filemap_read
+               |          generic_file_read_iter
+               |          ext4_file_read_iter
+               |          vfs_read
+               |          __x64_sys_pread64
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          __libc_pread
+               |          FileReadV
+               |          mdreadv
+               |          WaitReadBuffers
+               |          ReadBufferExtended
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          0xffffffffffffffff
+               |          
+               |--0.78%--do_nanosleep
+               |          hrtimer_nanosleep
+               |          common_nsleep
+               |          __x64_sys_clock_nanosleep
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          clock_nanosleep
+               |          __nanosleep
+               |          vacuum_delay_point.part.0
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          __libc_start_main
+               |          _start
+               |          
+                --0.78%--vmbus_sendpacket_mpb_desc
+                          storvsc_do_io
+                          storvsc_queuecommand
+                          scsi_dispatch_cmd
+                          scsi_queue_rq
+                          blk_mq_dispatch_rq_list
+                          __blk_mq_do_dispatch_sched
+                          __blk_mq_sched_dispatch_requests
+                          blk_mq_sched_dispatch_requests
+                          blk_mq_run_hw_queue
+                          blk_mq_dispatch_plug_list
+                          blk_mq_flush_plug_list.part.0
+                          blk_mq_flush_plug_list
+                          __blk_flush_plug
+                          blk_finish_plug
+                          read_pages
+                          page_cache_ra_unbounded
+                          page_cache_ra_order
+                          page_cache_async_ra
+                          filemap_get_pages
+                          filemap_read
+                          generic_file_read_iter
+                          ext4_file_read_iter
+                          vfs_read
+                          __x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __libc_pread
+                          FileReadV
+                          mdreadv
+                          WaitReadBuffers
+                          ReadBufferExtended
+                          heap_vacuum_rel
+                          vacuum_rel
+                          vacuum
+                          do_autovacuum
+                          AutoVacWorkerMain
+                          postmaster_child_launch.part.0
+                          StartChildProcess.lto_priv.0
+                          ServerLoop.isra.0
+                          PostmasterMain
+                          main
+                          0x7fd6ae42a1c9
+                          0xffffffffffffffff
+
+     6.98%  postgres  [kernel.kallsyms]  [k] __filemap_add_folio
+            |
+            ---__filemap_add_folio
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     6.20%  postgres  postgres           [.] hash_search_with_hash_value
+            |
+            ---hash_search_with_hash_value
+               |          
+               |--3.88%--InvalidateVictimBuffer
+               |          GetVictimBuffer.lto_priv.0
+               |          StartReadBuffer
+               |          ReadBufferExtended
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          __libc_start_main
+               |          _start
+               |          
+                --2.33%--StartReadBuffer
+                          ReadBufferExtended
+                          |          
+                          |--1.55%--fsm_readbuf
+                          |          fsm_set_and_search.lto_priv.0
+                          |          heap_vacuum_rel
+                          |          vacuum_rel
+                          |          vacuum
+                          |          do_autovacuum
+                          |          AutoVacWorkerMain
+                          |          postmaster_child_launch.part.0
+                          |          StartChildProcess.lto_priv.0
+                          |          ServerLoop.isra.0
+                          |          PostmasterMain
+                          |          main
+                          |          0x7fd6ae42a1c9
+                          |          __libc_start_main
+                          |          _start
+                          |          
+                           --0.78%--heap_vacuum_rel
+                                     vacuum_rel
+                                     vacuum
+                                     do_autovacuum
+                                     AutoVacWorkerMain
+                                     postmaster_child_launch.part.0
+                                     StartChildProcess.lto_priv.0
+                                     ServerLoop.isra.0
+                                     PostmasterMain
+                                     main
+                                     0x7fd6ae42a1c9
+                                     __libc_start_main
+                                     _start
+
+     4.65%  postgres  [kernel.kallsyms]  [k] _copy_to_iter
+            |
+            ---_copy_to_iter
+               copy_page_to_iter
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     4.65%  postgres  [kernel.kallsyms]  [k] clear_page_erms
+            |
+            ---clear_page_erms
+               get_page_from_freelist
+               __alloc_pages_noprof
+               |          
+               |--3.10%--alloc_pages_mpol_noprof
+               |          folio_alloc_noprof
+               |          filemap_alloc_folio_noprof
+               |          page_cache_ra_unbounded
+               |          page_cache_ra_order
+               |          page_cache_async_ra
+               |          filemap_get_pages
+               |          filemap_read
+               |          generic_file_read_iter
+               |          ext4_file_read_iter
+               |          vfs_read
+               |          __x64_sys_pread64
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          __libc_pread
+               |          FileReadV
+               |          mdreadv
+               |          WaitReadBuffers
+               |          ReadBufferExtended
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          0xffffffffffffffff
+               |          
+                --1.55%--allocate_slab
+                          new_slab
+                          ___slab_alloc
+                          kmem_cache_alloc_noprof
+                          alloc_buffer_head
+                          folio_alloc_buffers
+                          create_empty_buffers
+                          ext4_block_write_begin
+                          ext4_da_write_begin
+                          generic_perform_write
+                          ext4_buffered_write_iter
+                          ext4_file_write_iter
+                          vfs_write
+                          __x64_sys_pwrite64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __libc_pwrite
+                          FileWriteV
+                          mdwritev
+                          FlushBuffer.part.0.lto_priv.0
+                          GetVictimBuffer.lto_priv.0
+                          StartReadBuffer
+                          ReadBufferExtended
+                          heap_vacuum_rel
+                          vacuum_rel
+                          vacuum
+                          do_autovacuum
+                          AutoVacWorkerMain
+                          postmaster_child_launch.part.0
+                          StartChildProcess.lto_priv.0
+                          ServerLoop.isra.0
+                          PostmasterMain
+                          main
+                          0x7fd6ae42a1c9
+                          __libc_start_main
+                          0xffffffffffffffff
+
+     3.88%  postgres  [kernel.kallsyms]  [k] 0x0000209000016003
+            |
+            ---0xffffa09000012003
+               vmbus_set_event
+               vmbus_setevent
+               hv_ringbuffer_write
+               vmbus_sendpacket_mpb_desc
+               storvsc_do_io
+               storvsc_queuecommand
+               scsi_dispatch_cmd
+               scsi_queue_rq
+               blk_mq_dispatch_rq_list
+               __blk_mq_do_dispatch_sched
+               __blk_mq_sched_dispatch_requests
+               blk_mq_sched_dispatch_requests
+               blk_mq_run_hw_queue
+               blk_mq_dispatch_plug_list
+               blk_mq_flush_plug_list.part.0
+               blk_mq_flush_plug_list
+               __blk_flush_plug
+               blk_finish_plug
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     3.10%  postgres  [kernel.kallsyms]  [k] __mem_cgroup_charge
+            |
+            ---__mem_cgroup_charge
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     3.10%  postgres  postgres           [.] heap_prepare_freeze_tuple
+            |
+            ---heap_prepare_freeze_tuple
+               heap_prune_record_unchanged_lp_normal
+               heap_page_prune_and_freeze
+               0xffffffffffffffff
+
+     2.33%  postgres  [kernel.kallsyms]  [k] __block_commit_write
+            |
+            ---__block_commit_write
+               block_write_end
+               ext4_da_do_write_end
+               ext4_da_write_end
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     2.33%  postgres  [kernel.kallsyms]  [k] do_syscall_64
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     2.33%  postgres  [kernel.kallsyms]  [k] ext4_buffered_write_iter
+            |
+            ---ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     2.33%  postgres  [kernel.kallsyms]  [k] filemap_add_folio
+            |
+            ---filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     2.33%  postgres  libc.so.6          [.] __libc_pwrite
+            |
+            ---__libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     2.33%  postgres  postgres           [.] ResourceOwnerForget
+            |
+            ---ResourceOwnerForget
+               TerminateBufferIO
+               |          
+               |--0.78%--FlushBuffer.part.0.lto_priv.0
+               |          GetVictimBuffer.lto_priv.0
+               |          StartReadBuffer
+               |          ReadBufferExtended
+               |          heap_vacuum_rel
+               |          vacuum_rel
+               |          vacuum
+               |          do_autovacuum
+               |          AutoVacWorkerMain
+               |          postmaster_child_launch.part.0
+               |          StartChildProcess.lto_priv.0
+               |          ServerLoop.isra.0
+               |          PostmasterMain
+               |          main
+               |          0x7fd6ae42a1c9
+               |          __libc_start_main
+               |          _start
+               |          
+                --0.78%--WaitReadBuffers
+                          ReadBufferExtended
+                          heap_vacuum_rel
+                          vacuum_rel
+                          vacuum
+                          do_autovacuum
+                          AutoVacWorkerMain
+                          postmaster_child_launch.part.0
+                          StartChildProcess.lto_priv.0
+                          ServerLoop.isra.0
+                          PostmasterMain
+                          main
+                          0x7fd6ae42a1c9
+                          __libc_start_main
+                          _start
+
+     1.55%  postgres  [kernel.kallsyms]  [k] __folio_mark_dirty
+            |
+            ---__folio_mark_dirty
+               mark_buffer_dirty
+               __block_commit_write
+               block_write_end
+               ext4_da_do_write_end
+               ext4_da_write_end
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     1.55%  postgres  [kernel.kallsyms]  [k] copy_page_from_iter_atomic
+            |
+            ---copy_page_from_iter_atomic
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     1.55%  postgres  [kernel.kallsyms]  [k] filemap_get_read_batch
+            |
+            ---filemap_get_read_batch
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     1.55%  postgres  [kernel.kallsyms]  [k] kmem_cache_alloc_noprof
+            |
+            ---kmem_cache_alloc_noprof
+               alloc_buffer_head
+               folio_alloc_buffers
+               create_empty_buffers
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     1.55%  postgres  postgres           [.] AutoVacuumUpdateCostLimit
+            |
+            ---AutoVacuumUpdateCostLimit
+               vacuum_delay_point.part.0
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __alloc_pages_noprof
+            |
+            ---__alloc_pages_noprof
+               alloc_pages_mpol_noprof
+               folio_alloc_noprof
+               filemap_alloc_folio_noprof
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __blk_mq_alloc_requests
+            |
+            ---__blk_mq_alloc_requests
+               blk_mq_submit_bio
+               __submit_bio
+               submit_bio_noacct_nocheck
+               submit_bio_noacct
+               submit_bio
+               ext4_mpage_readpages
+               ext4_readahead
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __cond_resched
+            |
+            ---__cond_resched
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __mark_inode_dirty
+            |
+            ---__mark_inode_dirty
+               generic_update_time
+               file_modified
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __memset
+            |
+            ---__memset
+               alloc_buffer_head
+               folio_alloc_buffers
+               create_empty_buffers
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __rmqueue_pcplist
+            |
+            ---__rmqueue_pcplist
+               rmqueue
+               get_page_from_freelist
+               __alloc_pages_noprof
+               alloc_pages_mpol_noprof
+               folio_alloc_noprof
+               filemap_alloc_folio_noprof
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] __xas_next
+            |
+            ---__xas_next
+               filemap_get_read_batch
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] alloc_pages_mpol_noprof
+            |
+            ---alloc_pages_mpol_noprof
+               folio_alloc_noprof
+               filemap_alloc_folio_noprof
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] balance_dirty_pages_ratelimited_flags
+            |
+            ---balance_dirty_pages_ratelimited_flags
+               balance_dirty_pages_ratelimited
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] bio_add_folio
+            |
+            ---bio_add_folio
+               ext4_mpage_readpages
+               ext4_readahead
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] create_empty_buffers
+            |
+            ---create_empty_buffers
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] crypto_shash_update
+            |
+            ---crypto_shash_update
+               ext4_inode_csum
+               ext4_inode_csum_set
+               ext4_fill_raw_inode
+               ext4_do_update_inode.isra.0
+               ext4_mark_iloc_dirty
+               __ext4_mark_inode_dirty
+               ext4_dirty_inode
+               __mark_inode_dirty
+               generic_update_time
+               file_modified
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] dd_insert_requests
+            |
+            ---dd_insert_requests
+               blk_mq_dispatch_plug_list
+               blk_mq_flush_plug_list.part.0
+               blk_mq_flush_plug_list
+               __blk_flush_plug
+               blk_finish_plug
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] ext4_block_write_begin
+            |
+            ---ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] ext4_da_get_block_prep
+            |
+            ---ext4_da_get_block_prep
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] ext4_es_lookup_extent
+            |
+            ---ext4_es_lookup_extent
+               ext4_da_map_blocks.constprop.0
+               ext4_da_get_block_prep
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] fault_in_readable
+            |
+            ---fault_in_readable
+               fault_in_iov_iter_readable
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] filemap_get_entry
+            |
+            ---filemap_get_entry
+               __filemap_get_folio
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] filemap_read
+            |
+            ---filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] finish_task_switch.isra.0
+            |
+            ---finish_task_switch.isra.0
+               __schedule
+               schedule
+               do_nanosleep
+               hrtimer_nanosleep
+               common_nsleep
+               __x64_sys_clock_nanosleep
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               clock_nanosleep
+               __nanosleep
+               vacuum_delay_point.part.0
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  [kernel.kallsyms]  [k] folio_mark_accessed
+            |
+            ---folio_mark_accessed
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] generic_perform_write
+            |
+            ---generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] get_mem_cgroup_from_mm
+            |
+            ---get_mem_cgroup_from_mm
+               __mem_cgroup_charge
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] handle_softirqs
+            |
+            ---handle_softirqs
+               irq_exit_rcu
+               sysvec_hyperv_stimer0
+               asm_sysvec_hyperv_stimer0
+               __ext4_journal_stop
+               ext4_dirty_inode
+               __mark_inode_dirty
+               generic_update_time
+               touch_atime
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] lru_gen_refault
+            |
+            ---lru_gen_refault
+               workingset_refault
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] mem_cgroup_from_id
+            |
+            ---mem_cgroup_from_id
+               workingset_refault
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] mnt_get_write_access
+            |
+            ---mnt_get_write_access
+               touch_atime
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] page_cache_ra_order
+            |
+            ---page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] page_cache_ra_unbounded
+            |
+            ---page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] post_alloc_hook
+            |
+            ---post_alloc_hook
+               __alloc_pages_noprof
+               alloc_pages_mpol_noprof
+               folio_alloc_noprof
+               filemap_alloc_folio_noprof
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] rw_verify_area
+            |
+            ---rw_verify_area
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] sched_balance_update_blocked_averages
+            |
+            ---sched_balance_update_blocked_averages
+               sched_balance_softirq
+               handle_softirqs
+               irq_exit_rcu
+               sysvec_hyperv_stimer0
+               asm_sysvec_hyperv_stimer0
+               lru_gen_refault
+               workingset_refault
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] scsi_queue_rq
+            |
+            ---scsi_queue_rq
+               blk_mq_dispatch_rq_list
+               __blk_mq_do_dispatch_sched
+               __blk_mq_sched_dispatch_requests
+               blk_mq_sched_dispatch_requests
+               blk_mq_run_hw_queue
+               blk_mq_dispatch_plug_list
+               blk_mq_flush_plug_list.part.0
+               blk_mq_flush_plug_list
+               __blk_flush_plug
+               blk_finish_plug
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] setup_object
+            |
+            ---setup_object
+               shuffle_freelist
+               allocate_slab
+               new_slab
+               ___slab_alloc
+               kmem_cache_alloc_noprof
+               alloc_buffer_head
+               folio_alloc_buffers
+               create_empty_buffers
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] shuffle_freelist
+            |
+            ---shuffle_freelist
+               allocate_slab
+               new_slab
+               ___slab_alloc
+               kmem_cache_alloc_noprof
+               alloc_buffer_head
+               folio_alloc_buffers
+               create_empty_buffers
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] try_charge_memcg
+            |
+            ---try_charge_memcg
+               __mem_cgroup_charge
+               filemap_add_folio
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] update_io_ticks
+            |
+            ---update_io_ticks
+               blk_mq_submit_bio
+               __submit_bio
+               submit_bio_noacct_nocheck
+               submit_bio_noacct
+               submit_bio
+               ext4_mpage_readpages
+               ext4_readahead
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] xas_load
+            |
+            ---xas_load
+               xa_load
+               ext4_mpage_readpages
+               ext4_readahead
+               read_pages
+               page_cache_ra_unbounded
+               page_cache_ra_order
+               page_cache_async_ra
+               filemap_get_pages
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  [kernel.kallsyms]  [k] xas_start
+            |
+            ---xas_start
+               xas_load
+               filemap_get_entry
+               __filemap_get_folio
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __libc_pwrite
+               FileWriteV
+               mdwritev
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               0xffffffffffffffff
+
+     0.78%  postgres  libc.so.6          [.] __libc_pread
+            |
+            ---__libc_pread
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  postgres           [.] FileAccess.lto_priv.0
+            |
+            ---FileAccess.lto_priv.0
+               FileReadV
+               mdreadv
+               WaitReadBuffers
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               0xffffffffffffffff
+
+     0.78%  postgres  postgres           [.] LWLockRelease
+            |
+            ---LWLockRelease
+               XLogInsertRecord
+               XLogInsert
+               log_heap_visible
+               visibilitymap_set
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] LockBufHdr
+            |
+            ---LockBufHdr
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] ScheduleBufferTagForWriteback
+            |
+            ---ScheduleBufferTagForWriteback
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] StartReadBuffer
+            |
+            ---StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] fsm_set_and_search.lto_priv.0
+            |
+            ---fsm_set_and_search.lto_priv.0
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] hash_bytes
+            |
+            ---hash_bytes
+               StartReadBuffer
+               ReadBufferExtended
+               fsm_readbuf
+               fsm_set_and_search.lto_priv.0
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] smgropen
+            |
+            ---smgropen
+               FlushBuffer.part.0.lto_priv.0
+               GetVictimBuffer.lto_priv.0
+               StartReadBuffer
+               ReadBufferExtended
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+     0.78%  postgres  postgres           [.] vacuum_delay_point.part.0
+            |
+            ---vacuum_delay_point.part.0
+               heap_vacuum_rel
+               vacuum_rel
+               vacuum
+               do_autovacuum
+               AutoVacWorkerMain
+               postmaster_child_launch.part.0
+               StartChildProcess.lto_priv.0
+               ServerLoop.isra.0
+               PostmasterMain
+               main
+               0x7fd6ae42a1c9
+               __libc_start_main
+               _start
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
