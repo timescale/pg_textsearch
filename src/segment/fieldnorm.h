@@ -315,33 +315,26 @@ static const uint32 FIELDNORM_DECODE_TABLE[256] = {
 		2013265944};
 
 /*
- * Encode document length to fieldnorm byte (Lucene SmallFloat.intToByte4)
+ * Encode document length to fieldnorm byte via binary search.
  *
- * For lengths 0-39, returns exact value.
- * For larger lengths, uses 3-bit exponent + 4-bit mantissa encoding.
+ * Finds the largest index i where FIELDNORM_DECODE_TABLE[i] <= length.
+ * This matches Tantivy's fieldnorm_to_id implementation.
  */
 static inline uint8
 encode_fieldnorm(uint32 length)
 {
-	int bits;
-	int exp;
-	int mantissa;
+	int lo = 0;
+	int hi = 255;
 
-	/* Exact encoding for small values */
-	if (length < 40)
-		return (uint8)length;
-
-	/* Find highest bit position */
-	bits = 32 - __builtin_clz(length);
-
-	/* Exponent: how many bits above 5 */
-	exp = bits - 5;
-
-	/* Mantissa: top 4 bits after the implicit leading 1 */
-	mantissa = (length >> (bits - 5)) & 0x0F;
-
-	/* Encode: 40 + (exp-1)*16 + mantissa */
-	return (uint8)(40 + ((exp - 1) << 4) + mantissa);
+	while (lo < hi)
+	{
+		int mid = (lo + hi + 1) / 2;
+		if (FIELDNORM_DECODE_TABLE[mid] <= length)
+			lo = mid;
+		else
+			hi = mid - 1;
+	}
+	return (uint8)lo;
 }
 
 /*
