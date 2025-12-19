@@ -52,8 +52,6 @@
     <p class="description">
         Performance tracking for <a href="https://github.com/timescale/pg_textsearch">pg_textsearch</a>.
         Click any data point to view the commit.
-        <br>
-        <a href="profiles/">📊 CPU Profiles &amp; Flamegraphs</a>
     </p>
     <div id="charts"></div>
 
@@ -171,26 +169,10 @@
                             const idx = elements[0].index;
                             const commit = data[idx].commit;
                             if (commit) {
-                                const shortCommit = commit.substring(0, 7);
-                                // Show a small menu with commit and profile links
-                                const menu = document.createElement('div');
-                                menu.style.cssText = 'position:fixed;background:white;border:1px solid #ccc;border-radius:4px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);z-index:1000;';
-                                menu.innerHTML = `
-                                    <div style="margin-bottom:8px;font-weight:bold;color:#333;">Commit ${shortCommit}</div>
-                                    <a href="https://github.com/timescale/pg_textsearch/commit/${commit}" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📝 View Commit</a>
-                                    <a href="profiles/" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📊 Find Profile</a>
-                                `;
-                                menu.style.left = event.native.pageX + 'px';
-                                menu.style.top = event.native.pageY + 'px';
-                                document.body.appendChild(menu);
-
-                                const closeMenu = (e) => {
-                                    if (!menu.contains(e.target)) {
-                                        menu.remove();
-                                        document.removeEventListener('click', closeMenu);
-                                    }
-                                };
-                                setTimeout(() => document.addEventListener('click', closeMenu), 100);
+                                window.open(
+                                    `https://github.com/timescale/pg_textsearch/commit/${commit}`,
+                                    '_blank'
+                                );
                             }
                         }
                     }
