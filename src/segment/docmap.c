@@ -63,6 +63,7 @@ tp_docmap_create(void)
 
 	builder->num_docs	= 0;
 	builder->capacity	= 0;
+	builder->finalized	= false;
 	builder->ctid_map	= NULL;
 	builder->fieldnorms = NULL;
 
@@ -74,6 +75,15 @@ tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length)
 {
 	TpDocMapEntry *entry;
 	bool		   found;
+
+	Assert(!builder->finalized);
+
+	/* Guard: UINT32_MAX is reserved as "not found" sentinel */
+	if (builder->num_docs >= UINT32_MAX - 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("too many documents in segment (max %u)",
+						UINT32_MAX - 1)));
 
 	/* Look up or create entry in hash table */
 	entry = (TpDocMapEntry *)
@@ -131,8 +141,13 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 	TpDocMapEntry  *entries;
 	uint32			i;
 
+	Assert(!builder->finalized);
+
 	if (builder->num_docs == 0)
+	{
+		builder->finalized = true;
 		return;
+	}
 
 	/* Collect all entries from hash table */
 	entries = palloc(sizeof(TpDocMapEntry) * builder->num_docs);
@@ -163,6 +178,7 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 	}
 
 	pfree(entries);
+	builder->finalized = true;
 }
 
 void

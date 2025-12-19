@@ -294,7 +294,8 @@ merged_term_add_segment_ref(
 }
 
 /*
- * Load a block of postings for V2 merge source.
+ * Load the next block of postings for V2 merge source.
+ * Returns true if a block was loaded, false if no more blocks remain.
  */
 static bool
 posting_source_load_block(TpPostingMergeSource *ps)
@@ -310,7 +311,11 @@ posting_source_load_block(TpPostingMergeSource *ps)
 	tp_segment_read(
 			ps->reader, skip_offset, &ps->skip_entry, sizeof(TpSkipEntry));
 
-	/* Ensure we have enough buffer space */
+	/*
+	 * Ensure we have enough buffer space. We reuse the buffer between blocks,
+	 * only reallocating when a larger block is encountered. Old block data is
+	 * no longer needed since we process blocks sequentially.
+	 */
 	if (ps->skip_entry.doc_count > ps->block_capacity)
 	{
 		if (ps->block_postings)

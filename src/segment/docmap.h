@@ -37,8 +37,9 @@ typedef struct TpDocMapBuilder
 	HTAB  *ctid_to_id; /* Hash table: CTID → doc_id */
 	uint32 num_docs;   /* Number of documents assigned */
 	uint32 capacity;   /* Current capacity of arrays */
+	bool   finalized;  /* True after tp_docmap_finalize called */
 
-	/* Output arrays (indexed by doc_id) */
+	/* Output arrays (indexed by doc_id, valid after finalize) */
 	ItemPointerData *ctid_map;	 /* doc_id → CTID */
 	uint8			*fieldnorms; /* doc_id → encoded length (1 byte) */
 } TpDocMapBuilder;
@@ -52,7 +53,8 @@ extern TpDocMapBuilder *tp_docmap_create(void);
 /*
  * Add a document to the map.
  * Returns the assigned doc_id (reuses existing ID if CTID already present).
- * doc_length is stored for fieldnorm encoding.
+ * doc_length is stored for fieldnorm encoding; if CTID already exists, the
+ * original doc_length is kept (callers should ensure consistent lengths).
  */
 extern uint32
 tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length);
@@ -76,22 +78,24 @@ extern void tp_docmap_finalize(TpDocMapBuilder *builder);
 extern void tp_docmap_destroy(TpDocMapBuilder *builder);
 
 /*
- * Get the CTID for a doc_id (after finalize).
+ * Get the CTID for a doc_id. Requires finalize to have been called.
  */
 static inline ItemPointer
 tp_docmap_get_ctid(TpDocMapBuilder *builder, uint32 doc_id)
 {
+	Assert(builder->finalized);
 	if (doc_id >= builder->num_docs)
 		return NULL;
 	return &builder->ctid_map[doc_id];
 }
 
 /*
- * Get the fieldnorm for a doc_id (after finalize).
+ * Get the fieldnorm for a doc_id. Requires finalize to have been called.
  */
 static inline uint8
 tp_docmap_get_fieldnorm(TpDocMapBuilder *builder, uint32 doc_id)
 {
+	Assert(builder->finalized);
 	if (doc_id >= builder->num_docs)
 		return 0;
 	return builder->fieldnorms[doc_id];
