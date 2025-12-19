@@ -45,7 +45,7 @@ typedef struct TpDocMapBuilder
 } TpDocMapBuilder;
 
 /*
- * Initialize a document map builder.
+ * Create a new document map builder (constructor).
  * Call this before collecting documents.
  */
 extern TpDocMapBuilder *tp_docmap_create(void);
