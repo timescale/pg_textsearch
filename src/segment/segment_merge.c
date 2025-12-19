@@ -62,14 +62,25 @@ typedef struct TpMergedTerm
 } TpMergedTerm;
 
 /*
+ * Current posting info during merge (for N-way merge comparison).
+ */
+typedef struct TpMergePostingInfo
+{
+	ItemPointerData ctid;		/* CTID for comparison ordering */
+	uint32			old_doc_id; /* Doc ID in source segment */
+	uint16			frequency;	/* Term frequency */
+	uint8			fieldnorm;	/* Encoded fieldnorm (1 byte) */
+} TpMergePostingInfo;
+
+/*
  * Posting merge source - tracks position in one segment's posting list
  * for streaming N-way merge. Updated for V2 block-based format.
  */
 typedef struct TpPostingMergeSource
 {
-	TpSegmentReader *reader;	/* Segment reader */
-	TpSegmentPosting current;	/* Current posting (output format) */
-	bool			 exhausted; /* No more postings */
+	TpSegmentReader	  *reader;	  /* Segment reader */
+	TpMergePostingInfo current;	  /* Current posting info */
+	bool			   exhausted; /* No more postings */
 
 	/* V2 block iteration state */
 	uint32			skip_index_offset; /* Offset to skip entries */
@@ -346,17 +357,18 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 	TpBlockPosting	*bp		= &ps->block_postings[ps->current_in_block];
 	ItemPointerData	 ctid;
 
-	/* Look up CTID from ctid_map */
+	/* Look up CTID from ctid_map (needed for N-way merge ordering) */
 	tp_segment_read(
 			ps->reader,
 			header->ctid_map_offset + (bp->doc_id * sizeof(ItemPointerData)),
 			&ctid,
 			sizeof(ItemPointerData));
 
-	/* Build output posting (fieldnorm is inline in block posting) */
+	/* Build output posting info */
 	ps->current.ctid	   = ctid;
+	ps->current.old_doc_id = bp->doc_id;
 	ps->current.frequency  = bp->frequency;
-	ps->current.doc_length = (uint16)decode_fieldnorm(bp->fieldnorm);
+	ps->current.fieldnorm  = bp->fieldnorm;
 }
 
 /*
@@ -467,13 +479,29 @@ find_min_posting_source(TpPostingMergeSource *sources, int num_sources)
 }
 
 /*
+ * Mapping from (source_idx, old_doc_id) → new_doc_id.
+ * Avoids hash lookups during posting write phase.
+ */
+typedef struct TpMergeDocMapping
+{
+	uint32 **old_to_new; /* old_to_new[src_idx][old_doc_id] = new_doc_id */
+	int		 num_sources;
+} TpMergeDocMapping;
+
+/*
  * Build merged docmap from source segment ctid_maps.
+ * Also builds direct mapping arrays for fast old→new doc_id lookup.
  */
 static TpDocMapBuilder *
-build_merged_docmap(TpMergeSource *sources, int num_sources)
+build_merged_docmap(
+		TpMergeSource *sources, int num_sources, TpMergeDocMapping *mapping)
 {
 	TpDocMapBuilder *docmap = tp_docmap_create();
 	int				 i;
+
+	/* Initialize mapping arrays */
+	mapping->num_sources = num_sources;
+	mapping->old_to_new	 = palloc0(num_sources * sizeof(uint32 *));
 
 	for (i = 0; i < num_sources; i++)
 	{
@@ -485,11 +513,16 @@ build_merged_docmap(TpMergeSource *sources, int num_sources)
 			continue;
 
 		num_docs = header->num_docs;
+
+		/* Allocate mapping array for this source */
+		mapping->old_to_new[i] = palloc(num_docs * sizeof(uint32));
+
 		for (j = 0; j < num_docs; j++)
 		{
 			ItemPointerData ctid;
 			uint8			fieldnorm;
 			uint32			doc_length;
+			uint32			new_doc_id;
 
 			/* Read CTID from source */
 			tp_segment_read(
@@ -506,8 +539,9 @@ build_merged_docmap(TpMergeSource *sources, int num_sources)
 					sizeof(uint8));
 			doc_length = decode_fieldnorm(fieldnorm);
 
-			/* Add to merged docmap */
-			tp_docmap_add(docmap, &ctid, doc_length);
+			/* Add to merged docmap and record mapping */
+			new_doc_id = tp_docmap_add(docmap, &ctid, doc_length);
+			mapping->old_to_new[i][j] = new_doc_id;
 		}
 	}
 
@@ -516,13 +550,32 @@ build_merged_docmap(TpMergeSource *sources, int num_sources)
 }
 
 /*
+ * Free merge doc mapping arrays.
+ */
+static void
+free_merge_doc_mapping(TpMergeDocMapping *mapping)
+{
+	int i;
+
+	for (i = 0; i < mapping->num_sources; i++)
+	{
+		if (mapping->old_to_new[i])
+			pfree(mapping->old_to_new[i]);
+	}
+	pfree(mapping->old_to_new);
+}
+
+/*
  * Collected posting for V2 output.
+ * Stores source segment info for direct mapping lookup (avoids hash lookup).
  */
 typedef struct CollectedPosting
 {
-	ItemPointerData ctid;
+	ItemPointerData ctid;		/* For N-way merge ordering */
+	int				source_idx; /* Index into sources array */
+	uint32			old_doc_id; /* Doc ID in source segment */
 	uint16			frequency;
-	uint16			doc_length;
+	uint8			fieldnorm; /* Already encoded */
 } CollectedPosting;
 
 /*
@@ -572,9 +625,12 @@ collect_term_postings(
 			postings = repalloc(postings, sizeof(CollectedPosting) * capacity);
 		}
 
+		/* Store posting with source info for direct mapping lookup */
 		postings[num].ctid		 = psources[min_idx].current.ctid;
+		postings[num].source_idx = term->segment_refs[min_idx].segment_idx;
+		postings[num].old_doc_id = psources[min_idx].current.old_doc_id;
 		postings[num].frequency	 = psources[min_idx].current.frequency;
-		postings[num].doc_length = psources[min_idx].current.doc_length;
+		postings[num].fieldnorm	 = psources[min_idx].current.fieldnorm;
 		num++;
 
 		posting_source_advance(&psources[min_idx]);
@@ -621,6 +677,7 @@ write_merged_segment(
 	TpSegmentHeader		header;
 	TpDictionary		dict;
 	TpDocMapBuilder	   *docmap;
+	TpMergeDocMapping	doc_mapping;
 	MergeTermBlockInfo *term_blocks;
 	uint32			   *string_offsets;
 	uint32				string_pos;
@@ -634,12 +691,13 @@ write_merged_segment(
 	/* Per-term collected postings (for V2 block output) */
 	CollectedPosting **term_postings;
 	uint32			  *term_posting_counts;
+	TpBlockPosting	 **all_block_postings;
 
 	if (num_terms == 0)
 		return InvalidBlockNumber;
 
-	/* Build docmap from source segments */
-	docmap = build_merged_docmap(sources, num_sources);
+	/* Build docmap and direct mapping arrays from source segments */
+	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
 
 	/* Collect postings for each term */
 	term_postings		= palloc0(num_terms * sizeof(CollectedPosting *));
@@ -761,8 +819,6 @@ write_merged_segment(
 	 * Write skip index entries and posting blocks.
 	 * We convert postings to block format once, storing for reuse.
 	 */
-	TpBlockPosting **all_block_postings;
-
 	all_block_postings = palloc0(num_terms * sizeof(TpBlockPosting *));
 
 	/* First pass: build block_postings and write skip entries */
@@ -777,20 +833,21 @@ write_merged_segment(
 		if (doc_count == 0)
 			continue;
 
-		/* Convert all postings to block format first */
+		/*
+		 * Convert all postings to block format using direct mapping lookup.
+		 * This avoids hash lookups by using precomputed old_doc_id→new_doc_id
+		 * mapping arrays built during docmap construction.
+		 */
 		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
 		for (j = 0; j < doc_count; j++)
 		{
-			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
-			if (doc_id == UINT32_MAX)
-				elog(ERROR,
-					 "CTID (%u,%u) not found in docmap during merge",
-					 ItemPointerGetBlockNumber(&postings[j].ctid),
-					 ItemPointerGetOffsetNumber(&postings[j].ctid));
+			int	   src_idx	  = postings[j].source_idx;
+			uint32 old_doc_id = postings[j].old_doc_id;
+			uint32 new_doc_id = doc_mapping.old_to_new[src_idx][old_doc_id];
 
-			block_postings[j].doc_id	= doc_id;
+			block_postings[j].doc_id	= new_doc_id;
 			block_postings[j].frequency = postings[j].frequency;
-			block_postings[j].fieldnorm = docmap->fieldnorms[doc_id];
+			block_postings[j].fieldnorm = postings[j].fieldnorm;
 			block_postings[j].reserved	= 0;
 		}
 		all_block_postings[i] = block_postings;
@@ -912,6 +969,7 @@ write_merged_segment(
 	}
 	pfree(term_postings);
 	pfree(term_posting_counts);
+	free_merge_doc_mapping(&doc_mapping);
 	tp_docmap_destroy(docmap);
 	if (writer.pages)
 		pfree(writer.pages);
