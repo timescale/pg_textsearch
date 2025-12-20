@@ -11,9 +11,9 @@
 | v0.0.5 | Dec 2025 | Segment infrastructure, auto-spill, hierarchical merging |
 | v0.1.0 | Dec 2025 | First open-source release, implicit index resolution, partitioned tables |
 
-## Current (v0.1.1-dev)
+## Current (v0.2.0-dev)
 
-Block storage foundation for future query optimizations.
+Block storage foundation for query optimizations.
 
 - **V2 segment format**: Block-based posting storage (128 docs/block)
 - **Skip index**: Per-block metadata (last_doc_id, max_tf, max_fieldnorm)
@@ -23,20 +23,20 @@ Block storage foundation for future query optimizations.
 
 ## Future
 
-### v0.1.x - Query Optimizations
+### v0.5.0 - Query Optimizations
 
 Query-time performance improvements building on block storage.
 
 - **Block-Max WAND/MAXSCORE**: Early termination for top-k queries
-- **Compression**: Delta + FOR/PFOR encoding for posting lists
-- **Background worker**: Async segment merging
+- **Threshold-based block skipping**: Skip blocks that can't contribute to top-k
 
-### v1.0 - Production Ready
+### v1.0.0 - Production Ready (Target: Feb 2025)
 
 First production-quality release.
 
-- Bug fixes, performance tuning, polish
-- Benchmark validation
+- Performance tuning and polish
+- Compression (if time permits): Delta + FOR/PFOR encoding
+- Benchmark validation on large datasets
 - Backwards compatibility commitments begin
 
 ### Future (Post v1.0)

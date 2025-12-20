@@ -712,7 +712,7 @@ carrying compatibility code for formats that may never see production use.
 
 ## Implementation Roadmap
 
-### v0.1.1: Block Storage Foundation ✅ (in progress)
+### v0.2.0: Block Storage Foundation (in progress)
 - [x] Fixed-size posting blocks (128 docs)
 - [x] Block headers with last_doc_id, doc_count, block_max_tf, block_max_norm
 - [x] Skip index structure (TpSkipEntry, 16 bytes per block)
@@ -723,26 +723,18 @@ carrying compatibility code for formats that may never see production use.
 - [x] Index build optimization: binary search for initial segment writes
 - [ ] Query-time block-aware seek operation
 
-### v0.1.2: Block-Based Query Executor
+### v0.5.0: Block-Based Query Executor
 - [ ] Block max score computation at query time
 - [ ] Query executor (WAND or MAXSCORE based on benchmarks)
 - [ ] Single-term optimization path
 - [ ] Threshold-based block skipping
 - [ ] Benchmarks comparing old vs new query path
 
-### v0.1.3: Compression
-- [ ] Delta encoding for doc IDs
-- [ ] FOR encoding implementation
-- [ ] PFOR encoding for outlier blocks
-- [ ] VInt fallback for last block
-- [ ] Frequency compression
-- [ ] Decode benchmarks (scalar first, SIMD later)
-
-### v0.1.4: Polish
-- [ ] Multi-level skip list (optional, for very long lists)
-- [ ] Segment-level pruning
-- [ ] Roaring bitmaps for deleted docs
+### v1.0.0: Production Ready (Target: Feb 2025)
 - [ ] Performance tuning based on benchmarks
+- [ ] Compression (stretch goal): Delta + FOR/PFOR encoding
+- [ ] Multi-level skip list (optional, for very long lists)
+- [ ] Roaring bitmaps for deleted docs (optional)
 
 ---
 
