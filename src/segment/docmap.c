@@ -61,12 +61,11 @@ tp_docmap_create(void)
 			&hash_ctl,
 			HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 
-	builder->num_docs	 = 0;
-	builder->capacity	 = 0;
-	builder->finalized	 = false;
-	builder->ctid_map	 = NULL;
-	builder->fieldnorms	 = NULL;
-	builder->ctid_sorted = NULL;
+	builder->num_docs	= 0;
+	builder->capacity	= 0;
+	builder->finalized	= false;
+	builder->ctid_map	= NULL;
+	builder->fieldnorms = NULL;
 
 	return builder;
 }
@@ -134,19 +133,6 @@ docmap_entry_cmp(const void *a, const void *b)
 	return 0;
 }
 
-/*
- * Comparison function for sorting/searching by CTID
- */
-static int
-ctid_lookup_cmp(const void *a, const void *b)
-{
-	const TpCtidLookupEntry *ea = (const TpCtidLookupEntry *)a;
-	const TpCtidLookupEntry *eb = (const TpCtidLookupEntry *)b;
-
-	/* Cast away const for ItemPointerCompare which takes non-const args */
-	return ItemPointerCompare((ItemPointer)&ea->ctid, (ItemPointer)&eb->ctid);
-}
-
 void
 tp_docmap_finalize(TpDocMapBuilder *builder)
 {
@@ -191,19 +177,6 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 		builder->fieldnorms[i] = encode_fieldnorm(entries[i].doc_length);
 	}
 
-	/* Build sorted CTID lookup array for binary search */
-	builder->ctid_sorted = palloc(
-			sizeof(TpCtidLookupEntry) * builder->num_docs);
-	for (i = 0; i < builder->num_docs; i++)
-	{
-		builder->ctid_sorted[i].ctid   = builder->ctid_map[i];
-		builder->ctid_sorted[i].doc_id = i;
-	}
-	qsort(builder->ctid_sorted,
-		  builder->num_docs,
-		  sizeof(TpCtidLookupEntry),
-		  ctid_lookup_cmp);
-
 	pfree(entries);
 	builder->finalized = true;
 }
@@ -223,38 +196,5 @@ tp_docmap_destroy(TpDocMapBuilder *builder)
 	if (builder->fieldnorms)
 		pfree(builder->fieldnorms);
 
-	if (builder->ctid_sorted)
-		pfree(builder->ctid_sorted);
-
 	pfree(builder);
-}
-
-/*
- * Fast CTID → doc_id lookup using binary search.
- * Requires tp_docmap_finalize() to have been called.
- * Returns UINT32_MAX if not found.
- */
-uint32
-tp_docmap_lookup_fast(TpDocMapBuilder *builder, ItemPointer ctid)
-{
-	TpCtidLookupEntry  key;
-	TpCtidLookupEntry *result;
-
-	Assert(builder->finalized);
-
-	if (builder->num_docs == 0)
-		return UINT32_MAX;
-
-	key.ctid = *ctid;
-	result =
-			bsearch(&key,
-					builder->ctid_sorted,
-					builder->num_docs,
-					sizeof(TpCtidLookupEntry),
-					ctid_lookup_cmp);
-
-	if (result == NULL)
-		return UINT32_MAX;
-
-	return result->doc_id;
 }

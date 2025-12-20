@@ -1550,9 +1550,8 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 
 			for (j = block_start; j < block_end; j++)
 			{
-				uint32 doc_id =
-						tp_docmap_lookup_fast(docmap, &entries[j].ctid);
-				uint8 norm;
+				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+				uint8  norm;
 
 				if (doc_id == UINT32_MAX)
 					elog(ERROR,
