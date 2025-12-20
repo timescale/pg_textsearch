@@ -85,6 +85,7 @@
 
         function getUnit(metricName, defaultUnit) {
             if (metricName.includes('Index Size')) return 'MB';
+            if (metricName.includes('Index Build Time')) return 's';
             return defaultUnit || 'ms';
         }
 
@@ -98,12 +99,17 @@
 
             const unit = getUnit(metricName, data[0]?.unit || 'ms');
 
+            // Convert ms to seconds for Index Build Time
+            const chartData = metricName.includes('Index Build Time')
+                ? data.map(d => ({ ...d, y: d.y / 1000 }))
+                : data;
+
             new Chart(canvas, {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: metricName,
-                        data: data,
+                        data: chartData,
                         borderColor: colors[colorIdx % colors.length],
                         backgroundColor: colors[colorIdx % colors.length] + '33',
                         fill: true,
