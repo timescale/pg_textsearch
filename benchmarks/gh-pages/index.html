@@ -60,15 +60,18 @@
     <script src="./data.js"></script>
     <script>
         const colors = [
-            'rgb(54, 162, 235)',
-            'rgb(255, 99, 132)',
-            'rgb(75, 192, 192)',
-            'rgb(255, 159, 64)',
-            'rgb(153, 102, 255)',
-            'rgb(255, 205, 86)',
-            'rgb(201, 203, 207)',
-            'rgb(255, 99, 71)',
+            [54, 162, 235],
+            [255, 99, 132],
+            [75, 192, 192],
+            [255, 159, 64],
+            [153, 102, 255],
+            [255, 205, 86],
+            [201, 203, 207],
+            [255, 99, 71],
         ];
+
+        function rgb(c) { return `rgb(${c[0]}, ${c[1]}, ${c[2]})`; }
+        function rgba(c, a) { return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})`; }
 
         function formatDate(timestamp) {
             const d = new Date(timestamp);
@@ -110,8 +113,8 @@
                     datasets: [{
                         label: metricName,
                         data: chartData,
-                        borderColor: colors[colorIdx % colors.length],
-                        backgroundColor: colors[colorIdx % colors.length] + '18',
+                        borderColor: rgb(colors[colorIdx % colors.length]),
+                        backgroundColor: rgba(colors[colorIdx % colors.length], 0.1),
                         fill: true,
                         tension: 0.1,
                         pointRadius: 3,
