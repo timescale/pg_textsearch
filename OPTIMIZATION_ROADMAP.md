@@ -730,9 +730,14 @@ carrying compatibility code for formats that may never see production use.
 - [ ] Threshold-based block skipping
 - [ ] Benchmarks comparing old vs new query path
 
+### v0.4.0: Compression
+- [ ] Delta encoding for doc IDs
+- [ ] FOR/PFOR encoding for posting blocks
+- [ ] Frequency compression
+- [ ] Decode benchmarks
+
 ### v1.0.0: Production Ready (Target: Feb 2025)
 - [ ] Performance tuning based on benchmarks
-- [ ] Compression (stretch goal): Delta + FOR/PFOR encoding
 - [ ] Multi-level skip list (optional, for very long lists)
 - [ ] Roaring bitmaps for deleted docs (optional)
 

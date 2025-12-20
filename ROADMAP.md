@@ -30,12 +30,18 @@ Query-time performance improvements building on block storage.
 - **Block-Max WAND/MAXSCORE**: Early termination for top-k queries
 - **Threshold-based block skipping**: Skip blocks that can't contribute to top-k
 
+### v0.4.0 - Compression
+
+Reduce storage footprint via posting list compression.
+
+- **Delta encoding**: Compact doc ID storage
+- **FOR/PFOR**: Frame-of-reference encoding for posting blocks
+
 ### v1.0.0 - Production Ready (Target: Feb 2025)
 
 First production-quality release.
 
 - Performance tuning and polish
-- Compression (if time permits): Delta + FOR/PFOR encoding
 - Benchmark validation on large datasets
 - Backwards compatibility commitments begin
 
