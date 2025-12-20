@@ -1338,6 +1338,8 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	Page			 header_page;
 	TpSegmentHeader *existing_header;
 	TermBlockInfo	*term_blocks;
+	TpBlockPosting **all_block_postings;
+	uint32			*all_doc_counts;
 
 	/* Initialize the writer to avoid garbage values */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
@@ -1501,9 +1503,6 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	 * We convert postings to doc_ids once, storing block_postings for each
 	 * term. Skip entries are written first (all terms), then posting blocks.
 	 */
-	TpBlockPosting **all_block_postings;
-	uint32			*all_doc_counts;
-
 	all_block_postings = palloc0(num_terms * sizeof(TpBlockPosting *));
 	all_doc_counts	   = palloc0(num_terms * sizeof(uint32));
 
@@ -1551,8 +1550,9 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 
 			for (j = block_start; j < block_end; j++)
 			{
-				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
-				uint8  norm;
+				uint32 doc_id =
+						tp_docmap_lookup_fast(docmap, &entries[j].ctid);
+				uint8 norm;
 
 				if (doc_id == UINT32_MAX)
 					elog(ERROR,

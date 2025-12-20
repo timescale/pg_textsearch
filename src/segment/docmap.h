@@ -29,6 +29,15 @@ typedef struct TpDocMapEntry
 } TpDocMapEntry;
 
 /*
+ * Entry for sorted CTID lookup (binary search).
+ */
+typedef struct TpCtidLookupEntry
+{
+	ItemPointerData ctid;
+	uint32			doc_id;
+} TpCtidLookupEntry;
+
+/*
  * Document map builder context.
  * Collects documents and assigns sequential IDs during segment write.
  */
@@ -42,6 +51,9 @@ typedef struct TpDocMapBuilder
 	/* Output arrays (indexed by doc_id, valid after finalize) */
 	ItemPointerData *ctid_map;	 /* doc_id → CTID */
 	uint8			*fieldnorms; /* doc_id → encoded length (1 byte) */
+
+	/* Sorted lookup array for fast binary search (valid after finalize) */
+	TpCtidLookupEntry *ctid_sorted; /* Sorted by CTID for binary search */
 } TpDocMapBuilder;
 
 /*
@@ -60,10 +72,18 @@ extern uint32
 tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length);
 
 /*
- * Look up doc_id for a CTID.
+ * Look up doc_id for a CTID using hash table.
  * Returns UINT32_MAX if not found.
  */
 extern uint32 tp_docmap_lookup(TpDocMapBuilder *builder, ItemPointer ctid);
+
+/*
+ * Fast lookup using binary search on sorted array.
+ * Requires tp_docmap_finalize() to have been called.
+ * Returns UINT32_MAX if not found.
+ */
+extern uint32
+tp_docmap_lookup_fast(TpDocMapBuilder *builder, ItemPointer ctid);
 
 /*
  * Finalize the document map.
