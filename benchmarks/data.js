@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766197857054,
+  "lastUpdate": 1766207468625,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2213,6 +2213,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 15.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2551.58,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "99ff043f148ad1d05f2b39d20d8b676a8f8c3ae2",
+          "message": "Revert binary search optimization for CTID lookups\n\nThe binary search optimization intended to eliminate hash lookup overhead\nduring segment writing actually caused an 8% slowdown in index build time\n(671s -> 726s for MS MARCO 8.8M docs).\n\nRoot cause: For high-volume lookups (8.8M docs * 30 terms = 264M lookups),\nO(log n) binary search (23 comparisons per lookup) is slower than O(1)\nhash lookup, even with hash overhead.\n\nThis reverts the sorted CTID array and tp_docmap_lookup_fast() function,\nkeeping the simpler and faster hash-based tp_docmap_lookup().\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2025-12-20T02:15:07Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/99ff043f148ad1d05f2b39d20d8b676a8f8c3ae2"
+        },
+        "date": 1766207467541,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 713937.535,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 5.306,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 7.674,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 12.134,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 8.847,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 14.92,
             "unit": "ms"
           },
           {
