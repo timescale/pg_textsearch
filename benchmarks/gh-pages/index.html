@@ -202,7 +202,20 @@
         if (typeof window.BENCHMARK_DATA !== 'undefined') {
             const container = document.getElementById('charts');
 
-            Object.entries(window.BENCHMARK_DATA.entries).forEach(([suiteName, suiteData]) => {
+            // Define explicit order: MS-MARCO first, then Wikipedia, then Cranfield
+            const suiteOrder = [
+                'msmarco Benchmarks',
+                'wikipedia Benchmarks',
+                'cranfield Benchmarks'
+            ];
+
+            // Filter to only include metrics with doc count (new format)
+            const hasDocCount = (name) => name.includes(' docs)');
+
+            suiteOrder.forEach(suiteName => {
+                const suiteData = window.BENCHMARK_DATA.entries[suiteName];
+                if (!suiteData) return;
+
                 // Create section for this benchmark suite
                 const section = document.createElement('div');
                 section.className = 'dataset-section';
@@ -215,10 +228,13 @@
                 grid.className = 'charts-grid';
                 section.appendChild(grid);
 
-                // Group data by metric name
+                // Group data by metric name, filtering old format
                 const metrics = {};
                 suiteData.forEach(run => {
                     run.benches.forEach(bench => {
+                        // Skip old metrics without doc count
+                        if (!hasDocCount(bench.name)) return;
+
                         if (!metrics[bench.name]) {
                             metrics[bench.name] = [];
                         }
