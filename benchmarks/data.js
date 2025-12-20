@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766194066601,
+  "lastUpdate": 1766194067695,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2946,6 +2946,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Rare Term Query",
             "value": 4.824,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 144.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "bb55c7b0b7a448d93bad0b518b62f3701e798036",
+          "message": "Add v0.4.0 for compression",
+          "timestamp": "2025-12-20T01:24:57Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/bb55c7b0b7a448d93bad0b518b62f3701e798036"
+        },
+        "date": 1766194067466,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 21971.213,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 3.941,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 1.368,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 1.306,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 2.933,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 3.693,
             "unit": "ms"
           },
           {
