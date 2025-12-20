@@ -2,7 +2,7 @@
 
 **Status**: Draft for review
 **Author**: Todd J. Green @ Tiger Data
-**Last updated**: 2025-12-17
+**Last updated**: 2025-12-19
 
 ---
 
@@ -712,23 +712,25 @@ carrying compatibility code for formats that may never see production use.
 
 ## Implementation Roadmap
 
-### v0.0.4: Block Storage Foundation
-- [ ] Fixed-size posting blocks (128 docs)
-- [ ] Block headers with last_doc_id, doc_count
-- [ ] Skip index structure
-- [ ] Segment format v2
-- [ ] Basic block-aware seek operation
-- [ ] Fieldnorm quantization table
+### v0.1.1: Block Storage Foundation ✅ (in progress)
+- [x] Fixed-size posting blocks (128 docs)
+- [x] Block headers with last_doc_id, doc_count, block_max_tf, block_max_norm
+- [x] Skip index structure (TpSkipEntry, 16 bytes per block)
+- [x] Segment format V2 with block-based posting storage
+- [x] Fieldnorm quantization table (Lucene SmallFloat encoding)
+- [x] Doc ID mapping (segment-local u32 IDs, CTID map for heap lookup)
+- [x] Index build optimization: direct mapping arrays for merge path
+- [x] Index build optimization: binary search for initial segment writes
+- [ ] Query-time block-aware seek operation
 
-### v0.0.5: Block-Based Query Executor
-- [ ] Block max score storage (max_tf, fieldnorm_id)
+### v0.1.2: Block-Based Query Executor
 - [ ] Block max score computation at query time
 - [ ] Query executor (WAND or MAXSCORE based on benchmarks)
 - [ ] Single-term optimization path
 - [ ] Threshold-based block skipping
 - [ ] Benchmarks comparing old vs new query path
 
-### v0.0.6: Compression
+### v0.1.3: Compression
 - [ ] Delta encoding for doc IDs
 - [ ] FOR encoding implementation
 - [ ] PFOR encoding for outlier blocks
@@ -736,7 +738,7 @@ carrying compatibility code for formats that may never see production use.
 - [ ] Frequency compression
 - [ ] Decode benchmarks (scalar first, SIMD later)
 
-### v0.0.7: Polish
+### v0.1.4: Polish
 - [ ] Multi-level skip list (optional, for very long lists)
 - [ ] Segment-level pruning
 - [ ] Roaring bitmaps for deleted docs

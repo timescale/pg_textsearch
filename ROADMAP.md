@@ -13,17 +13,22 @@
 
 ## Current (v0.1.1-dev)
 
-Development version targeting optimizations.
+Block storage foundation for future query optimizations.
+
+- **V2 segment format**: Block-based posting storage (128 docs/block)
+- **Skip index**: Per-block metadata (last_doc_id, max_tf, max_fieldnorm)
+- **Doc ID mapping**: Compact 4-byte segment-local IDs instead of 6-byte CTIDs
+- **Fieldnorm quantization**: 1-byte encoded document lengths
+- **Index build optimizations**: Binary search and direct mapping for CTID lookups
 
 ## Future
 
-### v0.1.x - Optimizations
+### v0.1.x - Query Optimizations
 
-Performance and space efficiency improvements.
+Query-time performance improvements building on block storage.
 
-- **Compression**: Delta encoding for posting lists, bitpacking
-- **Skip lists**: Fast intersection for multi-term queries
-- **Block-Max WAND**: Early termination for top-k queries
+- **Block-Max WAND/MAXSCORE**: Early termination for top-k queries
+- **Compression**: Delta + FOR/PFOR encoding for posting lists
 - **Background worker**: Async segment merging
 
 ### v1.0 - Production Ready
