@@ -23,7 +23,7 @@ Block storage foundation for query optimizations.
 
 ## Future
 
-### v0.5.0 - Query Optimizations
+### v0.3.0 - Query Optimizations
 
 Query-time performance improvements building on block storage.
 

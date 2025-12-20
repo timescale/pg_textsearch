@@ -723,7 +723,7 @@ carrying compatibility code for formats that may never see production use.
 - [x] Index build optimization: binary search for initial segment writes
 - [ ] Query-time block-aware seek operation
 
-### v0.5.0: Block-Based Query Executor
+### v0.3.0: Block-Based Query Executor
 - [ ] Block max score computation at query time
 - [ ] Query executor (WAND or MAXSCORE based on benchmarks)
 - [ ] Single-term optimization path
