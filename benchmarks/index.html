@@ -52,21 +52,26 @@
     <p class="description">
         Performance tracking for <a href="https://github.com/timescale/pg_textsearch">pg_textsearch</a>.
         Click any data point to view the commit.
+        <br>
+        <a href="profiles/">📊 CPU Profiles &amp; Flamegraphs</a>
     </p>
     <div id="charts"></div>
 
     <script src="./data.js"></script>
     <script>
         const colors = [
-            'rgb(54, 162, 235)',
-            'rgb(255, 99, 132)',
-            'rgb(75, 192, 192)',
-            'rgb(255, 159, 64)',
-            'rgb(153, 102, 255)',
-            'rgb(255, 205, 86)',
-            'rgb(201, 203, 207)',
-            'rgb(255, 99, 71)',
+            [54, 162, 235],
+            [255, 99, 132],
+            [75, 192, 192],
+            [255, 159, 64],
+            [153, 102, 255],
+            [255, 205, 86],
+            [201, 203, 207],
+            [255, 99, 71],
         ];
+
+        function rgb(c) { return `rgb(${c[0]}, ${c[1]}, ${c[2]})`; }
+        function rgba(c, a) { return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})`; }
 
         function formatDate(timestamp) {
             const d = new Date(timestamp);
@@ -83,6 +88,7 @@
 
         function getUnit(metricName, defaultUnit) {
             if (metricName.includes('Index Size')) return 'MB';
+            if (metricName.includes('Index Build Time')) return 's';
             return defaultUnit || 'ms';
         }
 
@@ -96,14 +102,19 @@
 
             const unit = getUnit(metricName, data[0]?.unit || 'ms');
 
+            // Convert ms to seconds for Index Build Time
+            const chartData = metricName.includes('Index Build Time')
+                ? data.map(d => ({ ...d, y: d.y / 1000 }))
+                : data;
+
             new Chart(canvas, {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: metricName,
-                        data: data,
-                        borderColor: colors[colorIdx % colors.length],
-                        backgroundColor: colors[colorIdx % colors.length] + '33',
+                        data: chartData,
+                        borderColor: rgb(colors[colorIdx % colors.length]),
+                        backgroundColor: rgba(colors[colorIdx % colors.length], 0.1),
                         fill: true,
                         tension: 0.1,
                         pointRadius: 3,
@@ -169,10 +180,26 @@
                             const idx = elements[0].index;
                             const commit = data[idx].commit;
                             if (commit) {
-                                window.open(
-                                    `https://github.com/timescale/pg_textsearch/commit/${commit}`,
-                                    '_blank'
-                                );
+                                const shortCommit = commit.substring(0, 7);
+                                // Show a small menu with commit and profile links
+                                const menu = document.createElement('div');
+                                menu.style.cssText = 'position:fixed;background:white;border:1px solid #ccc;border-radius:4px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);z-index:1000;';
+                                menu.innerHTML = `
+                                    <div style="margin-bottom:8px;font-weight:bold;color:#333;">Commit ${shortCommit}</div>
+                                    <a href="https://github.com/timescale/pg_textsearch/commit/${commit}" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📝 View Commit</a>
+                                    <a href="profiles/" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📊 Find Profile</a>
+                                `;
+                                menu.style.left = event.native.pageX + 'px';
+                                menu.style.top = event.native.pageY + 'px';
+                                document.body.appendChild(menu);
+
+                                const closeMenu = (e) => {
+                                    if (!menu.contains(e.target)) {
+                                        menu.remove();
+                                        document.removeEventListener('click', closeMenu);
+                                    }
+                                };
+                                setTimeout(() => document.addEventListener('click', closeMenu), 100);
                             }
                         }
                     }
@@ -184,7 +211,20 @@
         if (typeof window.BENCHMARK_DATA !== 'undefined') {
             const container = document.getElementById('charts');
 
-            Object.entries(window.BENCHMARK_DATA.entries).forEach(([suiteName, suiteData]) => {
+            // Define explicit order: MS-MARCO first, then Wikipedia, then Cranfield
+            const suiteOrder = [
+                'msmarco Benchmarks',
+                'wikipedia Benchmarks',
+                'cranfield Benchmarks'
+            ];
+
+            // Filter to only include metrics with doc count (new format)
+            const hasDocCount = (name) => name.includes(' docs)');
+
+            suiteOrder.forEach(suiteName => {
+                const suiteData = window.BENCHMARK_DATA.entries[suiteName];
+                if (!suiteData) return;
+
                 // Create section for this benchmark suite
                 const section = document.createElement('div');
                 section.className = 'dataset-section';
@@ -197,10 +237,13 @@
                 grid.className = 'charts-grid';
                 section.appendChild(grid);
 
-                // Group data by metric name
+                // Group data by metric name, filtering old format
                 const metrics = {};
                 suiteData.forEach(run => {
                     run.benches.forEach(bench => {
+                        // Skip old metrics without doc count
+                        if (!hasDocCount(bench.name)) return;
+
                         if (!metrics[bench.name]) {
                             metrics[bench.name] = [];
                         }
