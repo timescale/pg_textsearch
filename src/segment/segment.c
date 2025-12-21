@@ -1306,18 +1306,24 @@ build_docmap_from_memtable(TpLocalIndexState *state)
 }
 
 /*
- * Per-term block information built during first pass.
+ * Per-term block information for V2 streaming format.
+ * Updated for streaming layout: postings written before skip index.
  */
 typedef struct TermBlockInfo
 {
-	uint32 skip_index_offset; /* Offset to this term's skip entries */
-	uint16 block_count;		  /* Number of blocks for this term */
-	uint32 posting_offset;	  /* Offset to this term's posting blocks */
-	uint32 doc_freq;		  /* Document frequency */
+	uint32 posting_offset;	 /* Absolute offset where postings were written */
+	uint16 block_count;		 /* Number of blocks for this term */
+	uint32 doc_freq;		 /* Document frequency */
+	uint32 skip_entry_start; /* Index into accumulated skip entries array */
 } TermBlockInfo;
 
 /*
- * Write V2 segment from memtable with block-based posting storage.
+ * Write V2 segment from memtable with streaming format.
+ *
+ * Layout: [header] → [dictionary] → [postings] → [skip index] →
+ *         [fieldnorm] → [ctid map]
+ *
+ * This matches the merge format: postings written before skip index.
  */
 BlockNumber
 tp_write_segment_v2(TpLocalIndexState *state, Relation index)
@@ -1338,8 +1344,11 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	Page			 header_page;
 	TpSegmentHeader *existing_header;
 	TermBlockInfo	*term_blocks;
-	TpBlockPosting **all_block_postings;
-	uint32			*all_doc_counts;
+
+	/* Accumulated skip entries for all terms */
+	TpSkipEntry *all_skip_entries;
+	uint32		 skip_entries_count;
+	uint32		 skip_entries_capacity;
 
 	/* Initialize the writer to avoid garbage values */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
@@ -1419,102 +1428,43 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
-	/* Record entries offset - will write V2 entries after calculating offsets
-	 */
+	/* Record entries offset - dict entries written after postings loop */
 	header.entries_offset = writer.current_offset;
 
-	/*
-	 * First pass: calculate skip index and posting block sizes for each term.
-	 * We need this to know where each term's skip entries and postings go.
-	 */
+	/* Write placeholder dict entries - we'll fill them in after streaming */
+	{
+		TpDictEntryV2 placeholder;
+		memset(&placeholder, 0, sizeof(TpDictEntryV2));
+		for (i = 0; i < num_terms; i++)
+			tp_segment_writer_write(
+					&writer, &placeholder, sizeof(TpDictEntryV2));
+	}
+
+	/* Postings start here - streaming format writes postings first */
+	header.postings_offset = writer.current_offset;
+
+	/* Initialize per-term tracking and skip entry accumulator */
 	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
 
-	{
-		uint32 skip_offset	  = 0;
-		uint32 posting_offset = 0;
-
-		for (i = 0; i < num_terms; i++)
-		{
-			TpPostingList *posting_list = NULL;
-			uint32		   doc_count	= 0;
-			uint32		   num_blocks;
-
-			if (terms[i].posting_list_dp != InvalidDsaPointer)
-			{
-				posting_list = (TpPostingList *)
-						dsa_get_address(state->dsa, terms[i].posting_list_dp);
-				if (posting_list)
-					doc_count = posting_list->doc_count;
-			}
-
-			/* Calculate number of blocks (ceiling division) */
-			num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-			if (num_blocks == 0 && doc_count > 0)
-				num_blocks = 1;
-
-			term_blocks[i].skip_index_offset = skip_offset;
-			term_blocks[i].block_count		 = (uint16)num_blocks;
-			term_blocks[i].posting_offset	 = posting_offset;
-			term_blocks[i].doc_freq = posting_list ? posting_list->doc_freq
-												   : 0;
-
-			/* Advance offsets */
-			skip_offset += num_blocks * sizeof(TpSkipEntry);
-			posting_offset += doc_count * sizeof(TpBlockPosting);
-		}
-	}
+	skip_entries_capacity = 1024;
+	skip_entries_count	  = 0;
+	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
 
 	/*
-	 * Calculate absolute offsets for skip index and postings.
-	 * Skip index comes after dict entries.
+	 * Streaming pass: for each term, convert postings and write immediately.
 	 */
-	header.skip_index_offset = header.entries_offset +
-							   (num_terms * sizeof(TpDictEntryV2));
-
-	{
-		uint32 total_skip_size = 0;
-		for (i = 0; i < num_terms; i++)
-			total_skip_size += term_blocks[i].block_count *
-							   sizeof(TpSkipEntry);
-
-		/* V1 postings_offset is reused for V2 posting blocks */
-		header.postings_offset = header.skip_index_offset + total_skip_size;
-	}
-
-	/* Write dictionary entries V2 */
-	for (i = 0; i < num_terms; i++)
-	{
-		TpDictEntryV2 entry;
-
-		entry.skip_index_offset = header.skip_index_offset +
-								  term_blocks[i].skip_index_offset;
-		entry.block_count = term_blocks[i].block_count;
-		entry.reserved	  = 0;
-		entry.doc_freq	  = term_blocks[i].doc_freq;
-
-		tp_segment_writer_write(&writer, &entry, sizeof(TpDictEntryV2));
-	}
-
-	/* Verify we're at the expected skip index position */
-	Assert(writer.current_offset == header.skip_index_offset);
-
-	/*
-	 * Second pass: Build and write skip index entries and posting blocks.
-	 * We convert postings to doc_ids once, storing block_postings for each
-	 * term. Skip entries are written first (all terms), then posting blocks.
-	 */
-	all_block_postings = palloc0(num_terms * sizeof(TpBlockPosting *));
-	all_doc_counts	   = palloc0(num_terms * sizeof(uint32));
-
-	/* First: build skip entries and block_postings, write skip entries */
 	for (i = 0; i < num_terms; i++)
 	{
 		TpPostingList  *posting_list = NULL;
 		TpPostingEntry *entries		 = NULL;
 		uint32			doc_count	 = 0;
 		uint32			block_idx;
-		TpSkipEntry	   *skip_entries   = NULL;
+		uint32			num_blocks;
 		TpBlockPosting *block_postings = NULL;
+
+		/* Record where this term's postings start */
+		term_blocks[i].posting_offset	= writer.current_offset;
+		term_blocks[i].skip_entry_start = skip_entries_count;
 
 		if (terms[i].posting_list_dp != InvalidDsaPointer)
 		{
@@ -1528,27 +1478,25 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 			}
 		}
 
+		term_blocks[i].doc_freq = posting_list ? posting_list->doc_freq : 0;
+
 		if (doc_count == 0)
-			continue;
-
-		/* Allocate temporary arrays for this term */
-		skip_entries = palloc0(
-				term_blocks[i].block_count * sizeof(TpSkipEntry));
-		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
-
-		/* Convert postings to doc_id format and build skip entries */
-		for (block_idx = 0; block_idx < term_blocks[i].block_count;
-			 block_idx++)
 		{
-			uint32 block_start	 = block_idx * TP_BLOCK_SIZE;
-			uint32 block_end	 = Min(block_start + TP_BLOCK_SIZE, doc_count);
-			uint32 docs_in_block = block_end - block_start;
-			uint32 j;
-			uint16 max_tf	   = 0;
-			uint8  max_norm	   = 0;
-			uint32 last_doc_id = 0;
+			term_blocks[i].block_count = 0;
+			continue;
+		}
 
-			for (j = block_start; j < block_end; j++)
+		/* Calculate number of blocks */
+		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		if (num_blocks == 0 && doc_count > 0)
+			num_blocks = 1;
+		term_blocks[i].block_count = (uint16)num_blocks;
+
+		/* Convert postings to block format */
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+		{
+			uint32 j;
+			for (j = 0; j < doc_count; j++)
 			{
 				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
 				uint8  norm;
@@ -1565,60 +1513,73 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 				block_postings[j].frequency = (uint16)entries[j].frequency;
 				block_postings[j].fieldnorm = norm;
 				block_postings[j].reserved	= 0;
-
-				/* Track block max stats */
-				if (entries[j].frequency > max_tf)
-					max_tf = (uint16)entries[j].frequency;
-				if (norm > max_norm)
-					max_norm = norm;
-
-				last_doc_id = doc_id;
 			}
-
-			/* Fill in skip entry */
-			skip_entries[block_idx].last_doc_id	   = last_doc_id;
-			skip_entries[block_idx].doc_count	   = (uint8)docs_in_block;
-			skip_entries[block_idx].block_max_tf   = max_tf;
-			skip_entries[block_idx].block_max_norm = max_norm;
-			skip_entries[block_idx].posting_offset =
-					header.postings_offset + term_blocks[i].posting_offset +
-					(block_start * sizeof(TpBlockPosting));
-			skip_entries[block_idx].flags		= TP_BLOCK_FLAG_UNCOMPRESSED;
-			skip_entries[block_idx].reserved[0] = 0;
-			skip_entries[block_idx].reserved[1] = 0;
-			skip_entries[block_idx].reserved[2] = 0;
 		}
 
-		/* Write skip entries for this term */
-		tp_segment_writer_write(
-				&writer,
-				skip_entries,
-				term_blocks[i].block_count * sizeof(TpSkipEntry));
+		/* Write posting blocks and build skip entries */
+		for (block_idx = 0; block_idx < num_blocks; block_idx++)
+		{
+			TpSkipEntry skip;
+			uint32		block_start = block_idx * TP_BLOCK_SIZE;
+			uint32 block_end = Min(block_start + TP_BLOCK_SIZE, doc_count);
+			uint32 j;
+			uint16 max_tf	   = 0;
+			uint8  max_norm	   = 0;
+			uint32 last_doc_id = 0;
 
-		pfree(skip_entries);
+			/* Calculate block stats */
+			for (j = block_start; j < block_end; j++)
+			{
+				if (block_postings[j].doc_id > last_doc_id)
+					last_doc_id = block_postings[j].doc_id;
+				if (block_postings[j].frequency > max_tf)
+					max_tf = block_postings[j].frequency;
+				if (block_postings[j].fieldnorm > max_norm)
+					max_norm = block_postings[j].fieldnorm;
+			}
 
-		/* Store block_postings for writing after all skip entries */
-		all_block_postings[i] = block_postings;
-		all_doc_counts[i]	  = doc_count;
+			/* Build skip entry with actual posting offset */
+			skip.last_doc_id	= last_doc_id;
+			skip.doc_count		= (uint8)(block_end - block_start);
+			skip.block_max_tf	= max_tf;
+			skip.block_max_norm = max_norm;
+			skip.posting_offset = writer.current_offset;
+			skip.flags			= TP_BLOCK_FLAG_UNCOMPRESSED;
+			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			/* Accumulate skip entry */
+			if (skip_entries_count >= skip_entries_capacity)
+			{
+				skip_entries_capacity *= 2;
+				all_skip_entries = repalloc(
+						all_skip_entries,
+						skip_entries_capacity * sizeof(TpSkipEntry));
+			}
+			all_skip_entries[skip_entries_count++] = skip;
+
+			/* Write posting block data */
+			tp_segment_writer_write(
+					&writer,
+					&block_postings[block_start],
+					(block_end - block_start) * sizeof(TpBlockPosting));
+		}
+
+		pfree(block_postings);
 	}
 
-	/* Second: write all posting blocks (reusing stored block_postings) */
-	for (i = 0; i < num_terms; i++)
+	/* Skip index starts here - after all postings */
+	header.skip_index_offset = writer.current_offset;
+
+	/* Write all accumulated skip entries */
+	if (skip_entries_count > 0)
 	{
-		if (all_block_postings[i] == NULL || all_doc_counts[i] == 0)
-			continue;
-
-		/* Write posting blocks for this term */
 		tp_segment_writer_write(
 				&writer,
-				all_block_postings[i],
-				all_doc_counts[i] * sizeof(TpBlockPosting));
-
-		pfree(all_block_postings[i]);
+				all_skip_entries,
+				skip_entries_count * sizeof(TpSkipEntry));
 	}
 
-	pfree(all_block_postings);
-	pfree(all_doc_counts);
+	pfree(all_skip_entries);
 
 	/* Write fieldnorm table */
 	header.fieldnorm_offset = writer.current_offset;
@@ -1632,7 +1593,6 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	header.ctid_map_offset = writer.current_offset;
 	if (docmap->num_docs > 0)
 	{
-		/* Write CTIDs directly - they're already in order by doc_id */
 		tp_segment_writer_write(
 				&writer,
 				docmap->ctid_map,
@@ -1647,6 +1607,13 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 
 	/* Write page index */
 	tp_segment_writer_flush(&writer);
+
+	/*
+	 * Mark buffer as empty to prevent tp_segment_writer_finish from flushing
+	 * again and overwriting our dict entry updates.
+	 */
+	writer.buffer_pos = SizeOfPageHeaderData;
+
 	page_index_root =
 			write_page_index(index, writer.pages, writer.pages_allocated);
 	header.page_index = page_index_root;
@@ -1654,6 +1621,66 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 	/* Update header with actual values */
 	header.data_size = writer.current_offset;
 	header.num_pages = writer.pages_allocated;
+
+	/*
+	 * Now write the dictionary entries with correct skip_index_offset values.
+	 * Do this BEFORE tp_segment_writer_finish so writer.pages is still valid.
+	 */
+	{
+		Buffer dict_buf;
+		uint32 entry_logical_page;
+		uint32 current_page = UINT32_MAX;
+
+		for (i = 0; i < num_terms; i++)
+		{
+			TpDictEntryV2 entry;
+			uint32		  entry_offset;
+			uint32		  page_offset;
+			BlockNumber	  physical_block;
+
+			/* Build the entry */
+			entry.skip_index_offset = header.skip_index_offset +
+									  (term_blocks[i].skip_entry_start *
+									   sizeof(TpSkipEntry));
+			entry.block_count = term_blocks[i].block_count;
+			entry.reserved	  = 0;
+			entry.doc_freq	  = term_blocks[i].doc_freq;
+
+			/* Calculate where this entry is in the segment */
+			entry_offset = header.entries_offset + (i * sizeof(TpDictEntryV2));
+			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
+			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
+
+			/* Read page if different from current */
+			if (entry_logical_page != current_page)
+			{
+				if (current_page != UINT32_MAX)
+				{
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+				}
+
+				physical_block = writer.pages[entry_logical_page];
+				dict_buf	   = ReadBuffer(index, physical_block);
+				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				current_page = entry_logical_page;
+			}
+
+			/* Write entry to page */
+			{
+				Page  page = BufferGetPage(dict_buf);
+				char *dest = (char *)page + SizeOfPageHeaderData + page_offset;
+				memcpy(dest, &entry, sizeof(TpDictEntryV2));
+			}
+		}
+
+		/* Release last buffer */
+		if (current_page != UINT32_MAX)
+		{
+			MarkBufferDirty(dict_buf);
+			UnlockReleaseBuffer(dict_buf);
+		}
+	}
 
 	tp_segment_writer_finish(&writer);
 

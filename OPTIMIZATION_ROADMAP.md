@@ -344,29 +344,34 @@ blocks, then only decompress posting data for blocks that pass the threshold.
 ┌─────────────────────────────────────────────────────────┐
 │ Segment Header                                          │
 ├─────────────────────────────────────────────────────────┤
-│ Term Dictionary (on-disk hash table)                    │
-│   - term -> (skip_index_offset, doc_freq, block_count)  │
-│   - O(1) lookup via linear probing (see design below)   │
+│ Term Dictionary                                         │
+│   - String pool (term text)                             │
+│   - Dict entries: skip_index_offset, block_count, df    │
 ├─────────────────────────────────────────────────────────┤
-│ Doc ID → CTID Mapping (6 bytes per doc)                 │
-│   - Maps segment-local doc IDs back to heap tuples      │
+│ Posting Blocks (written first for streaming)            │
+│   - 8 bytes per posting (uncompressed)                  │
+│   - See "Fieldnorm Storage" below for format details    │
 ├─────────────────────────────────────────────────────────┤
 │ Skip Index (per-term arrays of block headers)           │
 │   - 16 bytes per block, enables binary search           │
-│   - Frequently accessed during BMW, benefits from cache │
+│   - Written after postings (offsets now known)          │
 ├─────────────────────────────────────────────────────────┤
-│ Posting Blocks (uncompressed or compressed)             │
-│   - See "Fieldnorm Storage" below for format details    │
-├─────────────────────────────────────────────────────────┤
-│ Fieldnorm Table (compressed formats only)               │
+│ Fieldnorm Table                                         │
 │   - 1 byte per doc, quantized document lengths          │
-│   - Omitted in uncompressed format (inline in postings) │
+├─────────────────────────────────────────────────────────┤
+│ Doc ID → CTID Mapping (6 bytes per doc)                 │
+│   - Maps segment-local doc IDs back to heap tuples      │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Key insight**: Separating skip index from posting data improves cache
-behavior. During BMW, we frequently access skip entries but rarely decompress
-blocks.
+**Key insight**: The layout `[postings] → [skip index]` enables single-pass
+streaming writes. We write postings while tracking offsets and block stats,
+then write skip entries with known offsets. This eliminates multiple passes
+over the data that were required when skip index preceded postings.
+
+**Cache behavior**: During BMW queries, we scan skip entries to find candidate
+blocks. Since skip entries are small (16 bytes per 128 docs) and accessed
+sequentially, they cache well regardless of physical position.
 
 #### 1.3 Fieldnorm Quantization
 
