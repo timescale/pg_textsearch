@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766293712666,
+  "lastUpdate": 1766293714575,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2709,6 +2709,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 14.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2551.58,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "be9e9979fb6f0287d7876e902d565648bc07f655",
+          "message": "Fix dict entry page boundary overflow in V2 segment format\n\nThe V2 segment format's dict entry update code was writing 12-byte\nTpDictEntryV2 entries without handling the case where an entry spans\ntwo pages. When page_offset > 8156 (SEGMENT_DATA_PER_PAGE - sizeof),\nthe write would overflow into the next page's header, corrupting the\nLSN field and causing 'xlog flush request not satisfied' errors.\n\nFixed by detecting when an entry would cross a page boundary and\nsplitting the write across two pages. Applied to both tp_write_segment_v2()\nand the merge segment creation code.",
+          "timestamp": "2025-12-21T03:40:14Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/be9e9979fb6f0287d7876e902d565648bc07f655"
+        },
+        "date": 1766293713944,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 724388.554,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 5.283,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 7.388,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 12.293,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.055,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 8.963,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 15.13,
             "unit": "ms"
           },
           {
