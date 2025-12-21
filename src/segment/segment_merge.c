@@ -976,11 +976,52 @@ write_merged_segment(
 				current_page = entry_logical_page;
 			}
 
-			/* Write entry to page */
+			/* Write entry to page - handle page boundary spanning */
 			{
-				Page  page = BufferGetPage(dict_buf);
-				char *dest = (char *)page + SizeOfPageHeaderData + page_offset;
-				memcpy(dest, &entry, sizeof(TpDictEntryV2));
+				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
+											page_offset;
+
+				if (bytes_on_this_page >= sizeof(TpDictEntryV2))
+				{
+					/* Entry fits entirely on this page */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					memcpy(dest, &entry, sizeof(TpDictEntryV2));
+				}
+				else
+				{
+					/* Entry spans two pages */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					char *src = (char *)&entry;
+
+					/* Write first part to current page */
+					memcpy(dest, src, bytes_on_this_page);
+
+					/* Move to next page */
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+
+					entry_logical_page++;
+					if (entry_logical_page >= writer.pages_allocated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INTERNAL_ERROR),
+								 errmsg("dict entry spans beyond allocated")));
+
+					physical_block = writer.pages[entry_logical_page];
+					dict_buf	   = ReadBuffer(index, physical_block);
+					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					current_page = entry_logical_page;
+
+					/* Write remaining part to next page */
+					page = BufferGetPage(dict_buf);
+					dest = (char *)page + SizeOfPageHeaderData;
+					memcpy(dest,
+						   src + bytes_on_this_page,
+						   sizeof(TpDictEntryV2) - bytes_on_this_page);
+				}
 			}
 		}
 

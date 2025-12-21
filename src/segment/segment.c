@@ -682,9 +682,10 @@ allocate_segment_page(Relation index)
 	/* No free pages available, extend the relation */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-
-	/* The page should already be initialized by RBM_ZERO_AND_LOCK */
 	block = BufferGetBlockNumber(buffer);
+
+	/* Initialize the page header properly */
+	PageInit(BufferGetPage(buffer), BLCKSZ, 0);
 
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
@@ -1651,6 +1652,16 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
 			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
 
+			/* Bounds check */
+			if (entry_logical_page >= writer.pages_allocated)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("dict entry %u logical page %u >= "
+								"pages_allocated %u",
+								i,
+								entry_logical_page,
+								writer.pages_allocated)));
+
 			/* Read page if different from current */
 			if (entry_logical_page != current_page)
 			{
@@ -1666,11 +1677,52 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 				current_page = entry_logical_page;
 			}
 
-			/* Write entry to page */
+			/* Write entry to page - handle page boundary spanning */
 			{
-				Page  page = BufferGetPage(dict_buf);
-				char *dest = (char *)page + SizeOfPageHeaderData + page_offset;
-				memcpy(dest, &entry, sizeof(TpDictEntryV2));
+				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
+											page_offset;
+
+				if (bytes_on_this_page >= sizeof(TpDictEntryV2))
+				{
+					/* Entry fits entirely on this page */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					memcpy(dest, &entry, sizeof(TpDictEntryV2));
+				}
+				else
+				{
+					/* Entry spans two pages */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					char *src = (char *)&entry;
+
+					/* Write first part to current page */
+					memcpy(dest, src, bytes_on_this_page);
+
+					/* Move to next page */
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+
+					entry_logical_page++;
+					if (entry_logical_page >= writer.pages_allocated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INTERNAL_ERROR),
+								 errmsg("dict entry spans beyond allocated")));
+
+					physical_block = writer.pages[entry_logical_page];
+					dict_buf	   = ReadBuffer(index, physical_block);
+					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					current_page = entry_logical_page;
+
+					/* Write remaining part to next page */
+					page = BufferGetPage(dict_buf);
+					dest = (char *)page + SizeOfPageHeaderData;
+					memcpy(dest,
+						   src + bytes_on_this_page,
+						   sizeof(TpDictEntryV2) - bytes_on_this_page);
+				}
 			}
 		}
 
@@ -2311,18 +2363,30 @@ tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len)
 void
 tp_segment_writer_flush(TpSegmentWriter *writer)
 {
-	Buffer buffer;
-	Page   page;
+	Buffer		buffer;
+	Page		page;
+	BlockNumber block;
 
 	if (writer->buffer_page >= writer->pages_allocated)
 		return; /* Nothing to flush */
 
+	block = writer->pages[writer->buffer_page];
+
 	/* Write current buffer to disk */
-	buffer = ReadBuffer(writer->index, writer->pages[writer->buffer_page]);
+	buffer = ReadBuffer(writer->index, block);
 	LockBuffer(
 			buffer, BUFFER_LOCK_EXCLUSIVE); /* Need exclusive lock to modify */
 	page = BufferGetPage(buffer);
-	memcpy(page, writer->buffer, BLCKSZ);
+
+	/*
+	 * Copy only the data portion of the page, preserving the page header
+	 * that the buffer manager has set up. This avoids corrupting the LSN
+	 * and other buffer manager state.
+	 */
+	memcpy((char *)page + SizeOfPageHeaderData,
+		   (char *)writer->buffer + SizeOfPageHeaderData,
+		   BLCKSZ - SizeOfPageHeaderData);
+
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
 }
