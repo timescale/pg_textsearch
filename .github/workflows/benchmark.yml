@@ -179,6 +179,10 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
 
+        # Disable autovacuum to avoid profiling vacuum instead of queries
+        psql -c "ALTER SYSTEM SET autovacuum = off"
+        pg_ctl reload -D tmp_bench/data
+
         # Create a query script that runs many iterations for profiling
         cat > /tmp/profile_queries.sql << 'EOSQL'
         -- Run queries repeatedly to get meaningful profile samples
@@ -214,11 +218,11 @@ jobs:
         psql -f /tmp/profile_queries.sql &
         PSQL_PID=$!
 
-        sleep 1
-
-        # Find the postgres backend process
-        PG_PID=$(pgrep -f "postgres.*bench_test" | head -1)
-        echo "Profiling query PID: $PG_PID"
+        # Wait for backend to start, then find it
+        # With autovacuum disabled, we should only see our query backend
+        sleep 2
+        PG_PID=$(ps aux | grep "postgres:.*bench_test" | grep -v "autovacuum\|checkpointer\|walwriter\|bgwriter\|logical\|startup" | grep -v grep | awk '{print $2}' | head -1)
+        echo "Profiling query backend PID: $PG_PID"
 
         if [ -n "$PG_PID" ]; then
           # Record profile for query duration (up to 10 min)
@@ -246,6 +250,10 @@ jobs:
           echo "Could not find postgres backend PID for queries"
           wait $PSQL_PID || true
         fi
+
+        # Re-enable autovacuum
+        psql -c "ALTER SYSTEM RESET autovacuum"
+        pg_ctl reload -D tmp_bench/data
 
     - name: Generate profile summary
       run: |
