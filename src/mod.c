@@ -221,6 +221,8 @@ tp_object_access(
 		int				 subId,
 		void			*arg)
 {
+	(void)arg; /* unused - we don't care about drop flags */
+
 	/* Call previous hook if exists */
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
@@ -228,17 +230,18 @@ tp_object_access(
 	/* We only care about DROP events on relations (indexes are relations) */
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
-		ObjectAccessDrop *drop_arg = (ObjectAccessDrop *)arg;
-
-		/* Skip internal drops */
-		if ((drop_arg->dropflags & PERFORM_DELETION_INTERNAL) != 0)
-			return;
+		/*
+		 * Always cleanup our indexes regardless of drop flags.
+		 * PERFORM_DELETION_INTERNAL is set for cascade drops (e.g., DROP
+		 * TABLE dropping its indexes) but we still need to free registry
+		 * entries and shared memory in those cases.
+		 */
 
 		/* Check if this is one of our indexes */
 		if (!tp_registry_is_registered(objectId))
 			return;
 
-		/* Cleanup shared memory BEFORE unregistering */
+		/* Cleanup shared memory and unregister from registry */
 		tp_cleanup_index_shared_memory(objectId);
 	}
 }
