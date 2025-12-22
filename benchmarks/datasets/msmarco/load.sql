@@ -108,6 +108,11 @@ SELECT
     pg_size_pretty(pg_total_relation_size('msmarco_passages')) as table_size,
     pg_total_relation_size('msmarco_passages') as table_bytes;
 
+-- Segment statistics
+\echo ''
+\echo '=== Segment Statistics ==='
+SELECT bm25_summarize_index('msmarco_bm25_idx');
+
 \echo ''
 \echo '=== MS MARCO Load Complete ==='
 \echo 'Ready for query benchmarks'

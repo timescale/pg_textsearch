@@ -496,6 +496,7 @@ jobs:
         random_page_cost = 1.1
         effective_io_concurrency = 200
         pg_textsearch.index_memory_limit = 512MB
+        pg_textsearch.segments_per_level = 16
         EOF
 
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then

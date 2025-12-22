@@ -70,5 +70,10 @@ SELECT
     pg_size_pretty(pg_total_relation_size('wikipedia_articles')) as table_size,
     pg_total_relation_size('wikipedia_articles') as table_bytes;
 
+-- Segment statistics
+\echo ''
+\echo '=== Segment Statistics ==='
+SELECT bm25_summarize_index('wikipedia_bm25_idx');
+
 \echo ''
 \echo '=== Wikipedia Load Complete ==='
