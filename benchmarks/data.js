@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766370355205,
+  "lastUpdate": 1766370357738,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4285,6 +4285,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Size",
             "value": 153.11,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "3380f6ffe36eb525bff41498fddc06ac15e7b90b",
+          "message": "Tune segment configuration for better benchmarking\n\n- Default memtable spill threshold now 32M posting entries (~1M docs/segment)\n- Benchmark workflow uses segments_per_level=16 for fewer merges\n- Add segment statistics collection to MS MARCO and Wikipedia benchmarks",
+          "timestamp": "2025-12-22T02:20:23Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3380f6ffe36eb525bff41498fddc06ac15e7b90b"
+        },
+        "date": 1766370357068,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 19341.669,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 2.717,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 4.585,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 2.263,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 5.664,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 9.089,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.67,
             "unit": "MB"
           }
         ]
