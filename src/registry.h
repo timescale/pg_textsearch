@@ -3,38 +3,46 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * registry.h - Global registry for shared index states
+ *
+ * Uses a dshash (dynamic shared hash table) to map index OIDs to their
+ * shared state DSA pointers. This allows unlimited indexes (bounded only
+ * by available memory) with O(1) lookup performance.
  */
 #pragma once
 
 #include <postgres.h>
 
+#include <lib/dshash.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
 #include "index.h"
 
-/* Maximum number of concurrent Tapir indexes */
-#define TP_MAX_INDEXES 64
+/*
+ * LWLock tranche ID for the registry dshash.
+ * Uses LWTRANCHE_FIRST_USER_DEFINED + 1 to avoid conflict with string table.
+ */
+#define TP_REGISTRY_HASH_TRANCHE_ID (LWTRANCHE_FIRST_USER_DEFINED + 1)
 
 /*
- * Registry entry mapping an index OID to its shared state
+ * Registry entry stored in dshash
+ * The key is the first field (index_oid), value is shared_state_dp
  */
 typedef struct TpRegistryEntry
 {
-	Oid					index_oid; /* Index OID (InvalidOid if not in use) */
-	TpSharedIndexState *shared_state;	 /* Pointer to shared state in DSA */
-	dsa_pointer			shared_state_dp; /* DSA pointer for recovery */
+	Oid			index_oid;		 /* Hash key - must be first */
+	dsa_pointer shared_state_dp; /* DSA pointer to TpSharedIndexState */
 } TpRegistryEntry;
 
 /*
- * Global registry stored in regular shared memory
+ * Global registry control structure stored in shared memory.
+ * The actual entries are in a dshash stored in DSA.
  */
 typedef struct TpGlobalRegistry
 {
-	LWLock			lock;					 /* Protects the registry */
-	dsa_handle		dsa_handle;				 /* Handle for shared DSA area */
-	TpRegistryEntry entries[TP_MAX_INDEXES]; /* Fixed-size array of entries */
-	int				num_entries;			 /* Number of active entries */
+	LWLock				lock;			 /* Protects initialization */
+	dsa_handle			dsa_handle;		 /* Handle for shared DSA area */
+	dshash_table_handle registry_handle; /* Handle for the registry dshash */
 } TpGlobalRegistry;
 
 /* Registry management functions */
