@@ -325,6 +325,22 @@ jobs:
         [ -f index_profile.txt ] && cp index_profile.txt "$PROFILE_DIR/"
         [ -f query_profile.txt ] && cp query_profile.txt "$PROFILE_DIR/"
 
+        # Get commit message for metadata
+        COMMIT_MSG=$(git log -1 --format='%s' ${{ github.sha }} | head -c 80)
+        COMMIT_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        # Create metadata file for this profile
+        cat > "$PROFILE_DIR/meta.json" << EOF
+        {
+          "sha": "${SHORT_SHA}",
+          "full_sha": "${{ github.sha }}",
+          "branch": "${{ github.ref_name }}",
+          "date": "${COMMIT_DATE}",
+          "message": "${COMMIT_MSG}",
+          "dataset": "MS MARCO ${{ github.event.inputs.msmarco_size }}"
+        }
+        EOF
+
         # Create an index.html for this profile
         cat > "$PROFILE_DIR/index.html" << EOF
         <!DOCTYPE html>
@@ -332,8 +348,9 @@ jobs:
         <head><title>CPU Profiles - ${SHORT_SHA}</title></head>
         <body>
         <h1>CPU Profiles for ${{ github.ref_name }} @ ${SHORT_SHA}</h1>
-        <p>Dataset: MS MARCO ${{ github.event.inputs.msmarco_size }}</p>
-        <p>Date: $(date -u)</p>
+        <p><b>Commit:</b> ${COMMIT_MSG}</p>
+        <p><b>Dataset:</b> MS MARCO ${{ github.event.inputs.msmarco_size }}</p>
+        <p><b>Date:</b> $(date -u)</p>
         <h2>Flamegraphs</h2>
         <ul>
         $([ -f index_flamegraph.svg ] && echo "<li><a href='index_flamegraph.svg'>Index Build Flamegraph</a></li>")
@@ -348,32 +365,57 @@ jobs:
         </html>
         EOF
 
-        # Update profiles index
+        # Update profiles index with sorted entries and commit messages
         cat > /tmp/gh-pages/benchmarks/profiles/index.html << 'INDEXEOF'
         <!DOCTYPE html>
         <html>
-        <head><title>CPU Profiles</title></head>
+        <head>
+        <title>CPU Profiles</title>
+        <style>
+          body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 2em auto; }
+          .profile { margin: 0.5em 0; padding: 0.5em; border-left: 3px solid #ddd; }
+          .profile:hover { background: #f5f5f5; }
+          .sha { font-family: monospace; font-weight: bold; }
+          .msg { color: #555; }
+          .date { color: #888; font-size: 0.9em; }
+          h2 { margin-top: 1.5em; border-bottom: 1px solid #ddd; }
+        </style>
+        </head>
         <body>
         <h1>CPU Profiles</h1>
-        <p>Browse by branch and commit:</p>
-        <ul>
+        <p>Sorted by date (newest first)</p>
         INDEXEOF
 
-        # List all profile directories
+        # Collect all profiles with metadata, sort by date
         for branch_dir in /tmp/gh-pages/benchmarks/profiles/*/; do
           [ -d "$branch_dir" ] || continue
           branch=$(basename "$branch_dir")
           [ "$branch" = "index.html" ] && continue
-          echo "<li><b>$branch</b><ul>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+
+          echo "<h2>$branch</h2>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+
+          # Collect and sort profiles by date (newest first)
           for commit_dir in "$branch_dir"*/; do
             [ -d "$commit_dir" ] || continue
             commit=$(basename "$commit_dir")
-            echo "<li><a href='$branch/$commit/'>$commit</a></li>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            meta="$commit_dir/meta.json"
+            if [ -f "$meta" ]; then
+              date=$(grep '"date"' "$meta" | sed 's/.*": *"\([^"]*\)".*/\1/')
+              msg=$(grep '"message"' "$meta" | sed 's/.*": *"\([^"]*\)".*/\1/')
+              echo "$date|$commit|$msg"
+            else
+              echo "1970-01-01T00:00:00Z|$commit|"
+            fi
+          done | sort -r | while IFS='|' read -r date commit msg; do
+            echo "<div class='profile'>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            echo "  <a href='$branch/$commit/' class='sha'>$commit</a>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            [ -n "$msg" ] && echo "  <span class='msg'>- $msg</span>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            [ "$date" != "1970-01-01T00:00:00Z" ] && echo "  <span class='date'>($date)</span>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            echo "</div>" >> /tmp/gh-pages/benchmarks/profiles/index.html
           done
-          echo "</ul></li>" >> /tmp/gh-pages/benchmarks/profiles/index.html
         done
 
-        echo "</ul></body></html>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+        echo "</body></html>" >> /tmp/gh-pages/benchmarks/profiles/index.html
 
         # Commit and push
         cd /tmp/gh-pages
