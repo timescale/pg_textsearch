@@ -818,15 +818,47 @@ jobs:
         # Save the new index.html before switching branches
         cp benchmarks/gh-pages/index.html /tmp/new_index.html
 
-        # Update index.html on gh-pages branch
+        # Update index.html and branch info on gh-pages branch
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch origin gh-pages
         git checkout gh-pages
+
         cp /tmp/new_index.html benchmarks/index.html
-        git add benchmarks/index.html
+
+        # Update branch_info.js with this commit's branch
+        BRANCH_FILE="benchmarks/branch_info.js"
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        BRANCH="${{ github.ref_name }}"
+
+        # Create file if it doesn't exist
+        if [ ! -f "$BRANCH_FILE" ]; then
+          echo "window.BRANCH_INFO = {};" > "$BRANCH_FILE"
+        fi
+
+        # Add this commit's branch info (keep last 500 entries)
+        node -e "
+          const fs = require('fs');
+          const file = '$BRANCH_FILE';
+          let content = fs.readFileSync(file, 'utf8');
+          // Extract existing object
+          const match = content.match(/window\.BRANCH_INFO\s*=\s*(\{[\s\S]*\});?/);
+          let info = match ? JSON.parse(match[1]) : {};
+          // Add new entry
+          info['${{ github.sha }}'] = '$BRANCH';
+          // Keep only last 500 entries
+          const keys = Object.keys(info);
+          if (keys.length > 500) {
+            const toRemove = keys.slice(0, keys.length - 500);
+            toRemove.forEach(k => delete info[k]);
+          }
+          fs.writeFileSync(file,
+            'window.BRANCH_INFO = ' + JSON.stringify(info, null, 2) + ';\\n');
+        "
+
+        git add benchmarks/index.html "$BRANCH_FILE"
         if ! git diff --cached --quiet; then
-          git commit -m "Update benchmark dashboard layout"
+          git commit -m "Update benchmark dashboard for ${SHORT_SHA} on ${BRANCH}"
           git push origin gh-pages
         fi
         # Return to original branch

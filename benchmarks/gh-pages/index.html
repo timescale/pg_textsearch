@@ -45,6 +45,14 @@
         .dataset-section {
             margin-bottom: 40px;
         }
+        .legend {
+            display: inline-block;
+            margin: 8px 0;
+        }
+        .legend-item {
+            margin-right: 16px;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -53,12 +61,28 @@
         Performance tracking for <a href="https://github.com/timescale/pg_textsearch">pg_textsearch</a>.
         Click any data point to view the commit.
         <br>
+        <span class="legend">
+            <span class="legend-item">● main branch</span>
+            <span class="legend-item">✕ feature branch</span>
+        </span>
+        <br>
         <a href="profiles/">📊 CPU Profiles &amp; Flamegraphs</a>
     </p>
     <div id="charts"></div>
 
     <script src="./data.js"></script>
+    <script src="./branch_info.js"></script>
     <script>
+        // Get branch for a commit, defaulting to 'main' for unknown commits
+        function getBranch(commitSha) {
+            if (typeof window.BRANCH_INFO === 'undefined') return 'main';
+            return window.BRANCH_INFO[commitSha] || 'main';
+        }
+
+        function isMainBranch(commitSha) {
+            return getBranch(commitSha) === 'main';
+        }
+
         const colors = [
             [54, 162, 235],
             [255, 99, 132],
@@ -80,6 +104,20 @@
                 day: 'numeric',
                 year: '2-digit'
             });
+        }
+
+        function formatDateTime(timestamp) {
+            const d = new Date(timestamp);
+            const date = d.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: '2-digit'
+            });
+            const time = d.toLocaleTimeString('en-US', {
+                hour: 'numeric',
+                minute: '2-digit'
+            });
+            return `${date} ${time}`;
         }
 
         function formatCommit(hash) {
@@ -107,18 +145,33 @@
                 ? data.map(d => ({ ...d, y: d.y / 1000 }))
                 : data;
 
+            // Style points based on branch: main = filled, feature = hollow
+            const color = colors[colorIdx % colors.length];
+            const pointStyles = chartData.map(d =>
+                isMainBranch(d.commit) ? 'circle' : 'crossRot');
+            const pointRadii = chartData.map(d =>
+                isMainBranch(d.commit) ? 4 : 5);
+            const pointBgColors = chartData.map(d =>
+                isMainBranch(d.commit) ? rgb(color) : 'white');
+            const pointBorderWidths = chartData.map(d =>
+                isMainBranch(d.commit) ? 1 : 2);
+
             new Chart(canvas, {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: metricName,
                         data: chartData,
-                        borderColor: rgb(colors[colorIdx % colors.length]),
-                        backgroundColor: rgba(colors[colorIdx % colors.length], 0.1),
+                        borderColor: rgb(color),
+                        backgroundColor: rgba(color, 0.1),
                         fill: true,
                         tension: 0.1,
-                        pointRadius: 3,
-                        pointHoverRadius: 6
+                        pointStyle: pointStyles,
+                        pointRadius: pointRadii,
+                        pointBackgroundColor: pointBgColors,
+                        pointBorderColor: rgb(color),
+                        pointBorderWidth: pointBorderWidths,
+                        pointHoverRadius: 7
                     }]
                 },
                 options: {
@@ -137,9 +190,10 @@
                             callbacks: {
                                 title: (items) => {
                                     const item = items[0];
-                                    const date = formatDate(item.raw.date);
+                                    const dateTime = formatDateTime(item.raw.date);
                                     const commit = formatCommit(item.raw.commit);
-                                    return `${date} (${commit})`;
+                                    const branch = getBranch(item.raw.commit);
+                                    return `${dateTime} (${commit}) [${branch}]`;
                                 },
                                 label: (item) => {
                                     return `${item.raw.y.toFixed(2)} ${unit}`;
