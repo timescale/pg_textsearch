@@ -137,7 +137,7 @@ _PG_init(void)
 			"When the memtable reaches this many posting entries, spill to "
 			"disk at transaction end. Set to 0 to disable.",
 			&tp_memtable_spill_threshold,
-			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 1M */
+			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 35M */
 			0,									 /* min 0 (disabled) */
 			INT_MAX,							 /* max INT_MAX */
 			PGC_USERSET,
