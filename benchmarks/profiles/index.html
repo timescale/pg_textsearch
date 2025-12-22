@@ -1,23 +1,53 @@
 <!DOCTYPE html>
 <html>
-<head><title>CPU Profiles</title></head>
+<head>
+<title>CPU Profiles</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 2em auto; }
+  .profile { margin: 0.5em 0; padding: 0.5em; border-left: 3px solid #ddd; }
+  .profile:hover { background: #f5f5f5; }
+  .sha { font-family: monospace; font-weight: bold; }
+  .msg { color: #555; }
+  .date { color: #888; font-size: 0.9em; }
+  h2 { margin-top: 1.5em; border-bottom: 1px solid #ddd; }
+</style>
+</head>
 <body>
 <h1>CPU Profiles</h1>
-<p>Browse by branch and commit:</p>
-<ul>
-<li><b>block-storage-phase1</b><ul>
-<li><a href='block-storage-phase1/1080101/'>1080101</a></li>
-<li><a href='block-storage-phase1/3380f6f/'>3380f6f</a></li>
-<li><a href='block-storage-phase1/59e46b9/'>59e46b9</a></li>
-<li><a href='block-storage-phase1/99ff043/'>99ff043</a></li>
-<li><a href='block-storage-phase1/be9e997/'>be9e997</a></li>
-<li><a href='block-storage-phase1/e24ccf3/'>e24ccf3</a></li>
-<li><a href='block-storage-phase1/ff16a2a/'>ff16a2a</a></li>
-</ul></li>
-<li><b>profile-main-baseline</b><ul>
-<li><a href='profile-main-baseline/d560f1e/'>d560f1e</a></li>
-</ul></li>
-<li><b>profile-v1-baseline</b><ul>
-<li><a href='profile-v1-baseline/de7e23b/'>de7e23b</a></li>
-</ul></li>
-</ul></body></html>
+<p>Sorted by date (newest first)</p>
+<h2>block-storage-phase1</h2>
+<div class='profile'>
+  <a href='block-storage-phase1/b992ef4/' class='sha'>b992ef4</a>
+  <span class='msg'>- Fix query profiling: disable autovacuum, filter background workers</span>
+  <span class='date'>(2025-12-22T04:47:51Z)</span>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/ff16a2a/' class='sha'>ff16a2a</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/e24ccf3/' class='sha'>e24ccf3</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/be9e997/' class='sha'>be9e997</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/99ff043/' class='sha'>99ff043</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/59e46b9/' class='sha'>59e46b9</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/3380f6f/' class='sha'>3380f6f</a>
+</div>
+<div class='profile'>
+  <a href='block-storage-phase1/1080101/' class='sha'>1080101</a>
+</div>
+<h2>profile-main-baseline</h2>
+<div class='profile'>
+  <a href='profile-main-baseline/d560f1e/' class='sha'>d560f1e</a>
+</div>
+<h2>profile-v1-baseline</h2>
+<div class='profile'>
+  <a href='profile-v1-baseline/de7e23b/' class='sha'>de7e23b</a>
+</div>
+</body></html>

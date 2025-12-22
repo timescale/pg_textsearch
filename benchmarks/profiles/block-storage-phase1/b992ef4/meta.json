@@ -1,0 +1,8 @@
+{
+  "sha": "b992ef4",
+  "full_sha": "b992ef444110bd0d3ee963882a7f0b9f945bd157",
+  "branch": "block-storage-phase1",
+  "date": "2025-12-22T04:47:51Z",
+  "message": "Fix query profiling: disable autovacuum, filter background workers",
+  "dataset": "MS MARCO full"
+}
