@@ -932,16 +932,16 @@ tp_score_all_terms_in_segment_chain(
 				idf = tp_calculate_idf(doc_freqs[term_idx], total_docs);
 
 				/* Initialize iterator directly with dict entry */
-				iter_v2.reader					 = reader;
-				iter_v2.term					 = term;
-				iter_v2.dict_entry_idx			 = dict_entry_idx;
-				iter_v2.dict_entry				 = dict_entry_v2;
-				iter_v2.initialized				 = true;
-				iter_v2.finished				 = false;
-				iter_v2.current_block			 = 0;
-				iter_v2.current_posting_in_block = 0;
-				iter_v2.block_postings			 = NULL;
-				iter_v2.block_posting_count		 = 0;
+				iter_v2.reader				= reader;
+				iter_v2.term				= term;
+				iter_v2.dict_entry_idx		= dict_entry_idx;
+				iter_v2.dict_entry			= dict_entry_v2;
+				iter_v2.initialized			= true;
+				iter_v2.finished			= false;
+				iter_v2.current_block		= 0;
+				iter_v2.current_in_block	= 0;
+				iter_v2.block_postings		= NULL;
+				iter_v2.block_postings_size = 0;
 
 				/* Process all postings for this term */
 				while (tp_segment_posting_iterator_next_v2(&iter_v2, &posting))
