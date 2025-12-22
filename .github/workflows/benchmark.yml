@@ -42,8 +42,467 @@ on:
           - '500K'
           - '1M'
           - 'full'
+      enable_profile:
+        description: 'Enable CPU profiling (generates flamegraph)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  # CPU profiling job (separate from timing benchmarks)
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # Allow 2 hours for full dataset profiling
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.enable_profile == 'true'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
+        df -h /
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc \
+            linux-tools-common linux-tools-generic linux-tools-$(uname -r) || true
+        # Install FlameGraph for visualization
+        git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
+
+        # PostgreSQL
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17 \
+            postgresql-17-dbgsym || sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension (release with debug symbols)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        # Release optimization but keep frame pointers for profiling
+        CFLAGS="-O2 -fno-omit-frame-pointer -g" make
+        sudo make install
+
+    - name: Configure PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 4GB
+        maintenance_work_mem = 512MB
+        pg_textsearch.index_memory_limit = 512MB
+        EOF
+
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Download MS MARCO dataset
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ github.event.inputs.msmarco_size }}
+
+    - name: Load data (without index)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        # Load data using the standard load script, but stop before index creation
+        # Line 91 is after sample queries, before index creation (line 96)
+        head -n 91 benchmarks/datasets/msmarco/load.sql > /tmp/load_data_only.sql
+        psql -f /tmp/load_data_only.sql
+        psql -c "SELECT COUNT(*) as num_rows FROM msmarco_passages"
+
+    - name: Profile index creation with perf
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        # Enable perf for non-root (may fail on some systems)
+        echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid || true
+        echo 0 | sudo tee /proc/sys/kernel/kptr_restrict || true
+
+        # Start index creation in background
+        psql -c "CREATE INDEX msmarco_bm25_idx ON msmarco_passages USING bm25(passage_text) WITH (text_config='english')" &
+        PSQL_PID=$!
+
+        # Wait a moment for the backend to start
+        sleep 2
+
+        # Find the postgres backend process
+        PG_PID=$(pgrep -f "postgres.*bench_test" | head -1)
+        echo "Profiling PID: $PG_PID"
+
+        if [ -n "$PG_PID" ]; then
+          # Record profile for duration of index build (up to 60 min for full dataset)
+          sudo perf record -F 99 -p $PG_PID -g --call-graph dwarf -o perf.data -- sleep 3600 &
+          PERF_PID=$!
+
+          # Wait for index creation to complete
+          wait $PSQL_PID || true
+
+          # Stop perf recording
+          sudo kill -INT $PERF_PID 2>/dev/null || true
+          sleep 2
+
+          # Generate perf report for indexing
+          sudo perf report -i perf.data --stdio --no-children > index_profile.txt 2>&1 || true
+
+          # Generate flamegraph for indexing
+          sudo perf script -i perf.data > perf.script 2>/dev/null || true
+          if [ -s perf.script ]; then
+            ./FlameGraph/stackcollapse-perf.pl perf.script > index_perf.folded
+            ./FlameGraph/flamegraph.pl --title "Index Build CPU Profile" index_perf.folded > index_flamegraph.svg
+            echo "Index flamegraph generated successfully"
+          fi
+        else
+          echo "Could not find postgres backend PID"
+          wait $PSQL_PID || true
+        fi
+
+    - name: Profile queries with perf
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        # Disable autovacuum to avoid profiling vacuum instead of queries
+        psql -c "ALTER SYSTEM SET autovacuum = off"
+        pg_ctl reload -D tmp_bench/data
+
+        # Create a query script that runs many iterations for profiling
+        cat > /tmp/profile_queries.sql << 'EOSQL'
+        -- Run queries repeatedly to get meaningful profile samples
+        -- Test both: queries WITHOUT scores (index scan) and WITH scores (per-row operator)
+        \timing off
+        DO $$
+        DECLARE
+          i INT;
+          dummy RECORD;
+        BEGIN
+          -- Part 1: Queries WITHOUT scores (300 iterations to get good samples)
+          FOR i IN 1..300 LOOP
+            -- Short query - no score
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage_text <@> 'search engine'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Medium query - no score
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage_text <@> 'machine learning algorithms'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Long query - no score
+            FOR dummy IN
+              SELECT ctid FROM msmarco_passages
+              ORDER BY passage_text <@> 'what is the best way to learn programming'::bm25query LIMIT 10
+            LOOP END LOOP;
+          END LOOP;
+
+          -- Part 2: Queries WITH scores (per-row operator call)
+          FOR i IN 1..300 LOOP
+            -- Short query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'search engine'::bm25query as score
+              FROM msmarco_passages
+              ORDER BY passage_text <@> 'search engine'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Medium query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'machine learning algorithms'::bm25query as score
+              FROM msmarco_passages
+              ORDER BY passage_text <@> 'machine learning algorithms'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Long query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'what is the best way to learn programming'::bm25query as score
+              FROM msmarco_passages
+              ORDER BY passage_text <@> 'what is the best way to learn programming'::bm25query LIMIT 10
+            LOOP END LOOP;
+          END LOOP;
+        END $$;
+        EOSQL
+
+        # Start queries in background
+        psql -f /tmp/profile_queries.sql &
+        PSQL_PID=$!
+
+        # Wait for backend to start, then find it
+        # With autovacuum disabled, we should only see our query backend
+        sleep 2
+        PG_PID=$(ps aux | grep "postgres:.*bench_test" | grep -v "autovacuum\|checkpointer\|walwriter\|bgwriter\|logical\|startup" | grep -v grep | awk '{print $2}' | head -1)
+        echo "Profiling query backend PID: $PG_PID"
+
+        if [ -n "$PG_PID" ]; then
+          # Record profile for query duration (up to 10 min)
+          sudo perf record -F 499 -p $PG_PID -g --call-graph dwarf -o query_perf.data -- sleep 600 &
+          PERF_PID=$!
+
+          # Wait for queries to complete
+          wait $PSQL_PID || true
+
+          # Stop perf recording
+          sudo kill -INT $PERF_PID 2>/dev/null || true
+          sleep 2
+
+          # Generate perf report for queries
+          sudo perf report -i query_perf.data --stdio --no-children > query_profile.txt 2>&1 || true
+
+          # Generate flamegraph for queries
+          sudo perf script -i query_perf.data > query_perf.script 2>/dev/null || true
+          if [ -s query_perf.script ]; then
+            ./FlameGraph/stackcollapse-perf.pl query_perf.script > query_perf.folded
+            ./FlameGraph/flamegraph.pl --title "Query CPU Profile" query_perf.folded > query_flamegraph.svg
+            echo "Query flamegraph generated successfully"
+          fi
+        else
+          echo "Could not find postgres backend PID for queries"
+          wait $PSQL_PID || true
+        fi
+
+        # Re-enable autovacuum
+        psql -c "ALTER SYSTEM RESET autovacuum"
+        pg_ctl reload -D tmp_bench/data
+
+    - name: Generate profile summary
+      run: |
+        echo "# CPU Profile Summary" > profile_summary.md
+        echo "" >> profile_summary.md
+        echo "**Date:** $(date -u)" >> profile_summary.md
+        echo "**Commit:** ${{ github.sha }}" >> profile_summary.md
+        echo "**Branch:** ${{ github.ref_name }}" >> profile_summary.md
+        echo "**Dataset:** MS MARCO ${{ github.event.inputs.msmarco_size }}" >> profile_summary.md
+        echo "" >> profile_summary.md
+
+        echo "## Index Build Profile" >> profile_summary.md
+        if [ -f index_profile.txt ]; then
+          echo '```' >> profile_summary.md
+          head -80 index_profile.txt >> profile_summary.md
+          echo '```' >> profile_summary.md
+        else
+          echo "Index profiling failed" >> profile_summary.md
+        fi
+
+        echo "" >> profile_summary.md
+        echo "## Query Profile" >> profile_summary.md
+        if [ -f query_profile.txt ]; then
+          echo '```' >> profile_summary.md
+          head -80 query_profile.txt >> profile_summary.md
+          echo '```' >> profile_summary.md
+        else
+          echo "Query profiling failed" >> profile_summary.md
+        fi
+
+        echo "" >> profile_summary.md
+        echo "## Artifacts" >> profile_summary.md
+        echo "- index_flamegraph.svg - Index build CPU flamegraph" >> profile_summary.md
+        echo "- query_flamegraph.svg - Query execution CPU flamegraph" >> profile_summary.md
+        echo "- index_profile.txt - Index build perf report" >> profile_summary.md
+        echo "- query_profile.txt - Query execution perf report" >> profile_summary.md
+
+    - name: Upload profile artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cpu-profile-${{ github.run_id }}
+        path: |
+          index_flamegraph.svg
+          query_flamegraph.svg
+          index_profile.txt
+          query_profile.txt
+          profile_summary.md
+          index_perf.folded
+          query_perf.folded
+        retention-days: 30
+
+    - name: Publish flamegraphs to GitHub Pages
+      if: always()
+      run: |
+        # Only publish if we have flamegraphs
+        if [ ! -f index_flamegraph.svg ] && [ ! -f query_flamegraph.svg ]; then
+          echo "No flamegraphs to publish"
+          exit 0
+        fi
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git fetch origin gh-pages
+
+        # Create a temporary directory for gh-pages content
+        mkdir -p /tmp/gh-pages
+        git worktree add /tmp/gh-pages gh-pages
+
+        # Create profiles directory structure: profiles/<branch>/<short-sha>/
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        PROFILE_DIR="/tmp/gh-pages/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}"
+        mkdir -p "$PROFILE_DIR"
+
+        # Copy flamegraphs
+        [ -f index_flamegraph.svg ] && cp index_flamegraph.svg "$PROFILE_DIR/"
+        [ -f query_flamegraph.svg ] && cp query_flamegraph.svg "$PROFILE_DIR/"
+        [ -f index_profile.txt ] && cp index_profile.txt "$PROFILE_DIR/"
+        [ -f query_profile.txt ] && cp query_profile.txt "$PROFILE_DIR/"
+
+        # Get commit message for metadata
+        COMMIT_MSG=$(git log -1 --format='%s' ${{ github.sha }} | head -c 80)
+        COMMIT_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        # Create metadata file for this profile
+        cat > "$PROFILE_DIR/meta.json" << EOF
+        {
+          "sha": "${SHORT_SHA}",
+          "full_sha": "${{ github.sha }}",
+          "branch": "${{ github.ref_name }}",
+          "date": "${COMMIT_DATE}",
+          "message": "${COMMIT_MSG}",
+          "dataset": "MS MARCO ${{ github.event.inputs.msmarco_size }}"
+        }
+        EOF
+
+        # Create an index.html for this profile
+        cat > "$PROFILE_DIR/index.html" << EOF
+        <!DOCTYPE html>
+        <html>
+        <head><title>CPU Profiles - ${SHORT_SHA}</title></head>
+        <body>
+        <h1>CPU Profiles for ${{ github.ref_name }} @ ${SHORT_SHA}</h1>
+        <p><b>Commit:</b> ${COMMIT_MSG}</p>
+        <p><b>Dataset:</b> MS MARCO ${{ github.event.inputs.msmarco_size }}</p>
+        <p><b>Date:</b> $(date -u)</p>
+        <h2>Flamegraphs</h2>
+        <ul>
+        $([ -f index_flamegraph.svg ] && echo "<li><a href='index_flamegraph.svg'>Index Build Flamegraph</a></li>")
+        $([ -f query_flamegraph.svg ] && echo "<li><a href='query_flamegraph.svg'>Query Flamegraph</a></li>")
+        </ul>
+        <h2>Text Reports</h2>
+        <ul>
+        $([ -f index_profile.txt ] && echo "<li><a href='index_profile.txt'>Index Build Profile</a></li>")
+        $([ -f query_profile.txt ] && echo "<li><a href='query_profile.txt'>Query Profile</a></li>")
+        </ul>
+        </body>
+        </html>
+        EOF
+
+        # Update profiles index with sorted entries and commit messages
+        cat > /tmp/gh-pages/benchmarks/profiles/index.html << 'INDEXEOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <title>CPU Profiles</title>
+        <style>
+          body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 2em auto; }
+          .profile { margin: 0.5em 0; padding: 0.5em; border-left: 3px solid #ddd; }
+          .profile:hover { background: #f5f5f5; }
+          .sha { font-family: monospace; font-weight: bold; }
+          .msg { color: #555; }
+          .date { color: #888; font-size: 0.9em; }
+          h2 { margin-top: 1.5em; border-bottom: 1px solid #ddd; }
+        </style>
+        </head>
+        <body>
+        <h1>CPU Profiles</h1>
+        <p>Sorted by date (newest first)</p>
+        INDEXEOF
+
+        # Collect all profiles with metadata, sort by date
+        for branch_dir in /tmp/gh-pages/benchmarks/profiles/*/; do
+          [ -d "$branch_dir" ] || continue
+          branch=$(basename "$branch_dir")
+          [ "$branch" = "index.html" ] && continue
+
+          echo "<h2>$branch</h2>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+
+          # Collect and sort profiles by date (newest first)
+          for commit_dir in "$branch_dir"*/; do
+            [ -d "$commit_dir" ] || continue
+            commit=$(basename "$commit_dir")
+            meta="$commit_dir/meta.json"
+            if [ -f "$meta" ]; then
+              date=$(grep '"date"' "$meta" | sed 's/.*": *"\([^"]*\)".*/\1/')
+              msg=$(grep '"message"' "$meta" | sed 's/.*": *"\([^"]*\)".*/\1/')
+              echo "$date|$commit|$msg"
+            else
+              echo "1970-01-01T00:00:00Z|$commit|"
+            fi
+          done | sort -r | while IFS='|' read -r date commit msg; do
+            echo "<div class='profile'>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            echo "  <a href='$branch/$commit/' class='sha'>$commit</a>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            [ -n "$msg" ] && echo "  <span class='msg'>- $msg</span>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            [ "$date" != "1970-01-01T00:00:00Z" ] && echo "  <span class='date'>($date)</span>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+            echo "</div>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+          done
+        done
+
+        echo "</body></html>" >> /tmp/gh-pages/benchmarks/profiles/index.html
+
+        # Commit and push
+        cd /tmp/gh-pages
+        git add benchmarks/profiles/
+        if ! git diff --cached --quiet; then
+          git commit -m "Add CPU profiles for ${{ github.ref_name }}@${SHORT_SHA}"
+          git push origin gh-pages
+          echo "Flamegraphs published to: https://timescale.github.io/pg_textsearch/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}/"
+        else
+          echo "No changes to publish"
+        fi
+
+        # Cleanup worktree
+        cd "$GITHUB_WORKSPACE"
+        git worktree remove /tmp/gh-pages --force || true
+
+    - name: Post profile summary
+      if: always()
+      run: |
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        PROFILE_URL="https://timescale.github.io/pg_textsearch/benchmarks/profiles/${{ github.ref_name }}/${SHORT_SHA}/"
+
+        echo "### CPU Profile Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**[View Flamegraphs on GitHub Pages](${PROFILE_URL})**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        echo "#### Index Build Profile" >> $GITHUB_STEP_SUMMARY
+        if [ -f index_profile.txt ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -40 index_profile.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Index profiling failed - check logs" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### Query Profile" >> $GITHUB_STEP_SUMMARY
+        if [ -f query_profile.txt ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -40 query_profile.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Query profiling failed - check logs" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
   # Full benchmark suite
   full-benchmark:
     runs-on: ubuntu-latest
@@ -113,6 +572,7 @@ jobs:
         random_page_cost = 1.1
         effective_io_concurrency = 200
         pg_textsearch.index_memory_limit = 512MB
+        pg_textsearch.segments_per_level = 16
         EOF
 
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
@@ -384,15 +844,47 @@ jobs:
         # Save the new index.html before switching branches
         cp benchmarks/gh-pages/index.html /tmp/new_index.html
 
-        # Update index.html on gh-pages branch
+        # Update index.html and branch info on gh-pages branch
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch origin gh-pages
         git checkout gh-pages
+
         cp /tmp/new_index.html benchmarks/index.html
-        git add benchmarks/index.html
+
+        # Update branch_info.js with this commit's branch
+        BRANCH_FILE="benchmarks/branch_info.js"
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        BRANCH="${{ github.ref_name }}"
+
+        # Create file if it doesn't exist
+        if [ ! -f "$BRANCH_FILE" ]; then
+          echo "window.BRANCH_INFO = {};" > "$BRANCH_FILE"
+        fi
+
+        # Add this commit's branch info (keep last 500 entries)
+        node -e "
+          const fs = require('fs');
+          const file = '$BRANCH_FILE';
+          let content = fs.readFileSync(file, 'utf8');
+          // Extract existing object
+          const match = content.match(/window\.BRANCH_INFO\s*=\s*(\{[\s\S]*\});?/);
+          let info = match ? JSON.parse(match[1]) : {};
+          // Add new entry
+          info['${{ github.sha }}'] = '$BRANCH';
+          // Keep only last 500 entries
+          const keys = Object.keys(info);
+          if (keys.length > 500) {
+            const toRemove = keys.slice(0, keys.length - 500);
+            toRemove.forEach(k => delete info[k]);
+          }
+          fs.writeFileSync(file,
+            'window.BRANCH_INFO = ' + JSON.stringify(info, null, 2) + ';\\n');
+        "
+
+        git add benchmarks/index.html "$BRANCH_FILE"
         if ! git diff --cached --quiet; then
-          git commit -m "Update benchmark dashboard layout"
+          git commit -m "Update benchmark dashboard for ${SHORT_SHA} on ${BRANCH}"
           git push origin gh-pages
         fi
         # Return to original branch
