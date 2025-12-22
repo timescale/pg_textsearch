@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766384449003,
+  "lastUpdate": 1766384450976,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4771,6 +4771,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Size",
             "value": 66.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0ca3751e0f0a001e6ffb6c729890aabfd1152ae9",
+          "message": "Add storage and query optimization roadmap (#79)\n\n## Summary\n\n- Adds design doc (`OPTIMIZATION_ROADMAP.md`) covering planned\noptimizations:\n- Block-Max WAND algorithm for O(k log n) top-k queries (vs current\nO(n))\n  - Block-aligned posting storage with skip lists\n  - FOR/PFOR compression targeting 50%+ space reduction\n  - Fieldnorm quantization using Lucene's SmallFloat scheme\n  - Phased implementation plan (v0.0.4 through v0.0.7)\n\n- Updates README to clarify \"not yet recommended\" production status\n\nThe roadmap draws from analysis of Tantivy and Lucene implementations,\nprioritizing asymptotic gains (BMW) over constant-factor gains\n(compression).",
+          "timestamp": "2025-12-17T20:06:29Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0ca3751e0f0a001e6ffb6c729890aabfd1152ae9"
+        },
+        "date": 1766384450317,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18401.065,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 1.107,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 1.703,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 1.581,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 2.976,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 3.476,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 153.11,
             "unit": "MB"
           }
         ]
