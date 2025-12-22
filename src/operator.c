@@ -289,30 +289,16 @@ tp_score_documents(
 				local_state->dsa, memtable->doc_lengths_handle);
 	}
 
-	/* Sum doc_freq from memtable + segments for unified IDF */
+	/* Get doc_freq from memtable for all terms */
 	unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
-	for (term_idx = 0; term_idx < query_term_count; term_idx++)
+	if (string_table)
 	{
-		const char *term = query_terms[term_idx];
-
-		/* Get doc_freq from memtable */
-		if (string_table)
+		for (term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
 			TpPostingList *posting_list = tp_string_table_get_posting_list(
-					local_state->dsa, string_table, term);
+					local_state->dsa, string_table, query_terms[term_idx]);
 			if (posting_list && posting_list->doc_count > 0)
 				unified_doc_freqs[term_idx] = posting_list->doc_count;
-		}
-
-		/* Add doc_freq from all segment levels */
-		for (level = 0; level < TP_MAX_LEVELS; level++)
-		{
-			if (level_heads[level] != InvalidBlockNumber)
-			{
-				uint32 segment_doc_freq = tp_segment_get_doc_freq(
-						index_relation, level_heads[level], term);
-				unified_doc_freqs[term_idx] += segment_doc_freq;
-			}
 		}
 	}
 
@@ -415,28 +401,28 @@ tp_score_documents(
 	if (doclength_table)
 		dshash_detach(doclength_table);
 
-	/* Score documents from all segment levels */
+	/*
+	 * Score documents from all segment levels efficiently.
+	 * This opens each segment ONCE and processes all terms, instead of
+	 * opening each segment once per term (which was O(terms * segments)).
+	 */
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		if (level_heads[level] == InvalidBlockNumber)
 			continue;
 
-		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
-		{
-			float4 idf =
-					tp_calculate_idf(unified_doc_freqs[term_idx], total_docs);
-			tp_process_term_in_segments(
-					index_relation,
-					level_heads[level],
-					query_terms[term_idx],
-					idf,
-					(float4)query_frequencies[term_idx],
-					k1,
-					b,
-					avg_doc_len,
-					doc_scores_hash,
-					local_state);
-		}
+		tp_score_all_terms_in_segment_chain(
+				index_relation,
+				level_heads[level],
+				query_terms,
+				query_term_count,
+				query_frequencies,
+				unified_doc_freqs, /* doc_freqs accumulated here */
+				total_docs,
+				k1,
+				b,
+				avg_doc_len,
+				doc_scores_hash);
 	}
 
 	/* Free unified doc_freqs array */

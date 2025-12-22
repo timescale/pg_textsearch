@@ -360,3 +360,17 @@ extern void tp_process_term_in_segments(
 /* Look up doc_freq for a term from segments (for operator scoring) */
 extern uint32 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term);
+
+/* Efficient: score all terms in a segment chain, opening each segment once */
+extern void tp_score_all_terms_in_segment_chain(
+		Relation	index,
+		BlockNumber first_segment,
+		char	  **terms,
+		int			term_count,
+		int32	   *query_frequencies,
+		uint32	   *doc_freqs, /* OUT: filled with segment doc_freqs */
+		int32		total_docs,
+		float4		k1,
+		float4		b,
+		float4		avg_doc_len,
+		void	   *doc_scores_hash);
