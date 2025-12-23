@@ -2,7 +2,7 @@
   "sha": "36a3da2",
   "full_sha": "36a3da2fec00a48fa61e27f869e62d49e8304174",
   "branch": "work2",
-  "date": "2025-12-23T16:22:09Z",
+  "date": "2025-12-23T18:56:18Z",
   "message": "Use zero-copy for per-posting CTID lookups",
   "dataset": "MS MARCO full"
 }
