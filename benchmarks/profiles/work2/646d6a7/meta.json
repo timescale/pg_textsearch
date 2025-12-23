@@ -1,0 +1,8 @@
+{
+  "sha": "646d6a7",
+  "full_sha": "646d6a73316422fd8cbd844aac3d847c4489fb7f",
+  "branch": "work2",
+  "date": "2025-12-23T04:36:30Z",
+  "message": "Optimize V2 block iteration with zero-copy access",
+  "dataset": "MS MARCO full"
+}
