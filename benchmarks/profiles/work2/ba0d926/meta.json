@@ -1,0 +1,8 @@
+{
+  "sha": "ba0d926",
+  "full_sha": "ba0d92672d812e132a586b6d64147acbe82a16c4",
+  "branch": "work2",
+  "date": "2025-12-23T00:14:14Z",
+  "message": "Add benchmark query variants: with and without scores",
+  "dataset": "MS MARCO full"
+}
