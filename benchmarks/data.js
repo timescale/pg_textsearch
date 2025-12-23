@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766448691523,
+  "lastUpdate": 1766464429020,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3944,6 +3944,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 4442.1,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "646d6a73316422fd8cbd844aac3d847c4489fb7f",
+          "message": "Optimize V2 block iteration with zero-copy access\n\nChange V2 segment posting iterator to use tp_segment_get_direct for\nblock data instead of tp_segment_read. This eliminates costly memcpy\noperations when block data fits within a single page (the common case).\n\nKey changes:\n- Add TpSegmentDirectAccess to V2 iterator for zero-copy block access\n- Try direct access first, fall back to copy when block spans pages\n- Properly release direct access when advancing blocks or finishing\n\nProfile showed V2 was spending ~27% CPU in tp_segment_read path\n(13.96% memcpy + 9.27% buffer manager + 3.5% read overhead) vs V1's\n~2.5% using zero-copy access. This should significantly reduce that.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2025-12-23T04:20:21Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/646d6a73316422fd8cbd844aac3d847c4489fb7f"
+        },
+        "date": 1766464428446,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 555325.94,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 14.21,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 55.729,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 45.531,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.042,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 6.297,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
             "unit": "MB"
           }
         ]
