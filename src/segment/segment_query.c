@@ -37,6 +37,7 @@ typedef struct TpSegmentPostingIterator
 
 /*
  * Iterator state for V2 block-based segment traversal
+ * Uses zero-copy access when block data fits within a single page.
  */
 typedef struct TpSegmentPostingIteratorV2
 {
@@ -52,9 +53,17 @@ typedef struct TpSegmentPostingIteratorV2
 	uint32		current_in_block; /* Position within current block */
 	TpSkipEntry skip_entry;		  /* Current block's skip entry */
 
-	/* Cached posting data for current block */
+	/* Zero-copy block access (preferred path) */
+	TpSegmentDirectAccess block_access;
+	bool				  has_block_access;
+
+	/* Block postings pointer - points to either direct data or fallback buffer
+	 */
 	TpBlockPosting *block_postings;
-	uint32			block_postings_size;
+
+	/* Fallback buffer for when block spans page boundaries */
+	TpBlockPosting *fallback_block;
+	uint32			fallback_block_size;
 
 	/* Output posting (converted to V1-style for compatibility) */
 	TpSegmentPosting output_posting;
@@ -272,7 +281,9 @@ tp_segment_posting_iterator_init_v2(
 	iter->initialized		  = false;
 	iter->finished			  = true;
 	iter->block_postings	  = NULL;
-	iter->block_postings_size = 0;
+	iter->has_block_access	  = false;
+	iter->fallback_block	  = NULL;
+	iter->fallback_block_size = 0;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -364,39 +375,66 @@ tp_segment_posting_iterator_init_v2(
 }
 
 /*
- * Load a block's postings into the iterator's buffer.
+ * Load a block's postings using zero-copy access when possible.
+ * Falls back to copying when block data spans page boundaries.
  */
 static bool
 tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 {
 	uint32 skip_offset;
 	uint32 block_size;
+	uint32 block_bytes;
 
 	if (iter->current_block >= iter->dict_entry.block_count)
 		return false;
 
-	/* Read skip entry for current block */
+	/* Release previous block access if any */
+	if (iter->has_block_access)
+	{
+		tp_segment_release_direct(&iter->block_access);
+		iter->has_block_access = false;
+		iter->block_postings   = NULL;
+	}
+
+	/* Read skip entry for current block (small, always copy) */
 	skip_offset = iter->dict_entry.skip_index_offset +
 				  (iter->current_block * sizeof(TpSkipEntry));
 	tp_segment_read(
 			iter->reader, skip_offset, &iter->skip_entry, sizeof(TpSkipEntry));
 
-	/* Allocate or reallocate block buffer */
-	block_size = iter->skip_entry.doc_count;
-	if (block_size > iter->block_postings_size)
-	{
-		if (iter->block_postings)
-			pfree(iter->block_postings);
-		iter->block_postings = palloc(block_size * sizeof(TpBlockPosting));
-		iter->block_postings_size = block_size;
-	}
+	block_size	= iter->skip_entry.doc_count;
+	block_bytes = block_size * sizeof(TpBlockPosting);
 
-	/* Read posting data for this block */
-	tp_segment_read(
-			iter->reader,
-			iter->skip_entry.posting_offset,
-			iter->block_postings,
-			block_size * sizeof(TpBlockPosting));
+	/* Try zero-copy direct access for block data */
+	if (tp_segment_get_direct(
+				iter->reader,
+				iter->skip_entry.posting_offset,
+				block_bytes,
+				&iter->block_access))
+	{
+		/* Zero-copy: point directly into the page buffer */
+		iter->block_postings   = (TpBlockPosting *)iter->block_access.data;
+		iter->has_block_access = true;
+	}
+	else
+	{
+		/* Fallback: block spans page boundary, must copy */
+		if (block_size > iter->fallback_block_size)
+		{
+			if (iter->fallback_block)
+				pfree(iter->fallback_block);
+			iter->fallback_block	  = palloc(block_bytes);
+			iter->fallback_block_size = block_size;
+		}
+
+		tp_segment_read(
+				iter->reader,
+				iter->skip_entry.posting_offset,
+				iter->fallback_block,
+				block_bytes);
+
+		iter->block_postings = iter->fallback_block;
+	}
 
 	iter->current_in_block = 0;
 	return true;
@@ -426,6 +464,12 @@ tp_segment_posting_iterator_next_v2(
 	{
 		if (!tp_segment_posting_iterator_load_block_v2(iter))
 		{
+			/* Release any block access before finishing */
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
@@ -437,11 +481,22 @@ tp_segment_posting_iterator_next_v2(
 		iter->current_block++;
 		if (iter->current_block >= iter->dict_entry.block_count)
 		{
+			/* Release block access before finishing */
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
 		if (!tp_segment_posting_iterator_load_block_v2(iter))
 		{
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
@@ -486,11 +541,21 @@ tp_segment_posting_iterator_next_v2(
 static void
 tp_segment_posting_iterator_free_v2(TpSegmentPostingIteratorV2 *iter)
 {
-	if (iter->block_postings)
+	/* Release direct block access if active */
+	if (iter->has_block_access)
 	{
-		pfree(iter->block_postings);
-		iter->block_postings = NULL;
+		tp_segment_release_direct(&iter->block_access);
+		iter->has_block_access = false;
 	}
+
+	/* Free fallback buffer if allocated */
+	if (iter->fallback_block)
+	{
+		pfree(iter->fallback_block);
+		iter->fallback_block = NULL;
+	}
+
+	iter->block_postings = NULL;
 }
 
 /*
@@ -941,7 +1006,9 @@ tp_score_all_terms_in_segment_chain(
 				iter_v2.current_block		= 0;
 				iter_v2.current_in_block	= 0;
 				iter_v2.block_postings		= NULL;
-				iter_v2.block_postings_size = 0;
+				iter_v2.has_block_access	= false;
+				iter_v2.fallback_block		= NULL;
+				iter_v2.fallback_block_size = 0;
 
 				/* Process all postings for this term */
 				while (tp_segment_posting_iterator_next_v2(&iter_v2, &posting))
