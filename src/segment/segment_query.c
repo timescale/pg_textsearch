@@ -507,8 +507,8 @@ tp_segment_posting_iterator_next_v2(
 	doc_id = bp->doc_id;
 
 	/*
-	 * Look up CTID from cached array (fast path) or fall back to per-posting
-	 * read. Fieldnorm is inline in block posting, no lookup needed.
+	 * Look up CTID from cached array (fast path) or use zero-copy direct
+	 * access. Fieldnorm is inline in block posting, no lookup needed.
 	 */
 	if (iter->reader->cached_ctids && doc_id < iter->reader->cached_num_docs)
 	{
@@ -517,13 +517,32 @@ tp_segment_posting_iterator_next_v2(
 	}
 	else
 	{
-		/* Slow path: per-posting CTID read */
-		tp_segment_read(
-				iter->reader,
-				header->ctid_map_offset + (doc_id * sizeof(ItemPointerData)),
-				&ctid_entry,
-				sizeof(TpCtidMapEntry));
-		iter->output_posting.ctid = ctid_entry.ctid;
+		/* Zero-copy CTID lookup - get pointer directly into CTID map page */
+		TpSegmentDirectAccess ctid_access;
+		uint32				  ctid_offset = header->ctid_map_offset +
+							 (doc_id * sizeof(ItemPointerData));
+
+		if (tp_segment_get_direct(
+					iter->reader,
+					ctid_offset,
+					sizeof(TpCtidMapEntry),
+					&ctid_access))
+		{
+			/* Zero-copy: read directly from page */
+			iter->output_posting.ctid =
+					((TpCtidMapEntry *)ctid_access.data)->ctid;
+			tp_segment_release_direct(&ctid_access);
+		}
+		else
+		{
+			/* Fallback: CTID spans page boundary (rare) */
+			tp_segment_read(
+					iter->reader,
+					ctid_offset,
+					&ctid_entry,
+					sizeof(TpCtidMapEntry));
+			iter->output_posting.ctid = ctid_entry.ctid;
+		}
 	}
 
 	/* Build output posting in V1 format (fieldnorm is inline in bp) */
