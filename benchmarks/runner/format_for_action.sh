@@ -107,6 +107,24 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
+    # With-score query latencies (if available)
+    (if .metrics.query_latencies_with_score_ms.common_term != null then
+        {
+            name: "\($dataset) - Common Term Query (with score)",
+            unit: "ms",
+            value: .metrics.query_latencies_with_score_ms.common_term
+        }
+    else empty end),
+
+    # Throughput with score (average latency)
+    (if .metrics.throughput_with_score.avg_ms_per_query != null then
+        {
+            name: "\($dataset) - Avg Query Latency with Score (20 queries)",
+            unit: "ms",
+            value: .metrics.throughput_with_score.avg_ms_per_query
+        }
+    else empty end),
+
     # Index size (in MB for readability)
     (if .metrics.index_size_bytes != null then
         {
