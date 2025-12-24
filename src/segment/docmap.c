@@ -119,19 +119,19 @@ tp_docmap_lookup(TpDocMapBuilder *builder, ItemPointer ctid)
 }
 
 /*
- * Comparison function for sorting by doc_id
+ * Comparison function for sorting by CTID.
+ * This ensures doc_ids are assigned in CTID order, which means
+ * postings sorted by CTID are also sorted by doc_id - critical
+ * for sequential access to CTID arrays during query iteration.
  */
 static int
-docmap_entry_cmp(const void *a, const void *b)
+docmap_entry_cmp_by_ctid(const void *a, const void *b)
 {
 	const TpDocMapEntry *ea = (const TpDocMapEntry *)a;
 	const TpDocMapEntry *eb = (const TpDocMapEntry *)b;
 
-	if (ea->doc_id < eb->doc_id)
-		return -1;
-	if (ea->doc_id > eb->doc_id)
-		return 1;
-	return 0;
+	/* Cast away const - ItemPointerCompare doesn't modify arguments */
+	return ItemPointerCompare((ItemPointer)&ea->ctid, (ItemPointer)&eb->ctid);
 }
 
 void
@@ -162,8 +162,16 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 
 	Assert(i == builder->num_docs);
 
-	/* Sort by doc_id to ensure correct array indexing */
-	qsort(entries, builder->num_docs, sizeof(TpDocMapEntry), docmap_entry_cmp);
+	/*
+	 * Sort by CTID to assign doc_ids in CTID order.
+	 * This maintains the invariant: CTID order = doc_id order.
+	 * Postings sorted by CTID will then be sorted by doc_id,
+	 * enabling sequential access to CTID arrays during iteration.
+	 */
+	qsort(entries,
+		  builder->num_docs,
+		  sizeof(TpDocMapEntry),
+		  docmap_entry_cmp_by_ctid);
 
 	/* Allocate output arrays (split CTID storage for better cache locality) */
 	builder->capacity	  = builder->num_docs;
@@ -171,14 +179,25 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 	builder->ctid_offsets = palloc(sizeof(OffsetNumber) * builder->num_docs);
 	builder->fieldnorms	  = palloc(sizeof(uint8) * builder->num_docs);
 
-	/* Fill arrays from sorted entries */
+	/*
+	 * Fill arrays and reassign doc_ids in CTID order.
+	 * Update hash table entries so lookups return the correct new doc_id.
+	 */
 	for (i = 0; i < builder->num_docs; i++)
 	{
-		Assert(entries[i].doc_id == i);
+		TpDocMapEntry *hash_entry;
+
+		/* Array position i = doc_id i (CTID-sorted order) */
 		builder->ctid_pages[i]	 = ItemPointerGetBlockNumber(&entries[i].ctid);
 		builder->ctid_offsets[i] = ItemPointerGetOffsetNumber(
 				&entries[i].ctid);
 		builder->fieldnorms[i] = encode_fieldnorm(entries[i].doc_length);
+
+		/* Update hash table entry with new doc_id */
+		hash_entry = (TpDocMapEntry *)hash_search(
+				builder->ctid_to_id, &entries[i].ctid, HASH_FIND, NULL);
+		Assert(hash_entry != NULL);
+		hash_entry->doc_id = i;
 	}
 
 	pfree(entries);

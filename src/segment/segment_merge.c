@@ -510,6 +510,9 @@ typedef struct TpMergeDocMapping
 /*
  * Build merged docmap from source segment CTID arrays.
  * Also builds direct mapping arrays for fast old→new doc_id lookup.
+ *
+ * IMPORTANT: The mapping is built AFTER finalize because finalize
+ * reassigns doc_ids in CTID order (the docmap invariant).
  */
 static TpDocMapBuilder *
 build_merged_docmap(
@@ -522,6 +525,7 @@ build_merged_docmap(
 	mapping->num_sources = num_sources;
 	mapping->old_to_new	 = palloc0(num_sources * sizeof(uint32 *));
 
+	/* First pass: add all documents to docmap (doc_ids are temporary) */
 	for (i = 0; i < num_sources; i++)
 	{
 		TpSegmentHeader *header = sources[i].reader->header;
@@ -543,7 +547,6 @@ build_merged_docmap(
 			OffsetNumber	offset;
 			uint8			fieldnorm;
 			uint32			doc_length;
-			uint32			new_doc_id;
 
 			/*
 			 * Read CTID from split arrays.
@@ -578,13 +581,62 @@ build_merged_docmap(
 					sizeof(uint8));
 			doc_length = decode_fieldnorm(fieldnorm);
 
-			/* Add to merged docmap and record mapping */
-			new_doc_id = tp_docmap_add(docmap, &ctid, doc_length);
-			mapping->old_to_new[i][j] = new_doc_id;
+			/* Add to merged docmap (doc_id assigned here is temporary) */
+			tp_docmap_add(docmap, &ctid, doc_length);
 		}
 	}
 
+	/* Finalize: reassigns doc_ids in CTID order */
 	tp_docmap_finalize(docmap);
+
+	/*
+	 * Second pass: build old→new mapping using finalized doc_ids.
+	 * After finalize, tp_docmap_lookup returns the correct CTID-sorted doc_id.
+	 */
+	for (i = 0; i < num_sources; i++)
+	{
+		TpSegmentHeader *header = sources[i].reader->header;
+		uint32			 num_docs;
+		uint32			 j;
+
+		if (header->ctid_pages_offset == 0 || mapping->old_to_new[i] == NULL)
+			continue;
+
+		num_docs = header->num_docs;
+
+		for (j = 0; j < num_docs; j++)
+		{
+			ItemPointerData ctid;
+			BlockNumber		page;
+			OffsetNumber	offset;
+
+			/* Reconstruct CTID for lookup */
+			if (sources[i].reader->cached_ctid_pages != NULL)
+			{
+				page   = sources[i].reader->cached_ctid_pages[j];
+				offset = sources[i].reader->cached_ctid_offsets[j];
+			}
+			else
+			{
+				tp_segment_read(
+						sources[i].reader,
+						header->ctid_pages_offset + (j * sizeof(BlockNumber)),
+						&page,
+						sizeof(BlockNumber));
+				tp_segment_read(
+						sources[i].reader,
+						header->ctid_offsets_offset +
+								(j * sizeof(OffsetNumber)),
+						&offset,
+						sizeof(OffsetNumber));
+			}
+			ItemPointerSet(&ctid, page, offset);
+
+			/* Look up the finalized doc_id */
+			mapping->old_to_new[i][j] = tp_docmap_lookup(docmap, &ctid);
+		}
+	}
+
 	return docmap;
 }
 

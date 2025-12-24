@@ -406,12 +406,17 @@ tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 	block_size	= iter->skip_entry.doc_count;
 	block_bytes = block_size * sizeof(TpBlockPosting);
 
-	/* Try zero-copy direct access for block data */
+	/*
+	 * Try zero-copy direct access for block data.
+	 * TpBlockPosting requires 4-byte alignment (due to uint32 doc_id).
+	 * If the data address is misaligned, fall back to copying.
+	 */
 	if (tp_segment_get_direct(
 				iter->reader,
 				iter->skip_entry.posting_offset,
 				block_bytes,
-				&iter->block_access))
+				&iter->block_access) &&
+		((uintptr_t)iter->block_access.data % sizeof(uint32)) == 0)
 	{
 		/* Zero-copy: point directly into the page buffer */
 		iter->block_postings   = (TpBlockPosting *)iter->block_access.data;
@@ -419,6 +424,9 @@ tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 	}
 	else
 	{
+		/* Release direct access if we got it but it's misaligned */
+		if (iter->block_access.data != NULL)
+			tp_segment_release_direct(&iter->block_access);
 		/* Fallback: block spans page boundary, must copy */
 		if (block_size > iter->fallback_block_size)
 		{

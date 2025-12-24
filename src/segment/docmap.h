@@ -7,9 +7,13 @@
  * In V2 format, posting lists use compact 4-byte segment-local doc IDs
  * instead of 6-byte CTIDs. This module provides:
  * - Collection of unique documents during segment build
- * - Assignment of sequential doc IDs (0 to N-1)
+ * - Assignment of sequential doc IDs (0 to N-1) in CTID order
  * - CTID → doc_id lookup during posting conversion
  * - Arrays for CTID map and fieldnorm table
+ *
+ * INVARIANT: Doc IDs are assigned in CTID order after finalize.
+ * This means CTID order = doc_id order, so postings sorted by CTID
+ * are also sorted by doc_id, enabling sequential access to CTID arrays.
  */
 #pragma once
 
