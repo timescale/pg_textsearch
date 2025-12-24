@@ -1371,7 +1371,7 @@ tp_buildempty(Relation index)
 	}
 
 	/* Create and initialize the metapage */
-	metabuf = ReadBuffer(index, P_NEW);
+	metabuf = ReadBufferExtended(index, INIT_FORKNUM, P_NEW, RBM_NORMAL, NULL);
 	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
