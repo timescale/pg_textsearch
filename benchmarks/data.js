@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766548624743,
+  "lastUpdate": 1766548626882,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4472,6 +4472,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 106.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "8c86fccb2939836185fc141daf2fa762a09fb9fb",
+          "message": "Implement top-k partial sort for BM25 result extraction\n\nReplace qsort with a custom partial quicksort that only sorts the\ntop-k elements needed for results. This is O(n + k log k) instead\nof O(n log n), providing significant speedup when k << n.\n\nKey optimizations:\n- Partial quicksort only recurses into partitions containing top-k\n- Inlined score comparison eliminates function call overhead\n- Insertion sort for small subarrays (< 16 elements)\n- Median-of-three pivot selection for better partitioning\n\nPerformance improvement: ~40% faster for multi-term queries on\nMS-MARCO (8.8M docs): 565ms -> 340ms for 5-term query.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2025-12-24T03:44:51Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8c86fccb2939836185fc141daf2fa762a09fb9fb"
+        },
+        "date": 1766548626256,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 543001.889,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 20.779,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 39.371,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 43.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.039,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 26.142,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 75.69,
             "unit": "ms"
           },
           {
