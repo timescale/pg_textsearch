@@ -34,7 +34,7 @@ key_to_ctid(uint64 key, ItemPointerData *ctid)
 }
 
 /*
- * Hash table entry - 24 bytes, cache-aligned.
+ * Hash table entry - 16 bytes.
  * Key of 0 indicates empty slot (CTID (0,0) is invalid).
  */
 typedef struct TpDocScoreEntry

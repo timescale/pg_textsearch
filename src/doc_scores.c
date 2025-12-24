@@ -38,6 +38,10 @@ hash_key(uint64 key)
 	hash *= 16777619u;
 	hash ^= (uint32)((key >> 40) & 0xFF);
 	hash *= 16777619u;
+	hash ^= (uint32)((key >> 48) & 0xFF);
+	hash *= 16777619u;
+	hash ^= (uint32)((key >> 56) & 0xFF);
+	hash *= 16777619u;
 
 	return hash;
 }
