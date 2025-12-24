@@ -65,6 +65,14 @@ typedef struct TpSegmentPostingIteratorV2
 	TpBlockPosting *fallback_block;
 	uint32			fallback_block_size;
 
+	/*
+	 * Block CTID cache: when loading a block, we batch-load all CTIDs
+	 * for the documents in that block. This converts O(postings) CTID
+	 * lookups into O(blocks) bulk reads.
+	 */
+	ItemPointerData *block_ctids;	   /* CTIDs for current block */
+	uint32			 block_ctids_size; /* Allocated size */
+
 	/* Output posting (converted to V1-style for compatibility) */
 	TpSegmentPosting output_posting;
 } TpSegmentPostingIteratorV2;
@@ -284,6 +292,8 @@ tp_segment_posting_iterator_init_v2(
 	iter->has_block_access	  = false;
 	iter->fallback_block	  = NULL;
 	iter->fallback_block_size = 0;
+	iter->block_ctids		  = NULL;
+	iter->block_ctids_size	  = 0;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -375,18 +385,22 @@ tp_segment_posting_iterator_init_v2(
 }
 
 /*
- * Load a block's postings using zero-copy access when possible.
- * Falls back to copying when block data spans page boundaries.
+ * Load a block's postings and batch-load all CTIDs for documents in block.
+ * Uses zero-copy access when block data fits within a single page.
  */
 static bool
 tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 {
-	uint32 skip_offset;
-	uint32 block_size;
-	uint32 block_bytes;
+	TpSegmentHeader *header;
+	uint32			 skip_offset;
+	uint32			 block_size;
+	uint32			 block_bytes;
+	uint32			 i;
 
 	if (iter->current_block >= iter->dict_entry.block_count)
 		return false;
+
+	header = iter->reader->header;
 
 	/* Release previous block access if any */
 	if (iter->has_block_access)
@@ -434,6 +448,37 @@ tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 				block_bytes);
 
 		iter->block_postings = iter->fallback_block;
+	}
+
+	/*
+	 * Batch-load CTIDs for all documents in this block.
+	 * This converts O(block_size) random CTID reads into one loop
+	 * that reads each CTID, but keeps pages cached via buffer manager.
+	 * For segments with pre-cached CTIDs, this is skipped.
+	 */
+	if (!iter->reader->cached_ctids && header->ctid_map_offset > 0)
+	{
+		/* Ensure CTID buffer is large enough */
+		if (block_size > iter->block_ctids_size)
+		{
+			if (iter->block_ctids)
+				pfree(iter->block_ctids);
+			iter->block_ctids = palloc(block_size * sizeof(ItemPointerData));
+			iter->block_ctids_size = block_size;
+		}
+
+		/* Load CTID for each document in block */
+		for (i = 0; i < block_size; i++)
+		{
+			uint32 doc_id	   = iter->block_postings[i].doc_id;
+			uint32 ctid_offset = header->ctid_map_offset +
+								 (doc_id * sizeof(ItemPointerData));
+			tp_segment_read(
+					iter->reader,
+					ctid_offset,
+					&iter->block_ctids[i],
+					sizeof(ItemPointerData));
+		}
 	}
 
 	iter->current_in_block = 0;
@@ -507,42 +552,30 @@ tp_segment_posting_iterator_next_v2(
 	doc_id = bp->doc_id;
 
 	/*
-	 * Look up CTID from cached array (fast path) or use zero-copy direct
-	 * access. Fieldnorm is inline in block posting, no lookup needed.
+	 * Look up CTID: prefer segment-level cache, then block-level cache.
+	 * Fieldnorm is inline in block posting, no lookup needed.
 	 */
 	if (iter->reader->cached_ctids && doc_id < iter->reader->cached_num_docs)
 	{
-		/* Fast path: use cached CTID array */
+		/* Fast path: use segment-level CTID cache (small segments only) */
 		iter->output_posting.ctid = iter->reader->cached_ctids[doc_id];
+	}
+	else if (iter->block_ctids)
+	{
+		/* Block-level CTID cache: loaded when block was loaded */
+		iter->output_posting.ctid = iter->block_ctids[iter->current_in_block];
 	}
 	else
 	{
-		/* Zero-copy CTID lookup - get pointer directly into CTID map page */
-		TpSegmentDirectAccess ctid_access;
-		uint32				  ctid_offset = header->ctid_map_offset +
+		/* Fallback: read CTID directly (should not happen with block cache) */
+		uint32 ctid_offset = header->ctid_map_offset +
 							 (doc_id * sizeof(ItemPointerData));
-
-		if (tp_segment_get_direct(
-					iter->reader,
-					ctid_offset,
-					sizeof(TpCtidMapEntry),
-					&ctid_access))
-		{
-			/* Zero-copy: read directly from page */
-			iter->output_posting.ctid =
-					((TpCtidMapEntry *)ctid_access.data)->ctid;
-			tp_segment_release_direct(&ctid_access);
-		}
-		else
-		{
-			/* Fallback: CTID spans page boundary (rare) */
-			tp_segment_read(
-					iter->reader,
-					ctid_offset,
-					&ctid_entry,
-					sizeof(TpCtidMapEntry));
-			iter->output_posting.ctid = ctid_entry.ctid;
-		}
+		tp_segment_read(
+				iter->reader,
+				ctid_offset,
+				&ctid_entry,
+				sizeof(TpCtidMapEntry));
+		iter->output_posting.ctid = ctid_entry.ctid;
 	}
 
 	/* Build output posting in V1 format (fieldnorm is inline in bp) */
@@ -572,6 +605,13 @@ tp_segment_posting_iterator_free_v2(TpSegmentPostingIteratorV2 *iter)
 	{
 		pfree(iter->fallback_block);
 		iter->fallback_block = NULL;
+	}
+
+	/* Free block CTID cache if allocated */
+	if (iter->block_ctids)
+	{
+		pfree(iter->block_ctids);
+		iter->block_ctids = NULL;
 	}
 
 	iter->block_postings = NULL;
@@ -1028,6 +1068,8 @@ tp_score_all_terms_in_segment_chain(
 				iter_v2.has_block_access	= false;
 				iter_v2.fallback_block		= NULL;
 				iter_v2.fallback_block_size = 0;
+				iter_v2.block_ctids			= NULL;
+				iter_v2.block_ctids_size	= 0;
 
 				/* Process all postings for this term */
 				while (tp_segment_posting_iterator_next_v2(&iter_v2, &posting))
