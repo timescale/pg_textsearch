@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766548626882,
+  "lastUpdate": 1766548629398,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5956,6 +5956,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Rare Term Query",
             "value": 8.116,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "8c86fccb2939836185fc141daf2fa762a09fb9fb",
+          "message": "Implement top-k partial sort for BM25 result extraction\n\nReplace qsort with a custom partial quicksort that only sorts the\ntop-k elements needed for results. This is O(n + k log k) instead\nof O(n log n), providing significant speedup when k << n.\n\nKey optimizations:\n- Partial quicksort only recurses into partitions containing top-k\n- Inlined score comparison eliminates function call overhead\n- Insertion sort for small subarrays (< 16 elements)\n- Median-of-three pivot selection for better partitioning\n\nPerformance improvement: ~40% faster for multi-term queries on\nMS-MARCO (8.8M docs): 565ms -> 340ms for 5-term query.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2025-12-24T03:44:51Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8c86fccb2939836185fc141daf2fa762a09fb9fb"
+        },
+        "date": 1766548628747,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18575.546,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 2.815,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 4.127,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 2.15,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 5.517,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 7.817,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query (with score)",
+            "value": 2.49,
             "unit": "ms"
           },
           {
