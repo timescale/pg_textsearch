@@ -61,18 +61,18 @@ SELECT title, content, ROUND((content <@> 'database')::numeric, 4) as score
 FROM limit_test
 ORDER BY content <@> 'database'
 LIMIT 5;
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
-NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
          title         |                              content                               |  score  
 -----------------------+--------------------------------------------------------------------+---------
- Database Architecture | database system architecture with storage and indexing strategies  | -0.9394
  Database Performance  | database optimization strategies for improving query performance   | -0.9394
- Database Security     | database security measures and access control mechanisms           | -0.9394
- Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
+ Database Architecture | database system architecture with storage and indexing strategies  | -0.9394
  Query Optimization    | query optimization techniques for efficient database operations    | -0.9394
+ Database Theory       | theoretical foundations of database systems and relational algebra | -0.9394
+ Database Security     | database security measures and access control mechanisms           | -0.9394
 (5 rows)
 
 -- Test 2: Different LIMIT values
@@ -92,14 +92,14 @@ SELECT title, ROUND((content <@> 'optimization')::numeric, 4) as score
 FROM limit_test
 ORDER BY content <@> 'optimization'
 LIMIT 3;
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
-NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
-       title        |  score  
---------------------+---------
- Query Optimization | -1.3915
- Algorithm Design   | -1.3915
- System Performance | -1.3915
+        title         |  score  
+----------------------+---------
+ Database Performance | -1.3915
+ Query Optimization   | -1.3915
+ Algorithm Design     | -1.3915
 (3 rows)
 
 -- Test LIMIT 10
@@ -108,16 +108,16 @@ FROM limit_test
 ORDER BY content <@> 'algorithm'
 LIMIT 10;
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.2328
        title       |  score  
 -------------------+---------
  Algorithm Design  | -1.3915
- Search Engines    | -1.3074
  Machine Learning  | -1.3074
  Text Processing   | -1.3074
+ Search Engines    | -1.3074
  Search Algorithms | -1.2328
 (5 rows)
 
@@ -144,18 +144,18 @@ ORDER BY content <@> 'database system'
 LIMIT 7;
 NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-2.3309
 NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-2.3309
-NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,14), BM25_score=-1.3915
+NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.1663
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
          title         |  score  
 -----------------------+---------
  Database Architecture | -2.3309
  Database Theory       | -2.3309
- System Performance    | -1.3915
  Information Systems   | -1.3915
- Database Security     | -0.9394
+ System Performance    | -1.3915
+ Database Performance  | -0.9394
  Query Optimization    | -0.9394
 (6 rows)
 
@@ -166,12 +166,12 @@ SELECT title, ROUND((content <@> 'performance')::numeric, 4) as score
 FROM limit_test
 ORDER BY content <@> 'performance'
 LIMIT 5 OFFSET 2;
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.8610
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.8610
 NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.8610
-NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.8610
-        title         |  score  
-----------------------+---------
- Database Performance | -1.8610
+       title        |  score  
+--------------------+---------
+ System Performance | -1.8610
 (1 row)
 
 -- Test 6: Very small LIMIT (edge case)
@@ -179,10 +179,10 @@ SELECT title, ROUND((content <@> 'text')::numeric, 4) as score
 FROM limit_test
 ORDER BY content <@> 'text'
 LIMIT 1;
-NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-1.7484
-     title      |  score  
-----------------+---------
- Text Analytics | -1.7484
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.7484
+      title      |  score  
+-----------------+---------
+ Text Processing | -1.7484
 (1 row)
 
 -- Test 7: Large LIMIT (should still use index optimization)
@@ -206,12 +206,12 @@ SELECT * FROM (
     ORDER BY content <@> to_bm25query('mining', 'limit_test_idx')
     LIMIT 3
 ) sub WHERE score < 0;
-NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-2.0767
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-2.0767
+NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-2.0767
      title      |  score  
 ----------------+---------
- Text Analytics | -2.0767
  Data Mining    | -2.0767
+ Text Analytics | -2.0767
 (2 rows)
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
@@ -220,8 +220,8 @@ SELECT 'Query 1' as query_name, COUNT(*) as results FROM (
     ORDER BY content <@> to_bm25query('database', 'limit_test_idx')
     LIMIT 2
 ) q1;
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.9394
  query_name | results 
 ------------+---------
  Query 1    |       2
@@ -246,9 +246,9 @@ SELECT 'Query 3' as query_name, COUNT(*) as results FROM (
     LIMIT 4
 ) q3;
 NOTICE:  BM25 index scan: tid=(0,18), BM25_score=-1.3915
-NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-1.3074
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3074
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-1.3074
  query_name | results 
 ------------+---------
  Query 3    |       4

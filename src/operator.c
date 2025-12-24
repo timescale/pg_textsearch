@@ -66,10 +66,21 @@ tp_create_doc_scores_hash(int max_results, int32 total_docs)
 }
 
 /*
- * Inline comparison macro for document scores (descending order).
- * Returns true if a should come before b (a has higher score).
+ * Inline comparison for document scores (descending order).
+ * Returns true if a should come before b.
+ * Primary: higher score first. Secondary: lower CTID first (for stability).
  */
-#define DOC_SCORE_GREATER(a, b) ((a)->score > (b)->score)
+static inline bool
+doc_score_greater(const DocumentScoreEntry *a, const DocumentScoreEntry *b)
+{
+	if (a->score != b->score)
+		return a->score > b->score;
+	/* Tiebreaker: sort by CTID ascending for deterministic ordering */
+	return ItemPointerCompare((ItemPointer)&a->ctid, (ItemPointer)&b->ctid) <
+		   0;
+}
+
+#define DOC_SCORE_GREATER(a, b) doc_score_greater((a), (b))
 
 /*
  * Swap two document score pointers.
@@ -94,8 +105,9 @@ insertion_sort_docs(DocumentScoreEntry **arr, int n)
 		DocumentScoreEntry *key = arr[i];
 		int					j	= i - 1;
 
-		/* Move elements with lower scores (descending order) */
-		while (j >= 0 && key->score > arr[j]->score)
+		/* Move elements that key should come before (descending score, then
+		 * CTID) */
+		while (j >= 0 && DOC_SCORE_GREATER(key, arr[j]))
 		{
 			arr[j + 1] = arr[j];
 			j--;
