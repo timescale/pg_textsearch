@@ -47,7 +47,7 @@ typedef struct TpPageIndexSpecial
 /*
  * Segment header - stored on the first page
  *
- * V2 format adds: skip_index_offset, fieldnorm_offset, ctid_map_offset
+ * V2 format adds: skip_index_offset, fieldnorm_offset, ctid storage
  */
 typedef struct TpSegmentHeader
 {
@@ -70,9 +70,11 @@ typedef struct TpSegmentHeader
 	uint32 doc_lengths_offset; /* Offset to document lengths (V1) */
 
 	/* V2 block storage offsets */
-	uint32 skip_index_offset; /* Offset to skip index (TpSkipEntry arrays) */
-	uint32 fieldnorm_offset;  /* Offset to fieldnorm table (1 byte/doc) */
-	uint32 ctid_map_offset;	  /* Offset to doc ID -> CTID mapping */
+	uint32 skip_index_offset;	/* Offset to skip index (TpSkipEntry arrays) */
+	uint32 fieldnorm_offset;	/* Offset to fieldnorm table (1 byte/doc) */
+	uint32 ctid_pages_offset;	/* Offset to BlockNumber array (4 bytes/doc) */
+	uint32 ctid_offsets_offset; /* Offset to OffsetNumber array (2 bytes/doc)
+								 */
 
 	/* Corpus statistics */
 	uint32 num_terms;	 /* Total unique terms */
@@ -246,9 +248,13 @@ typedef struct TpSegmentReader
 	Buffer current_buffer;
 	uint32 current_logical_page;
 
-	/* V2 format: CTID cache for result lookup (fieldnorm is inline) */
-	ItemPointerData *cached_ctids;	  /* CTID map (6 bytes/doc) */
-	uint32			 cached_num_docs; /* Number of docs cached */
+	/*
+	 * V2 format: CTID arrays for result lookup (loaded at segment open).
+	 * Split storage for better packing and cache locality during scoring.
+	 */
+	BlockNumber	 *cached_ctid_pages;   /* Page numbers (4 bytes/doc) */
+	OffsetNumber *cached_ctid_offsets; /* Tuple offsets (2 bytes/doc) */
+	uint32		  cached_num_docs;	   /* Number of docs cached */
 } TpSegmentReader;
 
 /*

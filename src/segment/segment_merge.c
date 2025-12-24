@@ -353,19 +353,38 @@ posting_source_load_block(TpPostingMergeSource *ps)
 static void
 posting_source_convert_current(TpPostingMergeSource *ps)
 {
-	TpSegmentHeader *header = ps->reader->header;
-	TpBlockPosting	*bp		= &ps->block_postings[ps->current_in_block];
-	ItemPointerData	 ctid;
+	TpBlockPosting *bp = &ps->block_postings[ps->current_in_block];
+	BlockNumber		page;
+	OffsetNumber	offset;
 
-	/* Look up CTID from ctid_map (needed for N-way merge ordering) */
-	tp_segment_read(
-			ps->reader,
-			header->ctid_map_offset + (bp->doc_id * sizeof(ItemPointerData)),
-			&ctid,
-			sizeof(ItemPointerData));
+	/*
+	 * Look up CTID from split arrays (needed for N-way merge ordering).
+	 * Use cached arrays if available, otherwise read from segment.
+	 */
+	if (ps->reader->cached_ctid_pages != NULL)
+	{
+		page   = ps->reader->cached_ctid_pages[bp->doc_id];
+		offset = ps->reader->cached_ctid_offsets[bp->doc_id];
+	}
+	else
+	{
+		TpSegmentHeader *header = ps->reader->header;
+
+		tp_segment_read(
+				ps->reader,
+				header->ctid_pages_offset + (bp->doc_id * sizeof(BlockNumber)),
+				&page,
+				sizeof(BlockNumber));
+		tp_segment_read(
+				ps->reader,
+				header->ctid_offsets_offset +
+						(bp->doc_id * sizeof(OffsetNumber)),
+				&offset,
+				sizeof(OffsetNumber));
+	}
 
 	/* Build output posting info */
-	ps->current.ctid	   = ctid;
+	ItemPointerSet(&ps->current.ctid, page, offset);
 	ps->current.old_doc_id = bp->doc_id;
 	ps->current.frequency  = bp->frequency;
 	ps->current.fieldnorm  = bp->fieldnorm;
@@ -489,7 +508,7 @@ typedef struct TpMergeDocMapping
 } TpMergeDocMapping;
 
 /*
- * Build merged docmap from source segment ctid_maps.
+ * Build merged docmap from source segment CTID arrays.
  * Also builds direct mapping arrays for fast old→new doc_id lookup.
  */
 static TpDocMapBuilder *
@@ -509,7 +528,7 @@ build_merged_docmap(
 		uint32			 num_docs;
 		uint32			 j;
 
-		if (header->ctid_map_offset == 0)
+		if (header->ctid_pages_offset == 0)
 			continue;
 
 		num_docs = header->num_docs;
@@ -520,16 +539,36 @@ build_merged_docmap(
 		for (j = 0; j < num_docs; j++)
 		{
 			ItemPointerData ctid;
+			BlockNumber		page;
+			OffsetNumber	offset;
 			uint8			fieldnorm;
 			uint32			doc_length;
 			uint32			new_doc_id;
 
-			/* Read CTID from source */
-			tp_segment_read(
-					sources[i].reader,
-					header->ctid_map_offset + (j * sizeof(ItemPointerData)),
-					&ctid,
-					sizeof(ItemPointerData));
+			/*
+			 * Read CTID from split arrays.
+			 * Use cached arrays if available.
+			 */
+			if (sources[i].reader->cached_ctid_pages != NULL)
+			{
+				page   = sources[i].reader->cached_ctid_pages[j];
+				offset = sources[i].reader->cached_ctid_offsets[j];
+			}
+			else
+			{
+				tp_segment_read(
+						sources[i].reader,
+						header->ctid_pages_offset + (j * sizeof(BlockNumber)),
+						&page,
+						sizeof(BlockNumber));
+				tp_segment_read(
+						sources[i].reader,
+						header->ctid_offsets_offset +
+								(j * sizeof(OffsetNumber)),
+						&offset,
+						sizeof(OffsetNumber));
+			}
+			ItemPointerSet(&ctid, page, offset);
 
 			/* Read fieldnorm to get doc length */
 			tp_segment_read(
@@ -904,14 +943,24 @@ write_merged_segment(
 				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
 	}
 
-	/* Write CTID map */
-	header.ctid_map_offset = writer.current_offset;
+	/* Write CTID pages array */
+	header.ctid_pages_offset = writer.current_offset;
 	if (docmap->num_docs > 0)
 	{
 		tp_segment_writer_write(
 				&writer,
-				docmap->ctid_map,
-				docmap->num_docs * sizeof(ItemPointerData));
+				docmap->ctid_pages,
+				docmap->num_docs * sizeof(BlockNumber));
+	}
+
+	/* Write CTID offsets array */
+	header.ctid_offsets_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_offsets,
+				docmap->num_docs * sizeof(OffsetNumber));
 	}
 
 	header.doc_lengths_offset = writer.current_offset;
@@ -1042,18 +1091,19 @@ write_merged_segment(
 	existing_header = (TpSegmentHeader *)((char *)header_page +
 										  SizeOfPageHeaderData);
 
-	existing_header->dictionary_offset	= header.dictionary_offset;
-	existing_header->strings_offset		= header.strings_offset;
-	existing_header->entries_offset		= header.entries_offset;
-	existing_header->postings_offset	= header.postings_offset;
-	existing_header->skip_index_offset	= header.skip_index_offset;
-	existing_header->fieldnorm_offset	= header.fieldnorm_offset;
-	existing_header->ctid_map_offset	= header.ctid_map_offset;
-	existing_header->doc_lengths_offset = header.doc_lengths_offset;
-	existing_header->num_docs			= header.num_docs;
-	existing_header->data_size			= header.data_size;
-	existing_header->num_pages			= header.num_pages;
-	existing_header->page_index			= header.page_index;
+	existing_header->dictionary_offset	 = header.dictionary_offset;
+	existing_header->strings_offset		 = header.strings_offset;
+	existing_header->entries_offset		 = header.entries_offset;
+	existing_header->postings_offset	 = header.postings_offset;
+	existing_header->skip_index_offset	 = header.skip_index_offset;
+	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+	existing_header->doc_lengths_offset	 = header.doc_lengths_offset;
+	existing_header->num_docs			 = header.num_docs;
+	existing_header->data_size			 = header.data_size;
+	existing_header->num_pages			 = header.num_pages;
+	existing_header->page_index			 = header.page_index;
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
