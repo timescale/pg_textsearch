@@ -14,7 +14,7 @@ WITH (text_config='english', k1=1.2, b=0.75);
 
 -- VERIFICATION: Check if _init fork exists and has valid size
 --
--- We verify that the init fork size is exactly one block size (Metapage)
+-- We verify that the init fork contains at least the meta page
 SELECT 
     relname, 
     -- Main fork should have data (Metapage + DocID page + etc)

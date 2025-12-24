@@ -16,7 +16,7 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
 -- VERIFICATION: Check if _init fork exists and has valid size
 --
--- We verify that the init fork size is exactly one block size (Metapage)
+-- We verify that the init fork contains at least the meta page
 SELECT 
     relname, 
     -- Main fork should have data (Metapage + DocID page + etc)
