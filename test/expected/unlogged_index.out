@@ -1,0 +1,40 @@
+-- Test unlogged index behavior and initialization fork creation
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.1.1-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+-- Create UNLOGGED table and index
+CREATE UNLOGGED TABLE unlogged_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO unlogged_test (content) VALUES ('test document');
+CREATE INDEX unlogged_idx ON unlogged_test USING bm25(content) 
+WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation unlogged_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
+-- VERIFICATION: Check if _init fork exists and has valid size
+--
+-- We verify that the init fork size is exactly one block size (Metapage)
+SELECT 
+    relname, 
+    -- Main fork should have data (Metapage + DocID page + etc)
+    pg_relation_size(indexrelid, 'main') > current_setting('block_size')::int as main_has_data,
+    -- Init fork must exist and be at least one page size
+    CASE 
+        WHEN pg_relation_size(indexrelid, 'init') >= current_setting('block_size')::int 
+        THEN 'PASS' 
+        ELSE 'FAIL' 
+    END as init_check
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = 'unlogged_idx';
+   relname    | main_has_data | init_check 
+--------------+---------------+------------
+ unlogged_idx | t             | PASS
+(1 row)
+
+-- Cleanup
+DROP TABLE unlogged_test;
+DROP EXTENSION pg_textsearch CASCADE;
