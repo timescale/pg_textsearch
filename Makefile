@@ -47,6 +47,11 @@ PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
+# SQL regression tests
+test: install
+	@echo "Running SQL regression tests..."
+	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
+
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
 	@echo "Setting up temporary PostgreSQL instance for local testing..."
@@ -89,7 +94,9 @@ test-all: test test-shell
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
 # Override installcheck to run all tests (SQL regression + shell scripts)
-installcheck: test test-shell
+installcheck: install
+	@$(MAKE) test
+	@$(MAKE) test-shell
 
 # Generate expected output files from current test results
 expected:
