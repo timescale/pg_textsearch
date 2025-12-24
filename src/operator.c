@@ -12,6 +12,7 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
+#include "doc_scores.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -36,48 +37,38 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 }
 
 /*
- * Create and initialize hash table for document scores
+ * Create document score table with reasonable initial size.
  */
-static HTAB *
-tp_create_doc_scores_hash(int max_results, int32 total_docs)
+static TpDocScoreTable *
+tp_create_doc_scores_table(int max_results, int32 total_docs)
 {
-	HASHCTL hash_ctl;
-	int		initial_size;
+	int initial_size;
 
 	/*
-	 * Size hash table reasonably - it will grow if needed. Avoid sizing for
+	 * Size table reasonably - it will grow if needed. Avoid sizing for
 	 * total_docs which could be tens of millions.
 	 */
 	initial_size = Max(max_results * 10, 1000);
 	if (initial_size > total_docs)
 		initial_size = total_docs;
 
-	/* Initialize hash control structure */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
-	hash_ctl.keysize   = sizeof(ItemPointerData);
-	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
-
-	/* Create hash table */
-	return hash_create(
-			"Document Scores",
-			initial_size,
-			&hash_ctl,
-			HASH_ELEM | HASH_BLOBS);
+	return tp_doc_score_table_create(initial_size, CurrentMemoryContext);
 }
 
 /*
  * Inline comparison for document scores (descending order).
  * Returns true if a should come before b.
- * Primary: higher score first. Secondary: lower CTID first (for stability).
+ * Primary: higher score first. Secondary: lower key (CTID) first for
+ * stability.
  */
 static inline bool
-doc_score_greater(const DocumentScoreEntry *a, const DocumentScoreEntry *b)
+doc_score_greater(const TpDocScoreEntry *a, const TpDocScoreEntry *b)
 {
 	if (a->score != b->score)
 		return a->score > b->score;
-	/* Tiebreaker: sort by CTID ascending for deterministic ordering */
-	return ItemPointerCompare((ItemPointer)&a->ctid, (ItemPointer)&b->ctid) <
-		   0;
+	/* Tiebreaker: sort by key (packed CTID) ascending for deterministic order
+	 */
+	return a->key < b->key;
 }
 
 #define DOC_SCORE_GREATER(a, b) doc_score_greater((a), (b))
@@ -86,11 +77,11 @@ doc_score_greater(const DocumentScoreEntry *a, const DocumentScoreEntry *b)
  * Swap two document score pointers.
  */
 static inline void
-swap_doc_ptrs(DocumentScoreEntry **a, DocumentScoreEntry **b)
+swap_doc_ptrs(TpDocScoreEntry **a, TpDocScoreEntry **b)
 {
-	DocumentScoreEntry *tmp = *a;
-	*a						= *b;
-	*b						= tmp;
+	TpDocScoreEntry *tmp = *a;
+	*a					 = *b;
+	*b					 = tmp;
 }
 
 /*
@@ -98,12 +89,12 @@ swap_doc_ptrs(DocumentScoreEntry **a, DocumentScoreEntry **b)
  * Inlined comparison for performance.
  */
 static void
-insertion_sort_docs(DocumentScoreEntry **arr, int n)
+insertion_sort_docs(TpDocScoreEntry **arr, int n)
 {
 	for (int i = 1; i < n; i++)
 	{
-		DocumentScoreEntry *key = arr[i];
-		int					j	= i - 1;
+		TpDocScoreEntry *key = arr[i];
+		int				 j	 = i - 1;
 
 		/* Move elements that key should come before (descending score, then
 		 * CTID) */
@@ -122,11 +113,11 @@ insertion_sort_docs(DocumentScoreEntry **arr, int n)
  * Uses median-of-three pivot selection and inlined comparison.
  */
 static int
-partition_docs(DocumentScoreEntry **arr, int left, int right)
+partition_docs(TpDocScoreEntry **arr, int left, int right)
 {
-	int					mid = left + (right - left) / 2;
-	DocumentScoreEntry *pivot;
-	int					store_idx;
+	int				 mid = left + (right - left) / 2;
+	TpDocScoreEntry *pivot;
+	int				 store_idx;
 
 	/* Median-of-three pivot selection */
 	if (DOC_SCORE_GREATER(arr[mid], arr[left]))
@@ -159,7 +150,7 @@ partition_docs(DocumentScoreEntry **arr, int left, int right)
  * O(n + k log k) average case instead of O(n log n) for full sort.
  */
 static void
-partial_quicksort_docs(DocumentScoreEntry **arr, int left, int right, int k)
+partial_quicksort_docs(TpDocScoreEntry **arr, int left, int right, int k)
 {
 	int pivot_idx;
 
@@ -203,7 +194,7 @@ partial_quicksort_docs(DocumentScoreEntry **arr, int left, int right, int k)
  * Elements at arr[k..n-1] are in undefined order but all have lower scores.
  */
 static void
-sort_top_k_docs(DocumentScoreEntry **arr, int n, int k)
+sort_top_k_docs(TpDocScoreEntry **arr, int n, int k)
 {
 	if (n <= 1 || k <= 0)
 		return;
@@ -217,18 +208,20 @@ sort_top_k_docs(DocumentScoreEntry **arr, int n, int k)
 /*
  * Extract and sort documents by BM25 score (descending)
  */
-static DocumentScoreEntry **
+static TpDocScoreEntry **
 tp_extract_and_sort_documents(
-		HTAB *doc_scores_hash, int max_results, int *actual_count)
+		TpDocScoreTable *doc_scores, int max_results, int *actual_count)
 {
-	DocumentScoreEntry **all_docs;
-	DocumentScoreEntry **sorted_docs;
-	int					 total_count;
-	int					 result_count;
-	int					 i;
+	TpDocScoreEntry	 **all_docs;
+	TpDocScoreEntry	 **sorted_docs;
+	int				   total_count;
+	int				   result_count;
+	int				   i;
+	TpDocScoreIterator iter;
+	TpDocScoreEntry	  *current_entry;
 
 	/* Get the total number of documents */
-	total_count = hash_get_num_entries(doc_scores_hash);
+	total_count = tp_doc_score_table_count(doc_scores);
 
 	if (total_count == 0)
 	{
@@ -237,25 +230,19 @@ tp_extract_and_sort_documents(
 	}
 
 	/* Allocate array for ALL documents first */
-	all_docs = (DocumentScoreEntry **)palloc(
-			total_count * sizeof(DocumentScoreEntry *));
+	all_docs = (TpDocScoreEntry **)palloc(
+			total_count * sizeof(TpDocScoreEntry *));
 
 	/* Extract ALL documents from hash table */
+	tp_doc_score_iter_init(&iter, doc_scores);
+	i = 0;
+
+	while ((current_entry = tp_doc_score_iter_next(&iter)) != NULL)
 	{
-		HASH_SEQ_STATUS		seq_status;
-		DocumentScoreEntry *current_entry;
-
-		hash_seq_init(&seq_status, doc_scores_hash);
-		i = 0;
-
-		while ((current_entry = (DocumentScoreEntry *)hash_seq_search(
-						&seq_status)) != NULL)
-		{
-			all_docs[i++] = current_entry;
-		}
-
-		Assert(i == total_count);
+		all_docs[i++] = current_entry;
 	}
+
+	Assert(i == total_count);
 
 	/* Determine how many results we need */
 	result_count = (total_count < max_results) ? total_count : max_results;
@@ -269,8 +256,8 @@ tp_extract_and_sort_documents(
 	if (result_count < total_count)
 	{
 		/* Need to copy just the top results to a smaller array */
-		sorted_docs = (DocumentScoreEntry **)palloc(
-				result_count * sizeof(DocumentScoreEntry *));
+		sorted_docs = (TpDocScoreEntry **)palloc(
+				result_count * sizeof(TpDocScoreEntry *));
 		for (i = 0; i < result_count; i++)
 			sorted_docs[i] = all_docs[i];
 		pfree(all_docs);
@@ -290,12 +277,12 @@ tp_extract_and_sort_documents(
  */
 static void
 tp_copy_results_to_output(
-		DocumentScoreEntry **sorted_docs,
-		int					 scored_count,
-		ItemPointer			 additional_ctids,
-		int					 additional_count,
-		ItemPointer			 result_ctids,
-		float4			   **result_scores)
+		TpDocScoreEntry **sorted_docs,
+		int				  scored_count,
+		ItemPointer		  additional_ctids,
+		int				  additional_count,
+		ItemPointer		  result_ctids,
+		float4			**result_scores)
 {
 	int		total_results = scored_count + additional_count;
 	float4 *scores;
@@ -307,7 +294,8 @@ tp_copy_results_to_output(
 	/* Copy scored documents */
 	for (i = 0; i < scored_count; i++)
 	{
-		result_ctids[i] = sorted_docs[i]->ctid;
+		/* Convert packed key back to CTID */
+		key_to_ctid(sorted_docs[i]->key, &result_ctids[i]);
 		/* Store BM25 score as computed (should be positive) */
 		scores[i] = sorted_docs[i]->score;
 	}
@@ -339,20 +327,19 @@ tp_score_documents(
 		ItemPointer		   result_ctids,
 		float4			 **result_scores)
 {
-	HTAB				*doc_scores_hash;
-	DocumentScoreEntry **sorted_docs;
-	float4				 avg_doc_len;
-	int32				 total_docs;
-	int					 scored_count = 0;
-	dshash_table		*string_table;
-	dshash_table		*doclength_table = NULL;
-	TpMemtable			*memtable;
-	TpIndexMetaPage		 metap;
-	BlockNumber			 level_heads[TP_MAX_LEVELS];
-	uint32				*unified_doc_freqs;
-	int					 i;
-	int					 term_idx;
-	int					 level;
+	TpDocScoreTable	 *doc_scores;
+	TpDocScoreEntry **sorted_docs;
+	float4			  avg_doc_len;
+	int32			  total_docs;
+	int				  scored_count = 0;
+	dshash_table	 *string_table;
+	dshash_table	 *doclength_table = NULL;
+	TpMemtable		 *memtable;
+	TpIndexMetaPage	  metap;
+	BlockNumber		  level_heads[TP_MAX_LEVELS];
+	uint32			 *unified_doc_freqs;
+	int				  i;
+	int				  term_idx;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -398,9 +385,9 @@ tp_score_documents(
 
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */
-	doc_scores_hash = tp_create_doc_scores_hash(max_results, total_docs);
-	if (!doc_scores_hash)
-		elog(ERROR, "Failed to create document scores hash table");
+	doc_scores = tp_create_doc_scores_table(max_results, total_docs);
+	if (!doc_scores)
+		elog(ERROR, "Failed to create document scores table");
 
 	/* Get string hash table if available - may be empty after spill */
 	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
@@ -460,13 +447,13 @@ tp_score_documents(
 			/* Process each document in this term's posting list */
 			for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
 			{
-				TpPostingEntry	   *entry = &entries[doc_idx];
-				float4				tf	  = entry->frequency;
-				float4				doc_len;
-				float4				term_score;
-				double				numerator_d, denominator_d;
-				DocumentScoreEntry *doc_entry;
-				bool				found;
+				TpPostingEntry	*entry = &entries[doc_idx];
+				float4			 tf	   = entry->frequency;
+				float4			 doc_len;
+				float4			 term_score;
+				double			 numerator_d, denominator_d;
+				TpDocScoreEntry *doc_entry;
+				bool			 found;
 
 				/* Validate TID first */
 				if (!ItemPointerIsValid(&entry->ctid))
@@ -506,14 +493,13 @@ tp_score_documents(
 									  (numerator_d / denominator_d) *
 									  (double)query_frequencies[term_idx]);
 
-				/* Find or create document entry in hash table */
-				doc_entry = (DocumentScoreEntry *)hash_search(
-						doc_scores_hash, &entry->ctid, HASH_ENTER, &found);
+				/* Find or create document entry */
+				doc_entry = tp_doc_score_table_insert(
+						doc_scores, &entry->ctid, &found);
 
 				if (!found)
 				{
 					/* New document - initialize */
-					doc_entry->ctid		  = entry->ctid;
 					doc_entry->score	  = term_score;
 					doc_entry->doc_length = doc_len;
 				}
@@ -553,7 +539,7 @@ tp_score_documents(
 				k1,
 				b,
 				avg_doc_len,
-				doc_scores_hash);
+				doc_scores);
 	}
 
 	/* Free unified doc_freqs array */
@@ -561,7 +547,7 @@ tp_score_documents(
 
 	/* Extract and sort documents by score */
 	sorted_docs = tp_extract_and_sort_documents(
-			doc_scores_hash, max_results, &scored_count);
+			doc_scores, max_results, &scored_count);
 
 	/* Copy results to output arrays (no additional zero-scored documents) */
 	tp_copy_results_to_output(
@@ -575,7 +561,7 @@ tp_score_documents(
 	/* Cleanup */
 	if (sorted_docs)
 		pfree(sorted_docs);
-	hash_destroy(doc_scores_hash);
+	tp_doc_score_table_destroy(doc_scores);
 
 	return scored_count;
 }
