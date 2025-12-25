@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766643735358,
+  "lastUpdate": 1766643737975,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7067,6 +7067,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Common Term Query (with score)",
             "value": 2.362,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "20313076f2f43cab3f1a36be0f2805fea22bcf83",
+          "message": "Style benchmark graph points by branch type (#84)\n\n## Summary\n- Main branch benchmark runs shown as filled circles (●)\n- Feature branch runs shown as X markers (✕) with white fill\n- Tooltip displays branch name alongside commit and date info\n- Added visual legend to dashboard header\n- Workflow now tracks branch info in `branch_info.js` on gh-pages (keeps\nlast 500 entries)\n\n## Testing\n- Run benchmark workflow on main and a feature branch\n- Verify points display with different styles on the dashboard\n- Hover over points to confirm branch name appears in tooltip",
+          "timestamp": "2025-12-22T19:49:33Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/20313076f2f43cab3f1a36be0f2805fea22bcf83"
+        },
+        "date": 1766643737351,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 20053.665,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 2.803,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 4.534,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 2.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 5.584,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 9.784,
             "unit": "ms"
           },
           {
