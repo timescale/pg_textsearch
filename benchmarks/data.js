@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766632078369,
+  "lastUpdate": 1766632080350,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5092,6 +5092,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 105.66,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "014207fbe339343c2329b04fa32a7527c051a985",
+          "message": "Fix hash function to use all 8 bytes of CTID key\n\nThe FNV-1a hash was only processing bytes 0-5 (bits 0-47), missing\nthe high 16 bits of block number (bits 48-63). For tables > 512MB,\nthis would cause hash collisions for CTIDs differing only in those\nbits.\n\nAlso fixed incorrect comment claiming 24-byte entry size (it's 16).",
+          "timestamp": "2025-12-24T07:33:50Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/014207fbe339343c2329b04fa32a7527c051a985"
+        },
+        "date": 1766632079732,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 532411.258,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 17.878,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 24.039,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 34.094,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.038,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 26.049,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 47.46,
             "unit": "ms"
           },
           {
