@@ -331,34 +331,37 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	}
 
 	/*
-	 * For V2 segments, preload CTID table into memory for result lookup.
-	 * Fieldnorms are now stored inline in TpBlockPosting, so no fieldnorm
-	 * cache is needed.
-	 *
-	 * For large segments (>100K docs), caching is counterproductive because:
-	 * - Loading 600KB+ of data upfront is expensive
-	 * - Top-k queries only access a small fraction of documents
-	 * - PostgreSQL's buffer cache handles per-doc reads efficiently
+	 * For V2 segments, preload CTID arrays into memory for result lookup.
+	 * Split storage (pages + offsets) gives better cache locality since
+	 * posting lists are sorted by doc_id, resulting in sequential access.
+	 * Fieldnorms are stored inline in TpBlockPosting, so no cache needed.
 	 */
-	reader->cached_ctids	= NULL;
-	reader->cached_num_docs = 0;
-
-#define TP_SEGMENT_CACHE_THRESHOLD 100000 /* Max docs to cache */
+	reader->cached_ctid_pages	= NULL;
+	reader->cached_ctid_offsets = NULL;
+	reader->cached_num_docs		= 0;
 
 	if (header->version >= TP_SEGMENT_FORMAT_V2 && header->num_docs > 0 &&
-		header->num_docs <= TP_SEGMENT_CACHE_THRESHOLD &&
-		header->ctid_map_offset > 0)
+		header->ctid_pages_offset > 0)
 	{
 		reader->cached_num_docs = header->num_docs;
 
-		/* Load CTID map (6 bytes per doc) */
-		reader->cached_ctids = palloc(
-				header->num_docs * sizeof(ItemPointerData));
+		/* Load CTID pages array (4 bytes per doc) */
+		reader->cached_ctid_pages = palloc(
+				header->num_docs * sizeof(BlockNumber));
 		tp_segment_read(
 				reader,
-				header->ctid_map_offset,
-				reader->cached_ctids,
-				header->num_docs * sizeof(ItemPointerData));
+				header->ctid_pages_offset,
+				reader->cached_ctid_pages,
+				header->num_docs * sizeof(BlockNumber));
+
+		/* Load CTID offsets array (2 bytes per doc) */
+		reader->cached_ctid_offsets = palloc(
+				header->num_docs * sizeof(OffsetNumber));
+		tp_segment_read(
+				reader,
+				header->ctid_offsets_offset,
+				reader->cached_ctid_offsets,
+				header->num_docs * sizeof(OffsetNumber));
 	}
 
 	return reader;
@@ -382,9 +385,12 @@ tp_segment_close(TpSegmentReader *reader)
 	if (reader->page_map)
 		pfree(reader->page_map);
 
-	/* Free V2 CTID cache (fieldnorm is inline in postings, no cache needed) */
-	if (reader->cached_ctids)
-		pfree(reader->cached_ctids);
+	/* Free V2 CTID caches (fieldnorm is inline in postings, no cache needed)
+	 */
+	if (reader->cached_ctid_pages)
+		pfree(reader->cached_ctid_pages);
+	if (reader->cached_ctid_offsets)
+		pfree(reader->cached_ctid_offsets);
 
 	pfree(reader);
 }
@@ -1590,14 +1596,24 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
 	}
 
-	/* Write CTID map */
-	header.ctid_map_offset = writer.current_offset;
+	/* Write CTID pages array */
+	header.ctid_pages_offset = writer.current_offset;
 	if (docmap->num_docs > 0)
 	{
 		tp_segment_writer_write(
 				&writer,
-				docmap->ctid_map,
-				docmap->num_docs * sizeof(ItemPointerData));
+				docmap->ctid_pages,
+				docmap->num_docs * sizeof(BlockNumber));
+	}
+
+	/* Write CTID offsets array */
+	header.ctid_offsets_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_offsets,
+				docmap->num_docs * sizeof(OffsetNumber));
 	}
 
 	/* Update num_docs to actual count from this segment */
@@ -1748,15 +1764,16 @@ tp_write_segment_v2(TpLocalIndexState *state, Relation index)
 										  SizeOfPageHeaderData);
 	existing_header->strings_offset = header.strings_offset;
 	existing_header->entries_offset = header.entries_offset;
-	existing_header->postings_offset	= header.postings_offset;
-	existing_header->skip_index_offset	= header.skip_index_offset;
-	existing_header->fieldnorm_offset	= header.fieldnorm_offset;
-	existing_header->ctid_map_offset	= header.ctid_map_offset;
-	existing_header->doc_lengths_offset = header.doc_lengths_offset;
-	existing_header->num_docs			= header.num_docs;
-	existing_header->data_size			= header.data_size;
-	existing_header->num_pages			= header.num_pages;
-	existing_header->page_index			= header.page_index;
+	existing_header->postings_offset	 = header.postings_offset;
+	existing_header->skip_index_offset	 = header.skip_index_offset;
+	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+	existing_header->doc_lengths_offset	 = header.doc_lengths_offset;
+	existing_header->num_docs			 = header.num_docs;
+	existing_header->data_size			 = header.data_size;
+	existing_header->num_pages			 = header.num_pages;
+	existing_header->page_index			 = header.page_index;
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
@@ -1966,7 +1983,9 @@ tp_dump_segment_to_output(
 		dump_printf(out, "Skip index offset: %u\n", header.skip_index_offset);
 		dump_printf(out, "Postings offset: %u\n", header.postings_offset);
 		dump_printf(out, "Fieldnorm offset: %u\n", header.fieldnorm_offset);
-		dump_printf(out, "CTID map offset: %u\n", header.ctid_map_offset);
+		dump_printf(out, "CTID pages offset: %u\n", header.ctid_pages_offset);
+		dump_printf(
+				out, "CTID offsets offset: %u\n", header.ctid_offsets_offset);
 	}
 	else
 	{
@@ -2257,32 +2276,35 @@ tp_dump_segment_to_output(
 
 		/* CTID map */
 		dump_printf(out, "\n=== CTID MAP (%u docs) ===\n", header.num_docs);
-		if (header.ctid_map_offset > 0)
+		if (header.ctid_pages_offset > 0)
 		{
-			ItemPointerData *ctids = palloc(
-					sizeof(ItemPointerData) * docs_to_show);
+			BlockNumber	 *pages	  = palloc(sizeof(BlockNumber) * docs_to_show);
+			OffsetNumber *offsets = palloc(
+					sizeof(OffsetNumber) * docs_to_show);
 			tp_segment_read(
 					reader,
-					header.ctid_map_offset,
-					ctids,
-					sizeof(ItemPointerData) * docs_to_show);
+					header.ctid_pages_offset,
+					pages,
+					sizeof(BlockNumber) * docs_to_show);
+			tp_segment_read(
+					reader,
+					header.ctid_offsets_offset,
+					offsets,
+					sizeof(OffsetNumber) * docs_to_show);
 
 			dump_printf(out, "  Doc ID -> CTID:\n");
 			for (i = 0; i < docs_to_show; i++)
 			{
 				dump_printf(
-						out,
-						"  [%04u] (%u,%u)\n",
-						i,
-						ItemPointerGetBlockNumber(&ctids[i]),
-						ItemPointerGetOffsetNumber(&ctids[i]));
+						out, "  [%04u] (%u,%u)\n", i, pages[i], offsets[i]);
 			}
 			if (header.num_docs > docs_to_show)
 				dump_printf(
 						out,
 						"  ... and %u more docs\n",
 						header.num_docs - docs_to_show);
-			pfree(ctids);
+			pfree(pages);
+			pfree(offsets);
 		}
 
 		tp_segment_close(reader);

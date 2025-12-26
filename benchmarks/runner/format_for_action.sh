@@ -107,6 +107,48 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
+    # With-score query latencies (if available)
+    (if .metrics.query_latencies_with_score_ms.short_query != null then
+        {
+            name: "\($dataset) - Short Query with Score",
+            unit: "ms",
+            value: .metrics.query_latencies_with_score_ms.short_query
+        }
+    else empty end),
+
+    (if .metrics.query_latencies_with_score_ms.medium_query != null then
+        {
+            name: "\($dataset) - Medium Query with Score",
+            unit: "ms",
+            value: .metrics.query_latencies_with_score_ms.medium_query
+        }
+    else empty end),
+
+    (if .metrics.query_latencies_with_score_ms.long_query != null then
+        {
+            name: "\($dataset) - Long Query with Score",
+            unit: "ms",
+            value: .metrics.query_latencies_with_score_ms.long_query
+        }
+    else empty end),
+
+    (if .metrics.query_latencies_with_score_ms.rare_term != null then
+        {
+            name: "\($dataset) - Rare Term Query with Score",
+            unit: "ms",
+            value: .metrics.query_latencies_with_score_ms.rare_term
+        }
+    else empty end),
+
+    # Throughput with score (average latency)
+    (if .metrics.throughput_with_score.avg_ms_per_query != null then
+        {
+            name: "\($dataset) - Avg Query Latency with Score",
+            unit: "ms",
+            value: .metrics.throughput_with_score.avg_ms_per_query
+        }
+    else empty end),
+
     # Index size (in MB for readability)
     (if .metrics.index_size_bytes != null then
         {

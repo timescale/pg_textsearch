@@ -3,6 +3,8 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+SET enable_seqscan = off;
+
 -- Create test table with BM25 index
 CREATE TABLE implicit_docs (
     id SERIAL PRIMARY KEY,
@@ -21,20 +23,20 @@ INSERT INTO implicit_docs (content) VALUES
 -- Test 1: Explicit index name works (baseline)
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello', 'implicit_docs_idx') < 0
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query('hello', 'implicit_docs_idx'), id
+LIMIT 10;
 
 -- Test 2: Implicit index resolution (main feature being tested)
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello') < 0
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query('hello'), id
+LIMIT 10;
 
 -- Test 3: Implicit resolution works with different query terms
 SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('database') < 0
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query('database'), id
+LIMIT 10;
 
 -- Test 4: Works with ORDER BY only (no WHERE clause)
 SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
@@ -62,14 +64,14 @@ INSERT INTO multi_col_docs (title, body) VALUES
 -- Query on title column should use title index
 SELECT id, title, ROUND((title <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-WHERE title <@> to_bm25query('hello') < 0
-ORDER BY score, id;
+ORDER BY title <@> to_bm25query('hello'), id
+LIMIT 10;
 
 -- Query on body column should use body index
 SELECT id, body, ROUND((body <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-WHERE body <@> to_bm25query('hello') < 0
-ORDER BY score, id;
+ORDER BY body <@> to_bm25query('hello'), id
+LIMIT 10;
 
 -- Test 6: Schema-qualified table still works with implicit resolution
 CREATE SCHEMA implicit_schema;
@@ -88,16 +90,16 @@ INSERT INTO implicit_schema.schema_docs (content) VALUES
 -- Implicit resolution should work even with schema-qualified tables
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_schema.schema_docs
-WHERE content <@> to_bm25query('hello') < 0
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query('hello'), id
+LIMIT 10;
 
 -- Test 7: text <@> text implicit syntax for standalone scoring
 -- The planner hook transforms text <@> text to text <@> bm25query for non-ORDER BY
 -- expressions, enabling implicit index resolution without to_bm25query().
 SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello') < 0
-ORDER BY score, id;
+ORDER BY content <@> 'hello', id
+LIMIT 10;
 
 -- Test 8: text <@> text works in ORDER BY with implicit index
 SELECT id, content
@@ -117,8 +119,8 @@ LIMIT 3;
 PREPARE explicit_search(text) AS
 SELECT id, content, ROUND((content <@> to_bm25query($1, 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query($1, 'implicit_docs_idx') < 0
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query($1, 'implicit_docs_idx'), id
+LIMIT 10;
 
 EXECUTE explicit_search('hello');
 EXECUTE explicit_search('database');

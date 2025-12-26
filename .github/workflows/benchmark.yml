@@ -186,28 +186,54 @@ jobs:
         # Create a query script that runs many iterations for profiling
         cat > /tmp/profile_queries.sql << 'EOSQL'
         -- Run queries repeatedly to get meaningful profile samples
+        -- Test both: queries WITHOUT scores (index scan) and WITH scores (per-row operator)
         \timing off
         DO $$
         DECLARE
           i INT;
           dummy RECORD;
         BEGIN
-          FOR i IN 1..100 LOOP
-            -- Short query
+          -- Part 1: Queries WITHOUT scores (300 iterations to get good samples)
+          FOR i IN 1..300 LOOP
+            -- Short query - no score
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
               ORDER BY passage_text <@> 'search engine'::bm25query LIMIT 10
             LOOP END LOOP;
 
-            -- Medium query
+            -- Medium query - no score
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
               ORDER BY passage_text <@> 'machine learning algorithms'::bm25query LIMIT 10
             LOOP END LOOP;
 
-            -- Long query
+            -- Long query - no score
             FOR dummy IN
               SELECT ctid FROM msmarco_passages
+              ORDER BY passage_text <@> 'what is the best way to learn programming'::bm25query LIMIT 10
+            LOOP END LOOP;
+          END LOOP;
+
+          -- Part 2: Queries WITH scores (per-row operator call)
+          FOR i IN 1..300 LOOP
+            -- Short query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'search engine'::bm25query as score
+              FROM msmarco_passages
+              ORDER BY passage_text <@> 'search engine'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Medium query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'machine learning algorithms'::bm25query as score
+              FROM msmarco_passages
+              ORDER BY passage_text <@> 'machine learning algorithms'::bm25query LIMIT 10
+            LOOP END LOOP;
+
+            -- Long query - with score
+            FOR dummy IN
+              SELECT ctid, passage_text <@> 'what is the best way to learn programming'::bm25query as score
+              FROM msmarco_passages
               ORDER BY passage_text <@> 'what is the best way to learn programming'::bm25query LIMIT 10
             LOOP END LOOP;
           END LOOP;

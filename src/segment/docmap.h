@@ -7,9 +7,13 @@
  * In V2 format, posting lists use compact 4-byte segment-local doc IDs
  * instead of 6-byte CTIDs. This module provides:
  * - Collection of unique documents during segment build
- * - Assignment of sequential doc IDs (0 to N-1)
+ * - Assignment of sequential doc IDs (0 to N-1) in CTID order
  * - CTID → doc_id lookup during posting conversion
  * - Arrays for CTID map and fieldnorm table
+ *
+ * INVARIANT: Doc IDs are assigned in CTID order after finalize.
+ * This means CTID order = doc_id order, so postings sorted by CTID
+ * are also sorted by doc_id, enabling sequential access to CTID arrays.
  */
 #pragma once
 
@@ -40,8 +44,9 @@ typedef struct TpDocMapBuilder
 	bool   finalized;  /* True after tp_docmap_finalize called */
 
 	/* Output arrays (indexed by doc_id, valid after finalize) */
-	ItemPointerData *ctid_map;	 /* doc_id → CTID */
-	uint8			*fieldnorms; /* doc_id → encoded length (1 byte) */
+	BlockNumber	 *ctid_pages;	/* doc_id → page number (4 bytes) */
+	OffsetNumber *ctid_offsets; /* doc_id → tuple offset (2 bytes) */
+	uint8		 *fieldnorms;	/* doc_id → encoded length (1 byte) */
 } TpDocMapBuilder;
 
 /*
@@ -67,7 +72,7 @@ extern uint32 tp_docmap_lookup(TpDocMapBuilder *builder, ItemPointer ctid);
 
 /*
  * Finalize the document map.
- * Builds the ctid_map and fieldnorms arrays sorted by doc_id.
+ * Builds the ctid arrays and fieldnorms array sorted by doc_id.
  * After this call, the hash table is no longer needed.
  */
 extern void tp_docmap_finalize(TpDocMapBuilder *builder);
@@ -79,14 +84,17 @@ extern void tp_docmap_destroy(TpDocMapBuilder *builder);
 
 /*
  * Get the CTID for a doc_id. Requires finalize to have been called.
+ * Reconstructs ItemPointerData from the split storage.
  */
-static inline ItemPointer
-tp_docmap_get_ctid(TpDocMapBuilder *builder, uint32 doc_id)
+static inline void
+tp_docmap_get_ctid(TpDocMapBuilder *builder, uint32 doc_id, ItemPointer result)
 {
 	Assert(builder->finalized);
-	if (doc_id >= builder->num_docs)
-		return NULL;
-	return &builder->ctid_map[doc_id];
+	Assert(doc_id < builder->num_docs);
+	ItemPointerSet(
+			result,
+			builder->ctid_pages[doc_id],
+			builder->ctid_offsets[doc_id]);
 }
 
 /*

@@ -277,14 +277,12 @@ SELECT validate_bm25_scoring(
 SELECT 'small' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_small_content_idx'))::numeric, 4) as score
 FROM partition_small
-WHERE content <@> to_bm25query('database', 'partition_small_content_idx') < 0
 ORDER BY score;
 
 -- Show actual scores from large partition
 SELECT 'large' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_large_content_idx'))::numeric, 4) as score
 FROM partition_large
-WHERE content <@> to_bm25query('database', 'partition_large_content_idx') < 0
 ORDER BY score;
 
 -- Validate index scan vs standalone scoring consistency per partition

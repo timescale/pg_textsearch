@@ -58,6 +58,21 @@
 /* Relation options - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
 
+/*
+ * Backend-local cached score for ORDER BY optimization.
+ *
+ * When tp_gettuple returns a row, the BM25 score is cached here. The
+ * bm25_get_current_score() stub function returns this value, avoiding
+ * re-computation of scores in resjunk ORDER BY expressions.
+ */
+static float8 tp_cached_score = 0.0;
+
+float8
+tp_get_cached_score(void)
+{
+	return tp_cached_score;
+}
+
 /* Local helper functions */
 static char *tp_get_qualified_index_name(Relation indexRelation);
 static void
@@ -1949,6 +1964,9 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
 			 scan->xs_heaptid.ip_posid,
 			 bm25_score);
+
+		/* Cache score for stub function to retrieve */
+		tp_cached_score = (float8)bm25_score;
 	}
 
 	/* Move to next position */

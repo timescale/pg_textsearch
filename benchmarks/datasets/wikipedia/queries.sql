@@ -12,8 +12,9 @@ SELECT 'Dataset size: ' || COUNT(*) || ' articles' as info FROM wikipedia_articl
 
 -- Warm up
 \echo 'Warming up index...'
-SELECT COUNT(*) FROM wikipedia_articles
-WHERE content <@> to_bm25query('test', 'wikipedia_bm25_idx') < 0;
+SELECT article_id FROM wikipedia_articles
+ORDER BY content <@> to_bm25query('test', 'wikipedia_bm25_idx')
+LIMIT 10;
 
 -- Benchmark 1: Single-word queries
 \echo ''
@@ -142,7 +143,7 @@ BEGIN
         EXECUTE format(
             'SELECT COUNT(*) FROM (
                 SELECT article_id FROM wikipedia_articles
-                WHERE content <@> to_bm25query(%L, ''wikipedia_bm25_idx'') < 0
+                ORDER BY content <@> to_bm25query(%L, ''wikipedia_bm25_idx'')
                 LIMIT 10
             ) t',
             q
@@ -154,23 +155,25 @@ BEGIN
     RAISE NOTICE 'Average query time: % ms', round(total_ms / 20, 1);
 END $$;
 
--- Benchmark 6: Result count queries (no LIMIT)
+-- Benchmark 6: Large LIMIT queries
 \echo ''
-\echo '=== Benchmark 6: Full Result Count ==='
-\echo 'Counting all matching documents (no LIMIT)'
+\echo '=== Benchmark 6: Large LIMIT Queries ==='
+\echo 'Fetching more results per query'
 
-\echo 'Query: "the" (very common term)'
+\echo 'Query: "history" LIMIT 100'
 EXPLAIN ANALYZE
-SELECT COUNT(*)
+SELECT article_id, title
 FROM wikipedia_articles
-WHERE content <@> to_bm25query('the', 'wikipedia_bm25_idx') < 0;
+ORDER BY content <@> to_bm25query('history', 'wikipedia_bm25_idx')
+LIMIT 100;
 
 \echo ''
-\echo 'Query: "quantum" (moderately rare)'
+\echo 'Query: "science technology" LIMIT 100'
 EXPLAIN ANALYZE
-SELECT COUNT(*)
+SELECT article_id, title
 FROM wikipedia_articles
-WHERE content <@> to_bm25query('quantum', 'wikipedia_bm25_idx') < 0;
+ORDER BY content <@> to_bm25query('science technology', 'wikipedia_bm25_idx')
+LIMIT 100;
 
 \echo ''
 \echo '=== Wikipedia Query Benchmarks Complete ==='

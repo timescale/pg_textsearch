@@ -98,8 +98,7 @@ CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
 
 SELECT COUNT(*) as matching_docs,
        ROUND(AVG((content <@> to_bm25query('database', 'docs_bm25_idx'))::numeric), 4) as avg_score
-FROM docs
-WHERE content <@> to_bm25query('database', 'docs_bm25_idx') < 0;
+FROM docs;
 
 -- =============================================================================
 -- LIMITATION 5: text <@> text operator doesn't use index scans

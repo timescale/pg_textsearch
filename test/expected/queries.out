@@ -51,13 +51,13 @@ SELECT title, content, ROUND((content <@> to_bm25query('database', 'articles_tap
 FROM articles
 ORDER BY content <@> 'database'
 LIMIT 5;
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-1.3220
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.2651
            title           |                                               content                                               |  score  
 ---------------------------+-----------------------------------------------------------------------------------------------------+---------
- Data Mining Techniques    | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
  Database Optimization     | database indexing and query optimization strategies for improving performance in large datasets     | -1.3220
+ Data Mining Techniques    | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
  Introduction to Databases | postgresql database management system with advanced indexing capabilities for fast query processing | -1.2651
 (3 rows)
 
@@ -107,16 +107,16 @@ WHERE category = 'technology'
 ORDER BY content <@> 'search algorithms'
 LIMIT 10;
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-2.3908
-NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.3220
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-1.1191
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.0228
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.9806
              title             |                                               content                                               |  score  
 -------------------------------+-----------------------------------------------------------------------------------------------------+---------
  Search Engine Design          | search relevance and ranking algorithms with focus on user experience and result quality            | -2.3908
- Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
  Machine Learning Fundamentals | machine learning algorithms and artificial intelligence techniques for data analysis and prediction | -1.3220
+ Data Mining Techniques        | data mining algorithms for pattern discovery and knowledge extraction from large databases          | -1.3220
  Text Search Algorithms        | full text search with tapir ranking and relevance scoring for information retrieval systems         | -1.0228
  Information Retrieval         | information retrieval and search engines using vector space models and term frequency analysis      | -0.9806
 (5 rows)

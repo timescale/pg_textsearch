@@ -135,6 +135,13 @@ CREATE FUNCTION bm25_text_text_score(text, text) RETURNS float8
     AS 'MODULE_PATHNAME', 'bm25_text_text_score'
     LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
 
+-- Stub function returning cached score from index scan.
+-- The planner hook replaces resjunk ORDER BY expressions with calls to this
+-- function, avoiding expensive re-computation of BM25 scores.
+CREATE FUNCTION bm25_get_current_score() RETURNS float8
+    AS 'MODULE_PATHNAME', 'bm25_get_current_score'
+    LANGUAGE C VOLATILE STRICT PARALLEL SAFE;
+
 -- <@> operator for text <@> text operations (implicit index resolution)
 -- The planner hook transforms this to text <@> bm25query when a BM25 index exists
 CREATE OPERATOR <@> (

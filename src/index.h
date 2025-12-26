@@ -126,3 +126,6 @@ extern relopt_kind tp_relopt_kind;
 
 /* IDF sum calculation for average IDF */
 extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);
+
+/* Cached score for ORDER BY optimization */
+extern float8 tp_get_cached_score(void);

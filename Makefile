@@ -34,7 +34,7 @@ OBJS = \
 MODULE_big = pg_textsearch
 
 # Include directories, debug flags, and warning flags for unused code
-PG_CPPFLAGS = -I$(srcdir)/src -g -O0 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable
+PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable
 
 # Uncomment the following line to enable debug index dumps
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX

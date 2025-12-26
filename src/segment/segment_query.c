@@ -37,6 +37,7 @@ typedef struct TpSegmentPostingIterator
 
 /*
  * Iterator state for V2 block-based segment traversal
+ * Uses zero-copy access when block data fits within a single page.
  */
 typedef struct TpSegmentPostingIteratorV2
 {
@@ -52,9 +53,17 @@ typedef struct TpSegmentPostingIteratorV2
 	uint32		current_in_block; /* Position within current block */
 	TpSkipEntry skip_entry;		  /* Current block's skip entry */
 
-	/* Cached posting data for current block */
+	/* Zero-copy block access (preferred path) */
+	TpSegmentDirectAccess block_access;
+	bool				  has_block_access;
+
+	/* Block postings pointer - points to either direct data or fallback buffer
+	 */
 	TpBlockPosting *block_postings;
-	uint32			block_postings_size;
+
+	/* Fallback buffer for when block spans page boundaries */
+	TpBlockPosting *fallback_block;
+	uint32			fallback_block_size;
 
 	/* Output posting (converted to V1-style for compatibility) */
 	TpSegmentPosting output_posting;
@@ -272,7 +281,9 @@ tp_segment_posting_iterator_init_v2(
 	iter->initialized		  = false;
 	iter->finished			  = true;
 	iter->block_postings	  = NULL;
-	iter->block_postings_size = 0;
+	iter->has_block_access	  = false;
+	iter->fallback_block	  = NULL;
+	iter->fallback_block_size = 0;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -364,39 +375,75 @@ tp_segment_posting_iterator_init_v2(
 }
 
 /*
- * Load a block's postings into the iterator's buffer.
+ * Load a block's postings for iteration.
+ * Uses zero-copy access when block data fits within a single page.
+ * CTIDs are looked up from segment-level cached arrays during iteration.
  */
 static bool
 tp_segment_posting_iterator_load_block_v2(TpSegmentPostingIteratorV2 *iter)
 {
 	uint32 skip_offset;
 	uint32 block_size;
+	uint32 block_bytes;
 
 	if (iter->current_block >= iter->dict_entry.block_count)
 		return false;
 
-	/* Read skip entry for current block */
+	/* Release previous block access if any */
+	if (iter->has_block_access)
+	{
+		tp_segment_release_direct(&iter->block_access);
+		iter->has_block_access = false;
+		iter->block_postings   = NULL;
+	}
+
+	/* Read skip entry for current block (small, always copy) */
 	skip_offset = iter->dict_entry.skip_index_offset +
 				  (iter->current_block * sizeof(TpSkipEntry));
 	tp_segment_read(
 			iter->reader, skip_offset, &iter->skip_entry, sizeof(TpSkipEntry));
 
-	/* Allocate or reallocate block buffer */
-	block_size = iter->skip_entry.doc_count;
-	if (block_size > iter->block_postings_size)
-	{
-		if (iter->block_postings)
-			pfree(iter->block_postings);
-		iter->block_postings = palloc(block_size * sizeof(TpBlockPosting));
-		iter->block_postings_size = block_size;
-	}
+	block_size	= iter->skip_entry.doc_count;
+	block_bytes = block_size * sizeof(TpBlockPosting);
 
-	/* Read posting data for this block */
-	tp_segment_read(
-			iter->reader,
-			iter->skip_entry.posting_offset,
-			iter->block_postings,
-			block_size * sizeof(TpBlockPosting));
+	/*
+	 * Try zero-copy direct access for block data.
+	 * TpBlockPosting requires 4-byte alignment (due to uint32 doc_id).
+	 * If the data address is misaligned, fall back to copying.
+	 */
+	if (tp_segment_get_direct(
+				iter->reader,
+				iter->skip_entry.posting_offset,
+				block_bytes,
+				&iter->block_access) &&
+		((uintptr_t)iter->block_access.data % sizeof(uint32)) == 0)
+	{
+		/* Zero-copy: point directly into the page buffer */
+		iter->block_postings   = (TpBlockPosting *)iter->block_access.data;
+		iter->has_block_access = true;
+	}
+	else
+	{
+		/* Release direct access if we got it but it's misaligned */
+		if (iter->block_access.data != NULL)
+			tp_segment_release_direct(&iter->block_access);
+		/* Fallback: block spans page boundary, must copy */
+		if (block_size > iter->fallback_block_size)
+		{
+			if (iter->fallback_block)
+				pfree(iter->fallback_block);
+			iter->fallback_block	  = palloc(block_bytes);
+			iter->fallback_block_size = block_size;
+		}
+
+		tp_segment_read(
+				iter->reader,
+				iter->skip_entry.posting_offset,
+				iter->fallback_block,
+				block_bytes);
+
+		iter->block_postings = iter->fallback_block;
+	}
 
 	iter->current_in_block = 0;
 	return true;
@@ -411,21 +458,23 @@ static bool
 tp_segment_posting_iterator_next_v2(
 		TpSegmentPostingIteratorV2 *iter, TpSegmentPosting **posting)
 {
-	TpSegmentHeader *header;
-	TpBlockPosting	*bp;
-	uint32			 doc_id;
-	TpCtidMapEntry	 ctid_entry;
+	TpBlockPosting *bp;
+	uint32			doc_id;
 
 	if (iter->finished || !iter->initialized)
 		return false;
-
-	header = iter->reader->header;
 
 	/* Load first block if needed */
 	if (iter->block_postings == NULL)
 	{
 		if (!tp_segment_posting_iterator_load_block_v2(iter))
 		{
+			/* Release any block access before finishing */
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
@@ -437,11 +486,22 @@ tp_segment_posting_iterator_next_v2(
 		iter->current_block++;
 		if (iter->current_block >= iter->dict_entry.block_count)
 		{
+			/* Release block access before finishing */
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
 		if (!tp_segment_posting_iterator_load_block_v2(iter))
 		{
+			if (iter->has_block_access)
+			{
+				tp_segment_release_direct(&iter->block_access);
+				iter->has_block_access = false;
+			}
 			iter->finished = true;
 			return false;
 		}
@@ -452,24 +512,16 @@ tp_segment_posting_iterator_next_v2(
 	doc_id = bp->doc_id;
 
 	/*
-	 * Look up CTID from cached array (fast path) or fall back to per-posting
-	 * read. Fieldnorm is inline in block posting, no lookup needed.
+	 * Look up CTID from segment-level cached arrays.
+	 * Posting lists are sorted by doc_id, so array access has excellent
+	 * cache locality. Fieldnorm is inline in block posting.
 	 */
-	if (iter->reader->cached_ctids && doc_id < iter->reader->cached_num_docs)
-	{
-		/* Fast path: use cached CTID array */
-		iter->output_posting.ctid = iter->reader->cached_ctids[doc_id];
-	}
-	else
-	{
-		/* Slow path: per-posting CTID read */
-		tp_segment_read(
-				iter->reader,
-				header->ctid_map_offset + (doc_id * sizeof(ItemPointerData)),
-				&ctid_entry,
-				sizeof(TpCtidMapEntry));
-		iter->output_posting.ctid = ctid_entry.ctid;
-	}
+	Assert(iter->reader->cached_ctid_pages != NULL);
+	Assert(doc_id < iter->reader->cached_num_docs);
+	ItemPointerSet(
+			&iter->output_posting.ctid,
+			iter->reader->cached_ctid_pages[doc_id],
+			iter->reader->cached_ctid_offsets[doc_id]);
 
 	/* Build output posting in V1 format (fieldnorm is inline in bp) */
 	iter->output_posting.frequency	= bp->frequency;
@@ -486,11 +538,21 @@ tp_segment_posting_iterator_next_v2(
 static void
 tp_segment_posting_iterator_free_v2(TpSegmentPostingIteratorV2 *iter)
 {
-	if (iter->block_postings)
+	/* Release direct block access if active */
+	if (iter->has_block_access)
 	{
-		pfree(iter->block_postings);
-		iter->block_postings = NULL;
+		tp_segment_release_direct(&iter->block_access);
+		iter->has_block_access = false;
 	}
+
+	/* Free fallback buffer if allocated */
+	if (iter->fallback_block)
+	{
+		pfree(iter->fallback_block);
+		iter->fallback_block = NULL;
+	}
+
+	iter->block_postings = NULL;
 }
 
 /*
@@ -776,4 +838,239 @@ tp_segment_get_doc_freq(
 		pfree(term_buffer);
 
 	return doc_freq;
+}
+
+/*
+ * Score all query terms across a chain of segments efficiently.
+ *
+ * This function opens each segment ONCE and processes ALL terms, avoiding
+ * the O(terms * segments) segment opens of the naive approach.
+ *
+ * For each segment:
+ *   1. Open segment
+ *   2. For each term: look up dictionary entry (get doc_freq) and score
+ * postings
+ *   3. Close segment
+ *
+ * The doc_freqs array is filled in with the sum of doc_freq across all
+ * segments. Scores are accumulated into the doc_scores_hash.
+ */
+void
+tp_score_all_terms_in_segment_chain(
+		Relation	index,
+		BlockNumber first_segment,
+		char	  **terms,
+		int			term_count,
+		int32	   *query_frequencies,
+		uint32	   *doc_freqs, /* OUT: filled with segment doc_freqs */
+		int32		total_docs,
+		float4		k1,
+		float4		b,
+		float4		avg_doc_len,
+		void	   *doc_scores_hash)
+{
+	BlockNumber current		= first_segment;
+	char	   *term_buffer = NULL;
+	uint32		buffer_size = 0;
+	HTAB	   *hash_table	= (HTAB *)doc_scores_hash;
+
+	while (current != InvalidBlockNumber)
+	{
+		TpSegmentReader *reader;
+		TpSegmentHeader *header;
+
+		/* Open segment ONCE for all terms */
+		reader = tp_segment_open(index, current);
+		if (!reader)
+			break;
+
+		header = reader->header;
+
+		/* Process each term in this segment */
+		for (int term_idx = 0; term_idx < term_count; term_idx++)
+		{
+			const char	*term = terms[term_idx];
+			TpDictionary dict_header;
+			int			 left, right, cmp;
+			bool		 found			= false;
+			uint32		 dict_entry_idx = 0;
+
+			if (header->num_terms == 0 || header->dictionary_offset == 0)
+				continue;
+
+			/* Read dictionary header */
+			tp_segment_read(
+					reader,
+					header->dictionary_offset,
+					&dict_header,
+					sizeof(dict_header.num_terms));
+
+			/* Binary search for term in dictionary */
+			left  = 0;
+			right = header->num_terms - 1;
+
+			while (left <= right)
+			{
+				int	   mid = left + (right - left) / 2;
+				uint32 string_offset_value;
+				uint32 string_offset;
+
+				struct
+				{
+					uint32 length;
+				} string_entry;
+
+				tp_segment_read(
+						reader,
+						header->dictionary_offset +
+								sizeof(dict_header.num_terms) +
+								(mid * sizeof(uint32)),
+						&string_offset_value,
+						sizeof(uint32));
+
+				string_offset = header->strings_offset + string_offset_value;
+
+				tp_segment_read(
+						reader,
+						string_offset,
+						&string_entry.length,
+						sizeof(uint32));
+
+				if (string_entry.length + 1 > buffer_size)
+				{
+					if (term_buffer)
+						pfree(term_buffer);
+					buffer_size = string_entry.length + 1;
+					term_buffer = palloc(buffer_size);
+				}
+
+				tp_segment_read(
+						reader,
+						string_offset + sizeof(uint32),
+						term_buffer,
+						string_entry.length);
+				term_buffer[string_entry.length] = '\0';
+
+				cmp = strcmp(term, term_buffer);
+
+				if (cmp == 0)
+				{
+					found		   = true;
+					dict_entry_idx = mid;
+					break;
+				}
+				else if (cmp < 0)
+				{
+					right = mid - 1;
+				}
+				else
+				{
+					left = mid + 1;
+				}
+			}
+
+			if (!found)
+				continue;
+
+			/* Found the term - get doc_freq and process postings */
+			if (header->version >= TP_SEGMENT_FORMAT_V2)
+			{
+				TpDictEntryV2			   dict_entry_v2;
+				TpSegmentPostingIteratorV2 iter_v2;
+				TpSegmentPosting		  *posting;
+				float4					   idf;
+
+				tp_segment_read(
+						reader,
+						header->entries_offset +
+								(dict_entry_idx * sizeof(TpDictEntryV2)),
+						&dict_entry_v2,
+						sizeof(TpDictEntryV2));
+
+				/* Accumulate doc_freq */
+				doc_freqs[term_idx] += dict_entry_v2.doc_freq;
+
+				/* Calculate IDF with current accumulated doc_freq */
+				idf = tp_calculate_idf(doc_freqs[term_idx], total_docs);
+
+				/* Initialize iterator directly with dict entry */
+				iter_v2.reader				= reader;
+				iter_v2.term				= term;
+				iter_v2.dict_entry_idx		= dict_entry_idx;
+				iter_v2.dict_entry			= dict_entry_v2;
+				iter_v2.initialized			= true;
+				iter_v2.finished			= false;
+				iter_v2.current_block		= 0;
+				iter_v2.current_in_block	= 0;
+				iter_v2.block_postings		= NULL;
+				iter_v2.has_block_access	= false;
+				iter_v2.fallback_block		= NULL;
+				iter_v2.fallback_block_size = 0;
+
+				/* Process all postings for this term */
+				while (tp_segment_posting_iterator_next_v2(&iter_v2, &posting))
+				{
+					process_posting(
+							posting,
+							idf,
+							(float4)query_frequencies[term_idx],
+							k1,
+							b,
+							avg_doc_len,
+							hash_table);
+				}
+				tp_segment_posting_iterator_free_v2(&iter_v2);
+			}
+			else
+			{
+				/* V1 format */
+				TpDictEntry				 dict_entry;
+				TpSegmentPostingIterator iter;
+				TpSegmentPosting		*posting;
+				float4					 idf;
+
+				tp_segment_read(
+						reader,
+						header->entries_offset +
+								(dict_entry_idx * sizeof(TpDictEntry)),
+						&dict_entry,
+						sizeof(TpDictEntry));
+
+				/* Accumulate doc_freq */
+				doc_freqs[term_idx] += dict_entry.doc_freq;
+
+				/* Calculate IDF with current accumulated doc_freq */
+				idf = tp_calculate_idf(doc_freqs[term_idx], total_docs);
+
+				/* Initialize iterator directly */
+				if (tp_segment_posting_iterator_init(&iter, reader, term))
+				{
+					while (tp_segment_posting_iterator_next(&iter, &posting))
+					{
+						process_posting(
+								posting,
+								idf,
+								(float4)query_frequencies[term_idx],
+								k1,
+								b,
+								avg_doc_len,
+								hash_table);
+					}
+
+					if (iter.has_active_access)
+					{
+						tp_segment_release_direct(&iter.current_access);
+						iter.has_active_access = false;
+					}
+				}
+			}
+		}
+
+		/* Move to next segment and close this one */
+		current = header->next_segment;
+		tp_segment_close(reader);
+	}
+
+	if (term_buffer)
+		pfree(term_buffer);
 }

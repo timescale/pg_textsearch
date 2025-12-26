@@ -120,11 +120,10 @@ HINT:  Create the index on a column directly, e.g., CREATE INDEX ... USING bm25(
 Test: Aggregate on scores with explicit index
 SELECT COUNT(*) as matching_docs,
        ROUND(AVG((content <@> to_bm25query('database', 'docs_bm25_idx'))::numeric), 4) as avg_score
-FROM docs
-WHERE content <@> to_bm25query('database', 'docs_bm25_idx') < 0;
+FROM docs;
  matching_docs | avg_score 
 ---------------+-----------
-             1 |   -0.9808
+             3 |   -0.3269
 (1 row)
 
 -- =============================================================================

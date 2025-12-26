@@ -66,21 +66,152 @@ tp_create_doc_scores_hash(int max_results, int32 total_docs)
 }
 
 /*
- * Comparison function for qsort - sort by BM25 score descending (higher scores
- * first)
+ * Inline comparison for document scores (descending order).
+ * Returns true if a should come before b.
+ * Primary: higher score first. Secondary: lower CTID first (for stability).
+ */
+static inline bool
+doc_score_greater(const DocumentScoreEntry *a, const DocumentScoreEntry *b)
+{
+	if (a->score != b->score)
+		return a->score > b->score;
+	/* Tiebreaker: sort by CTID ascending for deterministic ordering */
+	return ItemPointerCompare((ItemPointer)&a->ctid, (ItemPointer)&b->ctid) <
+		   0;
+}
+
+#define DOC_SCORE_GREATER(a, b) doc_score_greater((a), (b))
+
+/*
+ * Swap two document score pointers.
+ */
+static inline void
+swap_doc_ptrs(DocumentScoreEntry **a, DocumentScoreEntry **b)
+{
+	DocumentScoreEntry *tmp = *a;
+	*a						= *b;
+	*b						= tmp;
+}
+
+/*
+ * Insertion sort for small arrays - used for final sorting of top-k.
+ * Inlined comparison for performance.
+ */
+static void
+insertion_sort_docs(DocumentScoreEntry **arr, int n)
+{
+	for (int i = 1; i < n; i++)
+	{
+		DocumentScoreEntry *key = arr[i];
+		int					j	= i - 1;
+
+		/* Move elements that key should come before (descending score, then
+		 * CTID) */
+		while (j >= 0 && DOC_SCORE_GREATER(key, arr[j]))
+		{
+			arr[j + 1] = arr[j];
+			j--;
+		}
+		arr[j + 1] = key;
+	}
+}
+
+/*
+ * Partition for quickselect - returns pivot index.
+ * Partitions so elements with higher scores are on the left.
+ * Uses median-of-three pivot selection and inlined comparison.
  */
 static int
-compare_document_scores(const void *a, const void *b)
+partition_docs(DocumentScoreEntry **arr, int left, int right)
 {
-	const DocumentScoreEntry *doc_a = *(const DocumentScoreEntry **)a;
-	const DocumentScoreEntry *doc_b = *(const DocumentScoreEntry **)b;
+	int					mid = left + (right - left) / 2;
+	DocumentScoreEntry *pivot;
+	int					store_idx;
 
-	if (doc_a->score > doc_b->score)
-		return -1; /* a comes before b (descending order) */
-	else if (doc_a->score < doc_b->score)
-		return 1; /* b comes before a */
-	else
-		return 0; /* equal scores */
+	/* Median-of-three pivot selection */
+	if (DOC_SCORE_GREATER(arr[mid], arr[left]))
+		swap_doc_ptrs(&arr[left], &arr[mid]);
+	if (DOC_SCORE_GREATER(arr[right], arr[left]))
+		swap_doc_ptrs(&arr[left], &arr[right]);
+	if (DOC_SCORE_GREATER(arr[mid], arr[right]))
+		swap_doc_ptrs(&arr[mid], &arr[right]);
+
+	/* Pivot is now at arr[right] */
+	pivot	  = arr[right];
+	store_idx = left;
+
+	for (int i = left; i < right; i++)
+	{
+		/* Higher scores go to the left (descending order) */
+		if (DOC_SCORE_GREATER(arr[i], pivot))
+		{
+			swap_doc_ptrs(&arr[store_idx], &arr[i]);
+			store_idx++;
+		}
+	}
+	swap_doc_ptrs(&arr[store_idx], &arr[right]);
+	return store_idx;
+}
+
+/*
+ * Partial quicksort: ensures top-k elements are sorted in positions [0, k).
+ * Uses quickselect to partition, then only recurses into relevant partitions.
+ * O(n + k log k) average case instead of O(n log n) for full sort.
+ */
+static void
+partial_quicksort_docs(DocumentScoreEntry **arr, int left, int right, int k)
+{
+	int pivot_idx;
+
+	while (left < right)
+	{
+		/* Use insertion sort for small subarrays */
+		if (right - left < 16)
+		{
+			insertion_sort_docs(arr + left, right - left + 1);
+			return;
+		}
+
+		pivot_idx = partition_docs(arr, left, right);
+
+		/*
+		 * We need elements [0, k) sorted.
+		 * - If pivot_idx < k: left side is done, need to sort right side
+		 *   up to position k-1
+		 * - If pivot_idx >= k: only need to sort left side
+		 * - If pivot_idx == k-1: left side needs sorting, right side doesn't
+		 */
+		if (pivot_idx >= k)
+		{
+			/* Only recurse left - right side doesn't matter */
+			right = pivot_idx - 1;
+		}
+		else
+		{
+			/* Left side might need sorting, recurse into it */
+			if (pivot_idx > left)
+				partial_quicksort_docs(arr, left, pivot_idx - 1, k);
+			/* Continue with right side (tail recursion elimination) */
+			left = pivot_idx + 1;
+		}
+	}
+}
+
+/*
+ * Sort only the top-k elements of an array by score (descending).
+ * After this call, arr[0..k-1] contain the k highest-scoring elements, sorted.
+ * Elements at arr[k..n-1] are in undefined order but all have lower scores.
+ */
+static void
+sort_top_k_docs(DocumentScoreEntry **arr, int n, int k)
+{
+	if (n <= 1 || k <= 0)
+		return;
+
+	if (k >= n)
+		k = n;
+
+	partial_quicksort_docs(arr, 0, n - 1, k);
 }
 
 /*
@@ -126,14 +257,14 @@ tp_extract_and_sort_documents(
 		Assert(i == total_count);
 	}
 
-	/* Sort ALL documents by score using qsort */
-	qsort((void *)all_docs,
-		  total_count,
-		  sizeof(DocumentScoreEntry *),
-		  compare_document_scores);
-
-	/* Take only the top max_results */
+	/* Determine how many results we need */
 	result_count = (total_count < max_results) ? total_count : max_results;
+
+	/*
+	 * Partial sort: only sort the top result_count elements.
+	 * O(n + k log k) instead of O(n log n) for full qsort.
+	 */
+	sort_top_k_docs(all_docs, total_count, result_count);
 
 	if (result_count < total_count)
 	{
@@ -289,30 +420,16 @@ tp_score_documents(
 				local_state->dsa, memtable->doc_lengths_handle);
 	}
 
-	/* Sum doc_freq from memtable + segments for unified IDF */
+	/* Get doc_freq from memtable for all terms */
 	unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
-	for (term_idx = 0; term_idx < query_term_count; term_idx++)
+	if (string_table)
 	{
-		const char *term = query_terms[term_idx];
-
-		/* Get doc_freq from memtable */
-		if (string_table)
+		for (term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
 			TpPostingList *posting_list = tp_string_table_get_posting_list(
-					local_state->dsa, string_table, term);
+					local_state->dsa, string_table, query_terms[term_idx]);
 			if (posting_list && posting_list->doc_count > 0)
 				unified_doc_freqs[term_idx] = posting_list->doc_count;
-		}
-
-		/* Add doc_freq from all segment levels */
-		for (level = 0; level < TP_MAX_LEVELS; level++)
-		{
-			if (level_heads[level] != InvalidBlockNumber)
-			{
-				uint32 segment_doc_freq = tp_segment_get_doc_freq(
-						index_relation, level_heads[level], term);
-				unified_doc_freqs[term_idx] += segment_doc_freq;
-			}
 		}
 	}
 
@@ -415,28 +532,28 @@ tp_score_documents(
 	if (doclength_table)
 		dshash_detach(doclength_table);
 
-	/* Score documents from all segment levels */
+	/*
+	 * Score documents from all segment levels efficiently.
+	 * This opens each segment ONCE and processes all terms, instead of
+	 * opening each segment once per term (which was O(terms * segments)).
+	 */
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		if (level_heads[level] == InvalidBlockNumber)
 			continue;
 
-		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
-		{
-			float4 idf =
-					tp_calculate_idf(unified_doc_freqs[term_idx], total_docs);
-			tp_process_term_in_segments(
-					index_relation,
-					level_heads[level],
-					query_terms[term_idx],
-					idf,
-					(float4)query_frequencies[term_idx],
-					k1,
-					b,
-					avg_doc_len,
-					doc_scores_hash,
-					local_state);
-		}
+		tp_score_all_terms_in_segment_chain(
+				index_relation,
+				level_heads[level],
+				query_terms,
+				query_term_count,
+				query_frequencies,
+				unified_doc_freqs, /* doc_freqs accumulated here */
+				total_docs,
+				k1,
+				b,
+				avg_doc_len,
+				doc_scores_hash);
 	}
 
 	/* Free unified doc_freqs array */
