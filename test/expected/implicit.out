@@ -21,40 +21,38 @@ INSERT INTO implicit_docs (content) VALUES
     ('database system design'),
     ('hello database world');
 -- Test 1: Explicit index name works (baseline)
+-- Note: ORDER BY must use the raw expression, not the ROUND() alias, for index scan
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-ORDER BY score, id
+ORDER BY content <@> to_bm25query('hello', 'implicit_docs_idx'), id
 LIMIT 10;
- id |        content         |  score  
-----+------------------------+---------
-  1 | hello world example    | -0.4700
-  3 | hello database world   | -0.4700
-  2 | database system design |  0.0000
-(3 rows)
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
 
 -- Test 2: Implicit index resolution (main feature being tested)
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_docs
-ORDER BY score, id
+ORDER BY content <@> to_bm25query('hello'), id
 LIMIT 10;
- id |        content         |  score  
-----+------------------------+---------
-  1 | hello world example    | -0.4700
-  3 | hello database world   | -0.4700
-  2 | database system design |  0.0000
-(3 rows)
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
 
 -- Test 3: Implicit resolution works with different query terms
 SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
 FROM implicit_docs
-ORDER BY score, id
+ORDER BY content <@> to_bm25query('database'), id
 LIMIT 10;
  id |        content         |  score  
 ----+------------------------+---------
   2 | database system design | -0.4700
   3 | hello database world   | -0.4700
-  1 | hello world example    |  0.0000
-(3 rows)
+(2 rows)
 
 -- Test 4: Works with ORDER BY only (no WHERE clause)
 SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
@@ -92,26 +90,22 @@ INSERT INTO multi_col_docs (title, body) VALUES
 -- Query on title column should use title index
 SELECT id, title, ROUND((title <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-ORDER BY score, id
+ORDER BY title <@> to_bm25query('hello'), id
 LIMIT 10;
- id |     title     |  score  
-----+---------------+---------
-  1 | hello title   | -0.9808
-  2 | goodbye title |  0.0000
-  3 | neutral title |  0.0000
-(3 rows)
+ id |    title    |  score  
+----+-------------+---------
+  1 | hello title | -0.9808
+(1 row)
 
 -- Query on body column should use body index
 SELECT id, body, ROUND((body <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-ORDER BY score, id
+ORDER BY body <@> to_bm25query('hello'), id
 LIMIT 10;
- id |         body         |  score  
-----+----------------------+---------
-  2 | hello body content   | -0.9808
-  1 | goodbye body content |  0.0000
-  3 | neutral body content |  0.0000
-(3 rows)
+ id |        body        |  score  
+----+--------------------+---------
+  2 | hello body content | -0.9808
+(1 row)
 
 -- Test 6: Schema-qualified table still works with implicit resolution
 CREATE SCHEMA implicit_schema;
@@ -131,27 +125,25 @@ INSERT INTO implicit_schema.schema_docs (content) VALUES
 -- Implicit resolution should work even with schema-qualified tables
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_schema.schema_docs
-ORDER BY score, id
+ORDER BY content <@> to_bm25query('hello'), id
 LIMIT 10;
- id |       content       |  score  
-----+---------------------+---------
-  1 | hello from schema   | -0.6931
-  2 | goodbye from schema |  0.0000
-(2 rows)
+ id |      content      |  score  
+----+-------------------+---------
+  1 | hello from schema | -0.6931
+(1 row)
 
 -- Test 7: text <@> text implicit syntax for standalone scoring
 -- The planner hook transforms text <@> text to text <@> bm25query for non-ORDER BY
 -- expressions, enabling implicit index resolution without to_bm25query().
 SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM implicit_docs
-ORDER BY score, id
+ORDER BY content <@> 'hello', id
 LIMIT 10;
- id |        content         |  score  
-----+------------------------+---------
-  1 | hello world example    | -0.4700
-  3 | hello database world   | -0.4700
-  2 | database system design |  0.0000
-(3 rows)
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
 
 -- Test 8: text <@> text works in ORDER BY with implicit index
 SELECT id, content
@@ -181,23 +173,21 @@ LIMIT 3;
 PREPARE explicit_search(text) AS
 SELECT id, content, ROUND((content <@> to_bm25query($1, 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-ORDER BY score, id
+ORDER BY content <@> to_bm25query($1, 'implicit_docs_idx'), id
 LIMIT 10;
 EXECUTE explicit_search('hello');
- id |        content         |  score  
-----+------------------------+---------
-  1 | hello world example    | -0.4700
-  3 | hello database world   | -0.4700
-  2 | database system design |  0.0000
-(3 rows)
+ id |       content        |  score  
+----+----------------------+---------
+  1 | hello world example  | -0.4700
+  3 | hello database world | -0.4700
+(2 rows)
 
 EXECUTE explicit_search('database');
  id |        content         |  score  
 ----+------------------------+---------
   2 | database system design | -0.4700
   3 | hello database world   | -0.4700
-  1 | hello world example    |  0.0000
-(3 rows)
+(2 rows)
 
 DEALLOCATE explicit_search;
 -- Cleanup
