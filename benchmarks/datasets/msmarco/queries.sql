@@ -81,6 +81,69 @@ FROM benchmark_query('cryptocurrency blockchain');
 DROP FUNCTION benchmark_query;
 
 -- ============================================================
+-- Benchmark 1b: Query Latency WITH SCORE (10 iterations each)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 1b: Query Latency WITH SCORE (10 iterations each) ==='
+\echo 'Running top-10 queries with score in SELECT clause'
+\echo ''
+
+-- Helper function for queries that return score
+CREATE OR REPLACE FUNCTION benchmark_query_with_score(query_text text, iterations int DEFAULT 10)
+RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
+DECLARE
+    i int;
+    start_ts timestamp;
+    end_ts timestamp;
+    times numeric[];
+    sorted_times numeric[];
+BEGIN
+    times := ARRAY[]::numeric[];
+    FOR i IN 1..iterations LOOP
+        start_ts := clock_timestamp();
+        EXECUTE 'SELECT passage_id, passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'') AS score
+                 FROM msmarco_passages
+                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
+                 LIMIT 10' USING query_text;
+        end_ts := clock_timestamp();
+        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+    END LOOP;
+    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
+    median_ms := sorted_times[(iterations + 1) / 2];
+    min_ms := sorted_times[1];
+    max_ms := sorted_times[iterations];
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Short query (1 word) with score
+\echo 'Query 1 (with score): Short query (1 word) - "coffee"'
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query_with_score('coffee');
+
+\echo ''
+\echo 'Query 2 (with score): Medium query (3 words) - "how to cook"'
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query_with_score('how to cook');
+
+\echo ''
+\echo 'Query 3 (with score): Long query (question) - "what is the capital of france"'
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query_with_score('what is the capital of france');
+
+\echo ''
+\echo 'Query 4 (with score): Common term - "the"'
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query_with_score('the');
+
+\echo ''
+\echo 'Query 5 (with score): Rare term - "cryptocurrency blockchain"'
+SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
+FROM benchmark_query_with_score('cryptocurrency blockchain');
+
+DROP FUNCTION benchmark_query_with_score;
+
+-- ============================================================
 -- Benchmark 2: Query Throughput (batch of queries)
 -- ============================================================
 \echo ''
@@ -114,6 +177,43 @@ BEGIN
     end_time := clock_timestamp();
     total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
     RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in % ms (avg % ms/query)',
+        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
+END $$;
+
+-- ============================================================
+-- Benchmark 2b: Query Throughput WITH SCORE (batch of queries)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 2b: Query Throughput WITH SCORE (20 queries) ==='
+\echo 'Running 20 sequential top-10 queries with score in SELECT'
+
+-- Time 20 queries in sequence with score
+DO $$
+DECLARE
+    queries text[] := ARRAY[
+        'weather forecast', 'stock market', 'recipe chicken',
+        'python programming', 'machine learning', 'climate change',
+        'health benefits', 'travel destinations', 'movie reviews',
+        'sports scores', 'music history', 'science experiments',
+        'cooking tips', 'fitness exercises', 'book recommendations',
+        'technology news', 'financial advice', 'home improvement',
+        'garden plants', 'pet care'
+    ];
+    q text;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric := 0;
+BEGIN
+    start_time := clock_timestamp();
+    FOREACH q IN ARRAY queries LOOP
+        PERFORM passage_id, passage_text <@> to_bm25query(q, 'msmarco_bm25_idx') AS score
+        FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q, 'msmarco_bm25_idx')
+        LIMIT 10;
+    END LOOP;
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    RAISE NOTICE 'THROUGHPUT_RESULT_WITH_SCORE: 20 queries in % ms (avg % ms/query)',
         round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
 END $$;
 
