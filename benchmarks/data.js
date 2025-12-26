@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766715026589,
+  "lastUpdate": 1766722384284,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2154,6 +2154,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
             "value": 2.03,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "979749163401fa76b29a83e8cb49953d5f1f2076",
+          "message": "Revert custom hash table, use PostgreSQL dynahash\n\nRevert commits 014207f and a422e57 that introduced a custom\nlinear-probing hash table. Profiling showed tp_doc_score_table_insert\ntaking ~50% of query time, and the custom FNV-1a hash was doing\n8 multiplies per insert.\n\nPostgreSQL's built-in dynahash is well-tested and optimized.\nStick with it unless we have compelling evidence it's a bottleneck.",
+          "timestamp": "2025-12-26T02:51:16Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/979749163401fa76b29a83e8cb49953d5f1f2076"
+        },
+        "date": 1766722383028,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 237.235,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Short Query (1 word)",
+            "value": 1.595,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Medium Query (3 words)",
+            "value": 2.147,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Long Query (question)",
+            "value": 1.764,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Common Term Query",
+            "value": 1.637,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Rare Term Query",
+            "value": 1.229,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
+            "value": 2.11,
             "unit": "ms"
           },
           {
