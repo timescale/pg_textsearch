@@ -160,6 +160,21 @@ PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(bm25_text_bm25query_score);
 PG_FUNCTION_INFO_V1(bm25_text_text_score);
 PG_FUNCTION_INFO_V1(tpquery_eq);
+PG_FUNCTION_INFO_V1(bm25_get_current_score);
+
+/*
+ * bm25_get_current_score - stub function for ORDER BY optimization
+ *
+ * Returns the cached BM25 score from the most recent index scan tuple.
+ * The planner replaces resjunk ORDER BY expressions with calls to this
+ * function, avoiding expensive re-computation of scores already computed
+ * by the index scan.
+ */
+Datum
+bm25_get_current_score(PG_FUNCTION_ARGS pg_attribute_unused())
+{
+	PG_RETURN_FLOAT8(tp_get_cached_score());
+}
 
 /*
  * tpquery input function

@@ -17,13 +17,17 @@
 #include <catalog/pg_am.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_opclass.h>
+#include <catalog/pg_proc.h>
 #include <catalog/pg_type.h>
 #include <catalog/pg_type_d.h>
 #include <commands/defrem.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
+#include <nodes/plannodes.h>
 #include <optimizer/optimizer.h>
+#include <optimizer/planner.h>
 #include <parser/analyze.h>
+#include <parser/parse_func.h>
 #include <parser/parse_oper.h>
 #include <parser/parsetree.h>
 #include <utils/builtins.h>
@@ -38,8 +42,9 @@
 #include "planner.h"
 #include "query.h"
 
-/* Previous post_parse_analyze hook in chain */
+/* Previous hooks in chain */
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
+static planner_hook_type			prev_planner_hook			 = NULL;
 
 /*
  * Structure to hold looked-up OIDs for a query
@@ -554,12 +559,260 @@ tp_post_parse_analyze_hook(
 		prev_post_parse_analyze_hook(pstate, query, jstate);
 }
 
+/* ============================================================================
+ * Planner hook: Replace resjunk ORDER BY expressions with stub function
+ * ============================================================================
+ */
+
 /*
- * Initialize planner hook (called from _PG_init).
+ * Check if an expression is our BM25 scoring operator (text <@> bm25query).
+ */
+static bool
+is_bm25_score_opexpr(Node *node, BM25OidCache *oids)
+{
+	OpExpr *opexpr;
+
+	if (!IsA(node, OpExpr))
+		return false;
+
+	opexpr = (OpExpr *)node;
+	return opexpr->opno == oids->text_tpquery_operator_oid;
+}
+
+/*
+ * Create a FuncExpr calling bm25_get_current_score().
+ */
+static FuncExpr *
+make_stub_funcexpr(void)
+{
+	FuncExpr *funcexpr;
+	Oid		  funcoid;
+
+	/* Look up bm25_get_current_score function */
+	funcoid = LookupFuncName(
+			list_make1(makeString("bm25_get_current_score")), 0, NULL, false);
+	if (!OidIsValid(funcoid))
+		return NULL;
+
+	funcexpr				 = makeNode(FuncExpr);
+	funcexpr->funcid		 = funcoid;
+	funcexpr->funcresulttype = FLOAT8OID;
+	funcexpr->funcretset	 = false;
+	funcexpr->funcvariadic	 = false;
+	funcexpr->funcformat	 = COERCE_EXPLICIT_CALL;
+	funcexpr->funccollid	 = InvalidOid;
+	funcexpr->inputcollid	 = InvalidOid;
+	funcexpr->args			 = NIL;
+	funcexpr->location		 = -1;
+
+	return funcexpr;
+}
+
+/*
+ * Replace resjunk BM25 score expressions in a plan node's targetlist.
+ */
+static void
+replace_resjunk_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
+{
+	ListCell *lc;
+
+	foreach (lc, targetlist)
+	{
+		TargetEntry *tle = (TargetEntry *)lfirst(lc);
+
+		if (tle->resjunk && is_bm25_score_opexpr((Node *)tle->expr, oids))
+		{
+			FuncExpr *stub = make_stub_funcexpr();
+
+			if (stub != NULL)
+				tle->expr = (Expr *)stub;
+		}
+	}
+}
+
+/*
+ * Check if the plan contains a BM25 IndexScan that will compute scores.
+ * Only if such a scan exists should we replace resjunk expressions with the
+ * stub.
+ */
+static bool
+plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
+{
+	ListCell *lc;
+
+	if (plan == NULL)
+		return false;
+
+	/* Check if this is a BM25 IndexScan */
+	if (IsA(plan, IndexScan))
+	{
+		IndexScan *indexscan = (IndexScan *)plan;
+		Oid		   indexamid;
+		HeapTuple  classTuple;
+
+		/* Look up the index's access method */
+		classTuple =
+				SearchSysCache1(RELOID, ObjectIdGetDatum(indexscan->indexid));
+		if (HeapTupleIsValid(classTuple))
+		{
+			Form_pg_class classForm = (Form_pg_class)GETSTRUCT(classTuple);
+
+			indexamid = classForm->relam;
+			ReleaseSysCache(classTuple);
+
+			if (indexamid == oids->bm25_am_oid)
+				return true;
+		}
+	}
+
+	/* Recurse into child plans */
+	if (plan_has_bm25_indexscan(plan->lefttree, oids))
+		return true;
+	if (plan_has_bm25_indexscan(plan->righttree, oids))
+		return true;
+
+	/* Handle plan-specific children */
+	switch (nodeTag(plan))
+	{
+	case T_Append:
+	{
+		Append *append = (Append *)plan;
+
+		foreach (lc, append->appendplans)
+			if (plan_has_bm25_indexscan((Plan *)lfirst(lc), oids))
+				return true;
+	}
+	break;
+
+	case T_MergeAppend:
+	{
+		MergeAppend *merge = (MergeAppend *)plan;
+
+		foreach (lc, merge->mergeplans)
+			if (plan_has_bm25_indexscan((Plan *)lfirst(lc), oids))
+				return true;
+	}
+	break;
+
+	case T_SubqueryScan:
+	{
+		SubqueryScan *subquery = (SubqueryScan *)plan;
+
+		if (plan_has_bm25_indexscan(subquery->subplan, oids))
+			return true;
+	}
+	break;
+
+	default:
+		break;
+	}
+
+	return false;
+}
+
+/*
+ * Recursively walk the plan tree and replace resjunk BM25 expressions.
+ */
+static void
+replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
+{
+	if (plan == NULL)
+		return;
+
+	/* Process this node's targetlist */
+	replace_resjunk_scores_in_targetlist(plan->targetlist, oids);
+
+	/* Recurse into child plans */
+	replace_resjunk_scores_in_plan(plan->lefttree, oids);
+	replace_resjunk_scores_in_plan(plan->righttree, oids);
+
+	/* Handle plan-specific children */
+	switch (nodeTag(plan))
+	{
+	case T_Append:
+	{
+		Append	 *append = (Append *)plan;
+		ListCell *lc;
+
+		foreach (lc, append->appendplans)
+			replace_resjunk_scores_in_plan((Plan *)lfirst(lc), oids);
+	}
+	break;
+
+	case T_MergeAppend:
+	{
+		MergeAppend *merge = (MergeAppend *)plan;
+		ListCell	*lc;
+
+		foreach (lc, merge->mergeplans)
+			replace_resjunk_scores_in_plan((Plan *)lfirst(lc), oids);
+	}
+	break;
+
+	case T_SubqueryScan:
+	{
+		SubqueryScan *subquery = (SubqueryScan *)plan;
+
+		replace_resjunk_scores_in_plan(subquery->subplan, oids);
+	}
+	break;
+
+	default:
+		break;
+	}
+}
+
+/*
+ * Planner hook: called after standard_planner produces the plan.
+ *
+ * We walk the plan tree and replace resjunk ORDER BY expressions that use
+ * our <@> operator with calls to bm25_get_current_score(). This avoids
+ * expensive re-computation of BM25 scores that were already computed by
+ * the index scan.
+ *
+ * IMPORTANT: We only do this replacement when the plan actually uses a BM25
+ * IndexScan, because the stub function retrieves the cached score that is set
+ * by tp_gettuple during index scanning. If the plan uses SeqScan or other
+ * access methods, we leave the original expression so scores are computed.
+ */
+static PlannedStmt *
+tp_planner_hook(
+		Query		 *parse,
+		const char	 *query_string,
+		int			  cursorOptions,
+		ParamListInfo boundParams)
+{
+	PlannedStmt *result;
+	BM25OidCache oid_cache;
+
+	/* Call previous hook or standard planner */
+	if (prev_planner_hook)
+		result = prev_planner_hook(
+				parse, query_string, cursorOptions, boundParams);
+	else
+		result = standard_planner(
+				parse, query_string, cursorOptions, boundParams);
+
+	/* Only process if we have our extension's OIDs and there's a BM25 index
+	 * scan */
+	if (get_bm25_oids(&oid_cache) && result->planTree != NULL &&
+		plan_has_bm25_indexscan(result->planTree, &oid_cache))
+	{
+		replace_resjunk_scores_in_plan(result->planTree, &oid_cache);
+	}
+
+	return result;
+}
+
+/*
+ * Initialize planner hooks (called from _PG_init).
  */
 void
 tp_planner_hook_init(void)
 {
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
 	post_parse_analyze_hook		 = tp_post_parse_analyze_hook;
+
+	prev_planner_hook = planner_hook;
+	planner_hook	  = tp_planner_hook;
 }

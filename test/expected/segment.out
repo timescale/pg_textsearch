@@ -292,9 +292,9 @@ ORDER BY content <@> 'hello', id;
  id |      content       | hello_score 
 ----+--------------------+-------------
   8 | hello hello hello  |     -1.3468
+  5 | hello again friend |     -0.9735
   1 | hello world        |     -0.9735
   3 | hello goodbye      |     -0.9735
-  5 | hello again friend |     -0.9735
 (4 rows)
 
 -- Cleanup
