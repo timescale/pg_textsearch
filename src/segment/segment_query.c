@@ -8,7 +8,6 @@
 
 #include <utils/memutils.h>
 
-#include "doc_scores.h"
 #include "memtable/posting.h"
 #include "operator.h"
 #include "segment/dictionary.h"
@@ -567,15 +566,15 @@ process_posting(
 		float4			  k1,
 		float4			  b,
 		float4			  avg_doc_len,
-		TpDocScoreTable	 *doc_scores)
+		HTAB			 *hash_table)
 {
-	float4			 tf;
-	float4			 doc_len;
-	float4			 term_score;
-	double			 numerator_d, denominator_d;
-	TpDocScoreEntry *doc_entry;
-	bool			 found;
-	ItemPointerData	 local_ctid;
+	float4				tf;
+	float4				doc_len;
+	float4				term_score;
+	double				numerator_d, denominator_d;
+	DocumentScoreEntry *doc_entry;
+	bool				found;
+	ItemPointerData		local_ctid;
 
 	if (posting == NULL)
 	{
@@ -606,10 +605,12 @@ process_posting(
 	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
 						  (double)query_frequency);
 
-	/* Add or update document score */
-	doc_entry = tp_doc_score_table_insert(doc_scores, &local_ctid, &found);
+	/* Add or update document score in hash table */
+	doc_entry = (DocumentScoreEntry *)
+			hash_search(hash_table, &local_ctid, HASH_ENTER, &found);
 	if (!found)
 	{
+		doc_entry->ctid		  = local_ctid;
 		doc_entry->score	  = term_score;
 		doc_entry->doc_length = doc_len;
 	}
@@ -634,12 +635,12 @@ tp_process_term_in_segments(
 		float4						   k1,
 		float4						   b,
 		float4						   avg_doc_len,
-		void						  *doc_scores_ptr,
+		void						  *doc_scores_hash,
 		TpLocalIndexState *local_state pg_attribute_unused())
 {
 	BlockNumber		 current	= first_segment;
 	TpSegmentReader *reader		= NULL;
-	TpDocScoreTable *doc_scores = (TpDocScoreTable *)doc_scores_ptr;
+	HTAB			*hash_table = (HTAB *)doc_scores_hash;
 
 	while (current != InvalidBlockNumber)
 	{
@@ -670,7 +671,7 @@ tp_process_term_in_segments(
 							k1,
 							b,
 							avg_doc_len,
-							doc_scores);
+							hash_table);
 				}
 				tp_segment_posting_iterator_free_v2(&iter_v2);
 			}
@@ -692,7 +693,7 @@ tp_process_term_in_segments(
 							k1,
 							b,
 							avg_doc_len,
-							doc_scores);
+							hash_table);
 				}
 
 				/* Release any active buffer when done */
@@ -852,7 +853,7 @@ tp_segment_get_doc_freq(
  *   3. Close segment
  *
  * The doc_freqs array is filled in with the sum of doc_freq across all
- * segments. Scores are accumulated into the doc_scores table.
+ * segments. Scores are accumulated into the doc_scores_hash.
  */
 void
 tp_score_all_terms_in_segment_chain(
@@ -866,12 +867,12 @@ tp_score_all_terms_in_segment_chain(
 		float4		k1,
 		float4		b,
 		float4		avg_doc_len,
-		void	   *doc_scores_ptr)
+		void	   *doc_scores_hash)
 {
-	BlockNumber		 current	 = first_segment;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
-	TpDocScoreTable *doc_scores	 = (TpDocScoreTable *)doc_scores_ptr;
+	BlockNumber current		= first_segment;
+	char	   *term_buffer = NULL;
+	uint32		buffer_size = 0;
+	HTAB	   *hash_table	= (HTAB *)doc_scores_hash;
 
 	while (current != InvalidBlockNumber)
 	{
@@ -1016,7 +1017,7 @@ tp_score_all_terms_in_segment_chain(
 							k1,
 							b,
 							avg_doc_len,
-							doc_scores);
+							hash_table);
 				}
 				tp_segment_posting_iterator_free_v2(&iter_v2);
 			}
@@ -1053,7 +1054,7 @@ tp_score_all_terms_in_segment_chain(
 								k1,
 								b,
 								avg_doc_len,
-								doc_scores);
+								hash_table);
 					}
 
 					if (iter.has_active_access)

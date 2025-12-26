@@ -23,7 +23,6 @@ OBJS = \
 	src/registry.o \
 	src/state.o \
 	src/dump.o \
-	src/doc_scores.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/segment_query.o \
