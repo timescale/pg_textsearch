@@ -129,5 +129,3 @@ extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);
 
 /* Cached score for ORDER BY optimization */
 extern float8 tp_get_cached_score(void);
-extern bool	  tp_cached_score_is_valid(void);
-extern void	  tp_invalidate_cached_score(void);
