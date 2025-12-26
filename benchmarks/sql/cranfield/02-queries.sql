@@ -11,12 +11,10 @@
 -- Warm up: run a few queries to ensure index is cached
 \echo 'Warming up index...'
 SELECT doc_id FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx') < 0
 ORDER BY full_text <@> to_bm25query('boundary layer', 'cranfield_full_tapir_idx')
 LIMIT 10;
 
 SELECT doc_id FROM cranfield_full_documents
-WHERE full_text <@> to_bm25query('heat transfer', 'cranfield_full_tapir_idx') < 0
 ORDER BY full_text <@> to_bm25query('heat transfer', 'cranfield_full_tapir_idx')
 LIMIT 10;
 
@@ -42,7 +40,6 @@ BEGIN
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
         EXECUTE 'SELECT doc_id FROM cranfield_full_documents
-                 WHERE full_text <@> to_bm25query($1, ''cranfield_full_tapir_idx'') < 0
                  ORDER BY full_text <@> to_bm25query($1, ''cranfield_full_tapir_idx'')
                  LIMIT 10' USING query_text;
         end_ts := clock_timestamp();
@@ -101,7 +98,6 @@ BEGIN
     start_time := clock_timestamp();
     FOR q IN SELECT query_id, query_text FROM cranfield_full_queries ORDER BY query_id LOOP
         PERFORM doc_id FROM cranfield_full_documents
-        WHERE full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') < 0
         ORDER BY full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx')
         LIMIT 10;
         query_count := query_count + 1;
@@ -143,7 +139,6 @@ WITH query_results AS (
     CROSS JOIN LATERAL (
         SELECT doc_id, full_text
         FROM cranfield_full_documents
-        WHERE full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx') < 0
         ORDER BY full_text <@> to_bm25query(q.query_text, 'cranfield_full_tapir_idx')
         LIMIT 10
     ) d

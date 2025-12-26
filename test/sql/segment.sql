@@ -153,7 +153,6 @@ SELECT id, content,
        ROUND((content <@> 'hello')::numeric,
              4) AS hello_score
 FROM segment_test
-WHERE content <@> 'hello' < 0
 ORDER BY content <@> 'hello', id;
 
 -- Cleanup

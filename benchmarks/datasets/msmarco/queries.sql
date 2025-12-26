@@ -11,12 +11,10 @@
 -- Warm up: run a few queries to ensure index is cached
 \echo 'Warming up index...'
 SELECT passage_id FROM msmarco_passages
-WHERE passage_text <@> to_bm25query('test', 'msmarco_bm25_idx') < 0
 ORDER BY passage_text <@> to_bm25query('test', 'msmarco_bm25_idx')
 LIMIT 10;
 
 SELECT passage_id FROM msmarco_passages
-WHERE passage_text <@> to_bm25query('example query', 'msmarco_bm25_idx') < 0
 ORDER BY passage_text <@> to_bm25query('example query', 'msmarco_bm25_idx')
 LIMIT 10;
 
@@ -42,7 +40,6 @@ BEGIN
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
         EXECUTE 'SELECT passage_id FROM msmarco_passages
-                 WHERE passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'') < 0
                  ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
                  LIMIT 10' USING query_text;
         end_ts := clock_timestamp();
@@ -111,7 +108,6 @@ BEGIN
     start_time := clock_timestamp();
     FOREACH q IN ARRAY queries LOOP
         PERFORM passage_id FROM msmarco_passages
-        WHERE passage_text <@> to_bm25query(q, 'msmarco_bm25_idx') < 0
         ORDER BY passage_text <@> to_bm25query(q, 'msmarco_bm25_idx')
         LIMIT 10;
     END LOOP;
@@ -144,7 +140,6 @@ SELECT
 \echo ''
 \o /dev/null
 SELECT passage_id FROM msmarco_passages
-WHERE passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx') < 0
 ORDER BY passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx')
 LIMIT 10;
 \o

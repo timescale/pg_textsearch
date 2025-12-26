@@ -21,19 +21,16 @@ INSERT INTO implicit_docs (content) VALUES
 -- Test 1: Explicit index name works (baseline)
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello', 'implicit_docs_idx') < 0
 ORDER BY score, id;
 
 -- Test 2: Implicit index resolution (main feature being tested)
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello') < 0
 ORDER BY score, id;
 
 -- Test 3: Implicit resolution works with different query terms
 SELECT id, content, ROUND((content <@> to_bm25query('database'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('database') < 0
 ORDER BY score, id;
 
 -- Test 4: Works with ORDER BY only (no WHERE clause)
@@ -62,13 +59,11 @@ INSERT INTO multi_col_docs (title, body) VALUES
 -- Query on title column should use title index
 SELECT id, title, ROUND((title <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-WHERE title <@> to_bm25query('hello') < 0
 ORDER BY score, id;
 
 -- Query on body column should use body index
 SELECT id, body, ROUND((body <@> to_bm25query('hello'))::numeric, 4) as score
 FROM multi_col_docs
-WHERE body <@> to_bm25query('hello') < 0
 ORDER BY score, id;
 
 -- Test 6: Schema-qualified table still works with implicit resolution
@@ -88,7 +83,6 @@ INSERT INTO implicit_schema.schema_docs (content) VALUES
 -- Implicit resolution should work even with schema-qualified tables
 SELECT id, content, ROUND((content <@> to_bm25query('hello'))::numeric, 4) as score
 FROM implicit_schema.schema_docs
-WHERE content <@> to_bm25query('hello') < 0
 ORDER BY score, id;
 
 -- Test 7: text <@> text implicit syntax for standalone scoring
@@ -96,7 +90,6 @@ ORDER BY score, id;
 -- expressions, enabling implicit index resolution without to_bm25query().
 SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query('hello') < 0
 ORDER BY score, id;
 
 -- Test 8: text <@> text works in ORDER BY with implicit index
@@ -117,7 +110,6 @@ LIMIT 3;
 PREPARE explicit_search(text) AS
 SELECT id, content, ROUND((content <@> to_bm25query($1, 'implicit_docs_idx'))::numeric, 4) as score
 FROM implicit_docs
-WHERE content <@> to_bm25query($1, 'implicit_docs_idx') < 0
 ORDER BY score, id;
 
 EXECUTE explicit_search('hello');

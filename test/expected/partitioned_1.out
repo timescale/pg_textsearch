@@ -333,25 +333,32 @@ SELECT validate_bm25_scoring(
 SELECT 'small' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_small_content_idx'))::numeric, 4) as score
 FROM partition_small
-WHERE content <@> to_bm25query('database', 'partition_small_content_idx') < 0
 ORDER BY score;
  partition |          content           |  score  
 -----------+----------------------------+---------
  small     | database search query      | -0.4901
  small     | postgresql database system | -0.4901
-(2 rows)
+ small     | full text search engine    |  0.0000
+(3 rows)
 
 -- Show actual scores from large partition
 SELECT 'large' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_large_content_idx'))::numeric, 4) as score
 FROM partition_large
-WHERE content <@> to_bm25query('database', 'partition_large_content_idx') < 0
 ORDER BY score;
- partition |           content           |  score  
------------+-----------------------------+---------
- large     | database management system  | -1.4816
- large     | database query optimization | -1.4816
-(2 rows)
+ partition |            content             |  score  
+-----------+--------------------------------+---------
+ large     | database management system     | -1.4816
+ large     | database query optimization    | -1.4816
+ large     | web application development    |  0.0000
+ large     | cloud computing services       |  0.0000
+ large     | machine learning algorithms    |  0.0000
+ large     | data analysis tools            |  0.0000
+ large     | software engineering practices |  0.0000
+ large     | network security protocols     |  0.0000
+ large     | mobile app development         |  0.0000
+ large     | search engine optimization     |  0.0000
+(10 rows)
 
 -- Validate index scan vs standalone scoring consistency per partition
 SELECT validate_index_vs_standalone(
