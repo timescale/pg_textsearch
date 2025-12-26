@@ -560,7 +560,7 @@ tp_post_parse_analyze_hook(
 }
 
 /* ============================================================================
- * Planner hook: Replace resjunk ORDER BY expressions with stub function
+ * Planner hook: Replace BM25 score expressions with stub function
  * ============================================================================
  */
 
@@ -609,18 +609,44 @@ make_stub_funcexpr(void)
 }
 
 /*
- * Replace resjunk BM25 score expressions in a plan node's targetlist.
+ * Replace BM25 score expressions in a plan node's targetlist.
+ *
+ * Strategy: First find the resjunk ORDER BY expression (which the index scan
+ * computes and caches). Then replace both that expression AND any identical
+ * expressions in the SELECT clause with the stub function.
+ *
+ * This handles queries like:
+ *   SELECT content <@> 'hello' AS score FROM t ORDER BY content <@> 'hello'
+ * where both the SELECT and ORDER BY use the same score expression.
  */
 static void
-replace_resjunk_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
+replace_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
 {
 	ListCell *lc;
+	Expr	 *orderby_expr = NULL;
 
+	/* First pass: find the resjunk ORDER BY expression */
 	foreach (lc, targetlist)
 	{
 		TargetEntry *tle = (TargetEntry *)lfirst(lc);
 
 		if (tle->resjunk && is_bm25_score_opexpr((Node *)tle->expr, oids))
+		{
+			orderby_expr = tle->expr;
+			break;
+		}
+	}
+
+	if (orderby_expr == NULL)
+		return;
+
+	/* Second pass: replace the ORDER BY expr and any matching SELECT exprs */
+	foreach (lc, targetlist)
+	{
+		TargetEntry *tle = (TargetEntry *)lfirst(lc);
+
+		if (is_bm25_score_opexpr((Node *)tle->expr, oids) &&
+			equal(tle->expr, orderby_expr))
 		{
 			FuncExpr *stub = make_stub_funcexpr();
 
@@ -711,20 +737,20 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 }
 
 /*
- * Recursively walk the plan tree and replace resjunk BM25 expressions.
+ * Recursively walk the plan tree and replace BM25 score expressions.
  */
 static void
-replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
+replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 {
 	if (plan == NULL)
 		return;
 
 	/* Process this node's targetlist */
-	replace_resjunk_scores_in_targetlist(plan->targetlist, oids);
+	replace_scores_in_targetlist(plan->targetlist, oids);
 
 	/* Recurse into child plans */
-	replace_resjunk_scores_in_plan(plan->lefttree, oids);
-	replace_resjunk_scores_in_plan(plan->righttree, oids);
+	replace_scores_in_plan(plan->lefttree, oids);
+	replace_scores_in_plan(plan->righttree, oids);
 
 	/* Handle plan-specific children */
 	switch (nodeTag(plan))
@@ -735,7 +761,7 @@ replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		ListCell *lc;
 
 		foreach (lc, append->appendplans)
-			replace_resjunk_scores_in_plan((Plan *)lfirst(lc), oids);
+			replace_scores_in_plan((Plan *)lfirst(lc), oids);
 	}
 	break;
 
@@ -745,7 +771,7 @@ replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		ListCell	*lc;
 
 		foreach (lc, merge->mergeplans)
-			replace_resjunk_scores_in_plan((Plan *)lfirst(lc), oids);
+			replace_scores_in_plan((Plan *)lfirst(lc), oids);
 	}
 	break;
 
@@ -753,7 +779,7 @@ replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	{
 		SubqueryScan *subquery = (SubqueryScan *)plan;
 
-		replace_resjunk_scores_in_plan(subquery->subplan, oids);
+		replace_scores_in_plan(subquery->subplan, oids);
 	}
 	break;
 
@@ -765,15 +791,16 @@ replace_resjunk_scores_in_plan(Plan *plan, BM25OidCache *oids)
 /*
  * Planner hook: called after standard_planner produces the plan.
  *
- * We walk the plan tree and replace resjunk ORDER BY expressions that use
- * our <@> operator with calls to bm25_get_current_score(). This avoids
- * expensive re-computation of BM25 scores that were already computed by
- * the index scan.
+ * We walk the plan tree and replace BM25 score expressions with calls to
+ * bm25_get_current_score(). This avoids expensive re-computation of scores
+ * that were already computed by the index scan.
  *
- * IMPORTANT: We only do this replacement when the plan actually uses a BM25
- * IndexScan, because the stub function retrieves the cached score that is set
- * by tp_gettuple during index scanning. If the plan uses SeqScan or other
- * access methods, we leave the original expression so scores are computed.
+ * The optimization applies to:
+ * - Resjunk ORDER BY expressions (hidden sort keys)
+ * - SELECT clause expressions that match the ORDER BY expression
+ *
+ * We only do this when the plan uses a BM25 IndexScan, because the stub
+ * retrieves the cached score set by tp_gettuple during index scanning.
  */
 static PlannedStmt *
 tp_planner_hook(
@@ -798,7 +825,7 @@ tp_planner_hook(
 	if (get_bm25_oids(&oid_cache) && result->planTree != NULL &&
 		plan_has_bm25_indexscan(result->planTree, &oid_cache))
 	{
-		replace_resjunk_scores_in_plan(result->planTree, &oid_cache);
+		replace_scores_in_plan(result->planTree, &oid_cache);
 	}
 
 	return result;
