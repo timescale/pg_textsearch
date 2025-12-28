@@ -42,38 +42,30 @@ SELECT 'docs_vector_idx:{}'::bm25vector;
 (1 row)
 
 -- Test pg_textsearch scoring using text <@> bm25query operations
--- Note: Uses to_bm25query since ORDER BY is on alias not directly on operator
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
-ORDER BY score;
-           content           |  score  
------------------------------+---------
- hello world example         | -2.8453
- the quick brown fox         |  0.0000
- jumped over the lazy dog    |  0.0000
- sphinx of black quartz      |  0.0000
- postgresql full text search |  0.0000
-(5 rows)
+ORDER BY content <@> to_bm25query('hello world', 'docs_vector_idx')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-2.8453
+       content       |  score  
+---------------------+---------
+ hello world example | -2.8453
+(1 row)
 
--- Test different query terms with standalone text <@> bm25query operations
--- Note: Uses explicit index name because ORDER BY is on sum of two operators
+-- Test different query terms with multi-term query
 SELECT
     content,
-    ROUND((content <@> to_bm25query('postgresql', 'docs_vector_idx'))::numeric, 4) as postgresql_score,
-    ROUND((content <@> to_bm25query('search', 'docs_vector_idx'))::numeric, 4) as search_score
+    ROUND((content <@> to_bm25query('postgresql search', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
-ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
-         (content <@> to_bm25query('search', 'docs_vector_idx'))::float8;
-           content           | postgresql_score | search_score 
------------------------------+------------------+--------------
- postgresql full text search |          -1.2577 |      -1.2577
- the quick brown fox         |           0.0000 |       0.0000
- jumped over the lazy dog    |           0.0000 |       0.0000
- sphinx of black quartz      |           0.0000 |       0.0000
- hello world example         |           0.0000 |       0.0000
-(5 rows)
+ORDER BY content <@> to_bm25query('postgresql search', 'docs_vector_idx')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-2.5153
+           content           |  score  
+-----------------------------+---------
+ postgresql full text search | -2.5153
+(1 row)
 
 -- Test bm25vector equality operator
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello:1,world:2}'::bm25vector;

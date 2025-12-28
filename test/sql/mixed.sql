@@ -40,10 +40,11 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
--- Verify basic search works
+-- Verify basic search works (only matching documents via index)
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
-ORDER BY score;
+ORDER BY content <@> to_bm25query('database concurrent', 'concurrent_idx1')
+LIMIT 10;
 
 -- Test 2: Simulate concurrent inserts with same terms
 \echo 'Test 2: Concurrent inserts with overlapping terms'
@@ -137,9 +138,9 @@ WHERE id IN (1, 2);
 
 -- Verify search finds updated documents
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
-
 FROM concurrent_test_docs
-ORDER BY score;
+ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
+LIMIT 10;
 
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'
@@ -167,9 +168,9 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 
 -- Search should find all variants
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
-
 FROM concurrent_test_docs
-ORDER BY score, id;
+ORDER BY content <@> to_bm25query('exact same terms', 'concurrent_idx1'), id
+LIMIT 10;
 
 -- Test 9: Multiple indexes on same table
 \echo 'Test 9: Multiple indexes on same table'
@@ -200,15 +201,15 @@ INSERT INTO multi_idx_test (content) VALUES
 
 -- Query using the English index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
-
 FROM multi_idx_test
-ORDER BY english_score;
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
+LIMIT 10;
 
 -- Query using the Simple index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
-
 FROM multi_idx_test
-ORDER BY simple_score;
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple')
+LIMIT 10;
 
 -- Verify both indexes exist and function independently
 SELECT

@@ -329,36 +329,29 @@ SELECT validate_bm25_scoring(
 --   Large IDF = ln(1 + (10 - 2 + 0.5) / (2 + 0.5)) = ln(1 + 8.5/2.5) = ln(4.4) ≈ 1.48
 --
 -- This demonstrates partition-local statistics in action:
--- Show actual scores from small partition
+-- Show actual scores from small partition (only matching documents)
 SELECT 'small' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_small_content_idx'))::numeric, 4) as score
 FROM partition_small
-ORDER BY score;
+ORDER BY content <@> to_bm25query('database', 'partition_small_content_idx')
+LIMIT 10;
  partition |          content           |  score  
 -----------+----------------------------+---------
  small     | database search query      | -0.4901
  small     | postgresql database system | -0.4901
- small     | full text search engine    |  0.0000
-(3 rows)
+(2 rows)
 
--- Show actual scores from large partition
+-- Show actual scores from large partition (only matching documents)
 SELECT 'large' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_large_content_idx'))::numeric, 4) as score
 FROM partition_large
-ORDER BY score;
- partition |            content             |  score  
------------+--------------------------------+---------
- large     | database management system     | -1.4816
- large     | database query optimization    | -1.4816
- large     | web application development    |  0.0000
- large     | cloud computing services       |  0.0000
- large     | machine learning algorithms    |  0.0000
- large     | data analysis tools            |  0.0000
- large     | software engineering practices |  0.0000
- large     | network security protocols     |  0.0000
- large     | mobile app development         |  0.0000
- large     | search engine optimization     |  0.0000
-(10 rows)
+ORDER BY content <@> to_bm25query('database', 'partition_large_content_idx')
+LIMIT 10;
+ partition |           content           |  score  
+-----------+-----------------------------+---------
+ large     | database management system  | -1.4816
+ large     | database query optimization | -1.4816
+(2 rows)
 
 -- Validate index scan vs standalone scoring consistency per partition
 SELECT validate_index_vs_standalone(

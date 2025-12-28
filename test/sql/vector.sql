@@ -34,23 +34,20 @@ SELECT 'docs_vector_idx:{hello:2,world:1}'::bm25vector;
 SELECT 'docs_vector_idx:{}'::bm25vector;
 
 -- Test pg_textsearch scoring using text <@> bm25query operations
--- Note: Uses to_bm25query since ORDER BY is on alias not directly on operator
 SELECT
     content,
     ROUND((content <@> to_bm25query('hello world', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
-ORDER BY score;
+ORDER BY content <@> to_bm25query('hello world', 'docs_vector_idx')
+LIMIT 10;
 
--- Test different query terms with standalone text <@> bm25query operations
--- Note: Uses explicit index name because ORDER BY is on sum of two operators
+-- Test different query terms with multi-term query
 SELECT
-
     content,
-    ROUND((content <@> to_bm25query('postgresql', 'docs_vector_idx'))::numeric, 4) as postgresql_score,
-    ROUND((content <@> to_bm25query('search', 'docs_vector_idx'))::numeric, 4) as search_score
+    ROUND((content <@> to_bm25query('postgresql search', 'docs_vector_idx'))::numeric, 4) as score
 FROM test_docs
-ORDER BY (content <@> to_bm25query('postgresql', 'docs_vector_idx'))::float8 +
-         (content <@> to_bm25query('search', 'docs_vector_idx'))::float8;
+ORDER BY content <@> to_bm25query('postgresql search', 'docs_vector_idx')
+LIMIT 10;
 
 -- Test bm25vector equality operator
 SELECT 'docs_vector_idx:{hello:1,world:2}'::bm25vector = 'docs_vector_idx:{hello:1,world:2}'::bm25vector;

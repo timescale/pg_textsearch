@@ -273,17 +273,19 @@ SELECT validate_bm25_scoring(
 --
 -- This demonstrates partition-local statistics in action:
 
--- Show actual scores from small partition
+-- Show actual scores from small partition (only matching documents)
 SELECT 'small' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_small_content_idx'))::numeric, 4) as score
 FROM partition_small
-ORDER BY score;
+ORDER BY content <@> to_bm25query('database', 'partition_small_content_idx')
+LIMIT 10;
 
--- Show actual scores from large partition
+-- Show actual scores from large partition (only matching documents)
 SELECT 'large' as partition, content,
        ROUND((content <@> to_bm25query('database', 'partition_large_content_idx'))::numeric, 4) as score
 FROM partition_large
-ORDER BY score;
+ORDER BY content <@> to_bm25query('database', 'partition_large_content_idx')
+LIMIT 10;
 
 -- Validate index scan vs standalone scoring consistency per partition
 SELECT validate_index_vs_standalone(

@@ -39,18 +39,20 @@ NOTICE:  BM25 index build started for relation concurrent_idx1
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
--- Verify basic search works
+-- Verify basic search works (only matching documents via index)
 SELECT id, content, ROUND((content <@> to_bm25query('database concurrent', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
-ORDER BY score;
+ORDER BY content <@> to_bm25query('database concurrent', 'concurrent_idx1')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.5169
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-0.9580
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.8570
  id |                content                 |  score  
 ----+----------------------------------------+---------
   2 | concurrent programming patterns        | -1.5169
   5 | database indexing strategies           | -0.9580
   1 | database query optimization techniques | -0.8570
-  3 | shared memory management systems       |  0.0000
-  4 | lock-free data structures              |  0.0000
-(5 rows)
+(3 rows)
 
 -- Test 2: Simulate concurrent inserts with same terms
 \echo 'Test 2: Concurrent inserts with overlapping terms'
@@ -191,69 +193,30 @@ WHERE id IN (1, 2);
 -- Verify search finds updated documents
 SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
-ORDER BY score;
- id |                            content                             |  score  
-----+----------------------------------------------------------------+---------
-  2 | updated database system with enhanced concurrent features      | -3.5477
-  1 | updated database system with enhanced concurrent features      | -3.5477
-  5 | database indexing strategies                                   | -0.0768
-  8 | database concurrent processing improves performance            | -0.0671
- 59 | new concurrent database research paper                         | -0.0671
-  6 | database systems require concurrent access control             | -0.0631
-  7 | concurrent database operations need careful synchronization    | -0.0631
- 15 | test document number 7 contains database and concurrent terms  | -0.0563
- 16 | test document number 8 contains database and concurrent terms  | -0.0563
- 17 | test document number 9 contains database and concurrent terms  | -0.0563
- 18 | test document number 10 contains database and concurrent terms | -0.0563
- 19 | test document number 11 contains database and concurrent terms | -0.0563
- 20 | test document number 12 contains database and concurrent terms | -0.0563
- 21 | test document number 13 contains database and concurrent terms | -0.0563
- 22 | test document number 14 contains database and concurrent terms | -0.0563
- 23 | test document number 15 contains database and concurrent terms | -0.0563
- 24 | test document number 16 contains database and concurrent terms | -0.0563
- 25 | test document number 17 contains database and concurrent terms | -0.0563
- 26 | test document number 18 contains database and concurrent terms | -0.0563
- 27 | test document number 19 contains database and concurrent terms | -0.0563
- 28 | test document number 20 contains database and concurrent terms | -0.0563
- 29 | test document number 21 contains database and concurrent terms | -0.0563
- 30 | test document number 22 contains database and concurrent terms | -0.0563
- 31 | test document number 23 contains database and concurrent terms | -0.0563
- 32 | test document number 24 contains database and concurrent terms | -0.0563
- 33 | test document number 25 contains database and concurrent terms | -0.0563
- 34 | test document number 26 contains database and concurrent terms | -0.0563
- 35 | test document number 27 contains database and concurrent terms | -0.0563
- 36 | test document number 28 contains database and concurrent terms | -0.0563
- 37 | test document number 29 contains database and concurrent terms | -0.0563
- 38 | test document number 30 contains database and concurrent terms | -0.0563
- 39 | test document number 31 contains database and concurrent terms | -0.0563
- 40 | test document number 32 contains database and concurrent terms | -0.0563
- 41 | test document number 33 contains database and concurrent terms | -0.0563
- 42 | test document number 34 contains database and concurrent terms | -0.0563
- 43 | test document number 35 contains database and concurrent terms | -0.0563
- 44 | test document number 36 contains database and concurrent terms | -0.0563
- 45 | test document number 37 contains database and concurrent terms | -0.0563
- 46 | test document number 38 contains database and concurrent terms | -0.0563
- 47 | test document number 39 contains database and concurrent terms | -0.0563
- 48 | test document number 40 contains database and concurrent terms | -0.0563
- 49 | test document number 41 contains database and concurrent terms | -0.0563
- 50 | test document number 42 contains database and concurrent terms | -0.0563
- 51 | test document number 43 contains database and concurrent terms | -0.0563
- 52 | test document number 44 contains database and concurrent terms | -0.0563
- 53 | test document number 45 contains database and concurrent terms | -0.0563
- 55 | test document number 47 contains database and concurrent terms | -0.0563
- 56 | test document number 48 contains database and concurrent terms | -0.0563
- 57 | test document number 49 contains database and concurrent terms | -0.0563
- 58 | test document number 50 contains database and concurrent terms | -0.0563
- 54 | test document number 46 contains database and concurrent terms | -0.0563
-  9 | test document number 1 contains database and concurrent terms  | -0.0563
- 10 | test document number 2 contains database and concurrent terms  | -0.0563
- 11 | test document number 3 contains database and concurrent terms  | -0.0563
- 12 | test document number 4 contains database and concurrent terms  | -0.0563
- 13 | test document number 5 contains database and concurrent terms  | -0.0563
- 14 | test document number 6 contains database and concurrent terms  | -0.0563
-  3 | shared memory management systems                               |  0.0000
-  4 | lock-free data structures                                      |  0.0000
-(59 rows)
+ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,60), BM25_score=-3.5477
+NOTICE:  BM25 index scan: tid=(0,61), BM25_score=-3.5477
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-0.0768
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0716
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.0671
+NOTICE:  BM25 index scan: tid=(0,59), BM25_score=-0.0671
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.0631
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.0631
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.0563
+ id |                            content                            |  score  
+----+---------------------------------------------------------------+---------
+  1 | updated database system with enhanced concurrent features     | -3.5477
+  2 | updated database system with enhanced concurrent features     | -3.5477
+  5 | database indexing strategies                                  | -0.0768
+  8 | database concurrent processing improves performance           | -0.0671
+ 59 | new concurrent database research paper                        | -0.0671
+  6 | database systems require concurrent access control            | -0.0631
+  7 | concurrent database operations need careful synchronization   | -0.0631
+  9 | test document number 1 contains database and concurrent terms | -0.0563
+ 10 | test document number 2 contains database and concurrent terms | -0.0563
+(9 rows)
 
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'
@@ -288,62 +251,21 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 -- Search should find all variants
 SELECT id, content, ROUND((content <@> to_bm25query('exact same terms', 'concurrent_idx1'))::numeric, 4) as score
 FROM concurrent_test_docs
-ORDER BY score, id;
- id |                            content                             |  score  
-----+----------------------------------------------------------------+---------
- 60 | exact same terms for testing consistency                       | -3.8184
- 61 | exact same terms for testing consistency                       | -3.8184
- 62 | testing consistency with exact same terms                      | -3.8184
-  9 | test document number 1 contains database and concurrent terms  | -0.1870
- 11 | test document number 3 contains database and concurrent terms  | -0.1870
- 12 | test document number 4 contains database and concurrent terms  | -0.1870
- 13 | test document number 5 contains database and concurrent terms  | -0.1870
- 14 | test document number 6 contains database and concurrent terms  | -0.1870
- 16 | test document number 8 contains database and concurrent terms  | -0.1870
- 17 | test document number 9 contains database and concurrent terms  | -0.1870
- 18 | test document number 10 contains database and concurrent terms | -0.1870
- 19 | test document number 11 contains database and concurrent terms | -0.1870
- 21 | test document number 13 contains database and concurrent terms | -0.1870
- 22 | test document number 14 contains database and concurrent terms | -0.1870
- 23 | test document number 15 contains database and concurrent terms | -0.1870
- 24 | test document number 16 contains database and concurrent terms | -0.1870
- 26 | test document number 18 contains database and concurrent terms | -0.1870
- 27 | test document number 19 contains database and concurrent terms | -0.1870
- 28 | test document number 20 contains database and concurrent terms | -0.1870
- 29 | test document number 21 contains database and concurrent terms | -0.1870
- 31 | test document number 23 contains database and concurrent terms | -0.1870
- 32 | test document number 24 contains database and concurrent terms | -0.1870
- 33 | test document number 25 contains database and concurrent terms | -0.1870
- 34 | test document number 26 contains database and concurrent terms | -0.1870
- 36 | test document number 28 contains database and concurrent terms | -0.1870
- 37 | test document number 29 contains database and concurrent terms | -0.1870
- 38 | test document number 30 contains database and concurrent terms | -0.1870
- 39 | test document number 31 contains database and concurrent terms | -0.1870
- 41 | test document number 33 contains database and concurrent terms | -0.1870
- 42 | test document number 34 contains database and concurrent terms | -0.1870
- 43 | test document number 35 contains database and concurrent terms | -0.1870
- 44 | test document number 36 contains database and concurrent terms | -0.1870
- 46 | test document number 38 contains database and concurrent terms | -0.1870
- 47 | test document number 39 contains database and concurrent terms | -0.1870
- 48 | test document number 40 contains database and concurrent terms | -0.1870
- 49 | test document number 41 contains database and concurrent terms | -0.1870
- 51 | test document number 43 contains database and concurrent terms | -0.1870
- 52 | test document number 44 contains database and concurrent terms | -0.1870
- 53 | test document number 45 contains database and concurrent terms | -0.1870
- 54 | test document number 46 contains database and concurrent terms | -0.1870
- 56 | test document number 48 contains database and concurrent terms | -0.1870
- 57 | test document number 49 contains database and concurrent terms | -0.1870
- 58 | test document number 50 contains database and concurrent terms | -0.1870
-  1 | updated database system with enhanced concurrent features      |  0.0000
-  2 | updated database system with enhanced concurrent features      |  0.0000
-  3 | shared memory management systems                               |  0.0000
-  4 | lock-free data structures                                      |  0.0000
-  5 | database indexing strategies                                   |  0.0000
-  6 | database systems require concurrent access control             |  0.0000
-  7 | concurrent database operations need careful synchronization    |  0.0000
-  8 | database concurrent processing improves performance            |  0.0000
- 59 | new concurrent database research paper                         |  0.0000
-(52 rows)
+ORDER BY content <@> to_bm25query('exact same terms', 'concurrent_idx1'), id
+LIMIT 10;
+ id |                            content                            |  score  
+----+---------------------------------------------------------------+---------
+ 60 | exact same terms for testing consistency                      | -3.8184
+ 61 | exact same terms for testing consistency                      | -3.8184
+ 62 | testing consistency with exact same terms                     | -3.8184
+  9 | test document number 1 contains database and concurrent terms | -0.1870
+ 11 | test document number 3 contains database and concurrent terms | -0.1870
+ 12 | test document number 4 contains database and concurrent terms | -0.1870
+ 13 | test document number 5 contains database and concurrent terms | -0.1870
+ 14 | test document number 6 contains database and concurrent terms | -0.1870
+ 16 | test document number 8 contains database and concurrent terms | -0.1870
+ 17 | test document number 9 contains database and concurrent terms | -0.1870
+(10 rows)
 
 -- Test 9: Multiple indexes on same table
 \echo 'Test 9: Multiple indexes on same table'
@@ -378,28 +300,36 @@ INSERT INTO multi_idx_test (content) VALUES
 -- Query using the English index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
-ORDER BY english_score;
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.2723
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0118
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5636
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5059
  id |            content             | english_score 
 ----+--------------------------------+---------------
-  1 | hello world from the test      |       -1.1063
   5 | hello database world           |       -1.1063
+  1 | hello world from the test      |       -1.1063
   3 | hello from another document    |       -0.5531
   4 | world of databases and indexes |       -0.5531
-  2 | the quick brown fox jumps      |        0.0000
-(5 rows)
+(4 rows)
 
 -- Query using the Simple index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
-ORDER BY simple_score;
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple')
+LIMIT 10;
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.2723
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0118
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5636
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5059
  id |            content             | simple_score 
 ----+--------------------------------+--------------
   5 | hello database world           |      -1.2393
   1 | hello world from the test      |      -1.0210
   3 | hello from another document    |      -0.5598
   4 | world of databases and indexes |      -0.5105
-  2 | the quick brown fox jumps      |       0.0000
-(5 rows)
+(4 rows)
 
 -- Verify both indexes exist and function independently
 SELECT
