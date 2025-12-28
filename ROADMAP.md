@@ -37,7 +37,7 @@ Reduce storage footprint via posting list compression.
 - **Delta encoding**: Compact doc ID storage
 - **FOR/PFOR**: Frame-of-reference encoding for posting blocks
 
-### v1.0.0 - Production Ready (Target: Feb 2025)
+### v1.0.0 - Production Ready (Target: Feb 2026)
 
 First production-quality release.
 
