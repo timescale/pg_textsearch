@@ -41,11 +41,16 @@ SELECT 'Phase 1: memtable only' AS phase;
  Phase 1: memtable only
 (1 row)
 
-SELECT COUNT(*) AS count_before_spill FROM merge_test
-ORDER BY content <@> to_bm25query('hello', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')...
-                 ^
+SELECT COUNT(*) AS count_before_spill FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')
+    LIMIT 100
+) t;
+ count_before_spill 
+--------------------
+                  2
+(1 row)
+
 -- First spill creates segment 1 in L0
 SELECT bm25_spill_index('merge_test_idx') IS NOT NULL AS first_spill;
  first_spill 
@@ -60,11 +65,16 @@ SELECT 'Phase 1b: after first spill (1 segment in L0)' AS phase;
  Phase 1b: after first spill (1 segment in L0)
 (1 row)
 
-SELECT COUNT(*) AS hello_count_after_first_spill FROM merge_test
-ORDER BY content <@> to_bm25query('hello', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')...
-                 ^
+SELECT COUNT(*) AS hello_count_after_first_spill FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')
+    LIMIT 100
+) t;
+ hello_count_after_first_spill 
+-------------------------------
+                             2
+(1 row)
+
 --------------------------------------------------------------------------------
 -- Phase 2: Second batch - triggers L0->L1 merge (segments_per_level=2)
 --------------------------------------------------------------------------------
@@ -89,17 +99,27 @@ SELECT 'Phase 2: after second spill + merge (L0 empty, 1 segment in L1)' AS phas
 (1 row)
 
 -- Should find 2 documents with 'hello' (both in L1 merged segment)
-SELECT COUNT(*) AS hello_count_after_merge FROM merge_test
-ORDER BY content <@> to_bm25query('hello', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')...
-                 ^
+SELECT COUNT(*) AS hello_count_after_merge FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')
+    LIMIT 100
+) t;
+ hello_count_after_merge 
+-------------------------
+                       2
+(1 row)
+
 -- Should find 4 documents with 'database' (all in L1 merged segment)
-SELECT COUNT(*) AS database_count_after_merge FROM merge_test
-ORDER BY content <@> to_bm25query('database', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('database', 'merge_test_id...
-                 ^
+SELECT COUNT(*) AS database_count_after_merge FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
+    LIMIT 100
+) t;
+ database_count_after_merge 
+----------------------------
+                          3
+(1 row)
+
 -- Validate BM25 scoring is correct across L1 data
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
@@ -137,17 +157,27 @@ SELECT 'Phase 3: post-merge inserts (memtable + 1 L1 segment)' AS phase;
 (1 row)
 
 -- Should find 3 documents with 'hello' (2 in L1, 1 in memtable)
-SELECT COUNT(*) AS hello_count_with_new_inserts FROM merge_test
-ORDER BY content <@> to_bm25query('hello', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')...
-                 ^
+SELECT COUNT(*) AS hello_count_with_new_inserts FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('hello', 'merge_test_idx')
+    LIMIT 100
+) t;
+ hello_count_with_new_inserts 
+------------------------------
+                            3
+(1 row)
+
 -- Should find 5 documents with 'database' (4 in L1, 1 in memtable)
-SELECT COUNT(*) AS database_count_with_new_inserts FROM merge_test
-ORDER BY content <@> to_bm25query('database', 'merge_test_idx');
-ERROR:  column "merge_test.content" must appear in the GROUP BY clause or be used in an aggregate function
-LINE 2: ORDER BY content <@> to_bm25query('database', 'merge_test_id...
-                 ^
+SELECT COUNT(*) AS database_count_with_new_inserts FROM (
+    SELECT id FROM merge_test
+    ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
+    LIMIT 100
+) t;
+ database_count_with_new_inserts 
+---------------------------------
+                               4
+(1 row)
+
 -- Validate BM25 scoring with mixed sources (memtable + L1 segment)
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
