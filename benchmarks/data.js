@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766902892342,
+  "lastUpdate": 1766950899925,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5985,6 +5985,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
             "value": 98.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "SteveLauC",
+            "username": "SteveLauC",
+            "email": "stevelauc@outlook.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b9ee25614bb2d1969ac7723128ea37975c8acc6",
+          "message": "fix: buildempty() should write init fork (#89)\n\nAn index's `buildempty()` should modify the init fork, not the main\nfork. This commit replaces `ReadBuffer()` with\n`ReadBufferExtended(index, INIT_FORKNUM, P_NEW, RBM_NORMAL, NULL)` to\nfix the issue\n\nHere is how to verify the bug using commit\n20313076f2f43cab3f1a36be0f2805fea22bcf83:\n\n```sh\n$ cd pg_textsearch && git checkout 20313076f2f43cab\n$ make install\n$ psql\nsteve=# DROP EXTENSION IF EXISTS pg_textsearch;\nsteve=# create unlogged table test (content text);\nsteve=# create index idx_content on test using bm25 (content) with (text_config='english');\nsteve=# SELECT oid\nFROM pg_class\nWHERE relname = 'idx_content' AND relkind = 'i';\n  oid  \n-------\n 36129\n(1 row)\n\n#-- exit psql\n\n$ cd $PGDATA # cd to the PG data dir\n$ find . -name '36129*'\n./base/16384/36129_init\n./base/16384/36129\n\n$ ls -l ./base/16384/36129_init\n.rw------- 0 steve 24 Dec 12:25 ./base/16384/36129_init\n```\n\nYou can see that the init fork is empty, i.e., does not contain a meta\npage",
+          "timestamp": "2025-12-28T19:33:45Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8b9ee25614bb2d1969ac7723128ea37975c8acc6"
+        },
+        "date": 1766950899412,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 537177.944,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 7.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 18.576,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 15.659,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.035,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 4.725,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 40.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query with Score",
+            "value": 12.086,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query with Score",
+            "value": 22.079,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query with Score",
+            "value": 24.414,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query with Score",
+            "value": 14.337,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
+            "value": 53.66,
             "unit": "ms"
           },
           {
