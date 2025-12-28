@@ -5,11 +5,6 @@
 -- 1. Multiple L0 segments
 -- 2. L0 -> L1 merge triggered by segments_per_level = 2
 -- 3. Queries across multiple segment levels (L0, L1)
---
--- Known bug: Data from the first segment is lost during merge.
--- Document id=1 ('hello world database') is not found after merge for 'database'
--- or 'world' queries, though it IS found for 'hello'. This causes validation
--- failures for 'database' and 'world' terms.
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
@@ -84,7 +79,7 @@ SELECT COUNT(*) AS hello_count_after_merge FROM (
     LIMIT 100
 ) t;
 
--- Should find 4 documents with 'database' but only finds 3 due to merge bug (id=1 lost)
+-- Should find 4 documents with 'database' (all in L1 merged segment)
 SELECT COUNT(*) AS database_count_after_merge FROM (
     SELECT id FROM merge_test
     ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
@@ -92,7 +87,6 @@ SELECT COUNT(*) AS database_count_after_merge FROM (
 ) t;
 
 -- Validate BM25 scoring is correct across L1 data
--- Note: database and world validations fail due to merge bug losing id=1
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
        AS hello_valid_after_merge;
@@ -119,7 +113,7 @@ SELECT COUNT(*) AS hello_count_with_new_inserts FROM (
     LIMIT 100
 ) t;
 
--- Should find 5 documents with 'database' but only finds 4 due to merge bug (id=1 lost)
+-- Should find 5 documents with 'database' (4 in L1, 1 in memtable)
 SELECT COUNT(*) AS database_count_with_new_inserts FROM (
     SELECT id FROM merge_test
     ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
@@ -127,7 +121,6 @@ SELECT COUNT(*) AS database_count_with_new_inserts FROM (
 ) t;
 
 -- Validate BM25 scoring with mixed sources (memtable + L1 segment)
--- Note: database validation fails due to merge bug losing id=1
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
        AS hello_valid_mixed;
@@ -143,7 +136,6 @@ SELECT 'Phase 4: final verification' AS phase;
 SELECT COUNT(*) AS total_documents FROM merge_test;
 
 -- Show final scores for reference
--- Note: id=1 ('hello world database') is missing due to merge bug
 SELECT id, content,
        ROUND((content <@> to_bm25query('database', 'merge_test_idx'))::numeric, 4)
        AS database_score

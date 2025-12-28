@@ -5,11 +5,6 @@
 -- 1. Multiple L0 segments
 -- 2. L0 -> L1 merge triggered by segments_per_level = 2
 -- 3. Queries across multiple segment levels (L0, L1)
---
--- Known bug: Data from the first segment is lost during merge.
--- Document id=1 ('hello world database') is not found after merge for 'database'
--- or 'world' queries, though it IS found for 'hello'. This causes validation
--- failures for 'database' and 'world' terms.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.1.1-dev: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
@@ -111,7 +106,7 @@ SELECT COUNT(*) AS hello_count_after_merge FROM (
                        2
 (1 row)
 
--- Should find 4 documents with 'database' but only finds 3 due to merge bug (id=1 lost)
+-- Should find 4 documents with 'database' (all in L1 merged segment)
 SELECT COUNT(*) AS database_count_after_merge FROM (
     SELECT id FROM merge_test
     ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
@@ -119,11 +114,10 @@ SELECT COUNT(*) AS database_count_after_merge FROM (
 ) t;
  database_count_after_merge 
 ----------------------------
-                          3
+                          4
 (1 row)
 
 -- Validate BM25 scoring is correct across L1 data
--- Note: database and world validations fail due to merge bug losing id=1
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
        AS hello_valid_after_merge;
@@ -137,7 +131,7 @@ SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
        AS database_valid_after_merge;
  database_valid_after_merge 
 ----------------------------
- f
+ t
 (1 row)
 
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
@@ -145,7 +139,7 @@ SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
        AS world_valid_after_merge;
  world_valid_after_merge 
 -------------------------
- f
+ t
 (1 row)
 
 --------------------------------------------------------------------------------
@@ -170,7 +164,7 @@ SELECT COUNT(*) AS hello_count_with_new_inserts FROM (
                             3
 (1 row)
 
--- Should find 5 documents with 'database' but only finds 4 due to merge bug (id=1 lost)
+-- Should find 5 documents with 'database' (4 in L1, 1 in memtable)
 SELECT COUNT(*) AS database_count_with_new_inserts FROM (
     SELECT id FROM merge_test
     ORDER BY content <@> to_bm25query('database', 'merge_test_idx')
@@ -178,11 +172,10 @@ SELECT COUNT(*) AS database_count_with_new_inserts FROM (
 ) t;
  database_count_with_new_inserts 
 ---------------------------------
-                               4
+                               5
 (1 row)
 
 -- Validate BM25 scoring with mixed sources (memtable + L1 segment)
--- Note: database validation fails due to merge bug losing id=1
 SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
                              'hello', 'english', 1.2, 0.75)
        AS hello_valid_mixed;
@@ -196,7 +189,7 @@ SELECT validate_bm25_scoring('merge_test', 'content', 'merge_test_idx',
        AS database_valid_mixed;
  database_valid_mixed 
 ----------------------
- f
+ t
 (1 row)
 
 --------------------------------------------------------------------------------
@@ -215,7 +208,6 @@ SELECT COUNT(*) AS total_documents FROM merge_test;
 (1 row)
 
 -- Show final scores for reference
--- Note: id=1 ('hello world database') is missing due to merge bug
 SELECT id, content,
        ROUND((content <@> to_bm25query('database', 'merge_test_idx'))::numeric, 4)
        AS database_score
@@ -223,11 +215,12 @@ FROM merge_test
 ORDER BY content <@> to_bm25query('database', 'merge_test_idx'), id;
  id |         content          | database_score 
 ----+--------------------------+----------------
- 10 | database transaction log |        -0.8938
-  5 | database indexing query  |        -0.8938
-  7 | database world news      |        -0.8938
-  8 | goodbye database friend  |        -0.8938
-(4 rows)
+ 10 | database transaction log |        -0.6931
+  1 | hello world database     |        -0.6931
+  5 | database indexing query  |        -0.6931
+  7 | database world news      |        -0.6931
+  8 | goodbye database friend  |        -0.6931
+(5 rows)
 
 -- Cleanup
 DROP TABLE merge_test CASCADE;

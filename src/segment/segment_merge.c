@@ -697,6 +697,7 @@ collect_term_postings(
 	{
 		TpTermSegmentRef *ref	 = &term->segment_refs[i];
 		TpMergeSource	 *source = &sources[ref->segment_idx];
+
 		posting_source_init(&psources[i], source->reader, &ref->entry);
 	}
 
@@ -1346,13 +1347,20 @@ tp_merge_level_segments(Relation index, uint32 level)
 		current_merged->posting_count		  = 0; /* Set during write */
 		num_merged_terms++;
 
-		/* Record which segments have this term (don't load postings yet) */
+		/*
+		 * Record which segments have this term (don't load postings yet).
+		 * IMPORTANT: Use current_merged->term (the pstrdup'd copy) for
+		 * comparison, NOT min_term. When we advance sources[min_idx],
+		 * merge_source_advance() frees sources[min_idx].current_term, which
+		 * min_term points to. Using min_term after that would be
+		 * use-after-free undefined behavior.
+		 */
 		for (i = 0; i < num_sources; i++)
 		{
 			if (sources[i].exhausted)
 				continue;
 
-			if (strcmp(sources[i].current_term, min_term) == 0)
+			if (strcmp(sources[i].current_term, current_merged->term) == 0)
 			{
 				/* Record segment ref for later streaming merge */
 				merged_term_add_segment_ref(
