@@ -3,9 +3,14 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * registry.c - Global registry mapping index OIDs to shared state
+ *
+ * Uses a dshash (dynamic shared hash table) for O(1) lookups and no
+ * limit on the number of indexes (beyond available memory).
  */
 #include <postgres.h>
 
+#include <access/hash.h>
+#include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
 #include <storage/lwlock.h>
@@ -22,6 +27,85 @@ static TpGlobalRegistry *tapir_registry = NULL;
 static dsa_area *tapir_dsa = NULL;
 
 /*
+ * Hash function for Oid keys
+ */
+static uint32
+registry_hash_fn(const void *key, size_t keysize, void *arg)
+{
+	(void)keysize;
+	(void)arg;
+	return hash_bytes((const unsigned char *)key, sizeof(Oid));
+}
+
+/*
+ * Compare function for Oid keys
+ */
+static int
+registry_compare_fn(const void *a, const void *b, size_t keysize, void *arg)
+{
+	Oid oid_a = *(const Oid *)a;
+	Oid oid_b = *(const Oid *)b;
+
+	(void)keysize;
+	(void)arg;
+
+	if (oid_a < oid_b)
+		return -1;
+	if (oid_a > oid_b)
+		return 1;
+	return 0;
+}
+
+/*
+ * Copy function for Oid keys
+ */
+static void
+registry_copy_fn(void *dest, const void *src, size_t keysize, void *arg)
+{
+	(void)keysize;
+	(void)arg;
+	*(Oid *)dest = *(const Oid *)src;
+}
+
+/*
+ * Fill in dshash parameters for the registry
+ */
+static void
+get_registry_params(dshash_parameters *params)
+{
+	params->key_size		 = sizeof(Oid);
+	params->entry_size		 = sizeof(TpRegistryEntry);
+	params->compare_function = registry_compare_fn;
+	params->hash_function	 = registry_hash_fn;
+	params->copy_function	 = registry_copy_fn;
+	params->tranche_id		 = TP_REGISTRY_HASH_TRANCHE_ID;
+}
+
+/*
+ * Create the registry dshash table
+ */
+static dshash_table *
+registry_create(dsa_area *area)
+{
+	dshash_parameters params;
+
+	get_registry_params(&params);
+	return dshash_create(area, &params, NULL);
+}
+
+/*
+ * Attach to the registry dshash table
+ */
+static dshash_table *
+registry_attach(dsa_area *area, dshash_table_handle handle)
+{
+	dshash_parameters params;
+
+	get_registry_params(&params);
+	return dshash_attach(area, &params, handle, NULL);
+}
+
+/*
  * Request shared memory for the registry
  * Only effective when loaded via shared_preload_libraries
  * Without preloading, registry initializes lazily on first use
@@ -29,7 +113,7 @@ static dsa_area *tapir_dsa = NULL;
 void
 tp_registry_init(void)
 {
-	/* Request shared memory for the registry */
+	/* Request shared memory for the registry control structure */
 	RequestAddinShmemSpace(sizeof(TpGlobalRegistry));
 }
 
@@ -55,17 +139,9 @@ tp_registry_shmem_startup(void)
 		/* Initialize the registry lock */
 		LWLockInitialize(&tapir_registry->lock, LWLockNewTrancheId());
 
-		/* Initialize DSA handle as invalid */
-		tapir_registry->dsa_handle = DSA_HANDLE_INVALID;
-
-		/* Initialize all entries as not in use */
-		for (int i = 0; i < TP_MAX_INDEXES; i++)
-		{
-			tapir_registry->entries[i].index_oid	= InvalidOid;
-			tapir_registry->entries[i].shared_state = NULL;
-		}
-
-		tapir_registry->num_entries = 0;
+		/* Initialize handles as invalid - DSA/dshash created on first use */
+		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
+		tapir_registry->registry_handle = DSHASH_HANDLE_INVALID;
 	}
 
 	LWLockRelease(AddinShmemInitLock);
@@ -102,6 +178,7 @@ tp_registry_get_dsa(void)
 	{
 		/* First backend - create the DSA */
 		MemoryContext oldcontext;
+		dshash_table *registry_hash;
 		int			  tranche_id = LWLockNewTrancheId();
 
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
@@ -126,20 +203,18 @@ tp_registry_get_dsa(void)
 
 		/* Store handle for other backends */
 		tapir_registry->dsa_handle = dsa_get_handle(tapir_dsa);
+
+		/* Create the registry dshash */
+		registry_hash					= registry_create(tapir_dsa);
+		tapir_registry->registry_handle = dshash_get_hash_table_handle(
+				registry_hash);
+		dshash_detach(registry_hash);
 	}
 	else
 	{
 		/* DSA exists - attach to it */
 		MemoryContext oldcontext;
 
-		/* Register the tranche for this backend */
-		/* Note: We don't know the exact tranche_id here, but DSA handles this
-		 * internally */
-
-		/* Attach in TopMemoryContext so the dsa_area structure
-		 * doesn't get freed when query memory contexts are cleaned up.
-		 * This prevents heap-use-after-free errors when accessing the DSA
-		 * in subsequent queries. */
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		tapir_dsa  = dsa_attach(tapir_registry->dsa_handle);
 		MemoryContextSwitchTo(oldcontext);
@@ -161,92 +236,83 @@ tp_registry_get_dsa(void)
 
 /*
  * Register an index in the global registry
- * Returns true on success, false if registry is full
+ * Returns true on success (always succeeds with dshash - no limit)
  */
 bool
 tp_registry_register(
 		Oid index_oid, TpSharedIndexState *shared_state, dsa_pointer shared_dp)
 {
-	if (!tapir_registry)
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	bool			 found;
+
+	(void)shared_state; /* Not stored - we use DSA pointer instead */
+
+	/* Ensure DSA and registry are initialized */
+	tp_registry_get_dsa();
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Registry not attached in this backend - initialize it */
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-			elog(ERROR,
-				 "Failed to initialize Tapir registry for index %u",
-				 index_oid);
+		elog(ERROR,
+			 "Failed to initialize Tapir registry for index %u",
+			 index_oid);
 	}
 
-	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		elog(ERROR, "Failed to attach to registry hash table");
 
-	/* Check if already registered (shouldn't happen) */
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
-	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			/* Update the shared state and return */
-			tapir_registry->entries[i].shared_state	   = shared_state;
-			tapir_registry->entries[i].shared_state_dp = shared_dp;
-			LWLockRelease(&tapir_registry->lock);
-			return true;
-		}
-	}
+	/* Insert or update the entry */
+	entry = (TpRegistryEntry *)
+			dshash_find_or_insert(registry_hash, &index_oid, &found);
+	entry->index_oid	   = index_oid;
+	entry->shared_state_dp = shared_dp;
+	dshash_release_lock(registry_hash, entry);
 
-	/* Find an empty slot */
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
-	{
-		if (tapir_registry->entries[i].index_oid == InvalidOid)
-		{
-			tapir_registry->entries[i].index_oid	   = index_oid;
-			tapir_registry->entries[i].shared_state	   = shared_state;
-			tapir_registry->entries[i].shared_state_dp = shared_dp;
-			tapir_registry->num_entries++;
-			LWLockRelease(&tapir_registry->lock);
-			return true;
-		}
-	}
+	dshash_detach(registry_hash);
 
-	/* Registry is full - this is an error condition */
-	LWLockRelease(&tapir_registry->lock);
-	elog(ERROR, "Tapir registry full, cannot register index %u", index_oid);
-	/* Not reached, but keeps compiler happy */
-	return false;
+	return true;
 }
 
 /*
  * Look up an index in the registry
- * Returns the shared state pointer or NULL if not found
+ * Returns the shared state pointer (as DSA pointer cast) or NULL if not found
  */
 TpSharedIndexState *
 tp_registry_lookup(Oid index_oid)
 {
-	TpSharedIndexState *result = NULL;
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	dsa_pointer		 result = InvalidDsaPointer;
 
-	if (!tapir_registry)
+	/* Ensure DSA is initialized */
+	tp_registry_get_dsa();
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Registry not attached in this backend - initialize it */
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-			elog(ERROR, "Failed to initialize Tapir registry for lookup");
+		return NULL;
 	}
 
-	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return NULL;
 
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	if (entry)
 	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			/* Return the DSA pointer cast as a TpSharedIndexState pointer
-			 * The caller will convert it back to a DSA pointer */
-			result = (TpSharedIndexState *)(uintptr_t)tapir_registry
-							 ->entries[i]
-							 .shared_state_dp;
-			break;
-		}
+		result = entry->shared_state_dp;
+		dshash_release_lock(registry_hash, entry);
 	}
 
-	LWLockRelease(&tapir_registry->lock);
-	return result;
+	dshash_detach(registry_hash);
+
+	/* Return DSA pointer cast as TpSharedIndexState pointer
+	 * The caller will convert it back */
+	return (TpSharedIndexState *)(uintptr_t)result;
 }
 
 /*
@@ -256,28 +322,33 @@ tp_registry_lookup(Oid index_oid)
 dsa_pointer
 tp_registry_lookup_dsa(Oid index_oid)
 {
-	dsa_pointer result = InvalidDsaPointer;
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	dsa_pointer		 result = InvalidDsaPointer;
 
-	if (!tapir_registry)
+	/* Ensure DSA is initialized */
+	tp_registry_get_dsa();
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Registry not attached in this backend - initialize it */
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-			elog(ERROR, "Failed to initialize Tapir registry for lookup");
+		return InvalidDsaPointer;
 	}
 
-	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return InvalidDsaPointer;
 
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	if (entry)
 	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			result = tapir_registry->entries[i].shared_state_dp;
-			break;
-		}
+		result = entry->shared_state_dp;
+		dshash_release_lock(registry_hash, entry);
 	}
 
-	LWLockRelease(&tapir_registry->lock);
+	dshash_detach(registry_hash);
+
 	return result;
 }
 
@@ -288,24 +359,8 @@ tp_registry_lookup_dsa(Oid index_oid)
 dsa_pointer
 tp_registry_get_shared_dp(Oid index_oid)
 {
-	dsa_pointer result = InvalidDsaPointer;
-
-	if (!tapir_registry)
-		return InvalidDsaPointer;
-
-	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
-
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
-	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			result = tapir_registry->entries[i].shared_state_dp;
-			break;
-		}
-	}
-
-	LWLockRelease(&tapir_registry->lock);
-	return result;
+	/* Same implementation as tp_registry_lookup_dsa */
+	return tp_registry_lookup_dsa(index_oid);
 }
 
 /*
@@ -315,26 +370,44 @@ tp_registry_get_shared_dp(Oid index_oid)
 bool
 tp_registry_is_registered(Oid index_oid)
 {
-	bool result = false;
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	bool			 result = false;
 
+	/*
+	 * Don't try to initialize if registry doesn't exist yet.
+	 * This function is called from object access hook which may fire
+	 * before any index has been created.
+	 */
 	if (!tapir_registry)
 	{
-		/* Registry not initialized - can't be registered */
+		tp_registry_shmem_startup();
+		if (!tapir_registry)
+			return false;
+	}
+
+	if (tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 		return false;
-	}
 
-	LWLockAcquire(&tapir_registry->lock, LW_SHARED);
+	/* Ensure DSA is attached */
+	tp_registry_get_dsa();
+	if (!tapir_dsa)
+		return false;
 
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return false;
+
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	if (entry)
 	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			result = true;
-			break;
-		}
+		result = true;
+		dshash_release_lock(registry_hash, entry);
 	}
 
-	LWLockRelease(&tapir_registry->lock);
+	dshash_detach(registry_hash);
+
 	return result;
 }
 
@@ -345,52 +418,68 @@ tp_registry_is_registered(Oid index_oid)
 void
 tp_registry_unregister(Oid index_oid)
 {
-	if (!tapir_registry)
+	dshash_table *registry_hash;
+	bool		  deleted;
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Registry not initialized - nothing to unregister */
 		return;
 	}
 
-	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
+	/* Ensure DSA is attached */
+	tp_registry_get_dsa();
+	if (!tapir_dsa)
+		return;
 
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
-	{
-		if (tapir_registry->entries[i].index_oid == index_oid)
-		{
-			tapir_registry->entries[i].index_oid	   = InvalidOid;
-			tapir_registry->entries[i].shared_state	   = NULL;
-			tapir_registry->entries[i].shared_state_dp = InvalidDsaPointer;
-			tapir_registry->num_entries--;
-			break;
-		}
-	}
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return;
 
-	LWLockRelease(&tapir_registry->lock);
+	deleted = dshash_delete_key(registry_hash, &index_oid);
+	(void)deleted; /* Ignore if not found */
+
+	dshash_detach(registry_hash);
 }
 
 /*
  * Reset the DSA handle in the registry
  *
- * This is called when the extension is dropped to clear all index entries.
- * However, we DO NOT invalidate the DSA handle itself, as other backends
- * may still have references to it.
+ * This clears all index entries from the registry hash.
+ * Called when the extension is dropped.
  */
 void
 tp_registry_reset_dsa(void)
 {
-	if (!tapir_registry)
+	dshash_table	 *registry_hash;
+	dshash_seq_status status;
+	TpRegistryEntry	 *entry;
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+	{
+		return;
+	}
+
+	/* Ensure DSA is attached */
+	tp_registry_get_dsa();
+	if (!tapir_dsa)
 		return;
 
-	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return;
 
-	/* Clear all index entries */
-	for (int i = 0; i < TP_MAX_INDEXES; i++)
+	/* Delete all entries by iterating */
+	dshash_seq_init(&status, registry_hash, true); /* exclusive for deletion */
+
+	while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
 	{
-		tapir_registry->entries[i].index_oid	   = InvalidOid;
-		tapir_registry->entries[i].shared_state	   = NULL;
-		tapir_registry->entries[i].shared_state_dp = InvalidDsaPointer;
+		dshash_delete_current(&status);
 	}
-	tapir_registry->num_entries = 0;
 
-	LWLockRelease(&tapir_registry->lock);
+	dshash_seq_term(&status);
+	dshash_detach(registry_hash);
 }
