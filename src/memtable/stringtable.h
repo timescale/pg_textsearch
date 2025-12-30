@@ -13,10 +13,9 @@
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
+#include "posting.h"
+
 typedef struct TpStringHashEntry TpStringHashEntry;
-typedef struct TpPostingList	 TpPostingList;
-typedef struct TpLocalIndexState TpLocalIndexState;
-typedef struct TpPostingEntry	 TpPostingEntry;
 
 /*
  * Key structure that supports both lookup via char* and storage via

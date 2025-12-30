@@ -23,6 +23,7 @@
 #include "fieldnorm.h"
 #include "lib/dshash.h"
 #include "miscadmin.h"
+#include "pagemapper.h"
 #include "postgres.h"
 #include "segment.h"
 #include "storage/bufmgr.h"
@@ -39,12 +40,6 @@
  * Since segments are small and page maps are not frequently re-read in the
  * same backend, the performance impact of removing the cache is minimal.
  */
-
-/*
- * Usable data bytes per page, accounting for page header overhead.
- * This must be consistent between reader and writer.
- */
-#define SEGMENT_DATA_PER_PAGE (BLCKSZ - SizeOfPageHeaderData)
 
 /*
  * Helper function to read a term string at a given dictionary index.

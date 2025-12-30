@@ -20,6 +20,7 @@
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "memtable/stringtable.h"
 #include "metapage.h"
 #include "state.h"
 #include "vector.h"

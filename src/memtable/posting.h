@@ -3,6 +3,9 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * posting.h - In-memory posting list structures
+ *
+ * Defines TpPostingEntry and TpPostingList, the core data structures for
+ * memtable posting lists stored in DSA shared memory.
  */
 #pragma once
 
@@ -11,11 +14,34 @@
 #include <storage/itemptr.h>
 #include <storage/lwlock.h>
 #include <storage/spin.h>
+#include <utils/dsa.h>
 #include <utils/hsearch.h>
 
 #include "index.h"
-#include "memtable.h"
-#include "stringtable.h"
+
+/*
+ * Individual document occurrence within a posting list
+ */
+typedef struct TpPostingEntry
+{
+	ItemPointerData ctid;	   /* Document heap tuple ID */
+	int32			doc_id;	   /* Internal document ID */
+	int32			frequency; /* Term frequency in document */
+} TpPostingEntry;
+
+/*
+ * Posting list for a single term
+ * Uses dynamic arrays with O(1) amortized inserts during building,
+ * then sorts once at finalization for optimal query performance
+ */
+typedef struct TpPostingList
+{
+	int32		doc_count;	/* Length of the entries array */
+	int32		capacity;	/* Allocated array capacity */
+	bool		is_sorted;	/* True after final sort for queries */
+	int32		doc_freq;	/* Document frequency (for IDF calculation) */
+	dsa_pointer entries_dp; /* DSA pointer to TpPostingEntry array */
+} TpPostingList;
 
 /* Array growth multiplier */
 extern int tp_posting_list_growth_factor;

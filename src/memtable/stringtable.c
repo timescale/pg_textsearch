@@ -16,6 +16,7 @@
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
 #include "memory.h"
+#include "memtable.h"
 #include "posting.h"
 #include "state.h"
 #include "stringtable.h"

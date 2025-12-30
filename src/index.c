@@ -48,6 +48,7 @@
 #include "memory.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "memtable/stringtable.h"
 #include "metapage.h"
 #include "operator.h"
 #include "query.h"

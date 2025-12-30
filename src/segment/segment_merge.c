@@ -17,6 +17,7 @@
 #include "../metapage.h"
 #include "docmap.h"
 #include "fieldnorm.h"
+#include "pagemapper.h"
 #include "segment.h"
 #include "segment_merge.h"
 
@@ -91,9 +92,6 @@ typedef struct TpPostingMergeSource
 	TpBlockPosting *block_postings;	   /* Cached postings for current block */
 	uint32			block_capacity;	   /* Allocated size of block_postings */
 } TpPostingMergeSource;
-
-/* Data bytes per segment page (consistent with segment.c) */
-#define SEGMENT_DATA_PER_PAGE (BLCKSZ - SizeOfPageHeaderData)
 
 /*
  * Read term at index from a segment's dictionary.
