@@ -48,7 +48,7 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test: install
+test:
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -94,7 +94,7 @@ test-all: test test-shell
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
 # Override installcheck to run all tests (SQL regression + shell scripts)
-installcheck: install
+installcheck:
 	@$(MAKE) test
 	@$(MAKE) test-shell
 
