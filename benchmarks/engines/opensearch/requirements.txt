@@ -1,0 +1,2 @@
+# OpenSearch benchmark dependencies
+opensearch-py>=2.4.0
