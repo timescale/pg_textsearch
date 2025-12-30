@@ -672,6 +672,7 @@ jobs:
         echo "" >> benchmark_summary.md
 
         chmod +x benchmarks/runner/extract_metrics.sh
+        chmod +x benchmarks/runner/extract_realqueries_metrics.sh
 
         # Extract metrics per dataset when running "all"
         DATASET="${{ steps.datasets.outputs.dataset }}"
@@ -683,9 +684,18 @@ jobs:
               msmarco_metrics.json "msmarco" "MS MARCO" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               wikipedia_metrics.json "wikipedia" "Wikipedia" || true
+          # Extract real-query metrics for MS MARCO (new format)
+          ./benchmarks/runner/extract_realqueries_metrics.sh benchmark_results.txt \
+              msmarco_realqueries_metrics.json "msmarco-realqueries" || true
           # Also create combined for summary
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               benchmark_metrics.json "all" || true
+        elif [ "$DATASET" = "msmarco" ]; then
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              benchmark_metrics.json "$DATASET" || true
+          # Also extract real-query metrics
+          ./benchmarks/runner/extract_realqueries_metrics.sh benchmark_results.txt \
+              msmarco_realqueries_metrics.json "msmarco-realqueries" || true
         else
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               benchmark_metrics.json "$DATASET" || true
@@ -758,6 +768,7 @@ jobs:
       id: format_metrics
       run: |
         chmod +x benchmarks/runner/format_for_action.sh
+        chmod +x benchmarks/runner/format_realqueries_for_action.sh
         DATASET="${{ steps.datasets.outputs.dataset }}"
 
         if [ "$DATASET" = "all" ]; then
@@ -768,7 +779,24 @@ jobs:
                   "${name}_metrics.json" "${name}_action.json"
             fi
           done
+          # Format real-query metrics for MS MARCO
+          if [ -f "msmarco_realqueries_metrics.json" ]; then
+            ./benchmarks/runner/format_realqueries_for_action.sh \
+                msmarco_realqueries_metrics.json msmarco_realqueries_action.json
+          fi
           echo "is_all=true" >> $GITHUB_OUTPUT
+        elif [ "$DATASET" = "msmarco" ]; then
+          if [ -f benchmark_metrics.json ]; then
+            ./benchmarks/runner/format_for_action.sh \
+                benchmark_metrics.json benchmark_action.json
+          fi
+          # Also format real-query metrics
+          if [ -f "msmarco_realqueries_metrics.json" ]; then
+            ./benchmarks/runner/format_realqueries_for_action.sh \
+                msmarco_realqueries_metrics.json msmarco_realqueries_action.json
+          fi
+          echo "dataset=$DATASET" >> $GITHUB_OUTPUT
+          echo "is_all=false" >> $GITHUB_OUTPUT
         else
           if [ -f benchmark_metrics.json ]; then
             ./benchmarks/runner/format_for_action.sh \
@@ -800,6 +828,21 @@ jobs:
         name: 'msmarco Benchmarks'
         tool: 'customSmallerIsBetter'
         output-file-path: msmarco_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO Real Queries benchmark
+      if: always() && hashFiles('msmarco_realqueries_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco-realqueries Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_realqueries_action.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: true
         gh-pages-branch: gh-pages

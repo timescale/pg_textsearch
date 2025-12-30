@@ -1,249 +1,451 @@
 -- MS MARCO Passage Ranking - Query Benchmarks
--- Runs various query workloads against the indexed MS MARCO collection
+-- Uses real MS-MARCO queries from the loaded dataset
 -- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Query Benchmarks ==='
+\echo '=== MS MARCO Query Benchmarks (Real Queries) ==='
 \echo ''
 
--- Warm up: run a few queries to ensure index is cached
-\echo 'Warming up index...'
-SELECT passage_id FROM msmarco_passages
-ORDER BY passage_text <@> to_bm25query('test', 'msmarco_bm25_idx')
-LIMIT 10;
-
-SELECT passage_id FROM msmarco_passages
-ORDER BY passage_text <@> to_bm25query('example query', 'msmarco_bm25_idx')
-LIMIT 10;
-
--- ============================================================
--- Benchmark 1: Query Latency (10 iterations each, median reported)
--- ============================================================
-\echo ''
-\echo '=== Benchmark 1: Query Latency (10 iterations each) ==='
-\echo 'Running top-10 queries using the BM25 index'
-\echo ''
-
--- Helper function to run a query multiple times and return median execution time
-CREATE OR REPLACE FUNCTION benchmark_query(query_text text, iterations int DEFAULT 10)
-RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
-DECLARE
-    i int;
-    start_ts timestamp;
-    end_ts timestamp;
-    times numeric[];
-    sorted_times numeric[];
-BEGIN
-    times := ARRAY[]::numeric[];
-    FOR i IN 1..iterations LOOP
-        start_ts := clock_timestamp();
-        EXECUTE 'SELECT passage_id FROM msmarco_passages
-                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
-                 LIMIT 10' USING query_text;
-        end_ts := clock_timestamp();
-        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
-    END LOOP;
-    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
-    median_ms := sorted_times[(iterations + 1) / 2];
-    min_ms := sorted_times[1];
-    max_ms := sorted_times[iterations];
-    RETURN NEXT;
-END;
-$$ LANGUAGE plpgsql;
-
--- Short query (1 word)
-\echo 'Query 1: Short query (1 word) - "coffee"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query('coffee');
-
-\echo ''
-\echo 'Query 2: Medium query (3 words) - "how to cook"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query('how to cook');
-
-\echo ''
-\echo 'Query 3: Long query (question) - "what is the capital of france"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query('what is the capital of france');
-
-\echo ''
-\echo 'Query 4: Common term - "the"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query('the');
-
-\echo ''
-\echo 'Query 5: Rare term - "cryptocurrency blockchain"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query('cryptocurrency blockchain');
-
-DROP FUNCTION benchmark_query;
-
--- ============================================================
--- Benchmark 1b: Query Latency WITH SCORE (10 iterations each)
--- ============================================================
-\echo ''
-\echo '=== Benchmark 1b: Query Latency WITH SCORE (10 iterations each) ==='
-\echo 'Running top-10 queries with score in SELECT clause'
-\echo ''
-
--- Helper function for queries that return score
-CREATE OR REPLACE FUNCTION benchmark_query_with_score(query_text text, iterations int DEFAULT 10)
-RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
-DECLARE
-    i int;
-    start_ts timestamp;
-    end_ts timestamp;
-    times numeric[];
-    sorted_times numeric[];
-BEGIN
-    times := ARRAY[]::numeric[];
-    FOR i IN 1..iterations LOOP
-        start_ts := clock_timestamp();
-        EXECUTE 'SELECT passage_id, passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'') AS score
-                 FROM msmarco_passages
-                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
-                 LIMIT 10' USING query_text;
-        end_ts := clock_timestamp();
-        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
-    END LOOP;
-    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
-    median_ms := sorted_times[(iterations + 1) / 2];
-    min_ms := sorted_times[1];
-    max_ms := sorted_times[iterations];
-    RETURN NEXT;
-END;
-$$ LANGUAGE plpgsql;
-
--- Short query (1 word) with score
-\echo 'Query 1 (with score): Short query (1 word) - "coffee"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_with_score('coffee');
-
-\echo ''
-\echo 'Query 2 (with score): Medium query (3 words) - "how to cook"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_with_score('how to cook');
-
-\echo ''
-\echo 'Query 3 (with score): Long query (question) - "what is the capital of france"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_with_score('what is the capital of france');
-
-\echo ''
-\echo 'Query 4 (with score): Common term - "the"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_with_score('the');
-
-\echo ''
-\echo 'Query 5 (with score): Rare term - "cryptocurrency blockchain"'
-SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_with_score('cryptocurrency blockchain');
-
-DROP FUNCTION benchmark_query_with_score;
-
--- ============================================================
--- Benchmark 2: Query Throughput (batch of queries)
--- ============================================================
-\echo ''
-\echo '=== Benchmark 2: Query Throughput (20 queries) ==='
-\echo 'Running 20 sequential top-10 queries'
-
--- Time 20 queries in sequence
+-- Verify queries are loaded
 DO $$
 DECLARE
-    queries text[] := ARRAY[
-        'weather forecast', 'stock market', 'recipe chicken',
-        'python programming', 'machine learning', 'climate change',
-        'health benefits', 'travel destinations', 'movie reviews',
-        'sports scores', 'music history', 'science experiments',
-        'cooking tips', 'fitness exercises', 'book recommendations',
-        'technology news', 'financial advice', 'home improvement',
-        'garden plants', 'pet care'
-    ];
-    q text;
-    start_time timestamp;
-    end_time timestamp;
-    total_ms numeric := 0;
     cnt int;
 BEGIN
-    start_time := clock_timestamp();
-    FOREACH q IN ARRAY queries LOOP
+    SELECT COUNT(*) INTO cnt FROM msmarco_queries;
+    IF cnt = 0 THEN
+        RAISE EXCEPTION 'No queries loaded. Run load.sql first.';
+    END IF;
+    RAISE NOTICE 'Found % queries in msmarco_queries table', cnt;
+END $$;
+
+-- ============================================================
+-- Warm-up: Run a few queries to ensure index is cached
+-- ============================================================
+\echo ''
+\echo '=== Warming up index ==='
+DO $$
+DECLARE
+    q text;
+BEGIN
+    FOR q IN SELECT query_text FROM msmarco_queries LIMIT 5 LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q, 'msmarco_bm25_idx')
         LIMIT 10;
     END LOOP;
-    end_time := clock_timestamp();
-    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
-    RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in % ms (avg % ms/query)',
-        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
 END $$;
 
 -- ============================================================
--- Benchmark 2b: Query Throughput WITH SCORE (batch of queries)
+-- Benchmark 1: Full Throughput Test
+-- Run all dev queries and report aggregate statistics
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 2b: Query Throughput WITH SCORE (20 queries) ==='
-\echo 'Running 20 sequential top-10 queries with score in SELECT'
+\echo '=== Benchmark 1: Full Throughput Test (All Queries) ==='
 
--- Time 20 queries in sequence with score
 DO $$
 DECLARE
-    queries text[] := ARRAY[
-        'weather forecast', 'stock market', 'recipe chicken',
-        'python programming', 'machine learning', 'climate change',
-        'health benefits', 'travel destinations', 'movie reviews',
-        'sports scores', 'music history', 'science experiments',
-        'cooking tips', 'fitness exercises', 'book recommendations',
-        'technology news', 'financial advice', 'home improvement',
-        'garden plants', 'pet care'
-    ];
-    q text;
+    q record;
     start_time timestamp;
     end_time timestamp;
-    total_ms numeric := 0;
+    total_ms numeric;
+    query_count int;
 BEGIN
+    SELECT COUNT(*) INTO query_count FROM msmarco_queries;
+
     start_time := clock_timestamp();
-    FOREACH q IN ARRAY queries LOOP
-        PERFORM passage_id, passage_text <@> to_bm25query(q, 'msmarco_bm25_idx') AS score
-        FROM msmarco_passages
-        ORDER BY passage_text <@> to_bm25query(q, 'msmarco_bm25_idx')
+
+    FOR q IN SELECT query_id, query_text FROM msmarco_queries LOOP
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
         LIMIT 10;
     END LOOP;
+
     end_time := clock_timestamp();
     total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
-    RAISE NOTICE 'THROUGHPUT_RESULT_WITH_SCORE: 20 queries in % ms (avg % ms/query)',
-        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
+
+    RAISE NOTICE 'THROUGHPUT_ALL: % queries in %.2f ms', query_count, total_ms;
+    RAISE NOTICE 'THROUGHPUT_AVG: %.3f ms/query', total_ms / query_count;
+    RAISE NOTICE 'THROUGHPUT_QPS: %.2f queries/sec',
+        query_count / (total_ms / 1000.0);
 END $$;
 
 -- ============================================================
--- Benchmark 3: Index Statistics
+-- Benchmark 2: Query Length Analysis
+-- Group queries by word count and measure performance
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 3: Index Statistics ==='
+\echo '=== Benchmark 2: Query Length Analysis ==='
+
+-- Create temp table for timing results
+CREATE TEMP TABLE length_timing_results (
+    length_bucket text,
+    query_count int,
+    total_ms numeric,
+    avg_ms numeric
+);
+
+-- Short queries (1-2 words)
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        WHERE array_length(string_to_array(query_text, ' '), 1) <= 2
+    LOOP
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+        LIMIT 10;
+        query_count := query_count + 1;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO length_timing_results VALUES
+            ('1-2 words', query_count, total_ms, total_ms / query_count);
+    END IF;
+END $$;
+
+-- Medium queries (3-5 words)
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+    word_count int;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        WHERE array_length(string_to_array(query_text, ' '), 1) BETWEEN 3 AND 5
+    LOOP
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+        LIMIT 10;
+        query_count := query_count + 1;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO length_timing_results VALUES
+            ('3-5 words', query_count, total_ms, total_ms / query_count);
+    END IF;
+END $$;
+
+-- Long queries (6-8 words)
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        WHERE array_length(string_to_array(query_text, ' '), 1) BETWEEN 6 AND 8
+    LOOP
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+        LIMIT 10;
+        query_count := query_count + 1;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO length_timing_results VALUES
+            ('6-8 words', query_count, total_ms, total_ms / query_count);
+    END IF;
+END $$;
+
+-- Very long queries (9+ words)
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        WHERE array_length(string_to_array(query_text, ' '), 1) >= 9
+    LOOP
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+        LIMIT 10;
+        query_count := query_count + 1;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO length_timing_results VALUES
+            ('9+ words', query_count, total_ms, total_ms / query_count);
+    END IF;
+END $$;
+
+\echo ''
+\echo 'Query Length Performance:'
+SELECT
+    length_bucket as "Length",
+    query_count as "Count",
+    round(total_ms::numeric, 2) || ' ms' as "Total Time",
+    round(avg_ms::numeric, 3) || ' ms' as "Avg Time"
+FROM length_timing_results
+ORDER BY
+    CASE length_bucket
+        WHEN '1-2 words' THEN 1
+        WHEN '3-5 words' THEN 2
+        WHEN '6-8 words' THEN 3
+        WHEN '9+ words' THEN 4
+    END;
+
+DROP TABLE length_timing_results;
+
+-- ============================================================
+-- Benchmark 3: Latency Profiling (Percentiles)
+-- Sample queries for detailed latency distribution
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 3: Latency Profiling (100 Random Queries) ==='
+
+CREATE TEMP TABLE query_latencies (
+    query_id int,
+    latency_ms numeric
+);
+
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    latency numeric;
+BEGIN
+    -- Sample 100 random queries for latency profiling
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        ORDER BY random()
+        LIMIT 100
+    LOOP
+        start_time := clock_timestamp();
+
+        PERFORM passage_id FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+        LIMIT 10;
+
+        end_time := clock_timestamp();
+        latency := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+        INSERT INTO query_latencies VALUES (q.query_id, latency);
+    END LOOP;
+END $$;
+
+\echo ''
+\echo 'Latency Distribution:'
+SELECT
+    round(min(latency_ms)::numeric, 3) as "Min (ms)",
+    round(percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms)::numeric, 3)
+        as "P50 (ms)",
+    round(percentile_cont(0.90) WITHIN GROUP (ORDER BY latency_ms)::numeric, 3)
+        as "P90 (ms)",
+    round(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::numeric, 3)
+        as "P95 (ms)",
+    round(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::numeric, 3)
+        as "P99 (ms)",
+    round(max(latency_ms)::numeric, 3) as "Max (ms)",
+    round(avg(latency_ms)::numeric, 3) as "Avg (ms)"
+FROM query_latencies;
+
+DROP TABLE query_latencies;
+
+-- ============================================================
+-- Benchmark 4: Term Selectivity Analysis
+-- Compare performance of high vs low selectivity queries
+-- (Low selectivity = common terms, High selectivity = rare terms)
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 4: Term Selectivity Analysis ==='
+
+CREATE TEMP TABLE selectivity_results (
+    selectivity_bucket text,
+    query_count int,
+    total_ms numeric,
+    avg_ms numeric,
+    avg_result_count numeric
+);
+
+-- High selectivity queries (rare terms - return few results)
+-- These are queries that return < 1000 results at score threshold
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+    result_cnt int;
+    total_results bigint := 0;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        ORDER BY random()
+        LIMIT 200
+    LOOP
+        SELECT COUNT(*) INTO result_cnt
+        FROM msmarco_passages
+        WHERE passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+            < -1.0;
+
+        IF result_cnt < 1000 THEN
+            PERFORM passage_id FROM msmarco_passages
+            ORDER BY passage_text <@> to_bm25query(q.query_text,
+                'msmarco_bm25_idx')
+            LIMIT 10;
+            query_count := query_count + 1;
+            total_results := total_results + result_cnt;
+        END IF;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO selectivity_results VALUES
+            ('High (rare terms)', query_count, total_ms, total_ms / query_count,
+             total_results::numeric / query_count);
+    END IF;
+END $$;
+
+-- Low selectivity queries (common terms - return many results)
+DO $$
+DECLARE
+    q record;
+    start_time timestamp;
+    end_time timestamp;
+    total_ms numeric;
+    query_count int := 0;
+    result_cnt int;
+    total_results bigint := 0;
+BEGIN
+    start_time := clock_timestamp();
+
+    FOR q IN
+        SELECT query_id, query_text FROM msmarco_queries
+        ORDER BY random()
+        LIMIT 200
+    LOOP
+        SELECT COUNT(*) INTO result_cnt
+        FROM msmarco_passages
+        WHERE passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
+            < -1.0;
+
+        IF result_cnt >= 10000 THEN
+            PERFORM passage_id FROM msmarco_passages
+            ORDER BY passage_text <@> to_bm25query(q.query_text,
+                'msmarco_bm25_idx')
+            LIMIT 10;
+            query_count := query_count + 1;
+            total_results := total_results + result_cnt;
+        END IF;
+    END LOOP;
+
+    end_time := clock_timestamp();
+    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+
+    IF query_count > 0 THEN
+        INSERT INTO selectivity_results VALUES
+            ('Low (common terms)', query_count, total_ms, total_ms / query_count,
+             total_results::numeric / query_count);
+    END IF;
+END $$;
+
+\echo ''
+\echo 'Term Selectivity Performance:'
+SELECT
+    selectivity_bucket as "Selectivity",
+    query_count as "Count",
+    round(avg_ms::numeric, 3) || ' ms' as "Avg Time",
+    round(avg_result_count::numeric, 0) as "Avg Results"
+FROM selectivity_results
+ORDER BY selectivity_bucket DESC;
+
+DROP TABLE selectivity_results;
+
+-- ============================================================
+-- Benchmark 5: Sample Query Results (with scores)
+-- Show actual results for a few queries to verify correctness
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 5: Sample Query Results ==='
+
+-- Pick 3 random queries and show top-3 results
+DO $$
+DECLARE
+    q record;
+    r record;
+BEGIN
+    FOR q IN SELECT query_id, query_text FROM msmarco_queries
+             ORDER BY random() LIMIT 3 LOOP
+        RAISE NOTICE '';
+        RAISE NOTICE 'Query %: "%"', q.query_id, q.query_text;
+        RAISE NOTICE '  Top 3 results:';
+
+        FOR r IN
+            SELECT
+                passage_id,
+                round((passage_text <@> to_bm25query(q.query_text,
+                    'msmarco_bm25_idx'))::numeric, 4) as score,
+                left(passage_text, 60) || '...' as preview
+            FROM msmarco_passages
+            ORDER BY passage_text <@> to_bm25query(q.query_text,
+                'msmarco_bm25_idx')
+            LIMIT 3
+        LOOP
+            RAISE NOTICE '    [%] score=% "%"',
+                r.passage_id, r.score, r.preview;
+        END LOOP;
+    END LOOP;
+END $$;
+
+-- ============================================================
+-- Benchmark 6: Index Statistics
+-- ============================================================
+\echo ''
+\echo '=== Benchmark 6: Index Statistics ==='
 
 SELECT
     'msmarco_bm25_idx' as index_name,
     pg_size_pretty(pg_relation_size('msmarco_bm25_idx')) as index_size,
     pg_size_pretty(pg_relation_size('msmarco_passages')) as table_size,
-    (SELECT COUNT(*) FROM msmarco_passages) as num_documents;
+    (SELECT COUNT(*) FROM msmarco_passages) as num_documents,
+    (SELECT COUNT(*) FROM msmarco_queries) as num_queries;
 
 -- ============================================================
--- Summary: Extract key metrics for historical tracking
+-- Summary
 -- ============================================================
-\echo ''
-\echo '=== BENCHMARK SUMMARY (for historical tracking) ==='
-\echo 'Format: METRIC_NAME: value unit'
-
--- Re-run key queries and extract execution time only
-\echo ''
-\o /dev/null
-SELECT passage_id FROM msmarco_passages
-ORDER BY passage_text <@> to_bm25query('coffee', 'msmarco_bm25_idx')
-LIMIT 10;
-\o
-\echo 'See EXPLAIN ANALYZE output above for per-query latencies'
-
 \echo ''
 \echo '=== MS MARCO Query Benchmarks Complete ==='
