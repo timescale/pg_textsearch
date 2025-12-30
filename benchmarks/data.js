@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1766989163447,
+  "lastUpdate": 1767075644023,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2464,6 +2464,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
             "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "058dc902ac7802f7a6cd6a62c7d3aaf89a541b8f",
+          "message": "Update v1.0.0 target date to Feb 2026 (#97)\n\n## Summary\n- Updates the v1.0.0 release target from Feb 2025 to Feb 2026\n\nFixes #92",
+          "timestamp": "2025-12-28T20:03:50Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/058dc902ac7802f7a6cd6a62c7d3aaf89a541b8f"
+        },
+        "date": 1767075643516,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 260.826,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Short Query (1 word)",
+            "value": 0.118,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Medium Query (3 words)",
+            "value": 0.176,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Long Query (question)",
+            "value": 0.177,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Common Term Query",
+            "value": 0.143,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Rare Term Query",
+            "value": 0.052,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
+            "value": 0.23,
             "unit": "ms"
           },
           {
