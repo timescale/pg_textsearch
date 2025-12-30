@@ -265,8 +265,9 @@
         if (typeof window.BENCHMARK_DATA !== 'undefined') {
             const container = document.getElementById('charts');
 
-            // Define explicit order: MS-MARCO first, then Wikipedia, then Cranfield
+            // Define explicit order: MS-MARCO Real Queries first, then others
             const suiteOrder = [
+                'msmarco-realqueries Benchmarks',
                 'msmarco Benchmarks',
                 'wikipedia Benchmarks',
                 'cranfield Benchmarks'
