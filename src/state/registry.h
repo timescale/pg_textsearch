@@ -51,8 +51,6 @@ extern void tp_registry_shmem_startup(void);
 
 /* DSA management */
 extern dsa_area *tp_registry_get_dsa(void);
-extern void		 tp_registry_detach_dsa(void);
-extern void		 tp_registry_reset_dsa(void);
 
 /* Registry operations */
 extern bool tp_registry_register(
@@ -61,6 +59,5 @@ extern bool tp_registry_register(
 		dsa_pointer			shared_dp);
 extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
 extern dsa_pointer		   tp_registry_lookup_dsa(Oid index_oid);
-extern dsa_pointer		   tp_registry_get_shared_dp(Oid index_oid);
 extern bool				   tp_registry_is_registered(Oid index_oid);
 extern void				   tp_registry_unregister(Oid index_oid);

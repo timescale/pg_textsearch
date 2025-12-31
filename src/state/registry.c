@@ -353,17 +353,6 @@ tp_registry_lookup_dsa(Oid index_oid)
 }
 
 /*
- * Get DSA pointer to shared state from the registry
- * Returns the DSA pointer or InvalidDsaPointer if not found
- */
-dsa_pointer
-tp_registry_get_shared_dp(Oid index_oid)
-{
-	/* Same implementation as tp_registry_lookup_dsa */
-	return tp_registry_lookup_dsa(index_oid);
-}
-
-/*
  * Check if an index is registered
  * Returns true if the index is in the registry, false otherwise
  */
@@ -440,46 +429,5 @@ tp_registry_unregister(Oid index_oid)
 	deleted = dshash_delete_key(registry_hash, &index_oid);
 	(void)deleted; /* Ignore if not found */
 
-	dshash_detach(registry_hash);
-}
-
-/*
- * Reset the DSA handle in the registry
- *
- * This clears all index entries from the registry hash.
- * Called when the extension is dropped.
- */
-void
-tp_registry_reset_dsa(void)
-{
-	dshash_table	 *registry_hash;
-	dshash_seq_status status;
-	TpRegistryEntry	 *entry;
-
-	if (!tapir_registry ||
-		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
-	{
-		return;
-	}
-
-	/* Ensure DSA is attached */
-	tp_registry_get_dsa();
-	if (!tapir_dsa)
-		return;
-
-	registry_hash =
-			registry_attach(tapir_dsa, tapir_registry->registry_handle);
-	if (!registry_hash)
-		return;
-
-	/* Delete all entries by iterating */
-	dshash_seq_init(&status, registry_hash, true); /* exclusive for deletion */
-
-	while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
-	{
-		dshash_delete_current(&status);
-	}
-
-	dshash_seq_term(&status);
 	dshash_detach(registry_hash);
 }

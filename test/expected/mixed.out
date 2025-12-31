@@ -325,10 +325,10 @@ NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5636
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5059
  id |            content             | simple_score 
 ----+--------------------------------+--------------
-  5 | hello database world           |      -1.2393
-  1 | hello world from the test      |      -1.0210
-  3 | hello from another document    |      -0.5598
-  4 | world of databases and indexes |      -0.5105
+  5 | hello database world           |      -1.2723
+  1 | hello world from the test      |      -1.0118
+  3 | hello from another document    |      -0.5636
+  4 | world of databases and indexes |      -0.5059
 (4 rows)
 
 -- Verify both indexes exist and function independently

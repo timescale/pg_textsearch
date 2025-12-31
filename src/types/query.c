@@ -620,24 +620,27 @@ calculate_term_score(
 		float4 idf,
 		float4 doc_length,
 		float4 avg_doc_len,
+		float4 k1,
+		float4 b,
 		int	   query_freq)
 {
 	double numerator_d;
 	double denominator_d;
 	float4 term_score;
 
-	/* BM25 formula with default k1=1.2, b=0.75 */
-	numerator_d = (double)tf * (1.2 + 1.0);
+	/* BM25 formula: IDF * tf*(k1+1) / (tf + k1*(1-b+b*dl/avgdl)) */
+	numerator_d = (double)tf * ((double)k1 + 1.0);
 
 	if (avg_doc_len > 0.0f)
 	{
-		denominator_d = (double)tf + 1.2 * (1.0 - 0.75 +
-											0.75 * ((double)doc_length /
-													(double)avg_doc_len));
+		denominator_d = (double)tf +
+						(double)k1 * (1.0 - (double)b +
+									  (double)b * ((double)doc_length /
+												   (double)avg_doc_len));
 	}
 	else
 	{
-		denominator_d = (double)tf + 1.2;
+		denominator_d = (double)tf + (double)k1;
 	}
 
 	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
@@ -926,7 +929,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 
 			/* Calculate BM25 term score */
 			term_score = calculate_term_score(
-					tf, idf, doc_length, avg_doc_len, query_freq);
+					tf,
+					idf,
+					doc_length,
+					avg_doc_len,
+					metap->k1,
+					metap->b,
+					query_freq);
 
 			/* Accumulate the score */
 			result += term_score;

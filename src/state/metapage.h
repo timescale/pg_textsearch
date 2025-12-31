@@ -78,5 +78,4 @@ tp_update_metapage_stats(Relation index, int32 doc_delta, int64 len_delta);
  */
 extern void tp_add_docid_to_pages(Relation index, ItemPointer ctid);
 extern void tp_clear_docid_pages(Relation index);
-extern void tp_recover_from_docid_pages(Relation index);
 extern void tp_invalidate_docid_cache(void);

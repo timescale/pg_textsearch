@@ -42,6 +42,3 @@ extern TpPostingList *
 tp_get_posting_list(TpLocalIndexState *local_state, const char *term);
 extern TpPostingList *tp_get_or_create_posting_list(
 		TpLocalIndexState *local_state, const char *term);
-
-/* DSA-based per-index management */
-extern void tp_destroy_index_dsa(Oid index_oid);
