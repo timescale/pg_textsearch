@@ -64,10 +64,10 @@ BEGIN
     end_time := clock_timestamp();
     total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
 
-    RAISE NOTICE 'THROUGHPUT_ALL: % queries in %.2f ms', query_count, total_ms;
-    RAISE NOTICE 'THROUGHPUT_AVG: %.3f ms/query', total_ms / query_count;
-    RAISE NOTICE 'THROUGHPUT_QPS: %.2f queries/sec',
-        query_count / (total_ms / 1000.0);
+    RAISE NOTICE 'THROUGHPUT_ALL: % queries in % ms', query_count, round(total_ms::numeric, 2);
+    RAISE NOTICE 'THROUGHPUT_AVG: % ms/query', round((total_ms / query_count)::numeric, 3);
+    RAISE NOTICE 'THROUGHPUT_QPS: % queries/sec',
+        round((query_count / (total_ms / 1000.0))::numeric, 2);
 END $$;
 
 -- ============================================================
