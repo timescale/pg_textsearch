@@ -12,6 +12,17 @@
 
 typedef struct TpLocalIndexState TpLocalIndexState;
 
+/*
+ * Document score entry for query result accumulation.
+ * Used by both segment/scan.c and types/score.c for BM25 scoring.
+ */
+typedef struct DocumentScoreEntry
+{
+	ItemPointerData ctid;
+	float4			score;
+	float4			doc_length;
+} DocumentScoreEntry;
+
 extern int tp_score_documents(
 		TpLocalIndexState *local_state,
 		Relation		   index_relation,

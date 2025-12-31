@@ -18,7 +18,7 @@
 #include "memory.h"
 #include "memtable.h"
 #include "posting.h"
-#include "state.h"
+#include "state/state.h"
 #include "stringtable.h"
 
 /*

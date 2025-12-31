@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment_merge.c - Segment merge for LSM-style compaction
+ * segment/merge.c - Segment merge for LSM-style compaction
  */
 #include <postgres.h>
 
@@ -13,17 +13,17 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
-#include "../constants.h"
-#include "../metapage.h"
+#include "constants.h"
 #include "docmap.h"
 #include "fieldnorm.h"
+#include "merge.h"
 #include "pagemapper.h"
 #include "segment.h"
-#include "segment_merge.h"
+#include "state/metapage.h"
 
 /*
  * Merge source state - tracks current position in each source segment
- * Updated for V2 segment format.
+ * Updated for segment format.
  */
 typedef struct TpMergeSource
 {
@@ -31,7 +31,7 @@ typedef struct TpMergeSource
 	uint32			 current_idx;	 /* Current term index in dictionary */
 	uint32			 num_terms;		 /* Total terms in this segment */
 	char			*current_term;	 /* Current term text (palloc'd) */
-	TpDictEntryV2	 current_entry;	 /* V2 dictionary entry */
+	TpDictEntry		 current_entry;	 /* dictionary entry */
 	bool			 exhausted;		 /* True if no more terms */
 	uint32			*string_offsets; /* Cached string offsets array */
 } TpMergeSource;
@@ -42,8 +42,8 @@ typedef struct TpMergeSource
  */
 typedef struct TpTermSegmentRef
 {
-	int			  segment_idx; /* Index into sources array */
-	TpDictEntryV2 entry;	   /* V2 dict entry from that segment */
+	int			segment_idx; /* Index into sources array */
+	TpDictEntry entry;		 /* dict entry from that segment */
 } TpTermSegmentRef;
 
 /*
@@ -75,7 +75,7 @@ typedef struct TpMergePostingInfo
 
 /*
  * Posting merge source - tracks position in one segment's posting list
- * for streaming N-way merge. Updated for V2 block-based format.
+ * for streaming N-way merge. Updated for block-based format.
  */
 typedef struct TpPostingMergeSource
 {
@@ -83,7 +83,7 @@ typedef struct TpPostingMergeSource
 	TpMergePostingInfo current;	  /* Current posting info */
 	bool			   exhausted; /* No more postings */
 
-	/* V2 block iteration state */
+	/* block iteration state */
 	uint32			skip_index_offset; /* Offset to skip entries */
 	uint16			block_count;	   /* Total blocks */
 	uint32			current_block;	   /* Current block index */
@@ -152,13 +152,13 @@ merge_source_advance(TpMergeSource *source)
 	source->current_term =
 			merge_read_term_at_index(source, source->current_idx);
 
-	/* Read the V2 dictionary entry */
+	/* Read the dictionary entry */
 	tp_segment_read(
 			source->reader,
 			header->entries_offset +
-					(source->current_idx * sizeof(TpDictEntryV2)),
+					(source->current_idx * sizeof(TpDictEntry)),
 			&source->current_entry,
-			sizeof(TpDictEntryV2));
+			sizeof(TpDictEntry));
 
 	return true;
 }
@@ -279,7 +279,7 @@ merge_find_min_source(TpMergeSource *sources, int num_sources)
  */
 static void
 merged_term_add_segment_ref(
-		TpMergedTerm *term, int segment_idx, TpDictEntryV2 *entry)
+		TpMergedTerm *term, int segment_idx, TpDictEntry *entry)
 {
 	/* Grow array if needed */
 	if (term->num_segment_refs >= term->segment_refs_capacity)
@@ -303,7 +303,7 @@ merged_term_add_segment_ref(
 }
 
 /*
- * Load the next block of postings for V2 merge source.
+ * Load the next block of postings for merge source.
  * Returns true if a block was loaded, false if no more blocks remain.
  */
 static bool
@@ -389,13 +389,11 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 }
 
 /*
- * Initialize a posting merge source for V2 streaming.
+ * Initialize a posting merge source for streaming.
  */
 static void
 posting_source_init(
-		TpPostingMergeSource *ps,
-		TpSegmentReader		 *reader,
-		TpDictEntryV2		 *entry)
+		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry)
 {
 	memset(ps, 0, sizeof(TpPostingMergeSource));
 	ps->reader			  = reader;
@@ -655,7 +653,7 @@ free_merge_doc_mapping(TpMergeDocMapping *mapping)
 }
 
 /*
- * Collected posting for V2 output.
+ * Collected posting for output.
  * Stores source segment info for direct mapping lookup (avoids hash lookup).
  */
 typedef struct CollectedPosting
@@ -736,7 +734,7 @@ collect_term_postings(
 }
 
 /*
- * Per-term block info for V2 merge output.
+ * Per-term block info for merge output.
  * Updated for streaming format: postings written before skip index.
  */
 typedef struct MergeTermBlockInfo
@@ -748,7 +746,7 @@ typedef struct MergeTermBlockInfo
 } MergeTermBlockInfo;
 
 /*
- * Write a merged segment in V2 streaming format.
+ * Write a merged segment in streaming format.
  *
  * Layout: [header] → [dictionary] → [postings] → [skip index] →
  *         [fieldnorm] → [ctid map]
@@ -802,7 +800,7 @@ write_merged_segment(
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
 	header.magic		= TP_SEGMENT_MAGIC;
-	header.version		= TP_SEGMENT_FORMAT_V2;
+	header.version		= TP_SEGMENT_FORMAT_VERSION;
 	header.created_at	= GetCurrentTimestamp();
 	header.num_pages	= 0;
 	header.num_terms	= num_terms;
@@ -840,7 +838,7 @@ write_merged_segment(
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntryV2);
+		uint32 dict_offset = i * sizeof(TpDictEntry);
 
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
 		tp_segment_writer_write(&writer, terms[i].term, length);
@@ -852,11 +850,11 @@ write_merged_segment(
 
 	/* Write placeholder dict entries - we'll fill them in after streaming */
 	{
-		TpDictEntryV2 placeholder;
-		memset(&placeholder, 0, sizeof(TpDictEntryV2));
+		TpDictEntry placeholder;
+		memset(&placeholder, 0, sizeof(TpDictEntry));
 		for (i = 0; i < num_terms; i++)
 			tp_segment_writer_write(
-					&writer, &placeholder, sizeof(TpDictEntryV2));
+					&writer, &placeholder, sizeof(TpDictEntry));
 	}
 
 	/* Postings start here - streaming format writes postings first */
@@ -1014,8 +1012,6 @@ write_merged_segment(
 				docmap->num_docs * sizeof(OffsetNumber));
 	}
 
-	header.doc_lengths_offset = writer.current_offset;
-
 	/* Flush and write page index */
 	tp_segment_writer_flush(&writer);
 
@@ -1043,10 +1039,10 @@ write_merged_segment(
 
 		for (i = 0; i < num_terms; i++)
 		{
-			TpDictEntryV2 entry;
-			uint32		  entry_offset;
-			uint32		  page_offset;
-			BlockNumber	  physical_block;
+			TpDictEntry entry;
+			uint32		entry_offset;
+			uint32		page_offset;
+			BlockNumber physical_block;
 
 			/* Build the entry */
 			entry.skip_index_offset = header.skip_index_offset +
@@ -1057,7 +1053,7 @@ write_merged_segment(
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset + (i * sizeof(TpDictEntryV2));
+			entry_offset = header.entries_offset + (i * sizeof(TpDictEntry));
 			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
 			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
 
@@ -1081,13 +1077,13 @@ write_merged_segment(
 				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
 											page_offset;
 
-				if (bytes_on_this_page >= sizeof(TpDictEntryV2))
+				if (bytes_on_this_page >= sizeof(TpDictEntry))
 				{
 					/* Entry fits entirely on this page */
 					Page  page = BufferGetPage(dict_buf);
 					char *dest = (char *)page + SizeOfPageHeaderData +
 								 page_offset;
-					memcpy(dest, &entry, sizeof(TpDictEntryV2));
+					memcpy(dest, &entry, sizeof(TpDictEntry));
 				}
 				else
 				{
@@ -1120,7 +1116,7 @@ write_merged_segment(
 					dest = (char *)page + SizeOfPageHeaderData;
 					memcpy(dest,
 						   src + bytes_on_this_page,
-						   sizeof(TpDictEntryV2) - bytes_on_this_page);
+						   sizeof(TpDictEntry) - bytes_on_this_page);
 				}
 			}
 		}
@@ -1150,7 +1146,6 @@ write_merged_segment(
 	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
 	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
 	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-	existing_header->doc_lengths_offset	 = header.doc_lengths_offset;
 	existing_header->num_docs			 = header.num_docs;
 	existing_header->data_size			 = header.data_size;
 	existing_header->num_pages			 = header.num_pages;

@@ -13,7 +13,7 @@
 #include <nodes/pathnodes.h>
 #include <utils/guc.h>
 
-#include "limit.h"
+#include "state/limit.h"
 
 /*
  * Per-backend structure for current query limit - stores LIMIT value

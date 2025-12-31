@@ -23,12 +23,12 @@
 #include <utils/syscache.h>
 #include <varatt.h>
 
+#include "am/am.h"
 #include "constants.h"
-#include "index.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "metapage.h"
-#include "vector.h"
+#include "state/metapage.h"
+#include "types/vector.h"
 
 /* Local helper functions */
 

@@ -6,9 +6,11 @@
  */
 #pragma once
 
-#include "../constants.h"
-#include "access/htup_details.h"
-#include "postgres.h"
+#include <postgres.h>
+
+#include <access/htup_details.h>
+
+#include "constants.h"
 #include "storage/bufmgr.h"
 #include "storage/itemptr.h"
 #include "utils/timestamp.h"
@@ -39,21 +41,18 @@ typedef struct TpPageIndexSpecial
 } TpPageIndexSpecial;
 
 /*
- * Segment format versions
+ * Segment format version
  */
-#define TP_SEGMENT_FORMAT_V1 1 /* Original: flat posting lists */
-#define TP_SEGMENT_FORMAT_V2 2 /* Block storage with skip index */
+#define TP_SEGMENT_FORMAT_VERSION 2 /* Block storage with skip index */
 
 /*
  * Segment header - stored on the first page
- *
- * V2 format adds: skip_index_offset, fieldnorm_offset, ctid storage
  */
 typedef struct TpSegmentHeader
 {
 	/* Metadata */
 	uint32		magic;		/* TP_SEGMENT_MAGIC */
-	uint32		version;	/* Format version (V1 or V2) */
+	uint32		version;	/* Format version */
 	TimestampTz created_at; /* Creation time */
 	uint32		num_pages;	/* Total pages in segment */
 	uint32		data_size;	/* Total data bytes */
@@ -62,14 +61,13 @@ typedef struct TpSegmentHeader
 	uint32		level;		  /* Storage level (0 for memtable flush) */
 	BlockNumber next_segment; /* Next segment in chain */
 
-	/* Section offsets in logical file (V1 format) */
-	uint32 dictionary_offset;  /* Offset to TpDictionary */
-	uint32 strings_offset;	   /* Offset to string pool */
-	uint32 entries_offset;	   /* Offset to TpDictEntry array */
-	uint32 postings_offset;	   /* Offset to posting data */
-	uint32 doc_lengths_offset; /* Offset to document lengths (V1) */
+	/* Section offsets in logical file */
+	uint32 dictionary_offset; /* Offset to TpDictionary */
+	uint32 strings_offset;	  /* Offset to string pool */
+	uint32 entries_offset;	  /* Offset to TpDictEntry array */
+	uint32 postings_offset;	  /* Offset to posting data (blocks) */
 
-	/* V2 block storage offsets */
+	/* Block storage offsets */
 	uint32 skip_index_offset;	/* Offset to skip index (TpSkipEntry arrays) */
 	uint32 fieldnorm_offset;	/* Offset to fieldnorm table (1 byte/doc) */
 	uint32 ctid_pages_offset;	/* Offset to BlockNumber array (4 bytes/doc) */
@@ -119,42 +117,29 @@ typedef struct TpStringEntry
 } TpStringEntry;
 
 /*
- * Dictionary entry V1 - 12 bytes, flat posting lists
- */
-typedef struct TpDictEntryV1
-{
-	uint32 posting_offset; /* Logical offset to posting list */
-	uint32 posting_count;  /* Number of postings */
-	uint32 doc_freq;	   /* Document frequency for IDF */
-} __attribute__((aligned(4))) TpDictEntryV1;
-
-/*
- * Dictionary entry V2 - 12 bytes, block-based storage
+ * Dictionary entry - 12 bytes, block-based storage
  *
  * Points to skip index instead of raw postings. The skip index
  * contains block_count TpSkipEntry structures, each pointing to
  * a block of up to TP_BLOCK_SIZE postings.
  */
-typedef struct TpDictEntryV2
+typedef struct TpDictEntry
 {
 	uint32 skip_index_offset; /* Offset to TpSkipEntry array for this term */
 	uint16 block_count;		  /* Number of blocks (and skip entries) */
 	uint16 reserved;		  /* Padding */
 	uint32 doc_freq;		  /* Document frequency for IDF */
-} __attribute__((aligned(4))) TpDictEntryV2;
-
-/* Alias for current version */
-typedef TpDictEntryV1 TpDictEntry;
+} __attribute__((aligned(4))) TpDictEntry;
 
 /*
- * Posting entry - 10 bytes, packed
- * Includes inline doc_length to avoid lookup during scoring
+ * Segment posting - output format for iteration
+ * 10 bytes, packed. Used when converting block postings for scoring.
  */
 typedef struct TpSegmentPosting
 {
-	ItemPointerData ctid;		/* 6 bytes - heap tuple ID */
-	uint16			frequency;	/* 2 bytes - term frequency */
-	uint16			doc_length; /* 2 bytes - document length */
+	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID */
+	uint16			frequency; /* 2 bytes - term frequency */
+	uint16 doc_length;		   /* 2 bytes - document length (from fieldnorm) */
 } __attribute__((packed)) TpSegmentPosting;
 
 /*
@@ -205,7 +190,7 @@ typedef struct TpBlockPosting
 } TpBlockPosting;
 
 /*
- * CTID map entry - 6 bytes per document (V2 format)
+ * CTID map entry - 6 bytes per document
  *
  * Maps segment-local doc IDs to heap CTIDs. This enables using
  * compact 4-byte doc IDs in posting lists while still being able
@@ -249,7 +234,7 @@ typedef struct TpSegmentReader
 	uint32 current_logical_page;
 
 	/*
-	 * V2 format: CTID arrays for result lookup (loaded at segment open).
+	 * CTID arrays for result lookup (loaded at segment open).
 	 * Split storage for better packing and cache locality during scoring.
 	 */
 	BlockNumber	 *cached_ctid_pages;   /* Page numbers (4 bytes/doc) */
@@ -285,9 +270,7 @@ struct TpLocalIndexState;
 
 /* Writer functions */
 extern BlockNumber
-tp_write_segment(struct TpLocalIndexState *state, Relation index);
-extern BlockNumber
-tp_write_segment_v2(struct TpLocalIndexState *state, Relation index);
+			tp_write_segment(struct TpLocalIndexState *state, Relation index);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
@@ -319,10 +302,6 @@ extern bool tp_segment_get_direct(
 		TpSegmentDirectAccess *access);
 extern void tp_segment_release_direct(TpSegmentDirectAccess *access);
 
-/* Document length lookup */
-extern int32
-tp_segment_get_document_length(TpSegmentReader *reader, ItemPointer ctid);
-
 /* Debug functions */
 struct DumpOutput; /* Forward declaration */
 extern void tp_dump_segment_to_output(
@@ -342,14 +321,8 @@ tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages);
 extern void tp_report_fsm_stats(void);
 
 /* Zero-copy query execution - defined in segment_query.c */
-struct TpLocalIndexState; /* Forward declaration */
-
-typedef struct DocumentScoreEntry
-{
-	ItemPointerData ctid;
-	float4			score;
-	float4			doc_length;
-} DocumentScoreEntry;
+struct TpLocalIndexState;  /* Forward declaration */
+struct DocumentScoreEntry; /* Defined in types/score.h */
 
 extern void tp_process_term_in_segments(
 		Relation				  index,

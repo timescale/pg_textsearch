@@ -2,9 +2,9 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * docmap.h - Document ID mapping for V2 segment format
+ * docmap.h - Document ID mapping for segment format
  *
- * In V2 format, posting lists use compact 4-byte segment-local doc IDs
+ * Posting lists use compact 4-byte segment-local doc IDs
  * instead of 6-byte CTIDs. This module provides:
  * - Collection of unique documents during segment build
  * - Assignment of sequential doc IDs (0 to N-1) in CTID order

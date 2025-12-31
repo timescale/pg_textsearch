@@ -6,21 +6,24 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <access/htup_details.h>
 #include <catalog/namespace.h>
+#include <fmgr.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/lsyscache.h>
 
-#include "dump.h"
+#include "am/am.h"
+#include "debug/dump.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "metapage.h"
 #include "segment/segment.h"
-#include "state.h"
+#include "state/metapage.h"
+#include "state/state.h"
 
 /* Output size limits for string mode */
 #define MAX_OUTPUT_SIZE		  (256 * 1024) /* 256KB soft limit */
@@ -717,4 +720,84 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		pfree(metap);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
+}
+
+/*
+ * tp_dump_index - Debug function to show internal index structure
+ * including both memtable and all segments
+ *
+ * Takes index name and optional filename. If filename is provided,
+ * writes full dump to file (no truncation, includes hex dumps).
+ * Otherwise returns truncated output as text.
+ */
+PG_FUNCTION_INFO_V1(tp_dump_index);
+
+Datum
+tp_dump_index(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	char *index_name	  = text_to_cstring(index_name_text);
+
+	/* Check for optional filename parameter */
+	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
+	{
+		/* File mode - full dump with hex */
+		text *filename_text = PG_GETARG_TEXT_PP(1);
+		char *filename		= text_to_cstring(filename_text);
+		FILE *fp;
+
+		fp = fopen(filename, "w");
+		if (!fp)
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not open file \"%s\": %m", filename)));
+		}
+
+		{
+			DumpOutput out;
+			dump_init_file(&out, fp);
+			tp_dump_index_to_output(index_name, &out);
+		}
+
+		fclose(fp);
+
+		elog(INFO, "Index dump written to %s", filename);
+		PG_RETURN_TEXT_P(cstring_to_text_with_len(filename, strlen(filename)));
+	}
+	else
+	{
+		/* String mode - truncated output for SQL return */
+		StringInfoData result;
+		DumpOutput	   out;
+
+		initStringInfo(&result);
+		dump_init_string(&out, &result);
+		tp_dump_index_to_output(index_name, &out);
+
+		PG_RETURN_TEXT_P(cstring_to_text(result.data));
+	}
+}
+
+/*
+ * tp_summarize_index - Show index statistics without dumping content
+ *
+ * A faster alternative to bm25_dump_index that shows only statistics:
+ * corpus statistics, BM25 parameters, memory usage, memtable/segment counts.
+ */
+PG_FUNCTION_INFO_V1(tp_summarize_index);
+
+Datum
+tp_summarize_index(PG_FUNCTION_ARGS)
+{
+	text		  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char		  *index_name	   = text_to_cstring(index_name_text);
+	StringInfoData result;
+	DumpOutput	   out;
+
+	initStringInfo(&result);
+	dump_init_string(&out, &result);
+	tp_summarize_index_to_output(index_name, &out);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }

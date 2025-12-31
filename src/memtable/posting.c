@@ -16,11 +16,10 @@
 
 #include "common/hashfn.h"
 #include "constants.h"
-#include "memory.h"
 #include "memtable.h"
-#include "metapage.h"
 #include "posting.h"
-#include "state.h"
+#include "state/metapage.h"
+#include "state/state.h"
 #include "stringtable.h"
 
 /* Configuration parameters */

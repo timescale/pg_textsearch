@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * index.h - BM25 index access method interface
+ * am/am.h - BM25 access method shared definitions
  */
 #pragma once
 
@@ -13,19 +13,12 @@
 #include <storage/block.h>
 #include <storage/bufpage.h>
 
-#include "constants.h"
-#include "metapage.h"
-#include "vector.h"
+#include "state/state.h"
+#include "types/vector.h"
 
 /*
- * Tapir Index Access Method
- *
- * Tapir implements a single-column index for BM25 full-text search.
- * Each index uses PostgreSQL text search configurations and maintains
- * global statistics needed for BM25 scoring.
+ * BM25 scan opaque data - internal state for index scans
  */
-
-/* BM25 scan opaque data */
 typedef struct TpScanOpaqueData
 {
 	MemoryContext scan_context; /* Memory context for scan */
@@ -48,6 +41,16 @@ typedef struct TpScanOpaqueData
 
 typedef TpScanOpaqueData *TpScanOpaque;
 
+/* Index options structure */
+typedef struct TpOptions
+{
+	int32  vl_len_;			   /* varlena header (do not touch directly!) */
+	int32  text_config_offset; /* offset to text config string */
+	double k1;				   /* BM25 k1 parameter */
+	double b;				   /* BM25 b parameter */
+} TpOptions;
+
+/* Forward declarations */
 struct IndexInfo;
 struct PlannerInfo;
 struct IndexPath;
@@ -55,20 +58,27 @@ struct IndexVacuumInfo;
 struct IndexBulkDeleteResult;
 struct IndexBuildResult;
 
-/* Shared utility functions */
+/*
+ * Shared utility functions
+ */
+
+/* Resolve index name to OID (supports schema.index notation) */
 Oid tp_resolve_index_name_shared(const char *index_name);
 
-/* Access method handler */
+/* Get qualified index name for display */
+char *tp_get_qualified_index_name(Relation indexRelation);
+
+/* Cached score for ORDER BY optimization */
+float8 tp_get_cached_score(void);
+
+/*
+ * Access method handler
+ */
 Datum tp_handler(PG_FUNCTION_ARGS);
 
-struct IndexBulkDeleteResult *tp_bulkdelete(
-		struct IndexVacuumInfo		 *info,
-		struct IndexBulkDeleteResult *stats,
-		IndexBulkDeleteCallback		  callback,
-		void						 *callback_state);
-char *tp_buildphasename(int64 phase);
-
-/* Internal access method functions */
+/*
+ * Build functions (am/build.c)
+ */
 struct IndexBuildResult		 *
 tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
 void tp_buildempty(Relation index);
@@ -82,38 +92,8 @@ bool tp_insert(
 		bool			  indexUnchanged,
 		struct IndexInfo *indexInfo);
 
-IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
-void		  tp_rescan(
-				 IndexScanDesc scan,
-				 ScanKey	   keys,
-				 int		   nkeys,
-				 ScanKey	   orderbys,
-				 int		   norderbys);
-
-void tp_endscan(IndexScanDesc scan);
-bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
-void tp_costestimate(
-		struct PlannerInfo *root,
-		struct IndexPath   *path,
-		double				loop_count,
-		Cost			   *indexStartupCost,
-		Cost			   *indexTotalCost,
-		Selectivity		   *indexSelectivity,
-		double			   *indexCorrelation,
-		double			   *indexPages);
-
-bytea						 *tp_options(Datum reloptions, bool validate);
-bool						  tp_validate(Oid opclassoid);
-struct IndexBulkDeleteResult *tp_vacuumcleanup(
-		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
-
-/* Query limit tracking - now in limits.h */
-
-/* Include state management structures */
-#include "state.h"
-
 /* Shared document processing function */
-extern bool tp_process_document_text(
+bool tp_process_document_text(
 		text			  *document_text,
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
@@ -121,11 +101,39 @@ extern bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
+/* IDF sum calculation for average IDF */
+void tp_calculate_idf_sum(TpLocalIndexState *index_state);
+
+/*
+ * Scan functions (am/scan.c)
+ */
+IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
+void		  tp_rescan(
+				 IndexScanDesc scan,
+				 ScanKey	   keys,
+				 int		   nkeys,
+				 ScanKey	   orderbys,
+				 int		   norderbys);
+void tp_endscan(IndexScanDesc scan);
+bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
+
+/*
+ * Vacuum functions (am/vacuum.c)
+ */
+struct IndexBulkDeleteResult *tp_bulkdelete(
+		struct IndexVacuumInfo		 *info,
+		struct IndexBulkDeleteResult *stats,
+		IndexBulkDeleteCallback		  callback,
+		void						 *callback_state);
+struct IndexBulkDeleteResult *tp_vacuumcleanup(
+		struct IndexVacuumInfo *info, struct IndexBulkDeleteResult *stats);
+char *tp_buildphasename(int64 phase);
+
+/*
+ * Handler functions (am/handler.c)
+ */
+bytea *tp_options(Datum reloptions, bool validate);
+bool   tp_validate(Oid opclassoid);
+
 /* Relation options kind - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
-
-/* IDF sum calculation for average IDF */
-extern void tp_calculate_idf_sum(TpLocalIndexState *index_state);
-
-/* Cached score for ORDER BY optimization */
-extern float8 tp_get_cached_score(void);

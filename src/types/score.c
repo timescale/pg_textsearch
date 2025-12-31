@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * operator.c - BM25 scoring operators
+ * types/score.c - BM25 scoring operators and document ranking
  */
 #include <postgres.h>
 
@@ -15,10 +15,10 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "metapage.h"
-#include "operator.h"
 #include "segment/segment.h"
-#include "state.h"
+#include "state/metapage.h"
+#include "state/state.h"
+#include "types/score.h"
 
 /*
  * Centralized IDF calculation (basic version)
@@ -352,7 +352,6 @@ tp_score_documents(
 	uint32				*unified_doc_freqs;
 	int					 i;
 	int					 term_idx;
-	int					 level;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);

@@ -17,7 +17,7 @@
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 
-#include "index.h"
+#include "state/state.h"
 
 /*
  * Individual document occurrence within a posting list

@@ -18,8 +18,8 @@
 #include <utils/timestamp.h>
 
 #include "constants.h"
-#include "index.h"
 #include "posting.h"
+#include "state/state.h"
 
 /*
  * Document length entry for the dshash hash table

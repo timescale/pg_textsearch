@@ -4,14 +4,16 @@
  *
  * dictionary.c - Term dictionary for disk segments
  */
-#include "../memtable/memtable.h"
-#include "../memtable/posting.h"
-#include "../memtable/stringtable.h"
-#include "../state.h"
+#include <postgres.h>
+
+#include <lib/dshash.h>
+#include <utils/memutils.h>
+
 #include "dictionary.h"
-#include "lib/dshash.h"
-#include "postgres.h"
-#include "utils/memutils.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
+#include "state/state.h"
 
 /*
  * Comparison function for qsort

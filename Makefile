@@ -7,28 +7,32 @@ DATA = sql/pg_textsearch--0.2.0-dev.sql \
        sql/pg_textsearch--0.0.5--0.1.0.sql \
        sql/pg_textsearch--0.1.0--0.2.0-dev.sql
 
-# Source files
-# Full build - debugging initialization crash
+# Source files organized by directory
 OBJS = \
 	src/mod.o \
+	src/am/handler.o \
+	src/am/build.o \
+	src/am/scan.o \
+	src/am/vacuum.o \
 	src/memtable/memtable.o \
-	src/metapage.o \
 	src/memtable/posting.o \
-	src/index.o \
-	src/vector.o \
-	src/query.o \
 	src/memtable/stringtable.o \
-	src/operator.o \
-	src/limit.o \
-	src/registry.o \
-	src/state.o \
-	src/dump.o \
+	src/memtable/scan.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
-	src/segment/segment_query.o \
-	src/segment/segment_merge.o \
+	src/segment/scan.o \
+	src/segment/merge.o \
 	src/segment/docmap.o \
-	src/planner.o
+	src/types/vector.o \
+	src/types/query.o \
+	src/types/score.o \
+	src/state/state.o \
+	src/state/registry.o \
+	src/state/metapage.o \
+	src/state/limit.o \
+	src/planner/hooks.o \
+	src/planner/cost.o \
+	src/debug/dump.o
 
 # Shared library target
 MODULE_big = pg_textsearch

@@ -21,9 +21,9 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "metapage.h"
-#include "state.h"
-#include "vector.h"
+#include "state/metapage.h"
+#include "state/state.h"
+#include "types/vector.h"
 
 /* Maximum number of docids that fit in a page */
 #define TP_DOCIDS_PER_PAGE                   \

@@ -24,15 +24,15 @@
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
 
+#include "am/am.h"
 #include "constants.h"
-#include "index.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "metapage.h"
-#include "registry.h"
+#include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/segment_merge.h"
-#include "state.h"
+#include "state/metapage.h"
+#include "state/registry.h"
+#include "state/state.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
@@ -1024,7 +1024,7 @@ tp_bulk_load_spill_check(void)
 		PG_END_TRY();
 
 		/* Write the segment */
-		segment_root = tp_write_segment_v2(local_state, index_rel);
+		segment_root = tp_write_segment(local_state, index_rel);
 
 		/* Clear memtable and update metapage if spill succeeded */
 		if (segment_root != InvalidBlockNumber)

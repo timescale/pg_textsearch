@@ -16,7 +16,7 @@
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
-#include "index.h"
+#include "state/state.h"
 
 /*
  * LWLock tranche ID for the registry dshash.

@@ -18,7 +18,7 @@
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
-#include "registry.h"
+#include "state/registry.h"
 
 /* Backend-local pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;

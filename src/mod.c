@@ -19,13 +19,13 @@
 #include <utils/guc.h>
 #include <utils/inval.h>
 
+#include "am/am.h"
 #include "constants.h"
-#include "index.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "planner.h"
-#include "registry.h"
-#include "state.h"
+#include "planner/hooks.h"
+#include "state/registry.h"
+#include "state/state.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "0.0.6-dev");
