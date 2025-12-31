@@ -25,6 +25,7 @@ OBJS = \
 	src/segment/scan.o \
 	src/segment/merge.o \
 	src/segment/docmap.o \
+	src/segment/source.o \
 	src/types/vector.o \
 	src/types/query.o \
 	src/types/score.o \
