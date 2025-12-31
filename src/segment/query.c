@@ -571,7 +571,6 @@ process_posting(
 	float4				tf;
 	float4				doc_len;
 	float4				term_score;
-	double				numerator_d, denominator_d;
 	DocumentScoreEntry *doc_entry;
 	bool				found;
 	ItemPointerData		local_ctid;
@@ -597,13 +596,8 @@ process_posting(
 		return;
 
 	/* Calculate BM25 term score */
-	numerator_d	  = (double)tf * ((double)k1 + 1.0);
-	denominator_d = (double)tf +
-					(double)k1 * (1.0 - (double)b +
-								  (double)b * ((double)doc_len /
-											   (double)avg_doc_len));
-	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-						  (double)query_frequency);
+	term_score = tp_calculate_bm25_term_score(
+			tf, idf, doc_len, avg_doc_len, k1, b, query_frequency);
 
 	/* Add or update document score in hash table */
 	doc_entry = (DocumentScoreEntry *)

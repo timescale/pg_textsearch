@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * query/score.c - BM25 scoring operators and document ranking
+ * operator.c - BM25 scoring operators
  */
 #include <postgres.h>
 
@@ -13,14 +13,12 @@
 #include <utils/memutils.h>
 
 #include "memtable/memtable.h"
-#include "memtable/source.h"
+#include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "query/bmw.h"
-#include "query/score.h"
+#include "metapage.h"
+#include "operator.h"
 #include "segment/segment.h"
-#include "source.h"
-#include "state/metapage.h"
-#include "state/state.h"
+#include "state.h"
 
 /*
  * Centralized IDF calculation (basic version)
@@ -288,77 +286,6 @@ tp_extract_and_sort_documents(
 }
 
 /*
- * Get unified doc_freq for a term (memtable + all segments).
- * Returns 0 if term not found in any source.
- */
-static uint32
-tp_get_unified_doc_freq(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		const char		  *term,
-		BlockNumber		  *level_heads)
-{
-	uint32		   doc_freq = 0;
-	TpPostingList *posting_list;
-	int			   level;
-
-	/* Get doc_freq from memtable */
-	posting_list = tp_get_posting_list(local_state, term);
-	if (posting_list && posting_list->doc_count > 0)
-		doc_freq = posting_list->doc_count;
-
-	/* Add doc_freq from all segment levels */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		if (level_heads[level] != InvalidBlockNumber)
-		{
-			doc_freq +=
-					tp_segment_get_doc_freq(index, level_heads[level], term);
-		}
-	}
-
-	return doc_freq;
-}
-
-/*
- * Batch get unified doc_freq for multiple terms (memtable + all segments).
- * Much faster than calling tp_get_unified_doc_freq in a loop because
- * it opens each segment only once instead of once per term.
- */
-static void
-tp_batch_get_unified_doc_freq(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		char			 **terms,
-		int				   term_count,
-		BlockNumber		  *level_heads,
-		uint32			  *doc_freqs)
-{
-	int level;
-	int i;
-
-	/* Initialize doc_freqs with memtable counts */
-	for (i = 0; i < term_count; i++)
-	{
-		TpPostingList *posting_list =
-				tp_get_posting_list(local_state, terms[i]);
-		doc_freqs[i] = (posting_list && posting_list->doc_count > 0)
-							 ? posting_list->doc_count
-							 : 0;
-	}
-
-	/* Add doc_freq from all segment levels (batch lookup) */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		if (level_heads[level] != InvalidBlockNumber)
-		{
-			tp_batch_get_segment_doc_freq(
-					index, level_heads[level], terms, term_count, doc_freqs);
-		}
-	}
-}
-
-/*
  * Copy results to output arrays
  */
 static void
@@ -417,11 +344,14 @@ tp_score_documents(
 	float4				 avg_doc_len;
 	int32				 total_docs;
 	int					 scored_count = 0;
-	TpDataSource		*memtable_source;
+	dshash_table		*string_table;
+	dshash_table		*doclength_table = NULL;
+	TpMemtable			*memtable;
 	TpIndexMetaPage		 metap;
 	BlockNumber			 level_heads[TP_MAX_LEVELS];
 	uint32				*unified_doc_freqs;
 	int					 i;
+	int					 term_idx;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -431,6 +361,14 @@ tp_score_documents(
 
 	if (query_term_count <= 0 || max_results <= 0)
 		return 0;
+
+	/* Get memtable and corpus statistics */
+	memtable = get_memtable(local_state);
+	if (!memtable)
+	{
+		elog(ERROR, "Cannot get memtable for scoring - index state corrupted");
+		return 0; /* Never reached */
+	}
 
 	if (!local_state->shared)
 	{
@@ -457,188 +395,118 @@ tp_score_documents(
 	if (avg_doc_len <= 0.0f)
 		return 0;
 
-	/*
-	 * BMW fast path for single-term queries.
-	 * Uses Block-Max WAND to skip blocks that can't contribute to top-k.
-	 */
-	if (query_term_count == 1)
-	{
-		const char *term = query_terms[0];
-		uint32		doc_freq;
-		float4		idf;
-		float4	   *scores;
-		int			result_count;
-
-		/* Get unified doc_freq across memtable and segments */
-		doc_freq = tp_get_unified_doc_freq(
-				local_state, index_relation, term, level_heads);
-		if (doc_freq == 0)
-			return 0;
-
-		/* Calculate IDF */
-		idf = tp_calculate_idf(doc_freq, total_docs);
-
-		/* Allocate scores array */
-		scores = (float4 *)palloc(max_results * sizeof(float4));
-
-		/* Run BMW scoring */
-		result_count = tp_score_single_term_bmw(
-				local_state,
-				index_relation,
-				term,
-				idf,
-				k1,
-				b,
-				avg_doc_len,
-				max_results,
-				result_ctids,
-				scores,
-				NULL);
-
-		*result_scores = scores;
-		return result_count;
-	}
-
-	/*
-	 * BMW fast path for multi-term queries (2-8 terms).
-	 * Uses block-level upper bounds to skip non-contributing blocks.
-	 */
-	if (query_term_count <= 8)
-	{
-		uint32 *doc_freqs;
-		float4 *idfs;
-		float4 *scores;
-		int		result_count;
-		int		i;
-
-		/* Batch lookup doc_freqs for all terms (opens each segment once) */
-		doc_freqs = palloc(query_term_count * sizeof(uint32));
-		tp_batch_get_unified_doc_freq(
-				local_state,
-				index_relation,
-				query_terms,
-				query_term_count,
-				level_heads,
-				doc_freqs);
-
-		/* Convert doc_freqs to IDFs */
-		idfs = palloc(query_term_count * sizeof(float4));
-		for (i = 0; i < query_term_count; i++)
-		{
-			idfs[i] = (doc_freqs[i] > 0)
-							? tp_calculate_idf(doc_freqs[i], total_docs)
-							: 0.0f;
-		}
-		pfree(doc_freqs);
-
-		/* Allocate scores array */
-		scores = (float4 *)palloc(max_results * sizeof(float4));
-
-		/* Run multi-term BMW scoring */
-		result_count = tp_score_multi_term_bmw(
-				local_state,
-				index_relation,
-				query_terms,
-				query_term_count,
-				query_frequencies,
-				idfs,
-				k1,
-				b,
-				avg_doc_len,
-				max_results,
-				result_ctids,
-				scores,
-				NULL);
-
-		pfree(idfs);
-
-		/* If BMW returns -1, fall through to exhaustive path */
-		if (result_count >= 0)
-		{
-			*result_scores = scores;
-			return result_count;
-		}
-		pfree(scores);
-	}
-
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */
 	doc_scores_hash = tp_create_doc_scores_hash(max_results, total_docs);
 	if (!doc_scores_hash)
 		elog(ERROR, "Failed to create document scores hash table");
 
-	/* Allocate array for unified doc_freqs across all sources */
-	unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
-
-	/* Create memtable data source and score documents */
-	memtable_source = tp_memtable_source_create(local_state);
-	if (memtable_source)
+	/* Get string hash table if available - may be empty after spill */
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
-		/* Score documents from memtable using the data source interface */
+		string_table = tp_string_table_attach(
+				local_state->dsa, memtable->string_hash_handle);
+	}
+	else
+	{
+		string_table = NULL;
+	}
+
+	/* Attach to document length table for memtable scoring */
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		doclength_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+	}
+
+	/* Get doc_freq from memtable for all terms */
+	unified_doc_freqs = palloc0(query_term_count * sizeof(uint32));
+	if (string_table)
+	{
+		for (term_idx = 0; term_idx < query_term_count; term_idx++)
+		{
+			TpPostingList *posting_list = tp_string_table_get_posting_list(
+					local_state->dsa, string_table, query_terms[term_idx]);
+			if (posting_list && posting_list->doc_count > 0)
+				unified_doc_freqs[term_idx] = posting_list->doc_count;
+		}
+	}
+
+	/* Calculate BM25 scores from memtable if available */
+	if (string_table)
+	{
 		for (int term_idx = 0; term_idx < query_term_count; term_idx++)
 		{
-			const char	  *term = query_terms[term_idx];
-			TpPostingData *postings;
-			float4		   idf;
+			const char	   *term = query_terms[term_idx];
+			TpPostingList  *posting_list;
+			TpPostingEntry *entries;
+			float4			idf;
 
-			postings = tp_source_get_postings(memtable_source, term);
-			if (!postings || postings->count == 0)
-			{
-				if (postings)
-					tp_source_free_postings(memtable_source, postings);
+			posting_list = tp_string_table_get_posting_list(
+					local_state->dsa, string_table, term);
+
+			if (!posting_list || posting_list->doc_count == 0)
 				continue;
-			}
 
-			/* Update unified doc_freq from this source */
-			unified_doc_freqs[term_idx] = postings->doc_freq;
-
-			/* Calculate IDF using memtable doc_freq */
+			/* Calculate IDF using unified doc_freq from all sources */
 			idf = tp_calculate_idf(unified_doc_freqs[term_idx], total_docs);
 
-			/* Process each posting in columnar format */
-			for (int i = 0; i < postings->count; i++)
+			/* Get posting entries */
+			entries = tp_get_posting_entries(local_state->dsa, posting_list);
+			if (!entries)
+				continue;
+
+			/* Process each document in this term's posting list */
+			for (int doc_idx = 0; doc_idx < posting_list->doc_count; doc_idx++)
 			{
-				ItemPointerData	   *ctid = &postings->ctids[i];
-				float4				tf	 = (float4)postings->frequencies[i];
+				TpPostingEntry	   *entry = &entries[doc_idx];
+				float4				tf	  = entry->frequency;
 				float4				doc_len;
 				float4				term_score;
-				double				numerator_d, denominator_d;
 				DocumentScoreEntry *doc_entry;
 				bool				found;
-				int32				doc_len_int;
 
 				/* Validate TID first */
-				if (!ItemPointerIsValid(ctid))
+				if (!ItemPointerIsValid(&entry->ctid))
 					continue;
 
-				/* Get document length from source */
-				doc_len_int = tp_source_get_doc_length(memtable_source, ctid);
-				if (doc_len_int <= 0)
-					continue;
-				doc_len = (float4)doc_len_int;
+				/* Look up document length from hash table */
+				if (!doclength_table)
+				{
+					elog(ERROR,
+						 "Document length table not available for scoring");
+				}
+				{
+					int32 doc_len_int = tp_get_document_length_attached(
+							doclength_table, &entry->ctid);
+					if (doc_len_int <= 0)
+					{
+						elog(ERROR,
+							 "Failed to get document length for ctid (%u,%u)",
+							 BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
+							 entry->ctid.ip_posid);
+					}
+					doc_len = (float4)doc_len_int;
+				}
 
 				/* Calculate BM25 term score contribution */
-				numerator_d = (double)tf * ((double)k1 + 1.0);
-
-				/* Standard BM25 denominator calculation */
-				denominator_d = (double)tf +
-								(double)k1 *
-										(1.0 - (double)b +
-										 (double)b * ((double)doc_len /
-													  (double)avg_doc_len));
-
-				term_score = (float4)((double)idf *
-									  (numerator_d / denominator_d) *
-									  (double)query_frequencies[term_idx]);
+				term_score = tp_calculate_bm25_term_score(
+						tf,
+						idf,
+						doc_len,
+						avg_doc_len,
+						k1,
+						b,
+						(float4)query_frequencies[term_idx]);
 
 				/* Find or create document entry in hash table */
-				doc_entry = (DocumentScoreEntry *)
-						hash_search(doc_scores_hash, ctid, HASH_ENTER, &found);
+				doc_entry = (DocumentScoreEntry *)hash_search(
+						doc_scores_hash, &entry->ctid, HASH_ENTER, &found);
 
 				if (!found)
 				{
 					/* New document - initialize */
-					doc_entry->ctid		  = *ctid;
+					doc_entry->ctid		  = entry->ctid;
 					doc_entry->score	  = term_score;
 					doc_entry->doc_length = doc_len;
 				}
@@ -648,12 +516,14 @@ tp_score_documents(
 					doc_entry->score += term_score;
 				}
 			}
-
-			tp_source_free_postings(memtable_source, postings);
 		}
 
-		tp_source_close(memtable_source);
+		dshash_detach(string_table);
 	}
+
+	/* Detach from document length table after memtable scoring */
+	if (doclength_table)
+		dshash_detach(doclength_table);
 
 	/*
 	 * Score documents from all segment levels efficiently.

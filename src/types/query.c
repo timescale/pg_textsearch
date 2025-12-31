@@ -32,17 +32,17 @@
 #include <utils/syscache.h>
 #include <varatt.h>
 
-#include "am/am.h"
 #include "constants.h"
+#include "index.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "planner/hooks.h"
-#include "query/score.h"
+#include "metapage.h"
+#include "operator.h"
+#include "planner.h"
+#include "query.h"
 #include "segment/segment.h"
-#include "state/metapage.h"
-#include "state/state.h"
-#include "types/query.h"
-#include "types/vector.h"
+#include "state.h"
+#include "vector.h"
 
 /*
  * Cache for per-query IDF values to avoid repeated segment lookups.
@@ -612,44 +612,6 @@ find_term_frequency(
 }
 
 /*
- * Helper: Calculate BM25 score for a single term
- */
-static float4
-calculate_term_score(
-		float4 tf,
-		float4 idf,
-		float4 doc_length,
-		float4 avg_doc_len,
-		float4 k1,
-		float4 b,
-		int	   query_freq)
-{
-	double numerator_d;
-	double denominator_d;
-	float4 term_score;
-
-	/* BM25 formula: IDF * tf*(k1+1) / (tf + k1*(1-b+b*dl/avgdl)) */
-	numerator_d = (double)tf * ((double)k1 + 1.0);
-
-	if (avg_doc_len > 0.0f)
-	{
-		denominator_d = (double)tf +
-						(double)k1 * (1.0 - (double)b +
-									  (double)b * ((double)doc_length /
-												   (double)avg_doc_len));
-	}
-	else
-	{
-		denominator_d = (double)tf + (double)k1;
-	}
-
-	term_score = (float4)((double)idf * (numerator_d / denominator_d) *
-						  (double)query_freq);
-
-	return term_score;
-}
-
-/*
  * BM25 scoring function for text <@> bm25query operations
  *
  * This operator is called per-row when scoring documents, so we use fn_extra
@@ -928,14 +890,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			}
 
 			/* Calculate BM25 term score */
-			term_score = calculate_term_score(
+			term_score = tp_calculate_bm25_term_score(
 					tf,
 					idf,
 					doc_length,
 					avg_doc_len,
 					metap->k1,
 					metap->b,
-					query_freq);
+					(float4)query_freq);
 
 			/* Accumulate the score */
 			result += term_score;

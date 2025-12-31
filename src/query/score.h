@@ -37,3 +37,26 @@ extern int tp_score_documents(
 
 /* IDF calculation */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
+
+/*
+ * Calculate BM25 term score for a single term in a document.
+ * Formula: IDF * tf*(k1+1) / (tf + k1*(1-b+b*dl/avgdl)) * query_freq
+ */
+static inline float4
+tp_calculate_bm25_term_score(
+		float4 tf,
+		float4 idf,
+		float4 doc_length,
+		float4 avg_doc_len,
+		float4 k1,
+		float4 b,
+		float4 query_frequency)
+{
+	double numerator   = (double)tf * ((double)k1 + 1.0);
+	double denominator = (double)tf +
+						 (double)k1 * (1.0 - (double)b +
+									   (double)b * ((double)doc_length /
+													(double)avg_doc_len));
+	return (float4)((double)idf * (numerator / denominator) *
+					(double)query_frequency);
+}
