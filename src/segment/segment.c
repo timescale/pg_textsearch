@@ -4,35 +4,36 @@
  *
  * segment.c - Disk-based segment implementation
  */
-#include <stdio.h>
-#include <unistd.h>
+#include <postgres.h>
 
-#include "access/genam.h"
-#include "access/hash.h"
-#include "access/table.h"
-#include "catalog/namespace.h"
-#include "catalog/storage.h"
+#include <access/genam.h>
+#include <access/hash.h>
+#include <access/table.h>
+#include <catalog/namespace.h>
+#include <catalog/storage.h>
+#include <lib/dshash.h>
+#include <miscadmin.h>
+#include <stdio.h>
+#include <storage/bufmgr.h>
+#include <storage/bufpage.h>
+#include <storage/indexfsm.h>
+#include <storage/lock.h>
+#include <unistd.h>
+#include <utils/lsyscache.h>
+#include <utils/memutils.h>
+#include <utils/timestamp.h>
+
 #include "debug/dump.h"
 #include "dictionary.h"
 #include "docmap.h"
 #include "fieldnorm.h"
-#include "lib/dshash.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "miscadmin.h"
 #include "pagemapper.h"
-#include "postgres.h"
 #include "segment.h"
 #include "state/metapage.h"
 #include "state/state.h"
-#include "storage/bufmgr.h"
-#include "storage/bufpage.h"
-#include "storage/indexfsm.h"
-#include "storage/lock.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/timestamp.h"
 
 /*
  * Note: We previously had a global page map cache here, but it was removed
