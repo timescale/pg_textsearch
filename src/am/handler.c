@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/amapi.h>
+#include <access/htup_details.h>
 #include <access/reloptions.h>
 #include <catalog/pg_opclass.h>
 #include <commands/vacuum.h>
@@ -102,10 +103,9 @@ tp_options(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] =
 			{{"text_config",
 			  RELOPT_TYPE_STRING,
-			  offsetof(TpOptions, text_config_offset),
-			  0},
-			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1), 0},
-			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b), 0}};
+			  offsetof(TpOptions, text_config_offset)},
+			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1)},
+			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b)}};
 
 	return (bytea *)build_reloptions(
 			reloptions,
