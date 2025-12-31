@@ -10,6 +10,7 @@ DATA = sql/pg_textsearch--0.2.0-dev.sql \
 # Source files organized by directory
 OBJS = \
 	src/mod.o \
+	src/source.o \
 	src/am/handler.o \
 	src/am/build.o \
 	src/am/scan.o \
@@ -18,6 +19,7 @@ OBJS = \
 	src/memtable/posting.o \
 	src/memtable/stringtable.o \
 	src/memtable/scan.o \
+	src/memtable/source.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
