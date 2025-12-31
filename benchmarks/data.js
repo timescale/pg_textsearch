@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767153512093,
+  "lastUpdate": 1767153513456,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -6437,6 +6437,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "65caa7a9970576322531a099ce02110524114147",
+          "message": "Fix query loading: use CSV format to avoid backslash escapes\n\nPostgreSQL text format treats trailing backslash as line continuation.\nQuery 'what is the speed of light in m.p.h.\\' was being joined with next line.\nCSV format doesn't have this issue.\n\n🤖 Generated with [Claude Code](https://claude.ai/claude-code)",
+          "timestamp": "2025-12-31T03:20:36Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/65caa7a9970576322531a099ce02110524114147"
+        },
+        "date": 1767153513121,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (99.9K docs) - Index Build Time",
+            "value": 5799.313,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Index Size",
+            "value": 27.07,
             "unit": "MB"
           }
         ]
