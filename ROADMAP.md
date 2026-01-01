@@ -11,7 +11,7 @@
 | v0.0.5 | Dec 2025 | Segment infrastructure, auto-spill, hierarchical merging |
 | v0.1.0 | Dec 2025 | First open-source release, implicit index resolution, partitioned tables |
 
-## Current (v0.2.0-dev)
+## v0.2.0 - Block Storage Foundation
 
 Block storage foundation for query optimizations.
 
@@ -20,6 +20,8 @@ Block storage foundation for query optimizations.
 - **Doc ID mapping**: Compact 4-byte segment-local IDs instead of 6-byte CTIDs
 - **Fieldnorm quantization**: 1-byte encoded document lengths
 - **Index build optimizations**: Binary search and direct mapping for CTID lookups
+- **Unlimited indexes**: dshash registry removes fixed limit on concurrent indexes
+- **Benchmark suite**: MS MARCO and Wikipedia benchmarks with public dashboard
 
 ## Future
 

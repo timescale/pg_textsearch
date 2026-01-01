@@ -717,7 +717,7 @@ carrying compatibility code for formats that may never see production use.
 
 ## Implementation Roadmap
 
-### v0.2.0: Block Storage Foundation (in progress)
+### v0.2.0: Block Storage Foundation (released)
 - [x] Fixed-size posting blocks (128 docs)
 - [x] Block headers with last_doc_id, doc_count, block_max_tf, block_max_norm
 - [x] Skip index structure (TpSkipEntry, 16 bytes per block)

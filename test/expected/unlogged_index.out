@@ -1,6 +1,6 @@
 -- Test unlogged index behavior and initialization fork creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.1.1-dev: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.2.0: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 -- Create UNLOGGED table and index
 CREATE UNLOGGED TABLE unlogged_test (

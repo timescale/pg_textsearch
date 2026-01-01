@@ -1,11 +1,29 @@
 # Changelog
 
-## v0.1.1-dev (unreleased)
+## v0.2.0
 
 ### New Features
 
-- **Benchmark tracking**: Historical performance graphs published to GitHub
-  Pages with regression alerts on PRs and release gates
+- **V2 segment format**: Block-based posting storage (128 docs/block) with
+  skip index metadata for future Block-Max WAND optimization
+
+- **Unlimited indexes**: Replaced fixed-size registry with dshash for
+  unlimited concurrent BM25 indexes
+
+- **Benchmark suite**: MS MARCO and Wikipedia benchmarks with historical
+  performance tracking on GitHub Pages
+
+### Improvements
+
+- Major code refactoring: organized source into am/, memtable/, segment/,
+  types/, state/, planner/, and debug/ directories
+- Page reclamation after segment compaction
+- Better cost estimation for query planning
+
+### Bug Fixes
+
+- Fixed excessive memory allocation in document scoring
+- Fixed buildempty() to write init fork correctly
 
 ## v0.1.0
 
