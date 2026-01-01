@@ -16,44 +16,26 @@
 #include "types/score.h"
 
 /*
- * Iterator state for block-based segment traversal
- * Uses zero-copy access when block data fits within a single page.
+ * Read a skip entry by block index.
+ * Used by BMW scoring to pre-compute block max scores.
  */
-typedef struct TpSegmentPostingIterator
+void
+tp_segment_read_skip_entry(
+		TpSegmentReader *reader,
+		TpDictEntry		*dict_entry,
+		uint16			 block_idx,
+		TpSkipEntry		*skip)
 {
-	TpSegmentReader *reader;
-	const char		*term;
-	uint32			 dict_entry_idx;
-	TpDictEntry		 dict_entry;
-	bool			 initialized;
-	bool			 finished;
-
-	/* Block iteration state */
-	uint32		current_block; /* Current block index (0 to block_count-1) */
-	uint32		current_in_block; /* Position within current block */
-	TpSkipEntry skip_entry;		  /* Current block's skip entry */
-
-	/* Zero-copy block access (preferred path) */
-	TpSegmentDirectAccess block_access;
-	bool				  has_block_access;
-
-	/* Block postings pointer - points to either direct data or fallback buffer
-	 */
-	TpBlockPosting *block_postings;
-
-	/* Fallback buffer for when block spans page boundaries */
-	TpBlockPosting *fallback_block;
-	uint32			fallback_block_size;
-
-	/* Output posting (converted for scoring compatibility) */
-	TpSegmentPosting output_posting;
-} TpSegmentPostingIterator;
+	uint32 skip_offset = dict_entry->skip_index_offset +
+						 (block_idx * sizeof(TpSkipEntry));
+	tp_segment_read(reader, skip_offset, skip, sizeof(TpSkipEntry));
+}
 
 /*
  * Initialize iterator for a specific term in a segment.
  * Returns true if term found, false otherwise.
  */
-static bool
+bool
 tp_segment_posting_iterator_init(
 		TpSegmentPostingIterator *iter,
 		TpSegmentReader			 *reader,
@@ -170,7 +152,7 @@ tp_segment_posting_iterator_init(
  * Uses zero-copy access when block data fits within a single page.
  * CTIDs are looked up from segment-level cached arrays during iteration.
  */
-static bool
+bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 {
 	uint32 skip_offset;
@@ -245,7 +227,7 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
  * Converts block posting to TpSegmentPosting for scoring compatibility.
  * Returns false when no more postings.
  */
-static bool
+bool
 tp_segment_posting_iterator_next(
 		TpSegmentPostingIterator *iter, TpSegmentPosting **posting)
 {
@@ -326,7 +308,7 @@ tp_segment_posting_iterator_next(
 /*
  * Free iterator resources.
  */
-static void
+void
 tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter)
 {
 	/* Release direct block access if active */

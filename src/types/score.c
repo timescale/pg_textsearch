@@ -14,6 +14,8 @@
 
 #include "memtable/memtable.h"
 #include "memtable/source.h"
+#include "memtable/stringtable.h"
+#include "segment/bmw.h"
 #include "segment/segment.h"
 #include "source.h"
 #include "state/metapage.h"
@@ -286,6 +288,39 @@ tp_extract_and_sort_documents(
 }
 
 /*
+ * Get unified doc_freq for a term (memtable + all segments).
+ * Returns 0 if term not found in any source.
+ */
+static uint32
+tp_get_unified_doc_freq(
+		TpLocalIndexState *local_state,
+		Relation		   index,
+		const char		  *term,
+		BlockNumber		  *level_heads)
+{
+	uint32		   doc_freq = 0;
+	TpPostingList *posting_list;
+	int			   level;
+
+	/* Get doc_freq from memtable */
+	posting_list = tp_get_posting_list(local_state, term);
+	if (posting_list && posting_list->doc_count > 0)
+		doc_freq = posting_list->doc_count;
+
+	/* Add doc_freq from all segment levels */
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		if (level_heads[level] != InvalidBlockNumber)
+		{
+			doc_freq +=
+					tp_segment_get_doc_freq(index, level_heads[level], term);
+		}
+	}
+
+	return doc_freq;
+}
+
+/*
  * Copy results to output arrays
  */
 static void
@@ -383,6 +418,48 @@ tp_score_documents(
 	 * would get zero BM25 scores */
 	if (avg_doc_len <= 0.0f)
 		return 0;
+
+	/*
+	 * BMW fast path for single-term queries.
+	 * Uses Block-Max WAND to skip blocks that can't contribute to top-k.
+	 */
+	if (query_term_count == 1)
+	{
+		const char *term = query_terms[0];
+		uint32		doc_freq;
+		float4		idf;
+		float4	   *scores;
+		int			result_count;
+
+		/* Get unified doc_freq across memtable and segments */
+		doc_freq = tp_get_unified_doc_freq(
+				local_state, index_relation, term, level_heads);
+		if (doc_freq == 0)
+			return 0;
+
+		/* Calculate IDF */
+		idf = tp_calculate_idf(doc_freq, total_docs);
+
+		/* Allocate scores array */
+		scores = (float4 *)palloc(max_results * sizeof(float4));
+
+		/* Run BMW scoring */
+		result_count = tp_score_single_term_bmw(
+				local_state,
+				index_relation,
+				term,
+				idf,
+				k1,
+				b,
+				avg_doc_len,
+				max_results,
+				result_ctids,
+				scores,
+				NULL);
+
+		*result_scores = scores;
+		return result_count;
+	}
 
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */
