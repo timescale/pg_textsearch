@@ -353,3 +353,54 @@ extern void tp_score_all_terms_in_segment_chain(
 		float4		b,
 		float4		avg_doc_len,
 		void	   *doc_scores_hash);
+
+/*
+ * Segment posting iterator for block-based traversal.
+ * Used by BMW scoring to access individual blocks and skip entries.
+ */
+typedef struct TpSegmentPostingIterator
+{
+	TpSegmentReader *reader;
+	const char		*term;
+	uint32			 dict_entry_idx;
+	TpDictEntry		 dict_entry;
+	bool			 initialized;
+	bool			 finished;
+
+	/* Block iteration state */
+	uint32		current_block; /* Current block index (0 to block_count-1) */
+	uint32		current_in_block; /* Position within current block */
+	TpSkipEntry skip_entry;		  /* Current block's skip entry */
+
+	/* Zero-copy block access (preferred path) */
+	TpSegmentDirectAccess block_access;
+	bool				  has_block_access;
+
+	/* Block postings pointer - points to either direct data or fallback buf */
+	TpBlockPosting *block_postings;
+
+	/* Fallback buffer for when block spans page boundaries */
+	TpBlockPosting *fallback_block;
+	uint32			fallback_block_size;
+
+	/* Output posting (converted for scoring compatibility) */
+	TpSegmentPosting output_posting;
+} TpSegmentPostingIterator;
+
+/* Segment posting iterator functions */
+extern bool tp_segment_posting_iterator_init(
+		TpSegmentPostingIterator *iter,
+		TpSegmentReader			 *reader,
+		const char				 *term);
+extern bool
+tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter);
+extern bool tp_segment_posting_iterator_next(
+		TpSegmentPostingIterator *iter, TpSegmentPosting **posting);
+extern void tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter);
+
+/* Read a skip entry by block index */
+extern void tp_segment_read_skip_entry(
+		TpSegmentReader *reader,
+		TpDictEntry		*dict_entry,
+		uint16			 block_idx,
+		TpSkipEntry		*skip);
