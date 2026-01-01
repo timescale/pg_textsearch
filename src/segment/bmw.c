@@ -413,37 +413,8 @@ tp_score_single_term_bmw(
 		{
 			TpSegmentReader *reader = tp_segment_open(index, seg_head);
 
-			/* Only use BMW for V2 segments with skip index */
-			if (reader->header->version >= TP_SEGMENT_FORMAT_VERSION)
-			{
-				score_segment_single_term_bmw(
-						&heap, reader, term, idf, k1, b, avg_doc_len, stats);
-			}
-			else
-			{
-				/* V1 fallback: exhaustive scoring */
-				TpSegmentPostingIterator iter;
-				TpSegmentPosting		*posting;
-
-				if (tp_segment_posting_iterator_init(&iter, reader, term))
-				{
-					while (tp_segment_posting_iterator_next(&iter, &posting))
-					{
-						float4 score = compute_bm25_score(
-								idf,
-								posting->frequency,
-								posting->doc_length,
-								k1,
-								b,
-								avg_doc_len);
-						if (!tp_topk_dominated(&heap, score))
-							tp_topk_add(&heap, posting->ctid, score);
-						if (stats)
-							stats->docs_scored++;
-					}
-					tp_segment_posting_iterator_free(&iter);
-				}
-			}
+			score_segment_single_term_bmw(
+					&heap, reader, term, idf, k1, b, avg_doc_len, stats);
 
 			seg_head = reader->header->next_segment;
 			tp_segment_close(reader);
@@ -868,25 +839,15 @@ tp_score_multi_term_bmw(
 		{
 			TpSegmentReader *reader = tp_segment_open(index, seg_head);
 
-			/* Only use BMW for V2 segments with skip index */
-			if (reader->header->version >= TP_SEGMENT_FORMAT_VERSION)
-			{
-				score_segment_multi_term_bmw(
-						&heap,
-						reader,
-						terms,
-						term_count,
-						k1,
-						b,
-						avg_doc_len,
-						stats);
-			}
-			else
-			{
-				/* V1 fallback: exhaustive scoring per term */
-				/* For simplicity, skip V1 segments in multi-term BMW */
-				/* They will be scored by the exhaustive fallback */
-			}
+			score_segment_multi_term_bmw(
+					&heap,
+					reader,
+					terms,
+					term_count,
+					k1,
+					b,
+					avg_doc_len,
+					stats);
 
 			seg_head = reader->header->next_segment;
 			tp_segment_close(reader);
