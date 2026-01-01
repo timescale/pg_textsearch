@@ -12,11 +12,11 @@
 
 #include "constants.h"
 #include "memtable/source.h"
-#include "segment/bmw.h"
+#include "query/bmw.h"
+#include "query/score.h"
 #include "segment/fieldnorm.h"
 #include "source.h"
 #include "state/metapage.h"
-#include "types/score.h"
 
 /*
  * ------------------------------------------------------------

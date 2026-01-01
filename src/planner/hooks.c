@@ -40,8 +40,8 @@
 #include <utils/syscache.h>
 
 #include "hooks.h"
+#include "query/score.h"
 #include "types/query.h"
-#include "types/score.h"
 
 /* Previous hooks in chain */
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;

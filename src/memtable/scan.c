@@ -13,11 +13,11 @@
 #include <utils/memutils.h>
 
 #include "memtable.h"
+#include "query/score.h"
 #include "scan.h"
 #include "state/limit.h"
 #include "state/metapage.h"
 #include "state/state.h"
-#include "types/score.h"
 #include "types/vector.h"
 
 /*

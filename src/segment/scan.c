@@ -9,11 +9,11 @@
 #include <utils/memutils.h>
 
 #include "memtable/posting.h"
+#include "query/score.h"
 #include "segment/dictionary.h"
 #include "segment/fieldnorm.h"
 #include "segment/segment.h"
 #include "state/state.h"
-#include "types/score.h"
 
 /*
  * Read a skip entry by block index.
