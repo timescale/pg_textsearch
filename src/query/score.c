@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * types/score.c - BM25 scoring operators and document ranking
+ * query/score.c - BM25 scoring operators and document ranking
  */
 #include <postgres.h>
 
@@ -15,12 +15,12 @@
 #include "memtable/memtable.h"
 #include "memtable/source.h"
 #include "memtable/stringtable.h"
-#include "segment/bmw.h"
+#include "query/bmw.h"
+#include "query/score.h"
 #include "segment/segment.h"
 #include "source.h"
 #include "state/metapage.h"
 #include "state/state.h"
-#include "types/score.h"
 
 /*
  * Centralized IDF calculation (basic version)
