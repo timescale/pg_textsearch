@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767252819089,
+  "lastUpdate": 1767305351833,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2836,6 +2836,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
             "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "64a0270c2e43f3cb4f14af116f0229d5466e68a8",
+          "message": "Move BMW scoring code to src/query/ directory\n\nRefactor code organization:\n- Move bmw.c, bmw.h from src/segment/ to src/query/\n- Move score.c, score.h from src/types/ to src/query/\n- Update include paths across codebase\n- Add comprehensive BMW test suite (test/sql/bmw.sql)\n\nThe query/ directory is a more appropriate location for query-time\noptimization code (BMW, scoring) rather than segment/ which is for\nstorage format.",
+          "timestamp": "2026-01-01T21:52:49Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/64a0270c2e43f3cb4f14af116f0229d5466e68a8"
+        },
+        "date": 1767305350612,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 212.537,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Short Query (1 word)",
+            "value": 0.095,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Medium Query (3 words)",
+            "value": 0.154,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Long Query (question)",
+            "value": 0.156,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Common Term Query",
+            "value": 0.129,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Rare Term Query",
+            "value": 0.042,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
+            "value": 0.23,
             "unit": "ms"
           },
           {
