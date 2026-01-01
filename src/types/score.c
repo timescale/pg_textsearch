@@ -461,6 +461,57 @@ tp_score_documents(
 		return result_count;
 	}
 
+	/*
+	 * BMW fast path for multi-term queries (2-8 terms).
+	 * Uses block-level upper bounds to skip non-contributing blocks.
+	 */
+	if (query_term_count <= 8)
+	{
+		float4 *idfs;
+		float4 *scores;
+		int		result_count;
+		int		i;
+
+		/* Compute unified doc_freqs and IDFs for all terms */
+		idfs = palloc(query_term_count * sizeof(float4));
+		for (i = 0; i < query_term_count; i++)
+		{
+			uint32 doc_freq = tp_get_unified_doc_freq(
+					local_state, index_relation, query_terms[i], level_heads);
+			idfs[i] = (doc_freq > 0) ? tp_calculate_idf(doc_freq, total_docs)
+									 : 0.0f;
+		}
+
+		/* Allocate scores array */
+		scores = (float4 *)palloc(max_results * sizeof(float4));
+
+		/* Run multi-term BMW scoring */
+		result_count = tp_score_multi_term_bmw(
+				local_state,
+				index_relation,
+				query_terms,
+				query_term_count,
+				query_frequencies,
+				idfs,
+				k1,
+				b,
+				avg_doc_len,
+				max_results,
+				result_ctids,
+				scores,
+				NULL);
+
+		pfree(idfs);
+
+		/* If BMW returns -1, fall through to exhaustive path */
+		if (result_count >= 0)
+		{
+			*result_scores = scores;
+			return result_count;
+		}
+		pfree(scores);
+	}
+
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */
 	doc_scores_hash = tp_create_doc_scores_hash(max_results, total_docs);
