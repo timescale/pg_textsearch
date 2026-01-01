@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767248904036,
+  "lastUpdate": 1767248905969,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -6824,6 +6824,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
             "value": 48.49,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9392a467f82d3313679869fb686edb6b6d74639c",
+          "message": "Release v0.2.0 (#100)\n\nHappy New Year!\n\n## Summary\n\n- V2 segment format with block-based posting storage (128 docs/block)\n- Unlimited indexes via dshash registry\n- MS MARCO and Wikipedia benchmark suite\n- Major code refactoring into am/, memtable/, segment/, types/, state/,\nplanner/, and debug/ directories\n\n## Bug Fixes\n\n- Fixed excessive memory allocation in document scoring\n- Fixed buildempty() to write init fork correctly\n\n## Testing\n\nAll 30 SQL regression tests pass, plus concurrency, recovery, and\nsegment tests.\n\nAfter merge, tag with: `git tag -a v0.2.0 <merge-commit> -m \"Release\nv0.2.0 - Block storage foundation\"`",
+          "timestamp": "2026-01-01T02:31:40Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9392a467f82d3313679869fb686edb6b6d74639c"
+        },
+        "date": 1767248905328,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 492077.173,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 12.232,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 23.756,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 20.938,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.024,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 9.534,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 43.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query with Score",
+            "value": 20.69,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query with Score",
+            "value": 32.365,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query with Score",
+            "value": 39.022,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query with Score",
+            "value": 28.308,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
+            "value": 64.59,
             "unit": "ms"
           },
           {
