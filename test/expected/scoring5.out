@@ -2,7 +2,7 @@
 -- Generated BM25 test with 3 documents and 4 queries
 -- Testing both bulk build and incremental build modes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.2.0: This is prerelease software and should not be used in production.
+INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
 \set ECHO none
 SET pg_textsearch.log_scores = true;
