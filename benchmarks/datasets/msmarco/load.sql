@@ -49,9 +49,10 @@ CREATE TABLE msmarco_qrels (
 \echo 'Loading passages (this may take several minutes)...'
 \copy msmarco_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", \$2); print \$1, \"\\\"\" \$2 \"\\\"\"}" "$DATA_DIR/collection.tsv"' WITH (FORMAT csv);
 
--- Load queries (use a subset for benchmarking - first 10K queries)
+-- Load all dev queries (6,980 queries with relevance judgments)
+-- Use CSV format to avoid backslash escape issues in text format
 \echo 'Loading queries...'
-\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'head -10000 "$DATA_DIR/queries.dev.tsv"' WITH (FORMAT text, DELIMITER E'\t');
+\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", \$2); print \$1, \"\\\"\" \$2 \"\\\"\"}" "$DATA_DIR/queries.dev.tsv"' WITH (FORMAT csv);
 
 -- Load relevance judgments (qrels format: query_id, 0, passage_id, relevance)
 \echo 'Loading relevance judgments...'
