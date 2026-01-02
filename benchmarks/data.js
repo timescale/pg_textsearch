@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767313337239,
+  "lastUpdate": 1767313339014,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10202,6 +10202,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Rare Term Query with Score",
             "value": 3.702,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.67,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "87a0ce31e0f205366221c748f0264ebad27e365a",
+          "message": "Fix BMW block iteration bug that defeated block skipping\n\nThe posting iterator's tp_segment_posting_iterator_next() auto-advances\nto subsequent blocks when the current block is exhausted. This caused\nBMW to process ALL blocks once the first non-skipped block was entered,\ndefeating the entire block-skipping optimization.\n\nFix by:\n1. Resetting iter.finished before each block so subsequent blocks can be\n   processed\n2. Breaking out of the inner while loop when the iterator advances past\n   the current block, allowing the outer for loop to apply threshold\n   checks to decide whether to process subsequent blocks\n\nThis restores BMW's ability to skip blocks whose block_max_score is\nbelow the current top-k threshold.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-01-02T00:04:35Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/87a0ce31e0f205366221c748f0264ebad27e365a"
+        },
+        "date": 1767313338677,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18391.187,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
+            "value": 2.745,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
+            "value": 2.288,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query (question)",
+            "value": 4.785,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Common Term Query",
+            "value": 7.488,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query",
+            "value": 8.814,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Short Query with Score",
+            "value": 13.329,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Medium Query with Score",
+            "value": 2.812,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Long Query with Score",
+            "value": 2.939,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Rare Term Query with Score",
+            "value": 4.356,
             "unit": "ms"
           },
           {
