@@ -1,8 +1,7 @@
 -- MS MARCO Passage Ranking - Load and Index
 -- Loads the full 8.8M passage collection and creates BM25 index
 --
--- IDEMPOTENT: Uses CREATE TABLE/INDEX IF NOT EXISTS.
--- Data loading always runs but is fast; index creation is skipped if exists.
+-- IDEMPOTENT: Uses CREATE INDEX IF NOT EXISTS to skip index rebuild.
 --
 -- Usage:
 --   DATA_DIR=/path/to/data psql -f load.sql
@@ -13,64 +12,56 @@
 \echo '=== MS MARCO Passage Ranking - Data Loading ==='
 \echo ''
 
--- Create tables (IF NOT EXISTS avoids errors on re-run)
-\echo 'Creating tables...'
-CREATE TABLE IF NOT EXISTS msmarco_passages (
+-- Drop and recreate tables for clean state
+DROP TABLE IF EXISTS msmarco_passages CASCADE;
+DROP TABLE IF EXISTS msmarco_queries CASCADE;
+DROP TABLE IF EXISTS msmarco_qrels CASCADE;
+
+-- Create passages table
+\echo 'Creating passages table...'
+CREATE TABLE msmarco_passages (
     passage_id INTEGER PRIMARY KEY,
     passage_text TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS msmarco_queries (
+-- Create queries table
+\echo 'Creating queries table...'
+CREATE TABLE msmarco_queries (
     query_id INTEGER PRIMARY KEY,
     query_text TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS msmarco_qrels (
+-- Create relevance judgments table
+\echo 'Creating relevance judgments table...'
+CREATE TABLE msmarco_qrels (
     query_id INTEGER NOT NULL,
     passage_id INTEGER NOT NULL,
     relevance INTEGER NOT NULL,
     PRIMARY KEY (query_id, passage_id)
 );
 
--- Check if data already loaded
-DO $$
-DECLARE
-    passage_count bigint;
-BEGIN
-    SELECT COUNT(*) INTO passage_count FROM msmarco_passages;
-    IF passage_count >= 8000000 THEN
-        RAISE NOTICE 'Data already loaded (% passages), skipping data load',
-            passage_count;
-        -- Signal to skip loading (checked below)
-        PERFORM set_config('msmarco.skip_load', 'true', true);
-    ELSE
-        RAISE NOTICE 'Loading data (% passages found)...', passage_count;
-        PERFORM set_config('msmarco.skip_load', 'false', true);
-        -- Truncate for clean reload
-        TRUNCATE msmarco_passages, msmarco_queries, msmarco_qrels;
-    END IF;
-END $$;
+-- Load passages (this is the big one - 8.8M rows)
+-- Convert TSV to CSV to avoid issues with \. sequences in text format
+\echo 'Loading passages (this may take several minutes)...'
+\copy msmarco_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/collection.tsv"' WITH (FORMAT csv)
 
--- Load passages (skip if already loaded)
-\echo 'Loading passages...'
-\copy msmarco_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/collection.tsv" 2>/dev/null || true' WITH (FORMAT csv)
-
--- Load queries
+-- Load all dev queries (6,980 queries with relevance judgments)
+-- Use CSV format to avoid backslash escape issues in text format
 \echo 'Loading queries...'
-\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/queries.dev.tsv" 2>/dev/null || true' WITH (FORMAT csv)
+\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/queries.dev.tsv"' WITH (FORMAT csv)
 
--- Load relevance judgments
+-- Load relevance judgments (qrels format: query_id, 0, passage_id, relevance)
 \echo 'Loading relevance judgments...'
-CREATE TEMP TABLE IF NOT EXISTS qrels_raw (
+CREATE TEMP TABLE qrels_raw (
     query_id INTEGER,
     zero INTEGER,
     passage_id INTEGER,
     relevance INTEGER
 );
-\copy qrels_raw FROM PROGRAM 'cat "$DATA_DIR/qrels.dev.small.tsv" 2>/dev/null || true' WITH (FORMAT text, DELIMITER E'\t')
+\copy qrels_raw FROM PROGRAM 'cat "$DATA_DIR/qrels.dev.small.tsv"' WITH (FORMAT text, DELIMITER E'\t')
 INSERT INTO msmarco_qrels (query_id, passage_id, relevance)
-SELECT query_id, passage_id, relevance FROM qrels_raw
-ON CONFLICT DO NOTHING;
+SELECT query_id, passage_id, relevance FROM qrels_raw;
+DROP TABLE qrels_raw;
 
 -- Verify data loading
 \echo ''
@@ -84,23 +75,22 @@ ORDER BY metric;
 
 -- Show sample data
 \echo ''
-\echo 'Sample queries:'
-SELECT query_id, query_text FROM msmarco_queries LIMIT 5;
+\echo 'Sample passages:'
+SELECT passage_id, LEFT(passage_text, 100) || '...' as passage_preview
+FROM msmarco_passages
+LIMIT 3;
 
--- Create BM25 index (IF NOT EXISTS skips if already built)
 \echo ''
-\echo '=== BM25 Index ==='
+\echo 'Sample queries:'
+SELECT query_id, query_text
+FROM msmarco_queries
+LIMIT 5;
 
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'msmarco_bm25_idx') THEN
-        RAISE NOTICE 'Index msmarco_bm25_idx already exists, skipping creation';
-    ELSE
-        RAISE NOTICE 'Creating BM25 index on passages (this will take a while)...';
-    END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS msmarco_bm25_idx ON msmarco_passages
+-- Create BM25 index
+\echo ''
+\echo '=== Building BM25 Index ==='
+\echo 'Creating BM25 index on passages (this will take a while)...'
+CREATE INDEX msmarco_bm25_idx ON msmarco_passages
     USING bm25(passage_text) WITH (text_config='english');
 
 -- Report index and table sizes
