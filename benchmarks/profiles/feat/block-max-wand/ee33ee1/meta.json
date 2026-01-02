@@ -1,0 +1,8 @@
+{
+  "sha": "ee33ee1",
+  "full_sha": "ee33ee13b77400241319f71a81891cf752c811f4",
+  "branch": "feat/block-max-wand",
+  "date": "2026-01-02T01:22:55Z",
+  "message": "Batch doc_freq lookups for multi-term queries",
+  "dataset": "MS MARCO full"
+}
