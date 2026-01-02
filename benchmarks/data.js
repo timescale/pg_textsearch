@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767313339014,
+  "lastUpdate": 1767316744115,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7445,6 +7445,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
             "value": 33.11,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "ee33ee13b77400241319f71a81891cf752c811f4",
+          "message": "Batch doc_freq lookups for multi-term queries\n\nFor multi-term queries, the previous implementation called\ntp_get_unified_doc_freq() in a loop, which opened/closed each segment\nonce per term. With 5 terms and 6 segments, that's 30 segment\nopen/close cycles per query.\n\nAdd tp_batch_get_segment_doc_freq() which opens each segment once and\nlooks up all terms, reducing segment opens from O(terms * segments)\nto O(segments).\n\nThis addresses the ~32% time spent in tp_segment_get_doc_freq seen in\nprofiling.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-02T01:03:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/ee33ee13b77400241319f71a81891cf752c811f4"
+        },
+        "date": 1767316742822,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 511888.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query (1 word)",
+            "value": 10.214,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
+            "value": 10.283,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query (question)",
+            "value": 16.124,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Common Term Query",
+            "value": 0.041,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query",
+            "value": 10.317,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
+            "value": 22.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Short Query with Score",
+            "value": 15.079,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Medium Query with Score",
+            "value": 15.413,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Long Query with Score",
+            "value": 16.533,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Rare Term Query with Score",
+            "value": 20.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
+            "value": 29.15,
             "unit": "ms"
           },
           {
