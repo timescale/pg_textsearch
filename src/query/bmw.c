@@ -341,10 +341,19 @@ score_segment_single_term_bmw(
 
 		/* Load and score this block */
 		iter.current_block = i;
+		iter.finished	   = false; /* Reset so we can process this block */
 		tp_segment_posting_iterator_load_block(&iter);
 
 		while (tp_segment_posting_iterator_next(&iter, &posting))
 		{
+			/*
+			 * Break if iterator auto-advanced to next block.
+			 * This ensures we only process block i, allowing the outer
+			 * for loop to apply threshold checks to subsequent blocks.
+			 */
+			if (iter.current_block != i)
+				break;
+
 			float4 score = compute_bm25_score(
 					idf,
 					posting->frequency,
@@ -694,11 +703,15 @@ score_segment_multi_term_bmw(
 
 			/* Load this block using the pre-initialized iterator */
 			ts->iter.current_block = block_idx;
+			ts->iter.finished	   = false; /* Reset for this block */
 			tp_segment_posting_iterator_load_block(&ts->iter);
 
 			/* Accumulate scores for all postings in block */
 			while (tp_segment_posting_iterator_next(&ts->iter, &posting))
 			{
+				/* Break if iterator auto-advanced to next block */
+				if (ts->iter.current_block != block_idx)
+					break;
 				float4			term_score;
 				TpDocAccum	   *accum;
 				bool			found;
