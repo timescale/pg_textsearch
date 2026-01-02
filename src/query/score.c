@@ -321,6 +321,44 @@ tp_get_unified_doc_freq(
 }
 
 /*
+ * Batch get unified doc_freq for multiple terms (memtable + all segments).
+ * Much faster than calling tp_get_unified_doc_freq in a loop because
+ * it opens each segment only once instead of once per term.
+ */
+static void
+tp_batch_get_unified_doc_freq(
+		TpLocalIndexState *local_state,
+		Relation		   index,
+		char			 **terms,
+		int				   term_count,
+		BlockNumber		  *level_heads,
+		uint32			  *doc_freqs)
+{
+	int level;
+	int i;
+
+	/* Initialize doc_freqs with memtable counts */
+	for (i = 0; i < term_count; i++)
+	{
+		TpPostingList *posting_list =
+				tp_get_posting_list(local_state, terms[i]);
+		doc_freqs[i] = (posting_list && posting_list->doc_count > 0)
+							 ? posting_list->doc_count
+							 : 0;
+	}
+
+	/* Add doc_freq from all segment levels (batch lookup) */
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		if (level_heads[level] != InvalidBlockNumber)
+		{
+			tp_batch_get_segment_doc_freq(
+					index, level_heads[level], terms, term_count, doc_freqs);
+		}
+	}
+}
+
+/*
  * Copy results to output arrays
  */
 static void
@@ -467,20 +505,31 @@ tp_score_documents(
 	 */
 	if (query_term_count <= 8)
 	{
+		uint32 *doc_freqs;
 		float4 *idfs;
 		float4 *scores;
 		int		result_count;
 		int		i;
 
-		/* Compute unified doc_freqs and IDFs for all terms */
+		/* Batch lookup doc_freqs for all terms (opens each segment once) */
+		doc_freqs = palloc(query_term_count * sizeof(uint32));
+		tp_batch_get_unified_doc_freq(
+				local_state,
+				index_relation,
+				query_terms,
+				query_term_count,
+				level_heads,
+				doc_freqs);
+
+		/* Convert doc_freqs to IDFs */
 		idfs = palloc(query_term_count * sizeof(float4));
 		for (i = 0; i < query_term_count; i++)
 		{
-			uint32 doc_freq = tp_get_unified_doc_freq(
-					local_state, index_relation, query_terms[i], level_heads);
-			idfs[i] = (doc_freq > 0) ? tp_calculate_idf(doc_freq, total_docs)
-									 : 0.0f;
+			idfs[i] = (doc_freqs[i] > 0)
+							? tp_calculate_idf(doc_freqs[i], total_docs)
+							: 0.0f;
 		}
+		pfree(doc_freqs);
 
 		/* Allocate scores array */
 		scores = (float4 *)palloc(max_results * sizeof(float4));

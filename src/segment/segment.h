@@ -340,6 +340,14 @@ extern void tp_process_term_in_segments(
 extern uint32 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term);
 
+/* Batch lookup doc_freq for multiple terms - opens each segment once */
+extern void tp_batch_get_segment_doc_freq(
+		Relation	index,
+		BlockNumber first_segment,
+		char	  **terms,
+		int			term_count,
+		uint32	   *doc_freqs);
+
 /* Efficient: score all terms in a segment chain, opening each segment once */
 extern void tp_score_all_terms_in_segment_chain(
 		Relation	index,
