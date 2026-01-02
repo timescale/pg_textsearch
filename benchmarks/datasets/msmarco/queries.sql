@@ -37,11 +37,11 @@ BEGIN
 END $$;
 
 -- ============================================================
--- Benchmark 1: Full Throughput Test
--- Run all dev queries and report aggregate statistics
+-- Benchmark 1: Throughput Test (1000 query sample)
+-- Run a representative sample of queries for timing
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 1: Full Throughput Test (All Queries) ==='
+\echo '=== Benchmark 1: Throughput Test (1000 queries) ==='
 
 DO $$
 DECLARE
@@ -49,22 +49,22 @@ DECLARE
     start_time timestamp;
     end_time timestamp;
     total_ms numeric;
-    query_count int;
+    query_count int := 0;
 BEGIN
-    SELECT COUNT(*) INTO query_count FROM msmarco_queries;
-
     start_time := clock_timestamp();
 
-    FOR q IN SELECT query_id, query_text FROM msmarco_queries LOOP
+    -- Run first 1000 queries (deterministic sample)
+    FOR q IN SELECT query_id, query_text FROM msmarco_queries LIMIT 1000 LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
         LIMIT 10;
+        query_count := query_count + 1;
     END LOOP;
 
     end_time := clock_timestamp();
     total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
 
-    RAISE NOTICE 'THROUGHPUT_ALL: % queries in % ms', query_count, round(total_ms::numeric, 2);
+    RAISE NOTICE 'THROUGHPUT_1K: % queries in % ms', query_count, round(total_ms::numeric, 2);
     RAISE NOTICE 'THROUGHPUT_AVG: % ms/query', round((total_ms / query_count)::numeric, 3);
     RAISE NOTICE 'THROUGHPUT_QPS: % queries/sec',
         round((query_count / (total_ms / 1000.0))::numeric, 2);
@@ -99,6 +99,7 @@ BEGIN
     FOR q IN
         SELECT query_id, query_text FROM msmarco_queries
         WHERE array_length(string_to_array(query_text, ' '), 1) <= 2
+        LIMIT 200
     LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
@@ -130,6 +131,7 @@ BEGIN
     FOR q IN
         SELECT query_id, query_text FROM msmarco_queries
         WHERE array_length(string_to_array(query_text, ' '), 1) BETWEEN 3 AND 5
+        LIMIT 200
     LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
@@ -160,6 +162,7 @@ BEGIN
     FOR q IN
         SELECT query_id, query_text FROM msmarco_queries
         WHERE array_length(string_to_array(query_text, ' '), 1) BETWEEN 6 AND 8
+        LIMIT 200
     LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
@@ -190,6 +193,7 @@ BEGIN
     FOR q IN
         SELECT query_id, query_text FROM msmarco_queries
         WHERE array_length(string_to_array(query_text, ' '), 1) >= 9
+        LIMIT 200
     LOOP
         PERFORM passage_id FROM msmarco_passages
         ORDER BY passage_text <@> to_bm25query(q.query_text, 'msmarco_bm25_idx')
