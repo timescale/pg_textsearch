@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767316852916,
+  "lastUpdate": 1767333902554,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7686,6 +7686,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "1d84841b0a00d4e690e5e8ac3ced30b6d7dff40a",
+          "message": "Make MS MARCO load.sql idempotent\n\n- Use CREATE TABLE/INDEX IF NOT EXISTS to skip if already present\n- Avoids rebuilding index on re-runs (saves 30-60 min locally)\n- TRUNCATE only if data missing, not on every run",
+          "timestamp": "2026-01-02T06:02:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1d84841b0a00d4e690e5e8ac3ced30b6d7dff40a"
+        },
+        "date": 1767333901866,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (0 docs) - Index Build Time",
+            "value": 1.243,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (0 docs) - Index Size",
+            "value": 0,
             "unit": "MB"
           }
         ]
