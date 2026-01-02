@@ -15,10 +15,10 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "metapage.h"
-#include "operator.h"
+#include "query/score.h"
 #include "segment/segment.h"
-#include "state.h"
+#include "state/metapage.h"
+#include "state/state.h"
 
 /*
  * Centralized IDF calculation (basic version)

@@ -9,11 +9,11 @@
 #include <utils/memutils.h>
 
 #include "memtable/posting.h"
-#include "operator.h"
+#include "query/score.h"
 #include "segment/dictionary.h"
 #include "segment/fieldnorm.h"
 #include "segment/segment.h"
-#include "state.h"
+#include "state/state.h"
 
 /*
  * Iterator state for zero-copy segment posting traversal (V1 format)

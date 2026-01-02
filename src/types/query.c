@@ -32,17 +32,16 @@
 #include <utils/syscache.h>
 #include <varatt.h>
 
+#include "am/am.h"
 #include "constants.h"
-#include "index.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "metapage.h"
-#include "operator.h"
-#include "planner.h"
-#include "query.h"
+#include "query/score.h"
 #include "segment/segment.h"
-#include "state.h"
-#include "vector.h"
+#include "state/metapage.h"
+#include "state/state.h"
+#include "types/query.h"
+#include "types/vector.h"
 
 /*
  * Cache for per-query IDF values to avoid repeated segment lookups.
