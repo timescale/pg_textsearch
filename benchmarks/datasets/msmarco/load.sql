@@ -43,12 +43,12 @@ CREATE TABLE msmarco_qrels (
 -- Load passages (this is the big one - 8.8M rows)
 -- Convert TSV to CSV to avoid issues with \. sequences in text format
 \echo 'Loading passages (this may take several minutes)...'
-\copy msmarco_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/collection.tsv"' WITH (FORMAT csv)
+\copy msmarco_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", \$2); print \$1, \"\\\"\" \$2 \"\\\"\"}" "$DATA_DIR/collection.tsv"' WITH (FORMAT csv)
 
 -- Load all dev queries (6,980 queries with relevance judgments)
 -- Use CSV format to avoid backslash escape issues in text format
 \echo 'Loading queries...'
-\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", $2); print $1, \"\\\"\" $2 \"\\\"\"}" "$DATA_DIR/queries.dev.tsv"' WITH (FORMAT csv)
+\copy msmarco_queries(query_id, query_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", \$2); print \$1, \"\\\"\" \$2 \"\\\"\"}" "$DATA_DIR/queries.dev.tsv"' WITH (FORMAT csv)
 
 -- Load relevance judgments (qrels format: query_id, 0, passage_id, relevance)
 \echo 'Loading relevance judgments...'
