@@ -77,5 +77,6 @@ window.BRANCH_INFO = {
   "87a0ce31e0f205366221c748f0264ebad27e365a": "feat/block-max-wand",
   "ee33ee13b77400241319f71a81891cf752c811f4": "feat/block-max-wand",
   "c4a440c029d1e34847c11ce681215083a1db0569": "tj/real-msmarco-queries",
-  "24a36b5d86fd5bf059406102cf980ee20beade08": "feat/block-max-wand"
+  "24a36b5d86fd5bf059406102cf980ee20beade08": "feat/block-max-wand",
+  "caaaaff3c48b32f31f3ca3daa505c13fa3886d9c": "feat/block-max-wand"
 };
