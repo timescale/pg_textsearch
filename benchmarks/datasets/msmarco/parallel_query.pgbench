@@ -1,0 +1,8 @@
+-- pgbench script for parallel BM25 query benchmarking
+-- Selects a random query from msmarco_queries and runs top-10 search
+\set qoffset random(0, 9999)
+SELECT passage_id FROM msmarco_passages
+ORDER BY passage_text <@> to_bm25query(
+    (SELECT query_text FROM msmarco_queries OFFSET :qoffset LIMIT 1),
+    'msmarco_bm25_idx')
+LIMIT 10;

@@ -808,6 +808,19 @@ jobs:
 
         echo "End: $(date)" | tee -a benchmark_results.txt
 
+    - name: Run MS MARCO parallel benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PG_BIN="/usr/lib/postgresql/17/bin"
+        export PGDATABASE=bench_test
+
+        echo "=== MS MARCO Parallel Benchmark ===" | tee -a benchmark_results.txt
+
+        chmod +x benchmarks/datasets/msmarco/parallel_bench.sh
+        benchmarks/datasets/msmarco/parallel_bench.sh 2>&1 | \
+            tee -a benchmark_results.txt
+
     - name: Run Wikipedia benchmark
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
       run: |
