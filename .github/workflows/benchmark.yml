@@ -549,6 +549,7 @@ jobs:
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
         # Use identical configuration to pg_textsearch benchmark
+        NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
@@ -560,7 +561,9 @@ jobs:
         wal_buffers = 64MB
         random_page_cost = 1.1
         effective_io_concurrency = 200
-        max_parallel_maintenance_workers = 4
+        max_parallel_maintenance_workers = $NCPUS
+        max_parallel_workers_per_gather = $NCPUS
+        max_parallel_workers = $NCPUS
         EOF
 
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
@@ -716,6 +719,7 @@ jobs:
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
         # Tune for benchmarking (ubuntu-latest: 4 vCPUs, 16GB RAM)
+        NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
@@ -727,6 +731,9 @@ jobs:
         wal_buffers = 64MB
         random_page_cost = 1.1
         effective_io_concurrency = 200
+        max_parallel_maintenance_workers = $NCPUS
+        max_parallel_workers_per_gather = $NCPUS
+        max_parallel_workers = $NCPUS
         pg_textsearch.index_memory_limit = 512MB
         pg_textsearch.segments_per_level = 16
         EOF
