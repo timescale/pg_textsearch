@@ -542,9 +542,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
-        # Install ParadeDB pg_search extension
-        curl -s https://packagecloud.io/install/repositories/paradedb/paradedb/script.deb.sh | sudo bash
-        sudo apt-get install -y postgresql-17-pg-search
+        # Install ParadeDB pg_search extension from GitHub releases
+        # ubuntu-latest is Ubuntu 24.04 (Noble)
+        PG_SEARCH_VERSION="0.20.6"
+        wget -q "https://github.com/paradedb/paradedb/releases/download/v${PG_SEARCH_VERSION}/postgresql-17-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-noble_amd64.deb"
+        sudo dpkg -i "postgresql-17-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-noble_amd64.deb"
 
     - name: Configure PostgreSQL
       run: |
