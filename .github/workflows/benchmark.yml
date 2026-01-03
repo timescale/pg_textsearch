@@ -47,6 +47,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: 'Dry run - skip publishing to GitHub Pages'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
@@ -332,7 +337,7 @@ jobs:
         retention-days: 30
 
     - name: Publish flamegraphs to GitHub Pages
-      if: always()
+      if: always() && github.event.inputs.dry_run != 'true'
       run: |
         # Only publish if we have flamegraphs
         if [ ! -f index_flamegraph.svg ] && [ ! -f query_flamegraph.svg ]; then
@@ -641,7 +646,7 @@ jobs:
         fi
 
     - name: Publish ParadeDB benchmark
-      if: always() && hashFiles('paradedb_action.json') != ''
+      if: always() && hashFiles('paradedb_action.json') != '' && github.event.inputs.dry_run != 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'paradedb_msmarco Benchmarks'
@@ -942,7 +947,7 @@ jobs:
         fi
 
     - name: Publish Cranfield benchmark
-      if: always() && hashFiles('cranfield_action.json') != ''
+      if: always() && hashFiles('cranfield_action.json') != '' && github.event.inputs.dry_run != 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'cranfield Benchmarks'
@@ -957,7 +962,7 @@ jobs:
         fail-on-alert: false
 
     - name: Publish MS MARCO benchmark
-      if: always() && hashFiles('msmarco_action.json') != ''
+      if: always() && hashFiles('msmarco_action.json') != '' && github.event.inputs.dry_run != 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'msmarco Benchmarks'
@@ -972,7 +977,7 @@ jobs:
         fail-on-alert: false
 
     - name: Publish Wikipedia benchmark
-      if: always() && hashFiles('wikipedia_action.json') != ''
+      if: always() && hashFiles('wikipedia_action.json') != '' && github.event.inputs.dry_run != 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: 'wikipedia Benchmarks'
@@ -987,7 +992,7 @@ jobs:
         fail-on-alert: false
 
     - name: Publish single dataset benchmark
-      if: always() && steps.format_metrics.outputs.is_all == 'false' && hashFiles('benchmark_action.json') != ''
+      if: always() && steps.format_metrics.outputs.is_all == 'false' && hashFiles('benchmark_action.json') != '' && github.event.inputs.dry_run != 'true'
       uses: benchmark-action/github-action-benchmark@v1
       with:
         name: '${{ steps.format_metrics.outputs.dataset }} Benchmarks'
@@ -1002,7 +1007,7 @@ jobs:
         fail-on-alert: false
 
     - name: Update benchmark dashboard
-      if: always()
+      if: always() && github.event.inputs.dry_run != 'true'
       run: |
         # Save the new index.html before switching branches
         cp benchmarks/gh-pages/index.html /tmp/new_index.html
