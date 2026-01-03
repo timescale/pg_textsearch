@@ -1,0 +1,2 @@
+# Tantivy benchmark dependencies
+tantivy>=0.22.0

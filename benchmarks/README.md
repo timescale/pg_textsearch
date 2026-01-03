@@ -169,6 +169,90 @@ To add a new dataset:
    - `queries.sql` - Query benchmarks
 3. Update this README
 
+## Competitive Benchmarks (Experimental)
+
+Compare pg_textsearch against other search engines:
+
+| Engine | Implementation | Setup |
+|--------|---------------|-------|
+| **pg_textsearch** | Native | Built-in |
+| **ParadeDB** | pg_search extension (Tantivy) | Same Postgres |
+| **Tantivy** | tantivy-py | Python |
+| **OpenSearch** | Lucene-based | Docker |
+
+### Running Competitive Benchmarks
+
+```bash
+# Run all engines (requires Docker for OpenSearch)
+./compare_engines.sh
+
+# Run specific engines
+./compare_engines.sh --engines "pg_textsearch,tantivy"
+
+# Skip index building (use existing indexes)
+./compare_engines.sh --skip-index
+```
+
+### Prerequisites
+
+- **pg_textsearch:** Already installed
+- **Tantivy:** `pip install tantivy`
+- **OpenSearch:** `pip install opensearch-py` + Docker
+- **ParadeDB:** pg_search extension installed in Postgres
+
+### Individual Engine Benchmarks
+
+```bash
+# Tantivy (standalone)
+cd engines/tantivy
+pip install -r requirements.txt
+python benchmark.py --data-dir ../../datasets/msmarco/data
+
+# OpenSearch (Docker)
+cd engines/opensearch
+docker compose up -d
+pip install -r requirements.txt
+python benchmark.py --data-dir ../../datasets/msmarco/data
+docker compose down
+
+# ParadeDB (requires pg_search extension)
+psql -f engines/paradedb/setup.sql
+psql -f engines/paradedb/queries.sql
+```
+
+### CI Workflow
+
+The competitive benchmark workflow runs via manual trigger only:
+- Workflow: `.github/workflows/competitive-benchmark.yml`
+- Results stored as artifacts (NOT published to gh-pages)
+- Marked as WIP/experimental
+
+### Output Format
+
+Results are saved to `results/competitive/`:
+- `pg_textsearch_results.json`
+- `tantivy_results.json`
+- `opensearch_results.json`
+- `paradedb_results.json`
+- `comparison_results.json` (aggregated summary)
+
+Sample output:
+```json
+{
+  "timestamp": "2025-01-15T10:30:00Z",
+  "dataset": "msmarco",
+  "results": {
+    "pg_textsearch": {
+      "throughput_qps": 65.4,
+      "query_p50_ms": 15.2,
+      "query_p95_ms": 45.8
+    },
+    "tantivy": { ... },
+    "opensearch": { ... }
+  }
+}
+```
+
 ## Comparison with Other Systems
 
 For competitive benchmarks, you can run the same queries against:

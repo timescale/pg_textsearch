@@ -1,0 +1,32 @@
+# OpenSearch Benchmark Docker Setup
+#
+# Usage:
+#   docker-compose up -d
+#   # Wait for OpenSearch to be ready
+#   python benchmark.py --data-dir /path/to/msmarco/data
+#   docker-compose down
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: opensearch-benchmark
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms4g -Xmx4g
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30

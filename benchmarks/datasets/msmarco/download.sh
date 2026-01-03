@@ -35,7 +35,7 @@ else
 fi
 
 # Queries (dev set - 6980 queries with relevance judgments)
-if [ ! -f "queries.dev.small.tsv" ]; then
+if [ ! -f "queries.dev.tsv" ]; then
     echo "Downloading dev queries..."
     wget -q --show-progress \
         https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz
@@ -89,5 +89,5 @@ ls -lh "$DATA_DIR"/*.tsv 2>/dev/null | head -10
 echo ""
 echo "Dataset statistics:"
 echo "  Passages:  $(wc -l < collection.tsv)"
-echo "  Dev queries: $(wc -l < queries.dev.small.tsv 2>/dev/null || echo 'N/A')"
+echo "  Dev queries: $(wc -l < queries.dev.tsv 2>/dev/null || echo 'N/A')"
 echo "  Relevance judgments: $(wc -l < qrels.dev.small.tsv 2>/dev/null || echo 'N/A')"

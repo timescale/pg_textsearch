@@ -1,0 +1,304 @@
+name: "[WIP] Competitive Benchmarks (Experimental)"
+
+# IMPORTANT: This workflow is WORK-IN-PROGRESS
+# Results are NOT published to gh-pages or publicly graphed
+# Results are stored as raw artifacts only for internal analysis
+
+on:
+  # Manual trigger only - not scheduled
+  workflow_dispatch:
+    inputs:
+      engines:
+        description: 'Engines to benchmark (comma-separated)'
+        required: true
+        default: 'pg_textsearch,tantivy,opensearch'
+        type: choice
+        options:
+          - 'pg_textsearch'
+          - 'tantivy'
+          - 'opensearch'
+          - 'paradedb'
+          - 'pg_textsearch,tantivy'
+          - 'pg_textsearch,opensearch'
+          - 'pg_textsearch,tantivy,opensearch'
+          - 'pg_textsearch,paradedb,tantivy,opensearch'
+      msmarco_size:
+        description: 'MS MARCO subset size'
+        required: true
+        default: '100K'
+        type: choice
+        options:
+          - '100K'
+          - '500K'
+          - '1M'
+          - 'full'
+      skip_index:
+        description: 'Skip index building (reuse existing)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  competitive-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 480  # 8 hours max for full dataset with all engines
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add WIP notice to job summary
+      run: |
+        echo "## :warning: WORK IN PROGRESS" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "These competitive benchmarks are **experimental**." >> $GITHUB_STEP_SUMMARY
+        echo "Results may be incomplete or incorrect." >> $GITHUB_STEP_SUMMARY
+        echo "Do NOT use for public comparison claims." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Free disk space
+      run: |
+        echo "Initial disk space:"
+        df -h /
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
+        echo "After cleanup:"
+        df -h /
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install base dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc curl
+
+        # PostgreSQL 17
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Install Python benchmark dependencies
+      run: |
+        pip install tantivy opensearch-py
+
+    - name: Build pg_textsearch (release mode)
+      if: contains(github.event.inputs.engines, 'pg_textsearch')
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        CFLAGS="-O3 -DNDEBUG" make
+        sudo make install
+
+    - name: Configure PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 4GB
+        effective_cache_size = 12GB
+        maintenance_work_mem = 512MB
+        work_mem = 128MB
+        pg_textsearch.index_memory_limit = 512MB
+        EOF
+
+        pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch" || true
+
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+        echo "PGPORT=5432" >> $GITHUB_ENV
+        echo "PGDATABASE=bench_test" >> $GITHUB_ENV
+
+    - name: Download MS MARCO dataset
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ github.event.inputs.msmarco_size }}
+
+    - name: Load MS MARCO data into PostgreSQL
+      if: contains(github.event.inputs.engines, 'pg_textsearch') || contains(github.event.inputs.engines, 'paradedb')
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        psql -f benchmarks/datasets/msmarco/load.sql 2>&1 | tee load_output.txt
+
+        # Report loaded data
+        psql -c "SELECT COUNT(*) as passages FROM msmarco_passages"
+        psql -c "SELECT COUNT(*) as queries FROM msmarco_queries"
+
+    - name: Run pg_textsearch benchmark
+      if: contains(github.event.inputs.engines, 'pg_textsearch')
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        mkdir -p results/competitive
+
+        echo "=== pg_textsearch Benchmark ===" | tee -a benchmark_log.txt
+
+        # Run queries benchmark
+        psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
+            tee results/competitive/pg_textsearch_output.txt
+
+        # Extract metrics to JSON
+        python3 -c "
+        import json
+        import re
+
+        with open('results/competitive/pg_textsearch_output.txt', 'r') as f:
+            content = f.read()
+
+        results = {
+            'engine': 'pg_textsearch',
+            'dataset': 'msmarco',
+            'size': '${{ github.event.inputs.msmarco_size }}',
+            'queries': {}
+        }
+
+        # Extract throughput
+        m = re.search(r'THROUGHPUT_ALL: (\d+) queries in ([\d.]+) ms', content)
+        if m:
+            total_queries = int(m.group(1))
+            total_ms = float(m.group(2))
+            results['queries']['throughput'] = {
+                'total_queries': total_queries,
+                'total_ms': total_ms,
+                'avg_ms': total_ms / total_queries if total_queries > 0 else 0,
+                'qps': total_queries / (total_ms / 1000) if total_ms > 0 else 0
+            }
+
+        # Extract percentiles
+        for metric in ['p50', 'p90', 'p95', 'p99']:
+            m = re.search(rf'{metric}.*?:\s*([\d.]+)\s*ms', content, re.IGNORECASE)
+            if m:
+                if 'percentiles' not in results['queries']:
+                    results['queries']['percentiles'] = {}
+                results['queries']['percentiles'][metric] = float(m.group(1))
+
+        # Extract index info
+        m = re.search(r'Index Size[:\s]+([\d.]+\s*\w+)', content)
+        if m:
+            results['index'] = {'index_size': m.group(1)}
+
+        with open('results/competitive/pg_textsearch_results.json', 'w') as f:
+            json.dump(results, f, indent=2)
+
+        print(json.dumps(results, indent=2))
+        "
+
+    - name: Run Tantivy benchmark
+      if: contains(github.event.inputs.engines, 'tantivy')
+      run: |
+        mkdir -p results/competitive
+
+        echo "=== Tantivy Benchmark ===" | tee -a benchmark_log.txt
+
+        SKIP_FLAG=""
+        if [ "${{ github.event.inputs.skip_index }}" = "true" ]; then
+          SKIP_FLAG="--skip-index"
+        fi
+
+        python3 benchmarks/engines/tantivy/benchmark.py \
+            --data-dir benchmarks/datasets/msmarco/data \
+            --output results/competitive/tantivy_results.json \
+            --index-dir results/competitive/tantivy_index \
+            $SKIP_FLAG 2>&1 | tee results/competitive/tantivy_output.txt
+
+    - name: Run OpenSearch benchmark
+      if: contains(github.event.inputs.engines, 'opensearch')
+      run: |
+        mkdir -p results/competitive
+
+        echo "=== OpenSearch Benchmark ===" | tee -a benchmark_log.txt
+
+        # Start OpenSearch container
+        cd benchmarks/engines/opensearch
+        docker compose up -d
+
+        # Wait for OpenSearch to be ready
+        echo "Waiting for OpenSearch..."
+        for i in {1..60}; do
+          if curl -s http://localhost:9200 > /dev/null 2>&1; then
+            echo "OpenSearch is ready"
+            break
+          fi
+          sleep 2
+        done
+
+        cd "$GITHUB_WORKSPACE"
+
+        SKIP_FLAG=""
+        if [ "${{ github.event.inputs.skip_index }}" = "true" ]; then
+          SKIP_FLAG="--skip-index"
+        fi
+
+        python3 benchmarks/engines/opensearch/benchmark.py \
+            --data-dir benchmarks/datasets/msmarco/data \
+            --output results/competitive/opensearch_results.json \
+            $SKIP_FLAG 2>&1 | tee results/competitive/opensearch_output.txt
+
+        # Stop OpenSearch
+        cd benchmarks/engines/opensearch
+        docker compose down
+
+    - name: Aggregate comparison results
+      run: |
+        python3 benchmarks/compare_results.py \
+            --output-dir results/competitive \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>&1 | \
+            tee results/competitive/aggregation_log.txt
+
+    - name: Generate summary report
+      run: |
+        echo "## Competitive Benchmark Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Engines:** ${{ github.event.inputs.engines }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Dataset:** MS MARCO (${{ github.event.inputs.msmarco_size }})" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ -f results/competitive/comparison_results.json ]; then
+          echo "### Comparison Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat results/competitive/comparison_results.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo ":warning: **These results are experimental and should not be used for public claims.**" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload competitive benchmark artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: competitive-benchmark-${{ github.run_id }}
+        path: |
+          results/competitive/
+          benchmark_log.txt
+          load_output.txt
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
+        # Stop OpenSearch if still running
+        cd benchmarks/engines/opensearch
+        docker compose down 2>/dev/null || true

@@ -1,0 +1,840 @@
+-- BMW (Block-Max WAND) Algorithm Tests
+-- Tests the top-k optimization for both single-term and multi-term queries
+-- Setup: Create extension
+CREATE EXTENSION pg_textsearch;
+INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+-- ============================================================
+-- SECTION 1: Basic BMW correctness
+-- ============================================================
+CREATE TABLE bmw_basic (id SERIAL PRIMARY KEY, content TEXT);
+-- Insert documents with known term frequencies
+INSERT INTO bmw_basic (content) VALUES
+    ('apple apple apple'),           -- id=1, tf=3
+    ('apple apple'),                 -- id=2, tf=2
+    ('apple'),                       -- id=3, tf=1
+    ('apple apple apple apple'),     -- id=4, tf=4
+    ('banana'),                      -- id=5, no apple
+    ('apple banana'),                -- id=6, tf=1
+    ('apple apple banana banana');   -- id=7, tf=2
+CREATE INDEX bmw_basic_idx ON bmw_basic USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_basic_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 7 documents, avg_length=2.43, text_config='english' (k1=1.20, b=0.75)
+-- Test: Single-term BMW should return docs in score order
+SELECT id, content <@> 'apple'::bm25query as score
+FROM bmw_basic
+WHERE content <@> 'apple'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score         
+----+----------------------
+  4 | -0.31600049138069153
+  1 |  -0.3106285035610199
+  2 | -0.30041441321372986
+  3 | -0.27344056963920593
+  7 | -0.24154625833034515
+(5 rows)
+
+-- Verify: id=4 (tf=4) should be first, then id=1 (tf=3), etc.
+DROP TABLE bmw_basic;
+-- ============================================================
+-- SECTION 2: Empty and edge result counts
+-- ============================================================
+CREATE TABLE bmw_empty (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_empty (content) VALUES
+    ('cat dog bird'),
+    ('fish whale shark'),
+    ('lion tiger bear');
+CREATE INDEX bmw_empty_idx ON bmw_empty USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_empty_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 3 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+-- Test: Query term not in corpus (empty results)
+SELECT id FROM bmw_empty
+WHERE content <@> 'elephant'::bm25query < 0
+ORDER BY content <@> 'elephant'::bm25query LIMIT 10;
+ id 
+----
+(0 rows)
+
+-- Test: Only 1 document matches
+SELECT id FROM bmw_empty
+WHERE content <@> 'whale'::bm25query < 0
+ORDER BY content <@> 'whale'::bm25query LIMIT 10;
+ id 
+----
+  2
+(1 row)
+
+-- Test: Fewer results than LIMIT (3 docs match, LIMIT 10)
+SELECT id FROM bmw_empty
+WHERE content <@> 'cat fish lion'::bm25query < 0
+ORDER BY content <@> 'cat fish lion'::bm25query LIMIT 10;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
+DROP TABLE bmw_empty;
+-- ============================================================
+-- SECTION 3: Tie-breaking with identical scores
+-- ============================================================
+CREATE TABLE bmw_ties (id SERIAL PRIMARY KEY, content TEXT);
+-- Create documents with IDENTICAL scores (same tf, same doc length)
+INSERT INTO bmw_ties (content) VALUES
+    ('unique term here'),      -- id=1
+    ('exact same length'),     -- id=2, same length as id=1
+    ('exact same length'),     -- id=3, same length
+    ('exact same length'),     -- id=4, same length
+    ('exact same length');     -- id=5, same length
+CREATE INDEX bmw_ties_idx ON bmw_ties USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_ties_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
+-- Test: Documents with identical scores should be ordered by CTID (id)
+-- All "exact same length" docs have tf=1 and same doc_len
+SELECT id, content <@> 'exact'::bm25query as score
+FROM bmw_ties
+WHERE content <@> 'exact'::bm25query < 0
+ORDER BY content <@> 'exact'::bm25query LIMIT 10;
+ id |        score         
+----+----------------------
+  2 | -0.28768208622932434
+  3 | -0.28768208622932434
+  4 | -0.28768208622932434
+  5 | -0.28768208622932434
+(4 rows)
+
+-- Verify: IDs should be in ascending order (2,3,4,5) for tied scores
+DROP TABLE bmw_ties;
+-- ============================================================
+-- SECTION 4: LIMIT edge cases
+-- ============================================================
+CREATE TABLE bmw_limits (id SERIAL PRIMARY KEY, content TEXT);
+-- Create 20 documents with term "test"
+INSERT INTO bmw_limits (content)
+SELECT 'test document number ' || i
+FROM generate_series(1, 20) i;
+CREATE INDEX bmw_limits_idx ON bmw_limits USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_limits_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 20 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
+-- Test: LIMIT 1 (minimum)
+SELECT id FROM bmw_limits
+WHERE content <@> 'test'::bm25query < 0
+ORDER BY content <@> 'test'::bm25query LIMIT 1;
+ id 
+----
+  1
+(1 row)
+
+-- Test: LIMIT equals exact document count
+SELECT COUNT(*) FROM (
+    SELECT id FROM bmw_limits
+    WHERE content <@> 'test'::bm25query < 0
+    ORDER BY content <@> 'test'::bm25query LIMIT 20
+) x;
+ count 
+-------
+    20
+(1 row)
+
+-- Test: LIMIT exceeds document count
+SELECT COUNT(*) FROM (
+    SELECT id FROM bmw_limits
+    WHERE content <@> 'test'::bm25query < 0
+    ORDER BY content <@> 'test'::bm25query LIMIT 100
+) x;
+ count 
+-------
+    20
+(1 row)
+
+DROP TABLE bmw_limits;
+-- ============================================================
+-- SECTION 5: Multi-term query edge cases
+-- ============================================================
+CREATE TABLE bmw_multi (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_multi (content) VALUES
+    ('alpha beta gamma'),           -- id=1, has all 3
+    ('alpha beta'),                 -- id=2, has 2
+    ('alpha'),                      -- id=3, has 1
+    ('beta gamma'),                 -- id=4, has 2
+    ('delta epsilon'),              -- id=5, has none
+    ('alpha alpha alpha beta'),     -- id=6, high tf for alpha
+    ('gamma gamma gamma gamma');    -- id=7, high tf for gamma
+CREATE INDEX bmw_multi_idx ON bmw_multi USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multi_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 7 documents, avg_length=2.57, text_config='english' (k1=1.20, b=0.75)
+-- Test: 2-term query
+SELECT id, content <@> 'alpha beta'::bm25query as score
+FROM bmw_multi
+WHERE content <@> 'alpha beta'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  6 | -1.2767734229564667
+  2 |  -1.265801191329956
+  1 | -1.0772775411605835
+  3 | -0.7671522498130798
+  4 |  -0.632900595664978
+(5 rows)
+
+-- Test: 3-term query
+SELECT id, content <@> 'alpha beta gamma'::bm25query as score
+FROM bmw_multi
+WHERE content <@> 'alpha beta gamma'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  1 |  -1.851189374923706
+  4 | -1.5422469973564148
+  6 | -1.2767734229564667
+  7 | -1.2762757539749146
+  2 |  -1.265801191329956
+(5 rows)
+
+-- Test: Query with non-existent term (partial match)
+SELECT id, content <@> 'alpha nonexistent'::bm25query as score
+FROM bmw_multi
+WHERE content <@> 'alpha nonexistent'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  6 |   -0.80795818567276
+  3 | -0.7671522498130798
+  2 |  -0.632900595664978
+  1 | -0.5386387705802917
+(4 rows)
+
+-- Test: Query where all terms are non-existent
+SELECT id FROM bmw_multi
+WHERE content <@> 'xxx yyy zzz'::bm25query < 0
+ORDER BY content <@> 'xxx yyy zzz'::bm25query LIMIT 5;
+ id 
+----
+(0 rows)
+
+DROP TABLE bmw_multi;
+-- ============================================================
+-- SECTION 6: 8-term boundary (max for multi-term BMW)
+-- ============================================================
+CREATE TABLE bmw_8term (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_8term (content) VALUES
+    ('one two three four five six seven eight nine ten'),
+    ('one two three four'),
+    ('five six seven eight'),
+    ('one three five seven nine'),
+    ('two four six eight ten');
+CREATE INDEX bmw_8term_idx ON bmw_8term USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_8term_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5 documents, avg_length=5.60, text_config='english' (k1=1.20, b=0.75)
+-- Test: Exactly 8 terms (should use multi-term BMW)
+SELECT id, content <@> 'one two three four five six seven eight'::bm25query as score
+FROM bmw_8term
+WHERE content <@> 'one two three four five six seven eight'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  1 | -3.2631139755249023
+  2 | -2.4413371086120605
+  3 | -2.4413371086120605
+  4 |  -2.254817247390747
+  5 |  -2.254817247390747
+(5 rows)
+
+-- Test: 9+ terms (should fall back to exhaustive, but still work)
+SELECT id, content <@> 'one two three four five six seven eight nine'::bm25query as score
+FROM bmw_8term
+WHERE content <@> 'one two three four five six seven eight nine'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  1 | -3.9256308674812317
+  4 |  -3.170417845249176
+  2 | -2.4413371086120605
+  3 | -2.4413371086120605
+  5 |  -2.254817247390747
+(5 rows)
+
+DROP TABLE bmw_8term;
+-- ============================================================
+-- SECTION 7: Document length extremes
+-- ============================================================
+CREATE TABLE bmw_lengths (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_lengths (content) VALUES
+    ('x'),                                              -- id=1, very short
+    ('word'),                                           -- id=2, short
+    (repeat('word ', 100)),                             -- id=3, medium (100 words)
+    (repeat('word ', 1000)),                            -- id=4, long (1000 words)
+    ('word ' || repeat('filler ', 500));                -- id=5, word + filler
+CREATE INDEX bmw_lengths_idx ON bmw_lengths USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_lengths_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5 documents, avg_length=122.60, text_config='english' (k1=1.20, b=0.75)
+-- Test: Query should rank by BM25 (considers doc length)
+-- Short docs with term should score higher than long docs
+SELECT id, length(content) as doc_chars,
+       content <@> 'word'::bm25query as score
+FROM bmw_lengths
+WHERE content <@> 'word'::bm25query < 0
+ORDER BY content <@> 'word'::bm25query LIMIT 5;
+ id | doc_chars |        score        
+----+-----------+---------------------
+  4 |      5000 | -0.6275554299354553
+  3 |       500 | -0.6264228224754333
+  2 |         4 | -0.4841128885746002
+  5 |      3505 | -0.1990702748298645
+(4 rows)
+
+DROP TABLE bmw_lengths;
+-- ============================================================
+-- SECTION 8: High term frequency
+-- ============================================================
+CREATE TABLE bmw_highfreq (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_highfreq (content) VALUES
+    (repeat('keyword ', 1)),      -- id=1, tf=1
+    (repeat('keyword ', 10)),     -- id=2, tf=10
+    (repeat('keyword ', 50)),     -- id=3, tf=50
+    (repeat('keyword ', 100)),    -- id=4, tf=100
+    (repeat('keyword ', 200));    -- id=5, tf=200
+CREATE INDEX bmw_highfreq_idx ON bmw_highfreq USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_highfreq_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5 documents, avg_length=72.20, text_config='english' (k1=1.20, b=0.75)
+-- Test: High TF documents should rank higher (with saturation)
+SELECT id, content <@> 'keyword'::bm25query as score
+FROM bmw_highfreq
+WHERE content <@> 'keyword'::bm25query < 0
+ORDER BY content <@> 'keyword'::bm25query LIMIT 5;
+ id |        score         
+----+----------------------
+  5 |  -0.1887885183095932
+  4 | -0.18850965797901154
+  3 |   -0.187954381108284
+  2 | -0.18362723290920258
+  1 |  -0.1458514928817749
+(5 rows)
+
+-- Verify: Order should be 5,4,3,2,1 (highest tf first)
+-- But scores should show diminishing returns due to BM25 saturation
+DROP TABLE bmw_highfreq;
+-- ============================================================
+-- SECTION 9: Segment + Memtable combination
+-- ============================================================
+CREATE TABLE bmw_hybrid (id SERIAL PRIMARY KEY, content TEXT);
+-- Set low memory to force segment spill
+SET pg_textsearch.index_memory_limit = '64kB';
+-- Insert batch 1 (will go to segment after spill)
+INSERT INTO bmw_hybrid (content)
+SELECT 'segment document ' || i || ' with searchterm'
+FROM generate_series(1, 500) i;
+CREATE INDEX bmw_hybrid_idx ON bmw_hybrid USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_hybrid_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 500 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
+-- Force spill by inserting more
+INSERT INTO bmw_hybrid (content)
+SELECT 'more segment data ' || i || ' searchterm'
+FROM generate_series(501, 1000) i;
+-- Insert recent data (stays in memtable)
+INSERT INTO bmw_hybrid (content) VALUES
+    ('fresh memtable searchterm searchterm searchterm'),  -- High relevance
+    ('another memtable searchterm searchterm');
+-- Test: BMW should find results from both segment and memtable
+-- The memtable docs with higher tf should rank at top
+SELECT id, content <@> 'searchterm'::bm25query as score
+FROM bmw_hybrid
+WHERE content <@> 'searchterm'::bm25query < 0
+ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
+  id  |         score          
+------+------------------------
+ 1001 | -0.0007437646854668856
+ 1002 | -0.0006856626714579761
+    1 | -0.0004986796411685646
+    2 | -0.0004986796411685646
+    3 | -0.0004986796411685646
+    4 | -0.0004986796411685646
+    5 | -0.0004986796411685646
+    6 | -0.0004986796411685646
+    7 | -0.0004986796411685646
+    8 | -0.0004986796411685646
+(10 rows)
+
+-- Verify top results include the memtable docs (id > 1000)
+RESET pg_textsearch.index_memory_limit;
+DROP TABLE bmw_hybrid;
+-- ============================================================
+-- SECTION 10: Validate BMW equals exhaustive (LARGE SCALE)
+-- ============================================================
+-- CRITICAL: Must use >128 docs per block to test block skipping!
+-- Previous version used only 100 docs - less than 1 block.
+CREATE TABLE bmw_validate (id SERIAL PRIMARY KEY, content TEXT);
+-- Create 1000 diverse documents - spans ~8 blocks
+-- Varying term frequencies to create score diversity
+INSERT INTO bmw_validate (content)
+SELECT
+    CASE (i % 10)
+        WHEN 0 THEN 'apple apple apple banana cherry'  -- high apple tf
+        WHEN 1 THEN 'apple apple banana'
+        WHEN 2 THEN 'cherry cherry cherry'
+        WHEN 3 THEN 'apple cherry'
+        WHEN 4 THEN 'banana banana cherry cherry'
+        WHEN 5 THEN 'apple'
+        WHEN 6 THEN 'banana apple cherry'
+        WHEN 7 THEN 'cherry banana'
+        WHEN 8 THEN 'apple apple apple apple'  -- highest apple tf
+        WHEN 9 THEN 'banana'
+    END || ' document number ' || i
+FROM generate_series(1, 1000) i;
+-- Force to segment with low memory limit
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_validate_idx ON bmw_validate USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_validate_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=5.80, text_config='english' (k1=1.20, b=0.75)
+RESET pg_textsearch.index_memory_limit;
+-- Test: BMW (LIMIT) should match exhaustive (subquery LIMIT)
+-- Single-term
+WITH bmw AS (
+    SELECT id, content <@> 'apple'::bm25query as score
+    FROM bmw_validate WHERE content <@> 'apple'::bm25query < 0
+    ORDER BY content <@> 'apple'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'apple'::bm25query as score
+        FROM bmw_validate WHERE content <@> 'apple'::bm25query < 0
+        ORDER BY content <@> 'apple'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'single-term' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+    test     | result 
+-------------+--------
+ single-term | PASS
+(1 row)
+
+-- Multi-term
+WITH bmw AS (
+    SELECT id, content <@> 'apple banana'::bm25query as score
+    FROM bmw_validate WHERE content <@> 'apple banana'::bm25query < 0
+    ORDER BY content <@> 'apple banana'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'apple banana'::bm25query as score
+        FROM bmw_validate WHERE content <@> 'apple banana'::bm25query < 0
+        ORDER BY content <@> 'apple banana'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'multi-term' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+    test    | result 
+------------+--------
+ multi-term | PASS
+(1 row)
+
+-- Three-term
+WITH bmw AS (
+    SELECT id, content <@> 'apple banana cherry'::bm25query as score
+    FROM bmw_validate WHERE content <@> 'apple banana cherry'::bm25query < 0
+    ORDER BY content <@> 'apple banana cherry'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'apple banana cherry'::bm25query as score
+        FROM bmw_validate WHERE content <@> 'apple banana cherry'::bm25query < 0
+        ORDER BY content <@> 'apple banana cherry'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'three-term' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+    test    | result 
+------------+--------
+ three-term | PASS
+(1 row)
+
+DROP TABLE bmw_validate;
+-- ============================================================
+-- SECTION 11: Score monotonicity with multiple blocks
+-- ============================================================
+-- Use 500 docs to span multiple blocks (~4 blocks)
+CREATE TABLE bmw_monotonic (id SERIAL PRIMARY KEY, content TEXT);
+-- Create varying scores by varying term frequency
+INSERT INTO bmw_monotonic (content)
+SELECT
+    CASE
+        WHEN i % 50 = 0 THEN repeat('target ', 5)  -- high tf every 50 docs
+        WHEN i % 10 = 0 THEN repeat('target ', 3)  -- medium tf every 10 docs
+        ELSE 'target other words here'              -- low tf
+    END || ' doc' || i
+FROM generate_series(1, 500) i;
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_monotonic_idx ON bmw_monotonic USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_monotonic_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 500 documents, avg_length=3.14, text_config='english' (k1=1.20, b=0.75)
+RESET pg_textsearch.index_memory_limit;
+-- Test: Scores must be monotonically descending (more negative)
+-- This tests that BMW correctly orders results from multiple blocks
+WITH ranked AS (
+    SELECT id,
+           content <@> 'target'::bm25query as score,
+           LAG(content <@> 'target'::bm25query) OVER (ORDER BY content <@> 'target'::bm25query) as prev_score
+    FROM bmw_monotonic
+    WHERE content <@> 'target'::bm25query < 0
+    ORDER BY content <@> 'target'::bm25query
+    LIMIT 50
+)
+SELECT 'monotonic-multiblock' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM ranked
+WHERE prev_score IS NOT NULL AND score < prev_score;
+         test         | result 
+----------------------+--------
+ monotonic-multiblock | PASS
+(1 row)
+
+DROP TABLE bmw_monotonic;
+-- ============================================================
+-- SECTION 12: Block boundary stress test
+-- ============================================================
+-- Test with 640 docs = exactly 5 blocks of 128 docs each
+-- Place high-scoring docs at specific positions to test block skipping
+CREATE TABLE bmw_blocks (id SERIAL PRIMARY KEY, content TEXT);
+-- Insert 640 base documents (5 blocks worth)
+INSERT INTO bmw_blocks (content)
+SELECT 'baseline searchword document ' || i
+FROM generate_series(1, 640) i;
+-- Insert high-scoring docs at specific block positions:
+-- These should all appear in top-10 regardless of which block they're in
+INSERT INTO bmw_blocks (content) VALUES
+    ('searchword searchword searchword searchword searchword'),  -- id=641, tf=5
+    ('searchword searchword searchword searchword'),             -- id=642, tf=4
+    ('searchword searchword searchword');                        -- id=643, tf=3
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_blocks_idx ON bmw_blocks USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_blocks_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 643 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
+RESET pg_textsearch.index_memory_limit;
+-- Test: High-tf docs (641,642,643) must be in top results
+-- This validates block-max scoring finds them across multiple blocks
+SELECT id, content <@> 'searchword'::bm25query as score
+FROM bmw_blocks
+WHERE content <@> 'searchword'::bm25query < 0
+ORDER BY content <@> 'searchword'::bm25query LIMIT 10;
+ id  |         score          
+-----+------------------------
+ 641 | -0.0013297571567818522
+ 642 |  -0.001314413733780384
+ 643 | -0.0012896135449409485
+   1 | -0.0007766990456730127
+   2 | -0.0007766990456730127
+   3 | -0.0007766990456730127
+   4 | -0.0007766990456730127
+   5 | -0.0007766990456730127
+   6 | -0.0007766990456730127
+   7 | -0.0007766990456730127
+(10 rows)
+
+-- Validation: top 3 must be our high-tf docs
+WITH top3 AS (
+    SELECT id FROM bmw_blocks
+    WHERE content <@> 'searchword'::bm25query < 0
+    ORDER BY content <@> 'searchword'::bm25query LIMIT 3
+)
+SELECT 'block-boundary' as test,
+    CASE WHEN COUNT(*) = 3 AND
+              641 IN (SELECT id FROM top3) AND
+              642 IN (SELECT id FROM top3) AND
+              643 IN (SELECT id FROM top3)
+         THEN 'PASS' ELSE 'FAIL' END as result
+FROM top3;
+      test      | result 
+----------------+--------
+ block-boundary | PASS
+(1 row)
+
+DROP TABLE bmw_blocks;
+-- ============================================================
+-- SECTION 13: Repeated query terms
+-- ============================================================
+CREATE TABLE bmw_repeat (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_repeat (content) VALUES
+    ('cat cat cat'),
+    ('cat dog'),
+    ('dog dog dog');
+CREATE INDEX bmw_repeat_idx ON bmw_repeat USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_repeat_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+-- Test: Repeated terms in query should boost relevance
+SELECT id, content <@> 'cat cat'::bm25query as score
+FROM bmw_repeat
+WHERE content <@> 'cat cat'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |        score        
+----+---------------------
+  1 |   -1.43861985206604
+  2 | -1.0470967292785645
+(2 rows)
+
+DROP TABLE bmw_repeat;
+-- ============================================================
+-- SECTION 14: Unicode and special characters
+-- ============================================================
+CREATE TABLE bmw_unicode (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_unicode (content) VALUES
+    ('cafe with accent'),
+    ('naïve approach'),
+    ('北京 beijing china'),
+    ('emoji test'),
+    ('simple ascii text');
+CREATE INDEX bmw_unicode_idx ON bmw_unicode USING bm25(content)
+    WITH (text_config='simple');  -- simple config for unicode
+NOTICE:  BM25 index build started for relation bmw_unicode_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5 documents, avg_length=2.60, text_config='simple' (k1=1.20, b=0.75)
+-- Test: Should handle various character sets
+SELECT id, content <@> 'beijing'::bm25query as score
+FROM bmw_unicode
+WHERE content <@> 'beijing'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |       score        
+----+--------------------
+  3 | -1.304211139678955
+(1 row)
+
+SELECT id, content <@> 'simple'::bm25query as score
+FROM bmw_unicode
+WHERE content <@> 'simple'::bm25query < 0
+ORDER BY score LIMIT 5;
+ id |       score        
+----+--------------------
+  5 | -1.304211139678955
+(1 row)
+
+DROP TABLE bmw_unicode;
+-- ============================================================
+-- SECTION 15: Top-K scattered across blocks
+-- ============================================================
+-- This is the CRITICAL test for BMW: best docs are spread across
+-- different blocks, forcing the algorithm to check multiple blocks.
+CREATE TABLE bmw_scattered (id SERIAL PRIMARY KEY, content TEXT);
+-- Create 1000 docs where high-scoring docs are deliberately scattered:
+-- - Every 100th doc (100,200,300...) has tf=4 (highest)
+-- - Every 50th doc has tf=3
+-- - Every 10th doc has tf=2
+-- - Others have tf=1
+-- This ensures top-10 must come from DIFFERENT blocks
+INSERT INTO bmw_scattered (content)
+SELECT
+    CASE
+        WHEN i % 100 = 0 THEN 'scattered scattered scattered scattered'
+        WHEN i % 50 = 0 THEN 'scattered scattered scattered'
+        WHEN i % 10 = 0 THEN 'scattered scattered'
+        ELSE 'scattered filler words here'
+    END || ' doc' || i
+FROM generate_series(1, 1000) i;
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_scattered_idx ON bmw_scattered USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_scattered_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=3.93, text_config='english' (k1=1.20, b=0.75)
+RESET pg_textsearch.index_memory_limit;
+-- The top-10 should include docs 100,200,300,400,500,600,700,800,900,1000
+-- These are spread across 8 different blocks (1000/128 = ~8 blocks)
+SELECT id, content <@> 'scattered'::bm25query as score
+FROM bmw_scattered
+WHERE content <@> 'scattered'::bm25query < 0
+ORDER BY content <@> 'scattered'::bm25query LIMIT 10;
+  id  |         score          
+------+------------------------
+  100 | -0.0008074695360846817
+  200 | -0.0008074695360846817
+  300 | -0.0008074695360846817
+  400 | -0.0008074695360846817
+  500 | -0.0008074695360846817
+  600 | -0.0008074695360846817
+  700 | -0.0008074695360846817
+  800 | -0.0008074695360846817
+  900 | -0.0008074695360846817
+ 1000 | -0.0008074695360846817
+(10 rows)
+
+-- Validation: Verify top 10 includes the high-tf docs from different blocks
+WITH top10 AS (
+    SELECT id FROM bmw_scattered
+    WHERE content <@> 'scattered'::bm25query < 0
+    ORDER BY content <@> 'scattered'::bm25query LIMIT 10
+)
+SELECT 'scattered-blocks' as test,
+    CASE WHEN (SELECT COUNT(*) FROM top10 WHERE id IN (100,200,300,400,500,600,700,800,900,1000)) >= 8
+         THEN 'PASS' ELSE 'FAIL' END as result;
+       test       | result 
+------------------+--------
+ scattered-blocks | PASS
+(1 row)
+
+-- Also validate with exhaustive comparison
+WITH bmw AS (
+    SELECT id, content <@> 'scattered'::bm25query as score
+    FROM bmw_scattered WHERE content <@> 'scattered'::bm25query < 0
+    ORDER BY content <@> 'scattered'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'scattered'::bm25query as score
+        FROM bmw_scattered WHERE content <@> 'scattered'::bm25query < 0
+        ORDER BY content <@> 'scattered'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'scattered-equals-exhaustive' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+            test             | result 
+-----------------------------+--------
+ scattered-equals-exhaustive | PASS
+(1 row)
+
+DROP TABLE bmw_scattered;
+-- ============================================================
+-- SECTION 16: Multi-term with scattered high-scorers
+-- ============================================================
+-- Tests that multi-term BMW also works with scattered results
+CREATE TABLE bmw_multi_scattered (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO bmw_multi_scattered (content)
+SELECT
+    CASE
+        WHEN i % 100 = 0 THEN 'alpha alpha alpha beta beta gamma'
+        WHEN i % 50 = 0 THEN 'alpha alpha beta beta'
+        WHEN i % 10 = 0 THEN 'alpha beta'
+        ELSE 'alpha filler content'
+    END || ' doc' || i
+FROM generate_series(1, 1000) i;
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_multi_scattered_idx ON bmw_multi_scattered USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multi_scattered_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=3.96, text_config='english' (k1=1.20, b=0.75)
+RESET pg_textsearch.index_memory_limit;
+-- Multi-term query - top results should come from scattered positions
+WITH bmw AS (
+    SELECT id, content <@> 'alpha beta gamma'::bm25query as score
+    FROM bmw_multi_scattered WHERE content <@> 'alpha beta gamma'::bm25query < 0
+    ORDER BY content <@> 'alpha beta gamma'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'alpha beta gamma'::bm25query as score
+        FROM bmw_multi_scattered WHERE content <@> 'alpha beta gamma'::bm25query < 0
+        ORDER BY content <@> 'alpha beta gamma'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'multiterm-scattered' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+        test         | result 
+---------------------+--------
+ multiterm-scattered | PASS
+(1 row)
+
+DROP TABLE bmw_multi_scattered;
+-- ============================================================
+-- SECTION 17: Multiple segments
+-- ============================================================
+CREATE TABLE bmw_multiseg (id SERIAL PRIMARY KEY, content TEXT);
+SET pg_textsearch.index_memory_limit = '64kB';
+-- Batch 1 -> segment 1
+INSERT INTO bmw_multiseg (content)
+SELECT 'first segment batch ' || i || ' targetword'
+FROM generate_series(1, 300) i;
+CREATE INDEX bmw_multiseg_idx ON bmw_multiseg USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multiseg_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 300 documents, avg_length=5.00, text_config='english' (k1=1.20, b=0.75)
+-- Batch 2 -> segment 2
+INSERT INTO bmw_multiseg (content)
+SELECT 'second segment batch ' || i || ' targetword targetword'
+FROM generate_series(301, 600) i;
+-- Batch 3 -> segment 3 or memtable
+INSERT INTO bmw_multiseg (content)
+SELECT 'third batch ' || i || ' targetword targetword targetword'
+FROM generate_series(601, 700) i;
+RESET pg_textsearch.index_memory_limit;
+-- Test: Should find best results across all segments
+-- Third batch has highest tf, should rank first
+SELECT id, content <@> 'targetword'::bm25query as score
+FROM bmw_multiseg
+WHERE content <@> 'targetword'::bm25query < 0
+ORDER BY content <@> 'targetword'::bm25query LIMIT 10;
+ id  |         score          
+-----+------------------------
+ 601 | -0.0011030653258785605
+ 602 | -0.0011030653258785605
+ 603 | -0.0011030653258785605
+ 604 | -0.0011030653258785605
+ 605 | -0.0011030653258785605
+ 606 | -0.0011030653258785605
+ 607 | -0.0011030653258785605
+ 608 | -0.0011030653258785605
+ 609 | -0.0011030653258785605
+ 610 | -0.0011030653258785605
+(10 rows)
+
+-- Verify: Results should include docs from batch 3 (id > 600) at top
+-- Also verify total count is correct
+SELECT COUNT(*) FROM bmw_multiseg
+WHERE content <@> 'targetword'::bm25query < 0;
+ count 
+-------
+   700
+(1 row)
+
+DROP TABLE bmw_multiseg;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP EXTENSION pg_textsearch CASCADE;
