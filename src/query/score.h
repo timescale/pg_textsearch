@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * operator.h - BM25 scoring operator interface
+ * query/score.h - BM25 scoring operator interface
  */
 #pragma once
 

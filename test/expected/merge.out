@@ -215,11 +215,11 @@ FROM merge_test
 ORDER BY content <@> to_bm25query('database', 'merge_test_idx'), id;
  id |         content          | database_score 
 ----+--------------------------+----------------
- 10 | database transaction log |        -0.6931
   1 | hello world database     |        -0.6931
   5 | database indexing query  |        -0.6931
   7 | database world news      |        -0.6931
   8 | goodbye database friend  |        -0.6931
+ 10 | database transaction log |        -0.6931
 (5 rows)
 
 -- Cleanup
