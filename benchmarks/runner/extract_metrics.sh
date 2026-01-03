@@ -50,9 +50,14 @@ INDEX_BUILD_MS=$(grep -E "CREATE INDEX" "$LOG_FILE" -A 1 2>/dev/null | \
 LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
-# Extract document count from index build notice
+# Extract document count from index build notice (pg_textsearch) or passages loaded (ParadeDB)
 NUM_DOCUMENTS=$(grep -E "BM25 index build completed:" "$LOG_FILE" 2>/dev/null | \
     grep -oE "[0-9]+ documents" | grep -oE "[0-9]+" || echo "")
+# Fallback: ParadeDB/generic format "Passages loaded: | NNNNNNN"
+if [ -z "$NUM_DOCUMENTS" ]; then
+    NUM_DOCUMENTS=$(grep -E "Passages loaded:" "$LOG_FILE" 2>/dev/null | \
+        grep -oE "\| [0-9]+" | grep -oE "[0-9]+" || echo "")
+fi
 
 # Extract Execution Time from benchmark query outputs
 # Format: "Execution Time: 123.456 ms (min=..., max=...)"

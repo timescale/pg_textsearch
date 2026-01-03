@@ -503,6 +503,162 @@ jobs:
         pg_ctl stop -D tmp_bench/data || true
         rm -rf tmp_bench
 
+  # ParadeDB benchmark (competitive baseline)
+  # NOTE: pg_textsearch and pg_search cannot coexist in the same PostgreSQL
+  # instance due to conflicting 'bm25' access method names. This job runs
+  # in a separate PostgreSQL instance with identical configuration.
+  paradedb-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    # Run for msmarco or all datasets, and on scheduled runs
+    if: >
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.dataset == 'msmarco' || github.event.inputs.dataset == 'all'))
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
+        df -h /
+
+    - name: Install PostgreSQL and ParadeDB
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+
+        # Install PostgreSQL 17
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+        # Install ParadeDB pg_search extension
+        curl -s https://packagecloud.io/install/repositories/paradedb/paradedb/script.deb.sh | sudo bash
+        sudo apt-get install -y postgresql-17-pg-search
+
+    - name: Configure PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        # Use identical configuration to pg_textsearch benchmark
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 4GB
+        effective_cache_size = 12GB
+        maintenance_work_mem = 512MB
+        work_mem = 128MB
+        max_connections = 20
+        checkpoint_completion_target = 0.9
+        wal_buffers = 64MB
+        random_page_cost = 1.1
+        effective_io_concurrency = 200
+        max_parallel_maintenance_workers = 4
+        EOF
+
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_search"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Determine dataset size
+      id: dataset_size
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
+        else
+          echo "msmarco_size=full" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download MS MARCO dataset
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ steps.dataset_size.outputs.msmarco_size }}
+
+    - name: Run ParadeDB benchmark
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== ParadeDB MS MARCO Benchmark ===" | tee benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/paradedb/load.sql 2>&1 | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/paradedb/queries.sql 2>&1 | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Extract metrics
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt paradedb_metrics.json "paradedb_msmarco" "ParadeDB"
+
+    - name: Format metrics for benchmark tracking
+      run: |
+        chmod +x benchmarks/runner/format_for_action.sh
+        ./benchmarks/runner/format_for_action.sh paradedb_metrics.json paradedb_action.json
+
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: paradedb-benchmark-${{ github.run_id }}
+        path: |
+          benchmark_results.txt
+          paradedb_metrics.json
+          paradedb_action.json
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Post benchmark summary
+      if: always()
+      run: |
+        if [ -f paradedb_metrics.json ]; then
+          echo "### ParadeDB Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' paradedb_metrics.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Short Query | $(jq -r '.metrics.query_latencies_ms.short_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Medium Query | $(jq -r '.metrics.query_latencies_ms.medium_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Publish ParadeDB benchmark
+      if: always() && hashFiles('paradedb_action.json') != ''
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'paradedb_msmarco Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: paradedb_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: false
+        fail-on-alert: false
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
   # Full benchmark suite
   full-benchmark:
     runs-on: ubuntu-latest

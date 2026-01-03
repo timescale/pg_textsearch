@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pg_textsearch Benchmarks</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; margin-bottom: 10px; }
+        h2 { color: #555; margin-top: 30px; margin-bottom: 15px; }
+        .description {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+        @media (max-width: 1200px) {
+            .charts-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        @media (max-width: 800px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        canvas { max-height: 250px; }
+        .dataset-section {
+            margin-bottom: 40px;
+        }
+        .legend {
+            display: inline-block;
+            margin: 8px 0;
+        }
+        .legend-item {
+            margin-right: 16px;
+            font-size: 14px;
+        }
+        .comparison-legend {
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            display: inline-block;
+        }
+        .comparison-legend .legend-item {
+            display: inline-block;
+        }
+        .color-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        .tabs {
+            margin-bottom: 20px;
+        }
+        .tab-btn {
+            padding: 10px 20px;
+            border: none;
+            background: #ddd;
+            cursor: pointer;
+            font-size: 14px;
+            border-radius: 4px 4px 0 0;
+        }
+        .tab-btn.active {
+            background: white;
+            font-weight: bold;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>pg_textsearch Benchmarks</h1>
+    <p class="description">
+        Performance tracking for <a href="https://github.com/timescale/pg_textsearch">pg_textsearch</a>.
+        Click any data point to view the commit.
+        <br>
+        <span class="legend">
+            <span class="legend-item">● main branch</span>
+            <span class="legend-item">✕ feature branch</span>
+        </span>
+        <br>
+        <a href="profiles/">📊 CPU Profiles &amp; Flamegraphs</a>
+    </p>
+
+    <div class="tabs">
+        <button class="tab-btn active" onclick="showTab('comparison')">Comparison (pg_textsearch vs ParadeDB)</button>
+        <button class="tab-btn" onclick="showTab('individual')">Individual Results</button>
+    </div>
+
+    <div id="comparison" class="tab-content active">
+        <div class="comparison-legend">
+            <span class="legend-item"><span class="color-dot" style="background: rgb(54, 162, 235);"></span> pg_textsearch</span>
+            <span class="legend-item"><span class="color-dot" style="background: rgb(255, 99, 132);"></span> ParadeDB</span>
+        </div>
+        <div id="comparison-charts"></div>
+    </div>
+    <div id="individual" class="tab-content">
+        <div id="charts"></div>
+    </div>
+
+    <script src="./data.js"></script>
+    <script src="./branch_info.js"></script>
+    <script>
+        function showTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelector(`[onclick="showTab('${tabId}')"]`).classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        // Get branch for a commit, defaulting to 'main' for unknown commits
+        function getBranch(commitSha) {
+            if (typeof window.BRANCH_INFO === 'undefined') return 'main';
+            return window.BRANCH_INFO[commitSha] || 'main';
+        }
+
+        function isMainBranch(commitSha) {
+            return getBranch(commitSha) === 'main';
+        }
+
+        const colors = {
+            pgtextsearch: [54, 162, 235],   // blue
+            paradedb: [255, 99, 132],        // red/pink
+            default: [
+                [54, 162, 235],
+                [255, 99, 132],
+                [75, 192, 192],
+                [255, 159, 64],
+                [153, 102, 255],
+                [255, 205, 86],
+                [201, 203, 207],
+                [255, 99, 71],
+            ]
+        };
+
+        function rgb(c) { return `rgb(${c[0]}, ${c[1]}, ${c[2]})`; }
+        function rgba(c, a) { return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})`; }
+
+        function formatDate(timestamp) {
+            const d = new Date(timestamp);
+            return d.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: '2-digit'
+            });
+        }
+
+        function formatDateTime(timestamp) {
+            const d = new Date(timestamp);
+            const date = d.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: '2-digit'
+            });
+            const time = d.toLocaleTimeString('en-US', {
+                hour: 'numeric',
+                minute: '2-digit'
+            });
+            return `${date} ${time}`;
+        }
+
+        function formatCommit(hash) {
+            return hash ? hash.substring(0, 7) : '';
+        }
+
+        function getUnit(metricName, defaultUnit) {
+            if (metricName.includes('Index Size')) return 'MB';
+            if (metricName.includes('Index Build Time')) return 's';
+            return defaultUnit || 'ms';
+        }
+
+        // Extract the metric type from full metric name
+        // e.g., "msmarco (8.8M docs) - Short Query (1 word)" -> "Short Query (1 word)"
+        function getMetricType(metricName) {
+            const match = metricName.match(/ - (.+)$/);
+            return match ? match[1] : metricName;
+        }
+
+        // Create comparison chart with multiple datasets
+        function createComparisonChart(container, metricType, datasets) {
+            const div = document.createElement('div');
+            div.className = 'chart-container';
+
+            const canvas = document.createElement('canvas');
+            div.appendChild(canvas);
+            container.appendChild(div);
+
+            const unit = getUnit(metricType, datasets[0]?.data[0]?.unit || 'ms');
+
+            // Process datasets
+            const chartDatasets = datasets.map((ds, idx) => {
+                const color = ds.system === 'pg_textsearch' ? colors.pgtextsearch : colors.paradedb;
+
+                // Convert ms to seconds for Index Build Time
+                const chartData = metricType.includes('Index Build Time')
+                    ? ds.data.map(d => ({ ...d, y: d.y / 1000 }))
+                    : ds.data;
+
+                return {
+                    label: ds.system,
+                    data: chartData,
+                    borderColor: rgb(color),
+                    backgroundColor: rgba(color, 0.1),
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 4,
+                    pointBackgroundColor: rgb(color),
+                    pointBorderColor: rgb(color),
+                    pointHoverRadius: 7
+                };
+            });
+
+            new Chart(canvas, {
+                type: 'line',
+                data: { datasets: chartDatasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: metricType,
+                            font: { size: 13, weight: 'bold' }
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: { font: { size: 10 } }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => {
+                                    const item = items[0];
+                                    const dateTime = formatDateTime(item.raw.date);
+                                    const commit = formatCommit(item.raw.commit);
+                                    return `${dateTime} (${commit})`;
+                                },
+                                label: (item) => {
+                                    return `${item.dataset.label}: ${item.raw.y.toFixed(2)} ${unit}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                displayFormats: { day: 'MMM d' }
+                            },
+                            ticks: { font: { size: 10 } }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: unit,
+                                font: { size: 10 }
+                            },
+                            ticks: { font: { size: 10 } }
+                        }
+                    },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            const datasetIdx = elements[0].datasetIndex;
+                            const idx = elements[0].index;
+                            const commit = chartDatasets[datasetIdx].data[idx].commit;
+                            if (commit) {
+                                window.open(`https://github.com/timescale/pg_textsearch/commit/${commit}`, '_blank');
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createChart(container, metricName, data, colorIdx) {
+            const div = document.createElement('div');
+            div.className = 'chart-container';
+
+            const canvas = document.createElement('canvas');
+            div.appendChild(canvas);
+            container.appendChild(div);
+
+            const unit = getUnit(metricName, data[0]?.unit || 'ms');
+
+            // Convert ms to seconds for Index Build Time
+            const chartData = metricName.includes('Index Build Time')
+                ? data.map(d => ({ ...d, y: d.y / 1000 }))
+                : data;
+
+            // Style points based on branch: main = filled, feature = hollow
+            const color = colors.default[colorIdx % colors.default.length];
+            const pointStyles = chartData.map(d =>
+                isMainBranch(d.commit) ? 'circle' : 'crossRot');
+            const pointRadii = chartData.map(d =>
+                isMainBranch(d.commit) ? 4 : 5);
+            const pointBgColors = chartData.map(d =>
+                isMainBranch(d.commit) ? rgb(color) : 'white');
+            const pointBorderWidths = chartData.map(d =>
+                isMainBranch(d.commit) ? 1 : 2);
+
+            new Chart(canvas, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: metricName,
+                        data: chartData,
+                        borderColor: rgb(color),
+                        backgroundColor: rgba(color, 0.1),
+                        fill: true,
+                        tension: 0.1,
+                        pointStyle: pointStyles,
+                        pointRadius: pointRadii,
+                        pointBackgroundColor: pointBgColors,
+                        pointBorderColor: rgb(color),
+                        pointBorderWidth: pointBorderWidths,
+                        pointHoverRadius: 7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: metricName,
+                            font: { size: 13, weight: 'bold' }
+                        },
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => {
+                                    const item = items[0];
+                                    const dateTime = formatDateTime(item.raw.date);
+                                    const commit = formatCommit(item.raw.commit);
+                                    const branch = getBranch(item.raw.commit);
+                                    return `${dateTime} (${commit}) [${branch}]`;
+                                },
+                                label: (item) => {
+                                    return `${item.raw.y.toFixed(2)} ${unit}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'day', displayFormats: { day: 'MMM d' } },
+                            ticks: { font: { size: 10 } }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: unit, font: { size: 10 } },
+                            ticks: { font: { size: 10 } }
+                        }
+                    },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            const idx = elements[0].index;
+                            const commit = data[idx].commit;
+                            if (commit) {
+                                window.open(`https://github.com/timescale/pg_textsearch/commit/${commit}`, '_blank');
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Render charts
+        if (typeof window.BENCHMARK_DATA !== 'undefined') {
+            const comparisonContainer = document.getElementById('comparison-charts');
+            const individualContainer = document.getElementById('charts');
+
+            // Define suite order
+            const suiteOrder = [
+                'msmarco Benchmarks',
+                'paradedb_msmarco Benchmarks',
+                'wikipedia Benchmarks',
+                'cranfield Benchmarks'
+            ];
+
+            // Filter to only include metrics with doc count (new format)
+            const hasDocCount = (name) => name.includes(' docs)');
+
+            // =====================================
+            // Comparison charts (pg_textsearch vs ParadeDB)
+            // =====================================
+            const pgTextsearchSuite = window.BENCHMARK_DATA.entries['msmarco Benchmarks'];
+            const paradedbSuite = window.BENCHMARK_DATA.entries['paradedb_msmarco Benchmarks'];
+
+            if (pgTextsearchSuite || paradedbSuite) {
+                const compSection = document.createElement('div');
+                compSection.className = 'dataset-section';
+
+                const header = document.createElement('h2');
+                header.textContent = 'MS-MARCO: pg_textsearch vs ParadeDB';
+                compSection.appendChild(header);
+
+                const grid = document.createElement('div');
+                grid.className = 'charts-grid';
+                compSection.appendChild(grid);
+
+                // Collect metrics by type from both suites
+                const metricsByType = {};
+
+                const processSuite = (suite, systemName) => {
+                    if (!suite) return;
+                    suite.forEach(run => {
+                        run.benches.forEach(bench => {
+                            if (!hasDocCount(bench.name)) return;
+                            const metricType = getMetricType(bench.name);
+                            if (!metricsByType[metricType]) {
+                                metricsByType[metricType] = {};
+                            }
+                            if (!metricsByType[metricType][systemName]) {
+                                metricsByType[metricType][systemName] = [];
+                            }
+                            metricsByType[metricType][systemName].push({
+                                x: run.date,
+                                y: bench.value,
+                                unit: bench.unit,
+                                commit: run.commit.id,
+                                date: run.date
+                            });
+                        });
+                    });
+                };
+
+                processSuite(pgTextsearchSuite, 'pg_textsearch');
+                processSuite(paradedbSuite, 'ParadeDB');
+
+                // Create comparison charts for metrics that have both systems
+                const metricOrder = [
+                    'Index Build Time',
+                    'Short Query (1 word)',
+                    'Medium Query (3 words)',
+                    'Long Query (question)',
+                    'Common Term Query',
+                    'Rare Term Query',
+                    'Avg Query Latency (20 queries)',
+                    'Index Size'
+                ];
+
+                metricOrder.forEach(metricType => {
+                    const systems = metricsByType[metricType];
+                    if (!systems) return;
+
+                    const datasets = [];
+                    if (systems['pg_textsearch']) {
+                        datasets.push({ system: 'pg_textsearch', data: systems['pg_textsearch'] });
+                    }
+                    if (systems['ParadeDB']) {
+                        datasets.push({ system: 'ParadeDB', data: systems['ParadeDB'] });
+                    }
+
+                    if (datasets.length > 0) {
+                        createComparisonChart(grid, metricType, datasets);
+                    }
+                });
+
+                comparisonContainer.appendChild(compSection);
+            } else {
+                comparisonContainer.innerHTML = '<p>No comparison data available. Run both pg_textsearch and ParadeDB benchmarks.</p>';
+            }
+
+            // =====================================
+            // Individual charts (existing behavior)
+            // =====================================
+            suiteOrder.forEach(suiteName => {
+                const suiteData = window.BENCHMARK_DATA.entries[suiteName];
+                if (!suiteData) return;
+
+                const section = document.createElement('div');
+                section.className = 'dataset-section';
+
+                const header = document.createElement('h2');
+                header.textContent = suiteName;
+                section.appendChild(header);
+
+                const grid = document.createElement('div');
+                grid.className = 'charts-grid';
+                section.appendChild(grid);
+
+                const metrics = {};
+                suiteData.forEach(run => {
+                    run.benches.forEach(bench => {
+                        if (!hasDocCount(bench.name)) return;
+                        if (!metrics[bench.name]) {
+                            metrics[bench.name] = [];
+                        }
+                        metrics[bench.name].push({
+                            x: run.date,
+                            y: bench.value,
+                            unit: bench.unit,
+                            commit: run.commit.id,
+                            date: run.date
+                        });
+                    });
+                });
+
+                Object.entries(metrics).forEach(([metricName, data], idx) => {
+                    createChart(grid, metricName, data, idx);
+                });
+
+                individualContainer.appendChild(section);
+            });
+        } else {
+            document.getElementById('comparison-charts').innerHTML =
+                '<p>No benchmark data available yet. Run a benchmark workflow to generate data.</p>';
+            document.getElementById('charts').innerHTML =
+                '<p>No benchmark data available yet. Run a benchmark workflow to generate data.</p>';
+        }
+    </script>
+</body>
+</html>
