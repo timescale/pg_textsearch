@@ -27,6 +27,7 @@ LIMIT 10;
 \echo ''
 
 -- Helper function to run a query multiple times and return median execution time
+-- Uses paradedb.match() to handle arbitrary query strings
 CREATE OR REPLACE FUNCTION benchmark_query_paradedb(query_text text, iterations int DEFAULT 10)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
 DECLARE
@@ -40,7 +41,7 @@ BEGIN
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
         EXECUTE 'SELECT passage_id FROM msmarco_passages_paradedb
-                 WHERE passage_text @@@ $1
+                 WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY paradedb.score(passage_id) DESC
                  LIMIT 10' USING query_text;
         end_ts := clock_timestamp();
@@ -90,6 +91,7 @@ DROP FUNCTION benchmark_query_paradedb;
 \echo ''
 
 -- Helper function for queries that return score
+-- Uses paradedb.match() to handle arbitrary query strings
 CREATE OR REPLACE FUNCTION benchmark_query_paradedb_with_score(query_text text, iterations int DEFAULT 10)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
 DECLARE
@@ -104,7 +106,7 @@ BEGIN
         start_ts := clock_timestamp();
         EXECUTE 'SELECT passage_id, paradedb.score(passage_id) AS score
                  FROM msmarco_passages_paradedb
-                 WHERE passage_text @@@ $1
+                 WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY score DESC
                  LIMIT 10' USING query_text;
         end_ts := clock_timestamp();
@@ -153,6 +155,7 @@ DROP FUNCTION benchmark_query_paradedb_with_score;
 \echo 'Running 1000 real MS-MARCO queries with warmup'
 
 -- Helper function for throughput benchmark using real MS-MARCO queries
+-- Uses paradedb.match() to handle special characters in query strings
 CREATE OR REPLACE FUNCTION benchmark_throughput_paradedb(num_queries int DEFAULT 1000, iterations int DEFAULT 3)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric, queries_run int) AS $$
 DECLARE
@@ -170,7 +173,7 @@ BEGIN
     -- Warmup: run all queries once to populate caches
     FOR q IN SELECT query_text FROM msmarco_queries_paradedb LIMIT num_queries LOOP
         EXECUTE 'SELECT passage_id FROM msmarco_passages_paradedb
-                 WHERE passage_text @@@ $1
+                 WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY paradedb.score(passage_id) DESC
                  LIMIT 10' USING q.query_text;
     END LOOP;
@@ -181,7 +184,7 @@ BEGIN
         start_ts := clock_timestamp();
         FOR q IN SELECT query_text FROM msmarco_queries_paradedb LIMIT num_queries LOOP
             EXECUTE 'SELECT passage_id FROM msmarco_passages_paradedb
-                     WHERE passage_text @@@ $1
+                     WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                      ORDER BY paradedb.score(passage_id) DESC
                      LIMIT 10' USING q.query_text;
         END LOOP;
@@ -212,6 +215,7 @@ DROP FUNCTION benchmark_throughput_paradedb;
 \echo 'Running 1000 real MS-MARCO queries with score in SELECT'
 
 -- Helper function for throughput benchmark with score
+-- Uses paradedb.match() to handle special characters in query strings
 CREATE OR REPLACE FUNCTION benchmark_throughput_paradedb_with_score(num_queries int DEFAULT 1000, iterations int DEFAULT 3)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric, queries_run int) AS $$
 DECLARE
@@ -230,7 +234,7 @@ BEGIN
     FOR q IN SELECT query_text FROM msmarco_queries_paradedb LIMIT num_queries LOOP
         EXECUTE 'SELECT passage_id, paradedb.score(passage_id) AS score
                  FROM msmarco_passages_paradedb
-                 WHERE passage_text @@@ $1
+                 WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY score DESC
                  LIMIT 10' USING q.query_text;
     END LOOP;
@@ -242,7 +246,7 @@ BEGIN
         FOR q IN SELECT query_text FROM msmarco_queries_paradedb LIMIT num_queries LOOP
             EXECUTE 'SELECT passage_id, paradedb.score(passage_id) AS score
                      FROM msmarco_passages_paradedb
-                     WHERE passage_text @@@ $1
+                     WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                      ORDER BY score DESC
                      LIMIT 10' USING q.query_text;
         END LOOP;
