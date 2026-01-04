@@ -77,13 +77,20 @@ else
 fi
 
 # Extract throughput result (support both old and new format)
+# Format: "THROUGHPUT_RESULT: N queries in XXXX.XX ms (avg YY.YY ms/query)"
 THROUGHPUT_LINE=$(grep -E "THROUGHPUT_RESULT:" "$LOG_FILE" 2>/dev/null || \
     grep -E "THROUGHPUT_RESULT_NO_SCORE:" "$LOG_FILE" 2>/dev/null || echo "")
 THROUGHPUT_TOTAL_MS=""
 THROUGHPUT_AVG_MS=""
+THROUGHPUT_NUM_QUERIES=""
 if [ -n "$THROUGHPUT_LINE" ]; then
+    # Extract "N queries" -> N
+    THROUGHPUT_NUM_QUERIES=$(echo "$THROUGHPUT_LINE" | \
+        grep -oE "[0-9]+ queries" | grep -oE "[0-9]+" || echo "")
+    # Extract "in XXXX.XX ms" -> XXXX.XX (use 'in' prefix to avoid matching "Execution Time:")
     THROUGHPUT_TOTAL_MS=$(echo "$THROUGHPUT_LINE" | \
-        grep -oE "[0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
+        grep -oE "in [0-9]+\.[0-9]+ ms" | grep -oE "[0-9]+\.[0-9]+" || echo "")
+    # Extract "avg YY.YY" -> YY.YY
     THROUGHPUT_AVG_MS=$(echo "$THROUGHPUT_LINE" | \
         grep -oE "avg [0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
@@ -92,9 +99,12 @@ fi
 THROUGHPUT_SCORE_LINE=$(grep -E "THROUGHPUT_RESULT_WITH_SCORE:" "$LOG_FILE" 2>/dev/null || echo "")
 THROUGHPUT_SCORE_TOTAL_MS=""
 THROUGHPUT_SCORE_AVG_MS=""
+THROUGHPUT_SCORE_NUM_QUERIES=""
 if [ -n "$THROUGHPUT_SCORE_LINE" ]; then
+    THROUGHPUT_SCORE_NUM_QUERIES=$(echo "$THROUGHPUT_SCORE_LINE" | \
+        grep -oE "[0-9]+ queries" | grep -oE "[0-9]+" || echo "")
     THROUGHPUT_SCORE_TOTAL_MS=$(echo "$THROUGHPUT_SCORE_LINE" | \
-        grep -oE "[0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
+        grep -oE "in [0-9]+\.[0-9]+ ms" | grep -oE "[0-9]+\.[0-9]+" || echo "")
     THROUGHPUT_SCORE_AVG_MS=$(echo "$THROUGHPUT_SCORE_LINE" | \
         grep -oE "avg [0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
@@ -141,8 +151,10 @@ jq -n \
   --argjson long_query_score "$(num_or_null "${EXEC_TIMES_WITH_SCORE[2]}")" \
   --argjson common_term_score "$(num_or_null "${EXEC_TIMES_WITH_SCORE[3]}")" \
   --argjson rare_term_score "$(num_or_null "${EXEC_TIMES_WITH_SCORE[4]}")" \
+  --argjson throughput_num "$(num_or_null "$THROUGHPUT_NUM_QUERIES")" \
   --argjson throughput_total "$(num_or_null "$THROUGHPUT_TOTAL_MS")" \
   --argjson throughput_avg "$(num_or_null "$THROUGHPUT_AVG_MS")" \
+  --argjson throughput_score_num "$(num_or_null "$THROUGHPUT_SCORE_NUM_QUERIES")" \
   --argjson throughput_score_total "$(num_or_null "$THROUGHPUT_SCORE_TOTAL_MS")" \
   --argjson throughput_score_avg "$(num_or_null "$THROUGHPUT_SCORE_AVG_MS")" \
   '{
@@ -172,12 +184,12 @@ jq -n \
         rare_term: $rare_term_score
       },
       throughput: {
-        num_queries: 20,
+        num_queries: $throughput_num,
         total_ms: $throughput_total,
         avg_ms_per_query: $throughput_avg
       },
       throughput_with_score: {
-        num_queries: 20,
+        num_queries: $throughput_score_num,
         total_ms: $throughput_score_total,
         avg_ms_per_query: $throughput_score_avg
       }
