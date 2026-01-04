@@ -149,11 +149,12 @@ DROP FUNCTION benchmark_query_paradedb_with_score;
 -- Benchmark 2: Query Throughput (batch of queries)
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 2: Query Throughput (20 queries) ==='
-\echo 'Running 20 sequential top-10 queries'
+\echo '=== Benchmark 2: Query Throughput (20 queries, 10 iterations) ==='
+\echo 'Running 20 sequential top-10 queries with warmup'
 
--- Time 20 queries in sequence
-DO $$
+-- Helper function for throughput benchmark with warmup and multiple iterations
+CREATE OR REPLACE FUNCTION benchmark_throughput_paradedb(iterations int DEFAULT 10)
+RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
 DECLARE
     queries text[] := ARRAY[
         'weather forecast', 'stock market', 'recipe chicken',
@@ -165,32 +166,58 @@ DECLARE
         'garden plants', 'pet care'
     ];
     q text;
-    start_time timestamp;
-    end_time timestamp;
-    total_ms numeric := 0;
+    i int;
+    start_ts timestamp;
+    end_ts timestamp;
+    times numeric[];
+    sorted_times numeric[];
 BEGIN
-    start_time := clock_timestamp();
+    -- Warmup: run all queries once to populate caches
     FOREACH q IN ARRAY queries LOOP
-        PERFORM passage_id FROM msmarco_passages_paradedb
-        WHERE passage_text @@@ q
-        ORDER BY paradedb.score(passage_id) DESC
-        LIMIT 10;
+        EXECUTE 'SELECT passage_id FROM msmarco_passages_paradedb
+                 WHERE passage_text @@@ $1
+                 ORDER BY paradedb.score(passage_id) DESC
+                 LIMIT 10' USING q;
     END LOOP;
-    end_time := clock_timestamp();
-    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
-    RAISE NOTICE 'THROUGHPUT_RESULT: 20 queries in % ms (avg % ms/query)',
-        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
-END $$;
+
+    -- Timed iterations
+    times := ARRAY[]::numeric[];
+    FOR i IN 1..iterations LOOP
+        start_ts := clock_timestamp();
+        FOREACH q IN ARRAY queries LOOP
+            EXECUTE 'SELECT passage_id FROM msmarco_passages_paradedb
+                     WHERE passage_text @@@ $1
+                     ORDER BY paradedb.score(passage_id) DESC
+                     LIMIT 10' USING q;
+        END LOOP;
+        end_ts := clock_timestamp();
+        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+    END LOOP;
+
+    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
+    median_ms := sorted_times[(iterations + 1) / 2];
+    min_ms := sorted_times[1];
+    max_ms := sorted_times[iterations];
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT 'Execution Time: ' || round(median_ms / 20, 3) || ' ms (min=' || round(min_ms / 20, 3) || ', max=' || round(max_ms / 20, 3) || ')' as result,
+       'THROUGHPUT_RESULT: 20 queries in ' || round(median_ms, 2) || ' ms (avg ' || round(median_ms / 20, 2) || ' ms/query)' as summary
+FROM benchmark_throughput_paradedb();
+
+DROP FUNCTION benchmark_throughput_paradedb;
 
 -- ============================================================
 -- Benchmark 2b: Query Throughput WITH SCORE (batch of queries)
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 2b: Query Throughput WITH SCORE (20 queries) ==='
+\echo '=== Benchmark 2b: Query Throughput WITH SCORE (20 queries, 10 iterations) ==='
 \echo 'Running 20 sequential top-10 queries with score in SELECT'
 
--- Time 20 queries in sequence with score
-DO $$
+-- Helper function for throughput benchmark with score
+CREATE OR REPLACE FUNCTION benchmark_throughput_paradedb_with_score(iterations int DEFAULT 10)
+RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
 DECLARE
     queries text[] := ARRAY[
         'weather forecast', 'stock market', 'recipe chicken',
@@ -202,23 +229,49 @@ DECLARE
         'garden plants', 'pet care'
     ];
     q text;
-    start_time timestamp;
-    end_time timestamp;
-    total_ms numeric := 0;
+    i int;
+    start_ts timestamp;
+    end_ts timestamp;
+    times numeric[];
+    sorted_times numeric[];
 BEGIN
-    start_time := clock_timestamp();
+    -- Warmup: run all queries once to populate caches
     FOREACH q IN ARRAY queries LOOP
-        PERFORM passage_id, paradedb.score(passage_id) AS score
-        FROM msmarco_passages_paradedb
-        WHERE passage_text @@@ q
-        ORDER BY score DESC
-        LIMIT 10;
+        EXECUTE 'SELECT passage_id, paradedb.score(passage_id) AS score
+                 FROM msmarco_passages_paradedb
+                 WHERE passage_text @@@ $1
+                 ORDER BY score DESC
+                 LIMIT 10' USING q;
     END LOOP;
-    end_time := clock_timestamp();
-    total_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
-    RAISE NOTICE 'THROUGHPUT_RESULT_WITH_SCORE: 20 queries in % ms (avg % ms/query)',
-        round(total_ms::numeric, 2), round((total_ms / 20)::numeric, 2);
-END $$;
+
+    -- Timed iterations
+    times := ARRAY[]::numeric[];
+    FOR i IN 1..iterations LOOP
+        start_ts := clock_timestamp();
+        FOREACH q IN ARRAY queries LOOP
+            EXECUTE 'SELECT passage_id, paradedb.score(passage_id) AS score
+                     FROM msmarco_passages_paradedb
+                     WHERE passage_text @@@ $1
+                     ORDER BY score DESC
+                     LIMIT 10' USING q;
+        END LOOP;
+        end_ts := clock_timestamp();
+        times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+    END LOOP;
+
+    SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
+    median_ms := sorted_times[(iterations + 1) / 2];
+    min_ms := sorted_times[1];
+    max_ms := sorted_times[iterations];
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT 'Execution Time: ' || round(median_ms / 20, 3) || ' ms (min=' || round(min_ms / 20, 3) || ', max=' || round(max_ms / 20, 3) || ')' as result,
+       'THROUGHPUT_RESULT_WITH_SCORE: 20 queries in ' || round(median_ms, 2) || ' ms (avg ' || round(median_ms / 20, 2) || ' ms/query)' as summary
+FROM benchmark_throughput_paradedb_with_score();
+
+DROP FUNCTION benchmark_throughput_paradedb_with_score;
 
 -- ============================================================
 -- Benchmark 3: Index Statistics
