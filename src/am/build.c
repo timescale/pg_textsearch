@@ -10,6 +10,7 @@
 #include <catalog/namespace.h>
 #include <commands/progress.h>
 #include <executor/spi.h>
+#include <math.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
