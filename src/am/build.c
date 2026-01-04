@@ -39,6 +39,25 @@
 #define TP_PROGRESS_REPORT_INTERVAL 1000
 
 /*
+ * Build phase name for progress reporting
+ */
+char *
+tp_buildphasename(int64 phase)
+{
+	switch (phase)
+	{
+	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
+		return "initializing";
+	case TP_PHASE_LOADING:
+		return "loading tuples";
+	case TP_PHASE_WRITING:
+		return "writing index";
+	default:
+		return NULL;
+	}
+}
+
+/*
  * Auto-spill memtable to disk segment when posting count threshold exceeded.
  * This is called after each document insert to check if spill is needed.
  * The threshold is controlled by pg_textsearch.memtable_spill_threshold GUC.

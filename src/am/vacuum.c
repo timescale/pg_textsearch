@@ -23,10 +23,6 @@
 #include "state/metapage.h"
 #include "state/state.h"
 
-/* Tapir-specific build phases */
-#define TP_PHASE_LOADING 2
-#define TP_PHASE_WRITING 3
-
 /*
  * Bulk delete callback for vacuum
  */
@@ -118,25 +114,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 
 	return stats;
-}
-
-/*
- * Build phase name for progress reporting
- */
-char *
-tp_buildphasename(int64 phase)
-{
-	switch (phase)
-	{
-	case PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE:
-		return "initializing";
-	case TP_PHASE_LOADING:
-		return "loading tuples";
-	case TP_PHASE_WRITING:
-		return "writing index";
-	default:
-		return NULL;
-	}
 }
 
 /*
