@@ -57,95 +57,77 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
-    # Query latencies
-    (if .metrics.query_latencies_ms.short_query != null then
+    # Latency by token count (p50 values)
+    (if .metrics.latency_by_tokens.bucket_1.p50 != null then
         {
-            name: "\($dataset) - Short Query (1 word)",
+            name: "\($dataset) - 1 Token Query (p50)",
             unit: "ms",
-            value: .metrics.query_latencies_ms.short_query
+            value: .metrics.latency_by_tokens.bucket_1.p50
         }
     else empty end),
 
-    (if .metrics.query_latencies_ms.medium_query != null then
+    (if .metrics.latency_by_tokens.bucket_2.p50 != null then
         {
-            name: "\($dataset) - Medium Query (3 words)",
+            name: "\($dataset) - 2 Token Query (p50)",
             unit: "ms",
-            value: .metrics.query_latencies_ms.medium_query
+            value: .metrics.latency_by_tokens.bucket_2.p50
         }
     else empty end),
 
-    (if .metrics.query_latencies_ms.long_query != null then
+    (if .metrics.latency_by_tokens.bucket_3.p50 != null then
         {
-            name: "\($dataset) - Long Query (question)",
+            name: "\($dataset) - 3 Token Query (p50)",
             unit: "ms",
-            value: .metrics.query_latencies_ms.long_query
+            value: .metrics.latency_by_tokens.bucket_3.p50
         }
     else empty end),
 
-    (if .metrics.query_latencies_ms.common_term != null then
+    (if .metrics.latency_by_tokens.bucket_4.p50 != null then
         {
-            name: "\($dataset) - Common Term Query",
+            name: "\($dataset) - 4 Token Query (p50)",
             unit: "ms",
-            value: .metrics.query_latencies_ms.common_term
+            value: .metrics.latency_by_tokens.bucket_4.p50
         }
     else empty end),
 
-    (if .metrics.query_latencies_ms.rare_term != null then
+    (if .metrics.latency_by_tokens.bucket_5.p50 != null then
         {
-            name: "\($dataset) - Rare Term Query",
+            name: "\($dataset) - 5 Token Query (p50)",
             unit: "ms",
-            value: .metrics.query_latencies_ms.rare_term
+            value: .metrics.latency_by_tokens.bucket_5.p50
         }
     else empty end),
 
-    # Throughput (average latency)
+    (if .metrics.latency_by_tokens.bucket_6.p50 != null then
+        {
+            name: "\($dataset) - 6 Token Query (p50)",
+            unit: "ms",
+            value: .metrics.latency_by_tokens.bucket_6.p50
+        }
+    else empty end),
+
+    (if .metrics.latency_by_tokens.bucket_7.p50 != null then
+        {
+            name: "\($dataset) - 7 Token Query (p50)",
+            unit: "ms",
+            value: .metrics.latency_by_tokens.bucket_7.p50
+        }
+    else empty end),
+
+    (if .metrics.latency_by_tokens.bucket_8.p50 != null then
+        {
+            name: "\($dataset) - 8+ Token Query (p50)",
+            unit: "ms",
+            value: .metrics.latency_by_tokens.bucket_8.p50
+        }
+    else empty end),
+
+    # Throughput (average latency across 800 queries)
     (if .metrics.throughput.avg_ms_per_query != null then
         {
-            name: "\($dataset) - Avg Query Latency (20 queries)",
+            name: "\($dataset) - Throughput (avg ms/query)",
             unit: "ms",
             value: .metrics.throughput.avg_ms_per_query
-        }
-    else empty end),
-
-    # With-score query latencies (if available)
-    (if .metrics.query_latencies_with_score_ms.short_query != null then
-        {
-            name: "\($dataset) - Short Query with Score",
-            unit: "ms",
-            value: .metrics.query_latencies_with_score_ms.short_query
-        }
-    else empty end),
-
-    (if .metrics.query_latencies_with_score_ms.medium_query != null then
-        {
-            name: "\($dataset) - Medium Query with Score",
-            unit: "ms",
-            value: .metrics.query_latencies_with_score_ms.medium_query
-        }
-    else empty end),
-
-    (if .metrics.query_latencies_with_score_ms.long_query != null then
-        {
-            name: "\($dataset) - Long Query with Score",
-            unit: "ms",
-            value: .metrics.query_latencies_with_score_ms.long_query
-        }
-    else empty end),
-
-    (if .metrics.query_latencies_with_score_ms.rare_term != null then
-        {
-            name: "\($dataset) - Rare Term Query with Score",
-            unit: "ms",
-            value: .metrics.query_latencies_with_score_ms.rare_term
-        }
-    else empty end),
-
-    # Throughput with score (average latency)
-    (if .metrics.throughput_with_score.avg_ms_per_query != null then
-        {
-            name: "\($dataset) - Avg Query Latency with Score",
-            unit: "ms",
-            value: .metrics.throughput_with_score.avg_ms_per_query
         }
     else empty end),
 
