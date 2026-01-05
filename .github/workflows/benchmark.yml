@@ -530,7 +530,7 @@ jobs:
         sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
         df -h /
 
-    - name: Install PostgreSQL and ParadeDB
+    - name: Install PostgreSQL and System X
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
@@ -598,13 +598,13 @@ jobs:
         chmod +x download.sh
         ./download.sh ${{ steps.dataset_size.outputs.msmarco_size }}
 
-    - name: Run ParadeDB benchmark
+    - name: Run System X benchmark
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        echo "=== ParadeDB MS MARCO Benchmark ===" | tee benchmark_results.txt
+        echo "=== System X MS MARCO Benchmark ===" | tee benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/msmarco/paradedb/load.sql 2>&1 | tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/msmarco/paradedb/queries.sql 2>&1 | tee -a benchmark_results.txt
@@ -613,7 +613,7 @@ jobs:
     - name: Extract metrics
       run: |
         chmod +x benchmarks/runner/extract_metrics.sh
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt paradedb_metrics.json "paradedb_msmarco" "ParadeDB"
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt paradedb_metrics.json "systemx_msmarco" "System X"
 
     - name: Format metrics for benchmark tracking
       run: |
@@ -635,7 +635,7 @@ jobs:
       if: always()
       run: |
         if [ -f paradedb_metrics.json ]; then
-          echo "### ParadeDB Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "### System X Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY

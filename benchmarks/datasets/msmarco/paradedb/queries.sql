@@ -1,11 +1,11 @@
--- MS MARCO Passage Ranking - Query Benchmarks (ParadeDB)
--- Runs various query workloads against the indexed MS MARCO collection using ParadeDB
+-- MS MARCO Passage Ranking - Query Benchmarks (System X)
+-- Runs various query workloads against the indexed MS MARCO collection using System X
 -- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Query Benchmarks (ParadeDB) ==='
+\echo '=== MS MARCO Query Benchmarks (System X) ==='
 \echo ''
 
 -- Load benchmark queries (pre-sampled by token count)
@@ -199,4 +199,4 @@ SELECT
 DROP TABLE benchmark_queries_paradedb;
 
 \echo ''
-\echo '=== MS MARCO Query Benchmarks Complete (ParadeDB) ==='
+\echo '=== MS MARCO Query Benchmarks Complete (System X) ==='

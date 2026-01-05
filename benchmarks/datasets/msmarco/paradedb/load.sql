@@ -1,8 +1,8 @@
--- MS MARCO Passage Ranking - Load and Index (ParadeDB)
--- Loads the full 8.8M passage collection and creates ParadeDB BM25 index
+-- MS MARCO Passage Ranking - Load and Index (System X)
+-- Loads the full 8.8M passage collection and creates System X BM25 index
 --
 -- Usage:
---   DATA_DIR=/path/to/data psql -U postgres postgres -f load_paradedb.sql
+--   DATA_DIR=/path/to/data psql -U postgres postgres -f load.sql
 --
 -- The DATA_DIR environment variable should point to the directory containing:
 --   - collection.tsv (passage_id, passage_text)
@@ -12,7 +12,7 @@
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Passage Ranking - Data Loading (ParadeDB) ==='
+\echo '=== MS MARCO Passage Ranking - Data Loading (System X) ==='
 \echo 'Loading ~8.8M passages from MS MARCO collection'
 \echo ''
 
@@ -94,8 +94,8 @@ LIMIT 5;
 
 -- Create ParadeDB BM25 index with English tokenizer (stopwords + stemming)
 \echo ''
-\echo '=== Building ParadeDB BM25 Index ==='
-\echo 'Creating ParadeDB BM25 index on ~8.8M passages (this will take a while)...'
+\echo '=== Building System X BM25 Index ==='
+\echo 'Creating System X BM25 index on ~8.8M passages (this will take a while)...'
 CREATE INDEX msmarco_paradedb_idx ON msmarco_passages_paradedb
     USING bm25 (passage_id, passage_text)
     WITH (
@@ -124,5 +124,5 @@ SELECT
     pg_total_relation_size('msmarco_passages_paradedb') as table_bytes;
 
 \echo ''
-\echo '=== MS MARCO Load Complete (ParadeDB) ==='
+\echo '=== MS MARCO Load Complete (System X) ==='
 \echo 'Ready for query benchmarks'

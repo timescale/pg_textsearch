@@ -173,7 +173,7 @@ To add a new dataset:
 
 For competitive benchmarks, you can run the same queries against:
 - Native Postgres `ts_rank` (built-in full-text search)
-- ParadeDB `pg_search` (Tantivy-based)
+- Other PostgreSQL full-text search extensions
 - External systems (Elasticsearch, Meilisearch)
 
 See `datasets/[name]/queries_native.sql` for native Postgres equivalents.
