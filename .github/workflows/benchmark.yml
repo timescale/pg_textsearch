@@ -512,11 +512,11 @@ jobs:
         pg_ctl stop -D tmp_bench/data || true
         rm -rf tmp_bench
 
-  # ParadeDB benchmark (competitive baseline)
+  # System X benchmark (competitive baseline)
   # NOTE: pg_textsearch and pg_search cannot coexist in the same PostgreSQL
   # instance due to conflicting 'bm25' access method names. This job runs
   # in a separate PostgreSQL instance with identical configuration.
-  paradedb-benchmark:
+  system-x-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     # Run for msmarco or all datasets, and on scheduled runs
@@ -546,7 +546,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
-        # Install ParadeDB pg_search extension from GitHub releases
+        # Install System X extension from GitHub releases
         # ubuntu-latest is Ubuntu 24.04 (Noble)
         wget -q "https://github.com/paradedb/paradedb/releases/download/v${SYSTEM_X_VERSION}/postgresql-17-pg-search_${SYSTEM_X_VERSION}-1PARADEDB-noble_amd64.deb"
         sudo dpkg -i "postgresql-17-pg-search_${SYSTEM_X_VERSION}-1PARADEDB-noble_amd64.deb"
@@ -609,50 +609,50 @@ jobs:
 
         echo "=== System X MS MARCO Benchmark ===" | tee benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
-        time psql -f benchmarks/datasets/msmarco/paradedb/load.sql 2>&1 | tee -a benchmark_results.txt
-        time psql -f benchmarks/datasets/msmarco/paradedb/queries.sql 2>&1 | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemx/load.sql 2>&1 | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemx/queries.sql 2>&1 | tee -a benchmark_results.txt
         echo "End: $(date)" | tee -a benchmark_results.txt
 
     - name: Extract metrics
       run: |
         chmod +x benchmarks/runner/extract_metrics.sh
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt paradedb_metrics.json "systemx_msmarco" "System X"
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt systemx_metrics.json "systemx_msmarco" "System X"
 
     - name: Format metrics for benchmark tracking
       run: |
         chmod +x benchmarks/runner/format_for_action.sh
-        ./benchmarks/runner/format_for_action.sh paradedb_metrics.json paradedb_action.json
+        ./benchmarks/runner/format_for_action.sh systemx_metrics.json systemx_action.json
 
     - name: Upload results
       uses: actions/upload-artifact@v4
       with:
-        name: paradedb-benchmark-${{ github.run_id }}
+        name: system-x-benchmark-${{ github.run_id }}
         path: |
           benchmark_results.txt
-          paradedb_metrics.json
-          paradedb_action.json
+          systemx_metrics.json
+          systemx_action.json
           tmp_bench/postgres.log
         retention-days: 90
 
     - name: Post benchmark summary
       if: always()
       run: |
-        if [ -f paradedb_metrics.json ]; then
+        if [ -f systemx_metrics.json ]; then
           echo "### System X Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' paradedb_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' paradedb_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' systemx_metrics.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' systemx_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Cleanup
