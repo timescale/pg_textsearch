@@ -79,5 +79,5 @@ cut -f3 "$OUTPUT_FILE" | sort | uniq -c | sort -k2 -n
 echo ""
 echo "Sample queries per bucket:"
 for bucket in 1 2 3 4 5 6 7 8; do
-    echo "  Bucket $bucket: $(grep -P "\t${bucket}$" "$OUTPUT_FILE" | head -1 | cut -f2 | head -c 60)..."
+    echo "  Bucket $bucket: $(awk -F'\t' -v b="$bucket" '$3==b {print $2; exit}' "$OUTPUT_FILE" | head -c 60)..."
 done

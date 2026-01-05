@@ -4,6 +4,10 @@ permissions:
   contents: write
   deployments: write
 
+env:
+  # System X (competitive baseline) version for benchmarking
+  SYSTEM_X_VERSION: "0.20.6"
+
 on:
   # Nightly benchmark
   schedule:
@@ -544,9 +548,8 @@ jobs:
 
         # Install ParadeDB pg_search extension from GitHub releases
         # ubuntu-latest is Ubuntu 24.04 (Noble)
-        PG_SEARCH_VERSION="0.20.6"
-        wget -q "https://github.com/paradedb/paradedb/releases/download/v${PG_SEARCH_VERSION}/postgresql-17-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-noble_amd64.deb"
-        sudo dpkg -i "postgresql-17-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-noble_amd64.deb"
+        wget -q "https://github.com/paradedb/paradedb/releases/download/v${SYSTEM_X_VERSION}/postgresql-17-pg-search_${SYSTEM_X_VERSION}-1PARADEDB-noble_amd64.deb"
+        sudo dpkg -i "postgresql-17-pg-search_${SYSTEM_X_VERSION}-1PARADEDB-noble_amd64.deb"
 
     - name: Configure PostgreSQL
       run: |

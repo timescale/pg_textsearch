@@ -73,9 +73,9 @@ BEGIN
     n := array_length(times, 1);
     SELECT array_agg(t ORDER BY t) INTO sorted_times FROM unnest(times) t;
 
-    p50_ms := sorted_times[n / 2];
-    p95_ms := sorted_times[(n * 95) / 100];
-    p99_ms := sorted_times[(n * 99) / 100];
+    p50_ms := sorted_times[(n + 1) / 2];
+    p95_ms := sorted_times[(n * 95 + 99) / 100];
+    p99_ms := sorted_times[(n * 99 + 99) / 100];
     avg_ms := (SELECT AVG(t) FROM unnest(times) t);
     num_queries := n;
     RETURN NEXT;

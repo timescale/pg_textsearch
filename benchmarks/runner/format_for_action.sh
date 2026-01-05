@@ -125,7 +125,7 @@ jq --arg dataset "$DATASET_LABEL" '[
     # Throughput (average latency across 800 queries)
     (if .metrics.throughput.avg_ms_per_query != null then
         {
-            name: "\($dataset) - Throughput (avg ms/query)",
+            name: "\($dataset) - Throughput (800 queries, avg ms/query)",
             unit: "ms",
             value: .metrics.throughput.avg_ms_per_query
         }

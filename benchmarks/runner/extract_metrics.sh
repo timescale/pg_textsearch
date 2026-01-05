@@ -72,6 +72,11 @@ TABLE_SIZE_BYTES=$(grep -E "TABLE_SIZE:" "$LOG_FILE" 2>/dev/null | \
 # Format: LATENCY_BUCKET_N: p50=Xms p95=Yms p99=Zms avg=Wms (n=100)
 extract_bucket() {
     local bucket=$1
+    # Validate bucket is an integer between 1 and 8
+    if ! [[ "$bucket" =~ ^[1-8]$ ]]; then
+        echo "null"
+        return 0
+    fi
     local line=$(grep -E "LATENCY_BUCKET_${bucket}:" "$LOG_FILE" 2>/dev/null || echo "")
     if [ -n "$line" ]; then
         local p50=$(echo "$line" | grep -oE "p50=[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
