@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767594143171,
+  "lastUpdate": 1767656917137,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -240,6 +240,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Mateusz Paluszkiewicz",
+            "username": "TheAifam5",
+            "email": "theaifam5@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220",
+          "message": "Add missing math.h include in build.c (#105)\n\ngcc 14.2.0 reports an error about implicit declaration of 'log' function\nin build.c. Adding the math.h include resolves this issue.\n\nSigned-off-by: Mateusz Paluszkiewicz <theaifam5@gmail.com>",
+          "timestamp": "2026-01-05T05:14:17Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220"
+        },
+        "date": 1767656915847,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (99.9K docs) - Index Build Time",
+            "value": 5260.761,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Short Query (1 word)",
+            "value": 0.118,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Medium Query (3 words)",
+            "value": 0.155,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Long Query (question)",
+            "value": 0.169,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Common Term Query",
+            "value": 0.036,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Rare Term Query",
+            "value": 0.12,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Avg Query Latency (20 queries)",
+            "value": 0.48,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Short Query with Score",
+            "value": 0.532,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Medium Query with Score",
+            "value": 0.701,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Long Query with Score",
+            "value": 0.642,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Rare Term Query with Score",
+            "value": 0.623,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Avg Query Latency with Score",
+            "value": 1.01,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Index Size",
+            "value": 27.07,
             "unit": "MB"
           }
         ]
