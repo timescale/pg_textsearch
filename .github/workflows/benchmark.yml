@@ -641,10 +641,15 @@ jobs:
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' paradedb_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Short Query | $(jq -r '.metrics.query_latencies_ms.short_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Medium Query | $(jq -r '.metrics.query_latencies_ms.medium_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' paradedb_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Cleanup
@@ -894,18 +899,22 @@ jobs:
       if: always()
       run: |
         if [ -f benchmark_metrics.json ]; then
-          echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "### pg_textsearch Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
           echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Table Size | $(jq -r '.metrics.table_size // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Short Query | $(jq -r '.metrics.query_latencies_ms.short_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Medium Query | $(jq -r '.metrics.query_latencies_ms.medium_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Long Query | $(jq -r '.metrics.query_latencies_ms.long_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' benchmark_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Format metrics for benchmark tracking
