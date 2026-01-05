@@ -66,8 +66,9 @@
             <span class="legend-item">✕ feature branch</span>
         </span>
         <br>
-        <a href="profiles/">📊 CPU Profiles &amp; Flamegraphs</a>
+        <a href="profiles/">CPU Profiles &amp; Flamegraphs</a>
     </p>
+
     <div id="charts"></div>
 
     <script src="./data.js"></script>
@@ -85,26 +86,17 @@
 
         const colors = [
             [54, 162, 235],
-            [255, 99, 132],
             [75, 192, 192],
             [255, 159, 64],
             [153, 102, 255],
             [255, 205, 86],
             [201, 203, 207],
             [255, 99, 71],
+            [255, 99, 132],
         ];
 
         function rgb(c) { return `rgb(${c[0]}, ${c[1]}, ${c[2]})`; }
         function rgba(c, a) { return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})`; }
-
-        function formatDate(timestamp) {
-            const d = new Date(timestamp);
-            return d.toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: '2-digit'
-            });
-        }
 
         function formatDateTime(timestamp) {
             const d = new Date(timestamp);
@@ -183,9 +175,7 @@
                             text: metricName,
                             font: { size: 13, weight: 'bold' }
                         },
-                        legend: {
-                            display: false
-                        },
+                        legend: { display: false },
                         tooltip: {
                             callbacks: {
                                 title: (items) => {
@@ -204,29 +194,13 @@
                     scales: {
                         x: {
                             type: 'time',
-                            time: {
-                                unit: 'day',
-                                displayFormats: {
-                                    day: 'MMM d'
-                                }
-                            },
-                            title: {
-                                display: false
-                            },
-                            ticks: {
-                                font: { size: 10 }
-                            }
+                            time: { unit: 'day', displayFormats: { day: 'MMM d' } },
+                            ticks: { font: { size: 10 } }
                         },
                         y: {
                             beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: unit,
-                                font: { size: 10 }
-                            },
-                            ticks: {
-                                font: { size: 10 }
-                            }
+                            title: { display: true, text: unit, font: { size: 10 } },
+                            ticks: { font: { size: 10 } }
                         }
                     },
                     onClick: (event, elements) => {
@@ -234,26 +208,7 @@
                             const idx = elements[0].index;
                             const commit = data[idx].commit;
                             if (commit) {
-                                const shortCommit = commit.substring(0, 7);
-                                // Show a small menu with commit and profile links
-                                const menu = document.createElement('div');
-                                menu.style.cssText = 'position:fixed;background:white;border:1px solid #ccc;border-radius:4px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);z-index:1000;';
-                                menu.innerHTML = `
-                                    <div style="margin-bottom:8px;font-weight:bold;color:#333;">Commit ${shortCommit}</div>
-                                    <a href="https://github.com/timescale/pg_textsearch/commit/${commit}" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📝 View Commit</a>
-                                    <a href="profiles/" target="_blank" style="display:block;padding:4px 8px;color:#0066cc;text-decoration:none;">📊 Find Profile</a>
-                                `;
-                                menu.style.left = event.native.pageX + 'px';
-                                menu.style.top = event.native.pageY + 'px';
-                                document.body.appendChild(menu);
-
-                                const closeMenu = (e) => {
-                                    if (!menu.contains(e.target)) {
-                                        menu.remove();
-                                        document.removeEventListener('click', closeMenu);
-                                    }
-                                };
-                                setTimeout(() => document.addEventListener('click', closeMenu), 100);
+                                window.open(`https://github.com/timescale/pg_textsearch/commit/${commit}`, '_blank');
                             }
                         }
                     }
@@ -261,11 +216,11 @@
             });
         }
 
-        // Render charts for each benchmark suite
+        // Render charts
         if (typeof window.BENCHMARK_DATA !== 'undefined') {
             const container = document.getElementById('charts');
 
-            // Define explicit order: MS-MARCO first, then Wikipedia, then Cranfield
+            // Define suite order (pg_textsearch only)
             const suiteOrder = [
                 'msmarco Benchmarks',
                 'wikipedia Benchmarks',
@@ -279,7 +234,6 @@
                 const suiteData = window.BENCHMARK_DATA.entries[suiteName];
                 if (!suiteData) return;
 
-                // Create section for this benchmark suite
                 const section = document.createElement('div');
                 section.className = 'dataset-section';
 
@@ -291,13 +245,10 @@
                 grid.className = 'charts-grid';
                 section.appendChild(grid);
 
-                // Group data by metric name, filtering old format
                 const metrics = {};
                 suiteData.forEach(run => {
                     run.benches.forEach(bench => {
-                        // Skip old metrics without doc count
                         if (!hasDocCount(bench.name)) return;
-
                         if (!metrics[bench.name]) {
                             metrics[bench.name] = [];
                         }
@@ -311,7 +262,6 @@
                     });
                 });
 
-                // Create a chart for each metric
                 Object.entries(metrics).forEach(([metricName, data], idx) => {
                     createChart(grid, metricName, data, idx);
                 });
