@@ -647,21 +647,6 @@ jobs:
           echo "| Avg Query Latency | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' paradedb_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
         fi
 
-    - name: Publish ParadeDB benchmark
-      if: always() && hashFiles('paradedb_action.json') != '' && github.event.inputs.dry_run != 'true'
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        name: 'paradedb_msmarco Benchmarks'
-        tool: 'customSmallerIsBetter'
-        output-file-path: paradedb_action.json
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-        gh-pages-branch: gh-pages
-        benchmark-data-dir-path: benchmarks
-        alert-threshold: '150%'
-        comment-on-alert: false
-        fail-on-alert: false
-
     - name: Cleanup
       if: always()
       run: |
