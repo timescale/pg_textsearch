@@ -115,18 +115,18 @@ SELECT 'exhaustive' as path, * FROM exhaustive_results ORDER BY score;
 (10 rows)
 
 SELECT 'bmw' as path, * FROM bmw_results ORDER BY score;
- path | id |        score        
-------+----+---------------------
- bmw  |  1 | -1.2470827102661133
- bmw  |  2 | -1.2470827102661133
- bmw  |  3 | -1.2470827102661133
- bmw  |  4 | -1.2470827102661133
- bmw  |  5 | -1.2470827102661133
- bmw  |  6 | -1.2470827102661133
- bmw  |  7 | -1.2470827102661133
- bmw  |  8 | -1.2470827102661133
- bmw  |  9 | -1.2470827102661133
- bmw  | 10 | -1.2470827102661133
+ path | id  |        score        
+------+-----+---------------------
+ bmw  | 201 | -1.3151806592941284
+ bmw  |   1 | -1.2470827102661133
+ bmw  |   2 | -1.2470827102661133
+ bmw  |   3 | -1.2470827102661133
+ bmw  |   4 | -1.2470827102661133
+ bmw  |   5 | -1.2470827102661133
+ bmw  |   6 | -1.2470827102661133
+ bmw  |   7 | -1.2470827102661133
+ bmw  |   8 | -1.2470827102661133
+ bmw  |   9 | -1.2470827102661133
 (10 rows)
 
 -- TEST 1: Doc 201 should be in top 10 of exhaustive (it's the ONLY multi-term doc!)
@@ -142,9 +142,9 @@ SELECT 'exhaustive-has-201' as test,
 SELECT 'bmw-has-201' as test,
     CASE WHEN 201 IN (SELECT id FROM bmw_results)
     THEN 'PASS' ELSE 'FAIL - DOC 201 MISSING DUE TO PARTIAL SCORING BUG' END as result;
-    test     |                      result                       
--------------+---------------------------------------------------
- bmw-has-201 | FAIL - DOC 201 MISSING DUE TO PARTIAL SCORING BUG
+    test     | result 
+-------------+--------
+ bmw-has-201 | PASS
 (1 row)
 
 -- TEST 3: Doc 201 should be #1 in exhaustive (best score)
@@ -161,9 +161,9 @@ SELECT 'results-match' as test,
     CASE WHEN (SELECT COUNT(*) FROM
         (SELECT id FROM exhaustive_results EXCEPT SELECT id FROM bmw_results) x) = 0
     THEN 'PASS' ELSE 'FAIL - RESULTS DIFFER' END as result;
-     test      |        result         
----------------+-----------------------
- results-match | FAIL - RESULTS DIFFER
+     test      | result 
+---------------+--------
+ results-match | PASS
 (1 row)
 
 -- Show what score doc 201 SHOULD have

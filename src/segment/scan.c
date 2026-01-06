@@ -329,6 +329,138 @@ tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter)
 }
 
 /*
+ * Get current doc ID from iterator.
+ * Returns UINT32_MAX if iterator is finished or not positioned.
+ */
+uint32
+tp_segment_posting_iterator_current_doc_id(TpSegmentPostingIterator *iter)
+{
+	if (iter->finished || !iter->initialized || iter->block_postings == NULL)
+		return UINT32_MAX;
+
+	if (iter->current_in_block >= iter->skip_entry.doc_count)
+		return UINT32_MAX;
+
+	return iter->block_postings[iter->current_in_block].doc_id;
+}
+
+/*
+ * Seek iterator to target doc ID or the first doc ID >= target.
+ * Returns true if a posting was found, false if exhausted.
+ *
+ * Uses binary search on skip entries (each has last_doc_id) to find
+ * the right block, then linear scan within the block. This is the
+ * core operation for WAND-style doc-ID ordered traversal.
+ */
+bool
+tp_segment_posting_iterator_seek(
+		TpSegmentPostingIterator *iter,
+		uint32					  target_doc_id,
+		TpSegmentPosting		**posting)
+{
+	uint16		block_count;
+	int			left, right, mid;
+	uint16		target_block;
+	TpSkipEntry skip;
+
+	if (!iter->initialized || iter->finished)
+		return false;
+
+	block_count = iter->dict_entry.block_count;
+
+	/*
+	 * Binary search skip entries to find block containing target_doc_id.
+	 * Each skip entry has last_doc_id = maximum doc ID in that block.
+	 * We want the first block where last_doc_id >= target_doc_id.
+	 */
+	left  = 0;
+	right = block_count - 1;
+
+	while (left < right)
+	{
+		mid = left + (right - left) / 2;
+
+		/* Read skip entry to get last_doc_id */
+		tp_segment_read_skip_entry(
+				iter->reader, &iter->dict_entry, mid, &skip);
+
+		if (skip.last_doc_id < target_doc_id)
+		{
+			/* Target is past this block */
+			left = mid + 1;
+		}
+		else
+		{
+			/* Target might be in this block or earlier */
+			right = mid;
+		}
+	}
+
+	target_block = left;
+
+	/* Check if target is past all blocks */
+	if (target_block >= block_count)
+	{
+		iter->finished = true;
+		return false;
+	}
+
+	/* Load the target block */
+	iter->current_block	   = target_block;
+	iter->current_in_block = 0;
+	iter->finished		   = false;
+
+	if (!tp_segment_posting_iterator_load_block(iter))
+	{
+		iter->finished = true;
+		return false;
+	}
+
+	/* Linear scan within block to find target or first doc >= target */
+	while (iter->current_in_block < iter->skip_entry.doc_count)
+	{
+		TpBlockPosting *bp = &iter->block_postings[iter->current_in_block];
+
+		if (bp->doc_id >= target_doc_id)
+		{
+			/* Found it - convert to output posting */
+			Assert(iter->reader->cached_ctid_pages != NULL);
+			Assert(bp->doc_id < iter->reader->cached_num_docs);
+
+			ItemPointerSet(
+					&iter->output_posting.ctid,
+					iter->reader->cached_ctid_pages[bp->doc_id],
+					iter->reader->cached_ctid_offsets[bp->doc_id]);
+
+			iter->output_posting.frequency	= bp->frequency;
+			iter->output_posting.doc_length = (uint16)decode_fieldnorm(
+					bp->fieldnorm);
+
+			*posting = &iter->output_posting;
+			return true;
+		}
+
+		iter->current_in_block++;
+	}
+
+	/*
+	 * Exhausted this block without finding target.
+	 * This shouldn't happen if last_doc_id was correct, but handle it
+	 * by moving to next block and trying next().
+	 */
+	iter->current_block++;
+	if (iter->current_block >= block_count)
+	{
+		iter->finished = true;
+		return false;
+	}
+
+	/* Load next block and return first posting */
+	iter->current_in_block = 0;
+	return tp_segment_posting_iterator_next(iter, posting);
+}
+
+/*
  * Helper: Process a single posting and add score to hash table.
  */
 static void

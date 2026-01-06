@@ -412,3 +412,13 @@ extern void tp_segment_read_skip_entry(
 		TpDictEntry		*dict_entry,
 		uint16			 block_idx,
 		TpSkipEntry		*skip);
+
+/* Seek iterator to target doc ID (for WAND algorithm) */
+extern bool tp_segment_posting_iterator_seek(
+		TpSegmentPostingIterator *iter,
+		uint32					  target_doc_id,
+		TpSegmentPosting		**posting);
+
+/* Get current doc ID from iterator (for WAND pivot selection) */
+extern uint32
+tp_segment_posting_iterator_current_doc_id(TpSegmentPostingIterator *iter);

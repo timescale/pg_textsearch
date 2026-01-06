@@ -363,6 +363,8 @@ score_segment_single_term_bmw(
 
 		while (tp_segment_posting_iterator_next(&iter, &posting))
 		{
+			float4 score;
+
 			/*
 			 * Break if iterator auto-advanced to next block.
 			 * This ensures we only process block i, allowing the outer
@@ -371,7 +373,7 @@ score_segment_single_term_bmw(
 			if (iter.current_block != i)
 				break;
 
-			float4 score = compute_bm25_score(
+			score = compute_bm25_score(
 					idf,
 					posting->frequency,
 					posting->doc_length,
@@ -476,23 +478,6 @@ typedef struct TpTermState
 	TpSegmentPostingIterator iter;	/* Iterator (contains dict_entry) */
 	float4					*block_max_scores; /* Pre-computed block max */
 } TpTermState;
-
-/*
- * Document accumulator for multi-term scoring within a block.
- * Uses a small hash table since blocks have at most 128 docs.
- */
-typedef struct TpDocAccum
-{
-	uint32 doc_id;
-	float4 score;
-	uint8  fieldnorm; /* For doc length lookup */
-} TpDocAccum;
-
-/*
- * Hash table size for block document accumulation.
- * 256 = 2x block size (128) for good hash distribution with open addressing.
- */
-#define DOC_ACCUM_HASH_SIZE 256
 
 /*
  * Score memtable postings for multiple terms.
@@ -602,8 +587,23 @@ score_memtable_multi_term(
 }
 
 /*
- * Score segment postings for multiple terms using block-based BMW.
- * Skips blocks where sum of block_max_scores < threshold.
+ * Score segment postings for multiple terms using WAND-style traversal.
+ *
+ * This implementation uses doc-ID ordered traversal to correctly accumulate
+ * scores across all terms for each document. Documents may appear at different
+ * block positions across terms' posting lists, so we cannot iterate by block
+ * index and expect documents to align.
+ *
+ * Algorithm:
+ * 1. Initialize iterators for all terms, positioned at first posting
+ * 2. Find minimum doc_id across all active iterators (pivot)
+ * 3. Accumulate scores from all terms at pivot doc_id
+ * 4. Add fully-scored document to heap
+ * 5. Advance past pivot and repeat
+ *
+ * Block-max optimization: Before scoring a pivot doc, check if the sum of
+ * block-max scores from current blocks can beat the threshold. If not, we
+ * can skip ahead.
  */
 static void
 score_segment_multi_term_bmw(
@@ -616,13 +616,11 @@ score_segment_multi_term_bmw(
 		float4			 avg_doc_len,
 		TpBMWStats		*stats)
 {
-	uint16	max_blocks = 0;
-	uint16	block_idx;
-	int		term_idx;
-	HTAB   *doc_accum;
-	HASHCTL hash_ctl;
+	int term_idx;
+	int active_count;
 
 	/* Initialize term states for this segment */
+	active_count = 0;
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
 		TpTermState *ts = &terms[term_idx];
@@ -636,56 +634,125 @@ score_segment_multi_term_bmw(
 
 		ts->found = true;
 
-		/* Track maximum block count across all terms */
-		if (ts->iter.dict_entry.block_count > max_blocks)
-			max_blocks = ts->iter.dict_entry.block_count;
-
-		/* Pre-compute block max scores for this term */
-		ts->block_max_scores = palloc(
-				ts->iter.dict_entry.block_count * sizeof(float4));
-		for (block_idx = 0; block_idx < ts->iter.dict_entry.block_count;
-			 block_idx++)
+		/* Pre-compute block max scores for BMW threshold checks */
+		if (ts->iter.dict_entry.block_count > 0)
 		{
-			TpSkipEntry skip;
-			tp_segment_read_skip_entry(
-					reader, &ts->iter.dict_entry, block_idx, &skip);
-			ts->block_max_scores[block_idx] = tp_compute_block_max_score(
-					&skip, ts->idf, k1, b, avg_doc_len);
+			uint16 block_idx;
+			ts->block_max_scores = palloc(
+					ts->iter.dict_entry.block_count * sizeof(float4));
+			for (block_idx = 0; block_idx < ts->iter.dict_entry.block_count;
+				 block_idx++)
+			{
+				TpSkipEntry skip;
+				tp_segment_read_skip_entry(
+						reader, &ts->iter.dict_entry, block_idx, &skip);
+				ts->block_max_scores[block_idx] = tp_compute_block_max_score(
+						&skip, ts->idf, k1, b, avg_doc_len);
+			}
 		}
+
+		/* Position iterator at first block without advancing */
+		if (tp_segment_posting_iterator_load_block(&ts->iter))
+			active_count++;
 	}
 
 	/* If no terms found in segment, nothing to do */
-	if (max_blocks == 0)
+	if (active_count == 0)
 		goto cleanup;
 
-	/* Set up hash control for per-block accumulator */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
-	hash_ctl.keysize   = sizeof(uint32); /* doc_id */
-	hash_ctl.entrysize = sizeof(TpDocAccum);
-	hash_ctl.hcxt	   = CurrentMemoryContext;
-
-	/* Process blocks with BMW */
-	for (block_idx = 0; block_idx < max_blocks; block_idx++)
+	/* WAND-style doc-ID ordered traversal */
+	while (active_count > 0)
 	{
-		float4 threshold	  = tp_topk_threshold(heap);
-		float4 block_max_sum  = 0.0f;
-		int	   terms_in_block = 0;
+		uint32			pivot_doc_id = UINT32_MAX;
+		float4			doc_score	 = 0.0f;
+		float4			max_possible = 0.0f;
+		float4			threshold;
+		ItemPointerData pivot_ctid;
+		bool			have_ctid = false;
 
-		/* Compute sum of block max scores for this block position */
+		/* Find minimum doc_id across all active iterators */
 		for (term_idx = 0; term_idx < term_count; term_idx++)
 		{
 			TpTermState *ts = &terms[term_idx];
-			if (!ts->found || block_idx >= ts->iter.dict_entry.block_count)
+			uint32		 doc_id;
+
+			if (!ts->found || ts->iter.finished)
 				continue;
 
-			block_max_sum += ts->block_max_scores[block_idx] * ts->query_freq;
-			terms_in_block++;
+			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+			if (doc_id < pivot_doc_id)
+				pivot_doc_id = doc_id;
 		}
 
-		/* Skip block if it can't beat threshold */
-		if (block_max_sum < threshold || terms_in_block == 0)
+		if (pivot_doc_id == UINT32_MAX)
+			break; /* All iterators exhausted */
+
+		/*
+		 * Compute max possible score for pivot doc.
+		 * For terms at pivot: use block_max of current block
+		 * For terms past pivot: use 0 (doc doesn't contain term)
+		 */
+		threshold = tp_topk_threshold(heap);
+
+		for (term_idx = 0; term_idx < term_count; term_idx++)
 		{
-			if (stats && terms_in_block > 0)
+			TpTermState *ts = &terms[term_idx];
+			uint32		 doc_id;
+
+			if (!ts->found || ts->iter.finished)
+				continue;
+
+			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+
+			if (doc_id <= pivot_doc_id && ts->block_max_scores != NULL &&
+				ts->iter.current_block < ts->iter.dict_entry.block_count)
+			{
+				max_possible += ts->block_max_scores[ts->iter.current_block] *
+								ts->query_freq;
+			}
+		}
+
+		/* Skip this pivot if max possible score can't beat threshold */
+		if (max_possible < threshold)
+		{
+			/*
+			 * Advance all iterators past pivot_doc_id.
+			 * Use seek to efficiently skip ahead.
+			 */
+			for (term_idx = 0; term_idx < term_count; term_idx++)
+			{
+				TpTermState *ts = &terms[term_idx];
+				uint32		 doc_id;
+
+				if (!ts->found || ts->iter.finished)
+					continue;
+
+				doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+				if (doc_id == pivot_doc_id)
+				{
+					/* Advance to next doc */
+					ts->iter.current_in_block++;
+					/* Check if we need to load next block */
+					if (ts->iter.current_in_block >=
+						ts->iter.skip_entry.doc_count)
+					{
+						ts->iter.current_block++;
+						if (ts->iter.current_block >=
+							ts->iter.dict_entry.block_count)
+						{
+							ts->iter.finished = true;
+							active_count--;
+						}
+						else
+						{
+							ts->iter.current_in_block = 0;
+							tp_segment_posting_iterator_load_block(&ts->iter);
+						}
+					}
+				}
+			}
+
+			if (stats)
 				stats->blocks_skipped++;
 			continue;
 		}
@@ -693,94 +760,78 @@ score_segment_multi_term_bmw(
 		if (stats)
 			stats->blocks_scanned++;
 
-		/* Create fresh hash table for this block's document accumulation */
-		doc_accum = hash_create(
-				"Block Doc Accum",
-				DOC_ACCUM_HASH_SIZE,
-				&hash_ctl,
-				HASH_ELEM | HASH_BLOBS);
-
-		/* Load and accumulate postings from all terms for this block */
+		/*
+		 * Score the pivot document by accumulating contributions from
+		 * all terms that contain this doc_id.
+		 */
 		for (term_idx = 0; term_idx < term_count; term_idx++)
 		{
-			TpTermState		 *ts = &terms[term_idx];
-			TpSegmentPosting *posting;
+			TpTermState *ts = &terms[term_idx];
+			uint32		 doc_id;
 
-			if (!ts->found || block_idx >= ts->iter.dict_entry.block_count)
+			if (!ts->found || ts->iter.finished)
 				continue;
 
-			/* Load this block using the pre-initialized iterator */
-			ts->iter.current_block = block_idx;
-			ts->iter.finished	   = false; /* Reset for this block */
-			tp_segment_posting_iterator_load_block(&ts->iter);
+			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
 
-			/* Accumulate scores for all postings in block */
-			while (tp_segment_posting_iterator_next(&ts->iter, &posting))
+			if (doc_id == pivot_doc_id)
 			{
-				/* Break if iterator auto-advanced to next block */
-				if (ts->iter.current_block != block_idx)
-					break;
-				float4			term_score;
-				TpDocAccum	   *accum;
-				bool			found;
-				uint32			doc_id;
-				ItemPointerData ctid_copy;
+				/* This term contains the pivot doc - add its score */
+				TpBlockPosting *bp =
+						&ts->iter.block_postings[ts->iter.current_in_block];
+				float4 term_score = compute_bm25_score(
+											ts->idf,
+											bp->frequency,
+											(int32)decode_fieldnorm(
+													bp->fieldnorm),
+											k1,
+											b,
+											avg_doc_len) *
+									ts->query_freq;
 
-				/* Copy CTID to avoid alignment issues with packed struct */
-				memcpy(&ctid_copy, &posting->ctid, sizeof(ItemPointerData));
+				doc_score += term_score;
 
-				/* Use CTID as pseudo doc_id for hashing */
-				doc_id = ItemPointerGetBlockNumber(&ctid_copy) * 65536 +
-						 ItemPointerGetOffsetNumber(&ctid_copy);
-
-				term_score = compute_bm25_score(
-									 ts->idf,
-									 posting->frequency,
-									 posting->doc_length,
-									 k1,
-									 b,
-									 avg_doc_len) *
-							 ts->query_freq;
-
-				accum = (TpDocAccum *)
-						hash_search(doc_accum, &doc_id, HASH_ENTER, &found);
-
-				if (!found)
+				/* Capture CTID from first term (all should have same CTID) */
+				if (!have_ctid)
 				{
-					accum->doc_id	 = doc_id;
-					accum->score	 = term_score;
-					accum->fieldnorm = 0;
+					Assert(reader->cached_ctid_pages != NULL);
+					Assert(pivot_doc_id < reader->cached_num_docs);
+					ItemPointerSet(
+							&pivot_ctid,
+							reader->cached_ctid_pages[pivot_doc_id],
+							reader->cached_ctid_offsets[pivot_doc_id]);
+					have_ctid = true;
 				}
-				else
+
+				/* Advance iterator past pivot */
+				ts->iter.current_in_block++;
+				/* Check if we need to load next block */
+				if (ts->iter.current_in_block >= ts->iter.skip_entry.doc_count)
 				{
-					accum->score += term_score;
+					ts->iter.current_block++;
+					if (ts->iter.current_block >=
+						ts->iter.dict_entry.block_count)
+					{
+						ts->iter.finished = true;
+						active_count--;
+					}
+					else
+					{
+						ts->iter.current_in_block = 0;
+						tp_segment_posting_iterator_load_block(&ts->iter);
+					}
 				}
 			}
 		}
 
-		/* Add accumulated documents to heap */
+		/* Add fully-scored document to heap */
+		if (have_ctid && !tp_topk_dominated(heap, doc_score))
 		{
-			HASH_SEQ_STATUS seq;
-			TpDocAccum	   *accum;
-
-			hash_seq_init(&seq, doc_accum);
-			while ((accum = hash_seq_search(&seq)) != NULL)
-			{
-				ItemPointerData ctid;
-
-				/* Reconstruct CTID from doc_id encoding */
-				ItemPointerSet(
-						&ctid, accum->doc_id / 65536, accum->doc_id % 65536);
-
-				if (!tp_topk_dominated(heap, accum->score))
-					tp_topk_add(heap, ctid, accum->score);
-
-				if (stats)
-					stats->segment_docs_scored++;
-			}
+			tp_topk_add(heap, pivot_ctid, doc_score);
 		}
 
-		hash_destroy(doc_accum);
+		if (stats)
+			stats->segment_docs_scored++;
 	}
 
 cleanup:
