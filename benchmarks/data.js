@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767680961809,
+  "lastUpdate": 1767680964552,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1328,6 +1328,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 18996.624,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.75,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9aea7f2a200fda30b653e4dd6d4f25d03f52c937",
+          "message": "Add competitive benchmarks (#106)\n\n## Summary\n\n- Add System X benchmark job to run in parallel with pg_textsearch\nbenchmarks\n- Add `dry_run` option to skip publishing to GitHub Pages (for testing)\n- Set parallel workers dynamically based on CPU count for fair\ncomparison\n- Improve throughput benchmark methodology (warmup, multiple iterations,\nconsistent SQL)\n\n## Changes\n\n### Workflow\n- `dry_run` input parameter to test without publishing\n\n### Benchmark methodology\n- Throughput tests now include warmup pass\n- 10 iterations with median reporting (matching individual query tests)\n- Use `EXECUTE` instead of `PERFORM` for consistency\n- Fixes #95 by using subset of real MS-MARCO dev queries",
+          "timestamp": "2026-01-06T00:49:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9aea7f2a200fda30b653e4dd6d4f25d03f52c937"
+        },
+        "date": 1767680963824,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18689.723,
             "unit": "ms"
           },
           {
