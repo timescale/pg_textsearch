@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767665001125,
+  "lastUpdate": 1767665003035,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -640,6 +640,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
             "value": 130.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "a0eb255abc6bc57552bd3d53b9f738b234493c29",
+          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-01-06T00:28:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a0eb255abc6bc57552bd3d53b9f738b234493c29"
+        },
+        "date": 1767665002403,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 513293.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 10.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 11.83,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 13.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 19.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 26.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 35.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 48.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 117.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 48.7,
             "unit": "ms"
           },
           {
