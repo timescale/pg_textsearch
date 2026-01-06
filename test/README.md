@@ -56,7 +56,30 @@ Tests verify:
 - ✅ Shared memory structure integrity
 - ✅ Proper transaction isolation
 
-### 4. Memory Budget Testing
+### 4. Stress Testing
+
+Long-running stress tests for extended operation verification and resource leak detection.
+
+#### Stress Tests (`stress.sh`)
+- **Extended Insert/Query**: Continuous inserts and queries over extended time
+- **Concurrent Stress**: Multiple readers with continuous inserts and spills
+- **Multiple Indexes**: Interleaved operations on multiple indexes
+- **Segment Merge Stress**: Creates many segments to test merge behavior
+- **Resource Cleanup**: Repeated index creation/deletion
+
+Configuration (environment variables):
+- `STRESS_DURATION_MINUTES` - Test duration (default: 5)
+- `SPILL_THRESHOLD` - Low threshold to create more segments (default: 1000)
+- `DOCS_PER_BATCH` - Documents per insert batch (default: 100)
+- `CONCURRENT_READERS` - Number of concurrent reader processes (default: 3)
+
+Tests verify:
+- Continued correctness over extended operation
+- No memory leaks under sustained load
+- Proper segment creation and querying
+- Resource cleanup on index drop
+
+### 5. Memory Budget Testing
 
 The Tapir extension enforces strict per-index memory budgets to prevent runaway memory usage.
 
@@ -97,6 +120,7 @@ make installcheck REGRESS=limits
 # Individual shell script targets
 make test-concurrency      # Multi-session concurrency safety
 make test-recovery         # Crash recovery testing
+make test-stress           # Long-running stress tests
 make test-shell            # All shell scripts (concurrency + recovery + memory limits)
 make test-all              # Complete test suite (SQL + shell scripts)
 
@@ -104,7 +128,10 @@ make test-all              # Complete test suite (SQL + shell scripts)
 cd test/scripts
 ./concurrency.sh          # Multi-session concurrency safety
 ./recovery.sh             # Crash recovery testing
-./memory_limits.sh        # Memory budget enforcement stress testing
+./stress.sh               # Long-running stress tests (configurable duration)
+
+# Stress test with custom duration (10 minutes)
+STRESS_DURATION_MINUTES=10 ./stress.sh
 ```
 
 ## Test Development Guidelines
@@ -208,6 +235,21 @@ Tests are designed to:
 make test-all              # Complete test suite (recommended for CI)
 # OR separate stages:
 make installcheck          # SQL regression tests (fast)
-make test-concurrent-basic # Basic concurrency tests (medium)
-make test-recovery        # Crash recovery tests (slower)
+make test-concurrency      # Concurrency tests (medium)
+make test-recovery         # Crash recovery tests (slower)
+make test-stress           # Long-running stress tests (nightly)
 ```
+
+### Nightly Stress Tests
+
+The `nightly-stress.yml` workflow runs extended stress tests with:
+- AddressSanitizer with leak detection enabled
+- Low spill thresholds to create many segments
+- Extended duration tests (10+ minutes)
+- Automatic issue creation on failure
+
+These tests are designed to catch:
+- Memory leaks that only manifest under sustained load
+- Resource leaks from repeated index operations
+- Correctness issues that appear over time
+- Segment handling edge cases

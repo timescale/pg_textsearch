@@ -95,6 +95,10 @@ test-segment:
 	@echo "Running multi-backend segment tests..."
 	@cd test/scripts && ./segment.sh
 
+test-stress:
+	@echo "Running stress tests..."
+	@cd test/scripts && ./stress.sh
+
 test-shell: test-concurrency test-recovery test-segment
 	@echo "All shell-based tests completed"
 
@@ -183,6 +187,7 @@ help:
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
+	@echo "  make test-stress      - Run long-running stress tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -199,4 +204,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-shell test-all expected lint-format format format-check format-diff format-single help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single help

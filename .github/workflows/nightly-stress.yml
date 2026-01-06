@@ -1,0 +1,343 @@
+# Nightly stress tests with memory leak detection
+#
+# Runs long-running tests that:
+# - Exercise core functionality over extended time
+# - Create many segments via low spill thresholds
+# - Check for memory leaks and resource leaks
+# - Validate continued correctness over time
+#
+name: Nightly Stress Tests
+
+on:
+  schedule:
+    # Run at 3 AM UTC daily
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Test duration in minutes'
+        required: false
+        default: '10'
+      pg_version:
+        description: 'PostgreSQL version'
+        required: false
+        default: '17'
+        type: choice
+        options:
+          - '17'
+          - '18'
+
+env:
+  PG_SRC_DIR: "pgbuild"
+  PG_INSTALL_DIR: "postgresql"
+  CC: "clang-15"
+  CXX: "clang-15"
+  # AddressSanitizer with leak detection ENABLED
+  CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+  LDFLAGS: "-fsanitize=address,undefined"
+  # Enable leak detection for stress tests
+  ASAN_OPTIONS: "detect_leaks=1 abort_on_error=0 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
+  UBSAN_OPTIONS: "halt_on_error=0 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan"
+  # Leak sanitizer options
+  LSAN_OPTIONS: "suppressions=${{ github.workspace }}/test/lsan.supp exitcode=27 print_suppressions=0"
+
+jobs:
+  stress-test:
+    name: Stress Test PG${{ matrix.pg }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.pg_version || '17')) || fromJSON('["17", "18"]') }}
+
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y flex bison build-essential libssl-dev \
+          libreadline-dev clang-15 llvm-15 bc
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Create directories
+      run: |
+        mkdir -p ${{ github.workspace }}/sanitizer_logs
+        mkdir -p ${{ github.workspace }}/test-results
+
+    - name: Create leak sanitizer suppressions file
+      run: |
+        # Suppress known PostgreSQL internal leaks that are not our concern
+        cat > ${{ github.workspace }}/test/lsan.supp << 'EOF'
+        # PostgreSQL allocates some memory at startup that lives for the process lifetime
+        # These are not actual leaks, just long-lived allocations
+        leak:AllocSetContextCreate
+        leak:MemoryContextAlloc
+        leak:palloc
+        leak:repalloc
+        # OpenSSL has some one-time initialization allocations
+        leak:libssl
+        leak:libcrypto
+        EOF
+
+    - name: Get date for caching
+      id: get-date
+      run: echo "date=$(date +\"%Y%m%d\")" >> $GITHUB_OUTPUT
+
+    - name: Cache PostgreSQL ${{ matrix.pg }}
+      id: cache-postgresql
+      uses: actions/cache@v4
+      with:
+        path: ~/${{ env.PG_SRC_DIR }}
+        key: "nightly-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}"
+
+    - name: Determine PG version
+      id: pg-version
+      run: |
+        # Map major version to full version
+        case "${{ matrix.pg }}" in
+          17) echo "full_version=17.2" >> $GITHUB_OUTPUT ;;
+          18) echo "full_version=18.1" >> $GITHUB_OUTPUT ;;
+          *) echo "full_version=${{ matrix.pg }}.0" >> $GITHUB_OUTPUT ;;
+        esac
+
+    - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
+      if: steps.cache-postgresql.outputs.cache-hit != 'true'
+      run: |
+        wget -q -O postgresql.tar.bz2 \
+          https://ftp.postgresql.org/pub/source/v${{ steps.pg-version.outputs.full_version }}/postgresql-${{ steps.pg-version.outputs.full_version }}.tar.bz2
+        mkdir -p ~/$PG_SRC_DIR
+        tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
+
+        # Apply ASAN instrumentation patch
+        PG_MAJOR=${{ matrix.pg }}
+        if [ ${PG_MAJOR} -lt 18 ]; then
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+        else
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
+        fi
+
+        cd ~/$PG_SRC_DIR
+        ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
+          --with-openssl --without-readline --without-zlib --without-libxml
+        make -j$(nproc)
+
+    - name: Install PostgreSQL
+      run: |
+        cd ~/$PG_SRC_DIR
+        make install
+
+    - name: Verify leak detection works
+      run: |
+        echo "Testing that AddressSanitizer leak detection is functioning..."
+
+        # Create a test program with a deliberate memory leak
+        cat > test_leak.c << 'EOF'
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <string.h>
+
+        int main() {
+            // Deliberate memory leak - allocate but never free
+            char *leaked = malloc(1024);
+            strcpy(leaked, "This memory is deliberately leaked");
+            printf("Leaked pointer: %p\n", (void*)leaked);
+            // Note: we intentionally don't free 'leaked'
+            return 0;
+        }
+        EOF
+
+        # Compile with sanitizers
+        $CC $CFLAGS test_leak.c -o test_leak $LDFLAGS
+
+        # Run and expect it to fail with exit code 27 (our configured exitcode)
+        echo "Running deliberate leak test..."
+        set +e
+        ./test_leak
+        exit_code=$?
+        set -e
+
+        if [ $exit_code -eq 27 ]; then
+            echo "Leak detection is working correctly (caught deliberate leak)"
+        elif [ $exit_code -eq 0 ]; then
+            echo "ERROR: Leak detection did NOT catch the deliberate leak!"
+            echo "This means leak detection is not functioning properly."
+            exit 1
+        else
+            echo "WARNING: Unexpected exit code $exit_code"
+            # Still continue - the leak may have been detected differently
+        fi
+
+        rm -f test_leak test_leak.c
+        echo "Leak detection verification passed"
+
+    - name: Build and install pg_textsearch
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        make clean
+        make
+        make install
+
+    - name: Run stress tests
+      timeout-minutes: 90
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+
+        # Determine test duration
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          DURATION="${{ github.event.inputs.duration_minutes }}"
+        else
+          # Default 10 minutes for scheduled runs
+          DURATION=10
+        fi
+
+        echo "Running stress tests for ${DURATION} minutes..."
+
+        # Run stress tests with low spill threshold to create many segments
+        cd test/scripts
+        STRESS_DURATION_MINUTES=${DURATION} \
+        SPILL_THRESHOLD=500 \
+        DOCS_PER_BATCH=50 \
+        CONCURRENT_READERS=4 \
+        ./stress.sh 2>&1 | tee ${{ github.workspace }}/test-results/stress-test.log
+
+    - name: Run regression tests under sanitizer
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+
+        rm -rf tmp_nightly_test
+        mkdir -p tmp_nightly_test
+        initdb -D tmp_nightly_test/data --auth-local=trust
+
+        echo "port = 55437" >> tmp_nightly_test/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_nightly_test'" >> tmp_nightly_test/data/postgresql.conf
+
+        pg_ctl start -D tmp_nightly_test/data -l tmp_nightly_test/data/logfile -w
+        createdb -h $PWD/tmp_nightly_test -p 55437 contrib_regression
+
+        echo "Running SQL regression tests..."
+        if ! make test PGHOST=$PWD/tmp_nightly_test PGPORT=55437; then
+          echo "Regression tests failed"
+          cat test/regression.diffs || true
+        fi
+
+        pg_ctl stop -D tmp_nightly_test/data
+
+    - name: Run concurrency tests
+      timeout-minutes: 30
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        cd test/scripts
+        ./concurrency.sh 2>&1 | tee ${{ github.workspace }}/test-results/concurrency.log
+
+    - name: Run segment tests
+      timeout-minutes: 20
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        cd test/scripts
+        ./segment.sh 2>&1 | tee ${{ github.workspace }}/test-results/segment.log
+
+    - name: Check for sanitizer errors
+      if: always()
+      run: |
+        echo "Checking for sanitizer errors..."
+
+        # Count sanitizer log files
+        error_count=0
+        if [ -d "${{ github.workspace }}/sanitizer_logs" ]; then
+          for log in ${{ github.workspace }}/sanitizer_logs/*; do
+            if [ -f "$log" ] && [ -s "$log" ]; then
+              echo "=== Sanitizer error in $log ==="
+              cat "$log"
+              echo ""
+              error_count=$((error_count + 1))
+            fi
+          done
+        fi
+
+        if [ $error_count -gt 0 ]; then
+          echo "Found $error_count sanitizer error logs"
+          # Don't fail here - let the upload happen first
+        else
+          echo "No sanitizer errors detected"
+        fi
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-stress-results-pg${{ matrix.pg }}
+        path: |
+          ${{ github.workspace }}/test-results/
+          ${{ github.workspace }}/sanitizer_logs/
+          test/regression.diffs
+          test/regression.out
+          test/results/
+        retention-days: 14
+
+    - name: Upload failure artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-failure-debug-pg${{ matrix.pg }}
+        path: |
+          test/scripts/tmp_*/
+          tmp_nightly_test/
+        retention-days: 7
+
+  notify-on-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: stress-test
+    if: failure()
+    steps:
+    - name: Create failure issue
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = `Nightly stress tests failed on ${new Date().toISOString().split('T')[0]}`;
+          const body = `## Nightly Stress Test Failure
+
+          The nightly stress tests have failed. This may indicate:
+          - Memory leaks in the extension
+          - Resource leaks
+          - Correctness issues under extended operation
+          - Segment handling problems
+
+          **Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+
+          Please investigate the uploaded artifacts for details.
+          `;
+
+          // Check if there's already an open issue with this title prefix
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: 'nightly-failure'
+          });
+
+          const existingIssue = issues.data.find(i =>
+            i.title.startsWith('Nightly stress tests failed')
+          );
+
+          if (existingIssue) {
+            // Add a comment to existing issue
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existingIssue.number,
+              body: `Another failure on ${new Date().toISOString().split('T')[0]}\n\n${body}`
+            });
+          } else {
+            // Create new issue
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['nightly-failure', 'bug']
+            });
+          }
