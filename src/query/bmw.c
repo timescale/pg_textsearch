@@ -587,40 +587,44 @@ score_memtable_multi_term(
 }
 
 /*
- * Score segment postings for multiple terms using WAND-style traversal.
- *
- * This implementation uses doc-ID ordered traversal to correctly accumulate
- * scores across all terms for each document. Documents may appear at different
- * block positions across terms' posting lists, so we cannot iterate by block
- * index and expect documents to align.
- *
- * Algorithm:
- * 1. Initialize iterators for all terms, positioned at first posting
- * 2. Find minimum doc_id across all active iterators (pivot)
- * 3. Accumulate scores from all terms at pivot doc_id
- * 4. Add fully-scored document to heap
- * 5. Advance past pivot and repeat
- *
- * Block-max optimization: Before scoring a pivot doc, check if the sum of
- * block-max scores from current blocks can beat the threshold. If not, we
- * can skip ahead.
+ * Advance a term iterator to the next document.
+ * Returns true if iterator is still active, false if exhausted.
  */
-static void
-score_segment_multi_term_bmw(
-		TpTopKHeap		*heap,
-		TpSegmentReader *reader,
+static bool
+advance_term_iterator(TpTermState *ts)
+{
+	ts->iter.current_in_block++;
+
+	if (ts->iter.current_in_block >= ts->iter.skip_entry.doc_count)
+	{
+		ts->iter.current_block++;
+		if (ts->iter.current_block >= ts->iter.dict_entry.block_count)
+		{
+			ts->iter.finished = true;
+			return false;
+		}
+		ts->iter.current_in_block = 0;
+		tp_segment_posting_iterator_load_block(&ts->iter);
+	}
+	return true;
+}
+
+/*
+ * Initialize term states for a segment.
+ * Returns count of active iterators (terms found in segment).
+ */
+static int
+init_segment_term_states(
 		TpTermState		*terms,
 		int				 term_count,
+		TpSegmentReader *reader,
 		float4			 k1,
 		float4			 b,
-		float4			 avg_doc_len,
-		TpBMWStats		*stats)
+		float4			 avg_doc_len)
 {
+	int active_count = 0;
 	int term_idx;
-	int active_count;
 
-	/* Initialize term states for this segment */
-	active_count = 0;
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
 		TpTermState *ts = &terms[term_idx];
@@ -628,7 +632,6 @@ score_segment_multi_term_bmw(
 		ts->found			 = false;
 		ts->block_max_scores = NULL;
 
-		/* Initialize iterator (does dictionary lookup) */
 		if (!tp_segment_posting_iterator_init(&ts->iter, reader, ts->term))
 			continue;
 
@@ -651,107 +654,229 @@ score_segment_multi_term_bmw(
 			}
 		}
 
-		/* Position iterator at first block without advancing */
 		if (tp_segment_posting_iterator_load_block(&ts->iter))
 			active_count++;
 	}
 
-	/* If no terms found in segment, nothing to do */
-	if (active_count == 0)
-		goto cleanup;
+	return active_count;
+}
+
+/*
+ * Free term state resources for a segment.
+ */
+static void
+cleanup_segment_term_states(TpTermState *terms, int term_count)
+{
+	int term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		if (terms[term_idx].found)
+			tp_segment_posting_iterator_free(&terms[term_idx].iter);
+		if (terms[term_idx].block_max_scores)
+			pfree(terms[term_idx].block_max_scores);
+	}
+}
+
+/*
+ * Find minimum doc_id across all active term iterators.
+ * Returns UINT32_MAX if all iterators are exhausted.
+ */
+static uint32
+find_pivot_doc_id(TpTermState *terms, int term_count)
+{
+	uint32 pivot = UINT32_MAX;
+	int	   term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpTermState *ts = &terms[term_idx];
+		uint32		 doc_id;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+		if (doc_id < pivot)
+			pivot = doc_id;
+	}
+
+	return pivot;
+}
+
+/*
+ * Compute maximum possible score for a pivot document.
+ * Uses block-max scores from current blocks of each term.
+ */
+static float4
+compute_pivot_max_score(
+		TpTermState *terms, int term_count, uint32 pivot_doc_id)
+{
+	float4 max_possible = 0.0f;
+	int	   term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpTermState *ts = &terms[term_idx];
+		uint32		 doc_id;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+
+		if (doc_id <= pivot_doc_id && ts->block_max_scores != NULL &&
+			ts->iter.current_block < ts->iter.dict_entry.block_count)
+		{
+			max_possible += ts->block_max_scores[ts->iter.current_block] *
+							ts->query_freq;
+		}
+	}
+
+	return max_possible;
+}
+
+/*
+ * Score a pivot document by accumulating BM25 contributions from all terms.
+ * Advances iterators past the pivot and returns the score.
+ * Sets *ctid_out to the document's CTID and *active_count is updated.
+ */
+static float4
+score_pivot_document(
+		TpTermState		*terms,
+		int				 term_count,
+		uint32			 pivot_doc_id,
+		TpSegmentReader *reader,
+		float4			 k1,
+		float4			 b,
+		float4			 avg_doc_len,
+		ItemPointerData *ctid_out,
+		int				*active_count)
+{
+	float4 doc_score = 0.0f;
+	bool   have_ctid = false;
+	int	   term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpTermState *ts = &terms[term_idx];
+		uint32		 doc_id;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+
+		if (doc_id == pivot_doc_id)
+		{
+			TpBlockPosting *bp =
+					&ts->iter.block_postings[ts->iter.current_in_block];
+			float4 term_score = compute_bm25_score(
+										ts->idf,
+										bp->frequency,
+										(int32)decode_fieldnorm(bp->fieldnorm),
+										k1,
+										b,
+										avg_doc_len) *
+								ts->query_freq;
+
+			doc_score += term_score;
+
+			if (!have_ctid)
+			{
+				Assert(reader->cached_ctid_pages != NULL);
+				Assert(pivot_doc_id < reader->cached_num_docs);
+				ItemPointerSet(
+						ctid_out,
+						reader->cached_ctid_pages[pivot_doc_id],
+						reader->cached_ctid_offsets[pivot_doc_id]);
+				have_ctid = true;
+			}
+
+			if (!advance_term_iterator(ts))
+				(*active_count)--;
+		}
+	}
+
+	if (!have_ctid)
+		ItemPointerSetInvalid(ctid_out);
+
+	return doc_score;
+}
+
+/*
+ * Advance all iterators at the pivot past the current document.
+ * Used when block-max pruning determines the pivot can't beat threshold.
+ */
+static void
+skip_pivot_document(
+		TpTermState *terms,
+		int			 term_count,
+		uint32		 pivot_doc_id,
+		int			*active_count)
+{
+	int term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpTermState *ts = &terms[term_idx];
+		uint32		 doc_id;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+		if (doc_id == pivot_doc_id)
+		{
+			if (!advance_term_iterator(ts))
+				(*active_count)--;
+		}
+	}
+}
+
+/*
+ * Score segment postings for multiple terms using WAND-style traversal.
+ *
+ * Uses doc-ID ordered traversal to correctly accumulate scores across all
+ * terms. Block-max optimization prunes documents that can't beat threshold.
+ */
+static void
+score_segment_multi_term_bmw(
+		TpTopKHeap		*heap,
+		TpSegmentReader *reader,
+		TpTermState		*terms,
+		int				 term_count,
+		float4			 k1,
+		float4			 b,
+		float4			 avg_doc_len,
+		TpBMWStats		*stats)
+{
+	int active_count;
+
+	active_count = init_segment_term_states(
+			terms, term_count, reader, k1, b, avg_doc_len);
 
 	/* WAND-style doc-ID ordered traversal */
 	while (active_count > 0)
 	{
-		uint32			pivot_doc_id = UINT32_MAX;
-		float4			doc_score	 = 0.0f;
-		float4			max_possible = 0.0f;
+		uint32			pivot_doc_id;
+		float4			max_possible;
 		float4			threshold;
 		ItemPointerData pivot_ctid;
-		bool			have_ctid = false;
+		float4			doc_score;
 
-		/* Find minimum doc_id across all active iterators */
-		for (term_idx = 0; term_idx < term_count; term_idx++)
-		{
-			TpTermState *ts = &terms[term_idx];
-			uint32		 doc_id;
-
-			if (!ts->found || ts->iter.finished)
-				continue;
-
-			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-			if (doc_id < pivot_doc_id)
-				pivot_doc_id = doc_id;
-		}
-
+		pivot_doc_id = find_pivot_doc_id(terms, term_count);
 		if (pivot_doc_id == UINT32_MAX)
-			break; /* All iterators exhausted */
+			break;
 
-		/*
-		 * Compute max possible score for pivot doc.
-		 * For terms at pivot: use block_max of current block
-		 * For terms past pivot: use 0 (doc doesn't contain term)
-		 */
 		threshold = tp_topk_threshold(heap);
+		max_possible =
+				compute_pivot_max_score(terms, term_count, pivot_doc_id);
 
-		for (term_idx = 0; term_idx < term_count; term_idx++)
-		{
-			TpTermState *ts = &terms[term_idx];
-			uint32		 doc_id;
-
-			if (!ts->found || ts->iter.finished)
-				continue;
-
-			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-
-			if (doc_id <= pivot_doc_id && ts->block_max_scores != NULL &&
-				ts->iter.current_block < ts->iter.dict_entry.block_count)
-			{
-				max_possible += ts->block_max_scores[ts->iter.current_block] *
-								ts->query_freq;
-			}
-		}
-
-		/* Skip this pivot if max possible score can't beat threshold */
 		if (max_possible < threshold)
 		{
-			/*
-			 * Advance all iterators past pivot_doc_id.
-			 * Use seek to efficiently skip ahead.
-			 */
-			for (term_idx = 0; term_idx < term_count; term_idx++)
-			{
-				TpTermState *ts = &terms[term_idx];
-				uint32		 doc_id;
-
-				if (!ts->found || ts->iter.finished)
-					continue;
-
-				doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-				if (doc_id == pivot_doc_id)
-				{
-					/* Advance to next doc */
-					ts->iter.current_in_block++;
-					/* Check if we need to load next block */
-					if (ts->iter.current_in_block >=
-						ts->iter.skip_entry.doc_count)
-					{
-						ts->iter.current_block++;
-						if (ts->iter.current_block >=
-							ts->iter.dict_entry.block_count)
-						{
-							ts->iter.finished = true;
-							active_count--;
-						}
-						else
-						{
-							ts->iter.current_in_block = 0;
-							tp_segment_posting_iterator_load_block(&ts->iter);
-						}
-					}
-				}
-			}
-
+			skip_pivot_document(
+					terms, term_count, pivot_doc_id, &active_count);
 			if (stats)
 				stats->blocks_skipped++;
 			continue;
@@ -760,89 +885,26 @@ score_segment_multi_term_bmw(
 		if (stats)
 			stats->blocks_scanned++;
 
-		/*
-		 * Score the pivot document by accumulating contributions from
-		 * all terms that contain this doc_id.
-		 */
-		for (term_idx = 0; term_idx < term_count; term_idx++)
-		{
-			TpTermState *ts = &terms[term_idx];
-			uint32		 doc_id;
+		doc_score = score_pivot_document(
+				terms,
+				term_count,
+				pivot_doc_id,
+				reader,
+				k1,
+				b,
+				avg_doc_len,
+				&pivot_ctid,
+				&active_count);
 
-			if (!ts->found || ts->iter.finished)
-				continue;
-
-			doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-
-			if (doc_id == pivot_doc_id)
-			{
-				/* This term contains the pivot doc - add its score */
-				TpBlockPosting *bp =
-						&ts->iter.block_postings[ts->iter.current_in_block];
-				float4 term_score = compute_bm25_score(
-											ts->idf,
-											bp->frequency,
-											(int32)decode_fieldnorm(
-													bp->fieldnorm),
-											k1,
-											b,
-											avg_doc_len) *
-									ts->query_freq;
-
-				doc_score += term_score;
-
-				/* Capture CTID from first term (all should have same CTID) */
-				if (!have_ctid)
-				{
-					Assert(reader->cached_ctid_pages != NULL);
-					Assert(pivot_doc_id < reader->cached_num_docs);
-					ItemPointerSet(
-							&pivot_ctid,
-							reader->cached_ctid_pages[pivot_doc_id],
-							reader->cached_ctid_offsets[pivot_doc_id]);
-					have_ctid = true;
-				}
-
-				/* Advance iterator past pivot */
-				ts->iter.current_in_block++;
-				/* Check if we need to load next block */
-				if (ts->iter.current_in_block >= ts->iter.skip_entry.doc_count)
-				{
-					ts->iter.current_block++;
-					if (ts->iter.current_block >=
-						ts->iter.dict_entry.block_count)
-					{
-						ts->iter.finished = true;
-						active_count--;
-					}
-					else
-					{
-						ts->iter.current_in_block = 0;
-						tp_segment_posting_iterator_load_block(&ts->iter);
-					}
-				}
-			}
-		}
-
-		/* Add fully-scored document to heap */
-		if (have_ctid && !tp_topk_dominated(heap, doc_score))
-		{
+		if (ItemPointerIsValid(&pivot_ctid) &&
+			!tp_topk_dominated(heap, doc_score))
 			tp_topk_add(heap, pivot_ctid, doc_score);
-		}
 
 		if (stats)
 			stats->segment_docs_scored++;
 	}
 
-cleanup:
-	/* Free iterators and block_max_scores */
-	for (term_idx = 0; term_idx < term_count; term_idx++)
-	{
-		if (terms[term_idx].found)
-			tp_segment_posting_iterator_free(&terms[term_idx].iter);
-		if (terms[term_idx].block_max_scores)
-			pfree(terms[term_idx].block_max_scores);
-	}
+	cleanup_segment_term_states(terms, term_count);
 }
 
 /*

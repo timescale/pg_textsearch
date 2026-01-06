@@ -837,6 +837,72 @@ tp_batch_get_segment_doc_freq(
  * The doc_freqs array is filled in with the sum of doc_freq across all
  * segments. Scores are accumulated into the doc_scores_hash.
  */
+/*
+ * Process all postings for a term, accumulating scores in hash table.
+ */
+static void
+score_term_postings(
+		TpSegmentPostingIterator *iter,
+		float4					  idf,
+		float4					  query_freq,
+		float4					  k1,
+		float4					  b,
+		float4					  avg_doc_len,
+		HTAB					 *hash_table)
+{
+	TpSegmentPosting *posting;
+
+	while (tp_segment_posting_iterator_next(iter, &posting))
+	{
+		process_posting(
+				posting, idf, query_freq, k1, b, avg_doc_len, hash_table);
+	}
+}
+
+/*
+ * Process a single segment for all terms.
+ */
+static void
+score_segment_for_all_terms(
+		TpSegmentReader *reader,
+		char		   **terms,
+		int				 term_count,
+		int32			*query_frequencies,
+		uint32			*doc_freqs,
+		int32			 total_docs,
+		float4			 k1,
+		float4			 b,
+		float4			 avg_doc_len,
+		HTAB			*hash_table)
+{
+	for (int term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpSegmentPostingIterator iter;
+		float4					 idf;
+
+		if (!tp_segment_posting_iterator_init(&iter, reader, terms[term_idx]))
+			continue;
+
+		/* Accumulate doc_freq */
+		doc_freqs[term_idx] += iter.dict_entry.doc_freq;
+
+		/* Calculate IDF with current accumulated doc_freq */
+		idf = tp_calculate_idf(doc_freqs[term_idx], total_docs);
+
+		/* Process all postings for this term */
+		score_term_postings(
+				&iter,
+				idf,
+				(float4)query_frequencies[term_idx],
+				k1,
+				b,
+				avg_doc_len,
+				hash_table);
+
+		tp_segment_posting_iterator_free(&iter);
+	}
+}
+
 void
 tp_score_all_terms_in_segment_chain(
 		Relation	index,
@@ -851,164 +917,28 @@ tp_score_all_terms_in_segment_chain(
 		float4		avg_doc_len,
 		void	   *doc_scores_hash)
 {
-	BlockNumber current		= first_segment;
-	char	   *term_buffer = NULL;
-	uint32		buffer_size = 0;
-	HTAB	   *hash_table	= (HTAB *)doc_scores_hash;
+	BlockNumber current	   = first_segment;
+	HTAB	   *hash_table = (HTAB *)doc_scores_hash;
 
 	while (current != InvalidBlockNumber)
 	{
-		TpSegmentReader *reader;
-		TpSegmentHeader *header;
-
-		/* Open segment ONCE for all terms */
-		reader = tp_segment_open(index, current);
+		TpSegmentReader *reader = tp_segment_open(index, current);
 		if (!reader)
 			break;
 
-		header = reader->header;
+		score_segment_for_all_terms(
+				reader,
+				terms,
+				term_count,
+				query_frequencies,
+				doc_freqs,
+				total_docs,
+				k1,
+				b,
+				avg_doc_len,
+				hash_table);
 
-		/* Process each term in this segment */
-		for (int term_idx = 0; term_idx < term_count; term_idx++)
-		{
-			const char	*term = terms[term_idx];
-			TpDictionary dict_header;
-			int			 left, right, cmp;
-			bool		 found			= false;
-			uint32		 dict_entry_idx = 0;
-
-			if (header->num_terms == 0 || header->dictionary_offset == 0)
-				continue;
-
-			/* Read dictionary header */
-			tp_segment_read(
-					reader,
-					header->dictionary_offset,
-					&dict_header,
-					sizeof(dict_header.num_terms));
-
-			/* Binary search for term in dictionary */
-			left  = 0;
-			right = header->num_terms - 1;
-
-			while (left <= right)
-			{
-				int	   mid = left + (right - left) / 2;
-				uint32 string_offset_value;
-				uint32 string_offset;
-
-				struct
-				{
-					uint32 length;
-				} string_entry;
-
-				tp_segment_read(
-						reader,
-						header->dictionary_offset +
-								sizeof(dict_header.num_terms) +
-								(mid * sizeof(uint32)),
-						&string_offset_value,
-						sizeof(uint32));
-
-				string_offset = header->strings_offset + string_offset_value;
-
-				tp_segment_read(
-						reader,
-						string_offset,
-						&string_entry.length,
-						sizeof(uint32));
-
-				if (string_entry.length + 1 > buffer_size)
-				{
-					if (term_buffer)
-						pfree(term_buffer);
-					buffer_size = string_entry.length + 1;
-					term_buffer = palloc(buffer_size);
-				}
-
-				tp_segment_read(
-						reader,
-						string_offset + sizeof(uint32),
-						term_buffer,
-						string_entry.length);
-				term_buffer[string_entry.length] = '\0';
-
-				cmp = strcmp(term, term_buffer);
-
-				if (cmp == 0)
-				{
-					found		   = true;
-					dict_entry_idx = mid;
-					break;
-				}
-				else if (cmp < 0)
-				{
-					right = mid - 1;
-				}
-				else
-				{
-					left = mid + 1;
-				}
-			}
-
-			if (!found)
-				continue;
-
-			/* Found the term - get doc_freq and process postings */
-			{
-				TpDictEntry				 dict_entry;
-				TpSegmentPostingIterator iter;
-				TpSegmentPosting		*posting;
-				float4					 idf;
-
-				tp_segment_read(
-						reader,
-						header->entries_offset +
-								(dict_entry_idx * sizeof(TpDictEntry)),
-						&dict_entry,
-						sizeof(TpDictEntry));
-
-				/* Accumulate doc_freq */
-				doc_freqs[term_idx] += dict_entry.doc_freq;
-
-				/* Calculate IDF with current accumulated doc_freq */
-				idf = tp_calculate_idf(doc_freqs[term_idx], total_docs);
-
-				/* Initialize iterator directly with dict entry */
-				iter.reader				 = reader;
-				iter.term				 = term;
-				iter.dict_entry_idx		 = dict_entry_idx;
-				iter.dict_entry			 = dict_entry;
-				iter.initialized		 = true;
-				iter.finished			 = false;
-				iter.current_block		 = 0;
-				iter.current_in_block	 = 0;
-				iter.block_postings		 = NULL;
-				iter.has_block_access	 = false;
-				iter.fallback_block		 = NULL;
-				iter.fallback_block_size = 0;
-
-				/* Process all postings for this term */
-				while (tp_segment_posting_iterator_next(&iter, &posting))
-				{
-					process_posting(
-							posting,
-							idf,
-							(float4)query_frequencies[term_idx],
-							k1,
-							b,
-							avg_doc_len,
-							hash_table);
-				}
-				tp_segment_posting_iterator_free(&iter);
-			}
-		}
-
-		/* Move to next segment and close this one */
-		current = header->next_segment;
+		current = reader->header->next_segment;
 		tp_segment_close(reader);
 	}
-
-	if (term_buffer)
-		pfree(term_buffer);
 }
