@@ -47,7 +47,7 @@ $$;
 
 -- Function to benchmark a bucket and return percentiles
 CREATE OR REPLACE FUNCTION benchmark_bucket(bucket int)
-RETURNS TABLE(p50_ms numeric, p95_ms numeric, p99_ms numeric, avg_ms numeric, num_queries int) AS $$
+RETURNS TABLE(p50_ms numeric, p95_ms numeric, p99_ms numeric, avg_ms numeric, num_queries int, total_results bigint) AS $$
 DECLARE
     q record;
     start_ts timestamp;
@@ -55,16 +55,19 @@ DECLARE
     times numeric[];
     sorted_times numeric[];
     n int;
+    result_count bigint;
+    results_sum bigint := 0;
 BEGIN
     times := ARRAY[]::numeric[];
 
     FOR q IN SELECT query_text FROM benchmark_queries WHERE token_bucket = bucket ORDER BY query_id LOOP
         start_ts := clock_timestamp();
-        EXECUTE 'SELECT passage_id FROM msmarco_passages
+        EXECUTE 'SELECT COUNT(*) FROM (SELECT passage_id FROM msmarco_passages
                  ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
-                 LIMIT 10' USING q.query_text;
+                 LIMIT 10) t' INTO result_count USING q.query_text;
         end_ts := clock_timestamp();
         times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+        results_sum := results_sum + result_count;
     END LOOP;
 
     n := array_length(times, 1);
@@ -75,48 +78,49 @@ BEGIN
     p99_ms := sorted_times[(n * 99 + 99) / 100];
     avg_ms := (SELECT AVG(t) FROM unnest(times) t);
     num_queries := n;
+    total_results := results_sum;
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
 
 -- Run benchmarks for each token bucket
 \echo 'Token bucket 1 (1 search token):'
-SELECT 'LATENCY_BUCKET_1: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_1: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(1);
 
 \echo ''
 \echo 'Token bucket 2 (2 search tokens):'
-SELECT 'LATENCY_BUCKET_2: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_2: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(2);
 
 \echo ''
 \echo 'Token bucket 3 (3 search tokens):'
-SELECT 'LATENCY_BUCKET_3: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_3: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(3);
 
 \echo ''
 \echo 'Token bucket 4 (4 search tokens):'
-SELECT 'LATENCY_BUCKET_4: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_4: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(4);
 
 \echo ''
 \echo 'Token bucket 5 (5 search tokens):'
-SELECT 'LATENCY_BUCKET_5: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_5: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(5);
 
 \echo ''
 \echo 'Token bucket 6 (6 search tokens):'
-SELECT 'LATENCY_BUCKET_6: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_6: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(6);
 
 \echo ''
 \echo 'Token bucket 7 (7 search tokens):'
-SELECT 'LATENCY_BUCKET_7: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_7: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(7);
 
 \echo ''
 \echo 'Token bucket 8 (8+ search tokens):'
-SELECT 'LATENCY_BUCKET_8: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ')' as result
+SELECT 'LATENCY_BUCKET_8: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM benchmark_bucket(8);
 
 DROP FUNCTION benchmark_bucket;
