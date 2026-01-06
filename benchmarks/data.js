@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767667589622,
+  "lastUpdate": 1767667591584,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1182,6 +1182,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 18206.761,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.75,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "8828e633e464ddd754f6afe188862ded05d706ff",
+          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-01-06T02:24:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8828e633e464ddd754f6afe188862ded05d706ff"
+        },
+        "date": 1767667590975,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18996.624,
             "unit": "ms"
           },
           {
