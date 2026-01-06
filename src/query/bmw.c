@@ -448,6 +448,12 @@ tp_score_single_term_bmw(
 /*
  * Maximum number of terms for BMW multi-term path.
  * Beyond this, fall back to exhaustive scoring.
+ *
+ * 8 terms balances BMW overhead vs exhaustive cost:
+ * - Each term requires block_max precomputation and per-block iteration
+ * - Hash table accumulation adds overhead per document
+ * - Typical queries have 2-4 terms; 8 covers most real-world cases
+ * - Beyond 8, exhaustive scoring with simpler iteration wins
  */
 #define BMW_MAX_TERMS 8
 
@@ -477,7 +483,11 @@ typedef struct TpDocAccum
 	uint8  fieldnorm; /* For doc length lookup */
 } TpDocAccum;
 
-#define DOC_ACCUM_HASH_SIZE 256 /* Power of 2 >= 128 * 2 */
+/*
+ * Hash table size for block document accumulation.
+ * 256 = 2x block size (128) for good hash distribution with open addressing.
+ */
+#define DOC_ACCUM_HASH_SIZE 256
 
 /*
  * Score memtable postings for multiple terms.
