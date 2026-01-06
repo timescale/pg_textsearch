@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767680964552,
+  "lastUpdate": 1767731839162,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1108,6 +1108,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "c3c4fe35ea13da8feb79a71ae846b18059e89f77",
+          "message": "Fix wand test: use to_bm25query for explicit index binding\n\nBare bm25query casts don't work reliably when BMW is disabled.",
+          "timestamp": "2026-01-06T19:12:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3c4fe35ea13da8feb79a71ae846b18059e89f77"
+        },
+        "date": 1767731838545,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 249.368,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.3,
             "unit": "ms"
           },
           {
