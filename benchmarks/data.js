@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767680959706,
+  "lastUpdate": 1767680961809,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -794,6 +794,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
             "value": 53.12,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9aea7f2a200fda30b653e4dd6d4f25d03f52c937",
+          "message": "Add competitive benchmarks (#106)\n\n## Summary\n\n- Add System X benchmark job to run in parallel with pg_textsearch\nbenchmarks\n- Add `dry_run` option to skip publishing to GitHub Pages (for testing)\n- Set parallel workers dynamically based on CPU count for fair\ncomparison\n- Improve throughput benchmark methodology (warmup, multiple iterations,\nconsistent SQL)\n\n## Changes\n\n### Workflow\n- `dry_run` input parameter to test without publishing\n\n### Benchmark methodology\n- Throughput tests now include warmup pass\n- 10 iterations with median reporting (matching individual query tests)\n- Use `EXECUTE` instead of `PERFORM` for consistency\n- Fixes #95 by using subset of real MS-MARCO dev queries",
+          "timestamp": "2026-01-06T00:49:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9aea7f2a200fda30b653e4dd6d4f25d03f52c937"
+        },
+        "date": 1767680961127,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 523119.843,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 4.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 28.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 40.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 50.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 85.96,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 109.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 162.01,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 277.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 132.2,
             "unit": "ms"
           },
           {
