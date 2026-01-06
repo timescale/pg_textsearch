@@ -49,7 +49,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic bmw deletion vacuum dropped empty implicit index inheritance limits lock manyterms memory merge mixed partitioned queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 segment strings unsupported updates vector unlogged_index
+REGRESS = aerodocs basic bmw deletion vacuum dropped empty implicit index inheritance limits lock manyterms memory merge mixed partitioned queries schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 segment strings unsupported updates vector unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
