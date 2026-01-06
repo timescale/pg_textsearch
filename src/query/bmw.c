@@ -446,18 +446,6 @@ tp_score_single_term_bmw(
  */
 
 /*
- * Maximum number of terms for BMW multi-term path.
- * Beyond this, fall back to exhaustive scoring.
- *
- * 8 terms balances BMW overhead vs exhaustive cost:
- * - Each term requires block_max precomputation and per-block iteration
- * - Hash table accumulation adds overhead per document
- * - Typical queries have 2-4 terms; 8 covers most real-world cases
- * - Beyond 8, exhaustive scoring with simpler iteration wins
- */
-#define BMW_MAX_TERMS 8
-
-/*
  * Per-term state for multi-term BMW scoring.
  */
 typedef struct TpTermState
@@ -826,10 +814,6 @@ tp_score_multi_term_bmw(
 	/* Initialize stats */
 	if (stats)
 		memset(stats, 0, sizeof(TpBMWStats));
-
-	/* Limit term count for BMW path */
-	if (term_count > BMW_MAX_TERMS)
-		return -1; /* Signal caller to use exhaustive path */
 
 	/* Initialize top-k heap */
 	tp_topk_init(&heap, max_results, CurrentMemoryContext);
