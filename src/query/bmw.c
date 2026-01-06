@@ -37,6 +37,23 @@ tp_topk_init(TpTopKHeap *heap, int k, MemoryContext ctx)
 	MemoryContextSwitchTo(old_ctx);
 }
 
+void
+tp_topk_free(TpTopKHeap *heap)
+{
+	if (heap->ctids)
+	{
+		pfree(heap->ctids);
+		heap->ctids = NULL;
+	}
+	if (heap->scores)
+	{
+		pfree(heap->scores);
+		heap->scores = NULL;
+	}
+	heap->capacity = 0;
+	heap->size	   = 0;
+}
+
 /*
  * Swap two heap entries.
  */
@@ -641,16 +658,11 @@ score_segment_multi_term_bmw(
 	if (max_blocks == 0)
 		goto cleanup;
 
-	/* Create hash table for document score accumulation within blocks */
+	/* Set up hash control for per-block accumulator */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize   = sizeof(uint32); /* doc_id */
 	hash_ctl.entrysize = sizeof(TpDocAccum);
 	hash_ctl.hcxt	   = CurrentMemoryContext;
-	doc_accum		   = hash_create(
-			 "Block Doc Accum",
-			 DOC_ACCUM_HASH_SIZE,
-			 &hash_ctl,
-			 HASH_ELEM | HASH_BLOBS);
 
 	/* Process blocks with BMW */
 	for (block_idx = 0; block_idx < max_blocks; block_idx++)
@@ -681,14 +693,12 @@ score_segment_multi_term_bmw(
 		if (stats)
 			stats->blocks_scanned++;
 
-		/* Clear accumulator for this block */
-		{
-			HASH_SEQ_STATUS seq;
-			TpDocAccum	   *entry;
-			hash_seq_init(&seq, doc_accum);
-			while ((entry = hash_seq_search(&seq)) != NULL)
-				hash_search(doc_accum, &entry->doc_id, HASH_REMOVE, NULL);
-		}
+		/* Create fresh hash table for this block's document accumulation */
+		doc_accum = hash_create(
+				"Block Doc Accum",
+				DOC_ACCUM_HASH_SIZE,
+				&hash_ctl,
+				HASH_ELEM | HASH_BLOBS);
 
 		/* Load and accumulate postings from all terms for this block */
 		for (term_idx = 0; term_idx < term_count; term_idx++)
@@ -769,9 +779,9 @@ score_segment_multi_term_bmw(
 					stats->segment_docs_scored++;
 			}
 		}
-	}
 
-	hash_destroy(doc_accum);
+		hash_destroy(doc_accum);
+	}
 
 cleanup:
 	/* Free iterators and block_max_scores */

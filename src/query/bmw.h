@@ -39,6 +39,11 @@ typedef struct TpTopKHeap
 extern void tp_topk_init(TpTopKHeap *heap, int k, MemoryContext ctx);
 
 /*
+ * Free a top-k heap's allocated memory.
+ */
+extern void tp_topk_free(TpTopKHeap *heap);
+
+/*
  * Get current threshold (minimum score to enter top-k).
  * Returns 0 if heap not yet full.
  */
