@@ -666,6 +666,286 @@ WHERE content <@> 'targetword'::bm25query < 0;
 DROP TABLE bmw_multiseg;
 
 -- ============================================================
+-- SECTION 18: Partial last block
+-- ============================================================
+-- Test with 150 docs = 1 full block (128) + 1 partial block (22)
+-- This tests off-by-one errors in block iteration
+
+CREATE TABLE bmw_partial (id SERIAL PRIMARY KEY, content TEXT);
+
+-- 150 docs with varying tf to create score diversity
+INSERT INTO bmw_partial (content)
+SELECT
+    CASE
+        WHEN i <= 5 THEN 'partial partial partial partial'  -- tf=4, in block 0
+        WHEN i = 130 THEN 'partial partial partial'         -- tf=3, in partial block 1
+        WHEN i = 145 THEN 'partial partial partial partial partial'  -- tf=5, in partial block 1
+        ELSE 'partial filler doc' || i
+    END
+FROM generate_series(1, 150) i;
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_partial_idx ON bmw_partial USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: Should find high-tf docs from BOTH blocks
+-- Doc 145 (tf=5) should be #1, docs 1-5 (tf=4) should follow
+WITH bmw AS (
+    SELECT id, content <@> 'partial'::bm25query as score
+    FROM bmw_partial WHERE content <@> 'partial'::bm25query < 0
+    ORDER BY content <@> 'partial'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'partial'::bm25query as score
+        FROM bmw_partial WHERE content <@> 'partial'::bm25query < 0
+        ORDER BY content <@> 'partial'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'partial-block' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+-- Verify doc 145 is top result (highest tf in partial block)
+SELECT 'partial-block-top' as test,
+    CASE WHEN (SELECT id FROM bmw_partial
+               WHERE content <@> to_bm25query('partial', 'bmw_partial_idx') < 0
+               ORDER BY content <@> to_bm25query('partial', 'bmw_partial_idx') LIMIT 1) = 145
+         THEN 'PASS' ELSE 'FAIL' END as result;
+
+DROP TABLE bmw_partial;
+
+-- ============================================================
+-- SECTION 19: Term only in memtable (not in segments)
+-- ============================================================
+-- Tests the case where segment iterators return "not found"
+-- but memtable has data for the term
+
+CREATE TABLE bmw_memonly (id SERIAL PRIMARY KEY, content TEXT);
+
+SET pg_textsearch.index_memory_limit = '64kB';
+
+-- Insert docs that will go to segment (common term)
+INSERT INTO bmw_memonly (content)
+SELECT 'segment content common word doc' || i
+FROM generate_series(1, 200) i;
+
+CREATE INDEX bmw_memonly_idx ON bmw_memonly USING bm25(content)
+    WITH (text_config='english');
+
+-- Force spill
+SELECT bm25_spill_index('bmw_memonly_idx');
+
+-- Now insert docs with a NEW term that only exists in memtable
+INSERT INTO bmw_memonly (content) VALUES
+    ('uniquememterm uniquememterm uniquememterm'),  -- tf=3
+    ('uniquememterm uniquememterm'),                -- tf=2
+    ('uniquememterm');                              -- tf=1
+
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: Query for memtable-only term should work
+SELECT id, content <@> 'uniquememterm'::bm25query as score
+FROM bmw_memonly
+WHERE content <@> 'uniquememterm'::bm25query < 0
+ORDER BY content <@> 'uniquememterm'::bm25query LIMIT 5;
+
+-- Verify: Should return exactly 3 docs, in tf order (201, 202, 203)
+SELECT 'memtable-only-term' as test,
+    CASE WHEN (SELECT COUNT(*) FROM bmw_memonly
+               WHERE content <@> to_bm25query('uniquememterm', 'bmw_memonly_idx') < 0) = 3
+         THEN 'PASS' ELSE 'FAIL' END as result;
+
+-- Test: Multi-term with one term in segment, one in memtable only
+SELECT id, content <@> 'common uniquememterm'::bm25query as score
+FROM bmw_memonly
+WHERE content <@> 'common uniquememterm'::bm25query < 0
+ORDER BY content <@> 'common uniquememterm'::bm25query LIMIT 5;
+
+DROP TABLE bmw_memonly;
+
+-- ============================================================
+-- SECTION 20: Sparse posting lists (few postings per block)
+-- ============================================================
+-- When a term has very few postings spread across many doc IDs,
+-- each "block" may have only 1-2 postings. This tests block-max
+-- effectiveness when block_max ≈ actual score.
+
+CREATE TABLE bmw_sparse (id SERIAL PRIMARY KEY, content TEXT);
+
+-- Create 500 docs where only every 50th doc has the target term
+-- This creates ~10 postings spread across what would be 4 blocks
+INSERT INTO bmw_sparse (content)
+SELECT
+    CASE
+        WHEN i % 50 = 0 THEN 'sparse rare term here doc' || i
+        ELSE 'common filler words only doc' || i
+    END
+FROM generate_series(1, 500) i;
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_sparse_idx ON bmw_sparse USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: Should find all 10 sparse docs
+SELECT 'sparse-count' as test,
+    CASE WHEN (SELECT COUNT(*) FROM bmw_sparse
+               WHERE content <@> to_bm25query('sparse', 'bmw_sparse_idx') < 0) = 10
+         THEN 'PASS' ELSE 'FAIL' END as result;
+
+-- Test: BMW should match exhaustive for sparse terms
+WITH bmw AS (
+    SELECT id, content <@> 'sparse'::bm25query as score
+    FROM bmw_sparse WHERE content <@> 'sparse'::bm25query < 0
+    ORDER BY content <@> 'sparse'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'sparse'::bm25query as score
+        FROM bmw_sparse WHERE content <@> 'sparse'::bm25query < 0
+        ORDER BY content <@> 'sparse'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'sparse-equals-exhaustive' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+DROP TABLE bmw_sparse;
+
+-- ============================================================
+-- SECTION 21: Multi-term with different block structures
+-- ============================================================
+-- Term A has many postings (many blocks), term B has few (1 block)
+-- Tests WAND traversal when iterators have very different lengths
+
+CREATE TABLE bmw_asymmetric (id SERIAL PRIMARY KEY, content TEXT);
+
+-- 500 docs: "common" in all, "rare" in only 5 specific docs
+INSERT INTO bmw_asymmetric (content)
+SELECT
+    CASE
+        WHEN i IN (50, 150, 250, 350, 450) THEN 'common rare both terms doc' || i
+        ELSE 'common only single term doc' || i
+    END
+FROM generate_series(1, 500) i;
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_asymmetric_idx ON bmw_asymmetric USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: "common rare" should find only the 5 docs with both terms at top
+-- (they have higher combined score than single-term docs)
+WITH bmw AS (
+    SELECT id, content <@> 'common rare'::bm25query as score
+    FROM bmw_asymmetric WHERE content <@> 'common rare'::bm25query < 0
+    ORDER BY content <@> 'common rare'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'common rare'::bm25query as score
+        FROM bmw_asymmetric WHERE content <@> 'common rare'::bm25query < 0
+        ORDER BY content <@> 'common rare'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'asymmetric-multiterm' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+-- Verify top 5 are the dual-term docs (they should have best scores)
+WITH top5 AS (
+    SELECT id FROM bmw_asymmetric
+    WHERE content <@> 'common rare'::bm25query < 0
+    ORDER BY content <@> 'common rare'::bm25query LIMIT 5
+)
+SELECT 'asymmetric-top5' as test,
+    CASE WHEN (SELECT COUNT(*) FROM top5
+               WHERE id IN (50, 150, 250, 350, 450)) = 5
+         THEN 'PASS' ELSE 'FAIL' END as result;
+
+DROP TABLE bmw_asymmetric;
+
+-- ============================================================
+-- SECTION 22: Threshold exactly equals block_max
+-- ============================================================
+-- Create scenario where block_max score equals the threshold exactly
+-- Tests boundary condition in score < threshold vs score <= threshold
+
+CREATE TABLE bmw_threshold (id SERIAL PRIMARY KEY, content TEXT);
+
+-- Create docs with IDENTICAL scores to force threshold edge case
+-- All docs have tf=1 and same length -> identical BM25 scores
+INSERT INTO bmw_threshold (content)
+SELECT 'threshold test word' FROM generate_series(1, 200);
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_threshold_idx ON bmw_threshold USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: With 200 identical-score docs, LIMIT 10 should return 10
+-- and they should be ordered by CTID (id 1-10)
+SELECT 'threshold-boundary' as test,
+    CASE WHEN (SELECT COUNT(*) FROM (
+        SELECT id FROM bmw_threshold
+        WHERE content <@> to_bm25query('threshold', 'bmw_threshold_idx') < 0
+        ORDER BY content <@> to_bm25query('threshold', 'bmw_threshold_idx') LIMIT 10
+    ) x) = 10
+    THEN 'PASS' ELSE 'FAIL' END as result;
+
+-- Verify CTID ordering for tied scores (should be ids 1-10)
+SELECT 'threshold-tiebreak' as test,
+    CASE WHEN (SELECT array_agg(id ORDER BY id) FROM (
+        SELECT id FROM bmw_threshold
+        WHERE content <@> to_bm25query('threshold', 'bmw_threshold_idx') < 0
+        ORDER BY content <@> to_bm25query('threshold', 'bmw_threshold_idx') LIMIT 10
+    ) x) = ARRAY[1,2,3,4,5,6,7,8,9,10]
+    THEN 'PASS' ELSE 'FAIL' END as result;
+
+DROP TABLE bmw_threshold;
+
+-- ============================================================
+-- SECTION 23: All iterators exhaust simultaneously
+-- ============================================================
+-- Create a scenario where multiple term iterators all finish
+-- at exactly the same document
+
+CREATE TABLE bmw_simul (id SERIAL PRIMARY KEY, content TEXT);
+
+-- 100 docs where all have both terms - iterators move in lockstep
+INSERT INTO bmw_simul (content)
+SELECT 'alpha beta both terms doc' || i FROM generate_series(1, 100) i;
+
+-- Add one doc with only alpha at end
+INSERT INTO bmw_simul (content) VALUES ('alpha only final');
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_simul_idx ON bmw_simul USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Test: Should handle simultaneous exhaustion correctly
+WITH bmw AS (
+    SELECT id, content <@> 'alpha beta'::bm25query as score
+    FROM bmw_simul WHERE content <@> 'alpha beta'::bm25query < 0
+    ORDER BY content <@> 'alpha beta'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'alpha beta'::bm25query as score
+        FROM bmw_simul WHERE content <@> 'alpha beta'::bm25query < 0
+        ORDER BY content <@> 'alpha beta'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'simultaneous-exhaust' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+DROP TABLE bmw_simul;
+
+-- ============================================================
 -- Cleanup
 -- ============================================================
 DROP EXTENSION pg_textsearch CASCADE;
