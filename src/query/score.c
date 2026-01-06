@@ -22,6 +22,10 @@
 #include "state/metapage.h"
 #include "state/state.h"
 
+/* GUC variables from mod.c */
+extern bool tp_log_bmw_stats;
+extern bool tp_enable_bmw;
+
 /*
  * Centralized IDF calculation (basic version)
  * Calculates IDF using BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
@@ -461,13 +465,14 @@ tp_score_documents(
 	 * BMW fast path for single-term queries.
 	 * Uses Block-Max WAND to skip blocks that can't contribute to top-k.
 	 */
-	if (query_term_count == 1)
+	if (tp_enable_bmw && query_term_count == 1)
 	{
 		const char *term = query_terms[0];
 		uint32		doc_freq;
 		float4		idf;
 		float4	   *scores;
 		int			result_count;
+		TpBMWStats	stats;
 
 		/* Get unified doc_freq across memtable and segments */
 		doc_freq = tp_get_unified_doc_freq(
@@ -493,7 +498,26 @@ tp_score_documents(
 				max_results,
 				result_ctids,
 				scores,
-				NULL);
+				&stats);
+
+		/* Log BMW stats if enabled */
+		if (tp_log_bmw_stats)
+		{
+			elog(LOG,
+				 "BMW stats: memtable=%lu docs, segments=%lu docs "
+				 "(blocks: %lu scanned, %lu skipped, %.1f%% skip), "
+				 "results=%lu",
+				 (unsigned long)stats.memtable_docs,
+				 (unsigned long)stats.segment_docs_scored,
+				 (unsigned long)stats.blocks_scanned,
+				 (unsigned long)stats.blocks_skipped,
+				 (stats.blocks_scanned + stats.blocks_skipped) > 0
+						 ? 100.0 * stats.blocks_skipped /
+								   (stats.blocks_scanned +
+									stats.blocks_skipped)
+						 : 0.0,
+				 (unsigned long)stats.docs_in_results);
+		}
 
 		*result_scores = scores;
 		return result_count;
@@ -503,13 +527,14 @@ tp_score_documents(
 	 * BMW fast path for multi-term queries (2-8 terms).
 	 * Uses block-level upper bounds to skip non-contributing blocks.
 	 */
-	if (query_term_count <= 8)
+	if (tp_enable_bmw && query_term_count <= 8)
 	{
-		uint32 *doc_freqs;
-		float4 *idfs;
-		float4 *scores;
-		int		result_count;
-		int		i;
+		uint32	  *doc_freqs;
+		float4	  *idfs;
+		float4	  *scores;
+		int		   result_count;
+		int		   i;
+		TpBMWStats stats;
 
 		/* Batch lookup doc_freqs for all terms (opens each segment once) */
 		doc_freqs = palloc(query_term_count * sizeof(uint32));
@@ -548,13 +573,32 @@ tp_score_documents(
 				max_results,
 				result_ctids,
 				scores,
-				NULL);
+				&stats);
 
 		pfree(idfs);
 
 		/* If BMW returns -1, fall through to exhaustive path */
 		if (result_count >= 0)
 		{
+			/* Log BMW stats if enabled */
+			if (tp_log_bmw_stats)
+			{
+				elog(LOG,
+					 "BMW stats: memtable=%lu docs, segments=%lu docs "
+					 "(blocks: %lu scanned, %lu skipped, %.1f%% skip), "
+					 "results=%lu",
+					 (unsigned long)stats.memtable_docs,
+					 (unsigned long)stats.segment_docs_scored,
+					 (unsigned long)stats.blocks_scanned,
+					 (unsigned long)stats.blocks_skipped,
+					 (stats.blocks_scanned + stats.blocks_skipped) > 0
+							 ? 100.0 * stats.blocks_skipped /
+									   (stats.blocks_scanned +
+										stats.blocks_skipped)
+							 : 0.0,
+					 (unsigned long)stats.docs_in_results);
+			}
+
 			*result_scores = scores;
 			return result_count;
 		}

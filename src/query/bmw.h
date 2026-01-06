@@ -79,10 +79,11 @@ tp_topk_extract(TpTopKHeap *heap, ItemPointerData *ctids, float4 *scores);
  */
 typedef struct TpBMWStats
 {
-	uint64 blocks_scanned;	/* Blocks actually scored */
-	uint64 blocks_skipped;	/* Blocks skipped by BMW */
-	uint64 docs_scored;		/* Documents scored */
-	uint64 docs_in_results; /* Documents in final results */
+	uint64 blocks_scanned; /* Segment blocks actually scored */
+	uint64 blocks_skipped; /* Segment blocks skipped by BMW */
+	uint64 memtable_docs;  /* Documents scored from memtable (exhaustive) */
+	uint64 segment_docs_scored; /* Documents scored from segments */
+	uint64 docs_in_results;		/* Documents in final results */
 } TpBMWStats;
 
 /*

@@ -42,6 +42,12 @@ extern int tp_default_limit;
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
+/* Global variable for BMW stats logging - declared in query/score.c */
+bool tp_log_bmw_stats = false;
+
+/* Global variable to enable/disable BMW optimization - declared in score.c */
+bool tp_enable_bmw = true;
+
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
@@ -110,6 +116,32 @@ _PG_init(void)
 			"during index scans. Useful for debugging score calculation.",
 			&tp_log_scores,
 			false,		 /* default off */
+			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.log_bmw_stats",
+			"Log Block-Max WAND statistics during queries",
+			"When enabled, logs blocks scanned/skipped and documents scored "
+			"for each query. Useful for understanding BMW optimization.",
+			&tp_log_bmw_stats,
+			false,		 /* default off */
+			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.enable_bmw",
+			"Enable Block-Max WAND query optimization",
+			"When enabled, uses block-level upper bounds to skip "
+			"non-contributing blocks. Disable for benchmark comparison.",
+			&tp_enable_bmw,
+			true,		 /* default on */
 			PGC_USERSET, /* Can be changed per session */
 			0,
 			NULL,

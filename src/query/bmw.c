@@ -276,7 +276,7 @@ score_memtable_single_term(
 			tp_topk_add(heap, *ctid, score);
 
 		if (stats)
-			stats->docs_scored++;
+			stats->memtable_docs++;
 	}
 
 	tp_source_free_postings(source, postings);
@@ -368,7 +368,7 @@ score_segment_single_term_bmw(
 			}
 
 			if (stats)
-				stats->docs_scored++;
+				stats->segment_docs_scored++;
 		}
 	}
 
@@ -578,7 +578,7 @@ score_memtable_multi_term(
 				tp_topk_add(heap, entry->ctid, entry->score);
 
 			if (stats)
-				stats->docs_scored++;
+				stats->memtable_docs++;
 		}
 	}
 
@@ -587,7 +587,7 @@ score_memtable_multi_term(
 }
 
 /*
- * Score segment postings for multiple terms using BMW.
+ * Score segment postings for multiple terms using block-based BMW.
  * Skips blocks where sum of block_max_scores < threshold.
  */
 static void
@@ -768,7 +768,7 @@ score_segment_multi_term_bmw(
 					tp_topk_add(heap, ctid, accum->score);
 
 				if (stats)
-					stats->docs_scored++;
+					stats->segment_docs_scored++;
 			}
 		}
 	}
@@ -843,7 +843,7 @@ tp_score_multi_term_bmw(
 		level_heads[level] = metap->level_heads[level];
 	pfree(metap);
 
-	/* Score each segment with multi-term BMW */
+	/* Score each segment with block-based BMW */
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		BlockNumber seg_head = level_heads[level];
