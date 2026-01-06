@@ -389,8 +389,8 @@ DROP TABLE bmw_hybrid;
 -- ============================================================
 -- SECTION 10: Validate BMW equals exhaustive (LARGE SCALE)
 -- ============================================================
--- CRITICAL: Must use >128 docs per block to test block skipping!
--- Previous version used only 100 docs - less than 1 block.
+-- CRITICAL: Must use >128 docs to test block skipping!
+-- Block size is 128 docs, so we need multiple blocks for skip testing.
 CREATE TABLE bmw_validate (id SERIAL PRIMARY KEY, content TEXT);
 -- Create 1000 diverse documents - spans ~8 blocks
 -- Varying term frequencies to create score diversity
