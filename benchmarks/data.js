@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767657845515,
+  "lastUpdate": 1767659049900,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -399,6 +399,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Index Size",
+            "value": 27.07,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@tigerdata.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@tigerdata.com"
+          },
+          "id": "bf3d3f505226d6cd33101541473f608e9ff46537",
+          "message": "Add result count validation to benchmark queries\n\nBoth pg_textsearch and System X benchmarks now report total_results\nto verify that queries are actually returning data, not just executing.\n\nThis helps validate that the benchmark methodology is sound.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-06T00:19:21Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/bf3d3f505226d6cd33101541473f608e9ff46537"
+        },
+        "date": 1767659049139,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (99.9K docs) - Index Build Time",
+            "value": 5679.626,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.12,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.49,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
+            "value": 1.29,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
+            "value": 1.42,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.69,
             "unit": "ms"
           },
           {
