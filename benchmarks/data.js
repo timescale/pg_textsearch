@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767731840489,
+  "lastUpdate": 1767731842435,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1474,6 +1474,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 18689.723,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.75,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "c3c4fe35ea13da8feb79a71ae846b18059e89f77",
+          "message": "Fix wand test: use to_bm25query for explicit index binding\n\nBare bm25query casts don't work reliably when BMW is disabled.",
+          "timestamp": "2026-01-06T19:12:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3c4fe35ea13da8feb79a71ae846b18059e89f77"
+        },
+        "date": 1767731842163,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18522.035,
             "unit": "ms"
           },
           {
