@@ -46,8 +46,6 @@ SELECT bm25_spill_index('bmw_bug_idx');
 --   block 1: finds doc 201 in alpha only -> partial score
 -- Neither score is the correct combined score!
 
-SELECT bm25_summarize_index('bmw_bug_idx');
-
 -- Get ground truth with exhaustive scoring
 SET pg_textsearch.enable_bmw = off;
 CREATE TEMP TABLE exhaustive_results AS
