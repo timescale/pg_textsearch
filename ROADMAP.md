@@ -23,14 +23,26 @@ Block storage foundation for query optimizations.
 - **Unlimited indexes**: dshash registry removes fixed limit on concurrent indexes
 - **Benchmark suite**: MS MARCO and Wikipedia benchmarks with public dashboard
 
-## Future
+## In Progress
 
 ### v0.3.0 - Query Optimizations
 
 Query-time performance improvements building on block storage.
 
-- **Block-Max WAND/MAXSCORE**: Early termination for top-k queries
-- **Threshold-based block skipping**: Skip blocks that can't contribute to top-k
+**Completed:**
+- **Block-Max WAND (BMW) initial implementation**: Single-term and multi-term paths
+- **Threshold-based block skipping**: Skip blocks where max score < threshold
+- **Block max score precomputation**: Per-term block upper bounds for pruning
+- **GUC variables**: `pg_textsearch.enable_bmw` and `log_bmw_stats` for debugging
+- **Benchmark results**: 1.3-1.8x faster than System X on 1-4 term queries
+
+**Remaining:**
+- **Doc-ID ordered traversal**: Current multi-term BMW iterates by block index,
+  not doc ID. This prevents efficient skipping for long queries (8+ terms) where
+  different terms have non-overlapping doc ID ranges. Need WAND-style cursor-based
+  traversal that seeks by doc ID using skip entry `last_doc_id` fields.
+
+## Future
 
 ### v0.4.0 - Compression
 

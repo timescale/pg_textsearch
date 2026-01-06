@@ -729,11 +729,30 @@ carrying compatibility code for formats that may never see production use.
 - [ ] Query-time block-aware seek operation
 
 ### v0.3.0: Block-Based Query Executor
-- [ ] Block max score computation at query time
-- [ ] Query executor (WAND or MAXSCORE based on benchmarks)
-- [ ] Single-term optimization path
-- [ ] Threshold-based block skipping
-- [ ] Benchmarks comparing old vs new query path
+- [x] Block max score computation at query time
+- [x] Query executor (initial BMW implementation)
+- [x] Single-term optimization path
+- [x] Threshold-based block skipping
+- [x] Benchmarks comparing old vs new query path
+- [x] GUC variables for BMW enable/disable and stats logging
+- [ ] **Doc-ID ordered traversal** (see note below)
+
+**Note on current BMW limitation**: The multi-term BMW implementation iterates
+by block index (0, 1, 2, ...) rather than by doc ID. This assumes blocks across
+different terms are aligned, which they are not—each term's posting list has its
+own doc ID ranges. For short queries (1-4 terms), this works well because block
+skipping still provides significant wins. For long queries (8+ terms), the lack
+of doc-ID-based seeking prevents efficient skipping when terms have non-overlapping
+doc ID ranges.
+
+The fix requires WAND-style cursor-based traversal:
+1. Track each term's current doc ID position
+2. Find minimum doc ID across all cursors
+3. Use `last_doc_id` in skip entries to binary search/seek to target blocks
+4. Only load blocks that could contain the target doc ID
+
+This is the standard BMW algorithm described in Phase 2 above; the current
+implementation is a simplified approximation that works for common cases.
 
 ### v0.4.0: Compression
 - [ ] Delta encoding for doc IDs
