@@ -49,17 +49,17 @@ SELECT bm25_spill_index('bmw_bug_idx');
 -- Get ground truth with exhaustive scoring
 SET pg_textsearch.enable_bmw = off;
 CREATE TEMP TABLE exhaustive_results AS
-SELECT id, content <@> 'alpha beta'::bm25query as score
+SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
 FROM bmw_bug
-WHERE content <@> 'alpha beta'::bm25query < 0
+WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
 ORDER BY score LIMIT 10;
 
 -- Get BMW results
 SET pg_textsearch.enable_bmw = on;
 CREATE TEMP TABLE bmw_results AS
-SELECT id, content <@> 'alpha beta'::bm25query as score
+SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
 FROM bmw_bug
-WHERE content <@> 'alpha beta'::bm25query < 0
+WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
 ORDER BY score LIMIT 10;
 
 -- Show both result sets
@@ -90,7 +90,7 @@ SELECT 'results-match' as test,
 -- Show what score doc 201 SHOULD have
 SET pg_textsearch.enable_bmw = off;
 SELECT 'correct-score-for-201' as info,
-    content <@> 'alpha beta'::bm25query as expected_score
+    content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as expected_score
 FROM bmw_bug WHERE id = 201;
 
 DROP TABLE exhaustive_results, bmw_results;
