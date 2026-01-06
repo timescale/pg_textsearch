@@ -737,22 +737,48 @@ carrying compatibility code for formats that may never see production use.
 - [x] GUC variables for BMW enable/disable and stats logging
 - [ ] **Doc-ID ordered traversal** (see note below)
 
-**Note on current BMW limitation**: The multi-term BMW implementation iterates
-by block index (0, 1, 2, ...) rather than by doc ID. This assumes blocks across
-different terms are aligned, which they are not—each term's posting list has its
-own doc ID ranges. For short queries (1-4 terms), this works well because block
-skipping still provides significant wins. For long queries (8+ terms), the lack
-of doc-ID-based seeking prevents efficient skipping when terms have non-overlapping
-doc ID ranges.
+**Note on current BMW limitations**:
 
-The fix requires WAND-style cursor-based traversal:
-1. Track each term's current doc ID position
-2. Find minimum doc ID across all cursors
-3. Use `last_doc_id` in skip entries to binary search/seek to target blocks
-4. Only load blocks that could contain the target doc ID
+The v0.3.0 BMW implementation has two related limitations:
+
+1. **Block-index iteration instead of doc-ID iteration**: The multi-term BMW
+   iterates by block index (0, 1, 2, ...) rather than by doc ID. This assumes
+   blocks across different terms are aligned, which they are not—each term's
+   posting list has its own doc ID ranges. For short queries (1-4 terms), this
+   works because block skipping still helps. For long queries (8+ terms), terms
+   often have non-overlapping doc ID ranges, making block-index iteration
+   ineffective.
+
+2. **Single-block skipping only**: Even for single-term queries, we iterate
+   through blocks sequentially and skip one block at a time:
+   ```c
+   for (block_idx = 0; block_idx < block_count; block_idx++) {
+       if (block_max_scores[block_idx] < threshold)
+           continue;  // Skip THIS block, check next
+       // ... score block
+   }
+   ```
+   We never use binary search on `last_doc_id` to jump over multiple blocks.
+   The skip entry infrastructure supports O(log n) seeking, but we only use it
+   for O(n) sequential iteration with single-block skips.
+
+**Where multi-block seeking matters**:
+- **WAND pivot advancement**: When advancing cursors to a pivot doc_id, binary
+  search could skip hundreds of blocks instead of checking each one
+- **Sparse term intersection**: Terms with non-overlapping ranges waste time
+  scanning blocks that can't possibly match
+- **Long posting lists**: A term with 10,000 blocks does 10,000 comparisons
+  instead of ~13 (log2) to find a target doc_id
+
+**The fix** requires WAND-style cursor-based traversal:
+1. Track each term's current doc ID position (not block index)
+2. Find minimum doc ID across all cursors (the "pivot")
+3. Binary search `last_doc_id` in skip entries to seek directly to target blocks
+4. Only load/score blocks that could contain documents at the pivot
 
 This is the standard BMW algorithm described in Phase 2 above; the current
-implementation is a simplified approximation that works for common cases.
+implementation is a simplified approximation that works well for common
+short-query workloads but degrades for long queries.
 
 ### v0.4.0: Compression
 - [ ] Delta encoding for doc IDs
