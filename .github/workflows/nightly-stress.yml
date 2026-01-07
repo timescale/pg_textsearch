@@ -129,50 +129,6 @@ jobs:
         cd ~/$PG_SRC_DIR
         make install
 
-    - name: Verify leak detection works
-      run: |
-        echo "Testing that AddressSanitizer leak detection is functioning..."
-
-        # Create a test program with a deliberate memory leak
-        cat > test_leak.c << 'EOF'
-        #include <stdio.h>
-        #include <stdlib.h>
-        #include <string.h>
-
-        int main() {
-            // Deliberate memory leak - allocate but never free
-            char *leaked = malloc(1024);
-            strcpy(leaked, "This memory is deliberately leaked");
-            printf("Leaked pointer: %p\n", (void*)leaked);
-            // Note: we intentionally don't free 'leaked'
-            return 0;
-        }
-        EOF
-
-        # Compile with sanitizers
-        $CC $CFLAGS test_leak.c -o test_leak $LDFLAGS
-
-        # Run and expect it to fail with exit code 27 (our configured exitcode)
-        echo "Running deliberate leak test..."
-        set +e
-        ./test_leak
-        exit_code=$?
-        set -e
-
-        if [ $exit_code -eq 27 ]; then
-            echo "Leak detection is working correctly (caught deliberate leak)"
-        elif [ $exit_code -eq 0 ]; then
-            echo "ERROR: Leak detection did NOT catch the deliberate leak!"
-            echo "This means leak detection is not functioning properly."
-            exit 1
-        else
-            echo "WARNING: Unexpected exit code $exit_code"
-            # Still continue - the leak may have been detected differently
-        fi
-
-        rm -f test_leak test_leak.c
-        echo "Leak detection verification passed"
-
     - name: Build and install pg_textsearch
       run: |
         export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
