@@ -81,7 +81,9 @@ test-local: install
 clean: clean-test-dirs
 
 clean-test-dirs:
-	@rm -rf tmp_check_shared
+	@rm -rf tmp_check_shared coverage-html coverage.info
+	@find . -name "*.gcda" -delete 2>/dev/null || true
+	@find . -name "*.gcno" -delete 2>/dev/null || true
 
 # Shell script test targets (assume extension is already installed)
 test-concurrency:
@@ -168,6 +170,69 @@ format-single:
 
 format-check: lint-format
 
+# Code coverage targets (Linux only - requires lcov: apt install lcov)
+# Note: macOS is not supported due to gcov runtime crashes with Postgres extensions
+COVERAGE_DIR = coverage-html
+COVERAGE_INFO = coverage.info
+
+coverage-clean:
+	@echo "Cleaning coverage data..."
+	@rm -rf $(COVERAGE_DIR) $(COVERAGE_INFO)
+	@find . -name "*.gcda" -delete
+	@find . -name "*.gcno" -delete
+
+coverage-build: coverage-clean
+ifeq ($(shell uname),Darwin)
+	@echo "Error: Local coverage is not supported on macOS (gcov runtime crashes with Postgres extensions)."
+	@echo "Coverage reports are generated automatically in GitHub Actions CI."
+	@exit 1
+endif
+	@echo "Building with coverage instrumentation..."
+	@if ! command -v lcov >/dev/null 2>&1; then \
+		echo "lcov not found - install with: apt install lcov"; \
+		exit 1; \
+	fi
+	$(MAKE) clean
+	$(MAKE) PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
+	$(MAKE) install
+
+coverage: coverage-build
+	@echo "Running tests and collecting coverage..."
+	@lcov --zerocounters --directory .
+	-$(MAKE) test
+	@echo "Capturing coverage data..."
+	@lcov --capture \
+		--directory . \
+		--output-file $(COVERAGE_INFO) \
+		--base-directory $(shell pwd) \
+		--no-external \
+		--ignore-errors mismatch 2>/dev/null || \
+		lcov --capture \
+			--directory . \
+			--output-file $(COVERAGE_INFO) \
+			--base-directory $(shell pwd) \
+			--no-external
+	@lcov --remove $(COVERAGE_INFO) '*/test/*' \
+		--output-file $(COVERAGE_INFO) \
+		--ignore-errors unused 2>/dev/null || \
+		lcov --remove $(COVERAGE_INFO) '*/test/*' \
+			--output-file $(COVERAGE_INFO)
+	@echo "Generating HTML report..."
+	@genhtml $(COVERAGE_INFO) \
+		--output-directory $(COVERAGE_DIR) \
+		--title "pg_textsearch Coverage" \
+		--legend \
+		--show-details
+	@echo ""
+	@echo "Coverage report generated in $(COVERAGE_DIR)/index.html"
+	@lcov --summary $(COVERAGE_INFO)
+
+coverage-report:
+	@if [ ! -f $(COVERAGE_INFO) ]; then \
+		echo "No coverage data found. Run 'make coverage' first."; \
+		exit 1; \
+	fi
+	@lcov --summary $(COVERAGE_INFO)
 
 # Help target
 .PHONY: help
@@ -197,6 +262,13 @@ help:
 	@echo "  make format-diff  - Show formatting differences"
 	@echo "  make format-single FILE=path/to/file.c - Format specific file"
 	@echo ""
+	@echo "Code coverage targets (Linux only, requires lcov):"
+	@echo "  make coverage       - Build with coverage, run tests, generate HTML report"
+	@echo "  make coverage-build - Build with coverage instrumentation only"
+	@echo "  make coverage-clean - Remove coverage data and reports"
+	@echo "  make coverage-report - Show coverage summary (after running coverage)"
+	@echo "  Note: macOS not supported; coverage runs in GitHub Actions CI"
+	@echo ""
 	@echo "Configuration:"
 	@echo "  PG_CONFIG - Path to pg_config (default: pg_config)"
 	@echo ""
@@ -205,4 +277,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

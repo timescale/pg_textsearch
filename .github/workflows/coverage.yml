@@ -1,0 +1,159 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'sql/**'
+      - 'Makefile'
+      - '.github/workflows/coverage.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'sql/**'
+      - 'Makefile'
+      - '.github/workflows/coverage.yml'
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 17
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Install coverage tools
+      run: |
+        sudo apt-get install -y lcov build-essential bc
+
+    - name: Build extension with coverage instrumentation
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        # Build with coverage flags - disable optimization for accurate line counts
+        make PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
+        sudo env "PATH=$PATH" make install
+
+    - name: Setup test database
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_check_shared
+        mkdir -p tmp_check_shared
+        initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
+        echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
+        echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
+        pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
+        createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
+
+    - name: Zero coverage counters
+      run: |
+        lcov --zerocounters --directory .
+
+    - name: Run SQL regression tests
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make test PGHOST=$PWD/tmp_check_shared PGPORT=55433 || true
+        # Stop and restart Postgres to flush coverage data from backend
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile
+        pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
+
+    - name: Run shell-based tests
+      timeout-minutes: 10
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        # Run concurrency tests
+        (cd test/scripts && ./concurrency.sh) || true
+        # Run segment tests
+        (cd test/scripts && ./segment.sh) || true
+
+    - name: Stop PostgreSQL and flush coverage
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+
+    - name: Capture coverage data
+      run: |
+        # Capture coverage from all .gcda files
+        lcov --capture \
+             --directory . \
+             --output-file coverage.info \
+             --base-directory $PWD \
+             --no-external \
+             --ignore-errors mismatch
+
+        # Remove test files from coverage report (we only care about src/)
+        lcov --remove coverage.info \
+             '*/test/*' \
+             '*/tmp_check_shared/*' \
+             --output-file coverage.info \
+             --ignore-errors unused
+
+        # Show summary
+        lcov --list coverage.info
+
+    - name: Generate HTML report
+      run: |
+        genhtml coverage.info \
+                --output-directory coverage-html \
+                --title "pg_textsearch Coverage" \
+                --legend \
+                --show-details
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.info
+        fail_ci_if_error: false
+        verbose: true
+
+    - name: Upload HTML coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage-html/
+        retention-days: 30
+
+    - name: Upload lcov info file
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-lcov
+        path: coverage.info
+        retention-days: 30
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+        rm -rf tmp_check_shared
+
+    - name: Coverage summary
+      run: |
+        echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Download the HTML report from the artifacts to see detailed line-by-line coverage." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        # Extract and display summary stats
+        if [ -f coverage.info ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
