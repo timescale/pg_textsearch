@@ -587,9 +587,31 @@ test_segment_stress() {
 # Duration: 10% of total time
 # Expected: 20+ create/drop cycles, no resource leaks
 #
+# Checks for:
+# - DSA/shared memory leaks (via reference index DSA size)
+# - File descriptor leaks (via /proc or lsof)
+#
 test_resource_cleanup() {
     local duration=$TEST5_DURATION
     log "Test 5: Resource cleanup stress (${duration} seconds)"
+
+    # Create a reference index to monitor DSA usage
+    run_sql_quiet "CREATE TABLE ref_table (id SERIAL PRIMARY KEY, content TEXT);"
+    run_sql_quiet "INSERT INTO ref_table (content) VALUES ('reference document');"
+    run_sql_quiet "CREATE INDEX ref_idx ON ref_table USING bm25(content) WITH (text_config='english');"
+
+    # Record baseline DSA size
+    local baseline_dsa=$(run_sql_value "
+        SELECT (regexp_matches(bm25_summarize_index('ref_idx'), 'DSA total size: ([0-9]+)'))[1]::bigint;" 2>/dev/null || echo "0")
+    info "Baseline DSA: ${baseline_dsa} bytes"
+
+    # Get postgres backend PID for FD tracking (Linux only)
+    local backend_pid=$(run_sql_value "SELECT pg_backend_pid();")
+    local baseline_fds=0
+    if [ -d "/proc/${backend_pid}/fd" ]; then
+        baseline_fds=$(ls -1 /proc/${backend_pid}/fd 2>/dev/null | wc -l)
+        info "Baseline FDs: ${baseline_fds}"
+    fi
 
     local start_time=$(date +%s)
     local end_time=$((start_time + duration))
@@ -629,6 +651,35 @@ test_resource_cleanup() {
     done
 
     TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + cycle * docs_per_cycle))
+
+    # Check for DSA leaks - reference index DSA should not have grown significantly
+    local final_dsa=$(run_sql_value "
+        SELECT (regexp_matches(bm25_summarize_index('ref_idx'), 'DSA total size: ([0-9]+)'))[1]::bigint;" 2>/dev/null || echo "0")
+    local dsa_growth=0
+    if [ "$baseline_dsa" -gt 0 ] && [ "$final_dsa" -gt 0 ]; then
+        dsa_growth=$(( (final_dsa - baseline_dsa) * 100 / baseline_dsa ))
+    fi
+    info "Final DSA: ${final_dsa} bytes (${dsa_growth}% growth)"
+
+    # Check for FD leaks
+    local final_fds=0
+    if [ -d "/proc/${backend_pid}/fd" ]; then
+        final_fds=$(ls -1 /proc/${backend_pid}/fd 2>/dev/null | wc -l)
+        local fd_growth=$((final_fds - baseline_fds))
+        info "Final FDs: ${final_fds} (${fd_growth} growth)"
+        if [ $fd_growth -gt 10 ]; then
+            warn "Possible FD leak: ${fd_growth} new file descriptors"
+            TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+        fi
+    fi
+
+    # DSA growth > 50% after cleanup would indicate a leak
+    if [ $dsa_growth -gt 50 ]; then
+        warn "Possible DSA leak: ${dsa_growth}% growth in reference index"
+        TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+    fi
+
+    run_sql_quiet "DROP TABLE ref_table CASCADE;"
 
     log "Test 5 PASSED: Completed ${cycle} create/drop cycles"
 }
