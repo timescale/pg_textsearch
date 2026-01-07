@@ -15,11 +15,13 @@ OBJS = \
 	src/source.o \
 	src/am/handler.o \
 	src/am/build.o \
+	src/am/build_parallel.o \
 	src/am/scan.o \
 	src/am/vacuum.o \
 	src/memtable/memtable.o \
 	src/memtable/posting.o \
 	src/memtable/stringtable.o \
+	src/memtable/local_memtable.o \
 	src/memtable/scan.o \
 	src/memtable/source.o \
 	src/segment/segment.o \

@@ -14,6 +14,7 @@
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
+#include <optimizer/optimizer.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
@@ -23,6 +24,7 @@
 #include <utils/snapmgr.h>
 
 #include "am.h"
+#include "build_parallel.h"
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
@@ -738,6 +740,29 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
+
+	/*
+	 * Check if parallel build is possible.
+	 * Use plan_create_index_workers to determine number of workers.
+	 */
+	{
+		int nworkers;
+
+		nworkers = plan_create_index_workers(
+				RelationGetRelid(heap), RelationGetRelid(index));
+
+		if (nworkers > 0)
+		{
+			elog(NOTICE,
+				 "Using parallel index build with %d workers",
+				 nworkers);
+			return tp_build_parallel(
+					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+		}
+	}
+
+	/* Fall through to serial build */
+	elog(DEBUG1, "Using serial index build (no parallel workers available)");
 
 	/*
 	 * Initialize index state in BUILD mode with private DSA.
