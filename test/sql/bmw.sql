@@ -279,7 +279,6 @@ INSERT INTO bmw_hybrid (content) VALUES
 -- The memtable docs with higher tf should rank at top
 SELECT id, content <@> 'searchterm'::bm25query as score
 FROM bmw_hybrid
-WHERE content <@> 'searchterm'::bm25query < 0
 ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
 
 RESET pg_textsearch.index_memory_limit;
@@ -321,13 +320,13 @@ RESET pg_textsearch.index_memory_limit;
 -- Single-term
 WITH bmw AS (
     SELECT id, content <@> 'apple'::bm25query as score
-    FROM bmw_validate WHERE content <@> 'apple'::bm25query < 0
+    FROM bmw_validate
     ORDER BY content <@> 'apple'::bm25query LIMIT 20
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'apple'::bm25query as score
-        FROM bmw_validate WHERE content <@> 'apple'::bm25query < 0
+        FROM bmw_validate
         ORDER BY content <@> 'apple'::bm25query
     ) x LIMIT 20
 )
@@ -338,13 +337,13 @@ FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
 -- Multi-term
 WITH bmw AS (
     SELECT id, content <@> 'apple banana'::bm25query as score
-    FROM bmw_validate WHERE content <@> 'apple banana'::bm25query < 0
+    FROM bmw_validate
     ORDER BY content <@> 'apple banana'::bm25query LIMIT 20
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'apple banana'::bm25query as score
-        FROM bmw_validate WHERE content <@> 'apple banana'::bm25query < 0
+        FROM bmw_validate
         ORDER BY content <@> 'apple banana'::bm25query
     ) x LIMIT 20
 )
@@ -355,13 +354,13 @@ FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
 -- Three-term
 WITH bmw AS (
     SELECT id, content <@> 'apple banana cherry'::bm25query as score
-    FROM bmw_validate WHERE content <@> 'apple banana cherry'::bm25query < 0
+    FROM bmw_validate
     ORDER BY content <@> 'apple banana cherry'::bm25query LIMIT 20
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'apple banana cherry'::bm25query as score
-        FROM bmw_validate WHERE content <@> 'apple banana cherry'::bm25query < 0
+        FROM bmw_validate
         ORDER BY content <@> 'apple banana cherry'::bm25query
     ) x LIMIT 20
 )
@@ -400,7 +399,6 @@ WITH ranked AS (
            content <@> 'target'::bm25query as score,
            LAG(content <@> 'target'::bm25query) OVER (ORDER BY content <@> 'target'::bm25query) as prev_score
     FROM bmw_monotonic
-    WHERE content <@> 'target'::bm25query < 0
     ORDER BY content <@> 'target'::bm25query
     LIMIT 50
 )
@@ -440,13 +438,11 @@ RESET pg_textsearch.index_memory_limit;
 -- This validates block-max scoring finds them across multiple blocks
 SELECT id, content <@> 'searchword'::bm25query as score
 FROM bmw_blocks
-WHERE content <@> 'searchword'::bm25query < 0
 ORDER BY content <@> 'searchword'::bm25query LIMIT 10;
 
 -- Validation: top 3 must be our high-tf docs
 WITH top3 AS (
     SELECT id FROM bmw_blocks
-    WHERE content <@> 'searchword'::bm25query < 0
     ORDER BY content <@> 'searchword'::bm25query LIMIT 3
 )
 SELECT 'block-boundary' as test,
@@ -543,13 +539,11 @@ RESET pg_textsearch.index_memory_limit;
 -- These are spread across 8 different blocks (1000/128 = ~8 blocks)
 SELECT id, content <@> 'scattered'::bm25query as score
 FROM bmw_scattered
-WHERE content <@> 'scattered'::bm25query < 0
 ORDER BY content <@> 'scattered'::bm25query LIMIT 10;
 
 -- Validation: Verify top 10 includes the high-tf docs from different blocks
 WITH top10 AS (
     SELECT id FROM bmw_scattered
-    WHERE content <@> 'scattered'::bm25query < 0
     ORDER BY content <@> 'scattered'::bm25query LIMIT 10
 )
 SELECT 'scattered-blocks' as test,
@@ -559,13 +553,13 @@ SELECT 'scattered-blocks' as test,
 -- Also validate with exhaustive comparison
 WITH bmw AS (
     SELECT id, content <@> 'scattered'::bm25query as score
-    FROM bmw_scattered WHERE content <@> 'scattered'::bm25query < 0
+    FROM bmw_scattered
     ORDER BY content <@> 'scattered'::bm25query LIMIT 10
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'scattered'::bm25query as score
-        FROM bmw_scattered WHERE content <@> 'scattered'::bm25query < 0
+        FROM bmw_scattered
         ORDER BY content <@> 'scattered'::bm25query
     ) x LIMIT 10
 )
@@ -600,13 +594,13 @@ RESET pg_textsearch.index_memory_limit;
 -- Multi-term query - top results should come from scattered positions
 WITH bmw AS (
     SELECT id, content <@> 'alpha beta gamma'::bm25query as score
-    FROM bmw_multi_scattered WHERE content <@> 'alpha beta gamma'::bm25query < 0
+    FROM bmw_multi_scattered
     ORDER BY content <@> 'alpha beta gamma'::bm25query LIMIT 20
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'alpha beta gamma'::bm25query as score
-        FROM bmw_multi_scattered WHERE content <@> 'alpha beta gamma'::bm25query < 0
+        FROM bmw_multi_scattered
         ORDER BY content <@> 'alpha beta gamma'::bm25query
     ) x LIMIT 20
 )
@@ -648,14 +642,13 @@ RESET pg_textsearch.index_memory_limit;
 -- Third batch has highest tf, should rank first
 SELECT id, content <@> 'targetword'::bm25query as score
 FROM bmw_multiseg
-WHERE content <@> 'targetword'::bm25query < 0
 ORDER BY content <@> 'targetword'::bm25query LIMIT 10;
 
 -- Verify: Results should include docs from batch 3 (id > 600) at top
 
--- Also verify total count is correct
+-- Also verify total count is correct (use to_bm25query for count)
 SELECT COUNT(*) FROM bmw_multiseg
-WHERE content <@> 'targetword'::bm25query < 0;
+WHERE content <@> to_bm25query('targetword', 'bmw_multiseg_idx') < 0;
 
 DROP TABLE bmw_multiseg;
 
@@ -687,13 +680,13 @@ RESET pg_textsearch.index_memory_limit;
 -- Doc 145 (tf=5) should be #1, docs 1-5 (tf=4) should follow
 WITH bmw AS (
     SELECT id, content <@> 'partial'::bm25query as score
-    FROM bmw_partial WHERE content <@> 'partial'::bm25query < 0
+    FROM bmw_partial
     ORDER BY content <@> 'partial'::bm25query LIMIT 10
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'partial'::bm25query as score
-        FROM bmw_partial WHERE content <@> 'partial'::bm25query < 0
+        FROM bmw_partial
         ORDER BY content <@> 'partial'::bm25query
     ) x LIMIT 10
 )
@@ -742,7 +735,6 @@ RESET pg_textsearch.index_memory_limit;
 -- Test: Query for memtable-only term should work
 SELECT id, content <@> 'uniquememterm'::bm25query as score
 FROM bmw_memonly
-WHERE content <@> 'uniquememterm'::bm25query < 0
 ORDER BY content <@> 'uniquememterm'::bm25query LIMIT 5;
 
 -- Verify: Should return exactly 3 docs, in tf order (201, 202, 203)
@@ -754,7 +746,6 @@ SELECT 'memtable-only-term' as test,
 -- Test: Multi-term with one term in segment, one in memtable only
 SELECT id, content <@> 'common uniquememterm'::bm25query as score
 FROM bmw_memonly
-WHERE content <@> 'common uniquememterm'::bm25query < 0
 ORDER BY content <@> 'common uniquememterm'::bm25query LIMIT 5;
 
 DROP TABLE bmw_memonly;
@@ -792,13 +783,13 @@ SELECT 'sparse-count' as test,
 -- Test: BMW should match exhaustive for sparse terms
 WITH bmw AS (
     SELECT id, content <@> 'sparse'::bm25query as score
-    FROM bmw_sparse WHERE content <@> 'sparse'::bm25query < 0
+    FROM bmw_sparse
     ORDER BY content <@> 'sparse'::bm25query LIMIT 10
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'sparse'::bm25query as score
-        FROM bmw_sparse WHERE content <@> 'sparse'::bm25query < 0
+        FROM bmw_sparse
         ORDER BY content <@> 'sparse'::bm25query
     ) x LIMIT 10
 )
@@ -834,13 +825,13 @@ RESET pg_textsearch.index_memory_limit;
 -- (they have higher combined score than single-term docs)
 WITH bmw AS (
     SELECT id, content <@> 'common rare'::bm25query as score
-    FROM bmw_asymmetric WHERE content <@> 'common rare'::bm25query < 0
+    FROM bmw_asymmetric
     ORDER BY content <@> 'common rare'::bm25query LIMIT 10
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'common rare'::bm25query as score
-        FROM bmw_asymmetric WHERE content <@> 'common rare'::bm25query < 0
+        FROM bmw_asymmetric
         ORDER BY content <@> 'common rare'::bm25query
     ) x LIMIT 10
 )
@@ -851,7 +842,6 @@ FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
 -- Verify top 5 are the dual-term docs (they should have best scores)
 WITH top5 AS (
     SELECT id FROM bmw_asymmetric
-    WHERE content <@> 'common rare'::bm25query < 0
     ORDER BY content <@> 'common rare'::bm25query LIMIT 5
 )
 SELECT 'asymmetric-top5' as test,
@@ -923,13 +913,13 @@ RESET pg_textsearch.index_memory_limit;
 -- Test: Should handle simultaneous exhaustion correctly
 WITH bmw AS (
     SELECT id, content <@> 'alpha beta'::bm25query as score
-    FROM bmw_simul WHERE content <@> 'alpha beta'::bm25query < 0
+    FROM bmw_simul
     ORDER BY content <@> 'alpha beta'::bm25query LIMIT 20
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'alpha beta'::bm25query as score
-        FROM bmw_simul WHERE content <@> 'alpha beta'::bm25query < 0
+        FROM bmw_simul
         ORDER BY content <@> 'alpha beta'::bm25query
     ) x LIMIT 20
 )
