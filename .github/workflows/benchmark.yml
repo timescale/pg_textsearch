@@ -7,6 +7,10 @@ permissions:
 env:
   # System X (competitive baseline) version for benchmarking
   SYSTEM_X_VERSION: "0.20.6"
+  # System Y (VectorChord-BM25) version for benchmarking
+  SYSTEM_Y_VERSION: "0.2.1"
+  # pg_tokenizer version (dependency for System Y)
+  PG_TOKENIZER_VERSION: "0.2.0"
 
 on:
   # Nightly benchmark
@@ -653,6 +657,160 @@ jobs:
           echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
           echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' systemx_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
+  # System Y benchmark (VectorChord-BM25 competitive baseline)
+  # NOTE: pg_textsearch and vchord_bm25 cannot coexist in the same PostgreSQL
+  # instance due to conflicting 'bm25' access method names. This job runs
+  # in a separate PostgreSQL instance with identical configuration.
+  system-y-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    # Run for msmarco or all datasets, and on scheduled runs
+    if: >
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.dataset == 'msmarco' || github.event.inputs.dataset == 'all'))
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
+        df -h /
+
+    - name: Install PostgreSQL and System Y
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+
+        # Install PostgreSQL 17
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+        # Install pg_tokenizer (dependency for System Y)
+        wget -q "https://github.com/tensorchord/pg_tokenizer.rs/releases/download/${PG_TOKENIZER_VERSION}/postgresql-17-pg-tokenizer_${PG_TOKENIZER_VERSION}-1_amd64.deb"
+        sudo dpkg -i "postgresql-17-pg-tokenizer_${PG_TOKENIZER_VERSION}-1_amd64.deb"
+
+        # Install System Y (VectorChord-BM25) from GitHub releases
+        wget -q "https://github.com/tensorchord/VectorChord-BM25/releases/download/${SYSTEM_Y_VERSION}/postgresql-17-vchord-bm25_${SYSTEM_Y_VERSION}-1_amd64.deb"
+        sudo dpkg -i "postgresql-17-vchord-bm25_${SYSTEM_Y_VERSION}-1_amd64.deb"
+
+    - name: Configure PostgreSQL
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        # Use identical configuration to pg_textsearch benchmark
+        NCPUS=$(nproc)
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 4GB
+        effective_cache_size = 12GB
+        maintenance_work_mem = 512MB
+        work_mem = 128MB
+        max_connections = 20
+        checkpoint_completion_target = 0.9
+        wal_buffers = 64MB
+        random_page_cost = 1.1
+        effective_io_concurrency = 200
+        max_parallel_maintenance_workers = $NCPUS
+        max_parallel_workers_per_gather = $NCPUS
+        max_parallel_workers = $NCPUS
+        EOF
+
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_tokenizer CASCADE"
+        psql -d bench_test -c "CREATE EXTENSION vchord_bm25 CASCADE"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Determine dataset size
+      id: dataset_size
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
+        else
+          echo "msmarco_size=full" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download MS MARCO dataset
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ steps.dataset_size.outputs.msmarco_size }}
+
+    - name: Run System Y benchmark
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== System Y (VectorChord-BM25) MS MARCO Benchmark ===" | tee benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemy/load.sql 2>&1 | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemy/queries.sql 2>&1 | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Extract metrics
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt systemy_metrics.json "systemy_msmarco" "System Y"
+
+    - name: Format metrics for benchmark tracking
+      run: |
+        chmod +x benchmarks/runner/format_for_action.sh
+        ./benchmarks/runner/format_for_action.sh systemy_metrics.json systemy_action.json
+
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: system-y-benchmark-${{ github.run_id }}
+        path: |
+          benchmark_results.txt
+          systemy_metrics.json
+          systemy_action.json
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Post benchmark summary
+      if: always()
+      run: |
+        if [ -f systemy_metrics.json ]; then
+          echo "### System Y (VectorChord-BM25) Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' systemy_metrics.json) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' systemy_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' systemy_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
         fi
 
     - name: Cleanup
