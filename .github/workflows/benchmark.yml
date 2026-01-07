@@ -10,7 +10,7 @@ env:
   # System Y (VectorChord-BM25) version for benchmarking
   SYSTEM_Y_VERSION: "0.2.1"
   # pg_tokenizer version (dependency for System Y)
-  PG_TOKENIZER_VERSION: "0.2.0"
+  PG_TOKENIZER_VERSION: "0.1.1"
 
 on:
   # Nightly benchmark
