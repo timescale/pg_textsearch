@@ -10,8 +10,8 @@ name: Nightly Stress Tests
 
 on:
   schedule:
-    # Run at 3 AM UTC daily
-    - cron: '0 3 * * *'
+    # Run at 5 AM UTC daily (9 PM Pacific)
+    - cron: '0 5 * * *'
   workflow_dispatch:
     inputs:
       duration_minutes:
@@ -200,7 +200,8 @@ jobs:
         STRESS_DURATION_MINUTES=${DURATION} \
         SPILL_THRESHOLD=500 \
         DOCS_PER_BATCH=50 \
-        CONCURRENT_READERS=4 \
+        CONCURRENT_READERS=8 \
+        CONCURRENT_WRITERS=4 \
         ./stress.sh 2>&1 | tee ${{ github.workspace }}/test-results/stress-test.log
 
     - name: Run regression tests under sanitizer

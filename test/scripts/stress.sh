@@ -24,8 +24,9 @@ LOGFILE="${DATA_DIR}/postgres.log"
 STRESS_DURATION_MINUTES="${STRESS_DURATION_MINUTES:-5}"
 SPILL_THRESHOLD="${SPILL_THRESHOLD:-1000}"  # Low threshold for more segments
 DOCS_PER_BATCH="${DOCS_PER_BATCH:-100}"
-CONCURRENT_READERS="${CONCURRENT_READERS:-3}"
-VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-30}"  # seconds between validations
+CONCURRENT_READERS="${CONCURRENT_READERS:-6}"       # Readers per test
+CONCURRENT_WRITERS="${CONCURRENT_WRITERS:-3}"       # Writers for concurrent tests
+VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-30}"    # seconds between validations
 
 # Calculated durations for each test (in seconds)
 # Test 1: 40% of time, Test 2: 25%, Test 3: 15%, Test 4: 10%, Test 5: 10%
@@ -267,15 +268,16 @@ test_extended_insert_query() {
 }
 
 #
-# Test 2: Concurrent readers with continuous inserts
+# Test 2: Concurrent readers and writers
 #
-# Target: Multiple readers querying while writer inserts continuously
+# Target: Multiple readers and writers operating simultaneously
 # Duration: 25% of total time
-# Expected: 3-5 concurrent connections, ~3000 docs/min, continuous query load
+# Expected: 6 readers + 3 writers = 9 concurrent connections, heavy load
 #
 test_concurrent_stress() {
     local duration=$TEST2_DURATION
-    log "Test 2: Concurrent readers with continuous inserts (${duration} seconds, ${CONCURRENT_READERS} readers)"
+    local total_connections=$((CONCURRENT_READERS + CONCURRENT_WRITERS))
+    log "Test 2: Concurrent stress (${duration}s, ${CONCURRENT_READERS} readers + ${CONCURRENT_WRITERS} writers = ${total_connections} connections)"
 
     run_sql_quiet "CREATE TABLE conc_docs (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "CREATE INDEX conc_idx ON conc_docs USING bm25(content) WITH (text_config='english');"
@@ -301,14 +303,14 @@ test_concurrent_stress() {
     local start_time=$(date +%s)
     local end_time=$((start_time + duration))
 
-    # Start concurrent readers - these do HEAVY queries (fetch rows, not just counts)
+    # Start concurrent readers
     local reader_pids=()
     for ((r=1; r<=CONCURRENT_READERS; r++)); do
         {
             local queries=0
             local rows_fetched=0
             local errors=0
-            local search_terms=("alpha" "beta" "gamma" "database" "search" "document")
+            local search_terms=("alpha" "beta" "gamma" "database" "search" "document" "postgres" "index")
             while [ $(date +%s) -lt $end_time ]; do
                 local term="${search_terms[$((RANDOM % ${#search_terms[@]}))]}"
                 # Heavy query: fetch actual rows with scores
@@ -325,66 +327,74 @@ test_concurrent_stress() {
                     errors=$((errors + 1))
                 fi
                 queries=$((queries + 1))
-                sleep 0.05
+                sleep 0.03
             done
-            echo "Reader $r: $queries queries, $rows_fetched rows fetched, $errors errors"
+            echo "Reader $r: $queries queries, $rows_fetched rows, $errors errors" >&2
         } &
         reader_pids+=($!)
     done
 
-    # Writer: continuous inserts with periodic spills
-    local writer_docs=0
-    local spills=0
-    while [ $(date +%s) -lt $end_time ]; do
-        local insert_sql="INSERT INTO conc_docs (content) VALUES"
-        local first=true
-        for ((i=1; i<=30; i++)); do
-            local content=$(generate_doc_content $((1000 + writer_docs + i)))
-            if [ "$first" = true ]; then
-                insert_sql="${insert_sql} ('${content}')"
-                first=false
-            else
-                insert_sql="${insert_sql}, ('${content}')"
-            fi
-        done
-        run_sql_quiet "${insert_sql};"
-        writer_docs=$((writer_docs + 30))
+    # Start concurrent writers
+    local writer_pids=()
+    for ((w=1; w<=CONCURRENT_WRITERS; w++)); do
+        {
+            local docs=0
+            local spills=0
+            local errors=0
+            local base_id=$((w * 100000))
+            while [ $(date +%s) -lt $end_time ]; do
+                local insert_sql="INSERT INTO conc_docs (content) VALUES"
+                local first=true
+                for ((i=1; i<=20; i++)); do
+                    local content="writer${w} doc$((base_id + docs + i)) alpha beta gamma database search query index"
+                    if [ "$first" = true ]; then
+                        insert_sql="${insert_sql} ('${content}')"
+                        first=false
+                    else
+                        insert_sql="${insert_sql}, ('${content}')"
+                    fi
+                done
+                if psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "${insert_sql};" >/dev/null 2>&1; then
+                    docs=$((docs + 20))
+                else
+                    errors=$((errors + 1))
+                fi
 
-        # Periodic manual spill
-        if [ $((writer_docs % 300)) -eq 0 ]; then
-            run_sql_quiet "SELECT bm25_spill_index('conc_idx');"
-            spills=$((spills + 1))
-        fi
+                # Periodic spill from this writer
+                if [ $((docs % 500)) -eq 0 ] && [ $docs -gt 0 ]; then
+                    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT bm25_spill_index('conc_idx');" >/dev/null 2>&1
+                    spills=$((spills + 1))
+                fi
 
-        sleep 0.03
+                sleep 0.02
+            done
+            echo "Writer $w: $docs docs, $spills spills, $errors errors" >&2
+        } &
+        writer_pids+=($!)
     done
 
-    # Wait for readers and collect results
-    local total_reader_queries=0
-    local reader_failures=0
-    for pid in "${reader_pids[@]}"; do
-        if wait $pid 2>/dev/null; then
-            total_reader_queries=$((total_reader_queries + 1))
-        else
-            reader_failures=$((reader_failures + 1))
+    # Wait for all processes
+    local failures=0
+    for pid in "${reader_pids[@]}" "${writer_pids[@]}"; do
+        if ! wait $pid 2>/dev/null; then
+            failures=$((failures + 1))
         fi
     done
 
     local final_segments=$(get_segment_count 'conc_idx')
     local final_docs=$(run_sql_value "SELECT COUNT(*) FROM conc_docs;")
 
-    info "Writer: ${writer_docs} docs inserted, ${spills} spills, ${final_segments} segments"
-    info "Final document count: ${final_docs}"
+    info "Final: ${final_docs} documents, ${final_segments} segments"
 
     # Update global metrics
-    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + writer_docs + 500))
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + final_docs))
     TOTAL_SEGMENTS_CREATED=$((TOTAL_SEGMENTS_CREATED + final_segments))
-    TOTAL_ERRORS=$((TOTAL_ERRORS + reader_failures))
+    TOTAL_ERRORS=$((TOTAL_ERRORS + failures))
 
-    if [ $reader_failures -eq 0 ]; then
+    if [ $failures -eq 0 ]; then
         log "Test 2 PASSED"
     else
-        warn "Test 2: $reader_failures reader failures"
+        warn "Test 2: $failures process failures"
     fi
 
     run_sql_quiet "DROP TABLE conc_docs CASCADE;"
@@ -634,6 +644,7 @@ print_summary() {
     echo "  Spill threshold:     ${SPILL_THRESHOLD} postings"
     echo "  Docs per batch:      ${DOCS_PER_BATCH}"
     echo "  Concurrent readers:  ${CONCURRENT_READERS}"
+    echo "  Concurrent writers:  ${CONCURRENT_WRITERS}"
     echo ""
     echo "Results:"
     echo "  Total documents:     ${TOTAL_DOCS_INSERTED}"
@@ -676,6 +687,7 @@ main() {
     echo "  Spill threshold:    ${SPILL_THRESHOLD} postings"
     echo "  Docs per batch:     ${DOCS_PER_BATCH}"
     echo "  Concurrent readers: ${CONCURRENT_READERS}"
+    echo "  Concurrent writers: ${CONCURRENT_WRITERS}"
     echo ""
 
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found"
