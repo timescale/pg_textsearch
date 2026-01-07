@@ -1,18 +1,13 @@
--- BMW Multi-term Scoring Bug Test
+-- BMW Multi-term WAND Traversal Test
 --
--- This test exposes a critical bug in multi-term BMW scoring.
--- Documents appearing at different block positions across terms' posting
--- lists get partial scores instead of complete scores.
---
--- The bug: Block-index iteration processes blocks by index (0, 1, 2, ...)
--- assuming blocks are aligned by doc ID across terms. They're not.
--- A document in block 1 of "alpha" and block 3 of "beta" gets scored
--- twice with partial scores, neither of which is correct.
+-- Regression test for doc-ID ordered traversal in multi-term queries.
+-- Ensures documents at different block positions across posting lists
+-- are correctly scored.
 
 CREATE EXTENSION pg_textsearch;
 
 -- ============================================================
--- TEST: Multi-term doc missing from top-k due to partial scores
+-- TEST: Multi-term documents score correctly across block boundaries
 -- ============================================================
 
 CREATE TABLE bmw_bug (id SERIAL PRIMARY KEY, content TEXT);

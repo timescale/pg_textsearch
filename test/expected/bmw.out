@@ -37,7 +37,6 @@ ORDER BY score LIMIT 5;
   7 | -0.24154625833034515
 (5 rows)
 
--- Verify: id=4 (tf=4) should be first, then id=1 (tf=3), etc.
 DROP TABLE bmw_basic;
 -- ============================================================
 -- SECTION 2: Empty and edge result counts
@@ -113,7 +112,6 @@ ORDER BY content <@> 'exact'::bm25query LIMIT 10;
   5 | -0.28768208622932434
 (4 rows)
 
--- Verify: IDs should be in ascending order (2,3,4,5) for tied scores
 DROP TABLE bmw_ties;
 -- ============================================================
 -- SECTION 4: LIMIT edge cases
@@ -383,7 +381,6 @@ ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
     8 | -0.0004986796411685646
 (10 rows)
 
--- Verify top results include the memtable docs (id > 1000)
 RESET pg_textsearch.index_memory_limit;
 DROP TABLE bmw_hybrid;
 -- ============================================================

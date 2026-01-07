@@ -29,8 +29,6 @@ FROM bmw_basic
 WHERE content <@> 'apple'::bm25query < 0
 ORDER BY score LIMIT 5;
 
--- Verify: id=4 (tf=4) should be first, then id=1 (tf=3), etc.
-
 DROP TABLE bmw_basic;
 
 -- ============================================================
@@ -86,8 +84,6 @@ SELECT id, content <@> 'exact'::bm25query as score
 FROM bmw_ties
 WHERE content <@> 'exact'::bm25query < 0
 ORDER BY content <@> 'exact'::bm25query LIMIT 10;
-
--- Verify: IDs should be in ascending order (2,3,4,5) for tied scores
 
 DROP TABLE bmw_ties;
 
@@ -285,8 +281,6 @@ SELECT id, content <@> 'searchterm'::bm25query as score
 FROM bmw_hybrid
 WHERE content <@> 'searchterm'::bm25query < 0
 ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
-
--- Verify top results include the memtable docs (id > 1000)
 
 RESET pg_textsearch.index_memory_limit;
 DROP TABLE bmw_hybrid;
