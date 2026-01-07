@@ -1,11 +1,11 @@
--- MS MARCO Passage Ranking - Query Benchmarks (System Y / VectorChord-BM25)
--- Runs various query workloads against the indexed MS MARCO collection using VectorChord-BM25
+-- MS MARCO Passage Ranking - Query Benchmarks (System Y)
+-- Runs various query workloads against the indexed MS MARCO collection using System Y
 -- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Query Benchmarks (System Y / VectorChord-BM25) ==='
+\echo '=== MS MARCO Query Benchmarks (System Y) ==='
 \echo ''
 
 -- Load benchmark queries (pre-sampled by token count)
@@ -47,7 +47,7 @@ $$;
 \echo ''
 
 -- Function to benchmark a bucket and return percentiles
--- Uses VectorChord-BM25 tokenize() and <&> operator
+-- Uses System Y tokenize() and <&> operator
 CREATE OR REPLACE FUNCTION benchmark_bucket_systemy(bucket int)
 RETURNS TABLE(p50_ms numeric, p95_ms numeric, p99_ms numeric, avg_ms numeric, num_queries int, total_results bigint) AS $$
 DECLARE
@@ -136,7 +136,7 @@ DROP FUNCTION benchmark_bucket_systemy;
 \echo 'Running all 800 benchmark queries with warmup'
 
 -- Helper function for throughput benchmark
--- Uses VectorChord-BM25 tokenize() and <&> operator
+-- Uses System Y tokenize() and <&> operator
 CREATE OR REPLACE FUNCTION benchmark_throughput_systemy(iterations int DEFAULT 3)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric, queries_run int) AS $$
 DECLARE
@@ -203,4 +203,4 @@ SELECT
 DROP TABLE benchmark_queries_systemy;
 
 \echo ''
-\echo '=== MS MARCO Query Benchmarks Complete (System Y / VectorChord-BM25) ==='
+\echo '=== MS MARCO Query Benchmarks Complete (System Y) ==='

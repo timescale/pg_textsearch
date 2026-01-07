@@ -1,5 +1,5 @@
--- MS MARCO Passage Ranking - Load and Index (System Y / VectorChord-BM25)
--- Loads the full 8.8M passage collection and creates VectorChord-BM25 index
+-- MS MARCO Passage Ranking - Load and Index (System Y)
+-- Loads the full 8.8M passage collection and creates System Y BM25 index
 --
 -- Usage:
 --   DATA_DIR=/path/to/data psql -U postgres postgres -f load.sql
@@ -12,7 +12,7 @@
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Passage Ranking - Data Loading (System Y / VectorChord-BM25) ==='
+\echo '=== MS MARCO Passage Ranking - Data Loading (System Y) ==='
 \echo 'Loading ~8.8M passages from MS MARCO collection'
 \echo ''
 
@@ -127,7 +127,7 @@ UPDATE msmarco_passages_systemy SET embedding = tokenize(passage_text, 'msmarco_
 -- Create System Y BM25 index
 \echo ''
 \echo '=== Building System Y BM25 Index ==='
-\echo 'Creating VectorChord-BM25 index on ~8.8M passages (this will take a while)...'
+\echo 'Creating System Y BM25 index on ~8.8M passages (this will take a while)...'
 CREATE INDEX msmarco_systemy_idx ON msmarco_passages_systemy
     USING bm25 (embedding bm25_ops);
 
@@ -144,5 +144,5 @@ SELECT
     pg_total_relation_size('msmarco_passages_systemy') as table_bytes;
 
 \echo ''
-\echo '=== MS MARCO Load Complete (System Y / VectorChord-BM25) ==='
+\echo '=== MS MARCO Load Complete (System Y) ==='
 \echo 'Ready for query benchmarks'
