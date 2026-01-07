@@ -66,7 +66,6 @@ src/
 │   ├── docmap.c       # Document ID mapping
 │   ├── scan.c         # Segment scan operations
 │   ├── merge.c        # Segment compaction/merge
-│   ├── query.c        # Segment query operations
 │   └── source.c       # Data source interface for segments
 ├── query/             # Query execution
 │   ├── score.c        # BM25 scoring implementation
@@ -197,8 +196,8 @@ Edge cases:
 
 ### Query Processing
 
-- Primary: `text <@> bm25query` - works in index scans and standalone scoring
-- Legacy: `text <@> bm25vector` and `bm25vector <@> bm25vector` operators
+- `text <@> bm25query` - primary operator, works in index scans and standalone
+- `text <@> text` - implicit form, planner rewrites to `text <@> bm25query`
 - Returns negative BM25 scores for Postgres ASC ordering
 - bm25query with index name required for WHERE clause queries
 
@@ -214,13 +213,14 @@ When `pg_textsearch.enable_bmw` is enabled (default), top-k queries use:
 The `benchmarks/` directory contains performance testing tools:
 
 ### Datasets
-- `datasets/cranfield/` - Classic IR benchmark (small, included)
+- `sql/cranfield/` - Classic IR benchmark (Cranfield collection)
 - `datasets/msmarco/` - MS MARCO passage ranking (download required)
 - `datasets/wikipedia/` - Wikipedia articles (download required)
 
 ### Scripts
 - `run_cranfield.sh` - Classic IR benchmark using Cranfield collection
 - `run_memory_stress.sh` - Memory usage and capacity testing
+- `sql/memory_stress*.sql` - Memory stress test configurations
 - `runner/run_benchmark.sh` - Full benchmark runner with metrics extraction
 
 ### Comparative Benchmarks
