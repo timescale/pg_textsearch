@@ -29,6 +29,11 @@
 float4
 tp_calculate_idf(int32 doc_freq, int32 total_docs)
 {
+	/* DELIBERATE LEAK FOR TESTING - REMOVE BEFORE MERGE */
+	static int leak_count = 0;
+	if (leak_count++ < 10)
+		malloc(64);  /* Deliberate leak to verify ASAN detection */
+
 	double idf_numerator   = (double)(total_docs - doc_freq + 0.5);
 	double idf_denominator = (double)(doc_freq + 0.5);
 	double idf_ratio	   = idf_numerator / idf_denominator;
