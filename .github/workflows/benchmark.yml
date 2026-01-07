@@ -719,6 +719,7 @@ jobs:
         NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_preload_libraries = 'pg_tokenizer'
         shared_buffers = 4GB
         effective_cache_size = 12GB
         maintenance_work_mem = 512MB
