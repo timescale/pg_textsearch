@@ -1,0 +1,18 @@
+# LeakSanitizer suppressions for pg_textsearch tests
+#
+# These suppress known PostgreSQL internal allocations that are
+# intentionally long-lived and not actual memory leaks.
+
+# PostgreSQL memory contexts - allocations live for process lifetime
+leak:AllocSetContextCreate
+leak:MemoryContextAlloc
+leak:palloc
+leak:repalloc
+
+# OpenSSL one-time initialization
+leak:libssl
+leak:libcrypto
+
+# PostgreSQL GUC and catalog caches
+leak:GUC
+leak:CatalogCache

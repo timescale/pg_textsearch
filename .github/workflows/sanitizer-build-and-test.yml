@@ -33,8 +33,9 @@ env:
   LDFLAGS: "-fsanitize=address,undefined"
 
   # Sanitizer options - create logs directory for better debugging
-  ASAN_OPTIONS: "detect_leaks=0 abort_on_error=1 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
+  ASAN_OPTIONS: "detect_leaks=1 abort_on_error=0 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
   UBSAN_OPTIONS: "halt_on_error=1 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
+  LSAN_OPTIONS: "suppressions=${{ github.workspace }}/test/lsan.supp exitcode=27 print_suppressions=0"
 
 jobs:
   sanitizer:
