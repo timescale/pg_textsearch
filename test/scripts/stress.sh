@@ -605,13 +605,18 @@ test_resource_cleanup() {
         SELECT (regexp_matches(bm25_summarize_index('ref_idx'), 'DSA total size: ([0-9]+)'))[1]::bigint;" 2>/dev/null || echo "0")
     info "Baseline DSA: ${baseline_dsa} bytes"
 
-    # Get postgres backend PID for FD tracking (Linux only)
+    # Get postgres backend PID for FD and lock tracking
     local backend_pid=$(run_sql_value "SELECT pg_backend_pid();")
     local baseline_fds=0
     if [ -d "/proc/${backend_pid}/fd" ]; then
         baseline_fds=$(ls -1 /proc/${backend_pid}/fd 2>/dev/null | wc -l)
         info "Baseline FDs: ${baseline_fds}"
     fi
+
+    # Record baseline advisory locks (should be 0)
+    local baseline_advisory_locks=$(run_sql_value "
+        SELECT COUNT(*) FROM pg_locks WHERE pid = ${backend_pid} AND locktype = 'advisory';")
+    info "Baseline advisory locks: ${baseline_advisory_locks}"
 
     local start_time=$(date +%s)
     local end_time=$((start_time + duration))
@@ -676,6 +681,16 @@ test_resource_cleanup() {
     # DSA growth > 50% after cleanup would indicate a leak
     if [ $dsa_growth -gt 50 ]; then
         warn "Possible DSA leak: ${dsa_growth}% growth in reference index"
+        TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+    fi
+
+    # Check for advisory lock leaks
+    local final_advisory_locks=$(run_sql_value "
+        SELECT COUNT(*) FROM pg_locks WHERE pid = ${backend_pid} AND locktype = 'advisory';")
+    local lock_growth=$((final_advisory_locks - baseline_advisory_locks))
+    info "Final advisory locks: ${final_advisory_locks} (${lock_growth} growth)"
+    if [ $lock_growth -gt 0 ]; then
+        warn "Possible lock leak: ${lock_growth} advisory locks not released"
         TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
     fi
 
