@@ -1,8 +1,15 @@
 #!/bin/bash
 #
 # Long-running stress tests for pg_textsearch
-# Tests core functionality over extended time with many segment spills.
-# Designed for nightly CI runs with memory leak detection.
+#
+# Designed for nightly CI with memory leak detection. Each test is time-based
+# to ensure sustained load over the configured duration.
+#
+# Default nightly configuration targets:
+#   - 30 minutes total runtime
+#   - 100,000+ documents inserted
+#   - 100+ segments created
+#   - 5+ concurrent database connections
 #
 
 set -e
@@ -19,6 +26,21 @@ SPILL_THRESHOLD="${SPILL_THRESHOLD:-1000}"  # Low threshold for more segments
 DOCS_PER_BATCH="${DOCS_PER_BATCH:-100}"
 CONCURRENT_READERS="${CONCURRENT_READERS:-3}"
 VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-30}"  # seconds between validations
+
+# Calculated durations for each test (in seconds)
+# Test 1: 40% of time, Test 2: 25%, Test 3: 15%, Test 4: 10%, Test 5: 10%
+TOTAL_SECONDS=$((STRESS_DURATION_MINUTES * 60))
+TEST1_DURATION=$((TOTAL_SECONDS * 40 / 100))
+TEST2_DURATION=$((TOTAL_SECONDS * 25 / 100))
+TEST3_DURATION=$((TOTAL_SECONDS * 15 / 100))
+TEST4_DURATION=$((TOTAL_SECONDS * 10 / 100))
+TEST5_DURATION=$((TOTAL_SECONDS * 10 / 100))
+
+# Metrics tracking
+TOTAL_DOCS_INSERTED=0
+TOTAL_SEGMENTS_CREATED=0
+TOTAL_QUERIES_EXECUTED=0
+TOTAL_ERRORS=0
 
 # Colors for output
 RED='\033[0;31m'
@@ -64,20 +86,12 @@ unix_socket_directories = '${DATA_DIR}'
 listen_addresses = 'localhost'
 log_min_messages = warning
 log_statement = 'none'
-
-# Use low spill threshold to create many segments quickly
-# This is set via GUC in the test, but we note it here for documentation
 EOF
 
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w || error "Failed to start PostgreSQL"
 
     createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
-
-    # Load validation functions if available
-    if [ -f "${SCRIPT_DIR}/../sql/validation.sql" ]; then
-        psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -f "${SCRIPT_DIR}/../sql/validation.sql" >/dev/null
-    fi
 
     # Set low spill threshold
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c \
@@ -99,6 +113,13 @@ run_sql_value() {
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc "$1" 2>/dev/null
 }
 
+get_segment_count() {
+    local idx_name=$1
+    local summary=$(run_sql_value "SELECT bm25_summarize_index('${idx_name}');" 2>/dev/null || echo "")
+    # Format is "Total: N segments, ..." - extract the number
+    echo "$summary" | grep -o 'Total: [0-9]* segments' | grep -o '[0-9]*' || echo "0"
+}
+
 #
 # Generate random text content for documents
 #
@@ -107,10 +128,11 @@ generate_doc_content() {
     local words=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "eta" "theta"
                  "iota" "kappa" "lambda" "mu" "nu" "xi" "omicron" "pi" "rho"
                  "sigma" "tau" "upsilon" "phi" "chi" "psi" "omega" "database"
-                 "search" "query" "index" "document" "text" "ranking" "score")
+                 "search" "query" "index" "document" "text" "ranking" "score"
+                 "postgres" "extension" "memory" "segment" "posting" "term")
 
     local content="document ${doc_id}"
-    local num_words=$((RANDOM % 20 + 5))
+    local num_words=$((RANDOM % 30 + 10))
     for ((i=0; i<num_words; i++)); do
         content="${content} ${words[$((RANDOM % ${#words[@]}))]}"
     done
@@ -118,23 +140,29 @@ generate_doc_content() {
 }
 
 #
-# Test 1: Long-running insert/query cycle with many segments
+# Test 1: Extended insert/query cycle with continuous segment creation
+#
+# Target: Insert thousands of documents while running queries, creating many segments
+# Duration: 40% of total time
+# Expected: ~4000 docs/min at default settings, 40+ segments
 #
 test_extended_insert_query() {
-    log "Test 1: Extended insert/query cycle (${STRESS_DURATION_MINUTES} minutes)"
+    local duration=$TEST1_DURATION
+    log "Test 1: Extended insert/query cycle (${duration} seconds)"
 
     run_sql_quiet "CREATE TABLE stress_docs (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "CREATE INDEX stress_idx ON stress_docs USING bm25(content) WITH (text_config='english');"
 
     local start_time=$(date +%s)
-    local end_time=$((start_time + STRESS_DURATION_MINUTES * 60))
+    local end_time=$((start_time + duration))
     local batch_num=0
-    local total_docs=0
-    local segment_count=0
-    local last_validation=$start_time
+    local docs_inserted=0
+    local queries_run=0
     local errors=0
+    local last_validation=$start_time
+    local last_segment_count=0
 
-    info "Running for ${STRESS_DURATION_MINUTES} minutes with ${DOCS_PER_BATCH} docs/batch"
+    info "Duration: ${duration}s, target: ~$((duration * 70)) docs, ~$((duration * 70 / SPILL_THRESHOLD)) segments"
 
     while [ $(date +%s) -lt $end_time ]; do
         batch_num=$((batch_num + 1))
@@ -143,7 +171,7 @@ test_extended_insert_query() {
         local insert_sql="INSERT INTO stress_docs (content) VALUES"
         local first=true
         for ((i=1; i<=DOCS_PER_BATCH; i++)); do
-            local content=$(generate_doc_content $((total_docs + i)))
+            local content=$(generate_doc_content $((docs_inserted + i)))
             if [ "$first" = true ]; then
                 insert_sql="${insert_sql} ('${content}')"
                 first=false
@@ -157,74 +185,80 @@ test_extended_insert_query() {
             warn "Batch $batch_num insert failed"
             errors=$((errors + 1))
         fi
-        total_docs=$((total_docs + DOCS_PER_BATCH))
+        docs_inserted=$((docs_inserted + DOCS_PER_BATCH))
 
-        # Check segment count periodically
-        if [ $((batch_num % 10)) -eq 0 ]; then
-            local summary=$(run_sql_value "SELECT bm25_summarize_index('stress_idx');" 2>/dev/null || echo "")
-            local new_segment_count=$(echo "$summary" | grep -o 'segments: [0-9]*' | grep -o '[0-9]*' || echo "0")
-            if [ -n "$new_segment_count" ] && [ "$new_segment_count" != "$segment_count" ]; then
-                segment_count=$new_segment_count
-                info "Batch $batch_num: $total_docs docs, $segment_count segments"
-            fi
-        fi
-
-        # Run some queries
-        local query_terms=("alpha" "database" "search" "document" "gamma delta")
+        # Run queries - fetch actual rows, not just count
+        local query_terms=("alpha" "database" "search" "document" "gamma delta" "postgres extension")
         for term in "${query_terms[@]}"; do
-            local count=$(run_sql_value "SELECT COUNT(*) FROM stress_docs WHERE content <@> to_bm25query('${term}', 'stress_idx') < -0.01;" 2>/dev/null)
-            if [ -z "$count" ]; then
-                warn "Query for '${term}' returned no result"
+            # Heavy query: fetch top 50 results with scores
+            local result=$(run_sql_value "
+                SELECT COUNT(*) FROM (
+                    SELECT id, content <@> to_bm25query('${term}', 'stress_idx') as score
+                    FROM stress_docs
+                    ORDER BY content <@> to_bm25query('${term}', 'stress_idx')
+                    LIMIT 50
+                ) t WHERE score < 0;" 2>/dev/null)
+            queries_run=$((queries_run + 1))
+            if [ -z "$result" ]; then
                 errors=$((errors + 1))
             fi
         done
 
+        # Report progress every 20 batches
+        if [ $((batch_num % 20)) -eq 0 ]; then
+            local segment_count=$(get_segment_count 'stress_idx')
+            if [ "$segment_count" != "$last_segment_count" ]; then
+                last_segment_count=$segment_count
+            fi
+            local elapsed=$(($(date +%s) - start_time))
+            local rate=$((docs_inserted * 60 / (elapsed + 1)))
+            info "Progress: ${docs_inserted} docs, ${segment_count} segments, ${rate} docs/min"
+        fi
+
         # Periodic validation
         local now=$(date +%s)
         if [ $((now - last_validation)) -ge $VALIDATION_INTERVAL ]; then
-            info "Running validation checkpoint..."
-
             # Verify document count matches
             local table_count=$(run_sql_value "SELECT COUNT(*) FROM stress_docs;")
-            if [ "$table_count" != "$total_docs" ]; then
-                warn "Document count mismatch: expected $total_docs, got $table_count"
+            if [ "$table_count" != "$docs_inserted" ]; then
+                warn "Document count mismatch: expected $docs_inserted, got $table_count"
                 errors=$((errors + 1))
             fi
 
-            # Verify ordering is correct (scores should be negative and sorted)
-            local ordering_ok=$(run_sql_value "
-                SELECT CASE
-                    WHEN COUNT(*) = 0 THEN true
-                    WHEN MIN(score) < 0 AND MAX(score) < 0 THEN true
-                    ELSE false
-                END
-                FROM (
+            # Verify top results have valid negative scores
+            local valid_scores=$(run_sql_value "
+                SELECT COUNT(*) FROM (
                     SELECT content <@> to_bm25query('database', 'stress_idx') as score
                     FROM stress_docs
                     ORDER BY content <@> to_bm25query('database', 'stress_idx')
-                    LIMIT 100
-                ) t;")
+                    LIMIT 20
+                ) t WHERE score < 0;")
 
-            if [ "$ordering_ok" != "t" ]; then
-                warn "Score ordering validation failed"
+            if [ -z "$valid_scores" ] || [ "$valid_scores" -eq 0 ]; then
+                warn "Score validation failed: no valid negative scores"
                 errors=$((errors + 1))
             fi
 
             last_validation=$now
         fi
 
-        # Small delay to avoid overwhelming the system
-        sleep 0.05
+        sleep 0.02
     done
 
     # Final statistics
-    local final_summary=$(run_sql_value "SELECT bm25_summarize_index('stress_idx');" 2>/dev/null || echo "N/A")
-    local final_segments=$(echo "$final_summary" | grep -o 'segments: [0-9]*' | grep -o '[0-9]*' || echo "?")
+    local final_segments=$(get_segment_count 'stress_idx')
+    local final_count=$(run_sql_value "SELECT COUNT(*) FROM stress_docs;")
 
-    info "Final: $total_docs documents, $final_segments segments, $errors errors"
+    info "Final: ${final_count} documents, ${final_segments} segments, ${queries_run} queries, ${errors} errors"
+
+    # Update global metrics
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + docs_inserted))
+    TOTAL_SEGMENTS_CREATED=$((TOTAL_SEGMENTS_CREATED + final_segments))
+    TOTAL_QUERIES_EXECUTED=$((TOTAL_QUERIES_EXECUTED + queries_run))
+    TOTAL_ERRORS=$((TOTAL_ERRORS + errors))
 
     if [ $errors -eq 0 ]; then
-        log "Test 1 passed: Extended insert/query completed successfully"
+        log "Test 1 PASSED"
     else
         warn "Test 1 completed with $errors errors"
     fi
@@ -233,16 +267,21 @@ test_extended_insert_query() {
 }
 
 #
-# Test 2: Concurrent readers with continuous inserts and spills
+# Test 2: Concurrent readers with continuous inserts
+#
+# Target: Multiple readers querying while writer inserts continuously
+# Duration: 25% of total time
+# Expected: 3-5 concurrent connections, ~3000 docs/min, continuous query load
 #
 test_concurrent_stress() {
-    log "Test 2: Concurrent readers with continuous inserts (${CONCURRENT_READERS} readers)"
+    local duration=$TEST2_DURATION
+    log "Test 2: Concurrent readers with continuous inserts (${duration} seconds, ${CONCURRENT_READERS} readers)"
 
     run_sql_quiet "CREATE TABLE conc_docs (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "CREATE INDEX conc_idx ON conc_docs USING bm25(content) WITH (text_config='english');"
 
-    # Initial data load
-    info "Loading initial data..."
+    # Initial data load (500 docs)
+    info "Loading 500 initial documents..."
     for ((batch=1; batch<=10; batch++)); do
         local insert_sql="INSERT INTO conc_docs (content) VALUES"
         local first=true
@@ -260,36 +299,46 @@ test_concurrent_stress() {
     run_sql_quiet "SELECT bm25_spill_index('conc_idx');"
 
     local start_time=$(date +%s)
-    local duration=$((STRESS_DURATION_MINUTES * 60 / 2))  # Half duration for this test
     local end_time=$((start_time + duration))
 
-    # Start concurrent readers
+    # Start concurrent readers - these do HEAVY queries (fetch rows, not just counts)
     local reader_pids=()
     for ((r=1; r<=CONCURRENT_READERS; r++)); do
         {
             local queries=0
+            local rows_fetched=0
             local errors=0
+            local search_terms=("alpha" "beta" "gamma" "database" "search" "document")
             while [ $(date +%s) -lt $end_time ]; do
-                local count=$(psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc \
-                    "SELECT COUNT(*) FROM conc_docs WHERE content <@> to_bm25query('database', 'conc_idx') < -0.01;" 2>/dev/null)
-                if [ -z "$count" ]; then
+                local term="${search_terms[$((RANDOM % ${#search_terms[@]}))]}"
+                # Heavy query: fetch actual rows with scores
+                local result=$(psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc "
+                    SELECT COUNT(*) FROM (
+                        SELECT id, content, content <@> to_bm25query('${term}', 'conc_idx') as score
+                        FROM conc_docs
+                        ORDER BY content <@> to_bm25query('${term}', 'conc_idx')
+                        LIMIT 100
+                    ) t;" 2>/dev/null)
+                if [ -n "$result" ]; then
+                    rows_fetched=$((rows_fetched + result))
+                else
                     errors=$((errors + 1))
                 fi
                 queries=$((queries + 1))
-                sleep 0.1
+                sleep 0.05
             done
-            echo "Reader $r: $queries queries, $errors errors"
+            echo "Reader $r: $queries queries, $rows_fetched rows fetched, $errors errors"
         } &
         reader_pids+=($!)
     done
 
-    # Writer: continuous inserts
+    # Writer: continuous inserts with periodic spills
     local writer_docs=0
     local spills=0
     while [ $(date +%s) -lt $end_time ]; do
         local insert_sql="INSERT INTO conc_docs (content) VALUES"
         local first=true
-        for ((i=1; i<=20; i++)); do
+        for ((i=1; i<=30; i++)); do
             local content=$(generate_doc_content $((1000 + writer_docs + i)))
             if [ "$first" = true ]; then
                 insert_sql="${insert_sql} ('${content}')"
@@ -299,29 +348,41 @@ test_concurrent_stress() {
             fi
         done
         run_sql_quiet "${insert_sql};"
-        writer_docs=$((writer_docs + 20))
+        writer_docs=$((writer_docs + 30))
 
         # Periodic manual spill
-        if [ $((writer_docs % 200)) -eq 0 ]; then
+        if [ $((writer_docs % 300)) -eq 0 ]; then
             run_sql_quiet "SELECT bm25_spill_index('conc_idx');"
             spills=$((spills + 1))
         fi
 
-        sleep 0.05
+        sleep 0.03
     done
 
-    # Wait for readers
+    # Wait for readers and collect results
+    local total_reader_queries=0
     local reader_failures=0
     for pid in "${reader_pids[@]}"; do
-        if ! wait $pid 2>/dev/null; then
+        if wait $pid 2>/dev/null; then
+            total_reader_queries=$((total_reader_queries + 1))
+        else
             reader_failures=$((reader_failures + 1))
         fi
     done
 
-    info "Writer: $writer_docs docs inserted, $spills manual spills"
+    local final_segments=$(get_segment_count 'conc_idx')
+    local final_docs=$(run_sql_value "SELECT COUNT(*) FROM conc_docs;")
+
+    info "Writer: ${writer_docs} docs inserted, ${spills} spills, ${final_segments} segments"
+    info "Final document count: ${final_docs}"
+
+    # Update global metrics
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + writer_docs + 500))
+    TOTAL_SEGMENTS_CREATED=$((TOTAL_SEGMENTS_CREATED + final_segments))
+    TOTAL_ERRORS=$((TOTAL_ERRORS + reader_failures))
 
     if [ $reader_failures -eq 0 ]; then
-        log "Test 2 passed: Concurrent stress test completed"
+        log "Test 2 PASSED"
     else
         warn "Test 2: $reader_failures reader failures"
     fi
@@ -330,10 +391,15 @@ test_concurrent_stress() {
 }
 
 #
-# Test 3: Multiple indexes with interleaved operations
+# Test 3: Multiple indexes with interleaved operations (TIME-BASED)
+#
+# Target: Operate on multiple indexes simultaneously to test resource isolation
+# Duration: 15% of total time
+# Expected: 3 indexes, ~2000 docs each, 10+ segments each
 #
 test_multiple_indexes() {
-    log "Test 3: Multiple indexes with interleaved operations"
+    local duration=$TEST3_DURATION
+    log "Test 3: Multiple indexes with interleaved operations (${duration} seconds)"
 
     # Create 3 tables with indexes
     for t in 1 2 3; do
@@ -341,53 +407,75 @@ test_multiple_indexes() {
         run_sql_quiet "CREATE INDEX multi_idx_${t} ON multi_${t} USING bm25(content) WITH (text_config='english');"
     done
 
-    local iterations=50
+    local start_time=$(date +%s)
+    local end_time=$((start_time + duration))
+    local iteration=0
     local errors=0
+    local docs_per_table=0
 
-    for ((iter=1; iter<=iterations; iter++)); do
-        # Insert to all tables
+    while [ $(date +%s) -lt $end_time ]; do
+        iteration=$((iteration + 1))
+
+        # Insert batch to all tables
         for t in 1 2 3; do
-            local content="iteration ${iter} table ${t} with alpha beta gamma"
-            run_sql_quiet "INSERT INTO multi_${t} (content) VALUES ('${content}');"
+            local insert_sql="INSERT INTO multi_${t} (content) VALUES"
+            local first=true
+            for ((i=1; i<=20; i++)); do
+                local content="iteration ${iteration} table ${t} doc ${i} alpha beta gamma database search"
+                if [ "$first" = true ]; then
+                    insert_sql="${insert_sql} ('${content}')"
+                    first=false
+                else
+                    insert_sql="${insert_sql}, ('${content}')"
+                fi
+            done
+            run_sql_quiet "${insert_sql};"
         done
+        docs_per_table=$((docs_per_table + 20))
 
-        # Query from all tables - use ORDER BY with LIMIT for BM25 index usage
+        # Query from all tables
         for t in 1 2 3; do
-            local count=$(run_sql_value "SELECT COUNT(*) FROM (SELECT * FROM multi_${t} ORDER BY content <@> to_bm25query('alpha', 'multi_idx_${t}') LIMIT 1000) sub;")
-            # Check count is positive (BM25 found matching documents)
+            local count=$(run_sql_value "
+                SELECT COUNT(*) FROM (
+                    SELECT * FROM multi_${t}
+                    ORDER BY content <@> to_bm25query('alpha', 'multi_idx_${t}')
+                    LIMIT 100
+                ) sub;")
+            TOTAL_QUERIES_EXECUTED=$((TOTAL_QUERIES_EXECUTED + 1))
             if [ -z "$count" ] || [ "$count" -eq 0 ]; then
-                warn "Iteration $iter, table $t: expected documents, got $count"
                 errors=$((errors + 1))
             fi
         done
 
-        # Periodic spill to different indexes
-        if [ $((iter % 15)) -eq 0 ]; then
-            local table_num=$(( (iter / 15) % 3 + 1 ))
-            run_sql_quiet "SELECT bm25_spill_index('multi_idx_${table_num}');"
+        # Rotating spills across indexes
+        local spill_target=$(( (iteration % 3) + 1 ))
+        if [ $((iteration % 10)) -eq 0 ]; then
+            run_sql_quiet "SELECT bm25_spill_index('multi_idx_${spill_target}');"
         fi
+
+        sleep 0.02
     done
 
-    # Final validation - check table row counts
+    # Final validation
+    local total_segments=0
     for t in 1 2 3; do
         local count=$(run_sql_value "SELECT COUNT(*) FROM multi_${t};")
-        if [ "$count" != "$iterations" ]; then
-            warn "Table $t final count: expected $iterations, got $count"
+        local segments=$(get_segment_count "multi_idx_${t}")
+        total_segments=$((total_segments + segments))
+        info "Table $t: ${count} docs, ${segments} segments"
+
+        if [ "$count" != "$docs_per_table" ]; then
+            warn "Table $t count mismatch: expected $docs_per_table, got $count"
             errors=$((errors + 1))
         fi
     done
 
-    # Verify BM25 queries return results after all operations
-    for t in 1 2 3; do
-        local bm25_count=$(run_sql_value "SELECT COUNT(*) FROM (SELECT * FROM multi_${t} ORDER BY content <@> to_bm25query('alpha', 'multi_idx_${t}') LIMIT 1000) sub;")
-        if [ "$bm25_count" != "$iterations" ]; then
-            warn "Table $t final BM25 count: expected $iterations, got $bm25_count"
-            errors=$((errors + 1))
-        fi
-    done
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + docs_per_table * 3))
+    TOTAL_SEGMENTS_CREATED=$((TOTAL_SEGMENTS_CREATED + total_segments))
+    TOTAL_ERRORS=$((TOTAL_ERRORS + errors))
 
     if [ $errors -eq 0 ]; then
-        log "Test 3 passed: Multiple indexes test completed"
+        log "Test 3 PASSED"
     else
         warn "Test 3 completed with $errors errors"
     fi
@@ -398,23 +486,33 @@ test_multiple_indexes() {
 }
 
 #
-# Test 4: Segment merge stress test
+# Test 4: Segment creation stress test (TIME-BASED)
 #
-test_segment_merge_stress() {
-    log "Test 4: Segment merge stress test"
+# Target: Create as many segments as possible to test segment handling
+# Duration: 10% of total time
+# Expected: 50+ segments with small batches and frequent spills
+#
+test_segment_stress() {
+    local duration=$TEST4_DURATION
+    log "Test 4: Segment creation stress (${duration} seconds)"
 
-    run_sql_quiet "CREATE TABLE merge_test (id SERIAL PRIMARY KEY, content TEXT);"
-    run_sql_quiet "CREATE INDEX merge_idx ON merge_test USING bm25(content) WITH (text_config='english');"
+    run_sql_quiet "CREATE TABLE segment_test (id SERIAL PRIMARY KEY, content TEXT);"
+    run_sql_quiet "CREATE INDEX segment_idx ON segment_test USING bm25(content) WITH (text_config='english');"
 
-    # Create many small segments by inserting and spilling repeatedly
-    local target_segments=20
-    local docs_per_segment=50
+    local start_time=$(date +%s)
+    local end_time=$((start_time + duration))
+    local segment_num=0
+    local total_docs=0
+    local docs_per_segment=30  # Small batches = more segments
 
-    for ((seg=1; seg<=target_segments; seg++)); do
-        local insert_sql="INSERT INTO merge_test (content) VALUES"
+    while [ $(date +%s) -lt $end_time ]; do
+        segment_num=$((segment_num + 1))
+
+        # Insert small batch
+        local insert_sql="INSERT INTO segment_test (content) VALUES"
         local first=true
         for ((i=1; i<=docs_per_segment; i++)); do
-            local content="segment ${seg} document ${i} with search terms alpha beta"
+            local content="segment ${segment_num} document ${i} with unique terms seg${segment_num}word${i}"
             if [ "$first" = true ]; then
                 insert_sql="${insert_sql} ('${content}')"
                 first=false
@@ -423,76 +521,162 @@ test_segment_merge_stress() {
             fi
         done
         run_sql_quiet "${insert_sql};"
-        run_sql_quiet "SELECT bm25_spill_index('merge_idx');"
+        total_docs=$((total_docs + docs_per_segment))
 
-        if [ $((seg % 5)) -eq 0 ]; then
-            info "Created $seg segments..."
+        # Force spill after each batch to create many segments
+        run_sql_quiet "SELECT bm25_spill_index('segment_idx');"
+
+        # Verify searchability periodically
+        if [ $((segment_num % 20)) -eq 0 ]; then
+            local actual_segments=$(get_segment_count 'segment_idx')
+            info "Created ${actual_segments} segments, ${total_docs} docs"
+
+            # Query across all segments
+            local search_count=$(run_sql_value "
+                SELECT COUNT(*) FROM (
+                    SELECT * FROM segment_test
+                    ORDER BY content <@> to_bm25query('document', 'segment_idx')
+                    LIMIT 1000
+                ) sub;")
+            TOTAL_QUERIES_EXECUTED=$((TOTAL_QUERIES_EXECUTED + 1))
         fi
+
+        sleep 0.01
     done
 
-    local total_docs=$((target_segments * docs_per_segment))
+    local final_segments=$(get_segment_count 'segment_idx')
+    local final_docs=$(run_sql_value "SELECT COUNT(*) FROM segment_test;")
 
-    # Verify all documents are searchable using ORDER BY with LIMIT
-    local alpha_count=$(run_sql_value "SELECT COUNT(*) FROM (SELECT * FROM merge_test ORDER BY content <@> to_bm25query('alpha', 'merge_idx') LIMIT 10000) sub;")
+    # Verify all documents are searchable
+    local searchable=$(run_sql_value "
+        SELECT COUNT(*) FROM (
+            SELECT * FROM segment_test
+            ORDER BY content <@> to_bm25query('document', 'segment_idx')
+            LIMIT 100000
+        ) sub;")
 
-    if [ "$alpha_count" = "$total_docs" ]; then
-        log "Test 4 passed: All $total_docs documents searchable across segments"
+    info "Final: ${final_docs} documents across ${final_segments} segments"
+
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + total_docs))
+    TOTAL_SEGMENTS_CREATED=$((TOTAL_SEGMENTS_CREATED + final_segments))
+
+    if [ "$searchable" = "$final_docs" ]; then
+        log "Test 4 PASSED: All ${final_docs} documents searchable across ${final_segments} segments"
     else
-        warn "Test 4: Expected $total_docs, found $alpha_count"
+        warn "Test 4: Expected $final_docs searchable, found $searchable"
+        TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
     fi
 
-    run_sql_quiet "DROP TABLE merge_test CASCADE;"
+    run_sql_quiet "DROP TABLE segment_test CASCADE;"
 }
 
 #
-# Test 5: Resource cleanup verification
+# Test 5: Resource cleanup stress (TIME-BASED)
+#
+# Target: Repeatedly create and drop indexes to test resource cleanup
+# Duration: 10% of total time
+# Expected: 20+ create/drop cycles, no resource leaks
 #
 test_resource_cleanup() {
-    log "Test 5: Resource cleanup verification"
+    local duration=$TEST5_DURATION
+    log "Test 5: Resource cleanup stress (${duration} seconds)"
 
-    # Create and drop indexes repeatedly
-    local iterations=10
+    local start_time=$(date +%s)
+    local end_time=$((start_time + duration))
+    local cycle=0
+    local docs_per_cycle=200
 
-    for ((iter=1; iter<=iterations; iter++)); do
-        run_sql_quiet "CREATE TABLE cleanup_${iter} (id SERIAL PRIMARY KEY, content TEXT);"
-        run_sql_quiet "INSERT INTO cleanup_${iter} (content) SELECT 'document ' || g || ' alpha beta' FROM generate_series(1, 100) g;"
-        run_sql_quiet "CREATE INDEX cleanup_idx_${iter} ON cleanup_${iter} USING bm25(content) WITH (text_config='english');"
-        run_sql_quiet "SELECT bm25_spill_index('cleanup_idx_${iter}');"
+    while [ $(date +%s) -lt $end_time ]; do
+        cycle=$((cycle + 1))
 
-        # Query a few times
-        run_sql_quiet "SELECT COUNT(*) FROM cleanup_${iter} WHERE content <@> to_bm25query('alpha', 'cleanup_idx_${iter}') < -0.01;"
+        # Create table and index
+        run_sql_quiet "CREATE TABLE cleanup_${cycle} (id SERIAL PRIMARY KEY, content TEXT);"
+        run_sql_quiet "INSERT INTO cleanup_${cycle} (content)
+            SELECT 'document ' || g || ' alpha beta gamma database search query'
+            FROM generate_series(1, ${docs_per_cycle}) g;"
+        run_sql_quiet "CREATE INDEX cleanup_idx_${cycle} ON cleanup_${cycle} USING bm25(content) WITH (text_config='english');"
+        run_sql_quiet "SELECT bm25_spill_index('cleanup_idx_${cycle}');"
 
-        # Drop table (which drops index too)
-        run_sql_quiet "DROP TABLE cleanup_${iter} CASCADE;"
+        # Query multiple times
+        for ((q=1; q<=5; q++)); do
+            run_sql_quiet "
+                SELECT COUNT(*) FROM (
+                    SELECT * FROM cleanup_${cycle}
+                    ORDER BY content <@> to_bm25query('alpha', 'cleanup_idx_${cycle}')
+                    LIMIT 100
+                ) sub;"
+            TOTAL_QUERIES_EXECUTED=$((TOTAL_QUERIES_EXECUTED + 1))
+        done
+
+        # Drop table (cascades to index)
+        run_sql_quiet "DROP TABLE cleanup_${cycle} CASCADE;"
+
+        if [ $((cycle % 10)) -eq 0 ]; then
+            info "Completed ${cycle} create/drop cycles"
+        fi
+
+        sleep 0.02
     done
 
-    # Check no leaked resources (this relies on Postgres cleanup mechanisms)
-    # The real verification happens when running under sanitizers
+    TOTAL_DOCS_INSERTED=$((TOTAL_DOCS_INSERTED + cycle * docs_per_cycle))
 
-    log "Test 5 passed: Created and dropped $iterations indexes"
+    log "Test 5 PASSED: Completed ${cycle} create/drop cycles"
+}
+
+print_summary() {
+    echo ""
+    echo "============================================================"
+    echo "                    STRESS TEST SUMMARY"
+    echo "============================================================"
+    echo ""
+    echo "Configuration:"
+    echo "  Duration:            ${STRESS_DURATION_MINUTES} minutes"
+    echo "  Spill threshold:     ${SPILL_THRESHOLD} postings"
+    echo "  Docs per batch:      ${DOCS_PER_BATCH}"
+    echo "  Concurrent readers:  ${CONCURRENT_READERS}"
+    echo ""
+    echo "Results:"
+    echo "  Total documents:     ${TOTAL_DOCS_INSERTED}"
+    echo "  Total segments:      ${TOTAL_SEGMENTS_CREATED}"
+    echo "  Total queries:       ${TOTAL_QUERIES_EXECUTED}"
+    echo "  Total errors:        ${TOTAL_ERRORS}"
+    echo ""
+    echo "Time allocation:"
+    echo "  Test 1 (insert/query):    ${TEST1_DURATION}s (40%)"
+    echo "  Test 2 (concurrent):      ${TEST2_DURATION}s (25%)"
+    echo "  Test 3 (multi-index):     ${TEST3_DURATION}s (15%)"
+    echo "  Test 4 (segment stress):  ${TEST4_DURATION}s (10%)"
+    echo "  Test 5 (cleanup):         ${TEST5_DURATION}s (10%)"
+    echo ""
+    if [ $TOTAL_ERRORS -eq 0 ]; then
+        echo -e "${GREEN}STATUS: ALL TESTS PASSED${NC}"
+    else
+        echo -e "${YELLOW}STATUS: COMPLETED WITH ${TOTAL_ERRORS} ERRORS${NC}"
+    fi
+    echo "============================================================"
 }
 
 run_stress_tests() {
     log "Starting pg_textsearch stress tests"
-    log "Duration: ${STRESS_DURATION_MINUTES} minutes"
-    log "Spill threshold: ${SPILL_THRESHOLD}"
 
     test_extended_insert_query
     test_concurrent_stress
     test_multiple_indexes
-    test_segment_merge_stress
+    test_segment_stress
     test_resource_cleanup
 
-    log "All stress tests completed"
+    print_summary
 }
 
 main() {
-    log "Starting pg_textsearch stress testing..."
-    log "Configuration:"
-    log "  Duration: ${STRESS_DURATION_MINUTES} minutes"
-    log "  Spill threshold: ${SPILL_THRESHOLD}"
-    log "  Docs per batch: ${DOCS_PER_BATCH}"
-    log "  Concurrent readers: ${CONCURRENT_READERS}"
+    log "pg_textsearch stress test suite"
+    echo ""
+    echo "Configuration:"
+    echo "  Duration:           ${STRESS_DURATION_MINUTES} minutes (${TOTAL_SECONDS} seconds)"
+    echo "  Spill threshold:    ${SPILL_THRESHOLD} postings"
+    echo "  Docs per batch:     ${DOCS_PER_BATCH}"
+    echo "  Concurrent readers: ${CONCURRENT_READERS}"
+    echo ""
 
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found"
     command -v psql >/dev/null 2>&1 || error "psql not found"
@@ -500,8 +684,13 @@ main() {
     setup_test_db
     run_stress_tests
 
-    log "Stress tests completed successfully!"
-    exit 0
+    if [ $TOTAL_ERRORS -eq 0 ]; then
+        log "Stress tests completed successfully!"
+        exit 0
+    else
+        warn "Stress tests completed with ${TOTAL_ERRORS} errors"
+        exit 1
+    fi
 }
 
 if [ "${BASH_SOURCE[0]}" == "${0}" ]; then

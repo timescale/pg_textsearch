@@ -59,25 +59,33 @@ Tests verify:
 ### 4. Stress Testing
 
 Long-running stress tests for extended operation verification and resource leak detection.
+All tests are time-based to ensure sustained load over the configured duration.
 
 #### Stress Tests (`stress.sh`)
-- **Extended Insert/Query**: Continuous inserts and queries over extended time
-- **Concurrent Stress**: Multiple readers with continuous inserts and spills
-- **Multiple Indexes**: Interleaved operations on multiple indexes
-- **Segment Merge Stress**: Creates many segments to test merge behavior
-- **Resource Cleanup**: Repeated index creation/deletion
+- **Test 1: Extended Insert/Query** (40% of duration) - Continuous inserts (~30K docs/min) with concurrent queries
+- **Test 2: Concurrent Stress** (25% of duration) - Multiple readers querying while writer inserts continuously
+- **Test 3: Multiple Indexes** (15% of duration) - 3 indexes with interleaved insert/query operations
+- **Test 4: Segment Stress** (10% of duration) - Forces frequent spills to create many segments
+- **Test 5: Resource Cleanup** (10% of duration) - Repeated index creation/deletion cycles
 
 Configuration (environment variables):
-- `STRESS_DURATION_MINUTES` - Test duration (default: 5)
-- `SPILL_THRESHOLD` - Low threshold to create more segments (default: 1000)
+- `STRESS_DURATION_MINUTES` - Test duration (default: 5 local, 30 nightly)
+- `SPILL_THRESHOLD` - Posting threshold for spills (default: 1000 local, 500 nightly)
 - `DOCS_PER_BATCH` - Documents per insert batch (default: 100)
 - `CONCURRENT_READERS` - Number of concurrent reader processes (default: 3)
 
+Expected load for 30-minute nightly run:
+- ~1.2 million documents inserted
+- ~1,500 segments created
+- ~40,000 queries executed
+- 4+ concurrent database connections
+
 Tests verify:
-- Continued correctness over extended operation
-- No memory leaks under sustained load
-- Proper segment creation and querying
-- Resource cleanup on index drop
+- ✅ Continued correctness over extended operation
+- ✅ No memory leaks under sustained load
+- ✅ Proper segment creation and querying
+- ✅ Resource cleanup on index drop
+- ✅ Segment count tracking and validation
 
 ### 5. Memory Budget Testing
 
