@@ -28,7 +28,6 @@ tmp_check_shared/
 Thumbs.db
 
 # Claude Code files
-CLAUDE.md
 .claude/
 
 # VSCode files
