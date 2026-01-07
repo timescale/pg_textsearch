@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767760060215,
+  "lastUpdate": 1767766974901,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1875,6 +1875,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "67160fc91c9b962dc729a65e65fd65703f485b02",
+          "message": "Add CLAUDE.md to repository (#112)\n\n## Summary\n\n- Adds CLAUDE.md to the repository (previously gitignored)\n- Updates all sections to reflect current codebase state at v0.3.0-dev\n- Documents reorganized source structure with subdirectories\n- Updates GUC parameters and configuration options\n- Documents Block-Max WAND (BMW) query optimization\n- Adds all current test files and CI workflows\n\n## Key Changes\n\n**Source Structure**: Documented the reorganized codebase with:\n- `src/am/` - Access method implementation\n- `src/memtable/` - In-memory index structures\n- `src/segment/` - Disk-based segment storage\n- `src/query/` - Query execution and BMW optimization\n- `src/types/` - SQL data types\n- `src/state/` - Index state management\n- `src/planner/` - Query planner integration\n- `src/debug/` - Debugging utilities\n\n**Configuration**: Updated GUC parameters:\n- `pg_textsearch.default_limit` (was index_memory_limit)\n- `pg_textsearch.enable_bmw` (new)\n- `pg_textsearch.log_bmw_stats` (new)\n- `pg_textsearch.bulk_load_threshold` (new)\n- `pg_textsearch.memtable_spill_threshold` (new)\n- `pg_textsearch.segments_per_level` (new)\n\n**Documentation**: Added sections for:\n- Block-Max WAND optimization\n- All CI workflows (benchmark.yml, nightly-stress.yml,\nupgrade-tests.yml, etc.)\n- New benchmark datasets (MS MARCO, Wikipedia)\n- Debug functions (bm25_dump_index, bm25_summarize_index)\n\n## Testing\n\nN/A - documentation only",
+          "timestamp": "2026-01-07T05:22:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/67160fc91c9b962dc729a65e65fd65703f485b02"
+        },
+        "date": 1767766974379,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 237.564,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.32,
             "unit": "ms"
           },
           {
