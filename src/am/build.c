@@ -754,9 +754,24 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		/*
 		 * Only consider parallel build for tables with 100K+ estimated rows.
 		 * For smaller tables, the parallel coordination overhead exceeds
-		 * the benefit. Note: reltuples may be -1 if table never analyzed.
+		 * the benefit.
+		 *
+		 * If reltuples is -1 (table never analyzed), estimate from page count.
+		 * We use a conservative estimate of 50 tuples per 8KB page, which
+		 * assumes ~160 bytes per row (reasonable for text search workloads).
 		 */
-#define TP_MIN_PARALLEL_TUPLES 100000
+#define TP_MIN_PARALLEL_TUPLES		100000
+#define TP_TUPLES_PER_PAGE_ESTIMATE 50
+
+		if (reltuples < 0)
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+			reltuples = (double)nblocks * TP_TUPLES_PER_PAGE_ESTIMATE;
+			elog(DEBUG1,
+				 "Table not analyzed, estimating %.0f tuples from %u pages",
+				 reltuples,
+				 nblocks);
+		}
 
 		/*
 		 * Thresholds for warning about suboptimal parallelism.
