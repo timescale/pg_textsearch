@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767748004835,
+  "lastUpdate": 1767752806399,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "msmarco Benchmarks": [
@@ -1338,6 +1338,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2211.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "fa9f4cdd2130d551952e99092990ac6d92249ec8",
+          "message": "Add aggressive disk cleanup for System Y benchmark",
+          "timestamp": "2026-01-07T02:01:49Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fa9f4cdd2130d551952e99092990ac6d92249ec8"
+        },
+        "date": 1767752805897,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 550620.576,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 5.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 33.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 66.32,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 75.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 163.33,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 190.45,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 228.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 392.11,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 185.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2211.14,
             "unit": "MB"
           }
         ]
