@@ -16,7 +16,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@tigerdata.com"
           },
           "id": "e59eecc100b3ed695d90f71de5837183b836ba75",
-          "message": "Update step summaries for new token-bucketed metrics\n\nBoth ParadeDB and pg_textsearch job summaries now show:\n- Latency by token count (1-8+ tokens, p50)\n- Throughput (avg ms/query)\n\nEasy side-by-side comparison in GitHub Actions run summary.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "message": "Update step summaries for new token-bucketed metrics\n\nBoth ParadeDB and pg_textsearch job summaries now show:\n- Latency by token count (1-8+ tokens, p50)\n- Throughput (avg ms/query)\n\nEasy side-by-side comparison in GitHub Actions run summary.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
           "timestamp": "2026-01-05T05:20:02Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/e59eecc100b3ed695d90f71de5837183b836ba75"
         },
@@ -93,7 +93,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@tigerdata.com"
           },
           "id": "e59eecc100b3ed695d90f71de5837183b836ba75",
-          "message": "Update step summaries for new token-bucketed metrics\n\nBoth ParadeDB and pg_textsearch job summaries now show:\n- Latency by token count (1-8+ tokens, p50)\n- Throughput (avg ms/query)\n\nEasy side-by-side comparison in GitHub Actions run summary.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "message": "Update step summaries for new token-bucketed metrics\n\nBoth ParadeDB and pg_textsearch job summaries now show:\n- Latency by token count (1-8+ tokens, p50)\n- Throughput (avg ms/query)\n\nEasy side-by-side comparison in GitHub Actions run summary.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
           "timestamp": "2026-01-05T05:20:02Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/e59eecc100b3ed695d90f71de5837183b836ba75"
         },
@@ -148,421 +148,6 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Throughput (avg ms/query)",
             "value": 126.01,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Index Size",
-            "value": 2211.21,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Mateusz Paluszkiewicz",
-            "username": "TheAifam5",
-            "email": "theaifam5@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220",
-          "message": "Add missing math.h include in build.c (#105)\n\ngcc 14.2.0 reports an error about implicit declaration of 'log' function\nin build.c. Adding the math.h include resolves this issue.\n\nSigned-off-by: Mateusz Paluszkiewicz <theaifam5@gmail.com>",
-          "timestamp": "2026-01-05T05:14:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220"
-        },
-        "date": 1767594141357,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (8.8M docs) - Index Build Time",
-            "value": 530966.706,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Short Query (1 word)",
-            "value": 6.979,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
-            "value": 16.674,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Long Query (question)",
-            "value": 14.764,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Common Term Query",
-            "value": 0.046,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Rare Term Query",
-            "value": 4.965,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
-            "value": 34.78,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Short Query with Score",
-            "value": 12.794,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Medium Query with Score",
-            "value": 23.736,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Long Query with Score",
-            "value": 26.877,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Rare Term Query with Score",
-            "value": 16.009,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
-            "value": 42.38,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Index Size",
-            "value": 2211.21,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Mateusz Paluszkiewicz",
-            "username": "TheAifam5",
-            "email": "theaifam5@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220",
-          "message": "Add missing math.h include in build.c (#105)\n\ngcc 14.2.0 reports an error about implicit declaration of 'log' function\nin build.c. Adding the math.h include resolves this issue.\n\nSigned-off-by: Mateusz Paluszkiewicz <theaifam5@gmail.com>",
-          "timestamp": "2026-01-05T05:14:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220"
-        },
-        "date": 1767656915847,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5260.761,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Short Query (1 word)",
-            "value": 0.118,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Medium Query (3 words)",
-            "value": 0.155,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Long Query (question)",
-            "value": 0.169,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Common Term Query",
-            "value": 0.036,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Rare Term Query",
-            "value": 0.12,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Avg Query Latency (20 queries)",
-            "value": 0.48,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Short Query with Score",
-            "value": 0.532,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Medium Query with Score",
-            "value": 0.701,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Long Query with Score",
-            "value": 0.642,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Rare Term Query with Score",
-            "value": 0.623,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Avg Query Latency with Score",
-            "value": 1.01,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@tigerdata.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@tigerdata.com"
-          },
-          "id": "61561e2c3e7e1ebc240d78703213126fb67bc2f9",
-          "message": "Rename paradedb references to systemx for anonymization\n\n- Rename paradedb/ directory to systemx/\n- Rename job from paradedb-benchmark to system-x-benchmark\n- Rename artifact from paradedb-benchmark to system-x-benchmark\n- Rename internal file names (paradedb_metrics.json -> systemx_metrics.json)\n- Rename PostgreSQL objects (tables, indexes, functions) to use systemx suffix\n- Update all workflow step names and comments\n\nThe only remaining \"paradedb\" references are:\n- GitHub download URL (actual package location)\n- paradedb.match() and paradedb.score() SQL API functions (extension schema)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
-          "timestamp": "2026-01-05T22:21:24Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/61561e2c3e7e1ebc240d78703213126fb67bc2f9"
-        },
-        "date": 1767657844821,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5844.975,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.12,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.26,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.4,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.5,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.8,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 0.94,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1.19,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.39,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.71,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@tigerdata.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@tigerdata.com"
-          },
-          "id": "bf3d3f505226d6cd33101541473f608e9ff46537",
-          "message": "Add result count validation to benchmark queries\n\nBoth pg_textsearch and System X benchmarks now report total_results\nto verify that queries are actually returning data, not just executing.\n\nThis helps validate that the benchmark methodology is sound.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
-          "timestamp": "2026-01-06T00:19:21Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/bf3d3f505226d6cd33101541473f608e9ff46537"
-        },
-        "date": 1767659049139,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5679.626,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.12,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.26,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.4,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.49,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.85,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 1,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1.29,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.42,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.69,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "2a1a8490035f0914e4d2f4afc44258540e2b946b",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-          "timestamp": "2026-01-06T00:28:06Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/2a1a8490035f0914e4d2f4afc44258540e2b946b"
-        },
-        "date": 1767661747594,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (8.8M docs) - Index Build Time",
-            "value": 522045.617,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Short Query (1 word)",
-            "value": 9.022,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Medium Query (3 words)",
-            "value": 8.925,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Long Query (question)",
-            "value": 14.607,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Common Term Query",
-            "value": 0.039,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Rare Term Query",
-            "value": 9.005,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Avg Query Latency (20 queries)",
-            "value": 22.07,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Short Query with Score",
-            "value": 13.527,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Medium Query with Score",
-            "value": 15.501,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Long Query with Score",
-            "value": 16.549,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Rare Term Query with Score",
-            "value": 20.296,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (8.8M docs) - Avg Query Latency with Score",
-            "value": 28.76,
             "unit": "ms"
           },
           {
@@ -662,7 +247,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "a0eb255abc6bc57552bd3d53b9f738b234493c29",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Fix expected output to match updated bmw.sql comment\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T00:28:06Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/a0eb255abc6bc57552bd3d53b9f738b234493c29"
         },
@@ -739,7 +324,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "8828e633e464ddd754f6afe188862ded05d706ff",
-          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T02:24:58Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/8828e633e464ddd754f6afe188862ded05d706ff"
         },
@@ -953,314 +538,6 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2211.21,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "9d88a0d1db6ebf84a73dbe080af991694324b200",
-          "message": "Fix pg_tokenizer version to 0.1.1",
-          "timestamp": "2026-01-07T00:08:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/9d88a0d1db6ebf84a73dbe080af991694324b200"
-        },
-        "date": 1767744521038,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5901.386,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.13,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.27,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.42,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.5,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.81,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 1,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1.31,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.41,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.7,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "9d88a0d1db6ebf84a73dbe080af991694324b200",
-          "message": "Fix pg_tokenizer version to 0.1.1",
-          "timestamp": "2026-01-07T00:08:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/9d88a0d1db6ebf84a73dbe080af991694324b200"
-        },
-        "date": 1767744627204,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5687.791,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.13,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.26,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.36,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.46,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.66,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 0.78,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.4,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.69,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "c748e7036ea4d4394f7afbb5411b90bb7898e08d",
-          "message": "Add pg_tokenizer to shared_preload_libraries",
-          "timestamp": "2026-01-07T00:11:34Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/c748e7036ea4d4394f7afbb5411b90bb7898e08d"
-        },
-        "date": 1767745023301,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5725.17,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.14,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.28,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.44,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.52,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.87,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 0.99,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1.3,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.45,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.7,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "3ba39721d1e1e26938e1ff9efc7e5958a49dedd8",
-          "message": "Add tokenizer_catalog and bm25_catalog to search_path",
-          "timestamp": "2026-01-07T00:17:46Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/3ba39721d1e1e26938e1ff9efc7e5958a49dedd8"
-        },
-        "date": 1767745219122,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "msmarco (99.9K docs) - Index Build Time",
-            "value": 5708.252,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 1 Token Query (p50)",
-            "value": 0.12,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 2 Token Query (p50)",
-            "value": 0.26,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 3 Token Query (p50)",
-            "value": 0.43,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 4 Token Query (p50)",
-            "value": 0.5,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 5 Token Query (p50)",
-            "value": 0.82,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 6 Token Query (p50)",
-            "value": 0.97,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 7 Token Query (p50)",
-            "value": 1.28,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - 8+ Token Query (p50)",
-            "value": 1.41,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Throughput (800 queries, avg ms/query)",
-            "value": 0.7,
-            "unit": "ms"
-          },
-          {
-            "name": "msmarco (99.9K docs) - Index Size",
-            "value": 27.07,
             "unit": "MB"
           }
         ]
@@ -1509,7 +786,7 @@ window.BENCHMARK_DATA = {
             "email": "noreply@github.com"
           },
           "id": "87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47",
-          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch—not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms × segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch\u2014not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms \u00d7 segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
           "timestamp": "2026-01-07T04:07:12Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47"
         },
@@ -1732,130 +1009,6 @@ window.BENCHMARK_DATA = {
       {
         "commit": {
           "author": {
-            "name": "Mateusz Paluszkiewicz",
-            "username": "TheAifam5",
-            "email": "theaifam5@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220",
-          "message": "Add missing math.h include in build.c (#105)\n\ngcc 14.2.0 reports an error about implicit declaration of 'log' function\nin build.c. Adding the math.h include resolves this issue.\n\nSigned-off-by: Mateusz Paluszkiewicz <theaifam5@gmail.com>",
-          "timestamp": "2026-01-05T05:14:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220"
-        },
-        "date": 1767594139577,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "cranfield (1.3K docs) - Index Build Time",
-            "value": 246.461,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Short Query (1 word)",
-            "value": 0.124,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Medium Query (3 words)",
-            "value": 0.184,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Long Query (question)",
-            "value": 0.184,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Common Term Query",
-            "value": 0.154,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Rare Term Query",
-            "value": 0.051,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
-            "value": 0.27,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Index Size",
-            "value": 0.02,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "2a1a8490035f0914e4d2f4afc44258540e2b946b",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-          "timestamp": "2026-01-06T00:28:06Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/2a1a8490035f0914e4d2f4afc44258540e2b946b"
-        },
-        "date": 1767661746131,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "cranfield (1.3K docs) - Index Build Time",
-            "value": 240.686,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Short Query (1 word)",
-            "value": 0.125,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Medium Query (3 words)",
-            "value": 0.176,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Long Query (question)",
-            "value": 0.181,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Common Term Query",
-            "value": 0.15,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Rare Term Query",
-            "value": 0.053,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Avg Query Latency (20 queries)",
-            "value": 0.25,
-            "unit": "ms"
-          },
-          {
-            "name": "cranfield (1.3K docs) - Index Size",
-            "value": 0.02,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
             "name": "Todd J. Green",
             "username": "tjgreen42",
             "email": "tj@timescale.com"
@@ -1866,7 +1019,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "a0eb255abc6bc57552bd3d53b9f738b234493c29",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Fix expected output to match updated bmw.sql comment\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T00:28:06Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/a0eb255abc6bc57552bd3d53b9f738b234493c29"
         },
@@ -1903,7 +1056,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "8828e633e464ddd754f6afe188862ded05d706ff",
-          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T02:24:58Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/8828e633e464ddd754f6afe188862ded05d706ff"
         },
@@ -2014,7 +1167,7 @@ window.BENCHMARK_DATA = {
             "email": "noreply@github.com"
           },
           "id": "87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47",
-          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch—not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms × segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch\u2014not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms \u00d7 segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
           "timestamp": "2026-01-07T04:07:12Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47"
         },
@@ -2080,160 +1233,6 @@ window.BENCHMARK_DATA = {
       {
         "commit": {
           "author": {
-            "name": "Mateusz Paluszkiewicz",
-            "username": "TheAifam5",
-            "email": "theaifam5@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220",
-          "message": "Add missing math.h include in build.c (#105)\n\ngcc 14.2.0 reports an error about implicit declaration of 'log' function\nin build.c. Adding the math.h include resolves this issue.\n\nSigned-off-by: Mateusz Paluszkiewicz <theaifam5@gmail.com>",
-          "timestamp": "2026-01-05T05:14:17Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/ee054e9d8a2b8279b8c3a7e85b4eaa74d79c6220"
-        },
-        "date": 1767594142791,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "wikipedia (99.9K docs) - Index Build Time",
-            "value": 18753.694,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
-            "value": 2.806,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
-            "value": 3.588,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Long Query (question)",
-            "value": 2.195,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Common Term Query",
-            "value": 5.165,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Rare Term Query",
-            "value": 5.528,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Short Query with Score",
-            "value": 3.748,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Medium Query with Score",
-            "value": 4.37,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Long Query with Score",
-            "value": 3.524,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Rare Term Query with Score",
-            "value": 4.054,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Index Size",
-            "value": 66.75,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "committer": {
-            "name": "Todd J. Green",
-            "username": "tjgreen42",
-            "email": "tj@timescale.com"
-          },
-          "id": "2a1a8490035f0914e4d2f4afc44258540e2b946b",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-          "timestamp": "2026-01-06T00:28:06Z",
-          "url": "https://github.com/timescale/pg_textsearch/commit/2a1a8490035f0914e4d2f4afc44258540e2b946b"
-        },
-        "date": 1767661748830,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "wikipedia (99.9K docs) - Index Build Time",
-            "value": 18856.162,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Short Query (1 word)",
-            "value": 2.657,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Medium Query (3 words)",
-            "value": 2.001,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Long Query (question)",
-            "value": 4.833,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Common Term Query",
-            "value": 7.403,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Rare Term Query",
-            "value": 12.675,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Short Query with Score",
-            "value": 13.609,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Medium Query with Score",
-            "value": 2.876,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Long Query with Score",
-            "value": 2.921,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Rare Term Query with Score",
-            "value": 4.183,
-            "unit": "ms"
-          },
-          {
-            "name": "wikipedia (99.9K docs) - Index Size",
-            "value": 66.75,
-            "unit": "MB"
-          }
-        ]
-      },
-      {
-        "commit": {
-          "author": {
             "name": "Todd J. Green",
             "username": "tjgreen42",
             "email": "tj@timescale.com"
@@ -2244,7 +1243,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "a0eb255abc6bc57552bd3d53b9f738b234493c29",
-          "message": "Fix expected output to match updated bmw.sql comment\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Fix expected output to match updated bmw.sql comment\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T00:28:06Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/a0eb255abc6bc57552bd3d53b9f738b234493c29"
         },
@@ -2276,7 +1275,7 @@ window.BENCHMARK_DATA = {
             "email": "tj@timescale.com"
           },
           "id": "8828e633e464ddd754f6afe188862ded05d706ff",
-          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "message": "Remove BMW_MAX_TERMS limit - always use BMW for multi-term queries\n\nBenchmarks show BMW outperforms exhaustive scoring even for 8+ term\nqueries. The previous assumption that \"exhaustive wins beyond 8 terms\"\nwas incorrect - bucket 8 queries were 2.7x slower than System X due\nto falling back to exhaustive scanning.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
           "timestamp": "2026-01-06T02:24:58Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/8828e633e464ddd754f6afe188862ded05d706ff"
         },
@@ -2372,7 +1371,7 @@ window.BENCHMARK_DATA = {
             "email": "noreply@github.com"
           },
           "id": "87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47",
-          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch—not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms × segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "message": "Add Block-Max WAND (BMW) optimization for top-k queries (#102)\n\n## Summary\n\n- Implement Block-Max WAND (BMW) for top-k retrieval using block-level\nupper bounds in V2 segments\n- Add top-k min-heap with O(1) threshold access and O(log k) updates for\nefficient result tracking\n- BMW fast path for single-term queries (skip blocks that can't\ncontribute to top-k)\n- BMW fast path for multi-term queries with WAND-style doc-ID ordered\ntraversal\n- Batch doc_freq lookups to reduce segment open/close overhead for\nmulti-term queries\n- GUC variables `pg_textsearch.enable_bmw` and `log_bmw_stats` for\ndebugging/benchmarking\n\n## Performance (MS MARCO 8.8M docs, p50 latency)\n\n| Query Length | pg_textsearch | System X | Result |\n|--------------|---------------|----------|--------|\n| 1 token | 10.14ms | 18.05ms | **1.8x faster** |\n| 2 tokens | 12.54ms | 17.24ms | **1.4x faster** |\n| 3 tokens | 15.14ms | 22.94ms | **1.5x faster** |\n| 4 tokens | 19.72ms | 24.01ms | **1.2x faster** |\n| 5 tokens | 25.79ms | 26.21ms | ~same |\n| 6 tokens | 32.88ms | 33.47ms | ~same |\n| 7 tokens | 42.09ms | 32.23ms | 1.3x slower |\n| 8+ tokens | 63.41ms | 39.17ms | 1.6x slower |\n\n**Cranfield:** 225 queries in 57ms (0.26 ms/query avg)\n\n*Note: These benchmarks establish baselines for pg_textsearch\u2014not a\nhead-to-head comparison. System X has different defaults and tuning\noptions; further iteration on configurations required.*\n\n## Implementation Details\n\n**New files:**\n- `src/query/bmw.h` - Top-k heap, BMW stats, and scoring function\ninterfaces\n- `src/query/bmw.c` - Min-heap implementation, block max score\ncomputation, single-term and multi-term BMW scoring\n\n**Key algorithm:**\n1. Compute block max BM25 score from skip entry metadata\n(`block_max_tf`, `block_max_norm`)\n2. Only score blocks where `block_max_score >= current_threshold`\n3. Update threshold as better results are found\n4. Memtable scored exhaustively (no skip index)\n\n**Multi-term optimization:**\n- Sort terms by IDF (highest first) for faster threshold convergence\n- WAND-style doc-ID ordered traversal across terms' posting lists\n- Batch doc_freq lookups: opens each segment once instead of once per\nterm\n- Reduces segment opens from O(terms \u00d7 segments) to O(segments)\n\n## Testing\n\n- All regression tests pass\n- Shell-based tests pass (concurrency, recovery, segment)\n- Results match exhaustive scoring path with correct tie-breaking\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
           "timestamp": "2026-01-07T04:07:12Z",
           "url": "https://github.com/timescale/pg_textsearch/commit/87f6ae4508cd1f1d0037ca92ff012ff1e4eecd47"
         },
@@ -2425,4 +1424,4 @@ window.BENCHMARK_DATA = {
       }
     ]
   }
-}
+};
