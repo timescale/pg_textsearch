@@ -102,6 +102,10 @@ make test              # run SQL regression tests only
 make installcheck      # run all tests (SQL + shell scripts)
 make test-all          # same as installcheck
 
+# Run a single test
+$(pg_config --pgxs | xargs dirname)/../../src/test/regress/pg_regress \
+  --inputdir=test --outputdir=test basic  # runs basic.sql only
+
 # Individual test types
 make test-concurrency  # multi-session concurrency tests
 make test-recovery     # crash recovery tests
@@ -110,6 +114,12 @@ make test-stress       # long-running stress tests
 make test-shell        # run all shell-based tests
 make test-local        # run tests with dedicated Postgres instance
 make expected          # generate expected output from test results
+```
+
+### Debug Builds
+```bash
+# Enable debug index dumps (add to Makefile or command line)
+make PG_CPPFLAGS="-I$(pwd)/src -g -O2 -DDEBUG_DUMP_INDEX"
 ```
 
 ### Code Quality
@@ -144,53 +154,12 @@ make format-single FILE=path/to/file.c  # format specific file
 
 ## Test Structure
 
-### SQL Regression Tests (`test/sql/`)
-
-Core functionality:
-- `basic.sql` - Extension functionality and type operations
-- `index.sql` - Index creation and basic operations
-- `vector.sql` - bm25vector type and operations
-- `queries.sql` - Complex query patterns
-
-BM25 scoring:
-- `scoring1.sql` through `scoring6.sql` - Comprehensive BM25 scoring tests
-
-Storage and segments:
-- `segment.sql` - Disk segment operations
-- `memory.sql` - Memory management
-- `limits.sql` - Query limits and memory budget
-- `vacuum.sql` - Vacuum operations
-- `merge.sql` - Segment merge/compaction
-
-Query optimization:
-- `bmw.sql` - Block-Max WAND optimization
-- `wand.sql` - WAND algorithm tests
-
-Table features:
-- `inheritance.sql` - Table inheritance support
-- `partitioned.sql` - Partitioned table support
-- `unlogged_index.sql` - Unlogged table support
-
-Edge cases:
-- `aerodocs.sql` - IR validation using aerodynamics documents
-- `manyterms.sql` - High-term-count document testing
-- `strings.sql` - String interning and text processing
-- `deletion.sql` - Delete operations
-- `updates.sql` - Update operations
-- `mixed.sql` - Mixed operations testing
-- `dropped.sql` - Dropped column handling
-- `empty.sql` - Empty index handling
-- `implicit.sql` - Implicit index resolution
-- `lock.sql` - Locking behavior
-- `schema.sql` - Schema handling
-- `unsupported.sql` - Unsupported operation errors
-
-### Shell-based Tests (`test/scripts/`)
-
-- `concurrency.sh` - Multi-session safety verification
-- `recovery.sh` - Crash simulation and recovery
-- `segment.sh` - Multi-backend segment tests
-- `stress.sh` - Long-running stress tests
+- **SQL tests** (`test/sql/`): Core functionality, BM25 scoring (scoring1-6),
+  storage/segments, query optimization (bmw, wand), table features
+  (partitioned, inheritance), and edge cases
+- **Shell tests** (`test/scripts/`): concurrency.sh, recovery.sh, segment.sh,
+  stress.sh for multi-session, crash recovery, and load testing
+- **Expected output** (`test/expected/`): Reference outputs for regression tests
 
 ## BM25 Implementation
 
@@ -246,6 +215,8 @@ GitHub Actions workflows:
   dictionary, posting lists, and document entries
 - `bm25_dump_index(index_name, filepath)` - Dumps full index to file
 - `bm25_summarize_index(index_name)` - Shows high-level index statistics
+- `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
+  returns number of entries spilled
 
 ## Important Notes
 
