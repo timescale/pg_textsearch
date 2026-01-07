@@ -720,6 +720,7 @@ jobs:
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_preload_libraries = 'pg_tokenizer'
+        search_path = '"\$user", public, tokenizer_catalog, bm25_catalog'
         shared_buffers = 4GB
         effective_cache_size = 12GB
         maintenance_work_mem = 512MB
