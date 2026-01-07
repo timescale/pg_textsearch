@@ -178,12 +178,12 @@ get_or_create_posting(
 	bool				  found;
 	MemoryContext		  oldcxt;
 	char				  key[NAMEDATALEN];
+	int					  key_len;
 
-	/* Truncate term for hash key if needed */
-	if (term_len >= NAMEDATALEN)
-		term_len = NAMEDATALEN - 1;
-	memcpy(key, term, term_len);
-	key[term_len] = '\0';
+	/* Truncate term for hash key if needed, but preserve original term_len */
+	key_len = (term_len >= NAMEDATALEN) ? NAMEDATALEN - 1 : term_len;
+	memcpy(key, term, key_len);
+	key[key_len] = '\0';
 
 	entry = hash_search(memtable->term_hash, key, HASH_ENTER, &found);
 
@@ -194,7 +194,7 @@ get_or_create_posting(
 
 		entry->posting			  = palloc(sizeof(TpLocalPosting));
 		entry->posting->term	  = pstrdup(term);
-		entry->posting->term_len  = strlen(term);
+		entry->posting->term_len  = term_len;
 		entry->posting->doc_count = 0;
 		entry->posting->capacity  = TP_INITIAL_POSTING_LIST_CAPACITY;
 		entry->posting->entries	  = palloc(
@@ -270,10 +270,15 @@ tp_local_memtable_store_doc_length(
 	{
 		entry->ctid = *ctid;
 		memtable->num_docs++;
+		memtable->total_len += doc_length;
+	}
+	else
+	{
+		/* Adjust total length by the difference between new and old values */
+		memtable->total_len += doc_length - entry->length;
 	}
 
 	entry->length = doc_length;
-	memtable->total_len += doc_length;
 }
 
 /*
