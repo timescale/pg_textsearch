@@ -782,7 +782,26 @@ jobs:
 
         echo "=== System Y MS MARCO Benchmark ===" | tee benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
-        time psql -f benchmarks/datasets/msmarco/systemy/load.sql 2>&1 | tee -a benchmark_results.txt
+
+        # Run load script (this loads data, tokenizes, and builds index)
+        # Delete source data after loading to free disk space for tokenization
+        time psql -f benchmarks/datasets/msmarco/systemy/load.sql 2>&1 | tee -a benchmark_results.txt &
+        PSQL_PID=$!
+
+        # Wait for data loading to complete (look for verification output)
+        while ! grep -q "Data Loading Verification" benchmark_results.txt 2>/dev/null; do
+          sleep 10
+        done
+        sleep 5  # Brief delay to ensure COPY is done
+
+        # Delete source files to free space for tokenization and indexing
+        echo "Deleting source data to free disk space..."
+        rm -rf "$DATA_DIR"
+        df -h /
+
+        # Wait for load script to complete
+        wait $PSQL_PID
+
         time psql -f benchmarks/datasets/msmarco/systemy/queries.sql 2>&1 | tee -a benchmark_results.txt
         echo "End: $(date)" | tee -a benchmark_results.txt
 
