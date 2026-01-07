@@ -19,6 +19,7 @@
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
+#include <utils/guc.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
@@ -28,6 +29,7 @@
 #include "constants.h"
 #include "memtable/local_memtable.h"
 #include "segment/docmap.h"
+#include "segment/merge.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
 #include "state/metapage.h"
@@ -375,11 +377,54 @@ tp_init_parallel_shared(
 	shared->b				= b;
 	shared->worker_count	= nworkers;
 
-	/* Per-worker spill threshold */
-	shared->spill_threshold_per_worker = tp_memtable_spill_threshold /
-										 nworkers;
-	if (shared->spill_threshold_per_worker < 100000)
-		shared->spill_threshold_per_worker = 100000; /* minimum */
+	/*
+	 * Per-worker spill threshold calculation.
+	 *
+	 * We want segments large enough to be efficient but not so large that
+	 * workers run out of memory. With double-buffering, each worker can have
+	 * up to 2 active memtables, so we need to be conservative.
+	 *
+	 * Heuristic: Each posting entry uses ~25 bytes in the memtable
+	 * (ItemPointerData + frequency + hash overhead + term strings).
+	 * With maintenance_work_mem split across workers and double-buffering:
+	 *   budget = maintenance_work_mem / nworkers / 2 (for double-buffer)
+	 *   max_postings = budget / 25 bytes
+	 *
+	 * But we also use the GUC-based threshold as an upper bound.
+	 * Minimum of 1M postings ensures segments aren't too small (~40K docs).
+	 */
+#define TP_BYTES_PER_POSTING_ESTIMATE 25
+#define TP_MIN_POSTINGS_PER_WORKER	  1000000 /* ~40K docs minimum */
+
+	{
+		int64 memory_budget_per_worker;
+		int64 memory_based_threshold;
+		int64 guc_based_threshold;
+
+		/* maintenance_work_mem is in KB, convert to bytes */
+		memory_budget_per_worker = ((int64)maintenance_work_mem * 1024) /
+								   nworkers / 2; /* /2 for double-buffer */
+
+		memory_based_threshold = memory_budget_per_worker /
+								 TP_BYTES_PER_POSTING_ESTIMATE;
+
+		guc_based_threshold = tp_memtable_spill_threshold / nworkers;
+
+		/* Use smaller of memory-based and GUC-based thresholds */
+		shared->spill_threshold_per_worker =
+				Min(memory_based_threshold, guc_based_threshold);
+
+		/* But ensure minimum for segment efficiency */
+		if (shared->spill_threshold_per_worker < TP_MIN_POSTINGS_PER_WORKER)
+			shared->spill_threshold_per_worker = TP_MIN_POSTINGS_PER_WORKER;
+
+		elog(DEBUG1,
+			 "Parallel build: %d workers, %ld postings/worker threshold "
+			 "(memory budget: %ld KB/worker)",
+			 nworkers,
+			 (long)shared->spill_threshold_per_worker,
+			 (long)(memory_budget_per_worker / 1024));
+	}
 
 	/* Initialize coordination primitives */
 	SpinLockInit(&shared->mutex);
@@ -1236,6 +1281,15 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 		 "Linked %d segments from %d workers into L0",
 		 total_segments,
 		 shared->worker_count);
+
+	/*
+	 * Trigger compaction if L0 has too many segments.
+	 * This is critical for parallel builds which can create many small
+	 * segments (one per worker per spill). Without compaction, query
+	 * performance would degrade significantly.
+	 */
+	if (total_segments > 0)
+		tp_maybe_compact_level(index, 0);
 }
 
 /*
