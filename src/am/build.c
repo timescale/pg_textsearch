@@ -758,11 +758,38 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 #define TP_MIN_PARALLEL_TUPLES 100000
 
+		/*
+		 * Thresholds for warning about suboptimal parallelism.
+		 * These are conservative - we only warn when users could see
+		 * significant (>2x) speedup from more parallelism.
+		 */
+#define TP_WARN_NO_PARALLEL_TUPLES 1000000 /* 1M tuples */
+#define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
+#define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
+
 		nworkers = plan_create_index_workers(
 				RelationGetRelid(heap), RelationGetRelid(index));
 
 		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
+			/*
+			 * Warn if table is very large but parallelism is limited.
+			 * Users may not realize max_parallel_maintenance_workers
+			 * constrains index build parallelism.
+			 */
+			if (reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
+				nworkers <= TP_WARN_FEW_WORKERS_MIN)
+			{
+				elog(NOTICE,
+					 "Large table (%.0f tuples) with only %d parallel "
+					 "workers. "
+					 "Consider increasing max_parallel_maintenance_workers "
+					 "for "
+					 "faster index builds.",
+					 reltuples,
+					 nworkers);
+			}
+
 			elog(NOTICE,
 				 "Using parallel index build with %d workers (%.0f tuples)",
 				 nworkers,
@@ -776,6 +803,18 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 "Skipping parallel build: %.0f tuples < %d minimum",
 				 reltuples,
 				 TP_MIN_PARALLEL_TUPLES);
+		}
+		else if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES)
+		{
+			/*
+			 * Large table but no parallel workers available.
+			 * This is likely due to max_parallel_maintenance_workers = 0.
+			 */
+			elog(NOTICE,
+				 "Large table (%.0f tuples) but parallel build disabled. "
+				 "Set max_parallel_maintenance_workers > 0 for faster index "
+				 "builds.",
+				 reltuples);
 		}
 	}
 
