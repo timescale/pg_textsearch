@@ -402,7 +402,7 @@ process_posting(
 
 	if (posting == NULL)
 	{
-		elog(ERROR, "tp_process_term_in_segments: posting is NULL!");
+		elog(ERROR, "process_posting: posting is NULL!");
 	}
 
 	tf = posting->frequency;
@@ -441,65 +441,6 @@ process_posting(
 	else
 	{
 		doc_entry->score += term_score;
-	}
-}
-
-/*
- * Score documents matching a term across all segments.
- * IDF is pre-computed using unified doc_freq from memtable + segments.
- */
-void
-tp_process_term_in_segments(
-		Relation					   index,
-		BlockNumber					   first_segment,
-		const char					  *term,
-		float4						   idf,
-		float4						   query_frequency,
-		float4						   k1,
-		float4						   b,
-		float4						   avg_doc_len,
-		void						  *doc_scores_hash,
-		TpLocalIndexState *local_state pg_attribute_unused())
-{
-	BlockNumber				 current	= first_segment;
-	TpSegmentReader			*reader		= NULL;
-	HTAB					*hash_table = (HTAB *)doc_scores_hash;
-	TpSegmentPostingIterator iter;
-	TpSegmentPosting		*posting;
-
-	while (current != InvalidBlockNumber)
-	{
-		TpSegmentHeader *header;
-
-		/* Open segment */
-		reader = tp_segment_open(index, current);
-		if (!reader)
-			break;
-
-		header = reader->header;
-
-		/* Process postings for this term */
-		if (tp_segment_posting_iterator_init(&iter, reader, term))
-		{
-			while (tp_segment_posting_iterator_next(&iter, &posting))
-			{
-				process_posting(
-						posting,
-						idf,
-						query_frequency,
-						k1,
-						b,
-						avg_doc_len,
-						hash_table);
-			}
-			tp_segment_posting_iterator_free(&iter);
-		}
-
-		/* Get next segment from header */
-		current = header->next_segment;
-
-		/* Close this segment */
-		tp_segment_close(reader);
 	}
 }
 

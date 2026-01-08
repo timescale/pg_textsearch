@@ -1,0 +1,86 @@
+-- Additional coverage tests for untested code paths
+-- Tests debug functions, binary I/O, and text<@>text operator
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
+INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+-- =============================================================================
+-- Test 1: bm25_summarize_index debug function
+-- =============================================================================
+-- Create a simple table and index
+CREATE TABLE coverage_docs (id SERIAL PRIMARY KEY, content TEXT);
+INSERT INTO coverage_docs (content) VALUES
+    ('hello world test document'),
+    ('database search query optimization'),
+    ('full text search engine postgresql');
+CREATE INDEX coverage_idx ON coverage_docs USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation coverage_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 3 documents, avg_length=4.33, text_config='english' (k1=1.20, b=0.75)
+-- Test bm25_summarize_index - should return statistics without full dump
+SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_works;
+ summarize_works 
+-----------------
+ t
+(1 row)
+
+-- Test bm25_dump_index - basic call (string mode, truncated output)
+SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_works;
+ dump_works 
+------------
+ t
+(1 row)
+
+-- =============================================================================
+-- Test 2: bm25query equality (tpquery_eq)
+-- =============================================================================
+-- Test equality of identical queries
+SELECT to_bm25query('hello', 'coverage_idx') = to_bm25query('hello', 'coverage_idx') AS same_query_eq;
+ same_query_eq 
+---------------
+ t
+(1 row)
+
+-- Test inequality of different queries
+SELECT to_bm25query('hello', 'coverage_idx') = to_bm25query('world', 'coverage_idx') AS diff_query_eq;
+ diff_query_eq 
+---------------
+ f
+(1 row)
+
+-- =============================================================================
+-- Test 3: text <@> text operator (bm25_text_text_score)
+-- This is the implicit form without index context
+-- =============================================================================
+-- Force segment spill to have data on disk for the query
+SELECT bm25_spill_index('coverage_idx');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+-- Insert more data to create variation
+INSERT INTO coverage_docs (content) VALUES
+    ('additional text for testing'),
+    ('more content with different words');
+-- Test text <@> text implicit scoring
+-- This uses find_first_child_index to locate the bm25 index
+SET enable_seqscan = off;
+-- The implicit form should find coverage_idx automatically
+SELECT content, content <@> 'hello'::text AS score
+FROM coverage_docs
+WHERE content <@> 'hello'::text < 0
+ORDER BY content <@> 'hello'::text
+LIMIT 3;
+          content          |        score        
+---------------------------+---------------------
+ hello world test document | -1.3570750951766968
+(1 row)
+
+SET enable_seqscan = on;
+-- =============================================================================
+-- Cleanup
+-- =============================================================================
+DROP TABLE coverage_docs CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;
