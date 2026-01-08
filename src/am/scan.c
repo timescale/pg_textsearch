@@ -689,6 +689,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	float4		 bm25_score;
 	BlockNumber	 blknum;
 
+	(void)dir; /* BM25 index only supports forward scan */
+
 	Assert(scan != NULL);
 	Assert(so != NULL);
 	Assert(so->query_text != NULL);
