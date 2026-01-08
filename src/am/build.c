@@ -785,6 +785,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		nworkers = plan_create_index_workers(
 				RelationGetRelid(heap), RelationGetRelid(index));
 
+		elog(DEBUG1,
+			 "Parallel build check: nworkers=%d, reltuples=%.0f, min=%d",
+			 nworkers,
+			 reltuples,
+			 TP_MIN_PARALLEL_TUPLES);
+
 		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
 			/*

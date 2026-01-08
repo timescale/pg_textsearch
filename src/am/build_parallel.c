@@ -11,6 +11,7 @@
 #include <access/tableam.h>
 #include <access/xact.h>
 #include <catalog/index.h>
+#include <catalog/storage.h>
 #include <commands/progress.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -128,8 +129,8 @@ static void tp_init_parallel_shared(
 		double				   b,
 		int					   nworkers);
 
-static void tp_preallocate_page_pools(
-		Relation index, TpParallelBuildShared *shared, int pages_per_worker);
+static void tp_preallocate_page_pool(
+		Relation index, TpParallelBuildShared *shared, int total_pages);
 
 static void tp_leader_participate(
 		TpParallelBuildShared *shared,
@@ -228,7 +229,7 @@ static void tp_worker_process_document(
  */
 Size
 tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int pages_per_worker)
+		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages)
 {
 	Size size;
 	int	 total_workers;
@@ -245,12 +246,9 @@ tp_parallel_build_estimate_shmem(
 	size = add_size(
 			size, MAXALIGN(sizeof(TpWorkerSegmentInfo) * total_workers));
 
-	/* Page pools for all workers */
+	/* Shared page pool for all workers */
 	size = add_size(
-			size,
-			MAXALIGN(
-					(Size)total_workers * pages_per_worker *
-					sizeof(BlockNumber)));
+			size, MAXALIGN((Size)total_pool_pages * sizeof(BlockNumber)));
 
 	/* Parallel table scan descriptor */
 	size = add_size(size, table_parallelscan_estimate(heap, snapshot));
@@ -276,7 +274,7 @@ tp_build_parallel(
 	TpParallelBuildShared *shared;
 	Snapshot			   snapshot;
 	Size				   shmem_size;
-	int					   pages_per_worker;
+	int					   total_pool_pages;
 	BlockNumber			   heap_pages;
 	int					   launched;
 
@@ -284,11 +282,14 @@ tp_build_parallel(
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
-	/* Estimate pages needed per worker */
+	/*
+	 * Estimate total pages needed for index.
+	 * Use heap size * expansion factor + minimum per worker.
+	 * All workers share a single pool for better space efficiency.
+	 */
 	heap_pages		 = RelationGetNumberOfBlocks(heap);
-	pages_per_worker = (int)((heap_pages * TP_INDEX_EXPANSION_FACTOR) /
-							 nworkers) +
-					   TP_MIN_PAGES_PER_WORKER;
+	total_pool_pages = (int)(heap_pages * TP_INDEX_EXPANSION_FACTOR) +
+					   TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
 
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
@@ -296,7 +297,7 @@ tp_build_parallel(
 
 	/* Calculate shared memory size */
 	shmem_size = tp_parallel_build_estimate_shmem(
-			heap, snapshot, nworkers, pages_per_worker);
+			heap, snapshot, nworkers, total_pool_pages);
 
 	/* Enter parallel mode and create context */
 	EnterParallelMode();
@@ -320,10 +321,10 @@ tp_build_parallel(
 			k1,
 			b,
 			nworkers);
-	shared->pages_per_worker = pages_per_worker;
+	shared->total_pool_pages = total_pool_pages;
 
-	/* Pre-allocate page pools */
-	tp_preallocate_page_pools(index, shared, pages_per_worker);
+	/* Pre-allocate shared page pool */
+	tp_preallocate_page_pool(index, shared, total_pool_pages);
 
 	/* Initialize parallel table scan */
 	table_parallelscan_initialize(heap, TpParallelTableScan(shared), snapshot);
@@ -360,6 +361,18 @@ tp_build_parallel(
 
 	/* Finalize statistics in metapage */
 	tp_finalize_parallel_stats(shared, index);
+
+	/*
+	 * TODO: Reclaim unused pre-allocated pages.
+	 *
+	 * After parallel build with compaction, some pages may be orphaned:
+	 * - Original segments' pages are no longer referenced after merge
+	 * - These pages are not in FSM and can't be easily reused
+	 *
+	 * For now, VACUUM will eventually reclaim them. A future optimization
+	 * could add the orphaned pages to FSM or use smarter page allocation
+	 * during compaction.
+	 */
 
 	/* Build result */
 	result				 = palloc0(sizeof(IndexBuildResult));
@@ -467,10 +480,8 @@ tp_init_parallel_shared(
 	pg_atomic_init_u64(&shared->total_docs, 0);
 	pg_atomic_init_u64(&shared->total_len, 0);
 	pg_atomic_init_u32(&shared->pool_exhausted, 0);
-
-	/* Initialize per-worker pool indices (for all workers including leader) */
-	for (i = 0; i < shared->worker_count && i < TP_MAX_PARALLEL_WORKERS; i++)
-		pg_atomic_init_u32(&shared->pool_next[i], 0);
+	pg_atomic_init_u32(&shared->shared_pool_next, 0);
+	pg_atomic_init_u32(&shared->max_block_used, 0);
 
 	/*
 	 * Initialize worker segment info for all workers (bg workers + leader).
@@ -488,31 +499,28 @@ tp_init_parallel_shared(
 }
 
 /*
- * Pre-allocate pages for each worker's pool
+ * Pre-allocate shared page pool for all workers
  */
 static void
-tp_preallocate_page_pools(
-		Relation index, TpParallelBuildShared *shared, int pages_per_worker)
+tp_preallocate_page_pool(
+		Relation index, TpParallelBuildShared *shared, int total_pages)
 {
-	int			 total_pages;
 	int			 i;
 	Buffer		 buf;
-	BlockNumber *all_pages;
+	BlockNumber *pool;
 
-	total_pages = shared->worker_count * pages_per_worker;
-	all_pages	= (BlockNumber *)TpParallelPagePool(shared, 0);
+	pool = TpParallelPagePool(shared);
 
 	elog(DEBUG1,
-		 "Pre-allocating %d pages (%d per worker) for parallel build",
-		 total_pages,
-		 pages_per_worker);
+		 "Pre-allocating %d pages for parallel build shared pool",
+		 total_pages);
 
 	/* Extend relation and collect block numbers */
 	for (i = 0; i < total_pages; i++)
 	{
 		buf = ReadBufferExtended(
 				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		all_pages[i] = BufferGetBlockNumber(buf);
+		pool[i] = BufferGetBlockNumber(buf);
 
 		/* Initialize page */
 		PageInit(BufferGetPage(buf), BLCKSZ, 0);
@@ -903,13 +911,13 @@ tp_write_segment_from_local_memtable(
 		return InvalidBlockNumber;
 	}
 
-	/* Initialize writer with page pool */
+	/* Initialize writer with shared page pool */
 	tp_segment_writer_init_with_pool(
 			&writer,
 			index,
-			TpParallelPagePool(shared, worker_id),
-			shared->pages_per_worker,
-			&shared->pool_next[worker_id]);
+			TpParallelPagePool(shared),
+			shared->total_pool_pages,
+			&shared->shared_pool_next);
 
 	header_block = writer.pages[0];
 
@@ -1347,13 +1355,23 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 		 shared->worker_count);
 
 	/*
-	 * Trigger compaction if L0 has too many segments.
-	 * This is critical for parallel builds which can create many small
-	 * segments (one per worker per spill). Without compaction, query
-	 * performance would degrade significantly.
+	 * Compact segments to optimize query performance.
+	 *
+	 * Parallel builds create multiple segments (one per worker, potentially
+	 * more with spills). Each segment requires separate dictionary lookups
+	 * and skip index traversal during queries, causing significant overhead.
+	 *
+	 * Unlike normal compaction (which only triggers at threshold), we force
+	 * a merge here if there are 2+ segments. This ensures parallel builds
+	 * produce the same efficient single-segment structure as serial builds.
 	 */
-	if (total_segments > 0)
-		tp_maybe_compact_level(index, 0);
+	if (total_segments >= 2)
+	{
+		elog(DEBUG1,
+			 "Forcing compaction of %d parallel build segments",
+			 total_segments);
+		tp_merge_level_segments(index, 0);
+	}
 }
 
 /*
@@ -1390,28 +1408,50 @@ tp_finalize_parallel_stats(TpParallelBuildShared *shared, Relation index)
 }
 
 /*
- * Get a page from the pool (called from segment writer)
+ * Get a page from the shared pool (called from segment writer)
  * Falls back to FSM/extend if pool exhausted
+ *
+ * Note: worker_id parameter is kept for API compatibility but no longer used
+ * since all workers share a single pool.
  */
 BlockNumber
-tp_pool_get_page(TpParallelBuildShared *shared, int worker_id, Relation index)
+tp_pool_get_page(
+		TpParallelBuildShared *shared,
+		int					   worker_id __attribute__((unused)),
+		Relation			   index)
 {
 	BlockNumber *pool;
 	uint32		 idx;
+	BlockNumber	 block;
 
-	pool = TpParallelPagePool(shared, worker_id);
-	idx	 = pg_atomic_fetch_add_u32(&shared->pool_next[worker_id], 1);
+	pool = TpParallelPagePool(shared);
+	idx	 = pg_atomic_fetch_add_u32(&shared->shared_pool_next, 1);
 
-	if (idx < (uint32)shared->pages_per_worker)
-		return pool[idx];
+	if (idx < (uint32)shared->total_pool_pages)
+	{
+		block = pool[idx];
+
+		/* Track highest block used for potential truncation */
+		{
+			uint32 current_max;
+			do
+			{
+				current_max = pg_atomic_read_u32(&shared->max_block_used);
+				if (block <= current_max)
+					break;
+			} while (!pg_atomic_compare_exchange_u32(
+					&shared->max_block_used, &current_max, block));
+		}
+
+		return block;
+	}
 
 	/* Pool exhausted - mark and fall back */
 	pg_atomic_write_u32(&shared->pool_exhausted, 1);
 
 	/* Extend relation */
 	{
-		Buffer		buffer;
-		BlockNumber block;
+		Buffer buffer;
 
 		buffer = ReadBufferExtended(
 				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
