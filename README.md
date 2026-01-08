@@ -8,6 +8,7 @@ Modern ranked text search for Postgres.
 - Simple syntax: `ORDER BY content <@> 'search terms'`
 - BM25 ranking with configurable parameters (k1, b)
 - Works with Postgres text search configurations (english, french, german, etc.)
+- Parallel index builds for large tables
 - Supports partitioned tables
 - Goal: state-of-the-art performance and scalability
 
@@ -192,6 +193,28 @@ INSERT INTO documents (content) VALUES (...);
 -- Then create index
 CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
 ```
+
+### Parallel Index Builds
+
+pg_textsearch supports parallel index builds for faster indexing of large tables.
+Postgres automatically uses parallel workers based on table size and configuration.
+
+```sql
+-- Configure parallel workers (optional, uses server defaults otherwise)
+SET max_parallel_maintenance_workers = 4;
+
+-- Create index (parallel workers used automatically for large tables)
+CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
+```
+
+You'll see a notice when parallel build is used:
+```
+NOTICE:  Using parallel index build with 4 workers (1000000 tuples)
+```
+
+For partitioned tables, each partition builds its index independently with parallel
+workers if the partition is large enough. This allows efficient indexing of very
+large partitioned datasets.
 
 ## Monitoring
 
