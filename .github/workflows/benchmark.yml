@@ -857,16 +857,13 @@ jobs:
         # Extract metrics per dataset when running "all"
         DATASET="${{ steps.datasets.outputs.dataset }}"
         if [ "$DATASET" = "all" ]; then
-          # Extract each dataset separately
+          # Extract each dataset separately (with section filter for accurate metrics)
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               cranfield_metrics.json "cranfield" "Cranfield" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               msmarco_metrics.json "msmarco" "MS MARCO" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               wikipedia_metrics.json "wikipedia" "Wikipedia" || true
-          # Also create combined for summary
-          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
-              benchmark_metrics.json "all" || true
         else
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               benchmark_metrics.json "$DATASET" || true
@@ -919,8 +916,14 @@ jobs:
     - name: Post benchmark summary to job
       if: always()
       run: |
-        if [ -f benchmark_metrics.json ]; then
-          echo "### pg_textsearch Benchmark Results" >> $GITHUB_STEP_SUMMARY
+        # Helper function to output metrics table for a dataset
+        output_metrics_table() {
+          local file=$1
+          local name=$2
+          if [ ! -f "$file" ]; then
+            return
+          fi
+          echo "### pg_textsearch ${name} Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.event.inputs.compress_segments }}" = "true" ]; then
             echo "**Compression: enabled**" >> $GITHUB_STEP_SUMMARY
@@ -928,18 +931,29 @@ jobs:
           fi
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' benchmark_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' benchmark_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
+          echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' "$file") |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' "$file") |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' "$file") ms/query |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        }
+
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+        if [ "$DATASET" = "all" ]; then
+          # Show per-dataset summaries for accurate comparison
+          output_metrics_table "cranfield_metrics.json" "Cranfield"
+          output_metrics_table "msmarco_metrics.json" "MS MARCO"
+          output_metrics_table "wikipedia_metrics.json" "Wikipedia"
+        elif [ -f benchmark_metrics.json ]; then
+          output_metrics_table "benchmark_metrics.json" "$DATASET"
         fi
 
     - name: Format metrics for benchmark tracking
