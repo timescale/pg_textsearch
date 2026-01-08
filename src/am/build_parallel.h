@@ -78,17 +78,16 @@ typedef struct TpParallelBuildShared
 	pg_atomic_uint64 total_docs;	 /* Total documents indexed */
 	pg_atomic_uint64 total_len;		 /* Sum of all document lengths */
 
-	/* Page pool management */
-	int32			 pages_per_worker; /* Pre-allocated pages per worker */
-	pg_atomic_uint32 pool_exhausted;   /* Non-zero if any pool exhausted */
-
-	/* Per-worker pool indices (atomically incremented) */
-	pg_atomic_uint32 pool_next[TP_MAX_PARALLEL_WORKERS];
+	/* Page pool management - single shared pool for all workers */
+	int32			 total_pool_pages; /* Total pre-allocated pages */
+	pg_atomic_uint32 shared_pool_next; /* Next page index (shared counter) */
+	pg_atomic_uint32 pool_exhausted;   /* Non-zero if pool exhausted */
+	pg_atomic_uint32 max_block_used;   /* Highest block number used */
 
 	/*
 	 * Variable-length data follows:
 	 * - TpWorkerSegmentInfo worker_info[worker_count]
-	 * - BlockNumber page_pools[worker_count][pages_per_worker]
+	 * - BlockNumber page_pool[total_pool_pages] (shared by all workers)
 	 * - ParallelTableScanDescData (for parallel heap scan)
 	 */
 } TpParallelBuildShared;
@@ -104,16 +103,14 @@ TpParallelWorkerInfo(TpParallelBuildShared *shared)
 }
 
 /*
- * Get pointer to page pool for a specific worker
+ * Get pointer to shared page pool
  */
 static inline BlockNumber *
-TpParallelPagePool(TpParallelBuildShared *shared, int worker_id)
+TpParallelPagePool(TpParallelBuildShared *shared)
 {
 	char *base = (char *)TpParallelWorkerInfo(shared);
 	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	return (BlockNumber *)(base + (size_t)worker_id *
-										  shared->pages_per_worker *
-										  sizeof(BlockNumber));
+	return (BlockNumber *)base;
 }
 
 /*
@@ -124,9 +121,7 @@ TpParallelTableScan(TpParallelBuildShared *shared)
 {
 	char *base = (char *)TpParallelWorkerInfo(shared);
 	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	base += MAXALIGN(
-			(size_t)shared->worker_count * shared->pages_per_worker *
-			sizeof(BlockNumber));
+	base += MAXALIGN((size_t)shared->total_pool_pages * sizeof(BlockNumber));
 	return (ParallelTableScanDesc)base;
 }
 
@@ -154,4 +149,4 @@ tp_pool_get_page(TpParallelBuildShared *shared, int worker_id, Relation index);
 
 /* Estimate shared memory size needed for parallel build */
 extern Size tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int pages_per_worker);
+		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages);
