@@ -56,12 +56,13 @@ typedef struct TpWorkerSegmentInfo
 typedef struct TpParallelBuildShared
 {
 	/* Immutable configuration (set before workers launch) */
-	Oid	   heaprelid;		/* Heap relation OID */
-	Oid	   indexrelid;		/* Index relation OID */
-	Oid	   text_config_oid; /* Text search configuration OID */
-	double k1;				/* BM25 k1 parameter */
-	double b;				/* BM25 b parameter */
-	int32  worker_count;	/* Total workers (including leader) */
+	Oid		   heaprelid;		/* Heap relation OID */
+	Oid		   indexrelid;		/* Index relation OID */
+	Oid		   text_config_oid; /* Text search configuration OID */
+	AttrNumber attnum;			/* Attribute number of indexed column */
+	double	   k1;				/* BM25 k1 parameter */
+	double	   b;				/* BM25 b parameter */
+	int32	   worker_count;	/* Total workers (including leader) */
 
 	/* Per-worker spill threshold (total threshold / worker_count) */
 	int64 spill_threshold_per_worker;
@@ -144,7 +145,8 @@ extern struct IndexBuildResult *tp_build_parallel(
 		int				  nworkers);
 
 /* Worker entry point (called by parallel infrastructure) */
-extern void tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
+extern PGDLLEXPORT void
+tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
 
 /* Page pool allocation during segment write */
 extern BlockNumber

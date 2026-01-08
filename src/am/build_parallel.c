@@ -123,6 +123,7 @@ static void tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
+		AttrNumber			   attnum,
 		double				   k1,
 		double				   b,
 		int					   nworkers);
@@ -161,6 +162,12 @@ tp_worker_spill_memtable(
 
 	if (memtable->num_docs == 0)
 		return false;
+
+	elog(DEBUG1,
+		 "Worker %d spilling memtable: %d docs, %ld postings",
+		 worker_id,
+		 memtable->num_docs,
+		 memtable->total_postings);
 
 	seg_block = tp_write_segment_from_local_memtable(
 			memtable, index, shared, worker_id);
@@ -224,17 +231,26 @@ tp_parallel_build_estimate_shmem(
 		Relation heap, Snapshot snapshot, int nworkers, int pages_per_worker)
 {
 	Size size;
+	int	 total_workers;
+
+	/*
+	 * Total workers = nworkers (background workers) + 1 (leader participates)
+	 */
+	total_workers = nworkers + 1;
 
 	/* Base shared structure */
 	size = MAXALIGN(sizeof(TpParallelBuildShared));
 
 	/* Per-worker segment info array */
-	size = add_size(size, MAXALIGN(sizeof(TpWorkerSegmentInfo) * nworkers));
+	size = add_size(
+			size, MAXALIGN(sizeof(TpWorkerSegmentInfo) * total_workers));
 
 	/* Page pools for all workers */
 	size = add_size(
 			size,
-			MAXALIGN((Size)nworkers * pages_per_worker * sizeof(BlockNumber)));
+			MAXALIGN(
+					(Size)total_workers * pages_per_worker *
+					sizeof(BlockNumber)));
 
 	/* Parallel table scan descriptor */
 	size = add_size(size, table_parallelscan_estimate(heap, snapshot));
@@ -296,7 +312,14 @@ tp_build_parallel(
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
 	tp_init_parallel_shared(
-			shared, heap, index, text_config_oid, k1, b, nworkers);
+			shared,
+			heap,
+			index,
+			text_config_oid,
+			indexInfo->ii_IndexAttrNumbers[0],
+			k1,
+			b,
+			nworkers);
 	shared->pages_per_worker = pages_per_worker;
 
 	/* Pre-allocate page pools */
@@ -360,6 +383,7 @@ tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
+		AttrNumber			   attnum,
 		double				   k1,
 		double				   b,
 		int					   nworkers)
@@ -373,9 +397,15 @@ tp_init_parallel_shared(
 	shared->heaprelid		= RelationGetRelid(heap);
 	shared->indexrelid		= RelationGetRelid(index);
 	shared->text_config_oid = text_config_oid;
+	shared->attnum			= attnum;
 	shared->k1				= k1;
 	shared->b				= b;
-	shared->worker_count	= nworkers;
+	shared->worker_count	= nworkers + 1; /* nworkers + leader */
+
+	elog(DEBUG1,
+		 "Parallel build shared initialized: attnum=%d, workers=%d",
+		 attnum,
+		 shared->worker_count);
 
 	/*
 	 * Per-worker spill threshold calculation.
@@ -438,13 +468,16 @@ tp_init_parallel_shared(
 	pg_atomic_init_u64(&shared->total_len, 0);
 	pg_atomic_init_u32(&shared->pool_exhausted, 0);
 
-	/* Initialize per-worker pool indices */
-	for (i = 0; i < nworkers && i < TP_MAX_PARALLEL_WORKERS; i++)
+	/* Initialize per-worker pool indices (for all workers including leader) */
+	for (i = 0; i < shared->worker_count && i < TP_MAX_PARALLEL_WORKERS; i++)
 		pg_atomic_init_u32(&shared->pool_next[i], 0);
 
-	/* Initialize worker segment info */
+	/*
+	 * Initialize worker segment info for all workers (bg workers + leader).
+	 * Leader is worker_id=0, background workers are 1..nworkers.
+	 */
 	worker_info = TpParallelWorkerInfo(shared);
-	for (i = 0; i < nworkers; i++)
+	for (i = 0; i < shared->worker_count; i++)
 	{
 		worker_info[i].segment_head	 = InvalidBlockNumber;
 		worker_info[i].segment_tail	 = InvalidBlockNumber;
@@ -499,7 +532,7 @@ tp_preallocate_page_pools(
  * In the current synchronous implementation, this primarily provides
  * cleaner code structure and prepares for future async I/O support.
  */
-void
+PGDLLEXPORT void
 tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 {
 	TpParallelBuildShared *shared;
@@ -516,7 +549,12 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	shared = (TpParallelBuildShared *)
 			shm_toc_lookup(toc, TP_PARALLEL_KEY_SHARED, false);
 
-	worker_id = ParallelWorkerNumber;
+	/*
+	 * Worker ID assignment: if leader participates, it claims worker_id=0.
+	 * Background workers get IDs starting from 1 to avoid collision.
+	 */
+	worker_id = shared->leader_working ? ParallelWorkerNumber + 1
+									   : ParallelWorkerNumber;
 	my_info	  = &TpParallelWorkerInfo(shared)[worker_id];
 
 	elog(DEBUG1, "Parallel build worker %d starting", worker_id);
@@ -538,7 +576,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		tp_worker_process_document(
 				build_state.active,
 				slot,
-				1, /* first column */
+				shared->attnum,
 				shared->text_config_oid);
 
 		tuples_processed++;
@@ -638,7 +676,10 @@ tp_leader_participate(
 
 	my_info = &TpParallelWorkerInfo(shared)[worker_id];
 
-	elog(DEBUG1, "Leader participating as worker %d", worker_id);
+	elog(DEBUG1,
+		 "Leader participating as worker %d, attnum=%d",
+		 worker_id,
+		 shared->attnum);
 
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);
@@ -647,13 +688,23 @@ tp_leader_participate(
 	scan = table_beginscan_parallel(heap, TpParallelTableScan(shared));
 	slot = table_slot_create(heap, NULL);
 
+	elog(DEBUG1, "Leader entering scan loop, attnum=%d", shared->attnum);
+
 	/* Process tuples */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
+		if (tuples_processed == 0)
+			elog(DEBUG1, "Leader processing first tuple");
+
 		tp_worker_process_document(
-				build_state.active, slot, 1, shared->text_config_oid);
+				build_state.active,
+				slot,
+				shared->attnum,
+				shared->text_config_oid);
 
 		tuples_processed++;
+		if (tuples_processed % 100000 == 0)
+			elog(DEBUG1, "Leader: %ld tuples processed", tuples_processed);
 		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		/* Check spill threshold */
@@ -742,6 +793,10 @@ tp_worker_process_document(
 	if (isnull)
 		return;
 
+	/*
+	 * Note: DatumGetTextP may detoast, which can crash if text_datum
+	 * is invalid. The attnum must match the actual column position.
+	 */
 	document_text = DatumGetTextP(text_datum);
 	ctid		  = &slot->tts_tid;
 
@@ -963,8 +1018,10 @@ tp_write_segment_from_local_memtable(
 		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
 		for (j = 0; j < doc_count; j++)
 		{
-			uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+			uint32 doc_id;
 			uint8  norm;
+
+			doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
 
 			if (doc_id == UINT32_MAX)
 				elog(ERROR,
@@ -1203,10 +1260,17 @@ tp_write_segment_from_local_memtable(
 		MarkBufferDirty(buf);
 		UnlockReleaseBuffer(buf);
 	}
-
 	tp_segment_writer_finish(&writer);
 
+	elog(DEBUG1,
+		 "Worker %d: segment complete, header_block=%u, %d terms",
+		 worker_id,
+		 header_block,
+		 num_terms);
+
 	/* Cleanup */
+	if (writer.pages)
+		pfree(writer.pages);
 	pfree(term_blocks);
 	pfree(string_offsets);
 	pfree(sorted_terms);
