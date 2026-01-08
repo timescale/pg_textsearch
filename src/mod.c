@@ -24,6 +24,7 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "planner/hooks.h"
+#include "query/score.h"
 #include "state/registry.h"
 #include "state/state.h"
 

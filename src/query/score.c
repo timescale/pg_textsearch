@@ -22,10 +22,6 @@
 #include "state/metapage.h"
 #include "state/state.h"
 
-/* GUC variables from mod.c */
-extern bool tp_log_bmw_stats;
-extern bool tp_enable_bmw;
-
 /*
  * Centralized IDF calculation (basic version)
  * Calculates IDF using BM25 formula: log(1 + (N - df + 0.5) / (df + 0.5))
