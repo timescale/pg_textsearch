@@ -209,7 +209,7 @@ WHERE category = 'extreme'
     AND content <@> 'extreme testing' < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
- Extreme length test |        23614 | -4.2077
+ Extreme length test |        23614 | -4.2254
 (1 row)
 
 -- Cleanup

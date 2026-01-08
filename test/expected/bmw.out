@@ -297,10 +297,10 @@ WHERE content <@> 'word'::bm25query < 0
 ORDER BY content <@> 'word'::bm25query LIMIT 5;
  id | doc_chars |        score        
 ----+-----------+---------------------
-  4 |      5000 | -0.6275554299354553
-  3 |       500 | -0.6264228224754333
+  4 |      5000 | -0.6276808977127075
+  3 |       500 | -0.6266049146652222
   2 |         4 | -0.4841128885746002
-  5 |      3505 | -0.1990702748298645
+  5 |      3505 | -0.2028166949748993
 (4 rows)
 
 DROP TABLE bmw_lengths;
@@ -328,7 +328,7 @@ ORDER BY content <@> 'keyword'::bm25query LIMIT 5;
  id |        score         
 ----+----------------------
   5 |  -0.1887885183095932
-  4 | -0.18850965797901154
+  4 |  -0.1886022686958313
   3 |   -0.187954381108284
   2 | -0.18362723290920258
   1 |  -0.1458514928817749
@@ -903,7 +903,7 @@ NOTICE:  BM25 index build completed: 200 documents, avg_length=5.00, text_config
 SELECT bm25_spill_index('bmw_memonly_idx');
  bm25_spill_index 
 ------------------
-                2
+                 
 (1 row)
 
 -- Now insert docs with a NEW term that only exists in memtable

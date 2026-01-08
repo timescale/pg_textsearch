@@ -342,8 +342,8 @@ ORDER BY index_name;
      index_name      | index_size 
 ---------------------+------------
  multi_idx_test_pkey | 16 kB
- multi_idx_english   | 16 kB
- multi_idx_simple    | 16 kB
+ multi_idx_english   | 32 kB
+ multi_idx_simple    | 32 kB
 (3 rows)
 
 -- Clean up test table

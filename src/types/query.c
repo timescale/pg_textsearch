@@ -38,6 +38,7 @@
 #include "memtable/posting.h"
 #include "planner/hooks.h"
 #include "query/score.h"
+#include "segment/fieldnorm.h"
 #include "segment/segment.h"
 #include "state/metapage.h"
 #include "state/state.h"
@@ -844,8 +845,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		query_entries		= ARRPTR(query_tsvector);
 		query_lexemes_start = STRPTR(query_tsvector);
 
-		/* Calculate document length and prepare term data */
-		doc_length		 = calculate_doc_length(tsvector);
+		/*
+		 * Calculate document length with fieldnorm quantization.
+		 * We use the same encode/decode as segments to ensure the operator
+		 * produces identical scores to index scans. This quantization is
+		 * a deliberate approximation following Lucene's SmallFloat scheme.
+		 */
+		doc_length = (float4)decode_fieldnorm(
+				encode_fieldnorm((int32)calculate_doc_length(tsvector)));
 		query_term_count = query_tsvector->size;
 
 		/* Calculate BM25 score for each query term */
