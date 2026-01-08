@@ -23,96 +23,6 @@ typedef struct TpSegmentSource
 } TpSegmentSource;
 
 /*
- * Find a term in the segment dictionary using binary search.
- * Returns the dictionary entry index, or UINT32_MAX if not found.
- */
-static uint32
-segment_find_term(TpSegmentReader *reader, const char *term)
-{
-	TpSegmentHeader *header = reader->header;
-	TpDictionary	 dict_header;
-	int				 left, right, mid;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
-	uint32			 found_idx	 = UINT32_MAX;
-
-	if (header->num_terms == 0 || header->dictionary_offset == 0)
-		return UINT32_MAX;
-
-	/* Read dictionary header */
-	tp_segment_read(
-			reader,
-			header->dictionary_offset,
-			&dict_header,
-			sizeof(dict_header.num_terms));
-
-	/* Binary search for the term */
-	left  = 0;
-	right = dict_header.num_terms - 1;
-
-	while (left <= right)
-	{
-		TpStringEntry string_entry;
-		int			  cmp;
-		uint32		  string_offset_value;
-		uint32		  string_offset;
-
-		mid = left + (right - left) / 2;
-
-		/* Read the string offset for this entry */
-		tp_segment_read(
-				reader,
-				header->dictionary_offset + sizeof(dict_header.num_terms) +
-						(mid * sizeof(uint32)),
-				&string_offset_value,
-				sizeof(uint32));
-
-		string_offset = header->strings_offset + string_offset_value;
-
-		/* Read string length */
-		tp_segment_read(
-				reader, string_offset, &string_entry.length, sizeof(uint32));
-
-		/* Reallocate buffer if needed */
-		if (string_entry.length + 1 > buffer_size)
-		{
-			if (term_buffer)
-				pfree(term_buffer);
-			buffer_size = string_entry.length + 1;
-			term_buffer = palloc(buffer_size);
-		}
-
-		/* Read term text */
-		tp_segment_read(
-				reader,
-				string_offset + sizeof(uint32),
-				term_buffer,
-				string_entry.length);
-		term_buffer[string_entry.length] = '\0';
-
-		cmp = strcmp(term, term_buffer);
-		if (cmp == 0)
-		{
-			found_idx = mid;
-			break;
-		}
-		else if (cmp < 0)
-		{
-			right = mid - 1;
-		}
-		else
-		{
-			left = mid + 1;
-		}
-	}
-
-	if (term_buffer)
-		pfree(term_buffer);
-
-	return found_idx;
-}
-
-/*
  * Get posting data for a term from segment (V2 format).
  * Returns columnar data with parallel ctid and frequency arrays.
  */
@@ -121,25 +31,15 @@ segment_get_postings(TpDataSource *source, const char *term)
 {
 	TpSegmentSource *ss		= (TpSegmentSource *)source;
 	TpSegmentReader *reader = ss->reader;
-	TpSegmentHeader *header = reader->header;
-	uint32			 term_idx;
 	TpDictEntry		 dict_entry;
 	TpPostingData	*data;
 	uint32			 total_postings;
 	uint32			 current_idx;
 	uint32			 block_idx;
 
-	/* Find term in dictionary */
-	term_idx = segment_find_term(reader, term);
-	if (term_idx == UINT32_MAX)
+	/* Find term in dictionary using unified binary search */
+	if (tp_segment_find_term(reader, term, &dict_entry) < 0)
 		return NULL;
-
-	/* Read dictionary entry */
-	tp_segment_read(
-			reader,
-			header->entries_offset + (term_idx * sizeof(TpDictEntry)),
-			&dict_entry,
-			sizeof(TpDictEntry));
 
 	if (dict_entry.block_count == 0)
 		return NULL;

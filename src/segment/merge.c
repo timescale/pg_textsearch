@@ -96,27 +96,13 @@ typedef struct TpPostingMergeSource
 /*
  * Read term at index from a segment's dictionary.
  * Returns palloc'd string that must be freed by caller.
+ * Wrapper around the public tp_segment_read_term_at_index.
  */
 static char *
 merge_read_term_at_index(TpMergeSource *source, uint32 index)
 {
-	TpSegmentHeader *header = source->reader->header;
-	uint32			 string_offset;
-	uint32			 length;
-	char			*term;
-
-	string_offset = header->strings_offset + source->string_offsets[index];
-
-	/* Read string length */
-	tp_segment_read(source->reader, string_offset, &length, sizeof(uint32));
-
-	/* Allocate and read string */
-	term = palloc(length + 1);
-	tp_segment_read(
-			source->reader, string_offset + sizeof(uint32), term, length);
-	term[length] = '\0';
-
-	return term;
+	return tp_segment_read_term_at_index(
+			source->reader, index, source->string_offsets);
 }
 
 /*

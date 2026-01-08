@@ -422,3 +422,19 @@ extern bool tp_segment_posting_iterator_seek(
 /* Get current doc ID from iterator (for WAND pivot selection) */
 extern uint32
 tp_segment_posting_iterator_current_doc_id(TpSegmentPostingIterator *iter);
+
+/*
+ * Unified binary search for term in segment dictionary.
+ * Returns term index (0 to num_terms-1) if found, or -1 if not found.
+ * If entry_out is not NULL and term is found, populates it with dict entry.
+ */
+extern int tp_segment_find_term(
+		TpSegmentReader *reader, const char *term, TpDictEntry *entry_out);
+
+/*
+ * Read a term string at a given dictionary index.
+ * Returns palloc'd string that must be freed by caller.
+ * Used by merge and dump operations.
+ */
+extern char *tp_segment_read_term_at_index(
+		TpSegmentReader *reader, uint32 index, uint32 *string_offsets);

@@ -59,9 +59,7 @@ tp_create_doc_scores_hash(int max_results, int32 total_docs)
 		initial_size = total_docs;
 
 	/* Initialize hash control structure */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
-	hash_ctl.keysize   = sizeof(ItemPointerData);
-	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
+	tp_init_doc_hash_ctl(&hash_ctl, sizeof(DocumentScoreEntry), NULL);
 
 	/* Create hash table */
 	return hash_create(

@@ -41,11 +41,7 @@ tp_segment_posting_iterator_init(
 		TpSegmentReader			 *reader,
 		const char				 *term)
 {
-	TpSegmentHeader *header = reader->header;
-	TpDictionary	 dict_header;
-	int				 left, right, mid;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
+	int term_idx;
 
 	iter->reader			  = reader;
 	iter->term				  = term;
@@ -58,93 +54,16 @@ tp_segment_posting_iterator_init(
 	iter->fallback_block	  = NULL;
 	iter->fallback_block_size = 0;
 
-	if (header->num_terms == 0 || header->dictionary_offset == 0)
+	/* Use unified binary search */
+	term_idx = tp_segment_find_term(reader, term, &iter->dict_entry);
+	if (term_idx < 0)
 		return false;
 
-	/* Read dictionary header */
-	tp_segment_read(
-			reader,
-			header->dictionary_offset,
-			&dict_header,
-			sizeof(dict_header.num_terms));
+	iter->dict_entry_idx = term_idx;
+	iter->initialized	 = true;
+	iter->finished		 = (iter->dict_entry.block_count == 0);
 
-	/* Binary search for the term */
-	left  = 0;
-	right = dict_header.num_terms - 1;
-
-	while (left <= right)
-	{
-		TpStringEntry string_entry;
-		int			  cmp;
-		uint32		  string_offset_value;
-		uint32		  string_offset;
-
-		mid = left + (right - left) / 2;
-
-		/* Read string offset */
-		tp_segment_read(
-				reader,
-				header->dictionary_offset + sizeof(dict_header.num_terms) +
-						(mid * sizeof(uint32)),
-				&string_offset_value,
-				sizeof(uint32));
-
-		string_offset = header->strings_offset + string_offset_value;
-
-		/* Read string length */
-		tp_segment_read(
-				reader, string_offset, &string_entry.length, sizeof(uint32));
-
-		/* Reallocate buffer if needed */
-		if (string_entry.length + 1 > buffer_size)
-		{
-			if (term_buffer)
-				pfree(term_buffer);
-			buffer_size = string_entry.length + 1;
-			term_buffer = palloc(buffer_size);
-		}
-
-		/* Read term text */
-		tp_segment_read(
-				reader,
-				string_offset + sizeof(uint32),
-				term_buffer,
-				string_entry.length);
-		term_buffer[string_entry.length] = '\0';
-
-		/* Compare terms */
-		cmp = strcmp(term, term_buffer);
-
-		if (cmp == 0)
-		{
-			/* Found! Read dictionary entry */
-			tp_segment_read(
-					reader,
-					header->entries_offset + (mid * sizeof(TpDictEntry)),
-					&iter->dict_entry,
-					sizeof(TpDictEntry));
-
-			iter->dict_entry_idx = mid;
-			iter->initialized	 = true;
-			iter->finished		 = (iter->dict_entry.block_count == 0);
-
-			if (term_buffer)
-				pfree(term_buffer);
-			return true;
-		}
-		else if (cmp < 0)
-		{
-			right = mid - 1;
-		}
-		else
-		{
-			left = mid + 1;
-		}
-	}
-
-	if (term_buffer)
-		pfree(term_buffer);
-	return false;
+	return true;
 }
 
 /*
@@ -591,106 +510,25 @@ uint32
 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term)
 {
-	BlockNumber		 current	 = first_segment;
-	TpSegmentReader *reader		 = NULL;
-	uint32			 doc_freq	 = 0;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
+	BlockNumber current	 = first_segment;
+	uint32		doc_freq = 0;
 
 	while (current != InvalidBlockNumber)
 	{
-		TpSegmentHeader *header;
-		TpDictionary	 dict_header;
-		int				 left, right;
+		TpSegmentReader *reader;
+		TpDictEntry		 dict_entry;
 
 		reader = tp_segment_open(index, current);
 		if (!reader)
 			break;
 
-		header = reader->header;
-		if (header->num_terms == 0 || header->dictionary_offset == 0)
-		{
-			current = header->next_segment;
-			tp_segment_close(reader);
-			continue;
-		}
+		/* Use unified binary search */
+		if (tp_segment_find_term(reader, term, &dict_entry) >= 0)
+			doc_freq += dict_entry.doc_freq;
 
-		tp_segment_read(
-				reader,
-				header->dictionary_offset,
-				&dict_header,
-				sizeof(dict_header.num_terms));
-
-		left  = 0;
-		right = dict_header.num_terms - 1;
-
-		while (left <= right)
-		{
-			TpStringEntry string_entry;
-			int			  cmp;
-			uint32		  string_offset_value;
-			uint32		  string_offset;
-			int			  mid = left + (right - left) / 2;
-
-			tp_segment_read(
-					reader,
-					header->dictionary_offset + sizeof(dict_header.num_terms) +
-							(mid * sizeof(uint32)),
-					&string_offset_value,
-					sizeof(uint32));
-
-			string_offset = header->strings_offset + string_offset_value;
-
-			tp_segment_read(
-					reader,
-					string_offset,
-					&string_entry.length,
-					sizeof(uint32));
-
-			if (string_entry.length + 1 > buffer_size)
-			{
-				if (term_buffer)
-					pfree(term_buffer);
-				buffer_size = string_entry.length + 1;
-				term_buffer = palloc(buffer_size);
-			}
-
-			tp_segment_read(
-					reader,
-					string_offset + sizeof(uint32),
-					term_buffer,
-					string_entry.length);
-			term_buffer[string_entry.length] = '\0';
-
-			cmp = strcmp(term, term_buffer);
-
-			if (cmp == 0)
-			{
-				TpDictEntry dict_entry;
-				tp_segment_read(
-						reader,
-						header->entries_offset + (mid * sizeof(TpDictEntry)),
-						&dict_entry,
-						sizeof(TpDictEntry));
-				doc_freq += dict_entry.doc_freq;
-				break;
-			}
-			else if (cmp < 0)
-			{
-				right = mid - 1;
-			}
-			else
-			{
-				left = mid + 1;
-			}
-		}
-
-		current = header->next_segment;
+		current = reader->header->next_segment;
 		tp_segment_close(reader);
 	}
-
-	if (term_buffer)
-		pfree(term_buffer);
 
 	return doc_freq;
 }
@@ -711,15 +549,11 @@ tp_batch_get_segment_doc_freq(
 		int			term_count,
 		uint32	   *doc_freqs)
 {
-	BlockNumber current		= first_segment;
-	char	   *term_buffer = NULL;
-	uint32		buffer_size = 0;
+	BlockNumber current = first_segment;
 
 	while (current != InvalidBlockNumber)
 	{
 		TpSegmentReader *reader;
-		TpSegmentHeader *header;
-		TpDictionary	 dict_header;
 		int				 term_idx;
 
 		/* Open segment ONCE for all terms */
@@ -727,99 +561,20 @@ tp_batch_get_segment_doc_freq(
 		if (!reader)
 			break;
 
-		header = reader->header;
-
-		if (header->num_terms == 0 || header->dictionary_offset == 0)
-		{
-			current = header->next_segment;
-			tp_segment_close(reader);
-			continue;
-		}
-
-		/* Read dictionary header once per segment */
-		tp_segment_read(
-				reader,
-				header->dictionary_offset,
-				&dict_header,
-				sizeof(dict_header.num_terms));
-
-		/* Look up each term in this segment */
+		/* Look up each term using unified binary search */
 		for (term_idx = 0; term_idx < term_count; term_idx++)
 		{
-			const char *term  = terms[term_idx];
-			int			left  = 0;
-			int			right = dict_header.num_terms - 1;
+			TpDictEntry dict_entry;
 
-			/* Binary search for term in dictionary */
-			while (left <= right)
-			{
-				int	   mid = left + (right - left) / 2;
-				uint32 string_offset_value;
-				uint32 string_offset;
-				uint32 string_length;
-				int	   cmp;
-
-				tp_segment_read(
-						reader,
-						header->dictionary_offset +
-								sizeof(dict_header.num_terms) +
-								(mid * sizeof(uint32)),
-						&string_offset_value,
-						sizeof(uint32));
-
-				string_offset = header->strings_offset + string_offset_value;
-
-				tp_segment_read(
-						reader, string_offset, &string_length, sizeof(uint32));
-
-				if (string_length + 1 > buffer_size)
-				{
-					if (term_buffer)
-						pfree(term_buffer);
-					buffer_size = string_length + 1;
-					term_buffer = palloc(buffer_size);
-				}
-
-				tp_segment_read(
-						reader,
-						string_offset + sizeof(uint32),
-						term_buffer,
-						string_length);
-				term_buffer[string_length] = '\0';
-
-				cmp = strcmp(term, term_buffer);
-
-				if (cmp == 0)
-				{
-					/* Found - read dict entry and add doc_freq */
-					TpDictEntry dict_entry;
-					tp_segment_read(
-							reader,
-							header->entries_offset +
-									(mid * sizeof(TpDictEntry)),
-							&dict_entry,
-							sizeof(TpDictEntry));
-					doc_freqs[term_idx] += dict_entry.doc_freq;
-					break;
-				}
-				else if (cmp < 0)
-				{
-					right = mid - 1;
-				}
-				else
-				{
-					left = mid + 1;
-				}
-			}
+			if (tp_segment_find_term(reader, terms[term_idx], &dict_entry) >=
+				0)
+				doc_freqs[term_idx] += dict_entry.doc_freq;
 		}
 
 		/* Move to next segment and close this one */
-		current = header->next_segment;
+		current = reader->header->next_segment;
 		tp_segment_close(reader);
 	}
-
-	if (term_buffer)
-		pfree(term_buffer);
 }
 
 /*
