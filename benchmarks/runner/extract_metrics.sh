@@ -51,11 +51,13 @@ LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
 # Extract document count
+# Try pg_textsearch format first
 NUM_DOCUMENTS=$(grep -E "BM25 index build completed:" "$LOG_FILE" 2>/dev/null | \
     grep -oE "[0-9]+ documents" | grep -oE "[0-9]+" || echo "")
+# Fallback: look for various "X loaded:" patterns in SQL output (Passages, Documents, Articles)
 if [ -z "$NUM_DOCUMENTS" ]; then
-    NUM_DOCUMENTS=$(grep -E "Passages loaded:" "$LOG_FILE" 2>/dev/null | \
-        grep -oE "\| [0-9]+" | grep -oE "[0-9]+" || echo "")
+    NUM_DOCUMENTS=$(grep -E "(Passages|Documents|Articles) loaded" "$LOG_FILE" 2>/dev/null | \
+        grep -oE "\| +[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "")
 fi
 
 # Extract index and table sizes
