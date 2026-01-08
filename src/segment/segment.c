@@ -43,18 +43,19 @@
  */
 
 /*
- * Read a term string at a given dictionary index.
+ * Helper function to read a term string at a given dictionary index.
  * Returns the allocated string which must be freed by caller.
- * This is the public version used by merge and dump operations.
  */
-char *
-tp_segment_read_term_at_index(
-		TpSegmentReader *reader, uint32 index, uint32 *string_offsets)
+static char *
+read_term_at_index(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		uint32			*string_offsets)
 {
-	TpSegmentHeader *header = reader->header;
-	TpStringEntry	 string_entry;
-	char			*term_text;
-	uint32			 string_offset;
+	TpStringEntry string_entry;
+	char		 *term_text;
+	uint32		  string_offset;
 
 	/* Check for overflow when calculating string offset */
 	if (string_offsets[index] > UINT32_MAX - header->strings_offset)
@@ -93,17 +94,6 @@ tp_segment_read_term_at_index(
 	return term_text;
 }
 
-/* Internal wrapper for backward compatibility with dump code */
-static char *
-read_term_at_index(
-		TpSegmentReader		   *reader,
-		TpSegmentHeader *header pg_attribute_unused(),
-		uint32					index,
-		uint32				   *string_offsets)
-{
-	return tp_segment_read_term_at_index(reader, index, string_offsets);
-}
-
 /*
  * Helper function to read a dictionary entry at a given index
  */
@@ -131,106 +121,6 @@ read_dict_entry(
 
 	entry_offset = header->entries_offset + offset_increment;
 	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
-}
-
-/*
- * Unified binary search for term in segment dictionary.
- * Returns term index (0 to num_terms-1) if found, or -1 if not found.
- * If entry_out is not NULL and term is found, populates it with dict entry.
- */
-int
-tp_segment_find_term(
-		TpSegmentReader *reader, const char *term, TpDictEntry *entry_out)
-{
-	TpSegmentHeader *header = reader->header;
-	TpDictionary	 dict_header;
-	int				 left, right, mid;
-	char			*term_buffer = NULL;
-	uint32			 buffer_size = 0;
-	int				 found_idx	 = -1;
-
-	if (header->num_terms == 0 || header->dictionary_offset == 0)
-		return -1;
-
-	/* Read dictionary header */
-	tp_segment_read(
-			reader,
-			header->dictionary_offset,
-			&dict_header,
-			sizeof(dict_header.num_terms));
-
-	/* Binary search for the term */
-	left  = 0;
-	right = dict_header.num_terms - 1;
-
-	while (left <= right)
-	{
-		TpStringEntry string_entry;
-		int			  cmp;
-		uint32		  string_offset_value;
-		uint32		  string_offset;
-
-		mid = left + (right - left) / 2;
-
-		/* Read string offset */
-		tp_segment_read(
-				reader,
-				header->dictionary_offset + sizeof(dict_header.num_terms) +
-						(mid * sizeof(uint32)),
-				&string_offset_value,
-				sizeof(uint32));
-
-		string_offset = header->strings_offset + string_offset_value;
-
-		/* Read string length */
-		tp_segment_read(
-				reader, string_offset, &string_entry.length, sizeof(uint32));
-
-		/* Reallocate buffer if needed */
-		if (string_entry.length + 1 > buffer_size)
-		{
-			if (term_buffer)
-				pfree(term_buffer);
-			buffer_size = string_entry.length + 1;
-			term_buffer = palloc(buffer_size);
-		}
-
-		/* Read term text */
-		tp_segment_read(
-				reader,
-				string_offset + sizeof(uint32),
-				term_buffer,
-				string_entry.length);
-		term_buffer[string_entry.length] = '\0';
-
-		/* Compare terms */
-		cmp = strcmp(term, term_buffer);
-
-		if (cmp == 0)
-		{
-			found_idx = mid;
-			break;
-		}
-		else if (cmp < 0)
-		{
-			right = mid - 1;
-		}
-		else
-		{
-			left = mid + 1;
-		}
-	}
-
-	if (term_buffer)
-		pfree(term_buffer);
-
-	/* If found and entry_out requested, read the dict entry */
-	if (found_idx >= 0 && entry_out != NULL)
-	{
-		read_dict_entry(reader, header, found_idx, entry_out);
-	}
-
-	return found_idx;
 }
 
 /*

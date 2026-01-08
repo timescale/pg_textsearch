@@ -3,41 +3,6 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * state.h - Index state management structures
- *
- * LOCKING DISCIPLINE
- * ==================
- *
- * This extension uses a two-level locking scheme:
- *
- * 1. Per-Index LWLock (TpSharedIndexState.lock)
- *    - One LWLock per index, stored in the shared state
- *    - Acquired once per transaction via tp_acquire_index_lock()
- *    - Released at transaction end via tp_release_index_lock()
- *    - Writers: LW_EXCLUSIVE mode for INSERT/UPDATE/DELETE
- *    - Readers: LW_SHARED mode for SELECT queries
- *
- * 2. dshash Internal Locks (partition-level)
- *    - Held briefly during hash table operations
- *    - Released immediately after lookup/insert completes
- *
- * IMPORTANT: The per-index LWLock MUST be held when:
- *   - Accessing memtable data structures
- *   - Reading posting list entries returned by string table lookup
- *   - Modifying corpus statistics (total_docs, total_len)
- *
- * The string table lookup functions (tp_string_table_lookup, etc.) release
- * their dshash locks before returning, relying on the per-index LWLock to
- * prevent concurrent destruction. Callers MUST ensure the per-index lock
- * is held before calling these functions.
- *
- * Lock ordering (to prevent deadlocks):
- *   1. Per-index LWLock (acquired first, held for transaction duration)
- *   2. dshash partition locks (acquired/released during operations)
- *   3. Buffer locks (for metapage/segment access)
- *
- * WARNING: Do not upgrade from LW_SHARED to LW_EXCLUSIVE while holding
- * the lock. This can deadlock if another backend also holds LW_SHARED.
- * Instead, release and re-acquire (with potential for stale data).
  */
 #pragma once
 
@@ -71,6 +36,7 @@ typedef struct TpMemtable
 {
 	/* String interning hash table in DSA */
 	dshash_table_handle string_hash_handle; /* Handle to dshash string table */
+	int32				total_terms;		/* Total unique terms interned */
 	int64				total_postings;		/* Total posting entries for spill
 											 * threshold */
 
@@ -95,8 +61,10 @@ typedef struct TpSharedIndexState
 	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
 	/* Corpus statistics for BM25 scoring */
-	int32 total_docs; /* Total number of documents */
-	int64 total_len;  /* Total length of all documents */
+	int32  total_docs; /* Total number of documents */
+	int64  total_len;  /* Total length of all documents */
+	float8 idf_sum;	   /* Sum of all IDF values for average IDF calculation */
+	/* Note: num_unique_terms is available as memtable->total_terms */
 
 	/*
 	 * Per-index LWLock for transaction-level serialization.
@@ -121,6 +89,13 @@ typedef struct TpLocalIndexState
 	/* DSA attachment for this backend */
 	dsa_area *dsa; /* Attached DSA area for this index */
 
+	/*
+	 * Build mode flag: If true, this backend owns a private DSA that
+	 * gets destroyed and recreated on each spill for perfect memory
+	 * reclamation. If false, uses shared DSA for concurrent access.
+	 */
+	bool is_build_mode;
+
 	/* Transaction-level lock tracking */
 	bool	   lock_held; /* True if we hold the lock in this transaction */
 	LWLockMode lock_mode; /* Mode we're holding (LW_SHARED or LW_EXCLUSIVE) */
@@ -131,9 +106,13 @@ typedef struct TpLocalIndexState
 
 /* Function declarations for index state management */
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
-extern TpLocalIndexState			 *
+extern TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
+extern TpLocalIndexState			 *
+tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
+extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
+extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(
 					  Relation			 index_rel,

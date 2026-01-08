@@ -101,6 +101,9 @@ bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
+/* IDF sum calculation for average IDF */
+void tp_calculate_idf_sum(TpLocalIndexState *index_state);
+
 /*
  * Scan functions (am/scan.c)
  */

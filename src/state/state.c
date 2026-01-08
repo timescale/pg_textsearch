@@ -229,6 +229,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
+	shared_state->idf_sum	 = 0.0;
 
 	/* Initialize the per-index LWLock */
 	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
@@ -240,6 +241,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	memtable->total_terms		 = 0;
 	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -272,6 +274,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
 	local_state->shared				   = shared_state;
 	local_state->dsa				   = dsa;
+	local_state->is_build_mode		   = false; /* Runtime mode */
 	local_state->lock_held			   = false;
 	local_state->lock_mode			   = 0;
 	local_state->terms_added_this_xact = 0;
@@ -294,6 +297,243 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	entry->local_state = local_state;
 
 	return local_state;
+}
+
+/*
+ * Create index state for BUILD mode (CREATE INDEX)
+ *
+ * Uses a private DSA that is not shared with other backends.
+ * This private DSA will be destroyed and recreated on each spill,
+ * providing perfect memory reclamation.
+ */
+TpLocalIndexState *
+tp_create_build_index_state(Oid index_oid, Oid heap_oid)
+{
+	TpSharedIndexState	 *shared_state;
+	TpLocalIndexState	 *local_state;
+	TpMemtable			 *memtable;
+	dsa_area			 *private_dsa;
+	dsa_area			 *global_dsa;
+	dsa_pointer			  shared_dp;
+	dsa_pointer			  memtable_dp;
+	LocalStateCacheEntry *entry;
+	bool				  found;
+	int					  tranche_id;
+
+	/* Get the global DSA for shared state allocation */
+	global_dsa = tp_registry_get_dsa();
+
+	/* Allocate shared state in GLOBAL DSA (for statistics) */
+	shared_dp = dsa_allocate(global_dsa, sizeof(TpSharedIndexState));
+	if (shared_dp == InvalidDsaPointer)
+		elog(ERROR,
+			 "Failed to allocate shared state for build (index OID: %u)",
+			 index_oid);
+
+	shared_state = (TpSharedIndexState *)
+			dsa_get_address(global_dsa, shared_dp);
+
+	/* Initialize shared state */
+	shared_state->index_oid	 = index_oid;
+	shared_state->heap_oid	 = heap_oid;
+	shared_state->total_docs = 0;
+	shared_state->total_len	 = 0;
+	shared_state->idf_sum	 = 0.0;
+	shared_state->memtable_dp =
+			InvalidDsaPointer; /* Memtable in private DSA */
+
+	/* Initialize per-index LWLock */
+	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
+
+	/* Check if index already registered (rebuild case) */
+	if (tp_registry_lookup(index_oid) != NULL)
+		tp_registry_unregister(index_oid);
+
+	/* Register in global registry */
+	if (!tp_registry_register(index_oid, shared_state, shared_dp))
+	{
+		tp_registry_shmem_startup();
+		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		{
+			dsa_free(global_dsa, shared_dp);
+			elog(ERROR, "Failed to register index %u", index_oid);
+		}
+	}
+
+	/*
+	 * Create PRIVATE DSA for build.
+	 * This DSA is not registered globally - only this backend knows about it.
+	 * It will be destroyed and recreated on each spill for perfect
+	 * memory reclamation.
+	 */
+	tranche_id = LWLockNewTrancheId();
+	LWLockRegisterTranche(tranche_id, "pg_textsearch Build DSA");
+
+	private_dsa = dsa_create(tranche_id);
+	if (!private_dsa)
+		elog(ERROR, "Failed to create private DSA for index build");
+
+	/* Allocate and initialize memtable in PRIVATE DSA */
+	memtable_dp = dsa_allocate(private_dsa, sizeof(TpMemtable));
+	if (!DsaPointerIsValid(memtable_dp))
+		elog(ERROR, "Failed to allocate memtable in private DSA");
+
+	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
+	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	memtable->total_terms		 = 0;
+	memtable->total_postings	 = 0;
+	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+
+	/* Store memtable pointer in shared state for memtable access */
+	shared_state->memtable_dp = memtable_dp;
+
+	/* Create local state pointing to PRIVATE DSA */
+	local_state = (TpLocalIndexState *)
+			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
+	local_state->shared				   = shared_state;
+	local_state->dsa				   = private_dsa; /* PRIVATE DSA */
+	local_state->is_build_mode		   = true;		  /* BUILD MODE */
+	local_state->lock_held			   = false;
+	local_state->lock_mode			   = 0;
+	local_state->terms_added_this_xact = 0;
+
+	/* Cache the local state */
+	init_local_state_cache();
+	entry = (LocalStateCacheEntry *)
+			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
+	if (found && entry->local_state != NULL)
+		pfree(entry->local_state);
+
+	entry->local_state = local_state;
+
+	elog(LOG,
+		 "BUILD MODE: Created private DSA for index %u (will be destroyed on "
+		 "spills)",
+		 index_oid);
+
+	return local_state;
+}
+
+/*
+ * Recreate private DSA for build mode
+ *
+ * This is called after spilling to disk. We destroy the entire private DSA
+ * (freeing ALL memory to OS) and create a fresh one for the next batch.
+ * This provides perfect memory reclamation.
+ */
+void
+tp_recreate_build_dsa(TpLocalIndexState *local_state)
+{
+	dsa_area   *new_dsa;
+	TpMemtable *new_memtable;
+	dsa_pointer memtable_dp;
+	int			tranche_id;
+
+	Assert(local_state != NULL);
+	Assert(local_state->is_build_mode);
+
+	elog(DEBUG1, "BUILD MODE: Destroying private DSA and creating fresh one");
+
+	/*
+	 * Detach from old DSA. This calls dsa_detach() which, for a
+	 * non-attached DSA (no other backends), completely destroys it
+	 * and returns ALL memory to the OS. Perfect reclamation!
+	 */
+	if (local_state->dsa)
+		dsa_detach(local_state->dsa);
+
+	/* Create fresh private DSA */
+	tranche_id = LWLockNewTrancheId();
+	LWLockRegisterTranche(tranche_id, "pg_textsearch Build DSA");
+
+	new_dsa = dsa_create(tranche_id);
+	if (!new_dsa)
+		elog(ERROR, "Failed to recreate private DSA for build");
+
+	/* Allocate fresh memtable in new DSA */
+	memtable_dp = dsa_allocate(new_dsa, sizeof(TpMemtable));
+	if (!DsaPointerIsValid(memtable_dp))
+		elog(ERROR, "Failed to allocate memtable in new private DSA");
+
+	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
+	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	new_memtable->total_terms		 = 0;
+	new_memtable->total_postings	 = 0;
+	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+
+	/* Update shared state with new memtable pointer */
+	local_state->shared->memtable_dp = memtable_dp;
+
+	/* Update local state with new DSA */
+	local_state->dsa = new_dsa;
+
+	elog(DEBUG1, "BUILD MODE: Fresh private DSA created");
+}
+
+/*
+ * Finalize build mode and transition to runtime mode
+ *
+ * This is called at the end of CREATE INDEX. It:
+ * 1. Destroys the private DSA (returns all memory to OS)
+ * 2. Attaches to the global shared DSA
+ * 3. Initializes a fresh memtable in the global DSA
+ * 4. Sets is_build_mode = false for runtime operation
+ *
+ * After this, the index is ready for normal concurrent access.
+ */
+void
+tp_finalize_build_mode(TpLocalIndexState *local_state)
+{
+	dsa_area   *global_dsa;
+	TpMemtable *memtable;
+	dsa_pointer memtable_dp;
+
+	Assert(local_state != NULL);
+	Assert(local_state->is_build_mode);
+
+	elog(LOG, "BUILD MODE: Finalizing and transitioning to runtime mode");
+
+	/*
+	 * Destroy the private DSA. This returns ALL memory to the OS.
+	 * After build, the memtable should be empty (all data spilled to disk).
+	 */
+	if (local_state->dsa)
+	{
+		dsa_detach(local_state->dsa);
+		local_state->dsa = NULL;
+	}
+
+	/*
+	 * Attach to the global shared DSA for runtime operation.
+	 * This is the same DSA used by all backends for concurrent access.
+	 */
+	global_dsa = tp_registry_get_dsa();
+	if (!global_dsa)
+		elog(ERROR, "Failed to get global DSA for runtime mode");
+
+	local_state->dsa = global_dsa;
+
+	/*
+	 * Allocate a fresh memtable in the global DSA.
+	 * This memtable will be shared with other backends.
+	 */
+	memtable_dp = dsa_allocate(global_dsa, sizeof(TpMemtable));
+	if (!DsaPointerIsValid(memtable_dp))
+		elog(ERROR, "Failed to allocate memtable in global DSA");
+
+	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
+	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	memtable->total_terms		 = 0;
+	memtable->total_postings	 = 0;
+	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+
+	/* Update shared state with new memtable pointer */
+	local_state->shared->memtable_dp = memtable_dp;
+
+	/* Transition to runtime mode */
+	local_state->is_build_mode = false;
+
+	elog(LOG, "BUILD MODE: Successfully transitioned to runtime mode");
 }
 
 /*
@@ -482,6 +722,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	{
 		/* Rebuild posting lists from docid pages */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
+
+		/* Recalculate IDF sum after recovery */
+		tp_calculate_idf_sum(local_state);
 	}
 
 	/* Clean up */
@@ -810,10 +1053,7 @@ tp_release_all_index_locks(void)
 void
 tp_clear_memtable(TpLocalIndexState *local_state)
 {
-	TpMemtable	 *memtable;
-	dshash_table *string_table;
-	dshash_table *doc_lengths_table;
-	Size		  dsa_size_before;
+	TpMemtable *memtable;
 
 	if (!local_state || !local_state->shared)
 		return;
@@ -822,61 +1062,66 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	if (!memtable)
 		return;
 
-	/* Capture DSA size before clearing for debug output */
-	dsa_size_before = dsa_get_total_size(local_state->dsa);
-
 	/*
-	 * Destroy the string hash table completely instead of just clearing.
-	 * This frees all DSA allocations (strings and posting lists) and
-	 * destroys the hash table itself, allowing its memory to be released.
+	 * BUILD MODE: Destroy entire private DSA and create fresh one.
+	 * This provides perfect memory reclamation - ALL memory returns to OS.
 	 */
-	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	if (local_state->is_build_mode)
 	{
-		string_table = tp_string_table_attach(
-				local_state->dsa, memtable->string_hash_handle);
-		if (string_table)
-		{
-			/* Free all strings and posting lists */
-			tp_string_table_clear(local_state->dsa, string_table);
-			/* Destroy the hash table itself */
-			dshash_destroy(string_table);
-		}
-		/* Mark handle as invalid - table will be recreated on demand */
-		memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+		Size mem_before = dsa_get_total_size(local_state->dsa);
+
+		/* Destroy and recreate private DSA */
+		tp_recreate_build_dsa(local_state);
+
+		elog(LOG,
+			 "BUILD MODE: DSA destroyed and recreated, freed %zu bytes",
+			 mem_before);
+		return;
 	}
 
 	/*
-	 * Destroy the document lengths hash table completely.
-	 * The table will be recreated on demand when new documents are added.
+	 * RUNTIME MODE: Use best-effort reclamation with dshash_destroy +
+	 * dsa_trim. This is the existing behavior for concurrent inserts.
 	 */
-	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
 	{
-		doc_lengths_table = tp_doclength_table_attach(
-				local_state->dsa, memtable->doc_lengths_handle);
-		if (doc_lengths_table)
+		dshash_table *string_table;
+		dshash_table *doc_lengths_table;
+		Size		  dsa_size_before;
+
+		dsa_size_before = dsa_get_total_size(local_state->dsa);
+
+		/* Destroy the string hash table */
+		if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
 		{
-			/* Destroy the hash table (no entries to free - just ItemPointer
-			 * keys) */
-			dshash_destroy(doc_lengths_table);
+			string_table = tp_string_table_attach(
+					local_state->dsa, memtable->string_hash_handle);
+			if (string_table)
+			{
+				tp_string_table_clear(local_state->dsa, string_table);
+				dshash_destroy(string_table);
+			}
+			memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+			memtable->total_terms		 = 0;
 		}
-		/* Mark handle as invalid - table will be recreated on demand */
-		memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+
+		/* Destroy the document lengths hash table */
+		if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+		{
+			doc_lengths_table = tp_doclength_table_attach(
+					local_state->dsa, memtable->doc_lengths_handle);
+			if (doc_lengths_table)
+				dshash_destroy(doc_lengths_table);
+			memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+		}
+
+		/* Reset posting count */
+		memtable->total_postings = 0;
+
+		/* Try to reclaim DSA memory (best effort) */
+		dsa_trim(local_state->dsa);
+
+		(void)dsa_size_before;
 	}
-
-	/* Note: We preserve corpus statistics (total_docs, total_len, idf_sum)
-	 * as they represent the overall index state, not just the memtable */
-
-	/* Reset posting count for spill threshold tracking */
-	memtable->total_postings = 0;
-
-	/*
-	 * Aggressively try to reclaim empty DSA superblocks.
-	 * After destroying the hash tables, entire segments should be freeable.
-	 */
-	dsa_trim(local_state->dsa);
-
-	/* Suppress unused variable warning (used for debug logging if needed) */
-	(void)dsa_size_before;
 }
 
 /*

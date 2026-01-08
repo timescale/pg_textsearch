@@ -9,7 +9,6 @@
 #include <postgres.h>
 
 #include <storage/itemptr.h>
-#include <utils/hsearch.h>
 
 typedef struct TpLocalIndexState TpLocalIndexState;
 

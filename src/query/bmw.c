@@ -505,10 +505,12 @@ score_memtable_multi_term(
 		return;
 
 	/* Create hash table for document score accumulation */
-	tp_init_doc_hash_ctl(
-			&hash_ctl, sizeof(DocumentScoreEntry), CurrentMemoryContext);
-	doc_accum = hash_create(
-			"Memtable Doc Accum", 1024, &hash_ctl, HASH_ELEM | HASH_BLOBS);
+	memset(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize   = sizeof(ItemPointerData);
+	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
+	hash_ctl.hcxt	   = CurrentMemoryContext;
+	doc_accum		   = hash_create(
+			 "Memtable Doc Accum", 1024, &hash_ctl, HASH_ELEM | HASH_BLOBS);
 
 	/* Process each term */
 	for (term_idx = 0; term_idx < term_count; term_idx++)

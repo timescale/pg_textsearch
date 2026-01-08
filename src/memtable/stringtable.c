@@ -291,10 +291,6 @@ tp_string_table_get_posting_list(
 /*
  * Get posting list for a specific term
  * Returns NULL if term not found
- *
- * LOCKING: For index scans, caller should hold the per-index LWLock
- * (see state.h). For standalone operator use, the caller is responsible
- * for ensuring the returned pointer is used within the same SQL statement.
  */
 TpPostingList *
 tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
@@ -352,9 +348,6 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
  * Get or create a posting list for a term
  * This function manages the coordination between string table and posting
  * lists
- *
- * LOCKING: Caller must hold the per-index LWLock in EXCLUSIVE mode.
- * This function modifies shared data structures.
  */
 TpPostingList *
 tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
