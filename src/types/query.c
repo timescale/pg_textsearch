@@ -223,7 +223,7 @@ tpquery_in(PG_FUNCTION_ARGS)
 Datum
 tpquery_out(PG_FUNCTION_ARGS)
 {
-	TpQuery	  *tpquery = (TpQuery *)PG_GETARG_POINTER(0);
+	TpQuery	  *tpquery = (TpQuery *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 	StringInfo str	   = makeStringInfo();
 
 	if (OidIsValid(tpquery->index_oid))
@@ -266,7 +266,7 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	char	  *query_text;
 
 	/* Read and validate version */
-	version = pq_getmsgint(buf, sizeof(uint8));
+	version = pq_getmsgbyte(buf);
 	if (version != TPQUERY_VERSION)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
@@ -303,18 +303,19 @@ tpquery_recv(PG_FUNCTION_ARGS)
 Datum
 tpquery_send(PG_FUNCTION_ARGS)
 {
-	TpQuery	  *tpquery = (TpQuery *)PG_GETARG_POINTER(0);
-	StringInfo buf	   = makeStringInfo();
-	char	  *query_text;
+	TpQuery		  *tpquery = (TpQuery *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	StringInfoData buf;
+	char		  *query_text;
 
-	pq_sendint8(buf, TPQUERY_VERSION);
-	pq_sendint32(buf, tpquery->index_oid);
-	pq_sendint32(buf, tpquery->query_text_len);
+	pq_begintypsend(&buf);
+	pq_sendint8(&buf, TPQUERY_VERSION);
+	pq_sendint32(&buf, tpquery->index_oid);
+	pq_sendint32(&buf, tpquery->query_text_len);
 
 	query_text = get_tpquery_text(tpquery);
-	pq_sendbytes(buf, query_text, tpquery->query_text_len);
+	pq_sendbytes(&buf, query_text, tpquery->query_text_len);
 
-	PG_RETURN_BYTEA_P(pq_endtypsend(buf));
+	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
 /*
@@ -660,7 +661,7 @@ Datum
 bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 {
 	text	*text_arg	= PG_GETARG_TEXT_PP(0);
-	TpQuery *query		= (TpQuery *)PG_GETARG_POINTER(1);
+	TpQuery *query		= (TpQuery *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
 	char	*query_text = get_tpquery_text(query);
 	Oid		 index_oid;
 
@@ -971,8 +972,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 Datum
 tpquery_eq(PG_FUNCTION_ARGS)
 {
-	TpQuery *a = (TpQuery *)PG_GETARG_POINTER(0);
-	TpQuery *b = (TpQuery *)PG_GETARG_POINTER(1);
+	TpQuery *a = (TpQuery *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	TpQuery *b = (TpQuery *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
 
 	/* Compare index OIDs */
 	if (a->index_oid != b->index_oid)
