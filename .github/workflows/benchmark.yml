@@ -528,12 +528,9 @@ jobs:
   # in a separate PostgreSQL instance with identical configuration.
   system-x-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    # Run for msmarco or all datasets, and on scheduled runs
-    if: >
-      (github.event_name == 'schedule') ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.dataset == 'msmarco' || github.event.inputs.dataset == 'all'))
+    timeout-minutes: 360  # 6 hours for all datasets
+    # Run for any dataset selection or scheduled runs
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
     - uses: actions/checkout@v4
@@ -544,10 +541,16 @@ jobs:
         sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/share/swift
         df -h /
 
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
     - name: Install PostgreSQL and System X
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
+        pip install wikiextractor
 
         # Install PostgreSQL 17
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
@@ -596,42 +599,90 @@ jobs:
         psql -d bench_test -c "CREATE EXTENSION pg_search"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
-    - name: Determine dataset size
-      id: dataset_size
+    - name: Determine datasets to run
+      id: datasets
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
+          echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
           echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
+          # Scheduled: run all with full MS MARCO
+          echo "dataset=all" >> $GITHUB_OUTPUT
+          echo "wiki_size=100K" >> $GITHUB_OUTPUT
           echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ steps.dataset_size.outputs.msmarco_size }}
+        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
 
-    - name: Run System X benchmark
+    - name: Download Wikipedia dataset
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/wikipedia
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.wiki_size }}
+
+    - name: Run System X Cranfield benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== System X Cranfield Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        cd benchmarks/sql/cranfield
+        time psql -f systemx/01-load.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        time psql -f systemx/02-queries.sql 2>&1 | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Run System X MS MARCO benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        echo "=== System X MS MARCO Benchmark ===" | tee benchmark_results.txt
+        echo "=== System X MS MARCO Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/msmarco/systemx/load.sql 2>&1 | tee -a benchmark_results.txt
         time psql -f benchmarks/datasets/msmarco/systemx/queries.sql 2>&1 | tee -a benchmark_results.txt
         echo "End: $(date)" | tee -a benchmark_results.txt
 
+    - name: Run System X Wikipedia benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== System X Wikipedia Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/wikipedia/systemx/load.sql 2>&1 | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/wikipedia/systemx/queries.sql 2>&1 | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
     - name: Extract metrics
       run: |
         chmod +x benchmarks/runner/extract_metrics.sh
-        ./benchmarks/runner/extract_metrics.sh benchmark_results.txt systemx_metrics.json "systemx_msmarco" "System X"
+        DATASET="${{ steps.datasets.outputs.dataset }}"
 
-    - name: Format metrics for benchmark tracking
-      run: |
-        chmod +x benchmarks/runner/format_for_action.sh
-        ./benchmarks/runner/format_for_action.sh systemx_metrics.json systemx_action.json
+        if [ "$DATASET" = "all" ]; then
+          # Extract each dataset separately with section filter
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_cranfield_metrics.json "systemx_cranfield" "System X Cranfield" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_msmarco_metrics.json "systemx_msmarco" "System X MS MARCO" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_wikipedia_metrics.json "systemx_wikipedia" "System X Wikipedia" || true
+        else
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_metrics.json "systemx_${DATASET}" "System X" || true
+        fi
 
     - name: Upload results
       uses: actions/upload-artifact@v4
@@ -639,30 +690,48 @@ jobs:
         name: system-x-benchmark-${{ github.run_id }}
         path: |
           benchmark_results.txt
+          systemx_*_metrics.json
           systemx_metrics.json
-          systemx_action.json
           tmp_bench/postgres.log
         retention-days: 90
 
     - name: Post benchmark summary
       if: always()
       run: |
-        if [ -f systemx_metrics.json ]; then
-          echo "### System X Benchmark Results" >> $GITHUB_STEP_SUMMARY
+        # Helper function to output metrics table for a dataset
+        output_systemx_table() {
+          local file=$1
+          local name=$2
+          if [ ! -f "$file" ]; then
+            return
+          fi
+          echo "### System X ${name} Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' systemx_metrics.json) |" >> $GITHUB_STEP_SUMMARY
-          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' systemx_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
-          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' systemx_metrics.json) ms/query |" >> $GITHUB_STEP_SUMMARY
+          echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' "$file") |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Build | $(jq -r '.metrics.index_build_time_ms // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Index Size | $(jq -r '.metrics.index_size // "N/A"' "$file") |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_1.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_2.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_3.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_4.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_5.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_6.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_7.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8+ Token (p50) | $(jq -r '.metrics.latency_by_tokens.bucket_8.p50 // "N/A"' "$file") ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Throughput | $(jq -r '.metrics.throughput.avg_ms_per_query // "N/A"' "$file") ms/query |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        }
+
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+        if [ "$DATASET" = "all" ]; then
+          # Show per-dataset summaries
+          output_systemx_table "systemx_cranfield_metrics.json" "Cranfield"
+          output_systemx_table "systemx_msmarco_metrics.json" "MS MARCO"
+          output_systemx_table "systemx_wikipedia_metrics.json" "Wikipedia"
+        elif [ -f systemx_metrics.json ]; then
+          output_systemx_table "systemx_metrics.json" "$DATASET"
         fi
 
     - name: Cleanup
