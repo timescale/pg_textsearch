@@ -803,8 +803,18 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	if (local_state != NULL)
 	{
-		/* Rebuild posting lists from docid pages */
+		/* Rebuild posting lists from docid pages (if any) */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
+
+		/*
+		 * Load corpus statistics from metapage. This is needed for indexes
+		 * built with parallel workers (which write directly to segments
+		 * without docid pages) or if docid recovery didn't fully restore
+		 * the stats. The metapage is the authoritative source for total_docs
+		 * and total_len.
+		 */
+		local_state->shared->total_docs = metap->total_docs;
+		local_state->shared->total_len	= metap->total_len;
 
 		/* Recalculate IDF sum after recovery */
 		tp_calculate_idf_sum(local_state);
