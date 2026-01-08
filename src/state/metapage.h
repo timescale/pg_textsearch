@@ -35,7 +35,8 @@ typedef struct TpIndexMetaPageData
 	uint32		version;		  /* Index format version */
 	Oid			text_config_oid;  /* Text search configuration OID */
 	uint64		total_docs;		  /* Total number of documents */
-	uint64		total_terms;	  /* Number of unique terms for IDF calc */
+	uint64		total_terms;	  /* DEPRECATED: kept for on-disk compatibility,
+								   * never read. Do not use. */
 	uint64		total_len;		  /* Total length of all documents */
 	float4		k1;				  /* BM25 k1 parameter */
 	float4		b;				  /* BM25 b parameter */

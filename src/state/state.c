@@ -229,7 +229,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
-	shared_state->idf_sum	 = 0.0;
 
 	/* Initialize the per-index LWLock */
 	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
@@ -241,7 +240,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_terms		 = 0;
 	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -484,9 +482,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	{
 		/* Rebuild posting lists from docid pages */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
-
-		/* Recalculate IDF sum after recovery */
-		tp_calculate_idf_sum(local_state);
 	}
 
 	/* Clean up */
@@ -848,7 +843,6 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		}
 		/* Mark handle as invalid - table will be recreated on demand */
 		memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-		memtable->total_terms		 = 0;
 	}
 
 	/*

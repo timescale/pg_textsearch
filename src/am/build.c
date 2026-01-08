@@ -343,68 +343,6 @@ tp_build_init_metapage(
 }
 
 /*
- * Calculate the sum of all IDF values for the index
- */
-void
-tp_calculate_idf_sum(TpLocalIndexState *index_state)
-{
-	TpMemtable		  *memtable;
-	dshash_table	  *string_table;
-	dshash_seq_status  status;
-	TpStringHashEntry *entry;
-	float8			   idf_sum = 0.0;
-	int32			   total_docs;
-	int32			   term_count = 0;
-
-	Assert(index_state != NULL);
-	Assert(index_state->shared != NULL);
-
-	total_docs = index_state->shared->total_docs;
-	if (total_docs == 0)
-		return; /* No documents, no IDF to calculate */
-
-	memtable = get_memtable(index_state);
-	if (!memtable || memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
-		return;
-
-	/* Attach to the string hash table */
-	string_table = tp_string_table_attach(
-			index_state->dsa, memtable->string_hash_handle);
-
-	/* Iterate through all terms and calculate IDF for each */
-	dshash_seq_init(&status, string_table, false); /* shared lock */
-
-	while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) != NULL)
-	{
-		if (DsaPointerIsValid(entry->key.posting_list))
-		{
-			TpPostingList *posting_list =
-					dsa_get_address(index_state->dsa, entry->key.posting_list);
-
-			/* Calculate RAW IDF for this term (no epsilon adjustment) */
-			double idf_numerator   = (double)(total_docs -
-											  posting_list->doc_count + 0.5);
-			double idf_denominator = (double)(posting_list->doc_count + 0.5);
-			double idf_ratio	   = idf_numerator / idf_denominator;
-			double raw_idf		   = log(idf_ratio);
-
-			/* Use raw IDF for sum calculation (including negative values) */
-			idf_sum += raw_idf;
-			term_count++;
-		}
-	}
-
-	dshash_seq_term(&status);
-	dshash_detach(string_table);
-
-	/* Store the IDF sum in shared state */
-	index_state->shared->idf_sum = idf_sum;
-
-	/* Update the term count in memtable */
-	memtable->total_terms = term_count;
-}
-
-/*
  * Helper: Finalize build and update statistics
  */
 static void
@@ -419,9 +357,6 @@ tp_build_finalize_and_update_stats(
 	TpIndexMetaPage metap;
 
 	Assert(index_state != NULL);
-
-	/* Calculate IDF sum for average IDF computation */
-	tp_calculate_idf_sum(index_state);
 
 	/* Get actual statistics from the shared state */
 	*total_docs = index_state->shared->total_docs;
@@ -1038,8 +973,13 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
-	/* Recalculate IDF sum after insert */
-	tp_calculate_idf_sum(index_state);
+	/*
+	 * Note: tp_calculate_idf_sum() was previously called here on every
+	 * insert, but idf_sum is not currently used by any scoring code.
+	 * The function iterates all terms (O(n)), making it extremely
+	 * expensive during bulk inserts. If idf_sum becomes needed, it
+	 * should be calculated lazily or incrementally, not on every insert.
+	 */
 
 	return true;
 }

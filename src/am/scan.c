@@ -623,67 +623,57 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	}
 	PG_END_TRY();
 
-	/* Perform actual BM25 search using posting lists */
-	PG_TRY();
+	/* Get the index state with posting lists */
+	index_state = tp_get_local_index_state(
+			RelationGetRelid(scan->indexRelation));
+
+	if (!index_state)
 	{
-		/* Get the index state with posting lists */
-		index_state = tp_get_local_index_state(
-				RelationGetRelid(scan->indexRelation));
-
-		if (!index_state)
-		{
-			elog(WARNING, "Could not get index state for BM25 search");
-			pfree(metap);
-			return false;
-		}
-
-		/* Acquire shared lock for reading the memtable */
-		tp_acquire_index_lock(index_state, LW_SHARED);
-
-		/* Use the original query vector or create one from text */
-		query_vector = so->query_vector;
-
-		if (!query_vector && so->query_text)
-		{
-			/*
-			 * We have a text query - convert it to a vector using the index.
-			 */
-			char *index_name = tp_get_qualified_index_name(
-					scan->indexRelation);
-
-			text *index_name_text  = cstring_to_text(index_name);
-			text *query_text_datum = cstring_to_text(so->query_text);
-
-			Datum query_vec_datum = DirectFunctionCall2(
-					to_tpvector,
-					PointerGetDatum(query_text_datum),
-					PointerGetDatum(index_name_text));
-
-			query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
-
-			/* Free existing query vector if present */
-			if (so->query_vector)
-				pfree(so->query_vector);
-
-			/* Store the converted vector for this query execution */
-			so->query_vector = query_vector;
-		}
-
-		if (!query_vector)
-		{
-			elog(WARNING, "No query vector available in scan state");
-			pfree(metap);
-			return false;
-		}
-
-		/* Find documents matching the query using posting lists */
-		success = tp_memtable_search(scan, index_state, query_vector, metap);
+		elog(WARNING, "Could not get index state for BM25 search");
+		pfree(metap);
+		return false;
 	}
-	PG_CATCH();
+
+	/* Acquire shared lock for reading the memtable */
+	tp_acquire_index_lock(index_state, LW_SHARED);
+
+	/* Use the original query vector or create one from text */
+	query_vector = so->query_vector;
+
+	if (!query_vector && so->query_text)
 	{
-		success = false;
+		/*
+		 * We have a text query - convert it to a vector using the index.
+		 */
+		char *index_name = tp_get_qualified_index_name(scan->indexRelation);
+
+		text *index_name_text  = cstring_to_text(index_name);
+		text *query_text_datum = cstring_to_text(so->query_text);
+
+		Datum query_vec_datum = DirectFunctionCall2(
+				to_tpvector,
+				PointerGetDatum(query_text_datum),
+				PointerGetDatum(index_name_text));
+
+		query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
+
+		/* Free existing query vector if present */
+		if (so->query_vector)
+			pfree(so->query_vector);
+
+		/* Store the converted vector for this query execution */
+		so->query_vector = query_vector;
 	}
-	PG_END_TRY();
+
+	if (!query_vector)
+	{
+		elog(WARNING, "No query vector available in scan state");
+		pfree(metap);
+		return false;
+	}
+
+	/* Find documents matching the query using posting lists */
+	success = tp_memtable_search(scan, index_state, query_vector, metap);
 
 	pfree(metap);
 	return success;
@@ -721,20 +711,25 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	Assert(so->result_ctids != NULL);
 	Assert(so->current_pos < so->result_count);
 
-	Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
-
-	/* Additional validation - check for obviously invalid block numbers */
-	blknum = BlockIdGetBlockNumber(
-			&(so->result_ctids[so->current_pos].ip_blkid));
-	if (blknum == InvalidBlockNumber || blknum > TP_MAX_BLOCK_NUMBER)
+	/*
+	 * Skip invalid block numbers in a loop (not recursively, to avoid
+	 * stack overflow if many consecutive results are invalid).
+	 */
+	while (so->current_pos < so->result_count)
 	{
-		/* Skip this result and try the next one */
+		Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
+
+		blknum = BlockIdGetBlockNumber(
+				&(so->result_ctids[so->current_pos].ip_blkid));
+		if (blknum != InvalidBlockNumber && blknum <= TP_MAX_BLOCK_NUMBER)
+			break; /* Found valid result */
+
+		/* Skip invalid result */
 		so->current_pos++;
-		if (so->current_pos >= so->result_count)
-			return false;
-		/* Recursive call to try the next result */
-		return tp_gettuple(scan, dir);
 	}
+
+	if (so->current_pos >= so->result_count)
+		return false;
 
 	scan->xs_heaptid		= so->result_ctids[so->current_pos];
 	scan->xs_recheck		= false;
