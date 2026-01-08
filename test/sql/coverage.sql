@@ -1,10 +1,10 @@
 -- Additional coverage tests for untested code paths
--- Tests debug functions, binary I/O, and text<@>text operator
+-- Tests debug functions, segment dump, and text<@>text operator
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- =============================================================================
--- Test 1: bm25_summarize_index debug function
+-- Test 1: Basic debug functions with memtable-only data
 -- =============================================================================
 
 -- Create a simple table and index
@@ -17,14 +17,29 @@ INSERT INTO coverage_docs (content) VALUES
 CREATE INDEX coverage_idx ON coverage_docs USING bm25(content)
     WITH (text_config='english');
 
--- Test bm25_summarize_index - should return statistics without full dump
-SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_works;
+-- Test bm25_summarize_index with memtable data
+SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_memtable;
 
--- Test bm25_dump_index - basic call (string mode, truncated output)
-SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_works;
+-- Test bm25_dump_index with memtable data
+SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_memtable;
 
 -- =============================================================================
--- Test 2: bm25query equality (tpquery_eq)
+-- Test 2: Debug functions with segment data (exercises segment dump code)
+-- =============================================================================
+
+-- Force segment spill to have data on disk
+SELECT bm25_spill_index('coverage_idx');
+
+-- Test bm25_summarize_index with segment data
+-- This exercises tp_summarize_index_to_output with segments
+SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_segment;
+
+-- Test bm25_dump_index with segment data
+-- This exercises tp_dump_segment_to_output, read_dict_entry, read_term_at_index
+SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_segment;
+
+-- =============================================================================
+-- Test 3: bm25query equality (tpquery_eq)
 -- =============================================================================
 
 -- Test equality of identical queries
@@ -34,12 +49,9 @@ SELECT to_bm25query('hello', 'coverage_idx') = to_bm25query('hello', 'coverage_i
 SELECT to_bm25query('hello', 'coverage_idx') = to_bm25query('world', 'coverage_idx') AS diff_query_eq;
 
 -- =============================================================================
--- Test 3: text <@> text operator (bm25_text_text_score)
--- This is the implicit form without index context
+-- Test 4: text <@> text operator (bm25_text_text_score)
+-- This is the implicit form without explicit bm25query
 -- =============================================================================
-
--- Force segment spill to have data on disk for the query
-SELECT bm25_spill_index('coverage_idx');
 
 -- Insert more data to create variation
 INSERT INTO coverage_docs (content) VALUES
@@ -58,6 +70,20 @@ ORDER BY content <@> 'hello'::text
 LIMIT 3;
 
 SET enable_seqscan = on;
+
+-- =============================================================================
+-- Test 5: Multiple segments (exercises segment iteration in dump)
+-- =============================================================================
+
+-- Add more data and spill again to create multiple segments
+INSERT INTO coverage_docs (content)
+SELECT 'document number ' || i || ' with varying content for coverage'
+FROM generate_series(1, 100) AS i;
+
+SELECT bm25_spill_index('coverage_idx');
+
+-- Dump with multiple segments
+SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
 
 -- =============================================================================
 -- Cleanup
