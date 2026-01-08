@@ -973,13 +973,5 @@ tp_insert(
 	/* Store the docid for crash recovery */
 	tp_add_docid_to_pages(index, ht_ctid);
 
-	/*
-	 * Note: tp_calculate_idf_sum() was previously called here on every
-	 * insert, but idf_sum is not currently used by any scoring code.
-	 * The function iterates all terms (O(n)), making it extremely
-	 * expensive during bulk inserts. If idf_sum becomes needed, it
-	 * should be calculated lazily or incrementally, not on every insert.
-	 */
-
 	return true;
 }
