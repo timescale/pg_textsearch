@@ -67,14 +67,19 @@ tp_local_memtable_create(void)
 	MemoryContext	 oldcxt;
 	HASHCTL			 hash_ctl;
 
-	/* Create a dedicated memory context for this memtable */
+	/*
+	 * Allocate the memtable struct in the CURRENT context (parent), not in
+	 * mcxt. This allows tp_local_memtable_clear() to reset mcxt without
+	 * freeing the memtable struct itself.
+	 */
+	memtable = palloc0(sizeof(TpLocalMemtable));
+
+	/* Create a dedicated memory context for internal data */
 	mcxt = AllocSetContextCreate(
 			CurrentMemoryContext, "LocalMemtable", ALLOCSET_DEFAULT_SIZES);
 
-	oldcxt = MemoryContextSwitchTo(mcxt);
-
-	memtable	   = palloc0(sizeof(TpLocalMemtable));
 	memtable->mcxt = mcxt;
+	oldcxt		   = MemoryContextSwitchTo(mcxt);
 
 	/* Create term hash table */
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
@@ -163,8 +168,11 @@ tp_local_memtable_destroy(TpLocalMemtable *memtable)
 	if (!memtable)
 		return;
 
-	/* Deleting the memory context frees everything */
+	/* Delete the memory context (frees all internal data) */
 	MemoryContextDelete(memtable->mcxt);
+
+	/* Free the memtable struct itself (allocated in parent context) */
+	pfree(memtable);
 }
 
 /*
@@ -189,11 +197,21 @@ get_or_create_posting(
 
 	if (!found)
 	{
+		char *term_copy;
+
 		/* Create new posting list */
 		oldcxt = MemoryContextSwitchTo(memtable->mcxt);
 
+		/*
+		 * Note: term may not be null-terminated (e.g., TSVector lexemes),
+		 * so we must copy exactly term_len bytes and null-terminate.
+		 */
+		term_copy = palloc(term_len + 1);
+		memcpy(term_copy, term, term_len);
+		term_copy[term_len] = '\0';
+
 		entry->posting			  = palloc(sizeof(TpLocalPosting));
-		entry->posting->term	  = pstrdup(term);
+		entry->posting->term	  = term_copy;
 		entry->posting->term_len  = term_len;
 		entry->posting->doc_count = 0;
 		entry->posting->capacity  = TP_INITIAL_POSTING_LIST_CAPACITY;
