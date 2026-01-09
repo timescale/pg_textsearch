@@ -34,19 +34,6 @@ git mv sql/pg_textsearch--X.Y.Z-dev.sql sql/pg_textsearch--X.Y.Z.sql
 git mv sql/pg_textsearch--W.V.U--X.Y.Z-dev.sql sql/pg_textsearch--W.V.U--X.Y.Z.sql
 ```
 
-**Create dev-to-release upgrade path** (for users on dev version):
-```sh
-# Create sql/pg_textsearch--X.Y.Z-dev--X.Y.Z.sql with:
--- Upgrade from X.Y.Z-dev to X.Y.Z
--- No schema changes
-
-DO $$
-BEGIN
-    RAISE INFO 'pg_textsearch upgraded to vX.Y.Z';
-END
-$$;
-```
-
 **Update SQL file contents:**
 - In the main SQL file, update the version comment at the top
 - Update the `RAISE INFO` message (remove prerelease warnings for releases)
@@ -57,8 +44,7 @@ Add the new upgrade script to the `DATA` list:
 ```makefile
 DATA = sql/pg_textsearch--X.Y.Z.sql \
        ... \
-       sql/pg_textsearch--W.V.U--X.Y.Z.sql \
-       sql/pg_textsearch--X.Y.Z-dev--X.Y.Z.sql
+       sql/pg_textsearch--W.V.U--X.Y.Z.sql
 ```
 
 ### 4. Rename Release Banner Image
@@ -166,12 +152,9 @@ Update files with `0.4.0-dev`, create new SQL files, etc.
 
 ## SQL Upgrade Path Requirements
 
-Every release must have upgrade paths from:
-
-1. **Previous stable release** → new release (e.g., `0.2.0--0.3.0.sql`)
-2. **Previous dev version** → new release (e.g., `0.3.0-dev--0.3.0.sql`)
-
-This ensures users can upgrade regardless of which version they installed.
+Every release must have an upgrade path from the previous stable release
+(e.g., `0.2.0--0.3.0.sql`). Dev versions are not supported for direct upgrades;
+users on dev versions should reinstall the extension.
 
 ## Upgrade Compatibility
 

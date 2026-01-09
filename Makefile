@@ -6,8 +6,7 @@ DATA = sql/pg_textsearch--0.3.0.sql \
        sql/pg_textsearch--0.0.4--0.0.5.sql \
        sql/pg_textsearch--0.0.5--0.1.0.sql \
        sql/pg_textsearch--0.1.0--0.2.0.sql \
-       sql/pg_textsearch--0.2.0--0.3.0.sql \
-       sql/pg_textsearch--0.3.0-dev--0.3.0.sql
+       sql/pg_textsearch--0.2.0--0.3.0.sql
 
 # Source files organized by directory
 OBJS = \

@@ -23,16 +23,7 @@ mascot and the name occurs in various places in the source code.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports:
-- PostgreSQL 17
-- PostgreSQL 18
-
-### PostgreSQL 18 Support
-
-- **Embedded index name syntax**: Use `index_name:query` format in cast expressions for
-  better compatibility with PG18's query planner
-- **Improved ORDER BY optimization**: Full support for PG18's consistent ordering semantics
-- **Query planner compatibility**: Works correctly with PG18's more eager expression evaluation
+pg_textsearch supports PostgreSQL 17 and 18.
 
 ## Installation
 
