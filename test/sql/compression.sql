@@ -1,12 +1,9 @@
 -- Test compression functionality
--- Tests that compression can be enabled and produces correct results
+-- Tests that compression (now default) produces correct results
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Enable compression for this test
-SET pg_textsearch.compress_segments = on;
-
--- Verify the setting
+-- Compression is now on by default
 SHOW pg_textsearch.compress_segments;
 
 -- Create test table

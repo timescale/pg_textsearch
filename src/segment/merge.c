@@ -342,12 +342,33 @@ posting_source_load_block(TpPostingMergeSource *ps)
 		ps->block_capacity = ps->skip_entry.doc_count;
 	}
 
-	/* Read posting data for this block */
-	tp_segment_read(
-			ps->reader,
-			ps->skip_entry.posting_offset,
-			ps->block_postings,
-			ps->skip_entry.doc_count * sizeof(TpBlockPosting));
+	/* Read posting data for this block (handle compression) */
+	if (ps->skip_entry.flags == TP_BLOCK_FLAG_DELTA)
+	{
+		/* Compressed block - read and decompress */
+		uint8 compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
+
+		tp_segment_read(
+				ps->reader,
+				ps->skip_entry.posting_offset,
+				compressed_buf,
+				TP_MAX_COMPRESSED_BLOCK_SIZE);
+
+		tp_decompress_block(
+				compressed_buf,
+				ps->skip_entry.doc_count,
+				0, /* first_doc_id - deltas are relative within block */
+				ps->block_postings);
+	}
+	else
+	{
+		/* Uncompressed block - read directly */
+		tp_segment_read(
+				ps->reader,
+				ps->skip_entry.posting_offset,
+				ps->block_postings,
+				ps->skip_entry.doc_count * sizeof(TpBlockPosting));
+	}
 
 	ps->current_in_block = 0;
 	return true;
