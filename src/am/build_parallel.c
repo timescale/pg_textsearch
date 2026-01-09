@@ -1355,23 +1355,14 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 		 shared->worker_count);
 
 	/*
-	 * Compact segments to optimize query performance.
+	 * Check if compaction is needed based on segment count threshold.
 	 *
 	 * Parallel builds create multiple segments (one per worker, potentially
-	 * more with spills). Each segment requires separate dictionary lookups
-	 * and skip index traversal during queries, causing significant overhead.
-	 *
-	 * Unlike normal compaction (which only triggers at threshold), we force
-	 * a merge here if there are 2+ segments. This ensures parallel builds
-	 * produce the same efficient single-segment structure as serial builds.
+	 * more with spills). We use the standard threshold-based compaction to
+	 * ensure parallel builds produce the same index structure as serial
+	 * builds with the same segments_per_level setting.
 	 */
-	if (total_segments >= 2)
-	{
-		elog(DEBUG1,
-			 "Forcing compaction of %d parallel build segments",
-			 total_segments);
-		tp_merge_level_segments(index, 0);
-	}
+	tp_maybe_compact_level(index, 0);
 }
 
 /*
