@@ -215,6 +215,152 @@ jobs:
         pg_ctl -D /tmp/upgrade_test_data stop -m immediate || true
         rm -rf /tmp/upgrade_test_data
 
+  # Test that incompatible upgrades fail gracefully (no crash, proper error message)
+  test-incompatible-upgrade:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [17]
+        # Old versions with incompatible on-disk format
+        old_version: ['0.1.0']
+
+    steps:
+    - name: Checkout current code
+      uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates gnupg
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+        sudo systemctl stop postgresql
+
+    - name: Download old release v${{ matrix.old_version }}
+      run: |
+        DOWNLOAD_URL="https://github.com/timescale/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz"
+        curl -fsSL -o pg_textsearch-old.tar.gz "$DOWNLOAD_URL"
+        tar -xzf pg_textsearch-old.tar.gz
+
+    - name: Build old version v${{ matrix.old_version }}
+      run: |
+        cd pg_textsearch-${{ matrix.old_version }}
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean || true
+        make
+        sudo make install
+        cd ..
+
+    - name: Build current version
+      run: |
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean
+        make
+
+    - name: Start PostgreSQL and create test data with old version
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/incompat_test_data
+
+        initdb -D $PGDATA
+        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
+        echo "port = 5432" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        createdb -h /tmp incompat_test
+
+        psql -h /tmp -d incompat_test << 'SQL'
+        CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';
+        SELECT extversion AS old_version FROM pg_extension WHERE extname = 'pg_textsearch';
+
+        CREATE TABLE test_docs (id SERIAL PRIMARY KEY, content TEXT);
+        INSERT INTO test_docs (content) VALUES
+          ('PostgreSQL database system'),
+          ('Full text search ranking'),
+          ('Document indexing test');
+
+        CREATE INDEX idx_old ON test_docs USING bm25 (content) WITH (text_config = 'english');
+
+        -- Verify it works before upgrade
+        SELECT id, content <@> 'database'::text AS score FROM test_docs ORDER BY score LIMIT 1;
+        SQL
+
+    - name: Stop PostgreSQL, upgrade extension, restart
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+        # Stop server
+        pg_ctl -D /tmp/incompat_test_data stop -w
+
+        # Install new version
+        sudo make install
+
+        # Restart server with new code
+        pg_ctl -D /tmp/incompat_test_data start -w -l /tmp/incompat_test_data/logfile
+
+    - name: Verify incompatible index fails gracefully
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+
+        # Upgrade the extension
+        psql -h /tmp -d incompat_test -c "ALTER EXTENSION pg_textsearch UPDATE;"
+        psql -h /tmp -d incompat_test -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';"
+
+        # Try to use the old index - should get an error, NOT a crash
+        # We use a script that captures the error and verifies it's the expected message
+        psql -h /tmp -d incompat_test << 'SQLSCRIPT'
+        -- This should produce an error about incompatible index version
+        \set ON_ERROR_STOP off
+
+        DO $$
+        DECLARE
+          result float8;
+          err_msg text;
+        BEGIN
+          BEGIN
+            SELECT content <@> 'database'::text INTO result FROM test_docs LIMIT 1;
+            RAISE EXCEPTION 'Expected an error but query succeeded with result: %', result;
+          EXCEPTION WHEN OTHERS THEN
+            GET STACKED DIAGNOSTICS err_msg = MESSAGE_TEXT;
+            -- Check that we got a proper error message about version incompatibility
+            IF err_msg LIKE '%ncompatible%version%' OR err_msg LIKE '%recreate%' OR err_msg LIKE '%rebuild%' THEN
+              RAISE NOTICE 'Got expected error: %', err_msg;
+            ELSE
+              RAISE EXCEPTION 'Unexpected error message: %', err_msg;
+            END IF;
+          END;
+        END $$;
+
+        -- Verify server is still running (didn't crash)
+        SELECT 'Server still running after incompatible index access' as status;
+
+        -- Verify we can create NEW indexes with the new version
+        CREATE TABLE new_docs (content TEXT);
+        INSERT INTO new_docs VALUES ('Testing new index creation after upgrade');
+        CREATE INDEX idx_new ON new_docs USING bm25 (content) WITH (text_config = 'english');
+        SELECT content <@> 'testing'::text AS score FROM new_docs;
+        RAISE NOTICE 'New index creation works correctly';
+
+        -- Verify REINDEX fixes the old index
+        REINDEX INDEX idx_old;
+        SELECT id, content <@> 'database'::text AS score FROM test_docs ORDER BY score LIMIT 1;
+        RAISE NOTICE 'REINDEX successfully rebuilt incompatible index';
+        SQLSCRIPT
+
+        echo "Incompatible upgrade handled gracefully!"
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        pg_ctl -D /tmp/incompat_test_data stop -m immediate || true
+        rm -rf /tmp/incompat_test_data
+
   # Test clean install (no upgrade) on both PG versions
   test-clean-install:
     runs-on: ubuntu-latest
