@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767927935504,
+  "lastUpdate": 1767930950255,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -105,6 +105,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "29f2ac79eeeed7c627d7f8d77eb94899bb19e381",
+          "message": "Use threshold-based compaction for parallel builds\n\nParallel builds were forcing compaction with 2+ segments, bypassing the\nsegments_per_level threshold. This caused parallel builds to produce\ndifferent index structures than serial builds with the same settings.\n\nBenchmark showed serial builds with 8 unmerged segments at L0 had better\nquery performance (17.18ms) than parallel builds forced to 1 merged\nsegment at L1 (20.03ms) due to Block-Max WAND skip index efficiency.\n\nChange parallel builds to use tp_maybe_compact_level() which respects\nthe segments_per_level threshold, ensuring consistent index structure\nregardless of build method.",
+          "timestamp": "2026-01-09T03:14:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/29f2ac79eeeed7c627d7f8d77eb94899bb19e381"
+        },
+        "date": 1767930948991,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 216.184,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.3,
             "unit": "ms"
           },
           {
