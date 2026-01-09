@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767979175531,
+  "lastUpdate": 1767981136726,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -211,6 +211,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Build Time",
             "value": 254.934,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.02,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "151fefa781727d8f7664936d9be4d5f693c10a20",
+          "message": "Add unused pool pages to FSM before compaction\n\nMove the FSM reclamation into tp_link_all_worker_segments, right before\ncompaction is called. This ensures unused pre-allocated pages are\navailable for compaction to reuse, reducing index bloat.\n\nOnly call RecordFreeIndexPage here - compaction will call\nIndexFreeSpaceMapVacuum after freeing its own segment pages, which\nupdates the FSM upper levels for all free pages including ours.",
+          "timestamp": "2026-01-09T17:27:14Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/151fefa781727d8f7664936d9be4d5f693c10a20"
+        },
+        "date": 1767981136136,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 272.191,
             "unit": "ms"
           },
           {
