@@ -146,7 +146,13 @@ starting "Release v" merges to main. It:
 2. Builds release artifacts for PG17/PG18 on Linux/macOS (amd64/arm64)
 3. Creates a GitHub release with the artifacts
 
-### 10. Post-Release: Bump to Next Dev Version
+### 10. Update timescaledb-docker-ha
+
+Create a PR in the [timescaledb-docker-ha](https://github.com/timescale/timescaledb-docker-ha)
+repo to update the pg_textsearch version. This ensures the new release is included
+in Timescale's Docker images.
+
+### 11. Post-Release: Bump to Next Dev Version
 
 After the release is published, create a PR to bump to the next dev version:
 
