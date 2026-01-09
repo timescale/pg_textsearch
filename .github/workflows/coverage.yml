@@ -82,6 +82,8 @@ jobs:
         (cd test/scripts && ./concurrency.sh) || true
         # Run segment tests
         (cd test/scripts && ./segment.sh) || true
+        # Run recovery tests (exercises tp_rebuild_index_from_disk)
+        (cd test/scripts && ./recovery.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
       run: |
