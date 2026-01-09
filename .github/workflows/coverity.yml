@@ -38,7 +38,7 @@ jobs:
     - name: Download Coverity tools
       run: |
         wget https://scan.coverity.com/download/linux64 \
-          --post-data "token=${{ secrets.COVERITY_TOKEN }}&project=${{ github.repository }}" \
+          --post-data "token=${{ secrets.COVERITY_TOKEN }}&project=pg_textsearch" \
           -O coverity_tool.tgz -q
         tar xf coverity_tool.tgz
         mv cov-analysis-linux64-* coverity
@@ -55,7 +55,7 @@ jobs:
         FORM_EMAIL: --form email=tj@tigerdata.com
         FORM_FILE: --form file=@pg_textsearch.tgz
         FORM_DESC: --form description="GitHub Actions CI"
-        COVERITY_URL: https://scan.coverity.com/builds?project=${{ github.repository }}
+        COVERITY_URL: https://scan.coverity.com/builds?project=pg_textsearch
       run: |
         tar czf pg_textsearch.tgz cov-int
         VERSION=$(grep '^default_version' pg_textsearch.control | sed "s/.*'\(.*\)'/\1/")
