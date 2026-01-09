@@ -841,8 +841,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Fall through to serial build */
 	elog(DEBUG1, "Using serial index build (no parallel workers available)");
 
-	/* Initialize index state */
-	index_state = tp_create_shared_index_state(
+	/*
+	 * Initialize index state in BUILD mode with private DSA.
+	 * The private DSA will be destroyed and recreated on each spill,
+	 * providing perfect memory reclamation.
+	 */
+	index_state = tp_create_build_index_state(
 			RelationGetRelid(index), RelationGetRelid(heap));
 
 	/* Report loading phase */
@@ -938,6 +942,71 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Report FSM page reuse statistics */
 	tp_report_fsm_stats();
+
+	/*
+	 * Final spill: Write any remaining memtable data to disk segment.
+	 * This must happen BEFORE destroying the private DSA, otherwise all
+	 * build data would be lost.
+	 */
+	{
+		TpMemtable *memtable = get_memtable(index_state);
+
+		if (memtable && memtable->total_postings > 0)
+		{
+			BlockNumber		segment_root;
+			Buffer			metabuf;
+			Page			metapage;
+			TpIndexMetaPage metap;
+
+			elog(DEBUG1,
+				 "BUILD MODE: Final spill of %ld posting entries",
+				 (long)memtable->total_postings);
+
+			segment_root = tp_write_segment(index_state, index);
+
+			if (segment_root != InvalidBlockNumber)
+			{
+				/* Link new segment as L0 chain head */
+				metabuf = ReadBuffer(index, 0);
+				LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+				metapage = BufferGetPage(metabuf);
+				metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+				if (metap->level_heads[0] != InvalidBlockNumber)
+				{
+					/* Point new segment to old chain head */
+					Buffer			 seg_buf;
+					Page			 seg_page;
+					TpSegmentHeader *seg_header;
+
+					seg_buf = ReadBuffer(index, segment_root);
+					LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+					seg_page   = BufferGetPage(seg_buf);
+					seg_header = (TpSegmentHeader *)((char *)seg_page +
+													 SizeOfPageHeaderData);
+					seg_header->next_segment = metap->level_heads[0];
+					MarkBufferDirty(seg_buf);
+					UnlockReleaseBuffer(seg_buf);
+				}
+
+				metap->level_heads[0] = segment_root;
+				metap->level_counts[0]++;
+				MarkBufferDirty(metabuf);
+				UnlockReleaseBuffer(metabuf);
+
+				elog(DEBUG1,
+					 "BUILD MODE: Final segment written at block %u",
+					 segment_root);
+			}
+		}
+	}
+
+	/*
+	 * Finalize build mode: destroy private DSA and transition to global DSA.
+	 * This must be done before returning, otherwise queries will try to use
+	 * the private DSA which becomes invalid after the build transaction ends.
+	 */
+	tp_finalize_build_mode(index_state);
 
 	return result;
 }

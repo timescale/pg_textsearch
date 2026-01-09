@@ -10,6 +10,13 @@ test/regression.out
 test/results/
 tmp_check_shared/
 
+# Coverage artifacts
+coverage-html/
+coverage.info
+*.gcda
+*.gcno
+*.gcov
+
 # IDE/Editor files
 .vscode/
 .idea/

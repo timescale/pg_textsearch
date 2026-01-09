@@ -11,19 +11,9 @@
 | v0.0.5 | Dec 2025 | Segment infrastructure, auto-spill, hierarchical merging |
 | v0.1.0 | Dec 2025 | First open-source release, implicit index resolution, partitioned tables |
 | v0.2.0 | Dec 2025 | V2 segment format, skip index, doc ID mapping, benchmark suite |
+| v0.3.0 | Jan 2026 | Block-Max WAND query optimization, 4x faster queries |
 
 ## Upcoming
-
-### v0.3.0 - Query Optimizations (Jan 2026)
-
-Query-time performance improvements building on block storage.
-
-- **Block-Max WAND (BMW)**: Single-term and multi-term scoring with block skipping
-- **WAND-style doc-ID traversal**: Correct multi-term scoring via doc-ID ordered iteration
-- **Threshold-based block skipping**: Skip blocks where max score < threshold
-- **Block max score precomputation**: Per-term block upper bounds for pruning
-- **GUC variables**: `pg_textsearch.enable_bmw` and `log_bmw_stats` for debugging
-- **Benchmark results**: 4.3x faster than exhaustive, competitive with System X
 
 ### v0.4.0 - Compression (Jan 2026)
 

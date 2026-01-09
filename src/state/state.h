@@ -89,6 +89,13 @@ typedef struct TpLocalIndexState
 	/* DSA attachment for this backend */
 	dsa_area *dsa; /* Attached DSA area for this index */
 
+	/*
+	 * Build mode flag: If true, this backend owns a private DSA that
+	 * gets destroyed and recreated on each spill for perfect memory
+	 * reclamation. If false, uses shared DSA for concurrent access.
+	 */
+	bool is_build_mode;
+
 	/* Transaction-level lock tracking */
 	bool	   lock_held; /* True if we hold the lock in this transaction */
 	LWLockMode lock_mode; /* Mode we're holding (LW_SHARED or LW_EXCLUSIVE) */
@@ -99,9 +106,14 @@ typedef struct TpLocalIndexState
 
 /* Function declarations for index state management */
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
-extern TpLocalIndexState			 *
+extern TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
+extern TpLocalIndexState			 *
+tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
+extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
+extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
+extern void tp_cleanup_build_mode_on_abort(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(
 					  Relation			 index_rel,

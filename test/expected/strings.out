@@ -1,8 +1,7 @@
 -- Test long string handling including URLs, paths, and long terms
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
-INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+INFO:  pg_textsearch v0.3.0 installed
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
@@ -209,7 +208,7 @@ WHERE category = 'extreme'
     AND content <@> 'extreme testing' < 0;
       test_name      | total_length |  score  
 ---------------------+--------------+---------
- Extreme length test |        23614 | -4.2077
+ Extreme length test |        23614 | -4.2254
 (1 row)
 
 -- Cleanup

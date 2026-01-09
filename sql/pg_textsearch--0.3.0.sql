@@ -1,4 +1,4 @@
--- pg_textsearch extension version 0.3.0-dev
+-- pg_textsearch extension version 0.3.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -178,11 +178,10 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
--- Display warning about prerelease status
+-- Display version info
 DO $$
 BEGIN
-    RAISE INFO 'pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.';
-    RAISE INFO 'This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.';
+    RAISE INFO 'pg_textsearch v0.3.0 installed';
 END
 $$;
 

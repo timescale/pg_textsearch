@@ -37,3 +37,21 @@ extern int tp_score_documents(
 
 /* IDF calculation */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
+
+/* GUC variables for BMW configuration - defined in mod.c */
+extern bool tp_log_bmw_stats;
+extern bool tp_enable_bmw;
+
+/*
+ * Initialize HASHCTL for document score hash tables.
+ * Uses ItemPointerData as key (CTID).
+ */
+static inline void
+tp_init_doc_hash_ctl(HASHCTL *ctl, Size entry_size, MemoryContext memctx)
+{
+	memset(ctl, 0, sizeof(HASHCTL));
+	ctl->keysize   = sizeof(ItemPointerData);
+	ctl->entrysize = entry_size;
+	if (memctx != NULL)
+		ctl->hcxt = memctx;
+}

@@ -4,8 +4,7 @@
 -- Ensures documents at different block positions across posting lists
 -- are correctly scored.
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
-INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+INFO:  pg_textsearch v0.3.0 installed
 -- ============================================================
 -- TEST: Multi-term documents score correctly across block boundaries
 -- ============================================================

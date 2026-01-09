@@ -12,12 +12,10 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Goal: state-of-the-art performance and scalability
 
-🎉 **Now Open Source!** We're excited to share pg_textsearch with the community.
+🚀 **Status**: v0.3.0 - Query performance is production-ready. Index compression
+and parallel index builds are coming soon. See [ROADMAP.md](ROADMAP.md) for details.
 
-🚀 **Status**: v0.3.0-dev (prerelease) - Feature-complete but not yet optimized.
-Not yet recommended for production use. See [ROADMAP.md](ROADMAP.md) for what's next.
-
-![Tapir and Friends](images/tapir_and_friends_v0.3.0-dev.png)
+![Tapir and Friends](images/tapir_and_friends_v0.3.0.png)
 
 ## Historical note
 
@@ -26,16 +24,7 @@ mascot and the name occurs in various places in the source code.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports:
-- PostgreSQL 17
-- PostgreSQL 18
-
-### New in PostgreSQL 18 Support
-
-- **Embedded index name syntax**: Use `index_name:query` format in cast expressions for
-  better compatibility with PG18's query planner
-- **Improved ORDER BY optimization**: Full support for PG18's consistent ordering semantics
-- **Query planner compatibility**: Works correctly with PG18's more eager expression evaluation
+pg_textsearch supports PostgreSQL 17 and 18.
 
 ## Installation
 
@@ -330,6 +319,26 @@ concatenated identifiers.
 This behavior is similar to other search engines:
 - Elasticsearch: Truncates tokens (configurable via `truncate` filter, default 10 chars)
 - Tantivy: Truncates to 255 bytes by default
+
+### PL/pgSQL and Stored Procedures
+
+The implicit `text <@> 'query'` syntax relies on planner hooks to automatically
+detect the BM25 index. These hooks don't run inside PL/pgSQL DO blocks, functions,
+or stored procedures.
+
+**Inside PL/pgSQL**, use explicit index names with `to_bm25query()`:
+
+```sql
+-- This won't work in PL/pgSQL:
+-- SELECT * FROM docs ORDER BY content <@> 'search terms' LIMIT 10;
+
+-- Use explicit index name instead:
+SELECT * FROM docs
+ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
+LIMIT 10;
+```
+
+Regular SQL queries (outside PL/pgSQL) support both forms.
 
 ## Troubleshooting
 
