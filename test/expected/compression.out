@@ -1,11 +1,9 @@
 -- Test compression functionality
--- Tests that compression can be enabled and produces correct results
+-- Tests that compression (now default) produces correct results
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
 INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
--- Enable compression for this test
-SET pg_textsearch.compress_segments = on;
--- Verify the setting
+-- Compression is now on by default
 SHOW pg_textsearch.compress_segments;
  pg_textsearch.compress_segments 
 ---------------------------------
