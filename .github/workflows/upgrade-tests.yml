@@ -23,8 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        # Test upgrades from recent stable releases
-        old_version: ['0.1.0', '0.2.0']
+        # Test upgrades from compatible releases only.
+        # Note: 0.1.0 and earlier are not upgrade-compatible due to:
+        #   - Metapage version change (v4 -> v5)
+        #   - Shared memory structure size changes
+        # Users on 0.1.0 must recreate indexes after upgrading.
+        old_version: ['0.2.0']
 
     steps:
     - name: Checkout current code

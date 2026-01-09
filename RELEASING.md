@@ -84,7 +84,25 @@ and parallel index builds are coming soon. See [ROADMAP.md](ROADMAP.md) for deta
 
 Remove any "Now Open Source" or similar one-time announcements from previous releases.
 
-### 6. Run Tests and Update Expected Output
+### 6. Verify Paged Data Structure Versions
+
+If any on-disk format changed during this release cycle, bump the corresponding
+version constant in `src/constants.h`:
+
+| Constant | Purpose |
+|----------|---------|
+| `TP_METAPAGE_VERSION` | Index metapage format |
+| `TP_DOCID_PAGE_VERSION` | Document ID page format |
+| `TP_PAGE_INDEX_VERSION` | Page index format |
+| `TP_SEGMENT_FORMAT_VERSION` | Segment block storage format (in `segment.h`) |
+
+Also check `TPQUERY_VERSION` in `src/types/query.h` if bm25query format changed.
+
+**Important**: Version bumps break upgrade compatibility. If you bump a version,
+update the upgrade test workflow to exclude incompatible old versions, and
+document the breaking change in release notes.
+
+### 7. Run Tests and Update Expected Output
 
 ```sh
 make clean && make && make install
@@ -103,7 +121,7 @@ Verify all tests pass:
 make test  # Should show "All N tests passed"
 ```
 
-### 7. Create PR
+### 8. Create PR
 
 ```sh
 git checkout -b release-X.Y.Z
@@ -119,7 +137,7 @@ gh pr create --title "Release vX.Y.Z" --body "## Summary
 - \`make format-check\` passes"
 ```
 
-### 8. After PR Merges
+### 9. After PR Merges
 
 The release workflow (`release.yml`) triggers automatically when a PR with title
 starting "Release v" merges to main. It:
@@ -128,7 +146,7 @@ starting "Release v" merges to main. It:
 2. Builds release artifacts for PG17/PG18 on Linux/macOS (amd64/arm64)
 3. Creates a GitHub release with the artifacts
 
-### 9. Post-Release: Bump to Next Dev Version
+### 10. Post-Release: Bump to Next Dev Version
 
 After the release is published, create a PR to bump to the next dev version:
 
@@ -148,6 +166,30 @@ Every release must have upgrade paths from:
 2. **Previous dev version** → new release (e.g., `0.3.0-dev--0.3.0.sql`)
 
 This ensures users can upgrade regardless of which version they installed.
+
+## Upgrade Compatibility
+
+Not all version upgrades are compatible with `ALTER EXTENSION UPDATE`. Breaking
+changes that require index recreation or server restart:
+
+| Change Type | Impact | User Action Required |
+|-------------|--------|---------------------|
+| Metapage version bump | Existing indexes incompatible | `REINDEX` or recreate index |
+| Shared memory structure change | Server crash on mixed versions | Restart Postgres after upgrade |
+| Segment format change | Old segments unreadable | Recreate index |
+
+**Current compatibility matrix:**
+
+| From Version | To Version | Compatible? | Notes |
+|--------------|------------|-------------|-------|
+| 0.2.0 | 0.3.0 | ✅ Yes | Direct upgrade works |
+| 0.1.0 | 0.3.0 | ❌ No | Metapage v4→v5, shmem size change |
+| < 0.1.0 | 0.3.0 | ❌ No | Multiple breaking changes |
+
+When releasing a version with breaking changes:
+1. Update `.github/workflows/upgrade-tests.yml` to exclude incompatible versions
+2. Document in release notes that users must recreate indexes
+3. Consider providing a migration guide for major version bumps
 
 ## Automated Workflows
 
