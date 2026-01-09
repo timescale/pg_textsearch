@@ -16,7 +16,6 @@
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
-#include <storage/indexfsm.h>
 #include <storage/smgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
@@ -51,11 +50,11 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 
 /*
  * Expansion factor for estimating index pages from heap.
- * Text search indexes are typically smaller than the heap because they
- * store term frequencies rather than full text. A factor of 0.6 provides
- * some headroom for dictionary overhead and skip indices.
+ * Text search indexes are typically smaller than the heap, but during
+ * parallel builds we need extra headroom for multiple uncompacted segments
+ * and compaction overhead. A factor of 1.2 provides sufficient space.
  */
-#define TP_INDEX_EXPANSION_FACTOR 0.6
+#define TP_INDEX_EXPANSION_FACTOR 1.2
 
 /*
  * Worker build state with double-buffering support.
@@ -1347,36 +1346,6 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 		 "Linked %d segments from %d workers into L0",
 		 total_segments,
 		 shared->worker_count);
-
-	/*
-	 * Add unused pool pages to FSM before compaction.
-	 * This allows compaction to reuse pre-allocated pages instead of
-	 * extending the relation. We only call RecordFreeIndexPage here;
-	 * compaction will call IndexFreeSpaceMapVacuum after freeing its
-	 * own pages, which will make all free pages findable.
-	 */
-	{
-		uint32 pages_used = pg_atomic_read_u32(&shared->shared_pool_next);
-		BlockNumber *pool = TpParallelPagePool(shared);
-
-		if (pages_used < (uint32)shared->total_pool_pages)
-		{
-			uint32 pages_unused = (uint32)shared->total_pool_pages -
-								  pages_used;
-
-			elog(DEBUG1,
-				 "Adding %u unused pool pages to FSM (used %u of %d)",
-				 pages_unused,
-				 pages_used,
-				 shared->total_pool_pages);
-
-			for (uint32 j = pages_used; j < (uint32)shared->total_pool_pages;
-				 j++)
-			{
-				RecordFreeIndexPage(index, pool[j]);
-			}
-		}
-	}
 
 	/*
 	 * Check if compaction is needed based on segment count threshold.
