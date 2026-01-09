@@ -163,12 +163,13 @@ jobs:
         END $$;
 
         -- Test 2: Verify BM25 index scan works with ORDER BY ... LIMIT
+        -- Note: Must use explicit to_bm25query() in PL/pgSQL - implicit resolution doesn't work
         DO $$
         DECLARE
           rec record;
         BEGIN
           SELECT * INTO rec FROM upgrade_docs
-          ORDER BY content <@> 'database'::text LIMIT 1;
+          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25') LIMIT 1;
           IF rec.id IS NULL THEN
             RAISE EXCEPTION 'FAIL: Query returned no results';
           END IF;
@@ -180,7 +181,7 @@ jobs:
         DECLARE
           score_val float8;
         BEGIN
-          SELECT content <@> 'database'::text INTO score_val
+          SELECT content <@> to_bm25query('database', 'idx_upgrade_bm25') INTO score_val
           FROM upgrade_docs
           ORDER BY 1 LIMIT 1;
           IF score_val IS NULL OR score_val >= 0 THEN
@@ -199,7 +200,7 @@ jobs:
             SELECT t FROM unnest(ARRAY(
               EXPLAIN (COSTS OFF)
               SELECT * FROM upgrade_docs
-              ORDER BY content <@> 'database'::text
+              ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25')
               LIMIT 5
             )) AS t
           ) sub;
@@ -219,7 +220,7 @@ jobs:
           rec record;
         BEGIN
           SELECT * INTO rec FROM upgrade_docs
-          ORDER BY content <@> 'upgrade'::text LIMIT 1;
+          ORDER BY content <@> to_bm25query('upgrade', 'idx_upgrade_bm25') LIMIT 1;
           IF rec.id IS NULL THEN
             RAISE EXCEPTION 'FAIL: Could not find newly inserted document';
           END IF;
@@ -236,7 +237,7 @@ jobs:
         DECLARE
           score_val float8;
         BEGIN
-          SELECT content <@> 'testing'::text INTO score_val
+          SELECT content <@> to_bm25query('testing', 'idx_post_upgrade') INTO score_val
           FROM post_upgrade_docs
           ORDER BY 1 LIMIT 1;
           IF score_val IS NULL OR score_val >= 0 THEN
@@ -351,21 +352,20 @@ jobs:
         psql -h /tmp -d incompat_test -c "ALTER EXTENSION pg_textsearch UPDATE;"
         psql -h /tmp -d incompat_test -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';"
 
-        # Try to use the old index with ORDER BY to force index scan
-        # This should get an error about incompatible version, NOT a crash
+        # Try to use the old index - this should get an error about incompatible version, NOT a crash
+        # Note: Must use explicit to_bm25query() in PL/pgSQL - implicit resolution doesn't work
         psql -h /tmp -d incompat_test << 'SQLSCRIPT'
         \set ON_ERROR_STOP on
 
         -- Test 1: Verify incompatible index produces proper error (not crash)
-        -- Use ORDER BY to force index scan, catch the error
         DO $$
         DECLARE
           rec record;
           err_msg text;
         BEGIN
           BEGIN
-            -- ORDER BY with LIMIT forces index scan
-            SELECT * INTO rec FROM test_docs ORDER BY content <@> 'database'::text LIMIT 1;
+            SELECT * INTO rec FROM test_docs
+            ORDER BY content <@> to_bm25query('database', 'idx_old') LIMIT 1;
             RAISE EXCEPTION 'Expected an error but query succeeded';
           EXCEPTION WHEN OTHERS THEN
             GET STACKED DIAGNOSTICS err_msg = MESSAGE_TEXT;
@@ -390,7 +390,8 @@ jobs:
         DECLARE
           score float8;
         BEGIN
-          SELECT content <@> 'testing'::text INTO score FROM new_docs ORDER BY 1 LIMIT 1;
+          SELECT content <@> to_bm25query('testing', 'idx_new') INTO score
+          FROM new_docs ORDER BY 1 LIMIT 1;
           IF score IS NOT NULL AND score < 0 THEN
             RAISE NOTICE 'PASS: New index creation works, score=%', score;
           ELSE
@@ -405,7 +406,8 @@ jobs:
         DECLARE
           rec record;
         BEGIN
-          SELECT * INTO rec FROM test_docs ORDER BY content <@> 'database'::text LIMIT 1;
+          SELECT * INTO rec FROM test_docs
+          ORDER BY content <@> to_bm25query('database', 'idx_old') LIMIT 1;
           IF rec.id IS NOT NULL THEN
             RAISE NOTICE 'PASS: REINDEX fixed incompatible index, got id=%', rec.id;
           ELSE

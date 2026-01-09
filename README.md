@@ -306,6 +306,26 @@ This behavior is similar to other search engines:
 - Elasticsearch: Truncates tokens (configurable via `truncate` filter, default 10 chars)
 - Tantivy: Truncates to 255 bytes by default
 
+### PL/pgSQL and Stored Procedures
+
+The implicit `text <@> 'query'` syntax relies on planner hooks to automatically
+detect the BM25 index. These hooks don't run inside PL/pgSQL DO blocks, functions,
+or stored procedures.
+
+**Inside PL/pgSQL**, use explicit index names with `to_bm25query()`:
+
+```sql
+-- This won't work in PL/pgSQL:
+-- SELECT * FROM docs ORDER BY content <@> 'search terms' LIMIT 10;
+
+-- Use explicit index name instead:
+SELECT * FROM docs
+ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
+LIMIT 10;
+```
+
+Regular SQL queries (outside PL/pgSQL) support both forms.
+
 ## Troubleshooting
 
 ```sql
