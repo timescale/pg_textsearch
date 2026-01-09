@@ -171,6 +171,7 @@ tp_get_local_index_state(Oid index_oid)
 				TopMemoryContext, sizeof(TpLocalIndexState));
 		local_state->shared				   = shared_state;
 		local_state->dsa				   = dsa;
+		local_state->is_build_mode		   = false; /* Runtime mode */
 		local_state->lock_held			   = false;
 		local_state->lock_mode			   = 0;
 		local_state->terms_added_this_xact = 0;
