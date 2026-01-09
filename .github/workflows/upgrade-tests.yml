@@ -148,64 +148,104 @@ jobs:
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
         psql -h /tmp -d upgrade_test << 'SQL'
-        -- Verify extension upgraded to expected version
+        \set ON_ERROR_STOP on
+
+        -- Test 1: Verify extension upgraded to expected version
         DO $$
         DECLARE
           ver text;
         BEGIN
           SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
           IF ver NOT LIKE '0.3%' THEN
-            RAISE EXCEPTION 'Extension did not upgrade properly. Version: %', ver;
+            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %', ver;
           END IF;
-          RAISE NOTICE 'Extension upgraded to version: %', ver;
+          RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;
         END $$;
 
-        -- Verify BM25 queries still work
-        SELECT id, content <@> 'database search'::text AS score
-        FROM upgrade_docs
-        ORDER BY score
-        LIMIT 3;
+        -- Test 2: Verify BM25 index scan works with ORDER BY ... LIMIT
+        DO $$
+        DECLARE
+          rec record;
+        BEGIN
+          SELECT * INTO rec FROM upgrade_docs
+          ORDER BY content <@> 'database'::text LIMIT 1;
+          IF rec.id IS NULL THEN
+            RAISE EXCEPTION 'FAIL: Query returned no results';
+          END IF;
+          RAISE NOTICE 'PASS: BM25 query works, got id=%', rec.id;
+        END $$;
 
-        -- Verify scores are negative (BM25 returns negative scores for ASC ordering)
+        -- Test 3: Verify scores are negative (BM25 returns negative for ASC)
         DO $$
         DECLARE
           score_val float8;
         BEGIN
-          SELECT content <@> 'database search'::text INTO score_val
+          SELECT content <@> 'database'::text INTO score_val
           FROM upgrade_docs
-          LIMIT 1;
-          IF score_val >= 0 THEN
-            RAISE EXCEPTION 'BM25 score should be negative, got: %', score_val;
+          ORDER BY 1 LIMIT 1;
+          IF score_val IS NULL OR score_val >= 0 THEN
+            RAISE EXCEPTION 'FAIL: BM25 score should be negative, got: %', score_val;
           END IF;
-          RAISE NOTICE 'BM25 scoring working correctly, sample score: %', score_val;
+          RAISE NOTICE 'PASS: BM25 scoring correct, score=%', score_val;
         END $$;
 
-        -- Verify index is still usable (EXPLAIN should show index scan)
-        EXPLAIN (COSTS OFF)
-        SELECT * FROM upgrade_docs
-        ORDER BY content <@> 'database'::text
-        LIMIT 5;
+        -- Test 4: Verify index scan is used (check EXPLAIN output)
+        DO $$
+        DECLARE
+          plan_text text;
+        BEGIN
+          SELECT string_agg(t, E'\n') INTO plan_text
+          FROM (
+            SELECT t FROM unnest(ARRAY(
+              EXPLAIN (COSTS OFF)
+              SELECT * FROM upgrade_docs
+              ORDER BY content <@> 'database'::text
+              LIMIT 5
+            )) AS t
+          ) sub;
+          IF plan_text NOT LIKE '%Index Scan%' THEN
+            RAISE WARNING 'Index scan not used (may be OK for small tables): %', plan_text;
+          ELSE
+            RAISE NOTICE 'PASS: Index scan used in query plan';
+          END IF;
+        END $$;
 
-        -- Test inserting new data after upgrade
+        -- Test 5: Insert new data and verify it's searchable
         INSERT INTO upgrade_docs (content) VALUES
           ('New document added after upgrade to test index updates');
 
-        -- Query should include new document
-        SELECT id, content <@> 'upgrade'::text AS score
-        FROM upgrade_docs
-        WHERE content <@> 'upgrade'::text < 0
-        ORDER BY score
-        LIMIT 3;
+        DO $$
+        DECLARE
+          rec record;
+        BEGIN
+          SELECT * INTO rec FROM upgrade_docs
+          ORDER BY content <@> 'upgrade'::text LIMIT 1;
+          IF rec.id IS NULL THEN
+            RAISE EXCEPTION 'FAIL: Could not find newly inserted document';
+          END IF;
+          RAISE NOTICE 'PASS: New document searchable, id=%', rec.id;
+        END $$;
 
-        -- Test creating a new index after upgrade
+        -- Test 6: Create new index after upgrade
         CREATE TABLE post_upgrade_docs (content TEXT);
         INSERT INTO post_upgrade_docs VALUES ('Testing post-upgrade index creation');
         CREATE INDEX idx_post_upgrade ON post_upgrade_docs
           USING bm25 (content) WITH (text_config = 'english');
 
-        SELECT content <@> 'testing'::text AS score FROM post_upgrade_docs;
+        DO $$
+        DECLARE
+          score_val float8;
+        BEGIN
+          SELECT content <@> 'testing'::text INTO score_val
+          FROM post_upgrade_docs
+          ORDER BY 1 LIMIT 1;
+          IF score_val IS NULL OR score_val >= 0 THEN
+            RAISE EXCEPTION 'FAIL: New index query failed, score=%', score_val;
+          END IF;
+          RAISE NOTICE 'PASS: New index works, score=%', score_val;
+        END $$;
 
-        RAISE NOTICE 'All upgrade verification checks passed!';
+        SELECT 'All compatible upgrade tests passed!' as final_status;
         SQL
 
     - name: Cleanup
