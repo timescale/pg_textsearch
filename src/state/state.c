@@ -407,7 +407,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	entry->local_state = local_state;
 
-	elog(LOG,
+	elog(DEBUG1,
 		 "BUILD MODE: Created private DSA for index %u (will be destroyed on "
 		 "spills)",
 		 index_oid);
@@ -492,7 +492,7 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
 
-	elog(LOG, "BUILD MODE: Finalizing and transitioning to runtime mode");
+	elog(DEBUG1, "BUILD MODE: Finalizing and transitioning to runtime mode");
 
 	/*
 	 * Destroy the private DSA. This returns ALL memory to the OS.
@@ -534,7 +534,7 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	/* Transition to runtime mode */
 	local_state->is_build_mode = false;
 
-	elog(LOG, "BUILD MODE: Successfully transitioned to runtime mode");
+	elog(DEBUG1, "BUILD MODE: Successfully transitioned to runtime mode");
 }
 
 /*
@@ -1074,7 +1074,7 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		/* Destroy and recreate private DSA */
 		tp_recreate_build_dsa(local_state);
 
-		elog(LOG,
+		elog(DEBUG1,
 			 "BUILD MODE: DSA destroyed and recreated, freed %zu bytes",
 			 mem_before);
 		return;

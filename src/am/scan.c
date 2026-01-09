@@ -603,87 +603,68 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	so->current_pos	 = 0;
 
 	/* Get index metadata */
-	PG_TRY();
+	metap = tp_get_metapage(scan->indexRelation);
+	if (!metap)
 	{
-		metap = tp_get_metapage(scan->indexRelation);
-		if (!metap)
-		{
-			elog(WARNING,
-				 "Failed to get metapage for index %s",
-				 RelationGetRelationName(scan->indexRelation));
-			return false;
-		}
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("failed to get metapage for index %s",
+						RelationGetRelationName(scan->indexRelation))));
 	}
-	PG_CATCH();
+
+	/* Get the index state with posting lists */
+	index_state = tp_get_local_index_state(
+			RelationGetRelid(scan->indexRelation));
+
+	if (!index_state)
 	{
-		elog(WARNING,
-			 "Exception while getting metapage for index %s",
-			 RelationGetRelationName(scan->indexRelation));
-		PG_RE_THROW();
+		pfree(metap);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for BM25 search")));
 	}
-	PG_END_TRY();
 
-	/* Perform actual BM25 search using posting lists */
-	PG_TRY();
+	/* Acquire shared lock for reading the memtable */
+	tp_acquire_index_lock(index_state, LW_SHARED);
+
+	/* Use the original query vector or create one from text */
+	query_vector = so->query_vector;
+
+	if (!query_vector && so->query_text)
 	{
-		/* Get the index state with posting lists */
-		index_state = tp_get_local_index_state(
-				RelationGetRelid(scan->indexRelation));
+		/*
+		 * We have a text query - convert it to a vector using the index.
+		 */
+		char *index_name = tp_get_qualified_index_name(scan->indexRelation);
 
-		if (!index_state)
-		{
-			elog(WARNING, "Could not get index state for BM25 search");
-			pfree(metap);
-			return false;
-		}
+		text *index_name_text  = cstring_to_text(index_name);
+		text *query_text_datum = cstring_to_text(so->query_text);
 
-		/* Acquire shared lock for reading the memtable */
-		tp_acquire_index_lock(index_state, LW_SHARED);
+		Datum query_vec_datum = DirectFunctionCall2(
+				to_tpvector,
+				PointerGetDatum(query_text_datum),
+				PointerGetDatum(index_name_text));
 
-		/* Use the original query vector or create one from text */
-		query_vector = so->query_vector;
+		query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
 
-		if (!query_vector && so->query_text)
-		{
-			/*
-			 * We have a text query - convert it to a vector using the index.
-			 */
-			char *index_name = tp_get_qualified_index_name(
-					scan->indexRelation);
+		/* Free existing query vector if present */
+		if (so->query_vector)
+			pfree(so->query_vector);
 
-			text *index_name_text  = cstring_to_text(index_name);
-			text *query_text_datum = cstring_to_text(so->query_text);
-
-			Datum query_vec_datum = DirectFunctionCall2(
-					to_tpvector,
-					PointerGetDatum(query_text_datum),
-					PointerGetDatum(index_name_text));
-
-			query_vector = (TpVector *)DatumGetPointer(query_vec_datum);
-
-			/* Free existing query vector if present */
-			if (so->query_vector)
-				pfree(so->query_vector);
-
-			/* Store the converted vector for this query execution */
-			so->query_vector = query_vector;
-		}
-
-		if (!query_vector)
-		{
-			elog(WARNING, "No query vector available in scan state");
-			pfree(metap);
-			return false;
-		}
-
-		/* Find documents matching the query using posting lists */
-		success = tp_memtable_search(scan, index_state, query_vector, metap);
+		/* Store the converted vector for this query execution */
+		so->query_vector = query_vector;
 	}
-	PG_CATCH();
+
+	if (!query_vector)
 	{
-		success = false;
+		pfree(metap);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("no query vector available in scan state")));
 	}
-	PG_END_TRY();
+
+	/* Find documents matching the query using posting lists */
+	success = tp_memtable_search(scan, index_state, query_vector, metap);
 
 	pfree(metap);
 	return success;

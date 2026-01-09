@@ -855,7 +855,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			Page			metapage;
 			TpIndexMetaPage metap;
 
-			elog(LOG,
+			elog(DEBUG1,
 				 "BUILD MODE: Final spill of %ld posting entries",
 				 (long)memtable->total_postings);
 
@@ -891,7 +891,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				MarkBufferDirty(metabuf);
 				UnlockReleaseBuffer(metabuf);
 
-				elog(LOG,
+				elog(DEBUG1,
 					 "BUILD MODE: Final segment written at block %u",
 					 segment_root);
 			}

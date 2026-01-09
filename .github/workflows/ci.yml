@@ -74,8 +74,6 @@ jobs:
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
-        # Enable more verbose logging for debugging CI hangs
-        echo "log_min_messages = LOG" >> tmp_check_shared/data/postgresql.conf
 
         # Try to start PostgreSQL and show logs if it fails
         if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w; then
