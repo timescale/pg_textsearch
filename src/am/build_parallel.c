@@ -138,9 +138,6 @@ static void tp_init_parallel_shared(
 static void tp_preallocate_page_pool(
 		Relation index, TpParallelBuildShared *shared, int total_pages);
 
-static void
-tp_reclaim_unused_pool_pages(TpParallelBuildShared *shared, Relation index);
-
 static void tp_leader_participate(
 		TpParallelBuildShared *shared,
 		Relation			   heap,
@@ -365,13 +362,6 @@ tp_build_parallel(
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
 
-	/*
-	 * Reclaim unused pool pages before compaction.
-	 * This adds unused pre-allocated pages to FSM so they can be reused
-	 * by compaction instead of extending the relation.
-	 */
-	tp_reclaim_unused_pool_pages(shared, index);
-
 	/* Link all worker segments into L0 chain */
 	tp_link_all_worker_segments(shared, index);
 
@@ -379,16 +369,62 @@ tp_build_parallel(
 	tp_finalize_parallel_stats(shared, index);
 
 	/*
-	 * Note: Unused pool pages and freed segment pages are now in FSM.
-	 * VACUUM can truncate unused pages at the end of the relation if needed.
+	 * Copy pool info before destroying parallel context.
+	 * We need this to reclaim unused pages after context cleanup.
 	 */
+	{
+		BlockNumber *pool_copy;
+		uint32		 pages_used;
+		int			 total_pool_pages;
 
-	/* Build result */
+		pages_used		 = pg_atomic_read_u32(&shared->shared_pool_next);
+		total_pool_pages = shared->total_pool_pages;
+
+		if (pages_used < (uint32)total_pool_pages)
+		{
+			/* Copy unused page numbers to local memory */
+			int unused_count = total_pool_pages - (int)pages_used;
+
+			pool_copy = palloc(sizeof(BlockNumber) * unused_count);
+			memcpy(pool_copy,
+				   TpParallelPagePool(shared) + pages_used,
+				   sizeof(BlockNumber) * unused_count);
+
+			/* Build result */
+			result				= palloc0(sizeof(IndexBuildResult));
+			result->heap_tuples = (double)pg_atomic_read_u64(
+					&shared->tuples_scanned);
+			result->index_tuples = (double)pg_atomic_read_u64(
+					&shared->total_docs);
+
+			/* Cleanup parallel context first */
+			DestroyParallelContext(pcxt);
+			ExitParallelMode();
+			UnregisterSnapshot(snapshot);
+
+			/* Now safe to reclaim pages - no parallel context active */
+			elog(DEBUG1,
+				 "Reclaiming %d unused pool pages (used %u of %d)",
+				 unused_count,
+				 pages_used,
+				 total_pool_pages);
+
+			for (int i = 0; i < unused_count; i++)
+			{
+				RecordFreeIndexPage(index, pool_copy[i]);
+			}
+			IndexFreeSpaceMapVacuum(index);
+
+			pfree(pool_copy);
+			return result;
+		}
+	}
+
+	/* All pool pages were used - normal cleanup path */
 	result				 = palloc0(sizeof(IndexBuildResult));
 	result->heap_tuples	 = (double)pg_atomic_read_u64(&shared->tuples_scanned);
 	result->index_tuples = (double)pg_atomic_read_u64(&shared->total_docs);
 
-	/* Cleanup */
 	DestroyParallelContext(pcxt);
 	ExitParallelMode();
 	UnregisterSnapshot(snapshot);
@@ -539,48 +575,6 @@ tp_preallocate_page_pool(
 
 	/* Flush to ensure durability */
 	smgrimmedsync(RelationGetSmgr(index), MAIN_FORKNUM);
-}
-
-/*
- * Reclaim unused pre-allocated pool pages.
- *
- * After parallel workers finish, some pool pages may be unused. Add these
- * to the FSM so compaction can reuse them instead of extending the relation.
- * This prevents index bloat from over-allocation.
- */
-static void
-tp_reclaim_unused_pool_pages(TpParallelBuildShared *shared, Relation index)
-{
-	BlockNumber *pool;
-	uint32		 pages_used;
-	uint32		 pages_unused;
-	uint32		 i;
-
-	pool	   = TpParallelPagePool(shared);
-	pages_used = pg_atomic_read_u32(&shared->shared_pool_next);
-
-	if (pages_used >= (uint32)shared->total_pool_pages)
-	{
-		/* All pool pages were used, nothing to reclaim */
-		return;
-	}
-
-	pages_unused = (uint32)shared->total_pool_pages - pages_used;
-
-	elog(DEBUG1,
-		 "Reclaiming %u unused pool pages (used %u of %d)",
-		 pages_unused,
-		 pages_used,
-		 shared->total_pool_pages);
-
-	/* Add unused pages to FSM for reuse by compaction */
-	for (i = pages_used; i < (uint32)shared->total_pool_pages; i++)
-	{
-		RecordFreeIndexPage(index, pool[i]);
-	}
-
-	/* Update FSM upper pages so GetFreeIndexPage can find them */
-	IndexFreeSpaceMapVacuum(index);
 }
 
 /*
