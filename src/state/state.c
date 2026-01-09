@@ -538,6 +538,81 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 }
 
 /*
+ * Clean up build mode state on transaction abort
+ *
+ * This is called from the transaction callback when a transaction aborts.
+ * If we were in the middle of a CREATE INDEX (build mode), we need to:
+ * 1. Detach from the private DSA (which destroys it since no other refs)
+ * 2. Clean up the shared state from the registry
+ * 3. Remove from local cache
+ *
+ * This prevents memory leaks when CREATE INDEX is aborted.
+ */
+void
+tp_cleanup_build_mode_on_abort(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+	dsa_area			 *global_dsa;
+
+	if (local_state_cache == NULL)
+		return;
+
+	global_dsa = tp_registry_get_dsa();
+
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		TpLocalIndexState *local_state = entry->local_state;
+
+		if (local_state == NULL)
+			continue;
+
+		if (!local_state->is_build_mode)
+			continue;
+
+		elog(DEBUG1,
+			 "BUILD MODE ABORT: Cleaning up index %u",
+			 local_state->shared->index_oid);
+
+		/*
+		 * Detach from private DSA. Since this is a private DSA with no other
+		 * attachments, dsa_detach will destroy it and return memory to OS.
+		 */
+		if (local_state->dsa != NULL && local_state->dsa != global_dsa)
+		{
+			dsa_detach(local_state->dsa);
+			local_state->dsa = NULL;
+		}
+
+		/*
+		 * Clean up shared state from registry. The shared state was allocated
+		 * in the global DSA, so we need to free it there.
+		 */
+		if (local_state->shared != NULL)
+		{
+			Oid			index_oid = local_state->shared->index_oid;
+			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+
+			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
+			{
+				/* Free shared state from global DSA */
+				dsa_free(global_dsa, shared_dp);
+			}
+
+			/* Unregister from registry */
+			tp_registry_unregister(index_oid);
+
+			local_state->shared = NULL;
+		}
+
+		/* Free local state */
+		pfree(local_state);
+		entry->local_state = NULL;
+	}
+}
+
+/*
  * Clean up shared memory allocations for an index
  *
  * This is called when an index is dropped. We free the DSA allocations

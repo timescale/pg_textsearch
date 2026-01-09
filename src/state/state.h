@@ -113,6 +113,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
 extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
 extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
+extern void tp_cleanup_build_mode_on_abort(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(
 					  Relation			 index_rel,

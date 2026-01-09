@@ -327,9 +327,17 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		break;
 
 	case XACT_EVENT_COMMIT:
-	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_COMMIT:
+		/* Release all index locks held by this backend */
+		tp_release_all_index_locks();
+		/* Reset bulk load counters for next transaction */
+		tp_reset_bulk_load_counters();
+		break;
+
+	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_ABORT:
+		/* Clean up any in-progress index builds (private DSA) */
+		tp_cleanup_build_mode_on_abort();
 		/* Release all index locks held by this backend */
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
@@ -342,5 +350,3 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		break;
 	}
 }
-
-// CI trigger
