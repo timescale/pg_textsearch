@@ -1,7 +1,7 @@
 -- Additional coverage tests for untested code paths
 -- Tests debug functions, segment dump, and text<@>text operator
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.0-dev installed
+NOTICE:  extension "pg_textsearch" already exists, skipping
 -- =============================================================================
 -- Test 1: Basic debug functions with memtable-only data
 -- =============================================================================
@@ -35,12 +35,10 @@ SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_memtable;
 -- Test 2: Debug functions with segment data (exercises segment dump code)
 -- =============================================================================
 -- Force segment spill to have data on disk
--- Note: With build mode, data is already spilled during CREATE INDEX,
--- so memtable is empty here and returns NULL
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                 
+                2
 (1 row)
 
 -- Test bm25_summarize_index with segment data

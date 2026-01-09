@@ -8,6 +8,7 @@
 
 #include <utils/memutils.h>
 
+#include "compression.h"
 #include "memtable/posting.h"
 #include "query/score.h"
 #include "segment/dictionary.h"
@@ -154,8 +155,10 @@ tp_segment_posting_iterator_init(
 
 /*
  * Load a block's postings for iteration.
- * Uses zero-copy access when block data fits within a single page.
- * CTIDs are looked up from segment-level cached arrays during iteration.
+ * Uses zero-copy access when block data fits within a single page and is
+ * uncompressed. Compressed blocks are always decompressed into the fallback
+ * buffer. CTIDs are looked up from segment-level cached arrays during
+ * iteration.
  */
 bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
@@ -184,28 +187,20 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 	block_size	= iter->skip_entry.doc_count;
 	block_bytes = block_size * sizeof(TpBlockPosting);
 
-	/*
-	 * Try zero-copy direct access for block data.
-	 * TpBlockPosting requires 4-byte alignment (due to uint32 doc_id).
-	 * If the data address is misaligned, fall back to copying.
-	 */
-	if (tp_segment_get_direct(
+	/* Handle compressed blocks */
+	if (iter->skip_entry.flags == TP_BLOCK_FLAG_DELTA)
+	{
+		uint8 *compressed_buf;
+
+		/* Read compressed data into temporary buffer (max possible size) */
+		compressed_buf = palloc(TP_MAX_COMPRESSED_BLOCK_SIZE);
+		tp_segment_read(
 				iter->reader,
 				iter->skip_entry.posting_offset,
-				block_bytes,
-				&iter->block_access) &&
-		((uintptr_t)iter->block_access.data % sizeof(uint32)) == 0)
-	{
-		/* Zero-copy: point directly into the page buffer */
-		iter->block_postings   = (TpBlockPosting *)iter->block_access.data;
-		iter->has_block_access = true;
-	}
-	else
-	{
-		/* Release direct access if we got it but it's misaligned */
-		if (iter->block_access.data != NULL)
-			tp_segment_release_direct(&iter->block_access);
-		/* Fallback: block spans page boundary, must copy */
+				compressed_buf,
+				TP_MAX_COMPRESSED_BLOCK_SIZE);
+
+		/* Ensure fallback buffer is large enough */
 		if (block_size > iter->fallback_block_size)
 		{
 			if (iter->fallback_block)
@@ -214,13 +209,53 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 			iter->fallback_block_size = block_size;
 		}
 
-		tp_segment_read(
-				iter->reader,
-				iter->skip_entry.posting_offset,
-				iter->fallback_block,
-				block_bytes);
+		/* Decompress into fallback buffer */
+		tp_decompress_block(
+				compressed_buf, block_size, 0, iter->fallback_block);
 
+		pfree(compressed_buf);
 		iter->block_postings = iter->fallback_block;
+	}
+	else
+	{
+		/*
+		 * Uncompressed block: try zero-copy direct access.
+		 * TpBlockPosting requires 4-byte alignment (due to uint32 doc_id).
+		 * If the data address is misaligned, fall back to copying.
+		 */
+		if (tp_segment_get_direct(
+					iter->reader,
+					iter->skip_entry.posting_offset,
+					block_bytes,
+					&iter->block_access) &&
+			((uintptr_t)iter->block_access.data % sizeof(uint32)) == 0)
+		{
+			/* Zero-copy: point directly into the page buffer */
+			iter->block_postings   = (TpBlockPosting *)iter->block_access.data;
+			iter->has_block_access = true;
+		}
+		else
+		{
+			/* Release direct access if we got it but it's misaligned */
+			if (iter->block_access.data != NULL)
+				tp_segment_release_direct(&iter->block_access);
+			/* Fallback: block spans page boundary, must copy */
+			if (block_size > iter->fallback_block_size)
+			{
+				if (iter->fallback_block)
+					pfree(iter->fallback_block);
+				iter->fallback_block	  = palloc(block_bytes);
+				iter->fallback_block_size = block_size;
+			}
+
+			tp_segment_read(
+					iter->reader,
+					iter->skip_entry.posting_offset,
+					iter->fallback_block,
+					block_bytes);
+
+			iter->block_postings = iter->fallback_block;
+		}
 	}
 
 	iter->current_in_block = 0;

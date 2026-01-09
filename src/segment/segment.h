@@ -43,7 +43,7 @@ typedef struct TpPageIndexSpecial
 /*
  * Segment format version
  */
-#define TP_SEGMENT_FORMAT_VERSION 2 /* Block storage with skip index */
+#define TP_SEGMENT_FORMAT_VERSION 3 /* Block compression support */
 
 /*
  * Segment header - stored on the first page
