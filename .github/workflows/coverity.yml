@@ -1,0 +1,63 @@
+name: Coverity
+
+on:
+  schedule:
+    # Run weekly on Saturday at 22:00 UTC
+    - cron: '0 22 * * SAT'
+  push:
+    branches:
+      - coverity_scan
+      - trigger/coverity
+  pull_request:
+    paths:
+      - .github/workflows/coverity.yml
+  workflow_dispatch:
+
+jobs:
+  coverity:
+    name: Coverity PG${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [17, 18]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+
+    - name: Download Coverity tools
+      run: |
+        wget https://scan.coverity.com/download/linux64 \
+          --post-data "token=${{ secrets.COVERITY_TOKEN }}&project=${{ github.repository }}" \
+          -O coverity_tool.tgz -q
+        tar xf coverity_tool.tgz
+        mv cov-analysis-linux64-* coverity
+
+    - name: Build with Coverity
+      run: |
+        export PATH="$GITHUB_WORKSPACE/coverity/bin:/usr/lib/postgresql/${{ matrix.pg }}/bin:$PATH"
+        make clean || true
+        cov-build --dir cov-int make
+
+    - name: Upload to Coverity
+      env:
+        FORM_TOKEN: --form token=${{ secrets.COVERITY_TOKEN }}
+        FORM_EMAIL: --form email=tj@tigerdata.com
+        FORM_FILE: --form file=@pg_textsearch.tgz
+        FORM_DESC: --form description="GitHub Actions CI"
+        COVERITY_URL: https://scan.coverity.com/builds?project=${{ github.repository }}
+      run: |
+        tar czf pg_textsearch.tgz cov-int
+        VERSION=$(grep '^default_version' pg_textsearch.control | sed "s/.*'\(.*\)'/\1/")
+        curl $FORM_TOKEN $FORM_EMAIL $FORM_DESC $FORM_FILE \
+          --form version="${VERSION}-pg${{ matrix.pg }}" $COVERITY_URL
