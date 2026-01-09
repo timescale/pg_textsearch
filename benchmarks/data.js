@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767913639309,
+  "lastUpdate": 1767927935504,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -420,6 +420,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 8533.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "f302e837a9f5f51706d46a89d729c4a41e6c9a79",
+          "message": "Add parallel build scaling benchmark\n\nNew benchmark that tests index build performance with varying numbers\nof parallel workers (0, 1, 2, 4). Uses MS MARCO dataset and measures\nboth build time and query latency for each configuration.\n\nFiles:\n- benchmarks/datasets/msmarco/parallel_scaling.sql: SQL benchmark script\n- benchmarks/datasets/msmarco/load_data_only.sql: Data loading without index\n- benchmarks/run_parallel_scaling.sh: Shell runner for local testing\n- .github/workflows/benchmark.yml: Added parallel_scaling input option\n\nTo run in CI: trigger benchmark workflow with parallel_scaling=true",
+          "timestamp": "2026-01-09T02:28:51Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f302e837a9f5f51706d46a89d729c4a41e6c9a79"
+        },
+        "date": 1767927934878,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 320565.509,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 20.66,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 22.24,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 25.17,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 28.62,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 36.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 39.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 49.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 71.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 37.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 8533.17,
             "unit": "MB"
           }
         ]
