@@ -66,6 +66,11 @@ on:
         required: false
         default: false
         type: boolean
+      parallel_scaling:
+        description: 'Run parallel build scaling benchmark (varies worker count)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
@@ -893,6 +898,28 @@ jobs:
             tee -a benchmark_results.txt
 
         echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run parallel scaling benchmark
+      if: github.event.inputs.parallel_scaling == 'true' && (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all')
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== Parallel Scaling Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+
+        # Data should already be loaded from MS MARCO benchmark
+        # Just run the parallel scaling test
+        psql -f benchmarks/datasets/msmarco/parallel_scaling.sql 2>&1 | \
+            tee parallel_scaling_results.txt | tee -a benchmark_results.txt
+
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+        # Extract parallel scaling metrics
+        echo ""
+        echo "=== Parallel Scaling Summary ==="
+        grep -E "PARALLEL_(BUILD_WORKERS|QUERY_RESULT)" parallel_scaling_results.txt || true
 
     - name: Run Wikipedia benchmark
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
