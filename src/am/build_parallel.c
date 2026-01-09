@@ -368,63 +368,12 @@ tp_build_parallel(
 	/* Finalize statistics in metapage */
 	tp_finalize_parallel_stats(shared, index);
 
-	/*
-	 * Copy pool info before destroying parallel context.
-	 * We need this to reclaim unused pages after context cleanup.
-	 */
-	{
-		BlockNumber *pool_copy;
-		uint32		 pages_used;
-		int			 total_pool_pages;
-
-		pages_used		 = pg_atomic_read_u32(&shared->shared_pool_next);
-		total_pool_pages = shared->total_pool_pages;
-
-		if (pages_used < (uint32)total_pool_pages)
-		{
-			/* Copy unused page numbers to local memory */
-			int unused_count = total_pool_pages - (int)pages_used;
-
-			pool_copy = palloc(sizeof(BlockNumber) * unused_count);
-			memcpy(pool_copy,
-				   TpParallelPagePool(shared) + pages_used,
-				   sizeof(BlockNumber) * unused_count);
-
-			/* Build result */
-			result				= palloc0(sizeof(IndexBuildResult));
-			result->heap_tuples = (double)pg_atomic_read_u64(
-					&shared->tuples_scanned);
-			result->index_tuples = (double)pg_atomic_read_u64(
-					&shared->total_docs);
-
-			/* Cleanup parallel context first */
-			DestroyParallelContext(pcxt);
-			ExitParallelMode();
-			UnregisterSnapshot(snapshot);
-
-			/* Now safe to reclaim pages - no parallel context active */
-			elog(DEBUG1,
-				 "Reclaiming %d unused pool pages (used %u of %d)",
-				 unused_count,
-				 pages_used,
-				 total_pool_pages);
-
-			for (int i = 0; i < unused_count; i++)
-			{
-				RecordFreeIndexPage(index, pool_copy[i]);
-			}
-			IndexFreeSpaceMapVacuum(index);
-
-			pfree(pool_copy);
-			return result;
-		}
-	}
-
-	/* All pool pages were used - normal cleanup path */
+	/* Build result */
 	result				 = palloc0(sizeof(IndexBuildResult));
 	result->heap_tuples	 = (double)pg_atomic_read_u64(&shared->tuples_scanned);
 	result->index_tuples = (double)pg_atomic_read_u64(&shared->total_docs);
 
+	/* Cleanup */
 	DestroyParallelContext(pcxt);
 	ExitParallelMode();
 	UnregisterSnapshot(snapshot);
@@ -1398,6 +1347,36 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 		 "Linked %d segments from %d workers into L0",
 		 total_segments,
 		 shared->worker_count);
+
+	/*
+	 * Add unused pool pages to FSM before compaction.
+	 * This allows compaction to reuse pre-allocated pages instead of
+	 * extending the relation. We only call RecordFreeIndexPage here;
+	 * compaction will call IndexFreeSpaceMapVacuum after freeing its
+	 * own pages, which will make all free pages findable.
+	 */
+	{
+		uint32 pages_used = pg_atomic_read_u32(&shared->shared_pool_next);
+		BlockNumber *pool = TpParallelPagePool(shared);
+
+		if (pages_used < (uint32)shared->total_pool_pages)
+		{
+			uint32 pages_unused = (uint32)shared->total_pool_pages -
+								  pages_used;
+
+			elog(DEBUG1,
+				 "Adding %u unused pool pages to FSM (used %u of %d)",
+				 pages_unused,
+				 pages_used,
+				 shared->total_pool_pages);
+
+			for (uint32 j = pages_used; j < (uint32)shared->total_pool_pages;
+				 j++)
+			{
+				RecordFreeIndexPage(index, pool[j]);
+			}
+		}
+	}
 
 	/*
 	 * Check if compaction is needed based on segment count threshold.
