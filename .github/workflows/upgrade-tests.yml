@@ -311,45 +311,69 @@ jobs:
         psql -h /tmp -d incompat_test -c "ALTER EXTENSION pg_textsearch UPDATE;"
         psql -h /tmp -d incompat_test -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';"
 
-        # Try to use the old index - should get an error, NOT a crash
-        # We use a script that captures the error and verifies it's the expected message
+        # Try to use the old index with ORDER BY to force index scan
+        # This should get an error about incompatible version, NOT a crash
         psql -h /tmp -d incompat_test << 'SQLSCRIPT'
-        -- This should produce an error about incompatible index version
-        \set ON_ERROR_STOP off
+        \set ON_ERROR_STOP on
 
+        -- Test 1: Verify incompatible index produces proper error (not crash)
+        -- Use ORDER BY to force index scan, catch the error
         DO $$
         DECLARE
-          result float8;
+          rec record;
           err_msg text;
         BEGIN
           BEGIN
-            SELECT content <@> 'database'::text INTO result FROM test_docs LIMIT 1;
-            RAISE EXCEPTION 'Expected an error but query succeeded with result: %', result;
+            -- ORDER BY with LIMIT forces index scan
+            SELECT * INTO rec FROM test_docs ORDER BY content <@> 'database'::text LIMIT 1;
+            RAISE EXCEPTION 'Expected an error but query succeeded';
           EXCEPTION WHEN OTHERS THEN
             GET STACKED DIAGNOSTICS err_msg = MESSAGE_TEXT;
-            -- Check that we got a proper error message about version incompatibility
-            IF err_msg LIKE '%ncompatible%version%' OR err_msg LIKE '%recreate%' OR err_msg LIKE '%rebuild%' THEN
-              RAISE NOTICE 'Got expected error: %', err_msg;
+            -- Verify we got a version incompatibility error
+            IF err_msg LIKE '%Incompatible%version%' OR err_msg LIKE '%drop and recreate%' THEN
+              RAISE NOTICE 'PASS: Got expected incompatibility error: %', err_msg;
             ELSE
-              RAISE EXCEPTION 'Unexpected error message: %', err_msg;
+              RAISE EXCEPTION 'FAIL: Expected incompatibility error but got: %', err_msg;
             END IF;
           END;
         END $$;
 
-        -- Verify server is still running (didn't crash)
-        SELECT 'Server still running after incompatible index access' as status;
+        -- Test 2: Verify server is still running (didn't crash)
+        SELECT 'PASS: Server still running after incompatible index access' as status;
 
-        -- Verify we can create NEW indexes with the new version
+        -- Test 3: Verify we can create NEW indexes with the new version
         CREATE TABLE new_docs (content TEXT);
         INSERT INTO new_docs VALUES ('Testing new index creation after upgrade');
         CREATE INDEX idx_new ON new_docs USING bm25 (content) WITH (text_config = 'english');
-        SELECT content <@> 'testing'::text AS score FROM new_docs;
-        RAISE NOTICE 'New index creation works correctly';
 
-        -- Verify REINDEX fixes the old index
+        DO $$
+        DECLARE
+          score float8;
+        BEGIN
+          SELECT content <@> 'testing'::text INTO score FROM new_docs ORDER BY 1 LIMIT 1;
+          IF score IS NOT NULL AND score < 0 THEN
+            RAISE NOTICE 'PASS: New index creation works, score=%', score;
+          ELSE
+            RAISE EXCEPTION 'FAIL: New index query returned unexpected score: %', score;
+          END IF;
+        END $$;
+
+        -- Test 4: Verify REINDEX fixes the old index
         REINDEX INDEX idx_old;
-        SELECT id, content <@> 'database'::text AS score FROM test_docs ORDER BY score LIMIT 1;
-        RAISE NOTICE 'REINDEX successfully rebuilt incompatible index';
+
+        DO $$
+        DECLARE
+          rec record;
+        BEGIN
+          SELECT * INTO rec FROM test_docs ORDER BY content <@> 'database'::text LIMIT 1;
+          IF rec.id IS NOT NULL THEN
+            RAISE NOTICE 'PASS: REINDEX fixed incompatible index, got id=%', rec.id;
+          ELSE
+            RAISE EXCEPTION 'FAIL: Query after REINDEX returned no results';
+          END IF;
+        END $$;
+
+        SELECT 'All incompatible upgrade tests passed!' as final_status;
         SQLSCRIPT
 
         echo "Incompatible upgrade handled gracefully!"
