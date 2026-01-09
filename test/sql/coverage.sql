@@ -28,6 +28,8 @@ SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_memtable;
 -- =============================================================================
 
 -- Force segment spill to have data on disk
+-- Note: With build mode, data is already spilled during CREATE INDEX,
+-- so memtable is empty here and returns NULL
 SELECT bm25_spill_index('coverage_idx');
 
 -- Test bm25_summarize_index with segment data
