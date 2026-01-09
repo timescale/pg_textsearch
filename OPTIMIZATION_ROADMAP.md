@@ -780,11 +780,51 @@ This is the standard BMW algorithm described in Phase 2 above; the current
 implementation is a simplified approximation that works well for common
 short-query workloads but degrades for long queries.
 
-### v0.4.0: Compression
-- [ ] Delta encoding for doc IDs
-- [ ] FOR/PFOR encoding for posting blocks
-- [ ] Frequency compression
-- [ ] Decode benchmarks
+### v0.4.0: Compression (in progress)
+
+#### Posting Compression (PR #124)
+- [x] Delta encoding for doc IDs
+- [x] Bitpacking for deltas and frequencies
+- [x] GUC `pg_textsearch.compress_segments` (opt-in, default off)
+- [x] Compression in both spill and merge paths
+- [ ] SIMD-accelerated decoding (future optimization)
+
+**Results (MS MARCO 100K)**:
+- Uncompressed: 27 MB
+- Compressed: 16 MB (**41% reduction**)
+- ParadeDB: 14 MB (we're within 14%)
+
+#### Dictionary Compression (planned)
+Goal: Close the remaining gap to ParadeDB.
+
+**Current dictionary overhead**:
+- Term strings: ~10 bytes overhead + term length per term
+- TpDictEntry: 12 bytes per term (skip_index_offset, block_count, doc_freq)
+- For 100K terms: ~2-3 MB dictionary overhead
+
+**Planned approach (incremental)**:
+
+1. **Front-coding for term strings**
+   - Sorted terms share prefixes: "search", "searching", "searchable"
+   - Store: prefix_len (1 byte) + suffix bytes
+   - Expected: 30-50% reduction in string pool size
+   - Simple to implement, good ROI
+
+2. **TpDictEntry bitpacking**
+   - Block 256 terms together (like Tantivy's TermInfoStore)
+   - First term stores full values, rest use bitpacked deltas
+   - Expected: ~80% reduction in dict entry overhead
+
+3. **FST (Finite State Transducer)** (optional)
+   - Compressed trie mapping terms → ordinals
+   - Maximum compression (~10% of raw string size)
+   - More complex, requires careful C implementation
+   - Consider only if front-coding insufficient
+
+**Tantivy's approach for reference**:
+- Uses `tantivy-fst` crate for term → ordinal mapping
+- TermInfoStore with 256-term blocks and bitpacking
+- Achieves ~2-4 bytes per term (vs our current ~20 bytes)
 
 ### v1.0.0: Production Ready (Target: Feb 2025)
 - [ ] Performance tuning based on benchmarks

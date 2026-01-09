@@ -56,6 +56,11 @@ on:
         required: false
         default: false
         type: boolean
+      compress_segments:
+        description: 'Enable segment compression (delta + bitpacking)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
@@ -738,6 +743,12 @@ jobs:
         pg_textsearch.segments_per_level = 16
         EOF
 
+        # Enable compression if requested
+        if [ "${{ github.event.inputs.compress_segments }}" = "true" ]; then
+          echo "pg_textsearch.compress_segments = on" >> tmp_bench/data/postgresql.conf
+          echo "Compression enabled for this benchmark run"
+        fi
+
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
           echo "PostgreSQL failed to start. Log:"
           cat tmp_bench/postgres.log
@@ -832,6 +843,7 @@ jobs:
         echo "**Date:** $(date -u)" >> benchmark_summary.md
         echo "**Commit:** ${{ github.sha }}" >> benchmark_summary.md
         echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
+        echo "**Compression:** ${{ github.event.inputs.compress_segments == 'true' && 'enabled' || 'disabled' }}" >> benchmark_summary.md
         echo "" >> benchmark_summary.md
 
         chmod +x benchmarks/runner/extract_metrics.sh
@@ -904,6 +916,10 @@ jobs:
         if [ -f benchmark_metrics.json ]; then
           echo "### pg_textsearch Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.compress_segments }}" = "true" ]; then
+            echo "**Compression: enabled**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY

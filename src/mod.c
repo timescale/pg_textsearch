@@ -58,6 +58,10 @@ int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
+/* Global variable for segment compression (off by default until benchmarked)
+ */
+bool tp_compress_segments = false;
+
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -189,6 +193,20 @@ _PG_init(void)
 			2,							   /* min 2 */
 			64,							   /* max 64 */
 			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.compress_segments",
+			"Enable compression for new segment blocks",
+			"When enabled, posting blocks in new segments are compressed "
+			"using delta encoding and bitpacking. Reduces index size but "
+			"adds CPU overhead during queries. Off by default.",
+			&tp_compress_segments,
+			false,		 /* default off until benchmarked */
+			PGC_USERSET, /* Can be changed per session */
 			0,
 			NULL,
 			NULL,

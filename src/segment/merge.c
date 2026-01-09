@@ -13,6 +13,7 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
+#include "compression.h"
 #include "constants.h"
 #include "docmap.h"
 #include "fieldnorm.h"
@@ -20,6 +21,9 @@
 #include "pagemapper.h"
 #include "segment.h"
 #include "state/metapage.h"
+
+/* GUC variable for segment compression */
+extern bool tp_compress_segments;
 
 /*
  * Merge source state - tracks current position in each source segment
@@ -943,8 +947,31 @@ write_merged_segment(
 			skip.block_max_tf	= max_tf;
 			skip.block_max_norm = max_norm;
 			skip.posting_offset = writer.current_offset;
-			skip.flags			= TP_BLOCK_FLAG_UNCOMPRESSED;
 			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			/* Write posting block data (compressed or uncompressed) */
+			if (tp_compress_segments)
+			{
+				uint8  compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
+				uint32 compressed_size;
+
+				compressed_size = tp_compress_block(
+						&block_postings[block_start],
+						block_end - block_start,
+						compressed_buf);
+
+				skip.flags = TP_BLOCK_FLAG_DELTA;
+				tp_segment_writer_write(
+						&writer, compressed_buf, compressed_size);
+			}
+			else
+			{
+				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+				tp_segment_writer_write(
+						&writer,
+						&block_postings[block_start],
+						(block_end - block_start) * sizeof(TpBlockPosting));
+			}
 
 			/* Accumulate skip entry */
 			if (skip_entries_count >= skip_entries_capacity)
@@ -955,12 +982,6 @@ write_merged_segment(
 						skip_entries_capacity * sizeof(TpSkipEntry));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
-
-			/* Write posting block data */
-			tp_segment_writer_write(
-					&writer,
-					&block_postings[block_start],
-					(block_end - block_start) * sizeof(TpBlockPosting));
 		}
 
 		/* Free this term's data - don't accumulate across terms */
