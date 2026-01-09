@@ -1,15 +1,5 @@
 name: Upgrade Tests
 
-# UPGRADE TESTS TEMPORARILY DISABLED
-# These tests are disabled because:
-# 1. We bumped the metapage version from 1 to 2, making old indexes incompatible
-# 2. Old releases (0.0.1, 0.0.2) are not available for download yet
-# 3. When they become available, the tests will fail due to metapage version mismatch
-# 4. We need to implement proper migration code or document index recreation requirements
-#
-# To re-enable: uncomment the pull_request trigger below
-# Tests can still be run manually via workflow_dispatch
-
 on:
   workflow_dispatch:
     inputs:
@@ -17,16 +7,14 @@ on:
         description: 'Target version to test upgrades to (leave empty for current branch)'
         required: false
         type: string
+  pull_request:
+    paths:
+      - 'sql/**'
+      - 'pg_textsearch.control'
+      - '.github/workflows/upgrade-tests.yml'
   schedule:
     # Run weekly on Sundays at 2 AM UTC
     - cron: '0 2 * * 0'
-  # pull_request:
-  #   paths:
-  #     - 'sql/**'
-  #     - 'src/**'
-  #     - 'Makefile'
-  #     - 'pg_textsearch.control'
-  #     - '.github/workflows/upgrade-tests.yml'
 
 jobs:
   test-upgrades:
@@ -34,10 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Only test PG17 for upgrades from old versions
-        # since PG18 support was added in v0.0.3
-        pg_version: [17]
-        old_version: ['0.0.1', '0.0.2']
+        pg_version: [17, 18]
+        # Test upgrades from recent stable releases
+        old_version: ['0.1.0', '0.2.0']
 
     steps:
     - name: Checkout current code
@@ -46,187 +33,247 @@ jobs:
     - name: Install PostgreSQL ${{ matrix.pg_version }}
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates
+        sudo apt-get install -y wget ca-certificates gnupg
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
         sudo systemctl stop postgresql
+
+    - name: Download old release v${{ matrix.old_version }}
+      id: download
+      run: |
+        # Download the source tarball from GitHub releases
+        DOWNLOAD_URL="https://github.com/timescale/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz"
+        echo "Downloading from: $DOWNLOAD_URL"
+        if curl -fsSL -o pg_textsearch-old.tar.gz "$DOWNLOAD_URL"; then
+          echo "downloaded=true" >> $GITHUB_OUTPUT
+          tar -xzf pg_textsearch-old.tar.gz
+          ls -la
+        else
+          echo "::error::Failed to download v${{ matrix.old_version }}"
+          echo "downloaded=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Build old version v${{ matrix.old_version }}
+      run: |
+        cd pg_textsearch-${{ matrix.old_version }}
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        make clean || true
+        make
+        sudo make install
+        cd ..
 
     - name: Build current version
       run: |
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         make
+
+    - name: Start PostgreSQL and create test database
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/upgrade_test_data
+
+        initdb -D $PGDATA
+        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
+        echo "port = 5432" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        createdb -h /tmp upgrade_test
+
+    - name: Install old extension and create test data
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+
+        psql -h /tmp -d upgrade_test << 'SQL'
+        -- Install old version
+        CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';
+
+        -- Check installed version
+        SELECT extversion AS old_version FROM pg_extension WHERE extname = 'pg_textsearch';
+
+        -- Create test table with documents
+        CREATE TABLE upgrade_docs (
+          id SERIAL PRIMARY KEY,
+          content TEXT NOT NULL
+        );
+
+        INSERT INTO upgrade_docs (content) VALUES
+          ('PostgreSQL is a powerful open source database system'),
+          ('Full text search with BM25 ranking provides relevance scoring'),
+          ('The quick brown fox jumps over the lazy dog'),
+          ('Database indexing improves query performance significantly'),
+          ('Search engines use inverted indexes for fast lookups');
+
+        -- Create BM25 index
+        CREATE INDEX idx_upgrade_bm25 ON upgrade_docs
+          USING bm25 (content) WITH (text_config = 'english');
+
+        -- Run a query and save results for comparison
+        CREATE TABLE pre_upgrade_results AS
+        SELECT id, content <@> 'database search'::text AS score
+        FROM upgrade_docs
+        ORDER BY score
+        LIMIT 5;
+
+        SELECT * FROM pre_upgrade_results;
+        SQL
+
+    - name: Upgrade extension to current version
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+        # Install current version files
         sudo make install
 
-    - name: Attempt to download old version
-      id: download
-      run: |
-        # Try to download the old release
-        if wget -q https://github.com/Tapir-Database/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz; then
-          echo "downloaded=true" >> $GITHUB_OUTPUT
-        else
-          echo "Warning: v${{ matrix.old_version }} not available for download"
-          echo "downloaded=false" >> $GITHUB_OUTPUT
-        fi
+        # Perform the upgrade
+        psql -h /tmp -d upgrade_test << 'SQL'
+        -- Upgrade extension
+        ALTER EXTENSION pg_textsearch UPDATE;
 
-    - name: Build old version from source
-      if: steps.download.outputs.downloaded == 'true'
-      run: |
-        tar -xzf pg_textsearch-${{ matrix.old_version }}.tar.gz
-        cd pg_textsearch-${{ matrix.old_version }}
+        -- Verify new version
+        SELECT extversion AS new_version FROM pg_extension WHERE extname = 'pg_textsearch';
+        SQL
 
+    - name: Verify upgrade succeeded
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+
+        psql -h /tmp -d upgrade_test << 'SQL'
+        -- Verify extension upgraded to expected version
+        DO $$
+        DECLARE
+          ver text;
+        BEGIN
+          SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
+          IF ver NOT LIKE '0.3%' THEN
+            RAISE EXCEPTION 'Extension did not upgrade properly. Version: %', ver;
+          END IF;
+          RAISE NOTICE 'Extension upgraded to version: %', ver;
+        END $$;
+
+        -- Verify BM25 queries still work
+        SELECT id, content <@> 'database search'::text AS score
+        FROM upgrade_docs
+        ORDER BY score
+        LIMIT 3;
+
+        -- Verify scores are negative (BM25 returns negative scores for ASC ordering)
+        DO $$
+        DECLARE
+          score_val float8;
+        BEGIN
+          SELECT content <@> 'database search'::text INTO score_val
+          FROM upgrade_docs
+          LIMIT 1;
+          IF score_val >= 0 THEN
+            RAISE EXCEPTION 'BM25 score should be negative, got: %', score_val;
+          END IF;
+          RAISE NOTICE 'BM25 scoring working correctly, sample score: %', score_val;
+        END $$;
+
+        -- Verify index is still usable (EXPLAIN should show index scan)
+        EXPLAIN (COSTS OFF)
+        SELECT * FROM upgrade_docs
+        ORDER BY content <@> 'database'::text
+        LIMIT 5;
+
+        -- Test inserting new data after upgrade
+        INSERT INTO upgrade_docs (content) VALUES
+          ('New document added after upgrade to test index updates');
+
+        -- Query should include new document
+        SELECT id, content <@> 'upgrade'::text AS score
+        FROM upgrade_docs
+        WHERE content <@> 'upgrade'::text < 0
+        ORDER BY score
+        LIMIT 3;
+
+        -- Test creating a new index after upgrade
+        CREATE TABLE post_upgrade_docs (content TEXT);
+        INSERT INTO post_upgrade_docs VALUES ('Testing post-upgrade index creation');
+        CREATE INDEX idx_post_upgrade ON post_upgrade_docs
+          USING bm25 (content) WITH (text_config = 'english');
+
+        SELECT content <@> 'testing'::text AS score FROM post_upgrade_docs;
+
+        RAISE NOTICE 'All upgrade verification checks passed!';
+        SQL
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        pg_ctl -D /tmp/upgrade_test_data stop -m immediate || true
+        rm -rf /tmp/upgrade_test_data
+
+  # Test clean install (no upgrade) on both PG versions
+  test-clean-install:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg_version: [17, 18]
+
+    steps:
+    - name: Checkout current code
+      uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates gnupg
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+        sudo systemctl stop postgresql
+
+    - name: Build and install
+      run: |
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         make
-
-        # Save old .so file
-        cp pg_textsearch.so ../pg_textsearch_old.so
-        cd ..
-
-    - name: Test upgrade from ${{ matrix.old_version }}
-      if: steps.download.outputs.downloaded == 'true'
-      run: |
-        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
-        export PGDATA=/tmp/test_pgdata_${{ matrix.pg_version }}_${{ matrix.old_version }}
-
-        # Initialize database
-        initdb -D $PGDATA
-        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
-        echo "port = 54${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
-        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
-
-        pg_ctl -D $PGDATA start -w
-        createdb -h /tmp -p 54${{ matrix.pg_version }} test_upgrade
-
-        # Install old version
-        sudo cp pg_textsearch_old.so /usr/lib/postgresql/${{ matrix.pg_version }}/lib/pg_textsearch.so
-
-        # Create extension with old version
-        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade -c "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
-
-        # Create test data
-        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade << 'SQL'
-        CREATE TABLE test_docs (
-          id SERIAL PRIMARY KEY,
-          content TEXT NOT NULL
-        );
-
-        INSERT INTO test_docs (content) VALUES
-          ('PostgreSQL is a powerful, open source object-relational database system'),
-          ('It has more than 35 years of active development'),
-          ('PostgreSQL has earned a strong reputation for reliability and performance'),
-          ('Full text search capabilities are built into PostgreSQL'),
-          ('The BM25 algorithm provides relevance ranking for text search');
-
-        CREATE INDEX idx_test_bm25 ON test_docs
-        USING bm25 (content) WITH (text_config = 'english');
-
-        -- Store count for verification
-        SELECT COUNT(*) AS before_count FROM test_docs
-        WHERE content @@ to_tsquery('english', 'postgresql');
-        SQL
-
-        # Install new version
         sudo make install
 
-        # Perform upgrade
-        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade -c "ALTER EXTENSION pg_textsearch UPDATE;"
+    - name: Test clean installation
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PGDATA=/tmp/clean_test_data
 
-        # Verify upgrade
-        psql -h /tmp -p 54${{ matrix.pg_version }} -d test_upgrade << 'SQL'
-        -- Check version
+        initdb -D $PGDATA
+        echo "port = 5432" >> $PGDATA/postgresql.conf
+        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
+
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        createdb -h /tmp clean_test
+
+        psql -h /tmp -d clean_test << 'SQL'
+        CREATE EXTENSION pg_textsearch;
+
+        -- Verify version
         SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';
 
-        -- Test that searches still work
-        SELECT COUNT(*) AS after_count FROM test_docs
-        WHERE content @@ to_tsquery('english', 'postgresql');
+        -- Basic functionality test
+        CREATE TABLE docs (id SERIAL PRIMARY KEY, content TEXT);
+        INSERT INTO docs (content) VALUES
+          ('PostgreSQL full text search'),
+          ('BM25 ranking algorithm'),
+          ('Document retrieval system');
 
-        -- Test BM25 scoring still works
-        SELECT id, content <@> to_bm25query('postgresql database', 'idx_test_bm25'::text) AS score
-        FROM test_docs
-        ORDER BY score DESC
+        CREATE INDEX idx_docs ON docs USING bm25 (content) WITH (text_config = 'english');
+
+        -- Test query
+        SELECT id, content <@> 'search ranking'::text AS score
+        FROM docs
+        ORDER BY score
         LIMIT 3;
 
-        -- Test creating new index after upgrade
-        CREATE TABLE new_docs (
-          id SERIAL PRIMARY KEY,
-          content TEXT NOT NULL
-        );
-
-        INSERT INTO new_docs (content) VALUES
-          ('Testing the upgrade process'),
-          ('New documents added after upgrading'),
-          ('BM25 ranking should work correctly');
-
-        CREATE INDEX idx_new_bm25 ON new_docs
-        USING bm25 (content) WITH (text_config = 'english');
-
-        SELECT COUNT(*) FROM new_docs
-        WHERE content @@ to_tsquery('english', 'upgrade');
+        RAISE NOTICE 'Clean installation test passed!';
         SQL
 
-        # Cleanup
         pg_ctl -D $PGDATA stop -m immediate
         rm -rf $PGDATA
-
-    - name: Test clean install (no upgrade)
-      run: |
-        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
-        export PGDATA=/tmp/test_pgdata_clean_${{ matrix.pg_version }}
-
-        # Initialize database
-        initdb -D $PGDATA
-        echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
-        echo "port = 55${{ matrix.pg_version }}" >> $PGDATA/postgresql.conf
-        echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
-
-        pg_ctl -D $PGDATA start -w
-        createdb -h /tmp -p 55${{ matrix.pg_version }} test_clean
-
-        # Install current version directly
-        sudo make install
-
-        psql -h /tmp -p 55${{ matrix.pg_version }} -d test_clean -c "CREATE EXTENSION pg_textsearch;"
-
-        # Basic functionality test
-        psql -h /tmp -p 55${{ matrix.pg_version }} -d test_clean << 'SQL'
-        CREATE TABLE docs (content TEXT);
-        INSERT INTO docs VALUES ('Test document');
-        CREATE INDEX idx_bm25 ON docs USING bm25 (content) WITH (text_config = 'english');
-        SELECT COUNT(*) FROM docs WHERE content @@ to_tsquery('english', 'test');
-        SQL
-
-        # Cleanup
-        pg_ctl -D $PGDATA stop -m immediate
-        rm -rf $PGDATA
-
-    - name: Report results
-      if: always()
-      run: |
-        echo "### Upgrade Test Results"
-        echo "PostgreSQL Version: ${{ matrix.pg_version }}"
-        if [ "${{ steps.download.outputs.downloaded }}" = "true" ]; then
-          echo "✅ Tested upgrade from v${{ matrix.old_version }} to current version"
-        else
-          echo "⚠️ Skipped upgrade from v${{ matrix.old_version }} (release not available)"
-        fi
-        echo "✅ Tested clean installation of current version"
-
-  summary:
-    needs: test-upgrades
-    runs-on: ubuntu-latest
-    if: always()
-
-    steps:
-    - name: Upgrade Test Summary
-      run: |
-        echo "## Upgrade Testing Complete"
-        echo
-        echo "All upgrade paths have been tested:"
-        echo "- PostgreSQL 17 & 18"
-        echo "- Upgrades from v0.0.1 and v0.0.2 (where available)"
-        echo "- Clean installations"
-        echo
-        echo "Check individual job results for details."
