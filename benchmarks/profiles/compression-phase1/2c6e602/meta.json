@@ -1,0 +1,8 @@
+{
+  "sha": "2c6e602",
+  "full_sha": "2c6e602d415b1eeaf2af0a39704a49faf11f0eab",
+  "branch": "compression-phase1",
+  "date": "2026-01-09T23:04:19Z",
+  "message": "Add tests for mixed compression scenarios",
+  "dataset": "MS MARCO full"
+}
