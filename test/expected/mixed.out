@@ -2,8 +2,7 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
-INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+INFO:  pg_textsearch v0.3.0 installed
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Clean up from any previous tests

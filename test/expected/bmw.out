@@ -2,8 +2,7 @@
 -- Tests the top-k optimization for both single-term and multi-term queries
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.3.0-dev: This is prerelease software and should not be used in production.
-INFO:  This release contains breaking changes in the bm25 index structure and will require existing indexes to be rebuilt.
+INFO:  pg_textsearch v0.3.0 installed
 -- ============================================================
 -- SECTION 1: Basic BMW correctness
 -- ============================================================

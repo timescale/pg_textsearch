@@ -11,12 +11,10 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Goal: state-of-the-art performance and scalability
 
-🎉 **Now Open Source!** We're excited to share pg_textsearch with the community.
-
-🚀 **Status**: v0.3.0-dev (prerelease) - Feature-complete but not yet optimized.
+🚀 **Status**: v0.3.0 - Feature-complete but not yet optimized.
 Not yet recommended for production use. See [ROADMAP.md](ROADMAP.md) for what's next.
 
-![Tapir and Friends](images/tapir_and_friends_v0.3.0-dev.png)
+![Tapir and Friends](images/tapir_and_friends_v0.3.0.png)
 
 ## Historical note
 
@@ -29,7 +27,7 @@ pg_textsearch supports:
 - PostgreSQL 17
 - PostgreSQL 18
 
-### New in PostgreSQL 18 Support
+### PostgreSQL 18 Support
 
 - **Embedded index name syntax**: Use `index_name:query` format in cast expressions for
   better compatibility with PG18's query planner
