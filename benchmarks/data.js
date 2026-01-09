@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767939763722,
+  "lastUpdate": 1767939765628,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -855,6 +855,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 131.05,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7bfb0f5fcc97cefceb692de66f6bc6381ff07518",
+          "message": "Use private DSA for index builds to eliminate memory leaks (#118)\n\n## Summary\n\nEliminates memory leaks during CREATE INDEX by using a private DSA that\nis destroyed and recreated on each spill, providing perfect memory\nreclamation.\n\n### Problem\n\nAs identified in PR #117, index builds leak ~110-400MB per spill cycle\ndue to DSA fragmentation. Even with the threshold reduction in #117, a\n50M document build still leaks ~17GB cumulative memory.\n\n### Solution: Private DSA with Destroy/Recreate\n\n**Key Insight:** During CREATE INDEX, only one backend is building. We\ndon't need a shared DSA - we can use a private one and destroy it\ncompletely between spills.\n\n**Implementation:**\n```c\n// Create private DSA for build (not in global registry)\nprivate_dsa = dsa_create(tranche_id);  \n\n// After spill:\ndsa_detach(private_dsa);  // Destroys DSA + ALL memory → OS\nprivate_dsa = dsa_create(tranche_id);  // Fresh DSA for next batch\n```\n\n**Architecture:**\n- **BUILD MODE**: Private DSA, destroyed/recreated per spill → 0% memory\nleak\n- **RUNTIME MODE**: Shared DSA for concurrent inserts (unchanged)\n- **Same data structures**: dshash, posting lists work identically in\nboth modes\n- **Minimal changes**: ~100 lines of code\n\n### Changes\n\n**New functions:**\n- `tp_create_build_index_state()`: Creates private DSA instead of using\nglobal\n- `tp_recreate_build_dsa()`: Destroys old DSA and creates fresh one\n- Updated `tp_clear_memtable()`: Calls recreation in build mode\n\n**Modified files:**\n- `src/state/state.h`: Added `is_build_mode` flag\n- `src/state/state.c`: Implemented private DSA lifecycle  \n- `src/am/build.c`: Use build mode during CREATE INDEX\n\n### Expected Results\n\n**Memory profile with private DSA:**\n```\nBUILD_START: 23 MB\n1M docs: 428 MB (8M postings)\nBEFORE_SPILL: 428 MB\nAFTER_SPILL: 25 MB  ← Perfect reclamation!\n2M docs: 428 MB (no growth!)\nBEFORE_SPILL: 428 MB\nAFTER_SPILL: 25 MB  ← Still 25 MB!\n```\n\n**For any dataset size:** Peak stays at ~430MB\n\n### Comparison\n\n| Approach | 50M Docs Peak | Memory Leak | Code Changes |\n|----------|---------------|-------------|--------------|\n| Original (32M threshold) | 26GB (OOM) | 400MB/spill | 0 |\n| PR #117 (8M threshold) | ~18GB | 110MB/spill | ~150 lines |\n| **This PR (Private DSA)** | **~430MB** | **0MB/spill** | **~100\nlines** |\n\n### Testing Plan\n\n- [ ] Build compiles successfully\n- [ ] Existing regression tests pass\n- [ ] 1M document build with memory instrumentation shows perfect\nreclamation\n- [ ] 50M document build completes with constant ~430MB peak\n- [ ] Concurrent inserts still work (runtime mode validation)\n\n### Relationship to PR #117\n\nPR #117 provides immediate mitigation and enables large-scale\nbenchmarks.\nThis PR provides the complete architectural fix for unlimited\nscalability.\n\nBoth can be merged independently - #117 helps immediately, this PR\neliminates the issue entirely.",
+          "timestamp": "2026-01-09T03:58:05Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7bfb0f5fcc97cefceb692de66f6bc6381ff07518"
+        },
+        "date": 1767939765257,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18942.407,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.75,
             "unit": "MB"
           }
         ]
