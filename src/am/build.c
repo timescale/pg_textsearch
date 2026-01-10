@@ -743,12 +743,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/*
 	 * Check if parallel build is possible and beneficial.
-	 * Requirements:
-	 * 1. Postgres planner approves parallel workers (based on GUCs)
-	 * 2. Table has enough rows to justify parallel overhead (100K+ tuples)
+	 *
+	 * Postgres has already called plan_create_index_workers() and stored
+	 * the result in indexInfo->ii_ParallelWorkers. We use that value
+	 * directly to avoid redundant planning work and ensure consistency.
+	 *
+	 * We add our own minimum tuple threshold (100K) because for smaller
+	 * tables, the parallel coordination overhead exceeds the benefit.
 	 */
 	{
-		int	   nworkers;
+		int	   nworkers	 = indexInfo->ii_ParallelWorkers;
 		double reltuples = heap->rd_rel->reltuples;
 
 		/*
@@ -781,9 +785,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 #define TP_WARN_NO_PARALLEL_TUPLES 1000000 /* 1M tuples */
 #define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
 #define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
-
-		nworkers = plan_create_index_workers(
-				RelationGetRelid(heap), RelationGetRelid(index));
 
 		elog(DEBUG1,
 			 "Parallel build check: nworkers=%d, reltuples=%.0f, min=%d",

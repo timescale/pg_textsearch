@@ -16,6 +16,7 @@
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
+#include <storage/indexfsm.h>
 #include <storage/smgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
@@ -50,11 +51,13 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 
 /*
  * Expansion factor for estimating index pages from heap.
- * Text search indexes are typically smaller than the heap, but during
- * parallel builds we need extra headroom for multiple uncompacted segments
- * and compaction overhead. A factor of 1.2 provides sufficient space.
+ * Text search indexes are typically 20-25% of heap size. During parallel
+ * builds we need headroom for multiple uncompacted segments (up to
+ * segments_per_level) plus compaction overhead (new segment written while
+ * old segments still exist). A factor of 0.3 provides sufficient space
+ * for typical workloads. Unused pages are reclaimed to FSM after build.
  */
-#define TP_INDEX_EXPANSION_FACTOR 1.2
+#define TP_INDEX_EXPANSION_FACTOR 0.3
 
 /*
  * Worker build state with double-buffering support.
@@ -360,6 +363,38 @@ tp_build_parallel(
 
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
+
+	/*
+	 * Reclaim unused pages from the pre-allocated pool.
+	 * Pages beyond shared_pool_next were never used by any worker.
+	 */
+	{
+		uint32		 pool_used = pg_atomic_read_u32(&shared->shared_pool_next);
+		uint32		 pool_total = shared->total_pool_pages;
+		BlockNumber *pool		= TpParallelPagePool(shared);
+
+		if (pool_used < pool_total)
+		{
+			uint32 unused = pool_total - pool_used;
+			uint32 i;
+
+			elog(DEBUG1,
+				 "Reclaiming %u unused pool pages (used %u of %u)",
+				 unused,
+				 pool_used,
+				 pool_total);
+
+			for (i = pool_used; i < pool_total; i++)
+			{
+				RecordFreeIndexPage(index, pool[i]);
+			}
+
+			/* Update FSM upper levels so freed pages are findable */
+			IndexFreeSpaceMapVacuum(index);
+
+			elog(DEBUG1, "Reclaimed %u pool pages to FSM", unused);
+		}
+	}
 
 	/* Link all worker segments into L0 chain */
 	tp_link_all_worker_segments(shared, index);
