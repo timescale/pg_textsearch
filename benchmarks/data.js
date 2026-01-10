@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768026154240,
+  "lastUpdate": 1768026156693,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1484,6 +1484,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 79.25,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7c35333d63b364452d712aa405e7463691c40d0b",
+          "message": "Update banner image for v0.4.0 (#131)\n\n## Summary\n- Add new banner image for v0.4.0\n- Update README to reference the new image",
+          "timestamp": "2026-01-10T03:07:18Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7c35333d63b364452d712aa405e7463691c40d0b"
+        },
+        "date": 1768026156043,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18815.974,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 66.75,
             "unit": "MB"
           }
         ]
