@@ -156,7 +156,7 @@ jobs:
           ver text;
         BEGIN
           SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
-          IF ver NOT LIKE '0.3%' THEN
+          IF ver NOT LIKE '0.4%' THEN
             RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %', ver;
           END IF;
           RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;

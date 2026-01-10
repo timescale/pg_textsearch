@@ -1,7 +1,7 @@
 -- Test BM25 index behavior with table inheritance
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.3.0 installed
+INFO:  pg_textsearch v0.4.0-dev installed
 -- =============================================================================
 -- Test 1: PostgreSQL native table inheritance
 -- BM25 indexes on parent tables only index direct rows (ONLY semantics),
