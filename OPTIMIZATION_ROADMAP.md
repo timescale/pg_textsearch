@@ -568,61 +568,88 @@ void tp_bmw_single_term(TpTermScorer *scorer, int k, TpMinHeap *results) {
 
 ### Phase 3: Posting List Compression
 
-#### 3.1 Compression Strategy
+#### 3.1 Compression Strategy (Implemented in v0.4.0)
 
-| Data | Encoding | Rationale |
-|------|----------|-----------|
-| Doc IDs | Delta + FOR/PFOR | Sorted, small deltas |
-| Frequencies | FOR/PFOR | Usually small (1-10) |
-| Last block | VInt | < 128 docs, not worth FOR |
+| Data | Encoding | Status |
+|------|----------|--------|
+| Doc IDs | Delta + Bitpacking | ✅ Implemented |
+| Frequencies | Bitpacking | ✅ Implemented |
+| Fieldnorms | Stored separately | ✅ Implemented |
 
-#### 3.2 FOR (Frame of Reference)
+**What we implemented**: Simple bitpacking where all values in a 128-doc block
+use the same bit width (determined by the max value in that block). This is
+similar to Tantivy's approach and provides good compression with minimal decode
+overhead (~6% of query time per profiling).
+
+**What we didn't implement**: FOR/PFOR (Frame-of-Reference with Patching).
+FOR stores a base value plus small offsets; PFOR adds exception handling for
+outliers. These provide slightly better compression for blocks with outliers
+but add complexity. The simpler bitpacking approach was chosen for v0.4.0.
+
+#### 3.2 Bitpacking (Implemented)
 
 ```c
-void for_encode(uint32 *values, int count, uint8 *out, int *out_len) {
-    // Find minimum bits needed
-    uint32 max_val = 0;
-    for (int i = 0; i < count; i++)
-        if (values[i] > max_val) max_val = values[i];
-
-    uint8 bits = 32 - __builtin_clz(max_val | 1);
-
-    // Pack values
-    *out++ = bits;
-    for (int i = 0; i < count; i++) {
-        write_bits(out, values[i], bits);
+// Compress a block of 128 postings
+void tp_compress_block(TpBlockPosting *postings, uint32 doc_count,
+                       uint32 first_doc_id, uint8 *out, uint32 *out_len) {
+    // Delta encode doc IDs
+    uint32 deltas[TP_POSTING_BLOCK_SIZE];
+    uint32 prev_doc = first_doc_id;
+    for (int i = 0; i < doc_count; i++) {
+        deltas[i] = postings[i].doc_id - prev_doc;
+        prev_doc = postings[i].doc_id;
     }
+
+    // Find bits needed for max delta and max frequency
+    uint8 doc_id_bits = bits_needed(max_delta);
+    uint8 freq_bits = bits_needed(max_freq);
+
+    // Write 2-byte header + bitpacked values
+    out[0] = doc_id_bits;
+    out[1] = freq_bits;
+    bitpack_write(out + 2, deltas, doc_count, doc_id_bits);
+    bitpack_write(out + 2 + packed_size, freqs, doc_count, freq_bits);
 }
 ```
 
-**Expected compression**: Compression ratio depends heavily on posting list
-density. For web-scale collections, Zobel & Moffat [6] report 8-10 bits per
-doc ID with variable-byte encoding; FOR can achieve 4-6 bits for dense lists.
+**Compression results (MS MARCO)**:
 
-#### 3.3 PFOR for Outliers
+| Scale | Uncompressed | Compressed | ParadeDB | vs Uncompressed | vs ParadeDB |
+|-------|-------------|------------|----------|-----------------|-------------|
+| 100K docs | 27 MB | 16 MB | 14 MB | **-41%** | +14% |
+| 8.8M docs | 2.4 GB | 1.4 GB | 1.5 GB | **-42%** | **-7%** |
 
-When a few values don't fit the common bit width:
-1. Encode all values at reduced bit width
-2. Store exceptions: (index, high_bits) pairs
-3. Patch during decode
+At full scale, we're now **smaller than ParadeDB** (1396 MB vs 1500 MB).
 
-Tantivy uses this; Lucene uses a variant (Lucene 4.6+ uses a scheme derived
-from FastPFOR). See Lemire et al. [5] for detailed performance analysis.
+#### 3.3 FOR/PFOR (Not Implemented - Future Option)
 
-#### 3.4 SIMD Decoding
+FOR (Frame of Reference) and PFOR (Patched FOR) are more sophisticated
+compression schemes that could provide additional compression for blocks
+with outlier values:
+
+- **FOR**: Store base value + small offsets from base
+- **PFOR**: FOR with separate storage for exceptions that don't fit
+
+These were not implemented because:
+1. Simple bitpacking already achieves competitive compression
+2. Decode overhead is minimal (~6% of query time)
+3. We're already smaller than ParadeDB at scale
+4. Simpler code is easier to maintain
+
+If compression needs to be improved further, PFOR would be the next step.
+
+#### 3.4 SIMD Decoding (Future Optimization)
 
 Modern implementations use SIMD instructions (SSE2/AVX2) for decoding, achieving
 4+ billion integers/second per core. Key techniques from Lemire et al. [5]:
 
 - **SIMD-BP128**: Bit-packing with 128-bit SIMD registers, ~2x faster than
-  scalar PFOR while saving 2 bits/integer
-- **SIMD-FastPFOR**: Vectorized patched frame-of-reference, 30%+ faster than
-  scalar PFOR with 10% better compression
+  scalar
 - **Vectorized delta decoding**: SIMD prefix sum is 2x faster than scalar
 
-The [FastPFor library](https://github.com/lemire/FastPFor) provides reference
-implementations. For portability, we can use scalar code initially and add
-SIMD paths with runtime detection for x86-64.
+The current implementation uses scalar code for portability. SIMD paths could
+be added with runtime detection for x86-64 if decode becomes a bottleneck
+(currently only ~6% of query time).
 
 ---
 
@@ -780,19 +807,33 @@ This is the standard BMW algorithm described in Phase 2 above; the current
 implementation is a simplified approximation that works well for common
 short-query workloads but degrades for long queries.
 
-### v0.4.0: Compression (in progress)
+### v0.4.0: Compression (PR #124 - ready for merge)
 
-#### Posting Compression (PR #124)
-- [x] Delta encoding for doc IDs
-- [x] Bitpacking for deltas and frequencies
-- [x] GUC `pg_textsearch.compress_segments` (opt-in, default off)
+#### Posting Compression
+- [x] Delta encoding for doc IDs (gaps between sorted IDs)
+- [x] Bitpacking for deltas and frequencies (min bits per block)
+- [x] GUC `pg_textsearch.compress_segments` (default: **on**)
 - [x] Compression in both spill and merge paths
+- [x] Mixed compression support (toggle GUC between spills)
 - [ ] SIMD-accelerated decoding (future optimization)
+- [ ] FOR/PFOR encoding (not needed - bitpacking is sufficient)
 
-**Results (MS MARCO 100K)**:
-- Uncompressed: 27 MB
-- Compressed: 16 MB (**41% reduction**)
-- ParadeDB: 14 MB (we're within 14%)
+**Results (MS MARCO)**:
+
+| Scale | Uncompressed | Compressed | ParadeDB | Change |
+|-------|-------------|------------|----------|--------|
+| 100K docs | 27 MB | 16 MB | 14 MB | -41% |
+| 8.8M docs | ~2.4 GB | 1396 MB | 1500 MB | **-7% vs ParadeDB** |
+
+**Query performance (100K)**:
+- 1-token: 11% faster
+- 2-token: 19% faster
+- 3-token: 21% faster
+- 8-token: 2% slower (negligible)
+
+**Profiling (8.8M scale)**:
+- Decode overhead: ~6% of query time (`bitpack_decode` + `tp_decompress_block`)
+- Compression improves cache efficiency, offsetting decode cost
 
 #### Dictionary Compression (planned)
 Goal: Close the remaining gap to ParadeDB.
