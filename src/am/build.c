@@ -14,6 +14,7 @@
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
+#include <optimizer/optimizer.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
@@ -23,6 +24,7 @@
 #include <utils/snapmgr.h>
 
 #include "am.h"
+#include "build_parallel.h"
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
@@ -737,6 +739,108 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
+
+	/*
+	 * Check if parallel build is possible and beneficial.
+	 *
+	 * Postgres has already called plan_create_index_workers() and stored
+	 * the result in indexInfo->ii_ParallelWorkers. We use that value
+	 * directly to avoid redundant planning work and ensure consistency.
+	 *
+	 * We add our own minimum tuple threshold (100K) because for smaller
+	 * tables, the parallel coordination overhead exceeds the benefit.
+	 */
+	{
+		int	   nworkers	 = indexInfo->ii_ParallelWorkers;
+		double reltuples = heap->rd_rel->reltuples;
+
+		/*
+		 * Only consider parallel build for tables with 100K+ estimated rows.
+		 * For smaller tables, the parallel coordination overhead exceeds
+		 * the benefit.
+		 *
+		 * If reltuples is -1 (table never analyzed), estimate from page count.
+		 * We use a conservative estimate of 50 tuples per 8KB page, which
+		 * assumes ~160 bytes per row (reasonable for text search workloads).
+		 */
+#define TP_MIN_PARALLEL_TUPLES		100000
+#define TP_TUPLES_PER_PAGE_ESTIMATE 50
+
+		if (reltuples < 0)
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+			reltuples = (double)nblocks * TP_TUPLES_PER_PAGE_ESTIMATE;
+			elog(DEBUG1,
+				 "Table not analyzed, estimating %.0f tuples from %u pages",
+				 reltuples,
+				 nblocks);
+		}
+
+		/*
+		 * Thresholds for warning about suboptimal parallelism.
+		 * These are conservative - we only warn when users could see
+		 * significant (>2x) speedup from more parallelism.
+		 */
+#define TP_WARN_NO_PARALLEL_TUPLES 1000000 /* 1M tuples */
+#define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
+#define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
+
+		elog(DEBUG1,
+			 "Parallel build check: nworkers=%d, reltuples=%.0f, min=%d",
+			 nworkers,
+			 reltuples,
+			 TP_MIN_PARALLEL_TUPLES);
+
+		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
+		{
+			/*
+			 * Warn if table is very large but parallelism is limited.
+			 * Users may not realize max_parallel_maintenance_workers
+			 * constrains index build parallelism.
+			 */
+			if (reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
+				nworkers <= TP_WARN_FEW_WORKERS_MIN)
+			{
+				elog(NOTICE,
+					 "Large table (%.0f tuples) with only %d parallel "
+					 "workers. "
+					 "Consider increasing max_parallel_maintenance_workers "
+					 "for "
+					 "faster index builds.",
+					 reltuples,
+					 nworkers);
+			}
+
+			elog(NOTICE,
+				 "Using parallel index build with %d workers (%.0f tuples)",
+				 nworkers,
+				 reltuples);
+			return tp_build_parallel(
+					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+		}
+		else if (nworkers > 0)
+		{
+			elog(DEBUG1,
+				 "Skipping parallel build: %.0f tuples < %d minimum",
+				 reltuples,
+				 TP_MIN_PARALLEL_TUPLES);
+		}
+		else if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES)
+		{
+			/*
+			 * Large table but no parallel workers available.
+			 * This is likely due to max_parallel_maintenance_workers = 0.
+			 */
+			elog(NOTICE,
+				 "Large table (%.0f tuples) but parallel build disabled. "
+				 "Set max_parallel_maintenance_workers > 0 for faster index "
+				 "builds.",
+				 reltuples);
+		}
+	}
+
+	/* Fall through to serial build */
+	elog(DEBUG1, "Using serial index build (no parallel workers available)");
 
 	/*
 	 * Initialize index state in BUILD mode with private DSA.

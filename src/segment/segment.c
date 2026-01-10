@@ -620,17 +620,61 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 }
 
 /*
- * Allocate a new page for the writer
+ * Allocate a new page for the writer.
+ * Uses pre-allocated pool if available, otherwise falls back to FSM/extend.
  */
 static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 {
 	BlockNumber new_page;
+	Buffer		buffer;
 
 	/* Ensure we have space in the pages array */
 	tp_segment_writer_grow_pages(writer);
 
-	/* Allocate the actual page */
+	/*
+	 * First, check FSM for recycled pages (freed during compaction).
+	 * This ensures pages freed during parallel build get reused immediately,
+	 * rather than accumulating in FSM while the pool is consumed.
+	 */
+	new_page = GetFreeIndexPage(writer->index);
+	if (new_page != InvalidBlockNumber)
+	{
+		/* Reuse a previously freed page */
+		buffer = ReadBuffer(writer->index, new_page);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+
+		fsm_pages_reused++;
+
+		/* Add to our tracking array */
+		writer->pages[writer->pages_allocated] = new_page;
+		writer->pages_allocated++;
+
+		return new_page;
+	}
+
+	/* Try to get page from pre-allocated pool */
+	if (writer->page_pool != NULL && writer->pool_next != NULL)
+	{
+		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
+		if (idx < writer->pool_size)
+		{
+			new_page = writer->page_pool[idx];
+
+			/* Add to our tracking array */
+			writer->pages[writer->pages_allocated] = new_page;
+			writer->pages_allocated++;
+
+			return new_page;
+		}
+		/* Pool exhausted, fall through to extend */
+		elog(DEBUG1, "Page pool exhausted, extending relation");
+	}
+
+	/* No FSM pages and pool exhausted/unavailable - extend the relation */
 	new_page = allocate_segment_page(writer->index);
 
 	/* Add to our tracking array */
@@ -1733,7 +1777,50 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->posting_buffer		= NULL;
 	writer->posting_buffer_size = 0;
 
+	/* No page pool for normal builds */
+	writer->page_pool = NULL;
+	writer->pool_size = 0;
+	writer->pool_next = NULL;
+
 	/* Allocate first page */
+	tp_segment_writer_allocate_page(writer);
+
+	/* Initialize first page */
+	PageInit((Page)writer->buffer, BLCKSZ, 0);
+}
+
+/*
+ * Initialize segment writer with pre-allocated page pool.
+ * Used by parallel builds where pages are pre-allocated to avoid FSM
+ * contention.
+ */
+void
+tp_segment_writer_init_with_pool(
+		TpSegmentWriter	 *writer,
+		Relation		  index,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	writer->index			= index;
+	writer->pages			= NULL;
+	writer->pages_allocated = 0;
+	writer->pages_capacity	= 0;
+	writer->current_offset	= 0;
+	writer->buffer			= palloc(BLCKSZ);
+	writer->buffer_page		= 0;
+	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
+
+	/* Initialize reusable posting buffer */
+	writer->posting_buffer		= NULL;
+	writer->posting_buffer_size = 0;
+
+	/* Set up page pool */
+	writer->page_pool = page_pool;
+	writer->pool_size = pool_size;
+	writer->pool_next = pool_next;
+
+	/* Allocate first page (from pool) */
 	tp_segment_writer_allocate_page(writer);
 
 	/* Initialize first page */
@@ -1795,6 +1882,18 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 		return; /* Nothing to flush */
 
 	block = writer->pages[writer->buffer_page];
+
+	/* Validate block number before reading */
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(writer->index);
+		if (block >= nblocks)
+		{
+			elog(ERROR,
+				 "tp_segment_writer_flush: block %u >= nblocks %u",
+				 block,
+				 nblocks);
+		}
+	}
 
 	/* Write current buffer to disk */
 	buffer = ReadBuffer(writer->index, block);
