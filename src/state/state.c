@@ -153,8 +153,10 @@ tp_get_local_index_state(Oid index_oid)
 		return NULL;
 	}
 
-	/* If we reach here with shared_state set, it's actually a DSA pointer */
-	if (shared_state != NULL)
+	/*
+	 * If we reach here, shared_state is set (non-NULL) and is actually a DSA
+	 * pointer that needs to be converted to an address.
+	 */
 	{
 		/* shared_state is actually a DSA pointer - need to attach to DSA and
 		 * convert to address */
@@ -183,8 +185,6 @@ tp_get_local_index_state(Oid index_oid)
 
 		return local_state;
 	}
-
-	return NULL;
 }
 
 /*
@@ -1231,6 +1231,7 @@ tp_bulk_load_spill_check(void)
 		Buffer			   metabuf;
 		Page			   metapage;
 		TpIndexMetaPage	   metap;
+		bool			   index_open_failed = false;
 
 		if (!local_state || !local_state->shared)
 			continue;
@@ -1256,9 +1257,12 @@ tp_bulk_load_spill_check(void)
 		{
 			/* Index might have been dropped */
 			FlushErrorState();
-			continue;
+			index_open_failed = true;
 		}
 		PG_END_TRY();
+
+		if (index_open_failed)
+			continue;
 
 		/* Write the segment */
 		segment_root = tp_write_segment(local_state, index_rel);

@@ -499,6 +499,9 @@ tp_rescan(
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
+	if (!so)
+		return;
+
 	/* Retrieve query LIMIT, if available */
 	{
 		int query_limit = tp_get_query_limit(scan->indexRelation);
@@ -690,6 +693,12 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	if (so->result_ctids == NULL && !so->eof_reached)
 	{
 		if (!tp_execute_scoring_query(scan))
+		{
+			so->eof_reached = true;
+			return false;
+		}
+		/* Scoring query must have allocated result_ctids on success */
+		if (so->result_ctids == NULL)
 		{
 			so->eof_reached = true;
 			return false;

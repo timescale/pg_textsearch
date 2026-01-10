@@ -1108,7 +1108,8 @@ tp_insert(
 	tp_add_docid_to_pages(index, ht_ctid);
 
 	/* Recalculate IDF sum after insert */
-	tp_calculate_idf_sum(index_state);
+	if (index_state != NULL)
+		tp_calculate_idf_sum(index_state);
 
 	return true;
 }

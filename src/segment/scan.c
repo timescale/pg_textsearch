@@ -41,11 +41,16 @@ tp_segment_posting_iterator_init(
 		TpSegmentReader			 *reader,
 		const char				 *term)
 {
-	TpSegmentHeader *header = reader->header;
+	TpSegmentHeader *header;
 	TpDictionary	 dict_header;
 	int				 left, right, mid;
 	char			*term_buffer = NULL;
 	uint32			 buffer_size = 0;
+
+	if (!reader || !reader->header)
+		return false;
+
+	header = reader->header;
 
 	iter->reader			  = reader;
 	iter->term				  = term;

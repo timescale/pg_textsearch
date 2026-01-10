@@ -964,10 +964,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			continue;
 		}
 
-		/* Calculate number of blocks */
+		/* Calculate number of blocks (always >= 1 since doc_count > 0 here) */
 		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		if (num_blocks == 0 && doc_count > 0)
-			num_blocks = 1;
 		term_blocks[i].block_count = (uint16)num_blocks;
 
 		/* Convert postings to block format */

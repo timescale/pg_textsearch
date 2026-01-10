@@ -47,8 +47,11 @@ tp_memtable_search(
 	int			   entry_count;
 	char		  *ptr;
 
+	if (!so)
+		return false;
+
 	/* Use limit from scan state, fallback to GUC parameter */
-	if (so && so->limit > 0)
+	if (so->limit > 0)
 		max_results = so->limit;
 	else
 		max_results = tp_default_limit;

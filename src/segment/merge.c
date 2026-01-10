@@ -324,8 +324,12 @@ posting_source_load_block(TpPostingMergeSource *ps)
 	 * Ensure we have enough buffer space. We reuse the buffer between blocks,
 	 * only reallocating when a larger block is encountered. Old block data is
 	 * no longer needed since we process blocks sequentially.
+	 *
+	 * The NULL check ensures allocation on first call (when block_postings is
+	 * uninitialized) even if doc_count happens to equal block_capacity.
 	 */
-	if (ps->skip_entry.doc_count > ps->block_capacity)
+	if (ps->block_postings == NULL ||
+		ps->skip_entry.doc_count > ps->block_capacity)
 	{
 		if (ps->block_postings)
 			pfree(ps->block_postings);
@@ -894,10 +898,8 @@ write_merged_segment(
 			continue;
 		}
 
-		/* Calculate number of blocks */
+		/* Calculate number of blocks (always >= 1 since doc_count > 0 here) */
 		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		if (num_blocks == 0 && doc_count > 0)
-			num_blocks = 1;
 		term_blocks[i].block_count = (uint16)num_blocks;
 
 		/* Convert postings to block format using direct mapping lookup */
@@ -1033,7 +1035,7 @@ write_merged_segment(
 	 * tp_segment_writer_finish so writer.pages is still valid.
 	 */
 	{
-		Buffer dict_buf;
+		Buffer dict_buf = InvalidBuffer;
 		uint32 entry_logical_page;
 		uint32 current_page = UINT32_MAX;
 
