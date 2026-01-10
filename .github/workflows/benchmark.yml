@@ -1117,14 +1117,16 @@ jobs:
     - name: Setup database
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        mkdir -p tmp_validate/data
+        mkdir -p tmp_validate/data tmp_validate/socket
         initdb -D tmp_validate/data
         echo "shared_preload_libraries = ''" >> tmp_validate/data/postgresql.conf
         echo "shared_buffers = '1GB'" >> tmp_validate/data/postgresql.conf
         echo "work_mem = '256MB'" >> tmp_validate/data/postgresql.conf
-        pg_ctl -D tmp_validate/data -l tmp_validate/logfile start
-        sleep 2
+        echo "unix_socket_directories = '$PWD/tmp_validate/socket'" >> tmp_validate/data/postgresql.conf
+        pg_ctl -D tmp_validate/data -l tmp_validate/logfile start -w
+        export PGHOST="$PWD/tmp_validate/socket"
         createdb validation
+        echo "PGHOST=$PWD/tmp_validate/socket" >> $GITHUB_ENV
 
     - name: Download MS MARCO dataset
       run: |
