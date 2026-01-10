@@ -15,7 +15,9 @@ Modern ranked text search for Postgres.
 🚀 **Status**: v0.4.0-dev - Query performance is production-ready. Index compression
 and parallel index builds are coming soon. See [ROADMAP.md](ROADMAP.md) for details.
 
-![Tapir and Friends](images/tapir_and_friends_v0.3.0.png)
+![Tapir and Friends](images/tapir_and_friends_v0.4.0.png)
+
+*The theme of v0.4.0 is compression, which the friends are trying to avoid.*
 
 ## Historical note
 
