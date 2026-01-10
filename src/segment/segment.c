@@ -686,11 +686,36 @@ static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 {
 	BlockNumber new_page;
+	Buffer		buffer;
 
 	/* Ensure we have space in the pages array */
 	tp_segment_writer_grow_pages(writer);
 
-	/* Try to get page from pool if available */
+	/*
+	 * First, check FSM for recycled pages (freed during compaction).
+	 * This ensures pages freed during parallel build get reused immediately,
+	 * rather than accumulating in FSM while the pool is consumed.
+	 */
+	new_page = GetFreeIndexPage(writer->index);
+	if (new_page != InvalidBlockNumber)
+	{
+		/* Reuse a previously freed page */
+		buffer = ReadBuffer(writer->index, new_page);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+
+		fsm_pages_reused++;
+
+		/* Add to our tracking array */
+		writer->pages[writer->pages_allocated] = new_page;
+		writer->pages_allocated++;
+
+		return new_page;
+	}
+
+	/* Try to get page from pre-allocated pool */
 	if (writer->page_pool != NULL && writer->pool_next != NULL)
 	{
 		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
@@ -704,11 +729,11 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 
 			return new_page;
 		}
-		/* Pool exhausted, fall through to normal allocation */
-		elog(DEBUG1, "Page pool exhausted, falling back to FSM/extend");
+		/* Pool exhausted, fall through to extend */
+		elog(DEBUG1, "Page pool exhausted, extending relation");
 	}
 
-	/* Allocate the actual page via FSM or extend */
+	/* No FSM pages and pool exhausted/unavailable - extend the relation */
 	new_page = allocate_segment_page(writer->index);
 
 	/* Add to our tracking array */
