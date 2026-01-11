@@ -488,6 +488,94 @@ test_single_posting(void)
 	return 0;
 }
 
+/*
+ * Test that first_doc_id parameter must be 0.
+ *
+ * This documents a subtle API contract: compression always encodes deltas
+ * from 0, so decompression must also use first_doc_id=0. The parameter
+ * exists but only one value is valid.
+ */
+static int
+test_first_doc_id_must_be_zero(void)
+{
+	TpBlockPosting input[2];
+	TpBlockPosting output[2];
+	uint8          compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
+
+	input[0].doc_id    = 1000;
+	input[0].frequency = 1;
+	input[0].fieldnorm = 50;
+	input[0].reserved  = 0;
+
+	input[1].doc_id    = 1010;
+	input[1].frequency = 2;
+	input[1].fieldnorm = 60;
+	input[1].reserved  = 0;
+
+	tp_compress_block(input, 2, compressed);
+
+	/* Correct usage: first_doc_id = 0 */
+	tp_decompress_block(compressed, 2, 0, output);
+	TEST_ASSERT_EQ(output[0].doc_id, 1000, "first_doc_id=0 works");
+	TEST_ASSERT_EQ(output[1].doc_id, 1010, "first_doc_id=0 works");
+
+	/* Incorrect usage: first_doc_id != 0 produces wrong results */
+	tp_decompress_block(compressed, 2, 500, output);
+	/* This produces 1500 and 1510 instead of 1000 and 1010! */
+	TEST_ASSERT(output[0].doc_id != 1000,
+				"first_doc_id!=0 gives wrong result (by design)");
+
+	return 0;
+}
+
+/*
+ * Test that unsorted doc_ids don't crash (but waste bits).
+ *
+ * If doc_ids go backwards, the delta underflows to a huge value,
+ * forcing 32-bit encoding. Decompression still works due to
+ * unsigned wraparound, but this is wasteful and likely a caller bug.
+ */
+static int
+test_unsorted_doc_ids_dont_crash(void)
+{
+	TpBlockPosting input[3];
+	TpBlockPosting output[3];
+	uint8          compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
+
+	/* Intentionally unsorted - 100, 50, 200 */
+	input[0].doc_id    = 100;
+	input[0].frequency = 1;
+	input[0].fieldnorm = 50;
+	input[0].reserved  = 0;
+
+	input[1].doc_id    = 50; /* SMALLER than previous! */
+	input[1].frequency = 1;
+	input[1].fieldnorm = 50;
+	input[1].reserved  = 0;
+
+	input[2].doc_id    = 200;
+	input[2].frequency = 1;
+	input[2].fieldnorm = 50;
+	input[2].reserved  = 0;
+
+	/* Should not crash */
+	uint32 size = tp_compress_block(input, 3, compressed);
+	TEST_ASSERT(size > 0, "unsorted compresses without crash");
+
+	/* Check header - should require many bits due to underflow */
+	TpCompressedBlockHeader *header = (TpCompressedBlockHeader *)compressed;
+	TEST_ASSERT(header->doc_id_bits > 20,
+				"unsorted forces large bit width due to underflow");
+
+	/* Roundtrip still works due to unsigned wraparound */
+	tp_decompress_block(compressed, 3, 0, output);
+	TEST_ASSERT_EQ(output[0].doc_id, 100, "unsorted roundtrip works (0)");
+	TEST_ASSERT_EQ(output[1].doc_id, 50, "unsorted roundtrip works (1)");
+	TEST_ASSERT_EQ(output[2].doc_id, 200, "unsorted roundtrip works (2)");
+
+	return 0;
+}
+
 /* Test compression ratio is reasonable */
 static int
 test_compression_ratio(void)
@@ -532,6 +620,8 @@ main(void)
 	RUN_TEST(test_compressed_block_size);
 	RUN_TEST(test_empty_block);
 	RUN_TEST(test_single_posting);
+	RUN_TEST(test_first_doc_id_must_be_zero);
+	RUN_TEST(test_unsorted_doc_ids_dont_crash);
 	RUN_TEST(test_compression_ratio);
 
 	printf("\nCompression: %d/%d tests passed", passed, total);
