@@ -111,9 +111,11 @@ UNIT_TEST_SRCS = $(wildcard $(UNIT_TEST_DIR)/test_*.c)
 UNIT_TEST_BINS = $(UNIT_TEST_SRCS:.c=)
 UNIT_CC = cc
 UNIT_CFLAGS = -Wall -Wextra -g -O0 -std=c99
+# Include test/unit first so our postgres.h stub is found before the real one
+UNIT_INCLUDES = -I$(UNIT_TEST_DIR) -Isrc
 
 $(UNIT_TEST_DIR)/test_%: $(UNIT_TEST_DIR)/test_%.c $(UNIT_TEST_DIR)/pg_stubs.h
-	@$(UNIT_CC) $(UNIT_CFLAGS) -I$(UNIT_TEST_DIR) -o $@ $< -lm
+	@$(UNIT_CC) $(UNIT_CFLAGS) $(UNIT_INCLUDES) -o $@ $< -lm
 
 test-unit: $(UNIT_TEST_BINS)
 	@echo "Running C unit tests..."
