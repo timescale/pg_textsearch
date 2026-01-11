@@ -113,6 +113,8 @@ tp_compress_block(TpBlockPosting *postings, uint32 count, uint8 *out_buf)
 	uint32					 out_pos;
 	uint32					 i;
 
+	Assert(count <= TP_BLOCK_SIZE);
+
 	if (count == 0)
 		return 0;
 
@@ -188,11 +190,18 @@ tp_decompress_block(
 	uint32						   prev_doc;
 	uint32						   i;
 
+	Assert(count <= TP_BLOCK_SIZE);
+
 	if (count == 0)
 		return;
 
 	header = (const TpCompressedBlockHeader *)compressed;
-	pos	   = sizeof(TpCompressedBlockHeader);
+
+	/* Validate header values to prevent buffer overruns */
+	Assert(header->doc_id_bits >= 1 && header->doc_id_bits <= 32);
+	Assert(header->freq_bits >= 1 && header->freq_bits <= 16);
+
+	pos = sizeof(TpCompressedBlockHeader);
 
 	/* Allocate temporary arrays */
 	doc_deltas	= palloc(count * sizeof(uint32));
