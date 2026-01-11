@@ -318,10 +318,11 @@
 
         <h3>Why System X wins on long queries</h3>
         <p>
-            System X is built on Tantivy, a mature Rust-based search engine with
-            highly optimized posting list intersection algorithms. For complex queries
-            with many terms, the cost of scanning more posting lists outweighs the
-            BMW pruning benefits, and Tantivy's optimized intersection code wins.
+            Both pg_textsearch and System X (Tantivy) use the same Block-Max WAND
+            algorithm for top-k queries. The performance gap on longer queries is
+            likely due to implementation tuning rather than algorithmic differences.
+            As a newer implementation, pg_textsearch hasn't yet been fully optimized
+            for complex multi-term queries. This is an area for future improvement.
         </p>
 
         <h3>Recommendations</h3>
