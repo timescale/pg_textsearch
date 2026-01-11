@@ -78,7 +78,7 @@ test-local: install
 	@rm -rf tmp_check_shared
 
 # Clean test directories
-clean: clean-test-dirs
+clean: clean-test-dirs clean-unit
 
 clean-test-dirs:
 	@rm -rf tmp_check_shared coverage-html coverage.info
@@ -105,8 +105,40 @@ test-stress:
 test-shell: test-concurrency test-recovery test-segment
 	@echo "All shell-based tests completed"
 
-test-all: test test-shell
-	@echo "All tests (SQL regression + shell scripts) completed successfully"
+# C unit tests (standalone, no PostgreSQL required)
+UNIT_TEST_DIR = test/unit
+UNIT_TEST_SRCS = $(wildcard $(UNIT_TEST_DIR)/test_*.c)
+UNIT_TEST_BINS = $(UNIT_TEST_SRCS:.c=)
+UNIT_CC = cc
+UNIT_CFLAGS = -Wall -Wextra -g -O0 -std=c99
+
+$(UNIT_TEST_DIR)/test_%: $(UNIT_TEST_DIR)/test_%.c $(UNIT_TEST_DIR)/pg_stubs.h
+	@$(UNIT_CC) $(UNIT_CFLAGS) -I$(UNIT_TEST_DIR) -o $@ $< -lm
+
+test-unit: $(UNIT_TEST_BINS)
+	@echo "Running C unit tests..."
+	@failed=0; \
+	for test in $(UNIT_TEST_BINS); do \
+		echo ""; \
+		if $$test; then \
+			: ; \
+		else \
+			failed=1; \
+		fi; \
+	done; \
+	echo ""; \
+	if [ $$failed -eq 0 ]; then \
+		echo "All unit tests passed."; \
+	else \
+		echo "Some unit tests FAILED."; \
+		exit 1; \
+	fi
+
+clean-unit:
+	@rm -f $(UNIT_TEST_BINS)
+
+test-all: test test-unit test-shell
+	@echo "All tests (SQL regression + unit + shell scripts) completed successfully"
 
 # Override installcheck to run all tests (SQL regression + shell scripts)
 installcheck:
@@ -246,9 +278,10 @@ help:
 	@echo ""
 	@echo "Testing targets:"
 	@echo "  make test         - Run SQL regression tests only"
+	@echo "  make test-unit    - Run C unit tests (no Postgres required)"
 	@echo "  make installcheck - Run all tests (SQL + shell scripts)"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
-	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
+	@echo "  make test-all     - Run all tests (SQL + unit + shell scripts)"
 	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
@@ -277,4 +310,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs clean-unit installcheck test-concurrency test-recovery test-segment test-stress test-shell test-unit test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
