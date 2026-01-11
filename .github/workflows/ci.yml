@@ -21,6 +21,21 @@ on:
       - '.github/workflows/ci.yml'
 
 jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL dev (for pg_config only)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y postgresql-server-dev-17
+
+    - name: Run C unit tests
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make test-unit
+
   test:
     runs-on: ubuntu-latest
     strategy:
