@@ -1029,16 +1029,20 @@ jobs:
     - name: Update benchmark dashboard
       if: always() && github.event.inputs.dry_run != 'true'
       run: |
-        # Save the new index.html before switching branches
+        # Save the new pages before switching branches
         cp benchmarks/gh-pages/index.html /tmp/new_index.html
+        cp benchmarks/gh-pages/methodology.html /tmp/methodology.html 2>/dev/null || true
+        cp benchmarks/gh-pages/comparison.html /tmp/comparison.html 2>/dev/null || true
 
-        # Update index.html and branch info on gh-pages branch
+        # Update pages and branch info on gh-pages branch
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch origin gh-pages
         git checkout gh-pages
 
         cp /tmp/new_index.html benchmarks/index.html
+        [ -f /tmp/methodology.html ] && cp /tmp/methodology.html benchmarks/methodology.html
+        [ -f /tmp/comparison.html ] && cp /tmp/comparison.html benchmarks/comparison.html
 
         # Update branch_info.js with this commit's branch
         BRANCH_FILE="benchmarks/branch_info.js"
@@ -1070,7 +1074,7 @@ jobs:
             'window.BRANCH_INFO = ' + JSON.stringify(info, null, 2) + ';\\n');
         "
 
-        git add benchmarks/index.html "$BRANCH_FILE"
+        git add benchmarks/index.html benchmarks/methodology.html benchmarks/comparison.html "$BRANCH_FILE" 2>/dev/null || git add benchmarks/index.html "$BRANCH_FILE"
         if ! git diff --cached --quiet; then
           git commit -m "Update benchmark dashboard for ${SHORT_SHA} on ${BRANCH}"
           git push origin gh-pages
