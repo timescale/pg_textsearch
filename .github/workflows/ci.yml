@@ -29,6 +29,10 @@ jobs:
     - name: Install PostgreSQL dev (for pg_config only)
       run: |
         sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
         sudo apt-get install -y postgresql-server-dev-17
 
     - name: Run C unit tests
