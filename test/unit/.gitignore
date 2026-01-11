@@ -1,0 +1,7 @@
+# Compiled test binaries
+test_*
+!test_*.c
+!test_*.h
+
+# Debug symbols
+*.dSYM/

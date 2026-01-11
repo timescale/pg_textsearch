@@ -56,6 +56,16 @@ on:
         required: false
         default: false
         type: boolean
+      compress_segments:
+        description: 'Enable segment compression (delta + bitpacking)'
+        required: false
+        default: false
+        type: boolean
+      validate_compression:
+        description: 'Run compression validation (compare compressed vs uncompressed)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
@@ -738,6 +748,12 @@ jobs:
         pg_textsearch.segments_per_level = 16
         EOF
 
+        # Enable compression if requested
+        if [ "${{ github.event.inputs.compress_segments }}" = "true" ]; then
+          echo "pg_textsearch.compress_segments = on" >> tmp_bench/data/postgresql.conf
+          echo "Compression enabled for this benchmark run"
+        fi
+
         if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
           echo "PostgreSQL failed to start. Log:"
           cat tmp_bench/postgres.log
@@ -832,6 +848,7 @@ jobs:
         echo "**Date:** $(date -u)" >> benchmark_summary.md
         echo "**Commit:** ${{ github.sha }}" >> benchmark_summary.md
         echo "**Dataset:** ${{ steps.datasets.outputs.dataset }}" >> benchmark_summary.md
+        echo "**Compression:** ${{ github.event.inputs.compress_segments == 'true' && 'enabled' || 'disabled' }}" >> benchmark_summary.md
         echo "" >> benchmark_summary.md
 
         chmod +x benchmarks/runner/extract_metrics.sh
@@ -904,6 +921,10 @@ jobs:
         if [ -f benchmark_metrics.json ]; then
           echo "### pg_textsearch Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.compress_segments }}" = "true" ]; then
+            echo "**Compression: enabled**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Documents | $(jq -r '.metrics.num_documents // "N/A"' benchmark_metrics.json) |" >> $GITHUB_STEP_SUMMARY
@@ -1008,16 +1029,20 @@ jobs:
     - name: Update benchmark dashboard
       if: always() && github.event.inputs.dry_run != 'true'
       run: |
-        # Save the new index.html before switching branches
+        # Save the new pages before switching branches
         cp benchmarks/gh-pages/index.html /tmp/new_index.html
+        cp benchmarks/gh-pages/methodology.html /tmp/methodology.html 2>/dev/null || true
+        cp benchmarks/gh-pages/comparison.html /tmp/comparison.html 2>/dev/null || true
 
-        # Update index.html and branch info on gh-pages branch
+        # Update pages and branch info on gh-pages branch
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git fetch origin gh-pages
         git checkout gh-pages
 
         cp /tmp/new_index.html benchmarks/index.html
+        [ -f /tmp/methodology.html ] && cp /tmp/methodology.html benchmarks/methodology.html
+        [ -f /tmp/comparison.html ] && cp /tmp/comparison.html benchmarks/comparison.html
 
         # Update branch_info.js with this commit's branch
         BRANCH_FILE="benchmarks/branch_info.js"
@@ -1049,7 +1074,7 @@ jobs:
             'window.BRANCH_INFO = ' + JSON.stringify(info, null, 2) + ';\\n');
         "
 
-        git add benchmarks/index.html "$BRANCH_FILE"
+        git add benchmarks/index.html benchmarks/methodology.html benchmarks/comparison.html "$BRANCH_FILE" 2>/dev/null || git add benchmarks/index.html "$BRANCH_FILE"
         if ! git diff --cached --quiet; then
           git commit -m "Update benchmark dashboard for ${SHORT_SHA} on ${BRANCH}"
           git push origin gh-pages
@@ -1063,3 +1088,209 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         pg_ctl stop -D tmp_bench/data || true
         rm -rf tmp_bench
+
+  # Compression validation job - compares compressed vs uncompressed results
+  validate-compression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.validate_compression == 'true'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        df -h /
+
+    - name: Install PostgreSQL 17
+      run: |
+        sudo apt-get update
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make -j$(nproc)
+        sudo make install
+
+    - name: Setup database
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        mkdir -p tmp_validate/data tmp_validate/socket
+        initdb -D tmp_validate/data
+        echo "shared_preload_libraries = ''" >> tmp_validate/data/postgresql.conf
+        echo "shared_buffers = '1GB'" >> tmp_validate/data/postgresql.conf
+        echo "work_mem = '256MB'" >> tmp_validate/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_validate/socket'" >> tmp_validate/data/postgresql.conf
+        pg_ctl -D tmp_validate/data -l tmp_validate/logfile start -w
+        export PGHOST="$PWD/tmp_validate/socket"
+        createdb validation
+        echo "PGHOST=$PWD/tmp_validate/socket" >> $GITHUB_ENV
+
+    - name: Download MS MARCO dataset
+      run: |
+        MSMARCO_SIZE="${{ github.event.inputs.msmarco_size || '100K' }}"
+        echo "Downloading MS MARCO ${MSMARCO_SIZE}..."
+
+        mkdir -p benchmarks/datasets/msmarco
+        cd benchmarks/datasets/msmarco
+
+        if [ "$MSMARCO_SIZE" = "full" ]; then
+          wget -q https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz
+          tar -xzf collection.tar.gz
+          rm collection.tar.gz
+        else
+          # Download and truncate
+          wget -q https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz
+          tar -xzf collection.tar.gz
+          case $MSMARCO_SIZE in
+            100K) head -100000 collection.tsv > collection_subset.tsv ;;
+            500K) head -500000 collection.tsv > collection_subset.tsv ;;
+            1M)   head -1000000 collection.tsv > collection_subset.tsv ;;
+          esac
+          mv collection_subset.tsv collection.tsv
+          rm collection.tar.gz
+        fi
+
+        wc -l collection.tsv
+
+    - name: Run compression validation
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+
+        echo "=== Phase 1: Build COMPRESSED index and capture results ==="
+        psql -d validation << 'EOSQL'
+        CREATE EXTENSION pg_textsearch;
+
+        -- Create table
+        CREATE TABLE passages (
+            id INT PRIMARY KEY,
+            passage_text TEXT
+        );
+
+        -- Load data
+        \copy passages(id, passage_text) FROM 'benchmarks/datasets/msmarco/collection.tsv'
+
+        SELECT count(*) as doc_count FROM passages;
+
+        -- Build compressed index
+        SET pg_textsearch.compress_segments = on;
+        CREATE INDEX passages_bm25_idx ON passages USING bm25(passage_text)
+            WITH (text_config = 'english');
+        SELECT bm25_spill_index('passages_bm25_idx');
+
+        -- Capture compressed results (100 test queries)
+        CREATE TABLE compressed_results AS
+        WITH queries(q) AS (VALUES
+            ('what is'),
+            ('how to'),
+            ('search engine'),
+            ('machine learning'),
+            ('database query'),
+            ('information retrieval'),
+            ('text search'),
+            ('full text'),
+            ('ranking algorithm'),
+            ('document search')
+        )
+        SELECT
+            q as query,
+            id,
+            passage_text <@> to_bm25query(q, 'passages_bm25_idx') as score
+        FROM queries, passages
+        WHERE passage_text <@> to_bm25query(q, 'passages_bm25_idx') < 0
+        ORDER BY q, score, id
+        LIMIT 500;
+
+        SELECT count(*) as compressed_count FROM compressed_results;
+
+        DROP INDEX passages_bm25_idx;
+        EOSQL
+
+        echo "=== Phase 2: Build UNCOMPRESSED index and capture results ==="
+        psql -d validation << 'EOSQL'
+        -- Build uncompressed index
+        SET pg_textsearch.compress_segments = off;
+        CREATE INDEX passages_bm25_idx ON passages USING bm25(passage_text)
+            WITH (text_config = 'english');
+        SELECT bm25_spill_index('passages_bm25_idx');
+
+        -- Capture uncompressed results (same queries)
+        CREATE TABLE uncompressed_results AS
+        WITH queries(q) AS (VALUES
+            ('what is'),
+            ('how to'),
+            ('search engine'),
+            ('machine learning'),
+            ('database query'),
+            ('information retrieval'),
+            ('text search'),
+            ('full text'),
+            ('ranking algorithm'),
+            ('document search')
+        )
+        SELECT
+            q as query,
+            id,
+            passage_text <@> to_bm25query(q, 'passages_bm25_idx') as score
+        FROM queries, passages
+        WHERE passage_text <@> to_bm25query(q, 'passages_bm25_idx') < 0
+        ORDER BY q, score, id
+        LIMIT 500;
+
+        SELECT count(*) as uncompressed_count FROM uncompressed_results;
+        EOSQL
+
+        echo "=== Phase 3: Compare results ==="
+        psql -d validation << 'EOSQL'
+        -- Find any differences
+        SELECT 'DIFFERENCES FOUND:' as status;
+        SELECT
+            c.query,
+            c.id as compressed_id,
+            u.id as uncompressed_id,
+            c.score as compressed_score,
+            u.score as uncompressed_score,
+            abs(c.score - u.score) as score_diff
+        FROM compressed_results c
+        FULL OUTER JOIN uncompressed_results u
+            ON c.query = u.query AND c.id = u.id
+        WHERE c.id IS NULL
+           OR u.id IS NULL
+           OR abs(c.score - u.score) > 0.0001
+        LIMIT 20;
+
+        -- Summary
+        SELECT 'VALIDATION SUMMARY:' as status;
+        SELECT
+            (SELECT count(*) FROM compressed_results) as compressed_count,
+            (SELECT count(*) FROM uncompressed_results) as uncompressed_count,
+            (SELECT count(*) FROM compressed_results c
+             JOIN uncompressed_results u ON c.query = u.query AND c.id = u.id
+             WHERE abs(c.score - u.score) < 0.0001) as matching_count;
+
+        -- Final verdict
+        SELECT
+            CASE
+                WHEN (SELECT count(*) FROM compressed_results) =
+                     (SELECT count(*) FROM uncompressed_results)
+                AND (SELECT count(*) FROM compressed_results c
+                     JOIN uncompressed_results u ON c.query = u.query AND c.id = u.id
+                     WHERE abs(c.score - u.score) < 0.0001) =
+                    (SELECT count(*) FROM compressed_results)
+                THEN 'VALIDATION PASSED: Compressed and uncompressed results are identical'
+                ELSE 'VALIDATION FAILED: Results differ between compressed and uncompressed'
+            END as result;
+        EOSQL
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_validate/data || true
+        rm -rf tmp_validate
