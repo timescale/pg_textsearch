@@ -141,7 +141,7 @@
             <div class="summary-card">
                 <h4>pg_textsearch today</h4>
                 <ul>
-                    <li>15% smaller index size</li>
+                    <li>Smaller index (no positions stored)*</li>
                     <li>Faster on short queries (1-6 tokens)</li>
                     <li>Better p95 latency for simple queries</li>
                     <li>Native Postgres integration</li>
@@ -152,7 +152,7 @@
                 <ul>
                     <li>Faster index build (for now)</li>
                     <li>Faster on complex queries (7+ tokens)</li>
-                    <li>More consistent tail latencies</li>
+                    <li>Phrase queries supported</li>
                     <li>Larger feature set (facets, etc.)</li>
                 </ul>
             </div>
@@ -196,6 +196,14 @@
                 <td>-</td>
             </tr>
         </table>
+
+        <div class="note">
+            <strong>Index size caveat:</strong> pg_textsearch does not store term positions, so it
+            cannot support phrase queries like <code>"quick brown fox"</code>. System X stores
+            positions by default, which adds significant overhead but enables phrase search.
+            This accounts for most of the index size difference—it's a feature tradeoff, not
+            a compression advantage.
+        </div>
 
         <div class="note progress">
             <strong>In progress:</strong> Parallel index build
