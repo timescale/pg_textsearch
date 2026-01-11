@@ -33,13 +33,14 @@ typedef struct TpCompressedBlockHeader
 
 /* Verify buffer size is sufficient for worst case */
 StaticAssertDecl(
-	TP_MAX_COMPRESSED_BLOCK_SIZE >=
-		sizeof(TpCompressedBlockHeader) +
-		(TP_BLOCK_SIZE * 32 + 7) / 8 +  /* max doc_id bits (32 per value) */
-		(TP_BLOCK_SIZE * 16 + 7) / 8 +  /* max freq bits (16 per value) */
-		TP_BLOCK_SIZE,                   /* fieldnorms (1 byte each) */
-	"TP_MAX_COMPRESSED_BLOCK_SIZE too small for worst-case compression"
-);
+		TP_MAX_COMPRESSED_BLOCK_SIZE >=
+				sizeof(TpCompressedBlockHeader) +
+						(TP_BLOCK_SIZE * 32 + 7) /
+								8 + /* max doc_id bits (32 per value) */
+						(TP_BLOCK_SIZE * 16 + 7) /
+								8 +	   /* max freq bits (16 per value) */
+						TP_BLOCK_SIZE, /* fieldnorms (1 byte each) */
+		"TP_MAX_COMPRESSED_BLOCK_SIZE too small for worst-case compression");
 
 /*
  * Compression functions
