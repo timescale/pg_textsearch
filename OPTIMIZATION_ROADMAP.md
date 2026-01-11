@@ -614,12 +614,12 @@ void tp_compress_block(TpBlockPosting *postings, uint32 doc_count,
 
 **Compression results (MS MARCO)**:
 
-| Scale | Uncompressed | Compressed | ParadeDB | vs Uncompressed | vs ParadeDB |
+| Scale | Uncompressed | Compressed | System X | vs Uncompressed | vs System X |
 |-------|-------------|------------|----------|-----------------|-------------|
 | 100K docs | 27 MB | 16 MB | 14 MB | **-41%** | +14% |
 | 8.8M docs | 2.4 GB | 1.4 GB | 1.5 GB | **-42%** | **-7%** |
 
-At full scale, we're now **smaller than ParadeDB** (1396 MB vs 1500 MB).
+At full scale, we're now **smaller than System X** (1396 MB vs 1500 MB).  However, System X is also storing positional information for phrase queries, so numbers are not entirely comparable.
 
 #### 3.3 FOR/PFOR (Not Implemented - Future Option)
 
@@ -633,7 +633,7 @@ with outlier values:
 These were not implemented because:
 1. Simple bitpacking already achieves competitive compression
 2. Decode overhead is minimal (~6% of query time)
-3. We're already smaller than ParadeDB at scale
+3. We're already smaller than System X at scale
 4. Simpler code is easier to maintain
 
 If compression needs to be improved further, PFOR would be the next step.
@@ -820,10 +820,10 @@ short-query workloads but degrades for long queries.
 
 **Results (MS MARCO)**:
 
-| Scale | Uncompressed | Compressed | ParadeDB | Change |
+| Scale | Uncompressed | Compressed | System X | Change |
 |-------|-------------|------------|----------|--------|
 | 100K docs | 27 MB | 16 MB | 14 MB | -41% |
-| 8.8M docs | ~2.4 GB | 1396 MB | 1500 MB | **-7% vs ParadeDB** |
+| 8.8M docs | ~2.4 GB | 1396 MB | 1500 MB | **-7% vs System X** |
 
 **Query performance (100K)**:
 - 1-token: 11% faster
@@ -836,7 +836,7 @@ short-query workloads but degrades for long queries.
 - Compression improves cache efficiency, offsetting decode cost
 
 #### Dictionary Compression (planned)
-Goal: Close the remaining gap to ParadeDB.
+Goal: Close the remaining gap to System X.
 
 **Current dictionary overhead**:
 - Term strings: ~10 bytes overhead + term length per term
