@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>pg_textsearch vs System X - Benchmark Comparison</title>
+    <title>pg_textsearch vs System X - Development Progress</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -28,6 +28,16 @@
             color: #666;
             font-size: 0.9em;
             margin-bottom: 20px;
+        }
+        .snapshot-notice {
+            background: #e7f3ff;
+            border: 1px solid #b3d7ff;
+            border-radius: 6px;
+            padding: 15px 20px;
+            margin-bottom: 25px;
+        }
+        .snapshot-notice strong {
+            color: #0066cc;
         }
         table {
             border-collapse: collapse;
@@ -55,7 +65,7 @@
             border-left: 4px solid #0066cc;
         }
         .summary-card.systemx {
-            border-left-color: #dc3545;
+            border-left-color: #6c757d;
         }
         .summary-card h4 {
             margin: 0 0 10px 0;
@@ -75,6 +85,10 @@
             background: #cce5ff;
             border-left-color: #0066cc;
         }
+        .note.progress {
+            background: #d4edda;
+            border-left-color: #28a745;
+        }
         code {
             background: #f0f0f0;
             padding: 2px 6px;
@@ -82,12 +96,20 @@
             font-family: 'SF Mono', Monaco, monospace;
             font-size: 0.9em;
         }
-        .percent {
-            font-size: 0.85em;
-            color: #666;
-        }
         .better { color: #28a745; }
         .worse { color: #dc3545; }
+        .roadmap {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .roadmap h3 {
+            margin-top: 0;
+        }
+        .roadmap ul {
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
@@ -98,19 +120,26 @@
     </div>
 
     <h1>pg_textsearch vs System X</h1>
+    <p style="color: #666; margin-top: 0;">Development Progress Report</p>
 
     <div class="content">
+        <div class="snapshot-notice">
+            <strong>Snapshot in time:</strong> This comparison reflects pg_textsearch as of
+            January 2026. The project is under active development with performance improvements
+            shipping regularly. Check the <a href="./">benchmark dashboard</a> for the latest numbers.
+        </div>
+
         <p class="meta">
             <strong>Dataset:</strong> MS MARCO 8.8M passages |
             <strong>Date:</strong> 2026-01-10 |
             <strong>Commit:</strong> <a href="https://github.com/timescale/pg_textsearch/commit/3eb3a6f">3eb3a6f</a>
         </p>
 
-        <h2>Summary</h2>
+        <h2>Current Status</h2>
 
         <div class="summary-box">
             <div class="summary-card">
-                <h4>pg_textsearch strengths</h4>
+                <h4>pg_textsearch today</h4>
                 <ul>
                     <li>15% smaller index size</li>
                     <li>Faster on short queries (1-6 tokens)</li>
@@ -119,14 +148,24 @@
                 </ul>
             </div>
             <div class="summary-card systemx">
-                <h4>System X strengths</h4>
+                <h4>System X (baseline)</h4>
                 <ul>
-                    <li>3.8x faster index build</li>
+                    <li>3.8x faster index build (for now)</li>
                     <li>Faster on complex queries (7+ tokens)</li>
                     <li>More consistent tail latencies</li>
-                    <li>Tantivy-based engine</li>
+                    <li>Mature Tantivy engine</li>
                 </ul>
             </div>
+        </div>
+
+        <div class="roadmap">
+            <h3>Coming Soon</h3>
+            <ul>
+                <li><strong>Parallel index build</strong> - Will close the build time gap
+                    (<a href="https://github.com/timescale/pg_textsearch/pull/125">PR #125</a>)</li>
+                <li><strong>Long query optimization</strong> - Tuning BMW for 7+ token queries</li>
+                <li><strong>Tail latency improvements</strong> - Reducing p95/p99 variance</li>
+            </ul>
         </div>
 
         <h2>Index Size &amp; Build Time</h2>
@@ -158,11 +197,10 @@
             </tr>
         </table>
 
-        <div class="note info">
-            <strong>Index build parallelism:</strong> pg_textsearch currently builds indexes
-            single-threaded. Parallel index build is in development and expected to significantly
-            close this gap. See <a href="https://github.com/timescale/pg_textsearch/pull/125">PR #125</a>
-            for progress.
+        <div class="note progress">
+            <strong>In progress:</strong> Parallel index build
+            (<a href="https://github.com/timescale/pg_textsearch/pull/125">PR #125</a>)
+            will significantly reduce build time. Currently pg_textsearch builds single-threaded.
         </div>
 
         <h2>Query Latency (p50)</h2>
@@ -308,55 +346,31 @@
 
         <h2>Analysis</h2>
 
-        <h3>Why pg_textsearch wins on short queries</h3>
+        <h3>Short queries (1-6 tokens): pg_textsearch wins</h3>
         <p>
-            pg_textsearch uses Block-Max WAND (BMW) optimization which excels at
-            pruning non-competitive documents early. For short queries with few terms,
-            this aggressive pruning provides significant speedup. The smaller index
-            size (due to delta encoding + bitpacking compression) also means less I/O.
+            pg_textsearch's Block-Max WAND implementation with compressed posting lists
+            (delta encoding + bitpacking) excels at pruning non-competitive documents early.
+            The 15% smaller index size also reduces I/O overhead.
         </p>
 
-        <h3>Why System X wins on long queries</h3>
+        <h3>Long queries (7+ tokens): Work in progress</h3>
         <p>
-            Both pg_textsearch and System X (Tantivy) use the same Block-Max WAND
-            algorithm for top-k queries. The performance gap on longer queries is
-            likely due to implementation tuning rather than algorithmic differences.
-            As a newer implementation, pg_textsearch hasn't yet been fully optimized
-            for complex multi-term queries. This is an area for future improvement.
+            Both pg_textsearch and System X use the same Block-Max WAND algorithm.
+            The current performance gap on longer queries reflects implementation maturity,
+            not algorithmic limitations. This is an active optimization target.
         </p>
-
-        <h3>Recommendations</h3>
-        <ul>
-            <li>
-                <strong>Typical search workloads (1-5 tokens):</strong>
-                pg_textsearch provides better latency with smaller storage footprint
-            </li>
-            <li>
-                <strong>Complex queries or phrase search:</strong>
-                System X may be more suitable for advanced query patterns
-            </li>
-            <li>
-                <strong>Storage-constrained environments:</strong>
-                pg_textsearch's 15% smaller indexes can matter at scale
-            </li>
-            <li>
-                <strong>Fast index rebuilds needed:</strong>
-                System X's parallel build is currently faster (until pg_textsearch
-                adds parallel indexing)
-            </li>
-        </ul>
 
         <h2>Methodology</h2>
         <p>
-            Both extensions were benchmarked on the same GitHub Actions runner with
-            identical Postgres configuration. See <a href="methodology.html">full methodology</a>
+            Both extensions benchmarked on identical GitHub Actions runners with the same
+            Postgres configuration. See <a href="methodology.html">full methodology</a>
             for details.
         </p>
 
         <div class="note">
-            <strong>Fairness note:</strong> Both extensions use their default configurations.
-            Performance may vary with tuning. Results are from a single run on shared
-            infrastructure; expect ~10% variance between runs.
+            <strong>Note:</strong> Both extensions use default configurations.
+            Results are from a single run; expect ~10% variance between runs.
+            This page will be updated as optimizations land.
         </div>
     </div>
 </body>
