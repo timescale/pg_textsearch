@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pg_textsearch vs System X - Benchmark Comparison</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            line-height: 1.6;
+        }
+        h1 { color: #333; margin-bottom: 10px; }
+        h2 { color: #444; margin-top: 30px; border-bottom: 2px solid #ddd; padding-bottom: 8px; }
+        h3 { color: #555; margin-top: 20px; }
+        .nav { margin-bottom: 20px; }
+        .nav a { color: #0066cc; margin-right: 15px; }
+        .content {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px 12px;
+            text-align: left;
+        }
+        th { background: #f8f8f8; font-weight: 600; }
+        tr:nth-child(even) { background: #fafafa; }
+        .winner { background: #d4edda !important; font-weight: 600; }
+        .summary-box {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .summary-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #0066cc;
+        }
+        .summary-card.systemx {
+            border-left-color: #dc3545;
+        }
+        .summary-card h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .summary-card ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 12px 15px;
+            margin: 15px 0;
+        }
+        .note.info {
+            background: #cce5ff;
+            border-left-color: #0066cc;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.9em;
+        }
+        .percent {
+            font-size: 0.85em;
+            color: #666;
+        }
+        .better { color: #28a745; }
+        .worse { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="./">Dashboard</a>
+        <a href="methodology.html">Methodology</a>
+        <a href="profiles/">CPU Profiles</a>
+    </div>
+
+    <h1>pg_textsearch vs System X</h1>
+
+    <div class="content">
+        <p class="meta">
+            <strong>Dataset:</strong> MS MARCO 8.8M passages |
+            <strong>Date:</strong> 2026-01-10 |
+            <strong>Commit:</strong> <a href="https://github.com/timescale/pg_textsearch/commit/3eb3a6f">3eb3a6f</a>
+        </p>
+
+        <h2>Summary</h2>
+
+        <div class="summary-box">
+            <div class="summary-card">
+                <h4>pg_textsearch strengths</h4>
+                <ul>
+                    <li>15% smaller index size</li>
+                    <li>Faster on short queries (1-6 tokens)</li>
+                    <li>Better p95 latency for simple queries</li>
+                    <li>Native Postgres integration</li>
+                </ul>
+            </div>
+            <div class="summary-card systemx">
+                <h4>System X strengths</h4>
+                <ul>
+                    <li>3.8x faster index build</li>
+                    <li>Faster on complex queries (7+ tokens)</li>
+                    <li>More consistent tail latencies</li>
+                    <li>Tantivy-based engine</li>
+                </ul>
+            </div>
+        </div>
+
+        <h2>Index Size &amp; Build Time</h2>
+
+        <table>
+            <tr>
+                <th>Metric</th>
+                <th>pg_textsearch</th>
+                <th>System X</th>
+                <th>Difference</th>
+            </tr>
+            <tr>
+                <td>Index Size</td>
+                <td class="winner">1269 MB</td>
+                <td>1501 MB</td>
+                <td><span class="better">-15%</span></td>
+            </tr>
+            <tr>
+                <td>Build Time</td>
+                <td>517.8 sec</td>
+                <td class="winner">135.8 sec</td>
+                <td><span class="worse">+3.8x</span></td>
+            </tr>
+            <tr>
+                <td>Documents</td>
+                <td>8,841,770</td>
+                <td>8,841,823</td>
+                <td>-</td>
+            </tr>
+        </table>
+
+        <div class="note info">
+            <strong>Index build parallelism:</strong> pg_textsearch currently builds indexes
+            single-threaded. Parallel index build is in development and expected to significantly
+            close this gap. See <a href="https://github.com/timescale/pg_textsearch/pull/125">PR #125</a>
+            for progress.
+        </div>
+
+        <h2>Query Latency (p50)</h2>
+        <p>Median latency in milliseconds. Lower is better.</p>
+
+        <table>
+            <tr>
+                <th>Query Tokens</th>
+                <th>pg_textsearch</th>
+                <th>System X</th>
+                <th>Difference</th>
+            </tr>
+            <tr>
+                <td>1 token</td>
+                <td class="winner">12.34 ms</td>
+                <td>19.96 ms</td>
+                <td><span class="better">-38%</span></td>
+            </tr>
+            <tr>
+                <td>2 tokens</td>
+                <td class="winner">12.91 ms</td>
+                <td>18.92 ms</td>
+                <td><span class="better">-32%</span></td>
+            </tr>
+            <tr>
+                <td>3 tokens</td>
+                <td class="winner">15.72 ms</td>
+                <td>24.63 ms</td>
+                <td><span class="better">-36%</span></td>
+            </tr>
+            <tr>
+                <td>4 tokens</td>
+                <td class="winner">20.97 ms</td>
+                <td>26.03 ms</td>
+                <td><span class="better">-19%</span></td>
+            </tr>
+            <tr>
+                <td>5 tokens</td>
+                <td class="winner">27.50 ms</td>
+                <td>28.78 ms</td>
+                <td><span class="better">-4%</span></td>
+            </tr>
+            <tr>
+                <td>6 tokens</td>
+                <td class="winner">33.84 ms</td>
+                <td>36.13 ms</td>
+                <td><span class="better">-6%</span></td>
+            </tr>
+            <tr>
+                <td>7 tokens</td>
+                <td>43.41 ms</td>
+                <td class="winner">34.33 ms</td>
+                <td><span class="worse">+26%</span></td>
+            </tr>
+            <tr>
+                <td>8+ tokens</td>
+                <td>68.30 ms</td>
+                <td class="winner">41.74 ms</td>
+                <td><span class="worse">+64%</span></td>
+            </tr>
+        </table>
+
+        <h2>Query Latency (p95)</h2>
+        <p>95th percentile latency in milliseconds. Lower is better.</p>
+
+        <table>
+            <tr>
+                <th>Query Tokens</th>
+                <th>pg_textsearch</th>
+                <th>System X</th>
+                <th>Difference</th>
+            </tr>
+            <tr>
+                <td>1 token</td>
+                <td class="winner">15.13 ms</td>
+                <td>29.84 ms</td>
+                <td><span class="better">-49%</span></td>
+            </tr>
+            <tr>
+                <td>2 tokens</td>
+                <td class="winner">17.31 ms</td>
+                <td>34.89 ms</td>
+                <td><span class="better">-50%</span></td>
+            </tr>
+            <tr>
+                <td>3 tokens</td>
+                <td class="winner">28.82 ms</td>
+                <td>35.64 ms</td>
+                <td><span class="better">-19%</span></td>
+            </tr>
+            <tr>
+                <td>4 tokens</td>
+                <td>48.37 ms</td>
+                <td class="winner">37.63 ms</td>
+                <td><span class="worse">+29%</span></td>
+            </tr>
+            <tr>
+                <td>5 tokens</td>
+                <td>60.52 ms</td>
+                <td class="winner">40.18 ms</td>
+                <td><span class="worse">+51%</span></td>
+            </tr>
+            <tr>
+                <td>6 tokens</td>
+                <td>72.74 ms</td>
+                <td class="winner">50.21 ms</td>
+                <td><span class="worse">+45%</span></td>
+            </tr>
+            <tr>
+                <td>7 tokens</td>
+                <td>81.19 ms</td>
+                <td class="winner">57.60 ms</td>
+                <td><span class="worse">+41%</span></td>
+            </tr>
+            <tr>
+                <td>8+ tokens</td>
+                <td>129.47 ms</td>
+                <td class="winner">62.62 ms</td>
+                <td><span class="worse">+107%</span></td>
+            </tr>
+        </table>
+
+        <h2>Throughput</h2>
+        <p>Total time to execute 800 test queries sequentially.</p>
+
+        <table>
+            <tr>
+                <th>Metric</th>
+                <th>pg_textsearch</th>
+                <th>System X</th>
+            </tr>
+            <tr>
+                <td>Total time</td>
+                <td>27.07 sec</td>
+                <td class="winner">24.20 sec</td>
+            </tr>
+            <tr>
+                <td>Avg ms/query</td>
+                <td>33.84 ms</td>
+                <td class="winner">30.25 ms</td>
+            </tr>
+        </table>
+
+        <h2>Analysis</h2>
+
+        <h3>Why pg_textsearch wins on short queries</h3>
+        <p>
+            pg_textsearch uses Block-Max WAND (BMW) optimization which excels at
+            pruning non-competitive documents early. For short queries with few terms,
+            this aggressive pruning provides significant speedup. The smaller index
+            size (due to delta encoding + bitpacking compression) also means less I/O.
+        </p>
+
+        <h3>Why System X wins on long queries</h3>
+        <p>
+            System X is built on Tantivy, a mature Rust-based search engine with
+            highly optimized posting list intersection algorithms. For complex queries
+            with many terms, the cost of scanning more posting lists outweighs the
+            BMW pruning benefits, and Tantivy's optimized intersection code wins.
+        </p>
+
+        <h3>Recommendations</h3>
+        <ul>
+            <li>
+                <strong>Typical search workloads (1-5 tokens):</strong>
+                pg_textsearch provides better latency with smaller storage footprint
+            </li>
+            <li>
+                <strong>Complex queries or phrase search:</strong>
+                System X may be more suitable for advanced query patterns
+            </li>
+            <li>
+                <strong>Storage-constrained environments:</strong>
+                pg_textsearch's 15% smaller indexes can matter at scale
+            </li>
+            <li>
+                <strong>Fast index rebuilds needed:</strong>
+                System X's parallel build is currently faster (until pg_textsearch
+                adds parallel indexing)
+            </li>
+        </ul>
+
+        <h2>Methodology</h2>
+        <p>
+            Both extensions were benchmarked on the same GitHub Actions runner with
+            identical Postgres configuration. See <a href="methodology.html">full methodology</a>
+            for details.
+        </p>
+
+        <div class="note">
+            <strong>Fairness note:</strong> Both extensions use their default configurations.
+            Performance may vary with tuning. Results are from a single run on shared
+            infrastructure; expect ~10% variance between runs.
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Benchmark Methodology - pg_textsearch</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            line-height: 1.6;
+        }
+        h1 { color: #333; margin-bottom: 10px; }
+        h2 { color: #444; margin-top: 30px; border-bottom: 2px solid #ddd; padding-bottom: 8px; }
+        h3 { color: #555; margin-top: 20px; }
+        .nav { margin-bottom: 20px; }
+        .nav a { color: #0066cc; margin-right: 15px; }
+        .content {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px 12px;
+            text-align: left;
+        }
+        th { background: #f8f8f8; font-weight: 600; }
+        tr:nth-child(even) { background: #fafafa; }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.9em;
+        }
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+        .note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 12px 15px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="./">Dashboard</a>
+        <a href="comparison.html">System X Comparison</a>
+        <a href="profiles/">CPU Profiles</a>
+    </div>
+
+    <h1>Benchmark Methodology</h1>
+
+    <div class="content">
+        <h2>Overview</h2>
+        <p>
+            pg_textsearch benchmarks measure full-text search performance using real-world datasets.
+            Benchmarks run nightly on the <code>main</code> branch and on-demand for feature branches
+            via GitHub Actions.
+        </p>
+
+        <h2>Datasets</h2>
+
+        <h3>MS MARCO (Primary)</h3>
+        <p>
+            The <a href="https://microsoft.github.io/msmarco/">MS MARCO</a> passage ranking dataset
+            is our primary benchmark. It contains 8.8 million passages from web documents with
+            real search queries from Bing users.
+        </p>
+        <table>
+            <tr><th>Metric</th><th>Value</th></tr>
+            <tr><td>Documents</td><td>8,841,823</td></tr>
+            <tr><td>Average document length</td><td>~35 tokens</td></tr>
+            <tr><td>Test queries</td><td>800 (100 per token bucket)</td></tr>
+            <tr><td>Query token buckets</td><td>1, 2, 3, 4, 5, 6, 7, 8+</td></tr>
+        </table>
+
+        <h3>Wikipedia</h3>
+        <p>
+            Wikipedia article abstracts provide longer documents for testing scalability.
+            Available in 10K, 100K, 1M, and full (~6M) configurations.
+        </p>
+
+        <h3>Cranfield</h3>
+        <p>
+            The classic <a href="http://ir.dcs.gla.ac.uk/resources/test_collections/cran/">Cranfield collection</a>
+            (1,400 documents) is used for quick regression testing.
+        </p>
+
+        <h2>Environment</h2>
+
+        <h3>GitHub Actions Runner</h3>
+        <table>
+            <tr><th>Component</th><th>Specification</th></tr>
+            <tr><td>Platform</td><td>Ubuntu 24.04 (ubuntu-latest)</td></tr>
+            <tr><td>CPU</td><td>2-core AMD EPYC (GitHub-hosted)</td></tr>
+            <tr><td>Memory</td><td>7 GB RAM</td></tr>
+            <tr><td>Storage</td><td>~30 GB available after cleanup</td></tr>
+        </table>
+
+        <h3>Postgres Configuration</h3>
+        <pre><code>shared_buffers = 4GB
+maintenance_work_mem = 512MB
+work_mem = 256MB
+effective_cache_size = 6GB
+random_page_cost = 1.1</code></pre>
+
+        <h2>Metrics Collected</h2>
+
+        <h3>Index Build</h3>
+        <ul>
+            <li><strong>Build time</strong>: Wall-clock time to create the BM25 index</li>
+            <li><strong>Index size</strong>: On-disk size of the index (from <code>pg_relation_size</code>)</li>
+        </ul>
+
+        <h3>Query Latency</h3>
+        <p>
+            Queries are grouped by token count (1-8+). For each bucket, we run 100 queries
+            and report:
+        </p>
+        <ul>
+            <li><strong>p50</strong>: Median latency</li>
+            <li><strong>p95</strong>: 95th percentile latency</li>
+            <li><strong>p99</strong>: 99th percentile latency</li>
+            <li><strong>avg</strong>: Mean latency</li>
+        </ul>
+
+        <h3>Throughput</h3>
+        <p>
+            Total time to execute all 800 test queries sequentially, reported as
+            average milliseconds per query.
+        </p>
+
+        <h2>Benchmark Procedure</h2>
+
+        <ol>
+            <li><strong>Setup</strong>: Start fresh Postgres instance, create extension</li>
+            <li><strong>Load</strong>: Bulk load dataset using <code>\copy</code></li>
+            <li><strong>Index</strong>: Create BM25 index, force spill to segments</li>
+            <li><strong>Warmup</strong>: Run each query once to warm caches</li>
+            <li><strong>Measure</strong>: Run timed queries, collect statistics</li>
+            <li><strong>Report</strong>: Extract metrics, publish to dashboard</li>
+        </ol>
+
+        <div class="note">
+            <strong>Note:</strong> All queries use <code>LIMIT 10</code> to simulate
+            typical search result pages. The Block-Max WAND optimization is enabled
+            by default.
+        </div>
+
+        <h2>System X Comparison</h2>
+        <p>
+            We run identical benchmarks against System X (a competitive Postgres BM25 extension)
+            to provide context for our performance numbers. Both extensions:
+        </p>
+        <ul>
+            <li>Run on the same GitHub Actions runner</li>
+            <li>Use identical Postgres configuration</li>
+            <li>Process the same dataset and queries</li>
+            <li>Use their default configurations</li>
+        </ul>
+        <p>
+            See the <a href="comparison.html">detailed comparison</a> for latest results.
+        </p>
+
+        <h2>Reproducibility</h2>
+        <p>
+            All benchmark code is in the
+            <a href="https://github.com/timescale/pg_textsearch/tree/main/benchmarks">benchmarks/</a>
+            directory. To run locally:
+        </p>
+        <pre><code># MS MARCO benchmark
+cd benchmarks/datasets/msmarco
+./download.sh full
+psql -f load.sql
+
+# Or use the runner script
+./benchmarks/runner/run_benchmark.sh msmarco</code></pre>
+
+        <h2>Limitations</h2>
+        <ul>
+            <li>GitHub Actions runners have variable performance; expect ~10% variance</li>
+            <li>Single-threaded query execution (no concurrent load testing)</li>
+            <li>Cold start not measured (cache warmup before timing)</li>
+            <li>Network latency not included (local socket connection)</li>
+        </ul>
+    </div>
+</body>
+</html>
