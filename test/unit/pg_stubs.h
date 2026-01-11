@@ -1,7 +1,50 @@
 /*
  * pg_stubs.h - Minimal stubs for unit testing without PostgreSQL
  *
- * Provides just enough to compile and test pure computational functions.
+ * This file provides stub implementations of PostgreSQL types and functions,
+ * allowing pure computational code to be compiled and tested standalone.
+ *
+ * STUB CATEGORIES:
+ * ----------------
+ * 1. Basic types (uint8, uint32, etc.) - Direct C99 stdint mappings
+ * 2. Memory allocation (palloc, pfree) - Map to malloc/free
+ * 3. Assertions (Assert) - Map to standard assert()
+ * 4. Memory contexts - No-op stubs (most code doesn't need real contexts)
+ * 5. ItemPointer/CTID - Simplified struct for tuple identification
+ *
+ * ADDING NEW STUBS:
+ * -----------------
+ * When you want to test a new source file that uses PostgreSQL features:
+ *
+ * 1. Try compiling - the errors will tell you what's missing
+ * 2. Add minimal stubs here that satisfy the compiler
+ * 3. For complex features, consider if the function is really "testable"
+ *
+ * Example stubs you might add:
+ *
+ *   // Error logging - redirect to stderr
+ *   #define elog(level, ...) fprintf(stderr, __VA_ARGS__)
+ *   #define ereport(level, ...) fprintf(stderr, "error\n")
+ *
+ *   // String functions
+ *   #define pstrdup(s) strdup(s)
+ *
+ *   // Numeric types
+ *   typedef double float8;
+ *
+ *   // Buffer/page stubs (if testing buffer-aware code)
+ *   #define BLCKSZ 8192
+ *   typedef uint32 BlockNumber;
+ *
+ * WHAT NOT TO STUB:
+ * -----------------
+ * Some PostgreSQL features are too complex to stub meaningfully:
+ *   - Actual buffer manager operations (reading/writing pages)
+ *   - Lock manager
+ *   - Transaction management
+ *   - Catalog access
+ *
+ * Code using these should be tested via SQL regression tests instead.
  */
 #pragma once
 
@@ -13,7 +56,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Basic types */
+/*
+ * Basic PostgreSQL integer types
+ *
+ * PostgreSQL defines these in c.h. We map them to C99 stdint types.
+ * Add more as needed (e.g., int64 for 64-bit signed).
+ */
 typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef uint32_t uint32;
@@ -21,16 +69,37 @@ typedef int32_t int32;
 typedef int16_t int16;
 typedef float float4;
 
-/* Memory allocation - map to standard malloc/free */
+/*
+ * Memory allocation
+ *
+ * PostgreSQL uses palloc/pfree which allocate from memory contexts.
+ * For unit tests, we just use standard malloc/free.
+ *
+ * Note: This means memory allocated in tests won't be automatically
+ * freed on error like in PostgreSQL. Tests should explicitly free.
+ */
 #define palloc(size) malloc(size)
 #define palloc0(size) calloc(1, size)
 #define pfree(ptr) free(ptr)
 #define repalloc(ptr, size) realloc(ptr, size)
 
-/* Assertions */
+/*
+ * Assertions
+ *
+ * PostgreSQL's Assert() is only active in debug builds (USE_ASSERT_CHECKING).
+ * We always enable assertions in unit tests for safety.
+ */
 #define Assert(cond) assert(cond)
 
-/* Memory context stub - not really used in unit tests */
+/*
+ * Memory context stubs
+ *
+ * Most pure functions don't actually use memory contexts, but some headers
+ * reference them. These no-op stubs satisfy the compiler.
+ *
+ * If you need real context-switching behavior, you'd need more elaborate
+ * stubs or should use SQL-based tests instead.
+ */
 typedef void *MemoryContext;
 #define CurrentMemoryContext NULL
 static inline MemoryContext
@@ -40,7 +109,15 @@ MemoryContextSwitchTo(MemoryContext ctx)
 	return NULL;
 }
 
-/* ItemPointer stubs for CTID handling */
+/*
+ * ItemPointer (CTID) stubs
+ *
+ * ItemPointer identifies a tuple's physical location (block + offset).
+ * This simplified version is enough for testing posting list operations.
+ *
+ * Real PostgreSQL ItemPointerData has a more complex bit-packed layout,
+ * but this simplified struct works for testing comparison and storage.
+ */
 typedef struct ItemPointerData
 {
 	uint32 block;
@@ -75,7 +152,13 @@ ItemPointerCompare(const ItemPointer a, const ItemPointer b)
 	return 0;
 }
 
-/* Test framework macros */
+/*
+ * Test framework macros
+ *
+ * Simple test assertions and runner. Each test function returns 0 on success.
+ * The RUN_TEST macro tracks pass/fail counts using variables that must be
+ * declared in main(): int passed = 0, failed = 0, total = 0;
+ */
 #define TEST_ASSERT(cond, msg) \
 	do \
 	{ \
