@@ -592,8 +592,24 @@ static uint32 fsm_pages_reused = 0;
 static uint32 pages_extended   = 0;
 
 /*
+ * Flag to indicate we're in a parallel build context.
+ * When true, FSM is not safe to use because workers may have stale
+ * views of the relation size, causing "unexpected data beyond EOF" errors.
+ */
+static bool in_parallel_build = false;
+
+void
+tp_set_parallel_build_mode(bool enabled)
+{
+	in_parallel_build = enabled;
+}
+
+/*
  * Allocate a single page for segment.
  * First checks the free space map for recycled pages, then extends if needed.
+ *
+ * During parallel builds, FSM is skipped entirely because workers may see
+ * stale relation sizes, leading to "unexpected data beyond EOF" errors.
  */
 static BlockNumber
 allocate_segment_page(Relation index)
@@ -601,25 +617,50 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/* First, try to get a free page from FSM (recycled from compaction) */
-	block = GetFreeIndexPage(index);
-	if (block != InvalidBlockNumber)
+	/*
+	 * During parallel builds, skip FSM and extend directly.
+	 * FSM is unsafe in parallel context - see comments in
+	 * tp_segment_writer_allocate_page().
+	 */
+	if (!in_parallel_build)
 	{
-		/* Reuse a previously freed page */
-		buffer = ReadBuffer(index, block);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		/* Try to get a free page from FSM (recycled from compaction) */
+		block = GetFreeIndexPage(index);
+		if (block != InvalidBlockNumber)
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(index);
 
-		/* Initialize the recycled page */
-		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+			if (block >= nblocks)
+			{
+				/*
+				 * FSM returned a page beyond current relation size.
+				 * This can happen if FSM has stale entries. Skip it.
+				 */
+				elog(DEBUG1,
+					 "allocate_segment_page: FSM returned stale page %u "
+					 "(relation has %u blocks)",
+					 block,
+					 nblocks);
+			}
+			else
+			{
+				/* Reuse a previously freed page */
+				buffer = ReadBuffer(index, block);
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
+				/* Initialize the recycled page */
+				PageInit(BufferGetPage(buffer), BLCKSZ, 0);
 
-		fsm_pages_reused++;
-		return block;
+				MarkBufferDirty(buffer);
+				UnlockReleaseBuffer(buffer);
+
+				fsm_pages_reused++;
+				return block;
+			}
+		}
 	}
 
-	/* No free pages available, extend the relation */
+	/* No free pages available (or parallel build), extend the relation */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
@@ -686,34 +727,19 @@ static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 {
 	BlockNumber new_page;
-	Buffer		buffer;
+	Buffer		buf;
 
 	/* Ensure we have space in the pages array */
 	tp_segment_writer_grow_pages(writer);
 
 	/*
-	 * First, check FSM for recycled pages (freed during compaction).
-	 * This ensures pages freed during parallel build get reused immediately,
-	 * rather than accumulating in FSM while the pool is consumed.
+	 * During parallel builds (when pool is available), use the pool first.
+	 * FSM is not safe to use during parallel builds because workers may see
+	 * stale relation sizes, leading to "unexpected data beyond EOF" errors
+	 * when FSM returns pages that haven't been synced to all workers' views.
+	 *
+	 * For non-parallel builds, FSM is checked in allocate_segment_page().
 	 */
-	new_page = GetFreeIndexPage(writer->index);
-	if (new_page != InvalidBlockNumber)
-	{
-		/* Reuse a previously freed page */
-		buffer = ReadBuffer(writer->index, new_page);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
-
-		fsm_pages_reused++;
-
-		/* Add to our tracking array */
-		writer->pages[writer->pages_allocated] = new_page;
-		writer->pages_allocated++;
-
-		return new_page;
-	}
 
 	/* Try to get page from pre-allocated pool */
 	if (writer->page_pool != NULL && writer->pool_next != NULL)
@@ -729,11 +755,37 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 
 			return new_page;
 		}
-		/* Pool exhausted, fall through to extend */
-		elog(DEBUG1, "Page pool exhausted, extending relation");
+
+		/*
+		 * Pool exhausted during parallel build.
+		 * Extend the relation directly - DO NOT use FSM.
+		 *
+		 * FSM is unsafe during parallel builds because:
+		 * 1. Workers may have stale views of relation size
+		 * 2. FSM entries from compaction may reference pages beyond
+		 *    what a worker's cached smgr_targblock knows about
+		 * 3. RelationGetNumberOfBlocks can return a cached value that
+		 *    doesn't match the actual file size visible to the worker
+		 */
+		elog(DEBUG1, "Page pool exhausted, extending relation directly");
+
+		buf = ReadBufferExtended(
+				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		new_page = BufferGetBlockNumber(buf);
+		PageInit(BufferGetPage(buf), BLCKSZ, 0);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
+
+		pages_extended++;
+
+		/* Add to our tracking array */
+		writer->pages[writer->pages_allocated] = new_page;
+		writer->pages_allocated++;
+
+		return new_page;
 	}
 
-	/* No FSM pages and pool exhausted/unavailable - extend the relation */
+	/* Non-parallel path: use allocate_segment_page which checks FSM */
 	new_page = allocate_segment_page(writer->index);
 
 	/* Add to our tracking array */

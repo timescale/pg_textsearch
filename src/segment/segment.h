@@ -343,6 +343,9 @@ tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages);
 /* FSM statistics reporting (for debugging) */
 extern void tp_report_fsm_stats(void);
 
+/* Parallel build mode - when true, FSM is not used for page allocation */
+extern void tp_set_parallel_build_mode(bool enabled);
+
 /* Look up doc_freq for a term from segments (for operator scoring) */
 extern uint32 tp_segment_get_doc_freq(
 		Relation index, BlockNumber first_segment, const char *term);
