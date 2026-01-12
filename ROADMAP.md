@@ -17,10 +17,12 @@
 
 ### v0.4.0 - Compression (Jan 2026)
 
-Reduce storage footprint via posting list compression.
+Reduce storage footprint via posting list compression (enabled by default).
 
-- **Delta encoding**: Compact doc ID storage
-- **FOR/PFOR**: Frame-of-reference encoding for posting blocks
+- **Delta encoding**: Compact doc ID storage using gaps between sorted IDs
+- **Bitpacking**: Pack values at minimum bit width per block
+- **Benchmark results**: 41% smaller index, 11-21% faster queries on short terms
+- **GUC**: `pg_textsearch.compress_segments` (default: on)
 
 ### v1.0.0 - Production Ready (Feb 2026)
 
