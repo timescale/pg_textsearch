@@ -27,5 +27,6 @@ window.BRANCH_INFO = {
   "2c6e602d415b1eeaf2af0a39704a49faf11f0eab": "compression-phase1",
   "7c35333d63b364452d712aa405e7463691c40d0b": "main",
   "b5c04a7ab49812e54573104b3c1d178100608963": "compression-phase1",
-  "3eb3a6fb137a2fc8bc01da23ecb767d6f23fa08f": "compression-phase1"
+  "3eb3a6fb137a2fc8bc01da23ecb767d6f23fa08f": "compression-phase1",
+  "8f5bddeda45633e32fa749fef408047667f1e8ce": "parallel-build"
 };
