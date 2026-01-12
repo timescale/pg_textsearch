@@ -53,15 +53,15 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 /*
  * Expansion factor for estimating index pages from heap.
  *
- * BM25 indexes typically use 30-40% of heap pages. We use 0.6 as a reasonable
- * estimate that provides some safety margin. The pool also includes estimated
+ * BM25 indexes typically use 30-40% of heap pages. We use 0.8 to provide
+ * adequate safety margin for large datasets. The pool also includes estimated
  * page index pages.
  *
  * If the pool is exhausted during build, an error will be raised suggesting
  * to increase this factor. The unused pool pages are reclaimed via truncation
  * after the build completes.
  */
-#define TP_INDEX_EXPANSION_FACTOR 0.6
+#define TP_INDEX_EXPANSION_FACTOR 0.8
 
 /*
  * Worker build state with double-buffering support.
