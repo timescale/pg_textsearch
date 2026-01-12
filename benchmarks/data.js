@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768195469001,
+  "lastUpdate": 1768199096310,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -401,6 +401,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "564b18a6e2fa542e2e37abbf35be189ecbecd6b3",
+          "message": "Implement AMPROP_DISTANCE_ORDERABLE in amproperty (#133)\n\n## Summary\n\nThe `amproperty` callback lets access methods report capabilities that\nPostgres can't infer automatically. For properties like\n`distance_orderable`, Postgres returns NULL if the access method doesn't\nimplement the callback.\n\nSince BM25 indexes support ORDER BY via the `<@>` operator, we should\nreport `distance_orderable = true`. This improves reporting of index\ncapabilities through tools like pgAdmin.\n\nFixes #103\n\n## Testing\nAll existing regression tests pass.",
+          "timestamp": "2026-01-12T03:23:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/564b18a6e2fa542e2e37abbf35be189ecbecd6b3"
+        },
+        "date": 1768199095075,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 285.158,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.33,
             "unit": "ms"
           },
           {
