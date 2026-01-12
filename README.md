@@ -10,7 +10,7 @@ Modern ranked text search for Postgres.
 - BM25 ranking with configurable parameters (k1, b)
 - Works with Postgres text search configurations (english, french, german, etc.)
 - Supports partitioned tables
-- Goal: state-of-the-art performance and scalability
+- Best in class performance and scalability
 
 🚀 **Status**: v0.4.0-dev - Query performance is production-ready. Index compression
 and parallel index builds are coming soon. See [ROADMAP.md](ROADMAP.md) for details.
