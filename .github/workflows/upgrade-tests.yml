@@ -24,11 +24,11 @@ jobs:
       matrix:
         pg_version: [17, 18]
         # Test upgrades from compatible releases only.
-        # Note: 0.1.0 and earlier are not upgrade-compatible due to:
-        #   - Metapage version change (v4 -> v5)
-        #   - Shared memory structure size changes
-        # Users on 0.1.0 must recreate indexes after upgrading.
-        old_version: ['0.2.0']
+        # Note: v0.4.0 introduced segment format v3 (compression), which is
+        # incompatible with v0.3.0 and earlier. Users must recreate indexes.
+        # When a future release maintains the same segment format, add that
+        # version here (e.g., when releasing 0.5.0, add '0.4.0' to this list).
+        old_version: []
 
     steps:
     - name: Checkout current code
@@ -249,7 +249,9 @@ jobs:
       matrix:
         pg_version: [17]
         # Old versions with incompatible on-disk format
-        old_version: ['0.1.0']
+        # - 0.1.0: Metapage v4→v5, shmem size change
+        # - 0.2.0, 0.3.0: Segment format v2→v3 (compression in v0.4.0)
+        old_version: ['0.1.0', '0.2.0', '0.3.0']
 
     steps:
     - name: Checkout current code

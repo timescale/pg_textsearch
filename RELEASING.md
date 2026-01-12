@@ -171,6 +171,8 @@ changes that require index recreation or server restart:
 
 | From Version | To Version | Compatible? | Notes |
 |--------------|------------|-------------|-------|
+| 0.3.0 | 0.4.0 | ❌ No | Segment format v2→v3 for compression |
+| 0.2.0 | 0.4.0 | ❌ No | Segment format v2→v3 |
 | 0.2.0 | 0.3.0 | ✅ Yes | Direct upgrade works |
 | 0.1.0 | 0.3.0 | ❌ No | Metapage v4→v5, shmem size change |
 | < 0.1.0 | 0.3.0 | ❌ No | Multiple breaking changes |

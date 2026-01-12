@@ -17,6 +17,12 @@
 - Fixed 'too many LWLocks taken' error on partitioned tables
 - Fixed Coverity static analysis issues
 
+### Breaking Changes
+
+- **Segment format v3**: Indexes created with v0.3.0 or earlier must be
+  recreated after upgrading to v0.4.0. Use `REINDEX INDEX index_name` or
+  drop and recreate the index.
+
 ## v0.3.0
 
 ### New Features
