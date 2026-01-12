@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.4.0
+
+### New Features
+
+- **Segment block compression**: LZ4 compression for posting list blocks,
+  reducing index size
+
+### Improvements
+
+- Coverity static analysis integration for detecting code quality issues
+- Implement AMPROP_DISTANCE_ORDERABLE in amproperty for better planner support
+
+### Bug Fixes
+
+- Fixed 'too many LWLocks taken' error on partitioned tables
+- Fixed Coverity static analysis issues
+
+## v0.3.0
+
+### New Features
+
+- **Block-Max WAND optimization**: 4x faster top-k queries using block-level
+  upper bounds to skip non-contributing blocks
+
+### Improvements
+
+- Added code coverage workflow with Codecov integration
+- Added segment integrity tests
+- Added nightly stress tests with memory leak detection
+- Added competitive benchmarks comparing pg_textsearch to other search engines
+- Code consolidation and refactoring for better maintainability
+
+### Bug Fixes
+
+- Fixed memory leaks by using private DSA for index builds
+- Fixed bm25query varlena detoasting for binary I/O and scoring
+
 ## v0.2.0
 
 ### New Features

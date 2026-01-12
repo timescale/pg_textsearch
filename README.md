@@ -12,8 +12,8 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-🚀 **Status**: v0.4.0-dev - Query performance is production-ready. Index compression
-is here; parallel index builds coming later in January 2026. See [ROADMAP.md](ROADMAP.md) for details.
+🚀 **Status**: v0.4.0 - Query performance is production-ready. Index compression
+is here; parallel index builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
 
 ![Tapir and Friends](images/tapir_and_friends_v0.4.0.png)
 

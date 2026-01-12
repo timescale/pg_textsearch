@@ -1,4 +1,4 @@
--- pg_textsearch extension version 0.4.0-dev
+-- pg_textsearch extension version 0.4.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
