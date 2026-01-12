@@ -181,7 +181,7 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
 -- Display version info
 DO $$
 BEGIN
-    RAISE INFO 'pg_textsearch v0.4.0-dev installed';
+    RAISE INFO 'pg_textsearch v0.4.0 installed';
 END
 $$;
 

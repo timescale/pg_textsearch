@@ -2,7 +2,7 @@
 -- Tests the top-k optimization for both single-term and multi-term queries
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.4.0-dev installed
+INFO:  pg_textsearch v0.4.0 installed
 -- ============================================================
 -- SECTION 1: Basic BMW correctness
 -- ============================================================

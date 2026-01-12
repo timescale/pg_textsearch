@@ -9,7 +9,7 @@
 -- - Document length encoding errors
 -- - Term frequency encoding errors
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.0-dev installed
+INFO:  pg_textsearch v0.4.0 installed
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;
 -- Create table with enough documents to be meaningful
