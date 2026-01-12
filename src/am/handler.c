@@ -20,6 +20,33 @@
 extern relopt_kind tp_relopt_kind;
 
 /*
+ * Report index properties for pg_index_column_has_property() etc.
+ */
+static bool
+tp_property(
+		Oid				index_oid,
+		int				attno,
+		IndexAMProperty prop,
+		const char	   *propname,
+		bool		   *res,
+		bool		   *isnull)
+{
+	(void)index_oid;
+	(void)attno;
+	(void)propname;
+	(void)isnull;
+
+	switch (prop)
+	{
+	case AMPROP_DISTANCE_ORDERABLE:
+		*res = true;
+		return true;
+	default:
+		return false; /* Let core handle other properties */
+	}
+}
+
+/*
  * Access method handler - returns IndexAmRoutine with function pointers
  */
 PG_FUNCTION_INFO_V1(tp_handler);
@@ -71,7 +98,7 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->amcanreturn		= NULL;
 	amroutine->amcostestimate	= tp_costestimate;
 	amroutine->amoptions		= tp_options;
-	amroutine->amproperty		= NULL;				 /* No property function */
+	amroutine->amproperty		= tp_property;
 	amroutine->ambuildphasename = tp_buildphasename; /* No build phase names */
 	amroutine->amvalidate		= tp_validate;
 	amroutine->amadjustmembers	= NULL; /* No member adjustment */
