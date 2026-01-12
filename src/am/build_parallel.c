@@ -431,12 +431,16 @@ tp_build_parallel(
 				 unused);
 
 			/* Truncate the relation to reclaim unused space */
+#if PG_VERSION_NUM >= 180000
 			smgrtruncate(
 					RelationGetSmgr(index),
 					&forknum,
 					1,
 					&old_nblocks,
 					&truncate_to);
+#else
+			smgrtruncate(RelationGetSmgr(index), &forknum, 1, &truncate_to);
+#endif
 
 			/* Invalidate relation cache to pick up new size */
 			CacheInvalidateRelcache(index);
