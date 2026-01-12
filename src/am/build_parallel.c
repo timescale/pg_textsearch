@@ -53,15 +53,15 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 /*
  * Expansion factor for estimating index pages from heap.
  *
- * BM25 indexes typically use 30-40% of heap pages. We use 0.5 as a reasonable
- * estimate that balances space efficiency with safety. The pool also includes
- * estimated page index pages (about 0.05% overhead).
+ * BM25 indexes typically use 30-40% of heap pages. We use 0.6 as a reasonable
+ * estimate that provides some safety margin. The pool also includes estimated
+ * page index pages.
  *
  * If the pool is exhausted during build, an error will be raised suggesting
  * to increase this factor. The unused pool pages are reclaimed via truncation
  * after the build completes.
  */
-#define TP_INDEX_EXPANSION_FACTOR 0.5
+#define TP_INDEX_EXPANSION_FACTOR 0.6
 
 /*
  * Worker build state with double-buffering support.
@@ -300,22 +300,29 @@ tp_build_parallel(
 	 * All workers share a single pool for better space efficiency.
 	 *
 	 * Also include estimated page index pages. Each segment needs
-	 * ceil(data_pages / entries_per_page) page index pages.
-	 * We estimate conservatively assuming all data pages in one segment.
+	 * ceil(segment_pages / entries_per_page) page index pages.
+	 * With multiple workers creating multiple segments (due to spills),
+	 * we estimate conservatively: assume each worker creates ~10 segments.
 	 */
 	heap_pages = RelationGetNumberOfBlocks(heap);
 	{
 		int data_pages;
 		int entries_per_page;
 		int page_index_pages;
+		int estimated_segments;
 
 		data_pages = (int)(heap_pages * TP_INDEX_EXPANSION_FACTOR) +
 					 TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
-		entries_per_page = tp_page_index_entries_per_page();
-		page_index_pages = (data_pages + entries_per_page - 1) /
-						   entries_per_page;
-		/* Add extra buffer for multiple segments (2x) */
-		page_index_pages *= 2;
+		entries_per_page   = tp_page_index_entries_per_page();
+		estimated_segments = (nworkers + 1) * 10; /* ~10 segments per worker */
+
+		/*
+		 * Each segment needs at least 1 page index page.
+		 * Plus pages for the actual data page mapping.
+		 */
+		page_index_pages = estimated_segments +
+						   (data_pages + entries_per_page - 1) /
+								   entries_per_page;
 
 		total_pool_pages = data_pages + page_index_pages;
 	}
@@ -655,6 +662,14 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	/* Open relations */
 	heap  = table_open(shared->heaprelid, AccessShareLock);
 	index = index_open(shared->indexrelid, RowExclusiveLock);
+
+	/*
+	 * Force smgr to refresh its cached nblocks. The leader pre-allocated pool
+	 * pages which extended the relation, but this worker's smgr cache is
+	 * stale. Without this, ReadBuffer can fail with "unexpected data beyond
+	 * EOF".
+	 */
+	smgrnblocks(RelationGetSmgr(index), MAIN_FORKNUM);
 
 	/* Enable parallel build mode - disables FSM for page allocation */
 	tp_set_parallel_build_mode(true);
