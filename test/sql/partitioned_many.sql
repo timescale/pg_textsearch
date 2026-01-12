@@ -1,0 +1,49 @@
+-- Test BM25 index creation on partitioned table with many partitions
+-- This tests for the "too many LWLocks taken" error that occurs when
+-- creating indexes on tables with many partitions containing data.
+--
+-- The bug triggers during document processing when per-index locks accumulate.
+-- With 200 partitions and data, the old code would exceed MAX_SIMUL_LWLOCKS.
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+-- Create a partitioned table with 200 partitions
+-- (200 is enough to trigger the bug - old limit was ~142 partitions)
+CREATE TABLE docs_many_parts (
+    id serial,
+    content text,
+    category int
+) PARTITION BY RANGE (category);
+
+-- Create 200 range partitions
+DO $$
+DECLARE
+    i int;
+BEGIN
+    FOR i IN 0..199 LOOP
+        EXECUTE format(
+            'CREATE TABLE docs_many_parts_%s PARTITION OF docs_many_parts
+             FOR VALUES FROM (%s) TO (%s)',
+            i, i, i + 1
+        );
+    END LOOP;
+END $$;
+
+-- Insert one row per partition - data is required to trigger the bug
+-- (the lock is acquired during document processing, not index creation)
+INSERT INTO docs_many_parts (content, category)
+SELECT 'test document ' || i, i FROM generate_series(0, 199) AS i;
+
+-- This should not fail with "too many LWLocks taken"
+-- Previously failed at around partition 142 when documents were processed
+CREATE INDEX docs_many_parts_idx ON docs_many_parts
+    USING bm25(content) WITH (text_config='english');
+
+-- Verify all 200 partition indexes were created
+SELECT COUNT(*) AS partition_index_count
+FROM pg_indexes
+WHERE indexname LIKE 'docs_many_parts_%_content_idx';
+
+-- Clean up
+DROP TABLE docs_many_parts CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

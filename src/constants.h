@@ -66,12 +66,22 @@
 /*
  * Fixed LWLock tranche IDs.
  * These must be consistent across all backends to allow DSA attachment.
- * We use high numbers to avoid conflicts with core PostgreSQL tranches.
+ * We use high numbers (1001+) to avoid conflicts with core PostgreSQL
+ * tranches.
+ *
+ * Using fixed tranche IDs is critical for supporting large numbers of indexes
+ * (e.g., partitioned tables with 500+ partitions). If we called
+ * LWLockNewTrancheId() for each index, we would quickly exhaust the available
+ * tranche IDs and get "too many LWLocks taken" errors.
  */
 #define TP_TRANCHE_STRING	   1001
 #define TP_TRANCHE_POSTING	   1002
 #define TP_TRANCHE_CORPUS	   1003
 #define TP_TRANCHE_DOC_LENGTHS 1004
+#define TP_TRANCHE_INDEX_LOCK  1005
+#define TP_TRANCHE_BUILD_DSA   1006
+#define TP_TRANCHE_GLOBAL_DSA  1007
+#define TP_TRANCHE_REGISTRY	   1008
 
 /*
  * Global GUC variables declared in mod.c

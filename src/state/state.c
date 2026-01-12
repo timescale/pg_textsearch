@@ -232,8 +232,12 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->total_len	 = 0;
 	shared_state->idf_sum	 = 0.0;
 
-	/* Initialize the per-index LWLock */
-	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
+	/*
+	 * Initialize the per-index LWLock using a fixed tranche ID.
+	 * Using a fixed ID avoids exhausting tranche IDs when creating many
+	 * indexes (e.g., partitioned tables with 500+ partitions).
+	 */
+	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
@@ -319,7 +323,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	dsa_pointer			  memtable_dp;
 	LocalStateCacheEntry *entry;
 	bool				  found;
-	int					  tranche_id;
 
 	/* Get the global DSA for shared state allocation */
 	global_dsa = tp_registry_get_dsa();
@@ -343,8 +346,12 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 
-	/* Initialize per-index LWLock */
-	LWLockInitialize(&shared_state->lock, LWLockNewTrancheId());
+	/*
+	 * Initialize per-index LWLock using a fixed tranche ID.
+	 * Using a fixed ID avoids exhausting tranche IDs when creating many
+	 * indexes (e.g., partitioned tables with 500+ partitions).
+	 */
+	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 
 	/* Check if index already registered (rebuild case) */
 	if (tp_registry_lookup(index_oid) != NULL)
@@ -366,11 +373,11 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * This DSA is not registered globally - only this backend knows about it.
 	 * It will be destroyed and recreated on each spill for perfect
 	 * memory reclamation.
+	 *
+	 * Use a fixed tranche ID to avoid exhausting tranche IDs when creating
+	 * many indexes (e.g., partitioned tables with 500+ partitions).
 	 */
-	tranche_id = LWLockNewTrancheId();
-	LWLockRegisterTranche(tranche_id, "pg_textsearch Build DSA");
-
-	private_dsa = dsa_create(tranche_id);
+	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
 	if (!private_dsa)
 		elog(ERROR, "Failed to create private DSA for index build");
 
@@ -428,7 +435,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 	dsa_area   *new_dsa;
 	TpMemtable *new_memtable;
 	dsa_pointer memtable_dp;
-	int			tranche_id;
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
@@ -443,11 +449,12 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 	if (local_state->dsa)
 		dsa_detach(local_state->dsa);
 
-	/* Create fresh private DSA */
-	tranche_id = LWLockNewTrancheId();
-	LWLockRegisterTranche(tranche_id, "pg_textsearch Build DSA");
-
-	new_dsa = dsa_create(tranche_id);
+	/*
+	 * Create fresh private DSA using fixed tranche ID.
+	 * Using a fixed ID avoids exhausting tranche IDs when creating many
+	 * indexes (e.g., partitioned tables with 500+ partitions).
+	 */
+	new_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
 	if (!new_dsa)
 		elog(ERROR, "Failed to recreate private DSA for build");
 

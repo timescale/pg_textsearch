@@ -19,10 +19,13 @@
 #include "state/state.h"
 
 /*
- * LWLock tranche ID for the registry dshash.
- * Uses LWTRANCHE_FIRST_USER_DEFINED + 1 to avoid conflict with string table.
+ * LWLock tranche ID for the registry dshash is defined in constants.h
+ * as TP_TRANCHE_REGISTRY. We use fixed tranche IDs to avoid exhausting
+ * tranche IDs when creating many indexes (e.g., partitioned tables with
+ * 500+ partitions).
  */
-#define TP_REGISTRY_HASH_TRANCHE_ID (LWTRANCHE_FIRST_USER_DEFINED + 1)
+#include "constants.h"
+#define TP_REGISTRY_HASH_TRANCHE_ID TP_TRANCHE_REGISTRY
 
 /*
  * Registry entry stored in dshash

@@ -136,8 +136,12 @@ tp_registry_shmem_startup(void)
 		/* First time initialization */
 		memset(tapir_registry, 0, sizeof(TpGlobalRegistry));
 
-		/* Initialize the registry lock */
-		LWLockInitialize(&tapir_registry->lock, LWLockNewTrancheId());
+		/*
+		 * Initialize the registry lock using fixed tranche ID.
+		 * Using a fixed ID avoids exhausting tranche IDs when creating many
+		 * indexes (e.g., partitioned tables with 500+ partitions).
+		 */
+		LWLockInitialize(&tapir_registry->lock, TP_TRANCHE_REGISTRY);
 
 		/* Initialize handles as invalid - DSA/dshash created on first use */
 		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
@@ -179,14 +183,15 @@ tp_registry_get_dsa(void)
 		/* First backend - create the DSA */
 		MemoryContext oldcontext;
 		dshash_table *registry_hash;
-		int			  tranche_id = LWLockNewTrancheId();
 
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* Register the tranche for LWLock debugging/monitoring */
-		LWLockRegisterTranche(tranche_id, "pg_textsearch DSA");
-
-		tapir_dsa = dsa_create(tranche_id);
+		/*
+		 * Create DSA using fixed tranche ID. Using a fixed ID avoids
+		 * exhausting tranche IDs when creating many indexes (e.g.,
+		 * partitioned tables with 500+ partitions).
+		 */
+		tapir_dsa = dsa_create(TP_TRANCHE_GLOBAL_DSA);
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)

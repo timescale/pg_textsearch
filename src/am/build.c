@@ -899,6 +899,14 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 
 	/*
+	 * Release the per-index lock before finalizing.
+	 * This is critical for partitioned tables where all partition indexes
+	 * are built in a single transaction - without this, locks would accumulate
+	 * and eventually hit the MAX_SIMUL_LWLOCKS limit (~200 locks).
+	 */
+	tp_release_index_lock(index_state);
+
+	/*
 	 * Finalize build mode: destroy private DSA and transition to global DSA.
 	 * This must be done before returning, otherwise queries will try to use
 	 * the private DSA which becomes invalid after the build transaction ends.
