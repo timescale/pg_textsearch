@@ -51,13 +51,19 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 
 /*
  * Expansion factor for estimating index pages from heap.
- * Text search indexes are typically 20-25% of heap size. During parallel
- * builds we need headroom for multiple uncompacted segments (up to
- * segments_per_level) plus compaction overhead (new segment written while
- * old segments still exist). A factor of 0.3 provides sufficient space
- * for typical workloads. Unused pages are reclaimed to FSM after build.
+ *
+ * BM25 indexes typically use 30-40% of heap pages. However, during parallel
+ * builds we use 1.0 because:
+ * 1. ALL pages must come from the pre-allocated pool - FSM is unsafe in
+ *    parallel context (workers have stale views of relation size)
+ * 2. Relation extensions during build may not be visible to all workers
+ * 3. Page index writing also needs pool pages but currently allocates
+ *    directly (TODO: fix this to use lower expansion factor)
+ *
+ * The oversized pool pages are reclaimed to FSM after build completes.
+ * A subsequent REINDEX will produce a properly-sized index.
  */
-#define TP_INDEX_EXPANSION_FACTOR 0.3
+#define TP_INDEX_EXPANSION_FACTOR 1.0
 
 /*
  * Worker build state with double-buffering support.
@@ -367,6 +373,15 @@ tp_build_parallel(
 	/*
 	 * Reclaim unused pages from the pre-allocated pool.
 	 * Pages beyond shared_pool_next were never used by any worker.
+	 * We mark them as free in FSM for future reuse.
+	 *
+	 * NOTE: We don't truncate the relation here because:
+	 * 1. Pool pages may not be at the very end (other allocations happen)
+	 * 2. Multi-segment files require careful handling
+	 * 3. The unused pages will be reused on subsequent index builds
+	 *
+	 * If the index size needs to be reduced, use REINDEX which rebuilds
+	 * the index from scratch with proper sizing.
 	 */
 	{
 		uint32		 pool_used = pg_atomic_read_u32(&shared->shared_pool_next);
@@ -599,6 +614,9 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	heap  = table_open(shared->heaprelid, AccessShareLock);
 	index = index_open(shared->indexrelid, RowExclusiveLock);
 
+	/* Enable parallel build mode - disables FSM for page allocation */
+	tp_set_parallel_build_mode(true);
+
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);
 
@@ -716,6 +734,9 @@ tp_leader_participate(
 		 "Leader participating as worker %d, attnum=%d",
 		 worker_id,
 		 shared->attnum);
+
+	/* Enable parallel build mode - disables FSM for page allocation */
+	tp_set_parallel_build_mode(true);
 
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);
@@ -1465,20 +1486,14 @@ tp_pool_get_page(
 		return block;
 	}
 
-	/* Pool exhausted - mark and fall back */
+	/* Pool exhausted */
 	pg_atomic_write_u32(&shared->pool_exhausted, 1);
 
-	/* Extend relation */
-	{
-		Buffer buffer;
+	elog(ERROR,
+		 "Parallel build page pool exhausted (used all %d pages). "
+		 "Increase TP_INDEX_EXPANSION_FACTOR to fix this issue.",
+		 shared->total_pool_pages);
 
-		buffer = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		block = BufferGetBlockNumber(buffer);
-		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
-
-		return block;
-	}
+	/* Not reached */
+	return InvalidBlockNumber;
 }
