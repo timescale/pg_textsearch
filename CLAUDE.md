@@ -218,6 +218,40 @@ GitHub Actions workflows:
 - `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
   returns number of entries spilled
 
+## Parallel Index Build
+
+Parallel index build uses multiple workers to speed up CREATE INDEX on large
+tables.
+
+### Requirements
+
+- Table must have >= 100,000 estimated rows (configurable via
+  `TP_MIN_PARALLEL_TUPLES`)
+- `max_parallel_maintenance_workers` must be > 0
+- Workers are automatically allocated based on table statistics
+
+### How It Works
+
+1. Leader pre-allocates a page pool for all workers to share
+2. Workers scan table in parallel, each building local memtables
+3. When memtables fill, workers spill to disk segments using pool pages
+4. Page index pages also come from the pool (prevents smgr cache issues)
+5. After all workers finish, unused pool pages are truncated
+6. Worker segment chains are linked into L0 and compacted if needed
+
+### Configuration
+
+| GUC | Description | Default |
+|-----|-------------|---------|
+| `max_parallel_maintenance_workers` | Max workers for parallel operations | 2 |
+
+### Limitations
+
+- Postgres may launch fewer workers than requested for smaller tables
+- Currently uses expansion factor 0.5 (index size ~50% of heap estimate)
+- If pool is exhausted, build fails with an error suggesting to increase
+  expansion factor
+
 ## Important Notes
 
 ### Concurrency Safety
