@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768199100400,
+  "lastUpdate": 1768250491661,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -438,6 +438,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "28b0b96866b20e1f3851df2737735347cecc5ce6",
+          "message": "Fix parallel build pool exhaustion and smgr cache issues\n\n- Increase expansion factor from 0.5 to 0.6 for safety margin\n- Improve page index estimation: account for ~10 segments per worker\n- Add smgrnblocks() call in worker init to refresh stale smgr cache\n  This fixes \"unexpected data beyond EOF\" errors in parallel workers",
+          "timestamp": "2026-01-12T20:30:11Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/28b0b96866b20e1f3851df2737735347cecc5ce6"
+        },
+        "date": 1768250490384,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 258.388,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.4,
             "unit": "ms"
           },
           {
