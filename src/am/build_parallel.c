@@ -22,6 +22,7 @@
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/guc.h>
+#include <utils/inval.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
@@ -52,18 +53,15 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 /*
  * Expansion factor for estimating index pages from heap.
  *
- * BM25 indexes typically use 30-40% of heap pages. However, during parallel
- * builds we use 1.0 because:
- * 1. ALL pages must come from the pre-allocated pool - FSM is unsafe in
- *    parallel context (workers have stale views of relation size)
- * 2. Relation extensions during build may not be visible to all workers
- * 3. Page index writing also needs pool pages but currently allocates
- *    directly (TODO: fix this to use lower expansion factor)
+ * BM25 indexes typically use 30-40% of heap pages. We use 0.5 as a reasonable
+ * estimate that balances space efficiency with safety. The pool also includes
+ * estimated page index pages (about 0.05% overhead).
  *
- * The oversized pool pages are reclaimed to FSM after build completes.
- * A subsequent REINDEX will produce a properly-sized index.
+ * If the pool is exhausted during build, an error will be raised suggesting
+ * to increase this factor. The unused pool pages are reclaimed via truncation
+ * after the build completes.
  */
-#define TP_INDEX_EXPANSION_FACTOR 1.0
+#define TP_INDEX_EXPANSION_FACTOR 0.5
 
 /*
  * Worker build state with double-buffering support.
@@ -300,10 +298,27 @@ tp_build_parallel(
 	 * Estimate total pages needed for index.
 	 * Use heap size * expansion factor + minimum per worker.
 	 * All workers share a single pool for better space efficiency.
+	 *
+	 * Also include estimated page index pages. Each segment needs
+	 * ceil(data_pages / entries_per_page) page index pages.
+	 * We estimate conservatively assuming all data pages in one segment.
 	 */
-	heap_pages		 = RelationGetNumberOfBlocks(heap);
-	total_pool_pages = (int)(heap_pages * TP_INDEX_EXPANSION_FACTOR) +
-					   TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
+	heap_pages = RelationGetNumberOfBlocks(heap);
+	{
+		int data_pages;
+		int entries_per_page;
+		int page_index_pages;
+
+		data_pages = (int)(heap_pages * TP_INDEX_EXPANSION_FACTOR) +
+					 TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
+		entries_per_page = tp_page_index_entries_per_page();
+		page_index_pages = (data_pages + entries_per_page - 1) /
+						   entries_per_page;
+		/* Add extra buffer for multiple segments (2x) */
+		page_index_pages *= 2;
+
+		total_pool_pages = data_pages + page_index_pages;
+	}
 
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
@@ -373,41 +388,64 @@ tp_build_parallel(
 	/*
 	 * Reclaim unused pages from the pre-allocated pool.
 	 * Pages beyond shared_pool_next were never used by any worker.
-	 * We mark them as free in FSM for future reuse.
 	 *
-	 * NOTE: We don't truncate the relation here because:
-	 * 1. Pool pages may not be at the very end (other allocations happen)
-	 * 2. Multi-segment files require careful handling
-	 * 3. The unused pages will be reused on subsequent index builds
+	 * Now that all allocations (including page index) come from the pool,
+	 * unused pages are at the end of the relation. We can safely truncate
+	 * to reclaim the space immediately.
 	 *
-	 * If the index size needs to be reduced, use REINDEX which rebuilds
-	 * the index from scratch with proper sizing.
+	 * Pool pages are allocated contiguously via P_NEW, so:
+	 *   pool[0] = first_pool_block (after metapage)
+	 *   pool[i] = first_pool_block + i
+	 *   unused pages = pool[pool_used] to pool[pool_total-1]
+	 *
+	 * The truncation point is pool[pool_used-1] + 1, which equals
+	 * first_pool_block + pool_used = pool[0] + pool_used.
 	 */
 	{
 		uint32		 pool_used = pg_atomic_read_u32(&shared->shared_pool_next);
 		uint32		 pool_total = shared->total_pool_pages;
 		BlockNumber *pool		= TpParallelPagePool(shared);
 
-		if (pool_used < pool_total)
+		if (pool_used < pool_total && pool_used > 0)
 		{
-			uint32 unused = pool_total - pool_used;
-			uint32 i;
+			BlockNumber truncate_to;
+			BlockNumber old_nblocks;
+			uint32		unused	= pool_total - pool_used;
+			ForkNumber	forknum = MAIN_FORKNUM;
+
+			/*
+			 * Truncate to just after the last used page.
+			 * pool[0] is first pool block; pool[pool_used-1] is last used.
+			 * Keep pool[0] + pool_used blocks total.
+			 */
+			truncate_to = pool[0] + pool_used;
+			old_nblocks = RelationGetNumberOfBlocks(index);
 
 			elog(DEBUG1,
-				 "Reclaiming %u unused pool pages (used %u of %u)",
-				 unused,
+				 "Truncating index: used %u of %u pool pages, "
+				 "truncating from %u to %u blocks (reclaiming %u pages)",
 				 pool_used,
-				 pool_total);
+				 pool_total,
+				 old_nblocks,
+				 truncate_to,
+				 unused);
 
-			for (i = pool_used; i < pool_total; i++)
-			{
-				RecordFreeIndexPage(index, pool[i]);
-			}
+			/* Truncate the relation to reclaim unused space */
+			smgrtruncate(
+					RelationGetSmgr(index),
+					&forknum,
+					1,
+					&old_nblocks,
+					&truncate_to);
 
-			/* Update FSM upper levels so freed pages are findable */
-			IndexFreeSpaceMapVacuum(index);
+			/* Invalidate relation cache to pick up new size */
+			CacheInvalidateRelcache(index);
 
-			elog(DEBUG1, "Reclaimed %u pool pages to FSM", unused);
+			elog(DEBUG1, "Truncated index, reclaimed %u pages", unused);
+		}
+		else if (pool_used == 0)
+		{
+			elog(WARNING, "Parallel build used 0 pool pages - no data?");
 		}
 	}
 
@@ -1197,9 +1235,14 @@ tp_write_segment_from_local_memtable(
 	 */
 	writer.buffer_pos = SizeOfPageHeaderData;
 
-	/* Write page index */
-	header.page_index =
-			write_page_index(index, writer.pages, writer.pages_allocated);
+	/* Write page index using pool (parallel-safe) */
+	header.page_index = write_page_index_from_pool(
+			index,
+			writer.pages,
+			writer.pages_allocated,
+			TpParallelPagePool(shared),
+			shared->total_pool_pages,
+			&shared->shared_pool_next);
 
 	/*
 	 * Now write the dictionary entries with correct skip_index_offset values.

@@ -1,0 +1,96 @@
+-- Test case: parallel_build
+-- Tests basic index build with enough data to exercise segment writing
+-- Note: Actual parallel workers require 100K+ tuples and max_parallel_maintenance_workers > 0
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.4.0-dev installed
+SET enable_seqscan = off;
+-- Create a table with moderate amount of data
+CREATE TABLE parallel_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+-- Insert data to create meaningful segments
+INSERT INTO parallel_test (content)
+SELECT 'Document number ' || i || ' contains words like ' ||
+       CASE i % 5
+           WHEN 0 THEN 'apple banana cherry'
+           WHEN 1 THEN 'database query optimization'
+           WHEN 2 THEN 'machine learning algorithm'
+           WHEN 3 THEN 'distributed systems design'
+           ELSE 'network protocol security'
+       END ||
+       ' and additional text to make it longer ' ||
+       CASE i % 3
+           WHEN 0 THEN 'with some extra content here'
+           WHEN 1 THEN 'including more varied terms'
+           ELSE 'plus different phrases altogether'
+       END
+FROM generate_series(1, 5000) AS i;
+-- Build index (serial since < 100K tuples)
+CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 5000 documents, avg_length=16.00, text_config='english' (k1=1.20, b=0.75)
+-- Verify index was created
+SELECT 'Index created' AS status
+FROM pg_class
+WHERE relname = 'parallel_test_idx';
+    status     
+---------------
+ Index created
+(1 row)
+
+-- Verify queries work correctly
+SELECT COUNT(*) AS apple_count
+FROM parallel_test
+WHERE content <@> to_bm25query('apple', 'parallel_test_idx') < 0;
+ apple_count 
+-------------
+        1000
+(1 row)
+
+SELECT COUNT(*) AS database_count
+FROM parallel_test
+WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
+ database_count 
+----------------
+           1000
+(1 row)
+
+-- Verify we can get top-k results with correct ordering
+SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_idx'))::numeric, 4) AS score
+FROM parallel_test
+ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx')
+LIMIT 5;
+ id |  score  
+----+---------
+ 12 | -3.3027
+ 27 | -3.3027
+  7 | -3.2183
+ 22 | -3.2183
+ 37 | -3.2183
+(5 rows)
+
+-- Verify index statistics look reasonable
+SELECT bm25_summarize_index('parallel_test_idx') IS NOT NULL AS has_summary;
+ has_summary 
+-------------
+ t
+(1 row)
+
+-- Test that we can do additional inserts after build
+INSERT INTO parallel_test (content) VALUES ('new document after build with unique terms');
+-- Verify the new document is searchable
+SELECT COUNT(*) AS new_doc_found
+FROM parallel_test
+WHERE content <@> to_bm25query('unique', 'parallel_test_idx') < 0;
+ new_doc_found 
+---------------
+             1
+(1 row)
+
+-- Cleanup
+DROP TABLE parallel_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

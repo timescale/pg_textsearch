@@ -334,6 +334,18 @@ extern void tp_dump_segment_to_output(
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
 
+/* Page index writing from pool (for parallel builds) */
+extern BlockNumber write_page_index_from_pool(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next);
+
+/* Calculate entries per page index page (for pool estimation) */
+extern uint32 tp_page_index_entries_per_page(void);
+
 /* Page reclamation for segment compaction */
 extern uint32 tp_segment_collect_pages(
 		Relation index, BlockNumber root_block, BlockNumber **pages_out);
