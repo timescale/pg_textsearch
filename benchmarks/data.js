@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768324912102,
+  "lastUpdate": 1768326479029,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -623,6 +623,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "fbff39af22ea556ca9cab93b45e437d49a35f9fd",
+          "message": "Add GUC and stats for WAND seek optimization\n\nAdd pg_textsearch.enable_wand_seek GUC to control whether WAND-style\nbinary search seeking is used (default: on). This allows A/B\ncomparison to measure the optimization's impact.\n\nAdd seek statistics to TpBMWStats:\n- seeks_performed: number of binary search seeks\n- docs_seeked: total doc IDs skipped via seeking\n- linear_advances: single-doc advances (no seek benefit)\n- seek_to_same_doc: seeks that landed on same/next doc\n\nThese stats are logged when pg_textsearch.log_bmw_stats=on.\n\nLocal testing shows the current implementation adds overhead without\nbenefit for typical workloads. The find_next_candidate_doc_id call\non every skip appears to cost more than the seeks save.",
+          "timestamp": "2026-01-13T17:35:23Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fbff39af22ea556ca9cab93b45e437d49a35f9fd"
+        },
+        "date": 1768326477745,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 289.344,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.29,
             "unit": "ms"
           },
           {
