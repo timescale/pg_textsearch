@@ -9,9 +9,9 @@ Modern ranked text search for Postgres.
 - Simple syntax: `ORDER BY content <@> 'search terms'`
 - BM25 ranking with configurable parameters (k1, b)
 - Works with Postgres text search configurations (english, french, german, etc.)
-- Rapidly approaching best in class performance and scalability
+- Fast top-k queries via Block-Max WAND optimization
 
-🚀 **Status**: v0.4.0 - Query performance is competitive with other leading Postgres-based solutions. Basic index compression arrives in this release; parallel index builds coming soon.  See [ROADMAP.md](ROADMAP.md) for details and [competitive benchmarking](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html) for a summary of current performance.
+⚠️ **Pre-release**: v0.4.0 - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds index compression; parallel builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
 
 ![Tapir and Friends](images/tapir_and_friends_v0.4.0.png)
 
