@@ -610,6 +610,58 @@ advance_term_iterator(TpTermState *ts)
 }
 
 /*
+ * Seek a term iterator to target doc ID using binary search.
+ * Returns true if iterator is still active (positioned at doc >= target),
+ * false if exhausted.
+ *
+ * This is the key WAND optimization: O(log blocks) instead of O(blocks).
+ */
+static bool
+seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
+{
+	TpSegmentPosting *posting;
+
+	if (!ts->found || ts->iter.finished)
+		return false;
+
+	/*
+	 * Check if target is in current block - if so, linear scan is faster
+	 * than the seek overhead.
+	 */
+	if (target_doc_id <= ts->iter.skip_entry.last_doc_id)
+	{
+		/* Target is in current block, linear scan within block */
+		while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
+		{
+			uint32 doc_id =
+					ts->iter.block_postings[ts->iter.current_in_block].doc_id;
+			if (doc_id >= target_doc_id)
+				return true;
+			ts->iter.current_in_block++;
+		}
+		/* Exhausted current block, fall through to load next */
+		ts->iter.current_block++;
+		if (ts->iter.current_block >= ts->iter.dict_entry.block_count)
+		{
+			ts->iter.finished = true;
+			return false;
+		}
+		ts->iter.current_in_block = 0;
+		tp_segment_posting_iterator_load_block(&ts->iter);
+		return !ts->iter.finished;
+	}
+
+	/* Target is beyond current block - use binary search */
+	if (!tp_segment_posting_iterator_seek(&ts->iter, target_doc_id, &posting))
+	{
+		ts->iter.finished = true;
+		return false;
+	}
+
+	return true;
+}
+
+/*
  * Initialize term states for a segment.
  * Returns count of active iterators (terms found in segment).
  */
@@ -805,8 +857,37 @@ score_pivot_document(
 }
 
 /*
+ * Find the minimum doc ID among terms NOT at the pivot.
+ * Returns UINT32_MAX if all active terms are at the pivot.
+ */
+static uint32
+find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
+{
+	uint32 next_doc = UINT32_MAX;
+	int	   term_idx;
+
+	for (term_idx = 0; term_idx < term_count; term_idx++)
+	{
+		TpTermState *ts = &terms[term_idx];
+		uint32		 doc_id;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+		if (doc_id > pivot && doc_id < next_doc)
+			next_doc = doc_id;
+	}
+
+	return next_doc;
+}
+
+/*
  * Advance all iterators at the pivot past the current document.
- * Used when block-max pruning determines the pivot can't beat threshold.
+ * Uses WAND-style seeking: instead of advancing by 1, seek to the
+ * next candidate doc ID (minimum among terms not at pivot).
+ *
+ * This is the key optimization: O(log blocks) skip instead of O(blocks).
  */
 static void
 skip_pivot_document(
@@ -815,8 +896,19 @@ skip_pivot_document(
 		uint32		 pivot_doc_id,
 		int			*active_count)
 {
-	int term_idx;
+	uint32 next_candidate;
+	int	   term_idx;
 
+	/*
+	 * Find the next promising doc ID: minimum among terms ahead of pivot.
+	 * If all terms are at the pivot, just advance by 1.
+	 */
+	next_candidate =
+			find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
+	if (next_candidate == UINT32_MAX)
+		next_candidate = pivot_doc_id + 1;
+
+	/* Seek all terms at pivot to the next candidate */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
 		TpTermState *ts = &terms[term_idx];
@@ -828,7 +920,7 @@ skip_pivot_document(
 		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
 		if (doc_id == pivot_doc_id)
 		{
-			if (!advance_term_iterator(ts))
+			if (!seek_term_to_doc(ts, next_candidate))
 				(*active_count)--;
 		}
 	}
