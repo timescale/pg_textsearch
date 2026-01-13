@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768324909338,
+  "lastUpdate": 1768324910721,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2093,6 +2093,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1274.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "0b1fde1605f16cc34b195c41209f76e13c1ac303",
+          "message": "Use binary search for WAND-style doc ID seeking in BMW\n\nThe multi-term BMW algorithm now uses binary search (via\ntp_segment_posting_iterator_seek) when skipping documents that can't\nbeat the threshold. Previously, iterators advanced one document at a\ntime.\n\nKey changes:\n- Add seek_term_to_doc() that uses binary search on skip entries when\n  the target is beyond the current block\n- Add find_next_candidate_doc_id() to find the minimum doc ID among\n  terms not at the current pivot\n- Modify skip_pivot_document() to seek to the next candidate instead\n  of advancing by 1\n\nThis changes the complexity from O(blocks) to O(log blocks) when\nskipping over documents with sparse term overlap.\n\nCloses #141",
+          "timestamp": "2026-01-13T16:57:19Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0b1fde1605f16cc34b195c41209f76e13c1ac303"
+        },
+        "date": 1768324910436,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 549316.324,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 12.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 13.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 13.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 18.95,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 24.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 30.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 43.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 62.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 31.25,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1269.35,
             "unit": "MB"
           }
         ]
