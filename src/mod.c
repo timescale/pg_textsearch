@@ -49,6 +49,9 @@ bool tp_log_bmw_stats = false;
 /* Global variable to enable/disable BMW optimization - declared in score.c */
 bool tp_enable_bmw = true;
 
+/* Global variable to enable/disable WAND-style seeking in BMW */
+bool tp_enable_wand_seek = true;
+
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
@@ -147,6 +150,20 @@ _PG_init(void)
 			"When enabled, uses block-level upper bounds to skip "
 			"non-contributing blocks. Disable for benchmark comparison.",
 			&tp_enable_bmw,
+			true,		 /* default on */
+			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.enable_wand_seek",
+			"Enable WAND-style binary search seeking in BMW",
+			"When enabled, uses binary search to seek term iterators to "
+			"the next candidate doc ID. When disabled, advances iterators "
+			"one document at a time. Disable to compare performance.",
+			&tp_enable_wand_seek,
 			true,		 /* default on */
 			PGC_USERSET, /* Can be changed per session */
 			0,

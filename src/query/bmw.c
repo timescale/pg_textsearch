@@ -18,6 +18,9 @@
 #include "source.h"
 #include "state/metapage.h"
 
+/* GUC variable for WAND-style seeking - defined in mod.c */
+extern bool tp_enable_wand_seek;
+
 /*
  * ------------------------------------------------------------
  * Top-K Min-Heap Implementation
@@ -884,35 +887,47 @@ find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
 
 /*
  * Advance all iterators at the pivot past the current document.
- * Uses WAND-style seeking: instead of advancing by 1, seek to the
- * next candidate doc ID (minimum among terms not at pivot).
  *
- * This is the key optimization: O(log blocks) skip instead of O(blocks).
+ * When tp_enable_wand_seek is true (default), uses WAND-style seeking:
+ * instead of advancing by 1, seek to the next candidate doc ID (minimum
+ * among terms not at pivot). This is O(log blocks) instead of O(blocks).
+ *
+ * When tp_enable_wand_seek is false, advances one document at a time
+ * (original behavior for comparison benchmarks).
  */
 static void
 skip_pivot_document(
 		TpTermState *terms,
 		int			 term_count,
 		uint32		 pivot_doc_id,
-		int			*active_count)
+		int			*active_count,
+		TpBMWStats	*stats)
 {
 	uint32 next_candidate;
 	int	   term_idx;
 
-	/*
-	 * Find the next promising doc ID: minimum among terms ahead of pivot.
-	 * If all terms are at the pivot, just advance by 1.
-	 */
-	next_candidate =
-			find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
-	if (next_candidate == UINT32_MAX)
+	if (tp_enable_wand_seek)
+	{
+		/*
+		 * WAND-style: find next promising doc ID and seek to it.
+		 */
+		next_candidate =
+				find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
+		if (next_candidate == UINT32_MAX)
+			next_candidate = pivot_doc_id + 1;
+	}
+	else
+	{
+		/* Original behavior: advance by 1 */
 		next_candidate = pivot_doc_id + 1;
+	}
 
-	/* Seek all terms at pivot to the next candidate */
+	/* Advance all terms at pivot to the next candidate */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
 		TpTermState *ts = &terms[term_idx];
 		uint32		 doc_id;
+		uint32		 skip_distance;
 
 		if (!ts->found || ts->iter.finished)
 			continue;
@@ -920,8 +935,34 @@ skip_pivot_document(
 		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
 		if (doc_id == pivot_doc_id)
 		{
-			if (!seek_term_to_doc(ts, next_candidate))
-				(*active_count)--;
+			skip_distance = next_candidate - pivot_doc_id;
+
+			if (tp_enable_wand_seek && skip_distance > 1)
+			{
+				/* Use binary search seek */
+				if (!seek_term_to_doc(ts, next_candidate))
+					(*active_count)--;
+
+				if (stats)
+				{
+					uint32 landed_doc =
+							tp_segment_posting_iterator_current_doc_id(
+									&ts->iter);
+					stats->seeks_performed++;
+					stats->docs_seeked += (next_candidate - pivot_doc_id - 1);
+					if (landed_doc <= pivot_doc_id + 1)
+						stats->seek_to_same_doc++;
+				}
+			}
+			else
+			{
+				/* Linear advance */
+				if (!advance_term_iterator(ts))
+					(*active_count)--;
+
+				if (stats)
+					stats->linear_advances++;
+			}
 		}
 	}
 }
@@ -968,7 +1009,7 @@ score_segment_multi_term_bmw(
 		if (max_possible < threshold)
 		{
 			skip_pivot_document(
-					terms, term_count, pivot_doc_id, &active_count);
+					terms, term_count, pivot_doc_id, &active_count, stats);
 			if (stats)
 				stats->blocks_skipped++;
 			continue;
