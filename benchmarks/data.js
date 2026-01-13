@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768333199037,
+  "lastUpdate": 1768333200704,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2321,6 +2321,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1274.81,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7e7e75e7ae39399c61ec85606231226baab39232",
+          "message": "Optimize WAND seek by maintaining sorted term array\n\nInspired by Tantivy's WAND implementation, maintain term iterators\nsorted by current doc ID. This makes find_pivot_doc_id O(1) and\nfind_next_candidate_doc_id O(1) typical case instead of O(N).\n\nKey changes:\n- Add term_current_doc_id() helper for consistent doc ID access\n- Add compare_terms_by_doc_id() and sort_terms_by_doc_id() for sorting\n- Sort terms after initialization in init_segment_term_states()\n- Re-sort after advancing terms in score_pivot_document() and\n  skip_pivot_document()\n- Simplify find_pivot_doc_id() to just return first term's doc ID\n- Optimize find_next_candidate_doc_id() to scan from start until\n  first term past pivot (O(1) when only one term at pivot)\n- Add early exit in compute_pivot_max_score() using sorted order\n\nLocal benchmarks show performance parity between seek ON/OFF modes,\nresolving the overhead issue from the previous O(N) iteration.",
+          "timestamp": "2026-01-13T18:48:40Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7e7e75e7ae39399c61ec85606231226baab39232"
+        },
+        "date": 1768333200404,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 544590.363,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 13.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 13.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 18.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 40.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 80.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 140.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 367.89,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 671.95,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 198.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1269.35,
             "unit": "MB"
           }
         ]
