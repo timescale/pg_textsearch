@@ -250,9 +250,10 @@ jobs:
       matrix:
         pg_version: [17]
         # Old versions with incompatible on-disk format
-        # - 0.1.0: Metapage v4→v5, shmem size change
-        # - 0.2.0, 0.3.0: Segment format v2→v3 (compression in v0.4.0)
-        old_version: ['0.1.0', '0.2.0', '0.3.0']
+        # - 0.1.0: Metapage v4→v5, shmem size change - truly incompatible
+        # Note: 0.2.0 and 0.3.0 are compatible because recovery rebuilds from
+        # heap, not from old segment format. Segment format v2→v3 doesn't matter.
+        old_version: ['0.1.0']
 
     steps:
     - name: Checkout current code
