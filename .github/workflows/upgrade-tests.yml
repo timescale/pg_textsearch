@@ -18,17 +18,18 @@ on:
 
 jobs:
   test-upgrades:
+    # Skip this job until we have compatible old versions to test against.
+    # v0.4.0 introduced segment format v3 (compression), which is incompatible
+    # with all prior releases. When releasing 0.5.0+ with the same segment
+    # format, add '0.4.0' to old_version and remove this 'if: false'.
+    if: false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
         # Test upgrades from compatible releases only.
-        # Note: v0.4.0 introduced segment format v3 (compression), which is
-        # incompatible with v0.3.0 and earlier. Users must recreate indexes.
-        # When a future release maintains the same segment format, add that
-        # version here (e.g., when releasing 0.5.0, add '0.4.0' to this list).
-        old_version: []
+        old_version: ['0.4.0']  # placeholder - job is disabled via 'if: false'
 
     steps:
     - name: Checkout current code
