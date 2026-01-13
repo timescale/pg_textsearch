@@ -1,95 +1,59 @@
 # pg_textsearch: Storage and Query Optimization Design
 
-**Status**: Draft for review
+**Status**: Mostly implemented (v0.4.0)
 **Author**: Todd J. Green @ Tiger Data
-**Last updated**: 2025-12-19
+**Last updated**: 2026-01-12
 
 ---
 
-## Problem Statement
+## Implementation Status
 
-pg_textsearch currently has $O(n)$ query complexity for top-$k$ retrieval, where
-$n$ = number of matching documents. For a query matching $10^5$ documents but
-requesting only $10$ results, we:
+Most high-impact query and indexing optimizations are now implemented:
 
-1. Score all $10^5$ documents
-2. Sort all $10^5$ scores
-3. Return top $10$
+| Optimization | Status | Impact |
+|--------------|--------|--------|
+| Block-Max WAND query executor | ✅ Done (v0.3.0) | Sub-linear top-k queries |
+| Block-based posting storage | ✅ Done (v0.2.0) | Enables BMW block skipping |
+| Skip index with block-max scores | ✅ Done (v0.2.0) | O(log n) block seeking |
+| Delta + bitpack compression | ✅ Done (v0.4.0) | 41% smaller indexes |
+| Fieldnorm quantization | ✅ Done (v0.2.0) | 1 byte vs 2-4 bytes per doc |
+| Doc ID mapping | ✅ Done (v0.2.0) | Compact u32 IDs, better compression |
+| Parallel index builds | 🔲 Not started | Faster bulk indexing |
+| SIMD decoding | 🔲 Not started | Minor speedup (~6% of query time) |
+| Dictionary compression | 🔲 Not started | Further size reduction |
 
-This becomes a major bottleneck as index size grows. Production search engines
-(Lucene, Tantivy, Elasticsearch) solve this with Block-Max WAND, which skips
-blocks that cannot contribute to the top-$k$ results. See "Why Block-Max WAND?"
-below for empirical performance data.
+**Current performance**: Query performance is competitive with other leading
+Postgres-based solutions. See [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html).
 
-### Goals
+**Main remaining work**: Parallel index builds would significantly improve
+bulk indexing performance. The query path is well-optimized; further gains
+would come from SIMD decoding (minor) or dictionary compression (size only).
 
-1. **Primary**: Achieve sub-linear query time for top-$k$ retrieval
-2. **Secondary**: Reduce storage footprint by 50%+ via compression
+---
+
+## Background
+
+### The Problem (Now Solved)
+
+Naive top-k retrieval has $O(n)$ complexity where $n$ = matching documents.
+Production search engines solve this with Block-Max WAND, which skips blocks
+that cannot contribute to top-k results.
+
+**Empirical results** from Ding & Suel on TREC GOV2 (25.2M documents):
+- Exhaustive OR: 3.8M docs evaluated, 225ms/query
+- BMW: 22K docs evaluated (0.6%), 28ms/query (8x faster)
+
+pg_textsearch now implements BMW (v0.3.0) with compressed block storage (v0.4.0).
 
 ### Non-Goals
 
-- **Faceted search**: Aggregations, facet counts, and drill-down filtering are
-  immediately expressible in SQL; we just haven't prioritized optimizing them.
-- **Query rewriting**: Spell correction, query expansion, and synonym handling
-  belong in the application layer or Postgres text search configurations.
-- **Result highlighting**: Snippet generation and term highlighting are
-  separate concerns from scoring and retrieval.
+- **Faceted search**: Expressible in SQL; not optimized
+- **Query rewriting**: Belongs in application layer
+- **Result highlighting**: Separate from scoring/retrieval
 
 ---
 
-## Current Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Index Structure                      │
-├─────────────────────────────────────────────────────────┤
-│  Memtable (shared memory)                               │
-│    - Small, write-optimized cache for recent inserts    │
-│    - Linear posting lists (no block structure needed)   │
-│    - Spills to segment when threshold exceeded          │
-│    - Locked for exclusive access during updates         │
-│                                                         │
-│  Segments (disk pages)                                  │
-│    - Immutable, created by memtable spill or merge      │
-│    - Each doc ID exists in exactly ONE location         │
-│      (either memtable or one segment)                   │
-│    - Self-contained: own term dictionary, fieldnorms    │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│                      Query Flow                         │
-├─────────────────────────────────────────────────────────┤
-│  1. Parse query terms                                   │
-│  2. For each term: linear scan of posting list          │
-│     (memtable + all segments)                           │
-│  3. Accumulate scores in hash table (ALL matching docs) │
-│  4. qsort() all scores                                  │
-│  5. Return top $k$                                      │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Corpus statistics**: avgdl (average document length) is computed at query time
-from `total_len / total_docs` counters maintained per-index in shared memory.
-These are updated during inserts and preserved across restarts via the metapage.
-
-**Posting list format** (segments):
-```c
-typedef struct TpSegmentPosting {
-    ItemPointerData ctid;    // 6 bytes - heap location
-    uint16 frequency;        // 2 bytes - term frequency
-    uint16 doc_length;       // 2 bytes - document length
-} TpSegmentPosting;          // 10 bytes total, uncompressed
-```
-
-**Key limitations**:
-- No skip pointers: Must scan entire posting list sequentially
-- No block structure: Can't skip non-competitive regions
-- No compression: 10 bytes per posting regardless of content
-- No early termination: Must process all matches before knowing top-$k$
-
----
-
-## Proposed Solution: Block-Based Query Optimization
+## Block-Based Query Optimization
 
 ### Why Block-Based Query Optimization?
 
@@ -744,7 +708,7 @@ carrying compatibility code for formats that may never see production use.
 
 ## Implementation Roadmap
 
-### v0.2.0: Block Storage Foundation (released)
+### v0.2.0: Block Storage Foundation (released Dec 2025)
 - [x] Fixed-size posting blocks (128 docs)
 - [x] Block headers with last_doc_id, doc_count, block_max_tf, block_max_norm
 - [x] Skip index structure (TpSkipEntry, 16 bytes per block)
@@ -755,7 +719,7 @@ carrying compatibility code for formats that may never see production use.
 - [x] Index build optimization: binary search for initial segment writes
 - [ ] Query-time block-aware seek operation
 
-### v0.3.0: Block-Based Query Executor
+### v0.3.0: Block-Based Query Executor (released Jan 2026)
 - [x] Block max score computation at query time
 - [x] Query executor (initial BMW implementation)
 - [x] Single-term optimization path
@@ -807,7 +771,7 @@ This is the standard BMW algorithm described in Phase 2 above; the current
 implementation is a simplified approximation that works well for common
 short-query workloads but degrades for long queries.
 
-### v0.4.0: Compression (PR #124 - ready for merge)
+### v0.4.0: Compression (released Jan 2026)
 
 #### Posting Compression
 - [x] Delta encoding for doc IDs (gaps between sorted IDs)
@@ -867,7 +831,7 @@ Goal: Close the remaining gap to System X.
 - TermInfoStore with 256-term blocks and bitpacking
 - Achieves ~2-4 bytes per term (vs our current ~20 bytes)
 
-### v1.0.0: Production Ready (Target: Feb 2025)
+### v1.0.0: Production Ready (Target: Feb 2026)
 - [ ] Performance tuning based on benchmarks
 - [ ] Multi-level skip list (optional, for very long lists)
 - [ ] Roaring bitmaps for deleted docs (optional)
