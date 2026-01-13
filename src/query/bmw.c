@@ -483,6 +483,46 @@ typedef struct TpTermState
 } TpTermState;
 
 /*
+ * Get current doc ID for a term, or UINT32_MAX if exhausted.
+ */
+static inline uint32
+term_current_doc_id(TpTermState *ts)
+{
+	if (!ts->found || ts->iter.finished)
+		return UINT32_MAX;
+	return tp_segment_posting_iterator_current_doc_id(&ts->iter);
+}
+
+/*
+ * Compare two term states by current doc ID for sorting.
+ * Exhausted iterators sort to the end (UINT32_MAX).
+ */
+static int
+compare_terms_by_doc_id(const void *a, const void *b)
+{
+	TpTermState *ta	   = (TpTermState *)a;
+	TpTermState *tb	   = (TpTermState *)b;
+	uint32		 doc_a = term_current_doc_id(ta);
+	uint32		 doc_b = term_current_doc_id(tb);
+
+	if (doc_a < doc_b)
+		return -1;
+	if (doc_a > doc_b)
+		return 1;
+	return 0;
+}
+
+/*
+ * Sort terms array by current doc ID.
+ * Called once after initialization.
+ */
+static void
+sort_terms_by_doc_id(TpTermState *terms, int term_count)
+{
+	qsort(terms, term_count, sizeof(TpTermState), compare_terms_by_doc_id);
+}
+
+/*
  * Score memtable postings for multiple terms.
  * Memtable has no skip index, so we score all postings exhaustively.
  */
@@ -667,6 +707,7 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 /*
  * Initialize term states for a segment.
  * Returns count of active iterators (terms found in segment).
+ * Terms array is sorted by doc ID after initialization.
  */
 static int
 init_segment_term_states(
@@ -713,6 +754,9 @@ init_segment_term_states(
 			active_count++;
 	}
 
+	/* Sort terms by current doc ID for efficient traversal */
+	sort_terms_by_doc_id(terms, term_count);
+
 	return active_count;
 }
 
@@ -736,32 +780,22 @@ cleanup_segment_term_states(TpTermState *terms, int term_count)
 /*
  * Find minimum doc_id across all active term iterators.
  * Returns UINT32_MAX if all iterators are exhausted.
+ *
+ * With sorted array: O(1) - just return the first term's doc ID.
  */
 static uint32
 find_pivot_doc_id(TpTermState *terms, int term_count)
 {
-	uint32 pivot = UINT32_MAX;
-	int	   term_idx;
-
-	for (term_idx = 0; term_idx < term_count; term_idx++)
-	{
-		TpTermState *ts = &terms[term_idx];
-		uint32		 doc_id;
-
-		if (!ts->found || ts->iter.finished)
-			continue;
-
-		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-		if (doc_id < pivot)
-			pivot = doc_id;
-	}
-
-	return pivot;
+	(void)term_count; /* Unused with sorted array */
+	return term_current_doc_id(&terms[0]);
 }
 
 /*
  * Compute maximum possible score for a pivot document.
  * Uses block-max scores from current blocks of each term.
+ *
+ * With sorted array: terms at or before pivot are at the beginning,
+ * so we can stop early when we hit a term past the pivot.
  */
 static float4
 compute_pivot_max_score(
@@ -772,15 +806,14 @@ compute_pivot_max_score(
 
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState *ts = &terms[term_idx];
-		uint32		 doc_id;
+		TpTermState *ts		= &terms[term_idx];
+		uint32		 doc_id = term_current_doc_id(ts);
 
-		if (!ts->found || ts->iter.finished)
-			continue;
+		/* Stop when we pass the pivot (sorted order) */
+		if (doc_id > pivot_doc_id)
+			break;
 
-		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-
-		if (doc_id <= pivot_doc_id && ts->block_max_scores != NULL &&
+		if (ts->block_max_scores != NULL &&
 			ts->iter.current_block < ts->iter.dict_entry.block_count)
 		{
 			max_possible += ts->block_max_scores[ts->iter.current_block] *
@@ -795,6 +828,9 @@ compute_pivot_max_score(
  * Score a pivot document by accumulating BM25 contributions from all terms.
  * Advances iterators past the pivot and returns the score.
  * Sets *ctid_out to the document's CTID and *active_count is updated.
+ *
+ * With sorted array: terms at pivot are at the start of the array.
+ * After advancing, we re-sort to maintain the sorted invariant.
  */
 static float4
 score_pivot_document(
@@ -812,15 +848,18 @@ score_pivot_document(
 	bool   have_ctid = false;
 	int	   term_idx;
 
+	/*
+	 * With sorted array, all terms at pivot are at the beginning.
+	 * Process until we hit a term past the pivot.
+	 */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState *ts = &terms[term_idx];
-		uint32		 doc_id;
+		TpTermState *ts		= &terms[term_idx];
+		uint32		 doc_id = term_current_doc_id(ts);
 
-		if (!ts->found || ts->iter.finished)
-			continue;
-
-		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
+		/* Stop when we pass the pivot (sorted order) */
+		if (doc_id > pivot_doc_id)
+			break;
 
 		if (doc_id == pivot_doc_id)
 		{
@@ -853,6 +892,9 @@ score_pivot_document(
 		}
 	}
 
+	/* Re-sort to maintain sorted invariant after advances */
+	sort_terms_by_doc_id(terms, term_count);
+
 	if (!have_ctid)
 		ItemPointerSetInvalid(ctid_out);
 
@@ -862,27 +904,25 @@ score_pivot_document(
 /*
  * Find the minimum doc ID among terms NOT at the pivot.
  * Returns UINT32_MAX if all active terms are at the pivot.
+ *
+ * With sorted array: O(1) typical - just find first term past pivot.
+ * Since terms are sorted by doc ID, we scan from index 1 until we find
+ * a term with doc_id > pivot.
  */
 static uint32
 find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
 {
-	uint32 next_doc = UINT32_MAX;
-	int	   term_idx;
+	int term_idx;
 
+	/* Scan from start to find first term not at pivot */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState *ts = &terms[term_idx];
-		uint32		 doc_id;
-
-		if (!ts->found || ts->iter.finished)
-			continue;
-
-		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
-		if (doc_id > pivot && doc_id < next_doc)
-			next_doc = doc_id;
+		uint32 doc_id = term_current_doc_id(&terms[term_idx]);
+		if (doc_id > pivot)
+			return doc_id;
 	}
 
-	return next_doc;
+	return UINT32_MAX;
 }
 
 /*
@@ -894,6 +934,9 @@ find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
  *
  * When tp_enable_wand_seek is false, advances one document at a time
  * (original behavior for comparison benchmarks).
+ *
+ * With sorted array: terms at pivot are at the beginning, and
+ * find_next_candidate_doc_id is O(1). After advancing, we re-sort.
  */
 static void
 skip_pivot_document(
@@ -910,6 +953,7 @@ skip_pivot_document(
 	{
 		/*
 		 * WAND-style: find next promising doc ID and seek to it.
+		 * With sorted array, this is O(1) - first term past pivot.
 		 */
 		next_candidate =
 				find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
@@ -922,17 +966,20 @@ skip_pivot_document(
 		next_candidate = pivot_doc_id + 1;
 	}
 
-	/* Advance all terms at pivot to the next candidate */
+	/*
+	 * Advance all terms at pivot to the next candidate.
+	 * With sorted array, terms at pivot are at the beginning.
+	 */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState *ts = &terms[term_idx];
-		uint32		 doc_id;
+		TpTermState *ts		= &terms[term_idx];
+		uint32		 doc_id = term_current_doc_id(ts);
 		uint32		 skip_distance;
 
-		if (!ts->found || ts->iter.finished)
-			continue;
+		/* Stop when we pass the pivot (sorted order) */
+		if (doc_id > pivot_doc_id)
+			break;
 
-		doc_id = tp_segment_posting_iterator_current_doc_id(&ts->iter);
 		if (doc_id == pivot_doc_id)
 		{
 			skip_distance = next_candidate - pivot_doc_id;
@@ -945,9 +992,7 @@ skip_pivot_document(
 
 				if (stats)
 				{
-					uint32 landed_doc =
-							tp_segment_posting_iterator_current_doc_id(
-									&ts->iter);
+					uint32 landed_doc = term_current_doc_id(ts);
 					stats->seeks_performed++;
 					stats->docs_seeked += (next_candidate - pivot_doc_id - 1);
 					if (landed_doc <= pivot_doc_id + 1)
@@ -965,6 +1010,9 @@ skip_pivot_document(
 			}
 		}
 	}
+
+	/* Re-sort to maintain sorted invariant after advances */
+	sort_terms_by_doc_id(terms, term_count);
 }
 
 /*
