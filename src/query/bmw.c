@@ -494,32 +494,31 @@ term_current_doc_id(TpTermState *ts)
 }
 
 /*
- * Compare two term states by current doc ID for sorting.
- * Exhausted iterators sort to the end (UINT32_MAX).
- */
-static int
-compare_terms_by_doc_id(const void *a, const void *b)
-{
-	TpTermState *ta	   = (TpTermState *)a;
-	TpTermState *tb	   = (TpTermState *)b;
-	uint32		 doc_a = term_current_doc_id(ta);
-	uint32		 doc_b = term_current_doc_id(tb);
-
-	if (doc_a < doc_b)
-		return -1;
-	if (doc_a > doc_b)
-		return 1;
-	return 0;
-}
-
-/*
- * Sort terms array by current doc ID.
- * Called once after initialization.
+ * Sort terms array by current doc ID using insertion sort.
+ *
+ * Insertion sort is O(N^2) worst case but O(N) for nearly-sorted arrays.
+ * Since we call this after advancing only a few terms, the array is
+ * nearly sorted and insertion sort outperforms qsort significantly.
+ * For N=2-5 terms (typical), this is essentially O(N).
  */
 static void
 sort_terms_by_doc_id(TpTermState *terms, int term_count)
 {
-	qsort(terms, term_count, sizeof(TpTermState), compare_terms_by_doc_id);
+	int i, j;
+
+	for (i = 1; i < term_count; i++)
+	{
+		TpTermState tmp	   = terms[i];
+		uint32		doc_id = term_current_doc_id(&tmp);
+
+		j = i - 1;
+		while (j >= 0 && term_current_doc_id(&terms[j]) > doc_id)
+		{
+			terms[j + 1] = terms[j];
+			j--;
+		}
+		terms[j + 1] = tmp;
+	}
 }
 
 /*
