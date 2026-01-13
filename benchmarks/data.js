@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768344948951,
+  "lastUpdate": 1768346311316,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2738,6 +2738,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
             "value": 36.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1269.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "6e9289e3137f0e15329f440f92c8be69ac56a3a4",
+          "message": "Remove sorted array overhead from WAND traversal\n\nThe sorted array approach was causing 16-17% overhead in profiling due\nto repeated insertion sorts after each document advance. This commit\nsimplifies to O(N) scans for finding the minimum doc ID, which has the\nsame asymptotic complexity but avoids memory writes.\n\nKey changes:\n- find_pivot_doc_id: now scans all terms for minimum (was O(1) sorted)\n- find_next_candidate_doc_id: now scans all terms for minimum past pivot\n- compute_pivot_max_score: uses continue instead of break\n- score_pivot_document: uses continue instead of break\n- skip_pivot_document: uses continue instead of break\n- Removed sort_terms_by_doc_id entirely\n\nThe WAND-style binary search seeking is retained. This removes the\nsorting overhead while keeping the seek optimization.",
+          "timestamp": "2026-01-13T23:03:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/6e9289e3137f0e15329f440f92c8be69ac56a3a4"
+        },
+        "date": 1768346310395,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 525453.624,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 12.62,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 11.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 12.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 18.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 23.13,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 28.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 39.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 59.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 30.39,
             "unit": "ms"
           },
           {
