@@ -9,11 +9,9 @@ Modern ranked text search for Postgres.
 - Simple syntax: `ORDER BY content <@> 'search terms'`
 - BM25 ranking with configurable parameters (k1, b)
 - Works with Postgres text search configurations (english, french, german, etc.)
-- Supports partitioned tables
-- Best in class performance and scalability
+- Rapidly approaching best in class performance and scalability
 
-🚀 **Status**: v0.4.0 - Query performance is production-ready. Index compression
-is here; parallel index builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
+🚀 **Status**: v0.4.0 - Query performance is competitive with other leading Postgres-based solutions. Basic index compression arrives in this release; parallel index builds coming soon.  See [ROADMAP.md](ROADMAP.md) for details and [competitive benchmarking](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html) for a summary of current performance.
 
 ![Tapir and Friends](images/tapir_and_friends_v0.4.0.png)
 
@@ -107,6 +105,46 @@ SET enable_seqscan = off;
 ```
 
 Note: Even if EXPLAIN shows a sequential scan, `<@>` and `to_bm25query` always use the index for corpus statistics (document counts, average length) required for BM25 scoring.
+
+### Filtering with WHERE Clauses
+
+There are two ways filtering interacts with BM25 index scans:
+
+**Pre-filtering** uses a separate index (B-tree, etc.) to reduce rows before scoring:
+```sql
+-- Create index on filter column
+CREATE INDEX ON documents (category_id);
+
+-- Query filters first, then scores matching rows
+SELECT * FROM documents
+WHERE category_id = 123
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+```
+
+**Post-filtering** applies the BM25 index scan first, then filters results:
+```sql
+SELECT * FROM documents
+WHERE content <@> to_bm25query('search terms', 'docs_idx') < -5.0
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+```
+
+**Performance considerations**:
+
+- **Pre-filtering tradeoff**: If the filter matches many rows (e.g., 100K+), scoring
+  all of them can be expensive. The BM25 index is most efficient when it can use
+  top-k optimization (ORDER BY + LIMIT) to avoid scoring every matching document.
+
+- **Post-filtering tradeoff**: The index returns top-k results *before* filtering.
+  If your WHERE clause eliminates most results, you may get fewer rows than
+  requested. Increase LIMIT to compensate, then re-limit in application code.
+
+- **Best case**: Pre-filter with a selective condition (matches <10% of rows), then
+  let BM25 score the reduced set with ORDER BY + LIMIT.
+
+This is similar to the [filtering behavior in pgvector](https://github.com/pgvector/pgvector?tab=readme-ov-file#filtering),
+where approximate indexes also apply filtering after the index scan.
 
 ## Indexing
 
@@ -203,8 +241,11 @@ Optional settings in `postgresql.conf`:
 pg_textsearch.default_limit = 1000           # default 1000
 
 # Auto-spill thresholds (set to 0 to disable)
-pg_textsearch.bulk_load_threshold = 100000   # terms per transaction
-pg_textsearch.memtable_spill_threshold = 800000  # posting entries (~8MB segments)
+pg_textsearch.bulk_load_threshold = 100000    # terms per transaction
+pg_textsearch.memtable_spill_threshold = 32000000  # posting entries (~1M docs/segment)
+
+# Compression (v0.4.0+)
+pg_textsearch.compress_segments = on          # default on
 ```
 
 The `memtable_spill_threshold` controls when the in-memory index spills to

@@ -12,17 +12,9 @@
 | v0.1.0 | Dec 2025 | First open-source release, implicit index resolution, partitioned tables |
 | v0.2.0 | Dec 2025 | V2 segment format, skip index, doc ID mapping, benchmark suite |
 | v0.3.0 | Jan 2026 | Block-Max WAND query optimization, 4x faster queries |
+| v0.4.0 | Jan 2026 | Posting list compression (delta encoding + bitpacking), 41% smaller indexes |
 
 ## Upcoming
-
-### v0.4.0 - Compression (Jan 2026)
-
-Reduce storage footprint via posting list compression (enabled by default).
-
-- **Delta encoding**: Compact doc ID storage using gaps between sorted IDs
-- **Bitpacking**: Pack values at minimum bit width per block
-- **Benchmark results**: 41% smaller index, 11-21% faster queries on short terms
-- **GUC**: `pg_textsearch.compress_segments` (default: on)
 
 ### v1.0.0 - Production Ready (Feb 2026)
 
