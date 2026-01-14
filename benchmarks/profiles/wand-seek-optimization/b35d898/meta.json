@@ -1,0 +1,8 @@
+{
+  "sha": "b35d898",
+  "full_sha": "b35d8984a0c388e1462efbce055a55e7dcac2dd4",
+  "branch": "wand-seek-optimization",
+  "date": "2026-01-14T02:44:17Z",
+  "message": "Pre-load skip entries for in-memory binary search",
+  "dataset": "MS MARCO full"
+}
