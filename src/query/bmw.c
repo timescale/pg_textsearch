@@ -479,7 +479,8 @@ typedef struct TpTermState
 	/* Segment-specific state (reset per segment) */
 	bool					 found; /* Term found in current segment */
 	TpSegmentPostingIterator iter;	/* Iterator (contains dict_entry) */
-	float4					*block_max_scores; /* Pre-computed block max */
+	float4 *block_max_scores;		/* Pre-computed block max scores */
+	uint32 *block_last_doc_ids;		/* Cached last_doc_id per block */
 } TpTermState;
 
 /*
@@ -624,16 +625,20 @@ advance_term_iterator(TpTermState *ts)
 }
 
 /*
- * Seek a term iterator to target doc ID using binary search.
- * Returns true if iterator is still active (positioned at doc >= target),
- * false if exhausted.
+ * Seek a term iterator to target doc ID using binary search on cached skip
+ * data. Returns true if iterator is still active (positioned at doc >=
+ * target), false if exhausted.
  *
- * This is the key WAND optimization: O(log blocks) instead of O(blocks).
+ * Uses pre-loaded block_last_doc_ids for O(log blocks) in-memory binary
+ * search, avoiding I/O during the search. Only loads the target block from
+ * disk.
  */
 static bool
 seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 {
-	TpSegmentPosting *posting;
+	uint16 block_count;
+	int	   left, right, mid;
+	uint16 target_block;
 
 	if (!ts->found || ts->iter.finished)
 		return false;
@@ -665,14 +670,65 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 		return !ts->iter.finished;
 	}
 
-	/* Target is beyond current block - use binary search */
-	if (!tp_segment_posting_iterator_seek(&ts->iter, target_doc_id, &posting))
+	/*
+	 * Target is beyond current block - binary search on cached last_doc_ids.
+	 * This is pure in-memory search, no I/O until we load the target block.
+	 */
+	block_count = ts->iter.dict_entry.block_count;
+
+	/* Binary search: find first block where last_doc_id >= target */
+	left  = ts->iter.current_block + 1; /* Start after current block */
+	right = block_count - 1;
+
+	while (left < right)
+	{
+		mid = left + (right - left) / 2;
+
+		if (ts->block_last_doc_ids[mid] < target_doc_id)
+			left = mid + 1;
+		else
+			right = mid;
+	}
+
+	target_block = left;
+
+	/* Check if target is past all blocks */
+	if (target_block >= block_count)
 	{
 		ts->iter.finished = true;
 		return false;
 	}
 
-	return true;
+	/* Load the target block */
+	ts->iter.current_block	  = target_block;
+	ts->iter.current_in_block = 0;
+
+	if (!tp_segment_posting_iterator_load_block(&ts->iter))
+	{
+		ts->iter.finished = true;
+		return false;
+	}
+
+	/* Linear scan within block to find target or first doc >= target */
+	while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
+	{
+		uint32 doc_id =
+				ts->iter.block_postings[ts->iter.current_in_block].doc_id;
+		if (doc_id >= target_doc_id)
+			return true;
+		ts->iter.current_in_block++;
+	}
+
+	/* Target not in this block, try next */
+	ts->iter.current_block++;
+	if (ts->iter.current_block >= block_count)
+	{
+		ts->iter.finished = true;
+		return false;
+	}
+	ts->iter.current_in_block = 0;
+	tp_segment_posting_iterator_load_block(&ts->iter);
+	return !ts->iter.finished;
 }
 
 /*
@@ -696,28 +752,32 @@ init_segment_term_states(
 	{
 		TpTermState *ts = &terms[term_idx];
 
-		ts->found			 = false;
-		ts->block_max_scores = NULL;
+		ts->found			   = false;
+		ts->block_max_scores   = NULL;
+		ts->block_last_doc_ids = NULL;
 
 		if (!tp_segment_posting_iterator_init(&ts->iter, reader, ts->term))
 			continue;
 
 		ts->found = true;
 
-		/* Pre-compute block max scores for BMW threshold checks */
+		/* Pre-load skip entries for BMW threshold checks and fast seeking */
 		if (ts->iter.dict_entry.block_count > 0)
 		{
 			uint16 block_idx;
-			ts->block_max_scores = palloc(
-					ts->iter.dict_entry.block_count * sizeof(float4));
-			for (block_idx = 0; block_idx < ts->iter.dict_entry.block_count;
-				 block_idx++)
+			uint16 block_count = ts->iter.dict_entry.block_count;
+
+			ts->block_max_scores   = palloc(block_count * sizeof(float4));
+			ts->block_last_doc_ids = palloc(block_count * sizeof(uint32));
+
+			for (block_idx = 0; block_idx < block_count; block_idx++)
 			{
 				TpSkipEntry skip;
 				tp_segment_read_skip_entry(
 						reader, &ts->iter.dict_entry, block_idx, &skip);
 				ts->block_max_scores[block_idx] = tp_compute_block_max_score(
 						&skip, ts->idf, k1, b, avg_doc_len);
+				ts->block_last_doc_ids[block_idx] = skip.last_doc_id;
 			}
 		}
 
@@ -742,6 +802,8 @@ cleanup_segment_term_states(TpTermState *terms, int term_count)
 			tp_segment_posting_iterator_free(&terms[term_idx].iter);
 		if (terms[term_idx].block_max_scores)
 			pfree(terms[term_idx].block_max_scores);
+		if (terms[term_idx].block_last_doc_ids)
+			pfree(terms[term_idx].block_last_doc_ids);
 	}
 }
 
