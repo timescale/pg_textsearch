@@ -206,29 +206,42 @@ tp_topk_add_segment(
 
 /*
  * Resolve CTIDs for segment results in the heap.
- * Opens each unique segment, looks up CTIDs for entries from that segment,
- * then closes it. Page maps will be hot in buffer cache from scoring phase.
+ * Batches lookups by segment - opens each unique segment once, resolves all
+ * CTIDs from that segment, then closes it. This avoids O(k) segment opens.
  */
 void
 tp_topk_resolve_ctids(TpTopKHeap *heap, Relation index)
 {
-	int i;
+	int i, j;
 
 	for (i = 0; i < heap->size; i++)
 	{
 		TpSegmentReader *reader;
+		BlockNumber		 seg_block;
 
-		/* Skip memtable entries - CTIDs already set */
+		/* Skip memtable entries and already-resolved entries */
 		if (heap->seg_blocks[i] == InvalidBlockNumber)
 			continue;
 
-		/* Open segment (page_map only, no CTID preload) and look up CTID */
-		reader = tp_segment_open_ex(index, heap->seg_blocks[i], false);
-		if (reader != NULL)
+		seg_block = heap->seg_blocks[i];
+
+		/* Open segment once for all entries from this segment */
+		reader = tp_segment_open_ex(index, seg_block, false);
+		if (reader == NULL)
+			continue;
+
+		/* Resolve all CTIDs from this segment */
+		for (j = i; j < heap->size; j++)
 		{
-			tp_segment_lookup_ctid(reader, heap->doc_ids[i], &heap->ctids[i]);
-			tp_segment_close(reader);
+			if (heap->seg_blocks[j] == seg_block)
+			{
+				tp_segment_lookup_ctid(reader, heap->doc_ids[j], &heap->ctids[j]);
+				/* Mark as resolved by setting seg_block to invalid */
+				heap->seg_blocks[j] = InvalidBlockNumber;
+			}
 		}
+
+		tp_segment_close(reader);
 	}
 }
 
