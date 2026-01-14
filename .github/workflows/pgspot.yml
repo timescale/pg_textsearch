@@ -1,0 +1,44 @@
+name: pgspot Security Check
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'sql/**'
+      - '.github/workflows/pgspot.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sql/**'
+      - '.github/workflows/pgspot.yml'
+
+jobs:
+  pgspot:
+    name: Check Extension SQL
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install pgspot
+      run: pip install pgspot
+
+    - name: Run pgspot
+      run: |
+        # Check extension SQL files
+        # Ignore PS017 (unqualified object reference) - false positives for
+        # type/operator definitions that reference types being created
+        has_errors=0
+        for sql_file in sql/pg_textsearch--*.sql; do
+          echo "Checking $sql_file"
+          if ! pgspot --ignore PS017 "$sql_file"; then
+            has_errors=1
+          fi
+        done
+        exit $has_errors

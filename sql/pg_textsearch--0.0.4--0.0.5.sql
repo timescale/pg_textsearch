@@ -1,7 +1,7 @@
 -- Upgrade from 0.0.4 to 0.0.5
 
 -- Function to force segment write (spill memtable to disk)
-CREATE OR REPLACE FUNCTION bm25_spill_index(index_name text)
+CREATE FUNCTION bm25_spill_index(index_name text)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
 LANGUAGE C VOLATILE STRICT;
