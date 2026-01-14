@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768356982817,
+  "lastUpdate": 1768358648294,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3120,6 +3120,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
             "value": 37.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1269.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "b35d8984a0c388e1462efbce055a55e7dcac2dd4",
+          "message": "Pre-load skip entries for in-memory binary search\n\nInstead of doing I/O for each binary search iteration when seeking,\npre-load all block last_doc_ids during term state initialization.\nThis makes binary search O(log N) in-memory operations instead of\nO(log N) I/O operations.\n\nChanges:\n- Add block_last_doc_ids array to TpTermState\n- Cache last_doc_id alongside block_max_scores during init\n- Rewrite seek_term_to_doc to use cached data for binary search\n- Only do I/O when loading the target block\n\nThis should significantly improve performance for high-token queries\nwhere many seeks are performed across large posting lists.",
+          "timestamp": "2026-01-14T00:20:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b35d8984a0c388e1462efbce055a55e7dcac2dd4"
+        },
+        "date": 1768358647661,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 513134.859,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 10.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 9.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 11.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 15.37,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 21.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 26.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 37.21,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 58.52,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 28.1,
             "unit": "ms"
           },
           {
