@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768371741017,
+  "lastUpdate": 1768374448822,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -845,6 +845,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "c5a6ea09ab094dd95174f6f7e75d338a680a295d",
+          "message": "Lazy CTID loading for segment queries\n\nDefer CTID resolution until final top-k results are known, reducing\nmemory usage from ~53MB to ~60 bytes per query (for k=10).\n\nChanges:\n- Add tp_segment_open_ex() with load_ctids parameter (default: false)\n- Add tp_segment_lookup_ctid() for targeted 6-byte reads\n- Split heap add into tp_topk_add_memtable/tp_topk_add_segment\n- Add tp_topk_resolve_ctids() to resolve CTIDs before extraction\n- Add doc_id field to TpSegmentPosting for deferred resolution\n- Update iterator to conditionally resolve CTIDs\n- Exhaustive path still loads CTIDs (needed for hash table keys)",
+          "timestamp": "2026-01-14T06:48:20Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c5a6ea09ab094dd95174f6f7e75d338a680a295d"
+        },
+        "date": 1768374447431,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 253.269,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.88,
             "unit": "ms"
           },
           {
