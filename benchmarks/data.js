@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768355522183,
+  "lastUpdate": 1768355524747,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3488,6 +3488,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 17268.505,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 36.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "b35d8984a0c388e1462efbce055a55e7dcac2dd4",
+          "message": "Pre-load skip entries for in-memory binary search\n\nInstead of doing I/O for each binary search iteration when seeking,\npre-load all block last_doc_ids during term state initialization.\nThis makes binary search O(log N) in-memory operations instead of\nO(log N) I/O operations.\n\nChanges:\n- Add block_last_doc_ids array to TpTermState\n- Cache last_doc_id alongside block_max_scores during init\n- Rewrite seek_term_to_doc to use cached data for binary search\n- Only do I/O when loading the target block\n\nThis should significantly improve performance for high-token queries\nwhere many seeks are performed across large posting lists.",
+          "timestamp": "2026-01-14T00:20:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b35d8984a0c388e1462efbce055a55e7dcac2dd4"
+        },
+        "date": 1768355524049,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 17539.149,
             "unit": "ms"
           },
           {
