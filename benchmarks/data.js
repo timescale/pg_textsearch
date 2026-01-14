@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768416447202,
+  "lastUpdate": 1768416449280,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4149,6 +4149,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 19526.9,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 36.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "94c66cc59f38a7e4e2d72832432f7825fb29fd3a",
+          "message": "Fix formatting",
+          "timestamp": "2026-01-14T18:43:28Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/94c66cc59f38a7e4e2d72832432f7825fb29fd3a"
+        },
+        "date": 1768416448588,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 17195.502,
             "unit": "ms"
           },
           {
