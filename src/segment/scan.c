@@ -329,8 +329,8 @@ tp_segment_posting_iterator_next(
 
 	/*
 	 * Look up CTID from segment-level cached arrays if available.
-	 * When lazy loading is enabled, CTIDs are not pre-cached and will
-	 * be resolved later via tp_segment_lookup_ctid.
+	 * By default, CTIDs are not pre-loaded and will be resolved later
+	 * via tp_segment_lookup_ctid.
 	 */
 	if (iter->reader->cached_ctid_pages != NULL)
 	{
