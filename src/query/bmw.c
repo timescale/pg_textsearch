@@ -18,9 +18,6 @@
 #include "source.h"
 #include "state/metapage.h"
 
-/* GUC variable for WAND-style seeking - defined in mod.c */
-extern bool tp_enable_wand_seek;
-
 /*
  * ------------------------------------------------------------
  * Top-K Min-Heap Implementation
@@ -945,12 +942,9 @@ find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
 /*
  * Advance all iterators at the pivot past the current document.
  *
- * When tp_enable_wand_seek is true (default), uses WAND-style seeking:
- * instead of advancing by 1, seek to the next candidate doc ID (minimum
- * among terms not at pivot). This is O(log blocks) instead of O(blocks).
- *
- * When tp_enable_wand_seek is false, advances one document at a time
- * (original behavior for comparison benchmarks).
+ * Uses WAND-style seeking: instead of advancing by 1, seek to the next
+ * candidate doc ID (minimum among terms not at pivot). This is O(log blocks)
+ * instead of O(blocks).
  */
 static void
 skip_pivot_document(
@@ -963,19 +957,11 @@ skip_pivot_document(
 	uint32 next_candidate;
 	int	   term_idx;
 
-	if (tp_enable_wand_seek)
-	{
-		/* WAND-style: find next promising doc ID and seek to it */
-		next_candidate =
-				find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
-		if (next_candidate == UINT32_MAX)
-			next_candidate = pivot_doc_id + 1;
-	}
-	else
-	{
-		/* Original behavior: advance by 1 */
+	/* Find next promising doc ID and seek to it */
+	next_candidate =
+			find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
+	if (next_candidate == UINT32_MAX)
 		next_candidate = pivot_doc_id + 1;
-	}
 
 	/* Advance all terms at pivot to the next candidate */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
@@ -989,7 +975,7 @@ skip_pivot_document(
 
 		skip_distance = next_candidate - pivot_doc_id;
 
-		if (tp_enable_wand_seek && skip_distance > 1)
+		if (skip_distance > 1)
 		{
 			/* Use binary search seek */
 			if (!seek_term_to_doc(ts, next_candidate))
@@ -1006,7 +992,7 @@ skip_pivot_document(
 		}
 		else
 		{
-			/* Linear advance */
+			/* Linear advance (skip_distance == 1) */
 			if (!advance_term_iterator(ts))
 				(*active_count)--;
 
