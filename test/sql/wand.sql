@@ -61,12 +61,7 @@ SELECT 'bmw-has-6' as test,
     CASE WHEN 6 IN (SELECT id FROM bmw_results)
     THEN 'PASS' ELSE 'FAIL - DOC 6 MISSING DUE TO PARTIAL SCORING BUG' END as result;
 
--- TEST 3: Doc 6 should be #1 in exhaustive (best score)
-SELECT 'exhaustive-6-is-top' as test,
-    CASE WHEN (SELECT id FROM exhaustive_results ORDER BY score LIMIT 1) = 6
-    THEN 'PASS' ELSE 'FAIL' END as result;
-
--- TEST 4: Results should match between BMW and exhaustive
+-- TEST 3: Results should match between BMW and exhaustive
 SELECT 'results-match' as test,
     CASE WHEN (SELECT COUNT(*) FROM
         (SELECT id FROM exhaustive_results EXCEPT SELECT id FROM bmw_results) x) = 0

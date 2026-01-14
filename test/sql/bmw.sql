@@ -678,17 +678,18 @@ RESET pg_textsearch.index_memory_limit;
 
 -- Test: Should find high-tf docs from BOTH blocks
 -- Doc 145 (tf=5) should be #1, docs 1-5 (tf=4) should follow
+-- Use LIMIT 7 to avoid tie-breaking among filler docs (all tf=2)
 WITH bmw AS (
     SELECT id, content <@> 'partial'::bm25query as score
     FROM bmw_partial
-    ORDER BY content <@> 'partial'::bm25query LIMIT 10
+    ORDER BY content <@> 'partial'::bm25query LIMIT 7
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'partial'::bm25query as score
         FROM bmw_partial
         ORDER BY content <@> 'partial'::bm25query
-    ) x LIMIT 10
+    ) x LIMIT 7
 )
 SELECT 'partial-block' as test,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
@@ -823,17 +824,18 @@ RESET pg_textsearch.index_memory_limit;
 
 -- Test: "common rare" should find only the 5 docs with both terms at top
 -- (they have higher combined score than single-term docs)
+-- Use LIMIT 5 to avoid tie-breaking among common-only docs
 WITH bmw AS (
     SELECT id, content <@> 'common rare'::bm25query as score
     FROM bmw_asymmetric
-    ORDER BY content <@> 'common rare'::bm25query LIMIT 10
+    ORDER BY content <@> 'common rare'::bm25query LIMIT 5
 ),
 exhaustive AS (
     SELECT id, score FROM (
         SELECT id, content <@> 'common rare'::bm25query as score
         FROM bmw_asymmetric
         ORDER BY content <@> 'common rare'::bm25query
-    ) x LIMIT 10
+    ) x LIMIT 5
 )
 SELECT 'asymmetric-multiterm' as test,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
