@@ -128,10 +128,13 @@ read_dict_entry(
 }
 
 /*
- * Open segment for reading
+ * Open segment for reading.
+ * If load_ctids is true, preloads all CTID arrays into memory (expensive).
+ * If load_ctids is false, skips CTID preloading - use tp_segment_lookup_ctid
+ * for deferred resolution.
  */
 TpSegmentReader *
-tp_segment_open(Relation index, BlockNumber root_block)
+tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 {
 	TpSegmentReader	   *reader;
 	Buffer				header_buf;
@@ -292,22 +295,21 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	}
 
 	/*
-	 * Preload CTID arrays into memory for result lookup.
-	 * Split storage (pages + offsets) gives better cache locality since
-	 * posting lists are sorted by doc_id, resulting in sequential access.
-	 * Fieldnorms are stored inline in TpBlockPosting, so no cache needed.
+	 * Optionally preload CTID arrays into memory for result lookup.
+	 * When load_ctids is false, callers should use tp_segment_lookup_ctid
+	 * for deferred resolution of individual CTIDs.
 	 */
 	reader->cached_ctid_pages	= NULL;
 	reader->cached_ctid_offsets = NULL;
 	reader->cached_num_docs		= 0;
 
-	if (header->num_docs > 0 && header->ctid_pages_offset > 0)
+	if (load_ctids && header->num_docs > 0 && header->ctid_pages_offset > 0)
 	{
 		reader->cached_num_docs = header->num_docs;
 
 		/* Load CTID pages array (4 bytes per doc) */
-		reader->cached_ctid_pages = palloc(
-				header->num_docs * sizeof(BlockNumber));
+		reader->cached_ctid_pages =
+				palloc(header->num_docs * sizeof(BlockNumber));
 		tp_segment_read(
 				reader,
 				header->ctid_pages_offset,
@@ -315,8 +317,8 @@ tp_segment_open(Relation index, BlockNumber root_block)
 				header->num_docs * sizeof(BlockNumber));
 
 		/* Load CTID offsets array (2 bytes per doc) */
-		reader->cached_ctid_offsets = palloc(
-				header->num_docs * sizeof(OffsetNumber));
+		reader->cached_ctid_offsets =
+				palloc(header->num_docs * sizeof(OffsetNumber));
 		tp_segment_read(
 				reader,
 				header->ctid_offsets_offset,
@@ -325,6 +327,59 @@ tp_segment_open(Relation index, BlockNumber root_block)
 	}
 
 	return reader;
+}
+
+/*
+ * Open segment for reading (default: skip CTID preloading).
+ * This is the standard entry point for query execution.
+ */
+TpSegmentReader *
+tp_segment_open(Relation index, BlockNumber root_block)
+{
+	return tp_segment_open_ex(index, root_block, false);
+}
+
+/*
+ * Look up a single CTID by doc_id.
+ * Used for deferred CTID resolution when CTIDs weren't preloaded.
+ */
+void
+tp_segment_lookup_ctid(
+		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out)
+{
+	BlockNumber	 page;
+	OffsetNumber offset;
+
+	Assert(reader != NULL);
+	Assert(ctid_out != NULL);
+	Assert(doc_id < reader->header->num_docs);
+
+	/* If CTIDs were preloaded, use the cache */
+	if (reader->cached_ctid_pages != NULL)
+	{
+		ItemPointerSet(
+				ctid_out,
+				reader->cached_ctid_pages[doc_id],
+				reader->cached_ctid_offsets[doc_id]);
+		return;
+	}
+
+	/* Read page number (4 bytes) from ctid_pages array */
+	tp_segment_read(
+			reader,
+			reader->header->ctid_pages_offset + doc_id * sizeof(BlockNumber),
+			&page,
+			sizeof(BlockNumber));
+
+	/* Read offset (2 bytes) from ctid_offsets array */
+	tp_segment_read(
+			reader,
+			reader->header->ctid_offsets_offset +
+					doc_id * sizeof(OffsetNumber),
+			&offset,
+			sizeof(OffsetNumber));
+
+	ItemPointerSet(ctid_out, page, offset);
 }
 
 void
