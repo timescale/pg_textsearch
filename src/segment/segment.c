@@ -308,8 +308,8 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		reader->cached_num_docs = header->num_docs;
 
 		/* Load CTID pages array (4 bytes per doc) */
-		reader->cached_ctid_pages =
-				palloc(header->num_docs * sizeof(BlockNumber));
+		reader->cached_ctid_pages = palloc(
+				header->num_docs * sizeof(BlockNumber));
 		tp_segment_read(
 				reader,
 				header->ctid_pages_offset,
@@ -317,8 +317,8 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 				header->num_docs * sizeof(BlockNumber));
 
 		/* Load CTID offsets array (2 bytes per doc) */
-		reader->cached_ctid_offsets =
-				palloc(header->num_docs * sizeof(OffsetNumber));
+		reader->cached_ctid_offsets = palloc(
+				header->num_docs * sizeof(OffsetNumber));
 		tp_segment_read(
 				reader,
 				header->ctid_offsets_offset,

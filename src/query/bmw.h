@@ -30,13 +30,13 @@
  */
 typedef struct TpTopKHeap
 {
-	ItemPointerData *ctids;		/* Array of k CTIDs (resolved at extraction) */
+	ItemPointerData *ctids; /* Array of k CTIDs (resolved at extraction) */
 	BlockNumber		*seg_blocks; /* Segment root block (InvalidBlockNumber =
 									memtable) */
-	uint32			*doc_ids;	 /* Segment-local doc IDs */
-	float4			*scores;	 /* Parallel array of scores */
-	int				 capacity;	 /* k - maximum results */
-	int				 size;		 /* Current entries (0 to k) */
+	uint32 *doc_ids;			 /* Segment-local doc IDs */
+	float4 *scores;				 /* Parallel array of scores */
+	int		capacity;			 /* k - maximum results */
+	int		size;				 /* Current entries (0 to k) */
 } TpTopKHeap;
 
 /*
@@ -83,10 +83,7 @@ tp_topk_add_memtable(TpTopKHeap *heap, ItemPointerData ctid, float4 score);
  * CTID resolution is deferred until extraction.
  */
 extern void tp_topk_add_segment(
-		TpTopKHeap *heap,
-		BlockNumber seg_block,
-		uint32		doc_id,
-		float4		score);
+		TpTopKHeap *heap, BlockNumber seg_block, uint32 doc_id, float4 score);
 
 /*
  * Resolve CTIDs for segment results in the heap.

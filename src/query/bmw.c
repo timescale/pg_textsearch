@@ -235,7 +235,8 @@ tp_topk_resolve_ctids(TpTopKHeap *heap, Relation index)
 		{
 			if (heap->seg_blocks[j] == seg_block)
 			{
-				tp_segment_lookup_ctid(reader, heap->doc_ids[j], &heap->ctids[j]);
+				tp_segment_lookup_ctid(
+						reader, heap->doc_ids[j], &heap->ctids[j]);
 				/* Mark as resolved by setting seg_block to invalid */
 				heap->seg_blocks[j] = InvalidBlockNumber;
 			}
@@ -252,10 +253,10 @@ tp_topk_resolve_ctids(TpTopKHeap *heap, Relation index)
 static int
 compare_heap_entries(const void *a, const void *b, void *arg)
 {
-	int			 i	   = *(const int *)a;
-	int			 j	   = *(const int *)b;
-	TpTopKHeap	*heap  = (TpTopKHeap *)arg;
-	int			 cmp;
+	int			i	 = *(const int *)a;
+	int			j	 = *(const int *)b;
+	TpTopKHeap *heap = (TpTopKHeap *)arg;
+	int			cmp;
 
 	/* Primary: higher score first (descending) */
 	if (heap->scores[i] > heap->scores[j])
@@ -263,7 +264,8 @@ compare_heap_entries(const void *a, const void *b, void *arg)
 	if (heap->scores[i] < heap->scores[j])
 		return 1;
 
-	/* Secondary: lower CTID first (ascending) for deterministic tie-breaking */
+	/* Secondary: lower CTID first (ascending) for deterministic tie-breaking
+	 */
 	cmp = ItemPointerCompare(&heap->ctids[i], &heap->ctids[j]);
 	return cmp;
 }
@@ -1017,8 +1019,8 @@ score_pivot_document(
 		if (!have_ctid)
 		{
 			/*
-			 * Resolve CTID if cached, otherwise leave invalid for lazy loading.
-			 * When lazy loading, CTIDs are resolved later via
+			 * Resolve CTID if cached, otherwise leave invalid for lazy
+			 * loading. When lazy loading, CTIDs are resolved later via
 			 * tp_topk_resolve_ctids.
 			 */
 			if (reader->cached_ctid_pages != NULL)
@@ -1196,7 +1198,8 @@ score_segment_multi_term_bmw(
 		 * Use tp_topk_add_segment for deferred CTID resolution.
 		 */
 		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
-			tp_topk_add_segment(heap, reader->root_block, pivot_doc_id, doc_score);
+			tp_topk_add_segment(
+					heap, reader->root_block, pivot_doc_id, doc_score);
 
 		if (stats)
 			stats->segment_docs_scored++;

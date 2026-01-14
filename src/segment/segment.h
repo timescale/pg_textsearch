@@ -295,9 +295,7 @@ extern void tp_segment_close(TpSegmentReader *reader);
 
 /* Lazy CTID lookup for deferred resolution */
 extern void tp_segment_lookup_ctid(
-		TpSegmentReader *reader,
-		uint32			 doc_id,
-		ItemPointerData *ctid_out);
+		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out);
 
 /* Zero-copy reader functions */
 typedef struct TpSegmentDirectAccess
