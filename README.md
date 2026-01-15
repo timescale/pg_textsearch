@@ -11,11 +11,11 @@ Modern ranked text search for Postgres.
 - Works with Postgres text search configurations (english, french, german, etc.)
 - Fast top-k queries via Block-Max WAND optimization
 
-⚠️ **Pre-release**: v0.4.0 - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds index compression; parallel builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
+⚠️ **Pre-release**: v0.5.0-dev - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds index compression; parallel builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
 
-![Tapir and Friends](images/tapir_and_friends_v0.4.0.png)
+![Tapir and Friends](images/tapir_and_friends_v0.5.0-dev.png)
 
-*The theme of v0.4.0 is compression, which the friends are trying to avoid.*
+*The theme of v0.5.0 is parallel indexing.*
 
 ## Historical note
 
