@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768416449280,
+  "lastUpdate": 1768458369939,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -919,6 +919,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d32590214fa6b4fbf6a5f8643b6461926873fdf6",
+          "message": "Bump version to v0.5.0-dev (#147)\n\n## Summary\n- Bump version from v0.4.0 to v0.5.0-dev\n- Update README to note parallel indexing as the main feature for v0.5.0\n- Add new SQL extension file and update test expected outputs\n\n## Testing\n- CI will verify the version string updates are consistent",
+          "timestamp": "2026-01-15T04:27:11Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d32590214fa6b4fbf6a5f8643b6461926873fdf6"
+        },
+        "date": 1768458368660,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 249.018,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.32,
             "unit": "ms"
           },
           {
