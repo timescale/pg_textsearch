@@ -29,10 +29,12 @@ tp_topk_init(TpTopKHeap *heap, int k, MemoryContext ctx)
 {
 	MemoryContext old_ctx = MemoryContextSwitchTo(ctx);
 
-	heap->ctids	   = palloc(k * sizeof(ItemPointerData));
-	heap->scores   = palloc(k * sizeof(float4));
-	heap->capacity = k;
-	heap->size	   = 0;
+	heap->ctids		 = palloc(k * sizeof(ItemPointerData));
+	heap->seg_blocks = palloc(k * sizeof(BlockNumber));
+	heap->doc_ids	 = palloc(k * sizeof(uint32));
+	heap->scores	 = palloc(k * sizeof(float4));
+	heap->capacity	 = k;
+	heap->size		 = 0;
 
 	MemoryContextSwitchTo(old_ctx);
 }
@@ -44,6 +46,16 @@ tp_topk_free(TpTopKHeap *heap)
 	{
 		pfree(heap->ctids);
 		heap->ctids = NULL;
+	}
+	if (heap->seg_blocks)
+	{
+		pfree(heap->seg_blocks);
+		heap->seg_blocks = NULL;
+	}
+	if (heap->doc_ids)
+	{
+		pfree(heap->doc_ids);
+		heap->doc_ids = NULL;
 	}
 	if (heap->scores)
 	{
@@ -60,35 +72,33 @@ tp_topk_free(TpTopKHeap *heap)
 static inline void
 heap_swap(TpTopKHeap *heap, int i, int j)
 {
-	ItemPointerData tmp_ctid  = heap->ctids[i];
-	float4			tmp_score = heap->scores[i];
+	ItemPointerData tmp_ctid	  = heap->ctids[i];
+	BlockNumber		tmp_seg_block = heap->seg_blocks[i];
+	uint32			tmp_doc_id	  = heap->doc_ids[i];
+	float4			tmp_score	  = heap->scores[i];
 
-	heap->ctids[i]	= heap->ctids[j];
-	heap->scores[i] = heap->scores[j];
-	heap->ctids[j]	= tmp_ctid;
-	heap->scores[j] = tmp_score;
+	heap->ctids[i]		= heap->ctids[j];
+	heap->seg_blocks[i] = heap->seg_blocks[j];
+	heap->doc_ids[i]	= heap->doc_ids[j];
+	heap->scores[i]		= heap->scores[j];
+
+	heap->ctids[j]		= tmp_ctid;
+	heap->seg_blocks[j] = tmp_seg_block;
+	heap->doc_ids[j]	= tmp_doc_id;
+	heap->scores[j]		= tmp_score;
 }
 
 /*
  * Compare two heap entries for min-heap ordering.
  * Returns true if entry at position a should be the parent of entry at b.
  *
- * For min-heap with tie-breaking:
- * - Lower score = should be parent (closer to root)
- * - For equal scores, higher CTID = should be parent (is "smaller")
- *
- * Why higher CTID is "smaller": Heapsort produces ascending order, then
- * we reverse for descending output. For equal scores we want lower CTIDs
- * first in output, so after reversal lower CTIDs should be at front.
- * Before reversal (ascending), higher CTIDs should come first.
+ * For min-heap: lower score = should be parent (closer to root).
+ * Tie-breaking by CTID happens after CTIDs are resolved at extraction time.
  */
 static inline bool
 heap_less(TpTopKHeap *heap, int a, int b)
 {
-	if (heap->scores[a] != heap->scores[b])
-		return heap->scores[a] < heap->scores[b];
-	/* Tiebreaker: higher CTID is "smaller" for heap purposes */
-	return ItemPointerCompare(&heap->ctids[a], &heap->ctids[b]) > 0;
+	return heap->scores[a] < heap->scores[b];
 }
 
 /*
@@ -135,61 +145,165 @@ heap_sift_down(TpTopKHeap *heap, int i)
 	}
 }
 
+/*
+ * Add a memtable result to the top-k heap.
+ * CTID is known immediately for memtable entries.
+ */
 void
-tp_topk_add(TpTopKHeap *heap, ItemPointerData ctid, float4 score)
+tp_topk_add_memtable(TpTopKHeap *heap, ItemPointerData ctid, float4 score)
 {
 	if (heap->size < heap->capacity)
 	{
 		/* Heap not full - just add */
-		int i			= heap->size++;
-		heap->ctids[i]	= ctid;
-		heap->scores[i] = score;
+		int i				= heap->size++;
+		heap->ctids[i]		= ctid;
+		heap->seg_blocks[i] = InvalidBlockNumber; /* Marks as memtable entry */
+		heap->doc_ids[i]	= 0;
+		heap->scores[i]		= score;
 		heap_sift_up(heap, i);
 	}
-	else if (
-			score > heap->scores[0] ||
-			(score == heap->scores[0] &&
-			 ItemPointerCompare(&ctid, &heap->ctids[0]) < 0))
+	else if (score > heap->scores[0])
 	{
-		/*
-		 * Heap full but new entry should replace root:
-		 * - Score beats minimum, OR
-		 * - Score equals minimum but new CTID is lower (we want to keep
-		 *   docs with lower CTIDs, so evict higher CTID at root)
-		 */
-		heap->ctids[0]	= ctid;
-		heap->scores[0] = score;
+		/* Heap full but new entry beats minimum */
+		heap->ctids[0]		= ctid;
+		heap->seg_blocks[0] = InvalidBlockNumber;
+		heap->doc_ids[0]	= 0;
+		heap->scores[0]		= score;
 		heap_sift_down(heap, 0);
 	}
 	/* else: doesn't qualify for top-k, ignore */
 }
 
 /*
- * Extract sorted results (descending by score).
- * Uses heap-sort: repeatedly swap root with end.
+ * Add a segment result to the top-k heap.
+ * CTID resolution is deferred until extraction.
+ */
+void
+tp_topk_add_segment(
+		TpTopKHeap *heap, BlockNumber seg_block, uint32 doc_id, float4 score)
+{
+	if (heap->size < heap->capacity)
+	{
+		/* Heap not full - just add */
+		int i = heap->size++;
+		ItemPointerSetInvalid(&heap->ctids[i]); /* Will be resolved later */
+		heap->seg_blocks[i] = seg_block;
+		heap->doc_ids[i]	= doc_id;
+		heap->scores[i]		= score;
+		heap_sift_up(heap, i);
+	}
+	else if (score > heap->scores[0])
+	{
+		/* Heap full but new entry beats minimum */
+		ItemPointerSetInvalid(&heap->ctids[0]);
+		heap->seg_blocks[0] = seg_block;
+		heap->doc_ids[0]	= doc_id;
+		heap->scores[0]		= score;
+		heap_sift_down(heap, 0);
+	}
+	/* else: doesn't qualify for top-k, ignore */
+}
+
+/*
+ * Resolve CTIDs for segment results in the heap.
+ * Batches lookups by segment - opens each unique segment once, resolves all
+ * CTIDs from that segment, then closes it. This avoids O(k) segment opens.
+ */
+void
+tp_topk_resolve_ctids(TpTopKHeap *heap, Relation index)
+{
+	int i, j;
+
+	for (i = 0; i < heap->size; i++)
+	{
+		TpSegmentReader *reader;
+		BlockNumber		 seg_block;
+
+		/* Skip memtable entries and already-resolved entries */
+		if (heap->seg_blocks[i] == InvalidBlockNumber)
+			continue;
+
+		seg_block = heap->seg_blocks[i];
+
+		/* Open segment once for all entries from this segment */
+		reader = tp_segment_open_ex(index, seg_block, false);
+		if (reader == NULL)
+			continue;
+
+		/* Resolve all CTIDs from this segment */
+		for (j = i; j < heap->size; j++)
+		{
+			if (heap->seg_blocks[j] == seg_block)
+			{
+				tp_segment_lookup_ctid(
+						reader, heap->doc_ids[j], &heap->ctids[j]);
+				/* Mark as resolved by setting seg_block to invalid */
+				heap->seg_blocks[j] = InvalidBlockNumber;
+			}
+		}
+
+		tp_segment_close(reader);
+	}
+}
+
+/*
+ * Compare function for qsort: sort by (score DESC, CTID ASC).
+ * This matches the exhaustive path's tie-breaking for deterministic results.
+ */
+static int
+compare_heap_entries(const void *a, const void *b, void *arg)
+{
+	int			i	 = *(const int *)a;
+	int			j	 = *(const int *)b;
+	TpTopKHeap *heap = (TpTopKHeap *)arg;
+	int			cmp;
+
+	/* Primary: higher score first (descending) */
+	if (heap->scores[i] > heap->scores[j])
+		return -1;
+	if (heap->scores[i] < heap->scores[j])
+		return 1;
+
+	/* Secondary: lower CTID first (ascending) for deterministic tie-breaking
+	 */
+	cmp = ItemPointerCompare(&heap->ctids[i], &heap->ctids[j]);
+	return cmp;
+}
+
+/*
+ * Extract sorted results (descending by score, CTID tie-breaking).
  *
- * Min-heap heapsort produces descending order (max at front), which is
- * exactly what we want: highest scores first, lowest CTIDs first for ties.
+ * Note: Call tp_topk_resolve_ctids first if heap contains segment results.
+ * This ensures CTIDs are available for tie-breaking to match exhaustive path.
  */
 int
 tp_topk_extract(TpTopKHeap *heap, ItemPointerData *ctids, float4 *scores)
 {
-	int count = heap->size;
+	int	 count = heap->size;
+	int *indices;
+	int	 i;
 
-	/* Heapsort in place */
-	while (heap->size > 0)
+	if (count == 0)
+		return 0;
+
+	/* Create index array for sorting */
+	indices = palloc(count * sizeof(int));
+	for (i = 0; i < count; i++)
+		indices[i] = i;
+
+	/* Sort indices by (score DESC, CTID ASC) */
+	qsort_arg(indices, count, sizeof(int), compare_heap_entries, heap);
+
+	/* Copy to output in sorted order */
+	for (i = 0; i < count; i++)
 	{
-		heap->size--;
-		heap_swap(heap, 0, heap->size);
-		heap_sift_down(heap, 0);
+		int idx	  = indices[i];
+		ctids[i]  = heap->ctids[idx];
+		scores[i] = heap->scores[idx];
 	}
 
-	/* Copy to output - heapsort already produced descending order */
-	for (int i = 0; i < count; i++)
-	{
-		ctids[i]  = heap->ctids[i];
-		scores[i] = heap->scores[i];
-	}
+	pfree(indices);
+	heap->size = 0;
 
 	return count;
 }
@@ -290,7 +404,7 @@ score_memtable_single_term(
 		score = compute_bm25_score(idf, tf, doc_len, k1, b, avg_doc_len);
 
 		if (!tp_topk_dominated(heap, score))
-			tp_topk_add(heap, *ctid, score);
+			tp_topk_add_memtable(heap, *ctid, score);
 
 		if (stats)
 			stats->memtable_docs++;
@@ -383,7 +497,8 @@ score_segment_single_term_bmw(
 
 			if (!tp_topk_dominated(heap, score))
 			{
-				tp_topk_add(heap, posting->ctid, score);
+				tp_topk_add_segment(
+						heap, reader->root_block, posting->doc_id, score);
 			}
 
 			if (stats)
@@ -448,6 +563,9 @@ tp_score_single_term_bmw(
 			tp_segment_close(reader);
 		}
 	}
+
+	/* Resolve CTIDs for segment results before extraction */
+	tp_topk_resolve_ctids(&heap, index);
 
 	/* Extract sorted results */
 	result_count = tp_topk_extract(&heap, result_ctids, result_scores);
@@ -587,7 +705,7 @@ score_memtable_multi_term(
 		while ((entry = hash_seq_search(&seq)) != NULL)
 		{
 			if (!tp_topk_dominated(heap, entry->score))
-				tp_topk_add(heap, entry->ctid, entry->score);
+				tp_topk_add_memtable(heap, entry->ctid, entry->score);
 
 			if (stats)
 				stats->memtable_docs++;
@@ -900,12 +1018,23 @@ score_pivot_document(
 
 		if (!have_ctid)
 		{
-			Assert(reader->cached_ctid_pages != NULL);
-			Assert(pivot_doc_id < reader->cached_num_docs);
-			ItemPointerSet(
-					ctid_out,
-					reader->cached_ctid_pages[pivot_doc_id],
-					reader->cached_ctid_offsets[pivot_doc_id]);
+			/*
+			 * Resolve CTID if cached, otherwise leave invalid for lazy
+			 * loading. When lazy loading, CTIDs are resolved later via
+			 * tp_topk_resolve_ctids.
+			 */
+			if (reader->cached_ctid_pages != NULL)
+			{
+				Assert(pivot_doc_id < reader->cached_num_docs);
+				ItemPointerSet(
+						ctid_out,
+						reader->cached_ctid_pages[pivot_doc_id],
+						reader->cached_ctid_offsets[pivot_doc_id]);
+			}
+			else
+			{
+				ItemPointerSetInvalid(ctid_out);
+			}
 			have_ctid = true;
 		}
 
@@ -1064,9 +1193,14 @@ score_segment_multi_term_bmw(
 				&pivot_ctid,
 				&active_count);
 
-		if (ItemPointerIsValid(&pivot_ctid) &&
-			!tp_topk_dominated(heap, doc_score))
-			tp_topk_add(heap, pivot_ctid, doc_score);
+		/*
+		 * doc_score > 0 means at least one term matched the pivot document.
+		 * (Scores are positive internally; negated at output for Postgres ASC)
+		 * Use tp_topk_add_segment for deferred CTID resolution.
+		 */
+		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
+			tp_topk_add_segment(
+					heap, reader->root_block, pivot_doc_id, doc_score);
 
 		if (stats)
 			stats->segment_docs_scored++;
@@ -1153,6 +1287,9 @@ tp_score_multi_term_bmw(
 	}
 
 	pfree(terms);
+
+	/* Resolve CTIDs for segment results before extraction */
+	tp_topk_resolve_ctids(&heap, index);
 
 	/* Extract sorted results */
 	result_count = tp_topk_extract(&heap, result_ctids, result_scores);

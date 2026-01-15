@@ -4,6 +4,10 @@
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
 
+\set ECHO none
+\i test/sql/validation.sql
+\set ECHO all
+
 -- ============================================================
 -- SECTION 1: Basic BMW correctness
 -- ============================================================
@@ -678,21 +682,8 @@ RESET pg_textsearch.index_memory_limit;
 
 -- Test: Should find high-tf docs from BOTH blocks
 -- Doc 145 (tf=5) should be #1, docs 1-5 (tf=4) should follow
-WITH bmw AS (
-    SELECT id, content <@> 'partial'::bm25query as score
-    FROM bmw_partial
-    ORDER BY content <@> 'partial'::bm25query LIMIT 10
-),
-exhaustive AS (
-    SELECT id, score FROM (
-        SELECT id, content <@> 'partial'::bm25query as score
-        FROM bmw_partial
-        ORDER BY content <@> 'partial'::bm25query
-    ) x LIMIT 10
-)
-SELECT 'partial-block' as test,
-    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
-FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+SELECT validate_bm25_scoring('bmw_partial', 'content', 'bmw_partial_idx',
+    'partial', 'english', 1.2, 0.75) as partial_block_valid;
 
 -- Verify doc 145 is top result (highest tf in partial block)
 SELECT 'partial-block-top' as test,
@@ -823,21 +814,8 @@ RESET pg_textsearch.index_memory_limit;
 
 -- Test: "common rare" should find only the 5 docs with both terms at top
 -- (they have higher combined score than single-term docs)
-WITH bmw AS (
-    SELECT id, content <@> 'common rare'::bm25query as score
-    FROM bmw_asymmetric
-    ORDER BY content <@> 'common rare'::bm25query LIMIT 10
-),
-exhaustive AS (
-    SELECT id, score FROM (
-        SELECT id, content <@> 'common rare'::bm25query as score
-        FROM bmw_asymmetric
-        ORDER BY content <@> 'common rare'::bm25query
-    ) x LIMIT 10
-)
-SELECT 'asymmetric-multiterm' as test,
-    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
-FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+SELECT validate_bm25_scoring('bmw_asymmetric', 'content', 'bmw_asymmetric_idx',
+    'common rare', 'english', 1.2, 0.75) as asymmetric_valid;
 
 -- Verify top 5 are the dual-term docs (they should have best scores)
 WITH top5 AS (

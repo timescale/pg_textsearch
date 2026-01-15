@@ -133,11 +133,16 @@ typedef struct TpDictEntry
 
 /*
  * Segment posting - output format for iteration
- * 10 bytes, packed. Used when converting block postings for scoring.
+ * 14 bytes, packed. Used when converting block postings for scoring.
+ *
+ * doc_id is segment-local, used for deferred CTID resolution in lazy loading.
+ * When CTIDs are pre-loaded, ctid is set immediately. When lazy loading,
+ * ctid is invalid and doc_id is used to look up CTID at result extraction.
  */
 typedef struct TpSegmentPosting
 {
-	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID */
+	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID (may be invalid) */
+	uint32			doc_id;	   /* 4 bytes - segment-local doc ID */
 	uint16			frequency; /* 2 bytes - term frequency */
 	uint16 doc_length;		   /* 2 bytes - document length (from fieldnorm) */
 } __attribute__((packed)) TpSegmentPosting;
@@ -278,6 +283,8 @@ extern void tp_segment_writer_flush(TpSegmentWriter *writer);
 extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 
 /* Reader functions */
+extern TpSegmentReader *
+tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
 extern void				tp_segment_read(
 					TpSegmentReader *reader,
@@ -285,6 +292,10 @@ extern void				tp_segment_read(
 					void			*dest,
 					uint32			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
+
+/* Lazy CTID lookup for deferred resolution */
+extern void tp_segment_lookup_ctid(
+		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out);
 
 /* Zero-copy reader functions */
 typedef struct TpSegmentDirectAccess

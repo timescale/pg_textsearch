@@ -324,17 +324,27 @@ tp_segment_posting_iterator_next(
 	bp	   = &iter->block_postings[iter->current_in_block];
 	doc_id = bp->doc_id;
 
+	/* Always store doc_id for deferred CTID resolution */
+	iter->output_posting.doc_id = doc_id;
+
 	/*
-	 * Look up CTID from segment-level cached arrays.
-	 * Posting lists are sorted by doc_id, so array access has excellent
-	 * cache locality. Fieldnorm is inline in block posting.
+	 * Look up CTID from segment-level cached arrays if available.
+	 * By default, CTIDs are not pre-loaded and will be resolved later
+	 * via tp_segment_lookup_ctid.
 	 */
-	Assert(iter->reader->cached_ctid_pages != NULL);
-	Assert(doc_id < iter->reader->cached_num_docs);
-	ItemPointerSet(
-			&iter->output_posting.ctid,
-			iter->reader->cached_ctid_pages[doc_id],
-			iter->reader->cached_ctid_offsets[doc_id]);
+	if (iter->reader->cached_ctid_pages != NULL)
+	{
+		Assert(doc_id < iter->reader->cached_num_docs);
+		ItemPointerSet(
+				&iter->output_posting.ctid,
+				iter->reader->cached_ctid_pages[doc_id],
+				iter->reader->cached_ctid_offsets[doc_id]);
+	}
+	else
+	{
+		/* Mark CTID invalid - will be resolved later */
+		ItemPointerSetInvalid(&iter->output_posting.ctid);
+	}
 
 	/* Build output posting (fieldnorm is inline in bp) */
 	iter->output_posting.frequency	= bp->frequency;
@@ -464,13 +474,21 @@ tp_segment_posting_iterator_seek(
 		if (bp->doc_id >= target_doc_id)
 		{
 			/* Found it - convert to output posting */
-			Assert(iter->reader->cached_ctid_pages != NULL);
-			Assert(bp->doc_id < iter->reader->cached_num_docs);
+			iter->output_posting.doc_id = bp->doc_id;
 
-			ItemPointerSet(
-					&iter->output_posting.ctid,
-					iter->reader->cached_ctid_pages[bp->doc_id],
-					iter->reader->cached_ctid_offsets[bp->doc_id]);
+			/* Resolve CTID if cached, otherwise leave invalid for later */
+			if (iter->reader->cached_ctid_pages != NULL)
+			{
+				Assert(bp->doc_id < iter->reader->cached_num_docs);
+				ItemPointerSet(
+						&iter->output_posting.ctid,
+						iter->reader->cached_ctid_pages[bp->doc_id],
+						iter->reader->cached_ctid_offsets[bp->doc_id]);
+			}
+			else
+			{
+				ItemPointerSetInvalid(&iter->output_posting.ctid);
+			}
 
 			iter->output_posting.frequency	= bp->frequency;
 			iter->output_posting.doc_length = (uint16)decode_fieldnorm(
@@ -903,7 +921,12 @@ tp_score_all_terms_in_segment_chain(
 
 	while (current != InvalidBlockNumber)
 	{
-		TpSegmentReader *reader = tp_segment_open(index, current);
+		/*
+		 * Use tp_segment_open_ex with load_ctids=true because the exhaustive
+		 * path needs CTIDs as hash keys. The lazy CTID loading optimization
+		 * is for the BMW path which uses doc_id in the top-k heap.
+		 */
+		TpSegmentReader *reader = tp_segment_open_ex(index, current, true);
 		if (!reader)
 			break;
 

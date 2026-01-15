@@ -23,13 +23,20 @@
  * Heap property: parent score <= child scores (minimum at root).
  * This allows O(1) threshold access and O(log k) updates.
  * When heap is full, threshold = root score (minimum in top-k).
+ *
+ * Supports deferred CTID resolution: segment results store (seg_block, doc_id)
+ * and resolve CTIDs only at extraction time. Memtable results have CTIDs
+ * immediately (seg_block = InvalidBlockNumber).
  */
 typedef struct TpTopKHeap
 {
-	ItemPointerData *ctids;	   /* Array of k CTIDs */
-	float4			*scores;   /* Parallel array of scores */
-	int				 capacity; /* k - maximum results */
-	int				 size;	   /* Current entries (0 to k) */
+	ItemPointerData *ctids; /* Array of k CTIDs (resolved at extraction) */
+	BlockNumber		*seg_blocks; /* Segment root block (InvalidBlockNumber =
+									memtable) */
+	uint32 *doc_ids;			 /* Segment-local doc IDs */
+	float4 *scores;				 /* Parallel array of scores */
+	int		capacity;			 /* k - maximum results */
+	int		size;				 /* Current entries (0 to k) */
 } TpTopKHeap;
 
 /*
@@ -65,16 +72,31 @@ tp_topk_dominated(TpTopKHeap *heap, float4 score)
 }
 
 /*
- * Add a document to the top-k heap.
- * If score doesn't beat threshold, does nothing.
- * If heap full and score beats minimum, replaces minimum.
+ * Add a memtable result to the top-k heap.
+ * CTID is known immediately for memtable entries.
  */
-extern void tp_topk_add(TpTopKHeap *heap, ItemPointerData ctid, float4 score);
+extern void
+tp_topk_add_memtable(TpTopKHeap *heap, ItemPointerData ctid, float4 score);
+
+/*
+ * Add a segment result to the top-k heap.
+ * CTID resolution is deferred until extraction.
+ */
+extern void tp_topk_add_segment(
+		TpTopKHeap *heap, BlockNumber seg_block, uint32 doc_id, float4 score);
+
+/*
+ * Resolve CTIDs for segment results in the heap.
+ * Must be called before tp_topk_extract.
+ * Opens segments as needed to look up CTIDs.
+ */
+extern void tp_topk_resolve_ctids(TpTopKHeap *heap, Relation index);
 
 /*
  * Extract sorted results from heap (descending by score).
  * Returns number of results extracted.
  * After extraction, heap is empty.
+ * Note: Call tp_topk_resolve_ctids first if heap contains segment results.
  */
 extern int
 tp_topk_extract(TpTopKHeap *heap, ItemPointerData *ctids, float4 *scores);
