@@ -246,6 +246,9 @@ pg_textsearch.memtable_spill_threshold = 32000000  # posting entries (~1M docs/s
 
 # Compression (v0.4.0+)
 pg_textsearch.compress_segments = on          # default on
+
+# Query optimization
+pg_textsearch.enable_bmw = on                 # Block-Max WAND for top-k queries
 ```
 
 The `memtable_spill_threshold` controls when the in-memory index spills to
