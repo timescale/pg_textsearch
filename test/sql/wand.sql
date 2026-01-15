@@ -2,9 +2,14 @@
 --
 -- Regression test for doc-ID ordered traversal in multi-term queries.
 -- Ensures documents at different block positions across posting lists
--- are correctly scored.
+-- are correctly scored. Uses validation.sql to verify scores match
+-- the reference BM25 implementation.
 
 CREATE EXTENSION pg_textsearch;
+
+\set ECHO none
+\i test/sql/validation.sql
+\set ECHO all
 
 -- ============================================================
 -- TEST: Multi-term documents score correctly across block boundaries
@@ -24,55 +29,16 @@ SELECT bm25_spill_index('bmw_bug_idx');
 
 -- Posting list layout in segment:
 -- "alpha": 6 postings (docs 1-5, 6) - fits in single block
--- "beta": 6 postings (doc 6, docs 7-206)
+-- "beta": 201 postings (doc 6, docs 7-206)
 --   - Block 0: docs 6-133
 --   - Block 1: docs 134-206
 --
 -- Doc 6 is the only multi-term document.
 
--- Get ground truth with exhaustive scoring
-SET pg_textsearch.enable_bmw = off;
-CREATE TEMP TABLE exhaustive_results AS
-SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
-FROM bmw_bug
-WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
-ORDER BY score LIMIT 206;
+-- Validate BMW produces correct scores for multi-term query
+SELECT validate_bm25_scoring('bmw_bug', 'content', 'bmw_bug_idx',
+    'alpha beta', 'english', 1.2, 0.75) as two_term_valid;
 
--- Get BMW results
-SET pg_textsearch.enable_bmw = on;
-CREATE TEMP TABLE bmw_results AS
-SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
-FROM bmw_bug
-WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
-ORDER BY score LIMIT 206;
-
--- Show both result sets
-SELECT 'exhaustive' as path, * FROM exhaustive_results ORDER BY score;
-SELECT 'bmw' as path, * FROM bmw_results ORDER BY score;
-
--- TEST 1: Doc 6 should be in exhaustive results (it's the ONLY multi-term doc!)
-SELECT 'exhaustive-has-6' as test,
-    CASE WHEN 6 IN (SELECT id FROM exhaustive_results)
-    THEN 'PASS' ELSE 'FAIL' END as result;
-
--- TEST 2: Doc 6 should be in BMW results
-SELECT 'bmw-has-6' as test,
-    CASE WHEN 6 IN (SELECT id FROM bmw_results)
-    THEN 'PASS' ELSE 'FAIL' END as result;
-
--- TEST 3: Results should match between BMW and exhaustive
-SELECT 'results-match' as test,
-    CASE WHEN (SELECT COUNT(*) FROM
-        (SELECT id FROM exhaustive_results EXCEPT SELECT id FROM bmw_results) x) = 0
-    THEN 'PASS' ELSE 'FAIL - RESULTS DIFFER' END as result;
-
--- Show what score doc 6 SHOULD have
-SET pg_textsearch.enable_bmw = off;
-SELECT 'correct-score-for-6' as info,
-    content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as expected_score
-FROM bmw_bug WHERE id = 6;
-
-DROP TABLE exhaustive_results, bmw_results;
 DROP TABLE bmw_bug;
 
 -- ============================================================
@@ -101,40 +67,10 @@ INSERT INTO three_term (content)
 
 SELECT bm25_spill_index('three_term_idx');
 
--- Get ground truth with exhaustive scoring
--- Use LIMIT 20 to get all matching docs (only 11 in table)
-SET pg_textsearch.enable_bmw = off;
-CREATE TEMP TABLE ex_3term AS
-SELECT id, content <@> to_bm25query('alpha beta gamma', 'three_term_idx') as score
-FROM three_term
-WHERE content <@> to_bm25query('alpha beta gamma', 'three_term_idx') < 0
-ORDER BY score LIMIT 20;
+-- Validate BMW produces correct scores for 3-term query
+SELECT validate_bm25_scoring('three_term', 'content', 'three_term_idx',
+    'alpha beta gamma', 'english', 1.2, 0.75) as three_term_valid;
 
--- Get BMW results
-SET pg_textsearch.enable_bmw = on;
-CREATE TEMP TABLE bmw_3term AS
-SELECT id, content <@> to_bm25query('alpha beta gamma', 'three_term_idx') as score
-FROM three_term
-WHERE content <@> to_bm25query('alpha beta gamma', 'three_term_idx') < 0
-ORDER BY score LIMIT 20;
-
--- Show both result sets
-SELECT 'exhaustive-3term' as mode, * FROM ex_3term ORDER BY score LIMIT 5;
-SELECT 'bmw-3term' as mode, * FROM bmw_3term ORDER BY score LIMIT 5;
-
--- TEST 5: Doc 8 (3-term doc) should be #1 in both
-SELECT '3-term-8-is-top' as test,
-    CASE WHEN (SELECT id FROM ex_3term ORDER BY score LIMIT 1) = 8
-         AND (SELECT id FROM bmw_3term ORDER BY score LIMIT 1) = 8
-    THEN 'PASS' ELSE 'FAIL' END as result;
-
--- TEST 6: 3-term results should match
-SELECT '3-term-results-match' as test,
-    CASE WHEN (SELECT COUNT(*) FROM
-        (SELECT id FROM ex_3term EXCEPT SELECT id FROM bmw_3term) x) = 0
-    THEN 'PASS' ELSE 'FAIL - 3-TERM RESULTS DIFFER' END as result;
-
-DROP TABLE ex_3term, bmw_3term;
 DROP TABLE three_term;
 
 DROP EXTENSION pg_textsearch CASCADE;
