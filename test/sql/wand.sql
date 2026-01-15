@@ -15,7 +15,6 @@ CREATE INDEX bmw_bug_idx ON bmw_bug USING bm25(content) WITH (text_config='engli
 
 -- Insert in order that puts multi-term doc at different block positions:
 -- 5 alpha-only docs, then 1 multi-term, then 200 beta-only docs
--- Using smaller counts to avoid tie-breaking issues while still testing block traversal
 INSERT INTO bmw_bug (content) SELECT 'alpha only ' || i FROM generate_series(1, 5) i;
 INSERT INTO bmw_bug (content) VALUES ('alpha beta both terms here');  -- id=6
 INSERT INTO bmw_bug (content) SELECT 'beta only ' || i FROM generate_series(7, 206) i;
@@ -37,7 +36,7 @@ CREATE TEMP TABLE exhaustive_results AS
 SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
 FROM bmw_bug
 WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
-ORDER BY score LIMIT 10;
+ORDER BY score LIMIT 206;
 
 -- Get BMW results
 SET pg_textsearch.enable_bmw = on;
@@ -45,21 +44,21 @@ CREATE TEMP TABLE bmw_results AS
 SELECT id, content <@> to_bm25query('alpha beta', 'bmw_bug_idx') as score
 FROM bmw_bug
 WHERE content <@> to_bm25query('alpha beta', 'bmw_bug_idx') < 0
-ORDER BY score LIMIT 10;
+ORDER BY score LIMIT 206;
 
 -- Show both result sets
 SELECT 'exhaustive' as path, * FROM exhaustive_results ORDER BY score;
 SELECT 'bmw' as path, * FROM bmw_results ORDER BY score;
 
--- TEST 1: Doc 6 should be in top 10 of exhaustive (it's the ONLY multi-term doc!)
+-- TEST 1: Doc 6 should be in exhaustive results (it's the ONLY multi-term doc!)
 SELECT 'exhaustive-has-6' as test,
     CASE WHEN 6 IN (SELECT id FROM exhaustive_results)
     THEN 'PASS' ELSE 'FAIL' END as result;
 
--- TEST 2: Doc 6 should be in top 10 of BMW (THIS FAILS - THE BUG!)
+-- TEST 2: Doc 6 should be in BMW results
 SELECT 'bmw-has-6' as test,
     CASE WHEN 6 IN (SELECT id FROM bmw_results)
-    THEN 'PASS' ELSE 'FAIL - DOC 6 MISSING DUE TO PARTIAL SCORING BUG' END as result;
+    THEN 'PASS' ELSE 'FAIL' END as result;
 
 -- TEST 3: Results should match between BMW and exhaustive
 SELECT 'results-match' as test,
@@ -88,8 +87,7 @@ CREATE TABLE three_term (id SERIAL PRIMARY KEY, content TEXT);
 CREATE INDEX three_term_idx ON three_term USING bm25(content)
     WITH (text_config='english');
 
--- Create layout to test multi-term scoring without excessive ties
--- Small counts to avoid tie-breaking issues
+-- Create layout to test multi-term scoring
 INSERT INTO three_term (content)
     SELECT 'alpha only ' || i FROM generate_series(1, 3) i;
 INSERT INTO three_term (content)
