@@ -1194,11 +1194,11 @@ score_segment_multi_term_bmw(
 				&active_count);
 
 		/*
-		 * doc_score < 0 means we found at least one term containing the pivot.
-		 * (BM25 scores are negative; more negative = better match)
+		 * doc_score > 0 means at least one term matched the pivot document.
+		 * (Scores are positive internally; negated at output for Postgres ASC)
 		 * Use tp_topk_add_segment for deferred CTID resolution.
 		 */
-		if (doc_score < 0.0f && !tp_topk_dominated(heap, doc_score))
+		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
 			tp_topk_add_segment(
 					heap, reader->root_block, pivot_doc_id, doc_score);
 
