@@ -2,7 +2,7 @@
 -- Tests basic index build with enough data to exercise segment writing
 -- Note: Actual parallel workers require 100K+ tuples and max_parallel_maintenance_workers > 0
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.0-dev installed
+INFO:  pg_textsearch v0.5.0-dev installed
 SET enable_seqscan = off;
 -- Create a table with moderate amount of data
 CREATE TABLE parallel_test (
