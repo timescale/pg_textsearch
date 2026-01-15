@@ -4,7 +4,7 @@
 -- Ensures documents at different block positions across posting lists
 -- are correctly scored.
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.4.0 installed
+INFO:  pg_textsearch v0.5.0-dev installed
 -- ============================================================
 -- TEST: Multi-term documents score correctly across block boundaries
 -- ============================================================
