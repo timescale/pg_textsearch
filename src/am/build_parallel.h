@@ -64,8 +64,8 @@ typedef struct TpParallelBuildShared
 	double	   b;				/* BM25 b parameter */
 	int32	   worker_count;	/* Total workers (including leader) */
 
-	/* Per-worker spill threshold (total threshold / worker_count) */
-	int64 spill_threshold_per_worker;
+	/* Per-worker memory budget for memtable (in bytes) */
+	Size memory_budget_per_worker;
 
 	/* Worker coordination */
 	slock_t			  mutex;		 /* Protects mutable scalar fields */
