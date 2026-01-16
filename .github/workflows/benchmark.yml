@@ -123,7 +123,7 @@ jobs:
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
-        maintenance_work_mem = 512MB
+        maintenance_work_mem = 1GB
         pg_textsearch.index_memory_limit = 512MB
         EOF
 
@@ -582,7 +582,7 @@ jobs:
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
         effective_cache_size = 12GB
-        maintenance_work_mem = 512MB
+        maintenance_work_mem = 1GB
         work_mem = 128MB
         max_connections = 20
         checkpoint_completion_target = 0.9
@@ -809,7 +809,7 @@ jobs:
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
         effective_cache_size = 12GB
-        maintenance_work_mem = 512MB
+        maintenance_work_mem = 1GB
         work_mem = 128MB
         max_connections = 20
         checkpoint_completion_target = 0.9
