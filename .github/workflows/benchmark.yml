@@ -533,7 +533,7 @@ jobs:
   # in a separate PostgreSQL instance with identical configuration.
   system-x-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours for all datasets
+    timeout-minutes: 60
     # Run for any dataset selection or scheduled runs
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
