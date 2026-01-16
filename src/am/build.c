@@ -812,7 +812,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					 nworkers);
 			}
 
-			elog(NOTICE,
+			elog(DEBUG1,
 				 "Using parallel index build with %d workers (%.0f tuples)",
 				 nworkers,
 				 reltuples);
