@@ -524,9 +524,11 @@ tp_init_parallel_shared(
 
 	{
 		Size memory_budget;
+		int	 total_workers = nworkers + 1; /* background workers + leader */
 
 		/* maintenance_work_mem is in KB, convert to bytes */
-		memory_budget = ((Size)maintenance_work_mem * 1024) / nworkers / 2;
+		memory_budget = ((Size)maintenance_work_mem * 1024) / total_workers /
+						2;
 
 		/* Apply slop factor to avoid thrashing near boundary */
 		shared->memory_budget_per_worker = (Size)(memory_budget *
@@ -534,7 +536,7 @@ tp_init_parallel_shared(
 
 		elog(DEBUG1,
 			 "Parallel build: %d workers, %zu KB memory budget/worker",
-			 nworkers,
+			 total_workers,
 			 shared->memory_budget_per_worker / 1024);
 	}
 
