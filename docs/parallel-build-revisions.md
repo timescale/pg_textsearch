@@ -122,26 +122,18 @@ If multiple runts exist, they can be combined together before merging with
 a full segment, or merged into a single segment if their combined size is
 reasonable.
 
-## Implementation Order
+## Implementation Status
 
-Suggested order based on dependencies and impact:
+### Completed (this PR)
 
 1. **Memory-based spill threshold** (Section 1)
-   - Self-contained change to worker memtable spill logic
-   - No dependencies on other changes
-   - Immediate benefit: accurate memory control
+   - Worker memtables now use `MemoryContextMemAllocated()` for accurate tracking
+   - Respects `maintenance_work_mem` divided by workers
+   - Removes heuristic `TP_BYTES_PER_POSTING_ESTIMATE` constant
 
-2. **Parallel compaction - basic** (Section 2, phase 2 only)
-   - Each worker merges its own chain after build
-   - Simple barrier synchronization
-   - Reduces segment count from `workers * spills` to `workers`
+### Deferred (follow-up PR)
 
-3. **Small segment handling** (Section 3)
-   - Integrate runt detection into compaction phase
-   - Modify segment distribution to pair runts with neighbors
-   - Achieves uniform segment size goal
-
-4. **Parallel compaction - full** (Section 2, multi-round)
-   - Add redistribution logic for additional merge rounds
-   - Only needed when workers > segments_per_level
-   - Achieves full LSM invariant restoration
+2. **Parallel compaction** (Sections 2 & 3)
+   - Requires refactoring `tp_merge_level_segments` to work on arbitrary chains
+   - Need to handle page allocation during parallel build (pool vs FSM)
+   - Significant complexity; better as dedicated follow-up

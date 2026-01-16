@@ -513,52 +513,29 @@ tp_init_parallel_shared(
 		 shared->worker_count);
 
 	/*
-	 * Per-worker spill threshold calculation.
+	 * Per-worker memory budget calculation.
 	 *
-	 * We want segments large enough to be efficient but not so large that
-	 * workers run out of memory. With double-buffering, each worker can have
-	 * up to 2 active memtables, so we need to be conservative.
-	 *
-	 * Heuristic: Each posting entry uses ~25 bytes in the memtable
-	 * (ItemPointerData + frequency + hash overhead + term strings).
-	 * With maintenance_work_mem split across workers and double-buffering:
-	 *   budget = maintenance_work_mem / nworkers / 2 (for double-buffer)
-	 *   max_postings = budget / 25 bytes
-	 *
-	 * But we also use the GUC-based threshold as an upper bound.
-	 * Minimum of 1M postings ensures segments aren't too small (~40K docs).
+	 * We split maintenance_work_mem across workers, with a factor of 2 for
+	 * double-buffering (each worker can have up to 2 active memtables).
+	 * We use 90% of the budget as the actual threshold to provide slop
+	 * and avoid thrashing near the boundary.
 	 */
-#define TP_BYTES_PER_POSTING_ESTIMATE 25
-#define TP_MIN_POSTINGS_PER_WORKER	  1000000 /* ~40K docs minimum */
+#define TP_MEMORY_SLOP_FACTOR 0.9
 
 	{
-		int64 memory_budget_per_worker;
-		int64 memory_based_threshold;
-		int64 guc_based_threshold;
+		Size memory_budget;
 
 		/* maintenance_work_mem is in KB, convert to bytes */
-		memory_budget_per_worker = ((int64)maintenance_work_mem * 1024) /
-								   nworkers / 2; /* /2 for double-buffer */
+		memory_budget = ((Size)maintenance_work_mem * 1024) / nworkers / 2;
 
-		memory_based_threshold = memory_budget_per_worker /
-								 TP_BYTES_PER_POSTING_ESTIMATE;
-
-		guc_based_threshold = tp_memtable_spill_threshold / nworkers;
-
-		/* Use smaller of memory-based and GUC-based thresholds */
-		shared->spill_threshold_per_worker =
-				Min(memory_based_threshold, guc_based_threshold);
-
-		/* But ensure minimum for segment efficiency */
-		if (shared->spill_threshold_per_worker < TP_MIN_POSTINGS_PER_WORKER)
-			shared->spill_threshold_per_worker = TP_MIN_POSTINGS_PER_WORKER;
+		/* Apply slop factor to avoid thrashing near boundary */
+		shared->memory_budget_per_worker = (Size)(memory_budget *
+												  TP_MEMORY_SLOP_FACTOR);
 
 		elog(DEBUG1,
-			 "Parallel build: %d workers, %ld postings/worker threshold "
-			 "(memory budget: %ld KB/worker)",
+			 "Parallel build: %d workers, %zu KB memory budget/worker",
 			 nworkers,
-			 (long)shared->spill_threshold_per_worker,
-			 (long)(memory_budget_per_worker / 1024));
+			 shared->memory_budget_per_worker / 1024);
 	}
 
 	/* Initialize coordination primitives */
@@ -684,18 +661,13 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	/* Process tuples */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		tp_worker_process_document(
-				build_state.active,
-				slot,
-				shared->attnum,
-				shared->text_config_oid);
-
-		tuples_processed++;
-		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
-
-		/* Check spill threshold */
-		if (build_state.active->total_postings >=
-			shared->spill_threshold_per_worker)
+		/*
+		 * Check memory budget BEFORE processing each document.
+		 * This ensures we don't exceed the budget, with some tolerance
+		 * for the size of a single document.
+		 */
+		if (MemoryContextMemAllocated(build_state.active->mcxt, true) >=
+			shared->memory_budget_per_worker)
 		{
 			TpLocalMemtable *to_spill;
 			TpLocalMemtable *alternate;
@@ -723,6 +695,15 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			tp_local_memtable_clear(to_spill);
 			build_state.spilling = NULL;
 		}
+
+		tp_worker_process_document(
+				build_state.active,
+				slot,
+				shared->attnum,
+				shared->text_config_oid);
+
+		tuples_processed++;
+		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -810,20 +791,11 @@ tp_leader_participate(
 		if (tuples_processed == 0)
 			elog(DEBUG1, "Leader processing first tuple");
 
-		tp_worker_process_document(
-				build_state.active,
-				slot,
-				shared->attnum,
-				shared->text_config_oid);
-
-		tuples_processed++;
-		if (tuples_processed % 100000 == 0)
-			elog(DEBUG1, "Leader: %ld tuples processed", tuples_processed);
-		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
-
-		/* Check spill threshold */
-		if (build_state.active->total_postings >=
-			shared->spill_threshold_per_worker)
+		/*
+		 * Check memory budget BEFORE processing each document.
+		 */
+		if (MemoryContextMemAllocated(build_state.active->mcxt, true) >=
+			shared->memory_budget_per_worker)
 		{
 			TpLocalMemtable *to_spill;
 			TpLocalMemtable *alternate;
@@ -843,6 +815,17 @@ tp_leader_participate(
 			tp_local_memtable_clear(to_spill);
 			build_state.spilling = NULL;
 		}
+
+		tp_worker_process_document(
+				build_state.active,
+				slot,
+				shared->attnum,
+				shared->text_config_oid);
+
+		tuples_processed++;
+		if (tuples_processed % 100000 == 0)
+			elog(DEBUG1, "Leader: %ld tuples processed", tuples_processed);
+		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
 	}
