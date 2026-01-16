@@ -2,7 +2,7 @@
 -- Loads Wikipedia articles and creates BM25 index
 --
 -- Usage:
---   psql -v data_dir="'/path/to/data'" -f load.sql
+--   DATA_DIR=/path/to/data psql -f load.sql
 
 \set ON_ERROR_STOP on
 \timing on
