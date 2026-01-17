@@ -14,13 +14,16 @@ sys.exit(0 if (sys.version_info.major, sys.version_info.minor) == (3, 10) else 1
 EOF
 }
 
-if is_py310 python3.10; then
-    PYTHON_BIN=python3.10
-elif is_py310 python3; then
-    PYTHON_BIN=python3
-elif is_py310 python; then
-    PYTHON_BIN=python
-else
+PYTHON_BIN=""
+
+for candidate in python3.10 python3 python; do
+    if is_py310 "$candidate"; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
     echo "Error: Python 3.10 is required. Install python3.10 and retry."
     exit 1
 fi
