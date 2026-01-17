@@ -8,7 +8,7 @@
 set -e
 
 is_py310() {
-    "$1" - <<'EOF' >/dev/null 2>&1
+    "$1" <<'EOF' >/dev/null 2>&1
 import sys
 sys.exit(0 if (sys.version_info.major, sys.version_info.minor) == (3, 10) else 1)
 EOF
