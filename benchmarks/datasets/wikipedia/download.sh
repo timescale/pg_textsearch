@@ -7,6 +7,26 @@
 
 set -e
 
+is_py310() {
+    "$1" - <<'EOF' >/dev/null 2>&1
+import sys
+sys.exit(0 if (sys.version_info.major, sys.version_info.minor) == (3, 10) else 1)
+EOF
+}
+
+if is_py310 python3.10; then
+    PYTHON_BIN=python3.10
+elif is_py310 python3; then
+    PYTHON_BIN=python3
+elif is_py310 python; then
+    PYTHON_BIN=python
+else
+    echo "Error: Python 3.10 is required. Install python3.10 and retry."
+    exit 1
+fi
+
+echo "Using Python interpreter: $PYTHON_BIN"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$SCRIPT_DIR/data"
 SUBSET_SIZE="${1:-full}"  # "full", "1M", "100K", "10K"
@@ -42,16 +62,16 @@ if [ "$SUBSET_SIZE" = "full" ]; then
     fi
 
     echo "Processing Wikipedia XML dump..."
-    echo "This requires WikiExtractor: pip install wikiextractor"
+    echo "This requires WikiExtractor: python3.10 -m pip install wikiextractor"
 
-    if ! command -v wikiextractor &> /dev/null; then
+    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
         echo "Installing wikiextractor..."
-        pip install wikiextractor
+        "$PYTHON_BIN" -m pip install wikiextractor
     fi
 
     # Extract to JSON format
     if [ ! -d "extracted" ]; then
-        python -m wikiextractor.WikiExtractor \
+        "$PYTHON_BIN" -m wikiextractor.WikiExtractor \
             --json \
             --output extracted \
             --compress \
@@ -60,7 +80,7 @@ if [ "$SUBSET_SIZE" = "full" ]; then
 
     # Convert to TSV format for COPY
     echo "Converting to TSV format..."
-    python3 << 'PYTHON_SCRIPT'
+    "$PYTHON_BIN" << 'PYTHON_SCRIPT'
 import json
 import gzip
 import os
@@ -124,21 +144,21 @@ else
             https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
     fi
 
-    if ! command -v wikiextractor &> /dev/null; then
+    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
         echo "Installing wikiextractor..."
-        pip install wikiextractor
+        "$PYTHON_BIN" -m pip install wikiextractor
     fi
 
     if [ ! -d "simple_extracted" ]; then
         echo "Extracting Simple Wikipedia..."
-        python -m wikiextractor.WikiExtractor \
+        "$PYTHON_BIN" -m wikiextractor.WikiExtractor \
             --json \
             --output simple_extracted \
             simplewiki-latest-pages-articles.xml.bz2
     fi
 
     echo "Converting to TSV (limiting to $NUM_ARTICLES articles)..."
-    python3 << PYTHON_SCRIPT
+    "$PYTHON_BIN" << PYTHON_SCRIPT
 import json
 import os
 from pathlib import Path
