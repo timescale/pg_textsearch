@@ -53,9 +53,9 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 /*
  * Expansion factor for estimating index pages from heap.
  *
- * BM25 indexes typically use 30-40% of heap pages. We use 0.8 to provide
- * adequate safety margin for large datasets. The pool also includes estimated
- * page index pages.
+ * BM25 indexes typically use 30-50% of heap pages for data, but text-heavy
+ * workloads with many unique terms can exceed this. We use 1.0 to provide
+ * adequate safety margin. The pool also includes estimated page index pages.
  *
  * If the pool is exhausted during build, an error will be raised suggesting
  * to increase this factor. The unused pool pages are reclaimed via truncation
@@ -177,10 +177,10 @@ tp_worker_spill_memtable(
 		return false;
 
 	elog(DEBUG1,
-		 "Worker %d spilling memtable: %d docs, %ld postings",
+		 "Worker %d spilling memtable: %d docs, %lld postings",
 		 worker_id,
 		 memtable->num_docs,
-		 memtable->total_postings);
+		 (long long)memtable->total_postings);
 
 	seg_block = tp_write_segment_from_local_memtable(
 			memtable, index, shared, worker_id);
@@ -377,17 +377,17 @@ tp_build_parallel(
 		 nworkers,
 		 launched);
 
-	/* Leader participates as a worker too */
-	if (launched > 0)
-	{
-		shared->leader_working = true;
-		tp_leader_participate(shared, heap, index, snapshot);
-	}
-	else
-	{
-		/* No workers launched - fall back would be handled by caller */
-		elog(WARNING, "No parallel workers launched for index build");
-	}
+	/*
+	 * Leader always participates as a worker.
+	 * Even if no background workers were launched, the leader will scan
+	 * the entire table as worker 0.
+	 */
+	if (launched == 0)
+		elog(DEBUG1,
+			 "No background workers launched, leader will do all work");
+
+	shared->leader_working = true;
+	tp_leader_participate(shared, heap, index, snapshot);
 
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
@@ -612,7 +612,8 @@ tp_preallocate_page_pool(
  * cleaner code structure and prepares for future async I/O support.
  */
 PGDLLEXPORT void
-tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
+tp_parallel_build_worker_main(
+		dsm_segment *seg __attribute__((unused)), shm_toc *toc)
 {
 	TpParallelBuildShared *shared;
 	TpWorkerSegmentInfo	  *my_info;
@@ -826,7 +827,9 @@ tp_leader_participate(
 
 		tuples_processed++;
 		if (tuples_processed % 100000 == 0)
-			elog(DEBUG1, "Leader: %ld tuples processed", tuples_processed);
+			elog(DEBUG1,
+				 "Leader: %lld tuples processed",
+				 (long long)tuples_processed);
 		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
@@ -1505,7 +1508,7 @@ BlockNumber
 tp_pool_get_page(
 		TpParallelBuildShared *shared,
 		int					   worker_id __attribute__((unused)),
-		Relation			   index)
+		Relation			   index __attribute__((unused)))
 {
 	BlockNumber *pool;
 	uint32		 idx;
