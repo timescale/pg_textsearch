@@ -695,6 +695,7 @@ jobs:
         echo "After cleanup:"
         df -h /
 
+    # wikiextractor requires Python 3.10 (unmaintained, breaks on newer versions)
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
       with:
