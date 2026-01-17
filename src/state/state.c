@@ -26,6 +26,7 @@
 
 #include "am/am.h"
 #include "constants.h"
+#include "executor/executor.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "segment/merge.h"
@@ -845,6 +846,12 @@ tp_rebuild_posting_lists_from_docids(
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
 	Relation		   heap_rel;
+	EState			  *estate	  = NULL;
+	ExprContext		  *econtext	  = NULL;
+	ExprState		  *expr_state = NULL;
+	TupleTableSlot	  *slot		  = NULL;
+	List			  *indexExprs = NULL;
+	AttrNumber		   attnum;
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
@@ -858,6 +865,27 @@ tp_rebuild_posting_lists_from_docids(
 
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+
+	attnum = index_rel->rd_index->indkey.values[0];
+
+	/* If is an expr index, be ready to evaluate exprs */
+	if (attnum == 0)
+	{
+		indexExprs = RelationGetIndexExpressions(index_rel);
+
+		if (indexExprs && list_length(indexExprs) > 0)
+		{
+			/* bm25 is not a multi-column index, so take the first expr */
+			Expr *expr = (Expr *)linitial(indexExprs);
+
+			estate	 = CreateExecutorState();
+			econtext = GetPerTupleExprContext(estate);
+
+			slot = table_slot_create(heap_rel, NULL);
+
+			expr_state = ExecInitExpr(expr, NULL);
+		}
+	}
 
 	current_page = metap->first_docid_page;
 
@@ -902,7 +930,6 @@ tp_rebuild_posting_lists_from_docids(
 			text		 *document_text;
 			int32		  doc_length;
 			BlockNumber	  heap_blkno;
-			AttrNumber	  attnum;
 
 			/* Validate the ItemPointer before attempting fetch */
 			if (!ItemPointerIsValid(ctid))
@@ -946,14 +973,20 @@ tp_rebuild_posting_lists_from_docids(
 				continue; /* Skip invalid documents */
 			}
 
-			/* Extract text from the indexed column.
-			 * We need to get the actual column number from the index.
-			 * rd_index->indkey.values[0] contains the attribute number
-			 * of the first indexed column in the heap relation.
-			 */
-			attnum	   = index_rel->rd_index->indkey.values[0];
-			text_datum = heap_getattr(
-					tuple, attnum, RelationGetDescr(heap_rel), &isnull);
+			/* Extract text from the indexed column. */
+			if (attnum == 0)
+			{
+				ExecStoreBufferHeapTuple(tuple, slot, heap_buf);
+
+				econtext->ecxt_scantuple = slot;
+				text_datum				 = ExecEvalExprSwitchContext(
+						  expr_state, econtext, &isnull);
+			}
+			else
+			{
+				text_datum = heap_getattr(
+						tuple, attnum, RelationGetDescr(heap_rel), &isnull);
+			}
 
 			if (!isnull)
 			{
@@ -987,6 +1020,12 @@ tp_rebuild_posting_lists_from_docids(
 		UnlockReleaseBuffer(docid_buf);
 	}
 
+	if (slot)
+		ExecDropSingleTupleTableSlot(slot);
+	if (estate)
+		FreeExecutorState(estate);
+	if (indexExprs)
+		list_free(indexExprs);
 	relation_close(heap_rel, AccessShareLock);
 
 	/* Log recovery completion */

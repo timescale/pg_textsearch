@@ -26,6 +26,7 @@
 #include "am.h"
 #include "build_parallel.h"
 #include "constants.h"
+#include "executor/executor.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -627,6 +628,8 @@ static bool
 tp_process_document(
 		TupleTableSlot	  *slot,
 		IndexInfo		  *indexInfo,
+		ExprContext		  *econtext,
+		ExprState		  *expr_state,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
 		Relation		   index,
@@ -637,10 +640,19 @@ tp_process_document(
 	text	   *document_text;
 	ItemPointer ctid;
 	int32		doc_length;
+	AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[0];
 
-	/* Get the text column value (first indexed column) */
-	text_datum =
-			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
+	/* It is an expression index, evalute the expr */
+	if (attnum == 0)
+	{
+		econtext->ecxt_scantuple = slot;
+		text_datum = ExecEvalExprSwitchContext(expr_state, econtext, &isnull);
+	}
+	else
+	{
+		/* Get the text column value */
+		text_datum = slot_getattr(slot, attnum, &isnull);
+	}
 
 	if (isnull)
 		return false; /* Skip NULL documents */
@@ -689,6 +701,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	EState			  *estate	  = NULL;
+	ExprContext		  *econtext	  = NULL;
+	ExprState		  *expr_state = NULL;
 
 	/* BM25 index build started */
 	elog(NOTICE,
@@ -701,19 +716,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * with different block layout than the old one.
 	 */
 	tp_invalidate_docid_cache();
-
-	/*
-	 * Check for expression indexes - BM25 indexes must be on a direct column
-	 * reference, not an expression like lower(content).
-	 */
-	if (indexInfo->ii_IndexAttrNumbers[0] == 0)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes on expressions are not supported"),
-				 errhint("Create the index on a column directly, e.g., "
-						 "CREATE INDEX ... USING bm25(content)")));
-	}
 
 	/* Report initialization phase */
 	pgstat_progress_update_param(
@@ -839,12 +841,29 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Prepare to scan table */
 	snapshot = tp_setup_table_scan(heap, &scan, &slot);
 
+	/*
+	 * If the index is built on an expression, set up the context so that
+	 * we can evaluate them.
+	 */
+	if (indexInfo->ii_IndexAttrNumbers[0] == 0)
+	{
+		/* Get the expression */
+		Expr *expr = (Expr *)linitial(indexInfo->ii_Expressions);
+		/* Set up the context */
+		estate	 = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+		/* prepare the expr tree for execution */
+		expr_state = ExecInitExpr(expr, NULL);
+	}
+
 	/* Process each document in the heap */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
 				slot,
 				indexInfo,
+				econtext,
+				expr_state,
 				text_config_oid,
 				index_state,
 				index,
@@ -865,6 +884,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
 
 	ExecDropSingleTupleTableSlot(slot);
+	if (estate)
+		FreeExecutorState(estate);
 	table_endscan(scan);
 
 #if PG_VERSION_NUM >= 180000
