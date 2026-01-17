@@ -1,17 +1,20 @@
 -- Test case: parallel_build
--- Tests basic index build with enough data to exercise segment writing
--- Note: Actual parallel workers require 100K+ tuples and max_parallel_maintenance_workers > 0
+-- Tests parallel index build with enough data to trigger parallel workers
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 SET enable_seqscan = off;
 
--- Create a table with moderate amount of data
+-- Force parallel build settings
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '256MB';
+
+-- Create a table with enough data to trigger parallel build (100K+ tuples)
 CREATE TABLE parallel_test (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
 
--- Insert data to create meaningful segments
+-- Insert 150K rows to exceed the 100K threshold for parallel build
 INSERT INTO parallel_test (content)
 SELECT 'Document number ' || i || ' contains words like ' ||
        CASE i % 5
@@ -27,9 +30,12 @@ SELECT 'Document number ' || i || ' contains words like ' ||
            WHEN 1 THEN 'including more varied terms'
            ELSE 'plus different phrases altogether'
        END
-FROM generate_series(1, 5000) AS i;
+FROM generate_series(1, 150000) AS i;
 
--- Build index (serial since < 100K tuples)
+-- Update statistics so planner knows table size
+ANALYZE parallel_test;
+
+-- Build index (should use parallel workers with 150K tuples)
 CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
   WITH (text_config='english');
 

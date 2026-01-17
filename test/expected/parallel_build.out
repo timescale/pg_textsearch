@@ -1,15 +1,17 @@
 -- Test case: parallel_build
--- Tests basic index build with enough data to exercise segment writing
--- Note: Actual parallel workers require 100K+ tuples and max_parallel_maintenance_workers > 0
+-- Tests parallel index build with enough data to trigger parallel workers
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.5.0-dev installed
 SET enable_seqscan = off;
--- Create a table with moderate amount of data
+-- Force parallel build settings
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '256MB';
+-- Create a table with enough data to trigger parallel build (100K+ tuples)
 CREATE TABLE parallel_test (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
--- Insert data to create meaningful segments
+-- Insert 150K rows to exceed the 100K threshold for parallel build
 INSERT INTO parallel_test (content)
 SELECT 'Document number ' || i || ' contains words like ' ||
        CASE i % 5
@@ -25,14 +27,15 @@ SELECT 'Document number ' || i || ' contains words like ' ||
            WHEN 1 THEN 'including more varied terms'
            ELSE 'plus different phrases altogether'
        END
-FROM generate_series(1, 5000) AS i;
--- Build index (serial since < 100K tuples)
+FROM generate_series(1, 150000) AS i;
+-- Update statistics so planner knows table size
+ANALYZE parallel_test;
+-- Build index (should use parallel workers with 150K tuples)
 CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
   WITH (text_config='english');
 NOTICE:  BM25 index build started for relation parallel_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 5000 documents, avg_length=16.00, text_config='english' (k1=1.20, b=0.75)
 -- Verify index was created
 SELECT 'Index created' AS status
 FROM pg_class
@@ -48,7 +51,7 @@ FROM parallel_test
 WHERE content <@> to_bm25query('apple', 'parallel_test_idx') < 0;
  apple_count 
 -------------
-        1000
+       30000
 (1 row)
 
 SELECT COUNT(*) AS database_count
@@ -56,7 +59,7 @@ FROM parallel_test
 WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
  database_count 
 ----------------
-           1000
+          30000
 (1 row)
 
 -- Verify we can get top-k results with correct ordering
@@ -66,11 +69,11 @@ ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx')
 LIMIT 5;
  id |  score  
 ----+---------
- 12 | -3.3027
- 27 | -3.3027
-  7 | -3.2183
- 22 | -3.2183
- 37 | -3.2183
+ 12 | -3.3033
+ 27 | -3.3033
+  7 | -3.2189
+ 22 | -3.2189
+ 37 | -3.2189
 (5 rows)
 
 -- Verify index statistics look reasonable
