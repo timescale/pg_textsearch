@@ -61,7 +61,7 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
  * to increase this factor. The unused pool pages are reclaimed via truncation
  * after the build completes.
  */
-#define TP_INDEX_EXPANSION_FACTOR 0.8
+#define TP_INDEX_EXPANSION_FACTOR 1.0
 
 /*
  * Worker build state with double-buffering support.
