@@ -178,10 +178,46 @@ get_bm25_oids(BM25OidCache *cache)
 }
 
 /*
- * Find BM25 index for a column.
+ * bm25_key_matches_query
+ *      Check if a specific index key definition matches the query expression.
+ *
+ * This helper handles both simple column indexes (e.g., USING bm25(col)) and
+ * expression indexes (e.g., USING bm25(lower(col))).
+ *
+ * Inputs:
+ *      idx_attnum:   Attribute number from pg_index.indkey[i] (0 for
+ * expressions). idx_expr:     Deserialized expression tree if idx_attnum == 0,
+ * else NULL. query_attnum: Attribute number extracted from query if it's a
+ * Var, otherwise InvalidAttrNumber. query_expr:   The full expression tree
+ * from the query.
+ */
+static bool
+bm25_key_matches_query(
+		AttrNumber idx_attnum,
+		Node	  *idx_expr,
+		AttrNumber query_attnum,
+		Node	  *query_expr)
+{
+	/* Index was built on a column */
+	if (idx_attnum != 0)
+	{
+		return idx_attnum == query_attnum;
+	}
+
+	/* It is an expression index */
+	if (idx_expr != NULL)
+	{
+		return equal(idx_expr, query_expr);
+	}
+
+	return false;
+}
+
+/*
+ * Find BM25 index.
  */
 static Oid
-find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
+find_bm25_index(Oid relid, AttrNumber attnum, Node *expr, Oid bm25_am_oid)
 {
 	Relation	indexRelation;
 	SysScanDesc scan;
@@ -211,6 +247,7 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 		Oid			  indexOid	= indexForm->indexrelid;
 		HeapTuple	  classTuple;
 		Form_pg_class classForm;
+		int			  nkeys = indexForm->indnatts;
 
 		classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indexOid));
 		if (!HeapTupleIsValid(classTuple))
@@ -220,11 +257,40 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 
 		if (classForm->relam == bm25_am_oid)
 		{
-			int nkeys = indexForm->indnatts;
+			/* Get the expression array */
+			List	 *indexExprs = NIL;
+			ListCell *lc_expr	 = NULL;
+			{
+				bool  isnull;
+				Datum exprsDatum = SysCacheGetAttr(
+						INDEXRELID,
+						indexTuple,
+						Anum_pg_index_indexprs,
+						&isnull);
+				if (!isnull)
+				{
+					char *exprsString = TextDatumGetCString(exprsDatum);
+					indexExprs		  = (List *)stringToNode(exprsString);
+					lc_expr			  = list_head(indexExprs);
+					pfree(exprsString);
+				}
+			}
 
 			for (int i = 0; i < nkeys; i++)
 			{
-				if (indexForm->indkey.values[i] == attnum)
+				AttrNumber idx_attnum = indexForm->indkey.values[i];
+				Node	  *idx_expr	  = NULL;
+
+				if (idx_attnum == 0)
+				{
+					if (lc_expr != NULL)
+					{
+						idx_expr = (Node *)lfirst(lc_expr);
+						lc_expr	 = lnext(indexExprs, lc_expr);
+					}
+				}
+
+				if (bm25_key_matches_query(idx_attnum, idx_expr, attnum, expr))
 				{
 					index_count++;
 					if (result == InvalidOid)
@@ -270,19 +336,64 @@ get_var_relation_and_attnum(
 }
 
 /*
- * Find BM25 index OID from a Var node representing the indexed column.
+ * Extract relation OID from an Expr node.
  */
 static Oid
-find_index_for_var(Var *var, ResolveIndexContext *context)
+get_expr_relation(Node *expr, Query *query)
 {
-	Oid		   relid;
-	AttrNumber attnum;
+	List		  *vars;
+	Var			  *var;
+	RangeTblEntry *rte;
+	Oid			   relid;
 
-	if (!get_var_relation_and_attnum(var, context->query, &relid, &attnum))
+	/*
+	 * All the Var nodes with in expr should point to the same relation.
+	 * So we just extract the relation info from the first node.
+	 */
+	vars = pull_var_clause(expr, 0);
+	if (!vars || list_length(vars) == 0)
+		return InvalidOid;
+	var = (Var *)linitial(vars);
+
+	if (var->varno < 1 || var->varno > list_length(query->rtable))
 		return InvalidOid;
 
-	return find_bm25_index_for_column(
-			relid, attnum, context->oid_cache->bm25_am_oid);
+	rte	  = rt_fetch(var->varno, query->rtable);
+	relid = rte->relid;
+
+	list_free(vars);
+	return relid;
+}
+
+/*
+ * Find BM25 index OID from an expression node that was possibly indexed.
+ */
+static Oid
+find_index_for_expr(Node *expr, ResolveIndexContext *context)
+{
+	Oid		   relid;
+	AttrNumber attnum = InvalidAttrNumber;
+
+	/*
+	 * Get the relid and possibly an attribute number if expr is a Var node
+	 */
+	if (IsA(expr, Var))
+	{
+		if (!get_var_relation_and_attnum(
+					(Var *)expr, context->query, &relid, &attnum))
+			return InvalidOid;
+	}
+	else
+	{
+		relid = get_expr_relation(expr, context->query);
+		if (!OidIsValid(relid))
+		{
+			return InvalidOid;
+		}
+	}
+
+	return find_bm25_index(
+			relid, attnum, expr, context->oid_cache->bm25_am_oid);
 }
 
 /*
@@ -364,10 +475,7 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	if (OidIsValid(tpquery->index_oid))
 		return NULL; /* Already resolved */
 
-	if (!IsA(left, Var))
-		return NULL;
-
-	index_oid = find_index_for_var((Var *)left, context);
+	index_oid = find_index_for_expr(left, context);
 	if (!OidIsValid(index_oid))
 		return NULL;
 
@@ -390,7 +498,6 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	BM25OidCache *oids = context->oid_cache;
 	Node		 *left;
 	Node		 *right;
-	Var			 *var;
 	Const		 *text_const;
 	Oid			  index_oid;
 	char		 *query_text;
@@ -405,16 +512,15 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	left  = linitial(opexpr->args);
 	right = lsecond(opexpr->args);
 
-	if (!IsA(left, Var) || !IsA(right, Const))
+	if (!IsA(right, Const))
 		return NULL;
 
-	var		   = (Var *)left;
 	text_const = (Const *)right;
 
 	if (text_const->consttype != TEXTOID || text_const->constisnull)
 		return NULL;
 
-	index_oid = find_index_for_var(var, context);
+	index_oid = find_index_for_expr(left, context);
 	if (!OidIsValid(index_oid))
 		return NULL;
 
