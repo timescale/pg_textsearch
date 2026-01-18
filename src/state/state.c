@@ -1012,6 +1012,8 @@ tp_rebuild_posting_lists_from_docids(
 			}
 
 			ReleaseBuffer(heap_buf);
+			if (econtext)
+				ResetExprContext(econtext);
 		}
 
 		/* Move to next page */

@@ -642,7 +642,7 @@ tp_process_document(
 	int32		doc_length;
 	AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[0];
 
-	/* It is an expression index, evalute the expr */
+	/* It is an expression index, evaluate the expr */
 	if (attnum == 0)
 	{
 		econtext->ecxt_scantuple = slot;
@@ -868,6 +868,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				index_state,
 				index,
 				&total_docs);
+
+		if (econtext)
+			ResetExprContext(econtext);
 
 		/* Report progress every TP_PROGRESS_REPORT_INTERVAL tuples */
 		if (total_docs % TP_PROGRESS_REPORT_INTERVAL == 0)
