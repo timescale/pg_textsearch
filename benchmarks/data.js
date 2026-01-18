@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768630843695,
+  "lastUpdate": 1768717309586,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1030,6 +1030,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "72239eee572aba5253e13aeb0bb5a086f81ace7e",
+          "message": "Document Python 3.10 pin for wikiextractor (#151)\n\n## Summary\n\n- Add comment explaining why Python 3.10 is pinned in the\ncomparative-benchmark job\n- wikiextractor is unmaintained and breaks on Python 3.11+",
+          "timestamp": "2026-01-17T02:20:39Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/72239eee572aba5253e13aeb0bb5a086f81ace7e"
+        },
+        "date": 1768717308785,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 257.835,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
             "unit": "ms"
           },
           {
