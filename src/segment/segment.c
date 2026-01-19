@@ -592,8 +592,24 @@ static uint32 fsm_pages_reused = 0;
 static uint32 pages_extended   = 0;
 
 /*
+ * Flag to indicate we're in a parallel build context.
+ * When true, FSM is not safe to use because workers may have stale
+ * views of the relation size, causing "unexpected data beyond EOF" errors.
+ */
+static bool in_parallel_build = false;
+
+void
+tp_set_parallel_build_mode(bool enabled)
+{
+	in_parallel_build = enabled;
+}
+
+/*
  * Allocate a single page for segment.
  * First checks the free space map for recycled pages, then extends if needed.
+ *
+ * During parallel builds, FSM is skipped entirely because workers may see
+ * stale relation sizes, leading to "unexpected data beyond EOF" errors.
  */
 static BlockNumber
 allocate_segment_page(Relation index)
@@ -601,25 +617,50 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/* First, try to get a free page from FSM (recycled from compaction) */
-	block = GetFreeIndexPage(index);
-	if (block != InvalidBlockNumber)
+	/*
+	 * During parallel builds, skip FSM and extend directly.
+	 * FSM is unsafe in parallel context - see comments in
+	 * tp_segment_writer_allocate_page().
+	 */
+	if (!in_parallel_build)
 	{
-		/* Reuse a previously freed page */
-		buffer = ReadBuffer(index, block);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		/* Try to get a free page from FSM (recycled from compaction) */
+		block = GetFreeIndexPage(index);
+		if (block != InvalidBlockNumber)
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(index);
 
-		/* Initialize the recycled page */
-		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+			if (block >= nblocks)
+			{
+				/*
+				 * FSM returned a page beyond current relation size.
+				 * This can happen if FSM has stale entries. Skip it.
+				 */
+				elog(DEBUG1,
+					 "allocate_segment_page: FSM returned stale page %u "
+					 "(relation has %u blocks)",
+					 block,
+					 nblocks);
+			}
+			else
+			{
+				/* Reuse a previously freed page */
+				buffer = ReadBuffer(index, block);
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
+				/* Initialize the recycled page */
+				PageInit(BufferGetPage(buffer), BLCKSZ, 0);
 
-		fsm_pages_reused++;
-		return block;
+				MarkBufferDirty(buffer);
+				UnlockReleaseBuffer(buffer);
+
+				fsm_pages_reused++;
+				return block;
+			}
+		}
 	}
 
-	/* No free pages available, extend the relation */
+	/* No free pages available (or parallel build), extend the relation */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
@@ -679,17 +720,72 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 }
 
 /*
- * Allocate a new page for the writer
+ * Allocate a new page for the writer.
+ * Uses pre-allocated pool if available, otherwise falls back to FSM/extend.
  */
 static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 {
 	BlockNumber new_page;
+	Buffer		buf;
 
 	/* Ensure we have space in the pages array */
 	tp_segment_writer_grow_pages(writer);
 
-	/* Allocate the actual page */
+	/*
+	 * During parallel builds (when pool is available), use the pool first.
+	 * FSM is not safe to use during parallel builds because workers may see
+	 * stale relation sizes, leading to "unexpected data beyond EOF" errors
+	 * when FSM returns pages that haven't been synced to all workers' views.
+	 *
+	 * For non-parallel builds, FSM is checked in allocate_segment_page().
+	 */
+
+	/* Try to get page from pre-allocated pool */
+	if (writer->page_pool != NULL && writer->pool_next != NULL)
+	{
+		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
+		if (idx < writer->pool_size)
+		{
+			new_page = writer->page_pool[idx];
+
+			/* Add to our tracking array */
+			writer->pages[writer->pages_allocated] = new_page;
+			writer->pages_allocated++;
+
+			return new_page;
+		}
+
+		/*
+		 * Pool exhausted during parallel build.
+		 * Extend the relation directly - DO NOT use FSM.
+		 *
+		 * FSM is unsafe during parallel builds because:
+		 * 1. Workers may have stale views of relation size
+		 * 2. FSM entries from compaction may reference pages beyond
+		 *    what a worker's cached smgr_targblock knows about
+		 * 3. RelationGetNumberOfBlocks can return a cached value that
+		 *    doesn't match the actual file size visible to the worker
+		 */
+		elog(DEBUG1, "Page pool exhausted, extending relation directly");
+
+		buf = ReadBufferExtended(
+				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		new_page = BufferGetBlockNumber(buf);
+		PageInit(BufferGetPage(buf), BLCKSZ, 0);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
+
+		pages_extended++;
+
+		/* Add to our tracking array */
+		writer->pages[writer->pages_allocated] = new_page;
+		writer->pages_allocated++;
+
+		return new_page;
+	}
+
+	/* Non-parallel path: use allocate_segment_page which checks FSM */
 	new_page = allocate_segment_page(writer->index);
 
 	/* Add to our tracking array */
@@ -776,6 +872,102 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 		prev_block = index_pages[i];
 		if (i == 0)
 			index_root = index_pages[i];
+	}
+
+	pfree(index_pages);
+	return index_root;
+}
+
+/*
+ * Calculate entries per page index page (for pool estimation).
+ * Exported so parallel build can estimate page index pages needed.
+ */
+uint32
+tp_page_index_entries_per_page(void)
+{
+	return (BLCKSZ - SizeOfPageHeaderData -
+			MAXALIGN(sizeof(TpPageIndexSpecial))) /
+		   sizeof(BlockNumber);
+}
+
+/*
+ * Write page index from a pre-allocated pool (for parallel builds).
+ * This avoids extending the relation during parallel builds, which is unsafe
+ * because workers have stale views of relation size.
+ */
+BlockNumber
+write_page_index_from_pool(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	BlockNumber index_root = InvalidBlockNumber;
+	BlockNumber prev_block = InvalidBlockNumber;
+
+	uint32 entries_per_page = tp_page_index_entries_per_page();
+	uint32 num_index_pages	= (num_pages + entries_per_page - 1) /
+							 entries_per_page;
+
+	/* Allocate index pages from pool */
+	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	uint32		 i;
+
+	for (i = 0; i < num_index_pages; i++)
+	{
+		uint32 idx = pg_atomic_fetch_add_u32(pool_next, 1);
+		if (idx >= pool_size)
+		{
+			pfree(index_pages);
+			elog(ERROR,
+				 "Page pool exhausted while writing page index (need %u more "
+				 "pages). Increase TP_INDEX_EXPANSION_FACTOR.",
+				 num_index_pages - i);
+		}
+		index_pages[i] = page_pool[idx];
+	}
+
+	/* Write index pages in reverse order (so we can chain them) */
+	for (int j = num_index_pages - 1; j >= 0; j--)
+	{
+		Buffer				buffer;
+		Page				page;
+		BlockNumber		   *page_data;
+		TpPageIndexSpecial *special;
+		uint32				start_idx;
+		uint32				entries_to_write;
+		uint32				k;
+
+		start_idx		 = j * entries_per_page;
+		entries_to_write = Min(entries_per_page, num_pages - start_idx);
+
+		buffer = ReadBuffer(index, index_pages[j]);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+
+		PageInit(page, BLCKSZ, sizeof(TpPageIndexSpecial));
+
+		special			   = (TpPageIndexSpecial *)PageGetSpecialPointer(page);
+		special->magic	   = TP_PAGE_INDEX_MAGIC;
+		special->version   = TP_PAGE_INDEX_VERSION;
+		special->page_type = TP_PAGE_FILE_INDEX;
+		special->next_page = prev_block;
+		special->num_entries = entries_to_write;
+		special->flags		 = 0;
+
+		page_data = (BlockNumber *)((char *)page + SizeOfPageHeaderData);
+
+		for (k = 0; k < entries_to_write; k++)
+			page_data[k] = pages[start_idx + k];
+
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+
+		prev_block = index_pages[j];
+		if (j == 0)
+			index_root = index_pages[j];
 	}
 
 	pfree(index_pages);
@@ -1809,7 +2001,50 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->posting_buffer		= NULL;
 	writer->posting_buffer_size = 0;
 
+	/* No page pool for normal builds */
+	writer->page_pool = NULL;
+	writer->pool_size = 0;
+	writer->pool_next = NULL;
+
 	/* Allocate first page */
+	tp_segment_writer_allocate_page(writer);
+
+	/* Initialize first page */
+	PageInit((Page)writer->buffer, BLCKSZ, 0);
+}
+
+/*
+ * Initialize segment writer with pre-allocated page pool.
+ * Used by parallel builds where pages are pre-allocated to avoid FSM
+ * contention.
+ */
+void
+tp_segment_writer_init_with_pool(
+		TpSegmentWriter	 *writer,
+		Relation		  index,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	writer->index			= index;
+	writer->pages			= NULL;
+	writer->pages_allocated = 0;
+	writer->pages_capacity	= 0;
+	writer->current_offset	= 0;
+	writer->buffer			= palloc(BLCKSZ);
+	writer->buffer_page		= 0;
+	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
+
+	/* Initialize reusable posting buffer */
+	writer->posting_buffer		= NULL;
+	writer->posting_buffer_size = 0;
+
+	/* Set up page pool */
+	writer->page_pool = page_pool;
+	writer->pool_size = pool_size;
+	writer->pool_next = pool_next;
+
+	/* Allocate first page (from pool) */
 	tp_segment_writer_allocate_page(writer);
 
 	/* Initialize first page */
@@ -1871,6 +2106,18 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 		return; /* Nothing to flush */
 
 	block = writer->pages[writer->buffer_page];
+
+	/* Validate block number before reading */
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(writer->index);
+		if (block >= nblocks)
+		{
+			elog(ERROR,
+				 "tp_segment_writer_flush: block %u >= nblocks %u",
+				 block,
+				 nblocks);
+		}
+	}
 
 	/* Write current buffer to disk */
 	buffer = ReadBuffer(writer->index, block);
