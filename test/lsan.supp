@@ -24,3 +24,6 @@ leak:CatalogCache
 
 # PostgreSQL process title (argv) saving - intentionally never freed
 leak:save_ps_display_args
+
+# PostgreSQL initdb string escaping - short-lived tool doesn't free
+leak:escape_single_quotes_ascii
