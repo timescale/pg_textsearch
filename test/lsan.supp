@@ -21,3 +21,6 @@ leak:libcrypto
 # PostgreSQL GUC and catalog caches
 leak:GUC
 leak:CatalogCache
+
+# PostgreSQL process title (argv) saving - intentionally never freed
+leak:save_ps_display_args

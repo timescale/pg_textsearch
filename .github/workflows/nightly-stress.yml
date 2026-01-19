@@ -42,6 +42,10 @@ env:
   # Leak sanitizer options
   LSAN_OPTIONS: "suppressions=${{ github.workspace }}/test/lsan.supp exitcode=27 print_suppressions=0"
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   stress-test:
     name: Stress Test PG${{ matrix.pg }}
@@ -84,6 +88,8 @@ jobs:
         # OpenSSL has some one-time initialization allocations
         leak:libssl
         leak:libcrypto
+        # PostgreSQL process title (argv) saving - intentionally never freed
+        leak:save_ps_display_args
         EOF
 
     - name: Get date for caching
@@ -94,7 +100,9 @@ jobs:
       id: cache-postgresql
       uses: actions/cache@v4
       with:
-        path: ~/${{ env.PG_SRC_DIR }}
+        path: |
+          ~/${{ env.PG_SRC_DIR }}
+          ~/${{ env.PG_INSTALL_DIR }}
         key: "nightly-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}"
 
     - name: Determine PG version
@@ -129,6 +137,7 @@ jobs:
         make -j$(nproc)
 
     - name: Install PostgreSQL
+      if: steps.cache-postgresql.outputs.cache-hit != 'true'
       run: |
         cd ~/$PG_SRC_DIR
         make install
