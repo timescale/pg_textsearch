@@ -1115,7 +1115,9 @@ skip_pivot_document(
 				uint32 landed_doc = term_current_doc_id(ts);
 				stats->seeks_performed++;
 				stats->docs_seeked += (next_candidate - pivot_doc_id - 1);
-				if (landed_doc <= pivot_doc_id + 1)
+				/* Avoid overflow: landed_doc - pivot_doc_id <= 1 is equivalent
+				 * to landed_doc <= pivot_doc_id + 1 */
+				if (landed_doc - pivot_doc_id <= 1)
 					stats->seek_to_same_doc++;
 			}
 		}
