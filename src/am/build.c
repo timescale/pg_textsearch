@@ -280,7 +280,8 @@ tp_build_extract_options(
 					(char *)options + options->text_config_offset);
 			/* Convert text config name to OID */
 			{
-				List *names = list_make1(makeString(*text_config_name));
+				List *names =
+						stringToQualifiedNameList(*text_config_name, NULL);
 
 				*text_config_oid = get_ts_config_oid(names, false);
 				list_free(names);
@@ -938,7 +939,8 @@ tp_buildempty(Relation index)
 			text_config_name = pstrdup(
 					(char *)options + options->text_config_offset);
 			{
-				List *names = list_make1(makeString(text_config_name));
+				List *names =
+						stringToQualifiedNameList(text_config_name, NULL);
 
 				text_config_oid = get_ts_config_oid(names, false);
 				list_free(names);
