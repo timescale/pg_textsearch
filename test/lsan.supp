@@ -25,5 +25,13 @@ leak:CatalogCache
 # PostgreSQL process title (argv) saving - intentionally never freed
 leak:save_ps_display_args
 
-# PostgreSQL initdb string escaping - short-lived tool doesn't free
+# PostgreSQL initdb - short-lived tool doesn't free memory before exit
 leak:escape_single_quotes_ascii
+leak:escape_quotes_bki
+leak:pretty_wal_size
+leak:pg_malloc_internal
+leak:setup_config
+leak:bootstrap_template1
+
+# System library allocations in short-lived tools
+leak:getaddrinfo
