@@ -35,3 +35,6 @@ leak:bootstrap_template1
 
 # System library allocations in short-lived tools
 leak:getaddrinfo
+
+# PostgreSQL server startup allocations - live for process lifetime
+leak:PostmasterMain
