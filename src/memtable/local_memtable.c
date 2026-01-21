@@ -13,22 +13,25 @@
 #include "local_memtable.h"
 
 /*
- * Hash entry for term lookup
+ * Hash entry for term lookup.
+ * Stores the full term alongside the posting list.
  */
 typedef struct TpLocalTermHashEntry
 {
-	char			key[NAMEDATALEN]; /* Term string (truncated for key) */
-	TpLocalPosting *posting;		  /* Pointer to full posting data */
+	char		   key[NAMEDATALEN]; /* Term string (truncated for hash key) */
+	char		  *term;			 /* Full term string (palloc'd) */
+	int32		   term_len;		 /* Length of full term */
+	TpLocalPosting posting;			 /* Posting list (embedded, not pointer) */
 } TpLocalTermHashEntry;
 
 /*
  * Comparison function for sorting terms alphabetically
  */
 static int
-local_posting_cmp(const void *a, const void *b)
+local_term_posting_cmp(const void *a, const void *b)
 {
-	const TpLocalPosting *pa = *(const TpLocalPosting **)a;
-	const TpLocalPosting *pb = *(const TpLocalPosting **)b;
+	const TpLocalTermPosting *pa = (const TpLocalTermPosting *)a;
+	const TpLocalTermPosting *pb = (const TpLocalTermPosting *)b;
 	return strcmp(pa->term, pb->term);
 }
 
@@ -38,18 +41,20 @@ local_posting_cmp(const void *a, const void *b)
 static int
 posting_entry_cmp(const void *a, const void *b)
 {
-	const TpLocalPostingEntry *ea = (const TpLocalPostingEntry *)a;
-	const TpLocalPostingEntry *eb = (const TpLocalPostingEntry *)b;
+	const TpPostingEntry *ea = (const TpPostingEntry *)a;
+	const TpPostingEntry *eb = (const TpPostingEntry *)b;
+	BlockNumber			  blk_a, blk_b;
+	OffsetNumber		  off_a, off_b;
 
 	/* Compare block numbers first */
-	BlockNumber blk_a = ItemPointerGetBlockNumber(&ea->ctid);
-	BlockNumber blk_b = ItemPointerGetBlockNumber(&eb->ctid);
+	blk_a = ItemPointerGetBlockNumber(&ea->ctid);
+	blk_b = ItemPointerGetBlockNumber(&eb->ctid);
 	if (blk_a != blk_b)
 		return (blk_a < blk_b) ? -1 : 1;
 
 	/* Then offset numbers */
-	OffsetNumber off_a = ItemPointerGetOffsetNumber(&ea->ctid);
-	OffsetNumber off_b = ItemPointerGetOffsetNumber(&eb->ctid);
+	off_a = ItemPointerGetOffsetNumber(&ea->ctid);
+	off_b = ItemPointerGetOffsetNumber(&eb->ctid);
 	if (off_a != off_b)
 		return (off_a < off_b) ? -1 : 1;
 
@@ -176,7 +181,8 @@ tp_local_memtable_destroy(TpLocalMemtable *memtable)
 }
 
 /*
- * Get or create a posting list for a term
+ * Get or create a posting list for a term.
+ * Returns pointer to the embedded posting in the hash entry.
  */
 static TpLocalPosting *
 get_or_create_posting(
@@ -188,7 +194,7 @@ get_or_create_posting(
 	char				  key[NAMEDATALEN];
 	int					  key_len;
 
-	/* Truncate term for hash key if needed, but preserve original term_len */
+	/* Truncate term for hash key if needed */
 	key_len = (term_len >= NAMEDATALEN) ? NAMEDATALEN - 1 : term_len;
 	memcpy(key, term, key_len);
 	key[key_len] = '\0';
@@ -197,33 +203,26 @@ get_or_create_posting(
 
 	if (!found)
 	{
-		char *term_copy;
-
-		/* Create new posting list */
 		oldcxt = MemoryContextSwitchTo(memtable->mcxt);
 
-		/*
-		 * Note: term may not be null-terminated (e.g., TSVector lexemes),
-		 * so we must copy exactly term_len bytes and null-terminate.
-		 */
-		term_copy = palloc(term_len + 1);
-		memcpy(term_copy, term, term_len);
-		term_copy[term_len] = '\0';
+		/* Store full term in hash entry */
+		entry->term = palloc(term_len + 1);
+		memcpy(entry->term, term, term_len);
+		entry->term[term_len] = '\0';
+		entry->term_len		  = term_len;
 
-		entry->posting			  = palloc(sizeof(TpLocalPosting));
-		entry->posting->term	  = term_copy;
-		entry->posting->term_len  = term_len;
-		entry->posting->doc_count = 0;
-		entry->posting->capacity  = TP_INITIAL_POSTING_LIST_CAPACITY;
-		entry->posting->entries	  = palloc(
-				  sizeof(TpLocalPostingEntry) * entry->posting->capacity);
+		/* Initialize embedded posting list */
+		entry->posting.doc_count = 0;
+		entry->posting.capacity	 = TP_INITIAL_POSTING_LIST_CAPACITY;
+		entry->posting.entries	 = palloc(
+				  sizeof(TpPostingEntry) * entry->posting.capacity);
 
 		memtable->num_terms++;
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	return entry->posting;
+	return &entry->posting;
 }
 
 /*
@@ -237,9 +236,9 @@ tp_local_memtable_add_term(
 		ItemPointer		 ctid,
 		int32			 frequency)
 {
-	TpLocalPosting		*posting;
-	TpLocalPostingEntry *entry;
-	MemoryContext		 oldcxt;
+	TpLocalPosting *posting;
+	TpPostingEntry *entry;
+	MemoryContext	oldcxt;
 
 	Assert(memtable != NULL);
 	Assert(term != NULL);
@@ -254,7 +253,7 @@ tp_local_memtable_add_term(
 
 		oldcxt			 = MemoryContextSwitchTo(memtable->mcxt);
 		posting->entries = repalloc(
-				posting->entries, sizeof(TpLocalPostingEntry) * new_capacity);
+				posting->entries, sizeof(TpPostingEntry) * new_capacity);
 		MemoryContextSwitchTo(oldcxt);
 
 		posting->capacity = new_capacity;
@@ -353,7 +352,7 @@ tp_local_memtable_iterator_next(TpLocalMemtableIterator *iter)
 	if (entry == NULL)
 		return NULL;
 
-	return entry->posting;
+	return &entry->posting;
 }
 
 /*
@@ -380,43 +379,46 @@ tp_local_memtable_foreach_doc(
 }
 
 /*
- * Get all posting lists sorted alphabetically by term
+ * Get all terms with posting lists, sorted alphabetically by term.
  *
  * Also sorts entries within each posting list by CTID.
  * Returns palloc'd array that caller must pfree.
  */
-TpLocalPosting **
+TpLocalTermPosting *
 tp_local_memtable_get_sorted_terms(
 		TpLocalMemtable *memtable, int *num_terms_out)
 {
-	TpLocalPosting		  **sorted;
-	TpLocalMemtableIterator iter;
-	TpLocalPosting		   *posting;
-	int						count = 0;
-	int						i;
+	TpLocalTermPosting	 *sorted;
+	TpLocalTermHashEntry *entry;
+	HASH_SEQ_STATUS		  status;
+	int					  count = 0;
+	int					  i;
 
 	Assert(memtable != NULL);
 	Assert(num_terms_out != NULL);
 
 	/* Allocate array */
-	sorted = palloc(sizeof(TpLocalPosting *) * memtable->num_terms);
+	sorted = palloc(sizeof(TpLocalTermPosting) * memtable->num_terms);
 
-	/* Collect all postings */
-	tp_local_memtable_iterator_init(&iter, memtable);
-	while ((posting = tp_local_memtable_iterator_next(&iter)) != NULL)
+	/* Collect all term/posting pairs from hash table */
+	hash_seq_init(&status, memtable->term_hash);
+	while ((entry = hash_seq_search(&status)) != NULL)
 	{
-		sorted[count++] = posting;
+		sorted[count].term	   = entry->term;
+		sorted[count].term_len = entry->term_len;
+		sorted[count].posting  = &entry->posting;
+		count++;
 	}
 
 	/* Sort alphabetically by term */
-	qsort(sorted, count, sizeof(TpLocalPosting *), local_posting_cmp);
+	qsort(sorted, count, sizeof(TpLocalTermPosting), local_term_posting_cmp);
 
 	/* Sort entries within each posting list by CTID */
 	for (i = 0; i < count; i++)
 	{
-		qsort(sorted[i]->entries,
-			  sorted[i]->doc_count,
-			  sizeof(TpLocalPostingEntry),
+		qsort(sorted[i].posting->entries,
+			  sorted[i].posting->doc_count,
+			  sizeof(TpPostingEntry),
 			  posting_entry_cmp);
 	}
 

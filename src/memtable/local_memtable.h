@@ -12,29 +12,31 @@
 
 #include <postgres.h>
 
-#include <storage/itemptr.h>
 #include <utils/hsearch.h>
 
-/*
- * Local posting entry - stored in palloc'd arrays
- */
-typedef struct TpLocalPostingEntry
-{
-	ItemPointerData ctid;	   /* Document heap tuple ID */
-	int32			frequency; /* Term frequency in document */
-} TpLocalPostingEntry;
+#include "posting_entry.h"
 
 /*
- * Local posting list for a single term
+ * Local posting list for a single term.
+ * Similar to TpPostingList but uses palloc instead of DSA.
  */
 typedef struct TpLocalPosting
 {
-	char				*term;		/* Term string (palloc'd) */
-	int32				 term_len;	/* Length of term string */
-	int32				 doc_count; /* Number of documents in posting list */
-	int32				 capacity;	/* Allocated capacity of entries array */
-	TpLocalPostingEntry *entries;	/* Array of posting entries (palloc'd) */
+	int32			doc_count; /* Number of documents in posting list */
+	int32			capacity;  /* Allocated capacity of entries array */
+	TpPostingEntry *entries;   /* Array of posting entries (palloc'd) */
 } TpLocalPosting;
+
+/*
+ * Combined term and posting for iteration/segment writing.
+ * Returned by tp_local_memtable_get_sorted_terms().
+ */
+typedef struct TpLocalTermPosting
+{
+	const char	   *term;	  /* Term string */
+	int32			term_len; /* Length of term string */
+	TpLocalPosting *posting;  /* Posting list */
+} TpLocalTermPosting;
 
 /*
  * Document length entry for local hash table
@@ -116,5 +118,5 @@ extern void tp_local_memtable_foreach_doc(
 		void					*arg);
 
 /* Build sorted term array for dictionary construction */
-extern TpLocalPosting **tp_local_memtable_get_sorted_terms(
+extern TpLocalTermPosting *tp_local_memtable_get_sorted_terms(
 		TpLocalMemtable *memtable, int *num_terms_out);

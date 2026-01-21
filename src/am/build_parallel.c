@@ -918,12 +918,12 @@ write_term_postings(
 		LocalTermBlockInfo	 *term_info,
 		SkipEntryAccumulator *skip_accum)
 {
-	uint32				 doc_count = posting->doc_count;
-	uint32				 num_blocks;
-	uint32				 block_idx;
-	TpBlockPosting		*block_postings;
-	TpLocalPostingEntry *entries = posting->entries;
-	uint32				 j;
+	uint32			doc_count = posting->doc_count;
+	uint32			num_blocks;
+	uint32			block_idx;
+	TpBlockPosting *block_postings;
+	TpPostingEntry *entries = posting->entries;
+	uint32			j;
 
 	/* Record where this term's postings start */
 	term_info->posting_offset	= writer->current_offset;
@@ -1140,7 +1140,7 @@ tp_write_segment_from_local_memtable(
 	TpSegmentWriter		 writer;
 	TpSegmentHeader		 header;
 	TpDocMapBuilder		*docmap;
-	TpLocalPosting	   **sorted_terms;
+	TpLocalTermPosting	*sorted_terms;
 	int					 num_terms;
 	BlockNumber			 header_block;
 	uint32				*string_offsets;
@@ -1201,7 +1201,7 @@ tp_write_segment_from_local_memtable(
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + sorted_terms[i]->term_len +
+		string_pos += sizeof(uint32) + sorted_terms[i].term_len +
 					  sizeof(uint32);
 	}
 	tp_segment_writer_write(
@@ -1211,11 +1211,11 @@ tp_write_segment_from_local_memtable(
 	header.strings_offset = writer.current_offset;
 	for (i = 0; i < num_terms; i++)
 	{
-		uint32 length	   = sorted_terms[i]->term_len;
+		uint32 length	   = sorted_terms[i].term_len;
 		uint32 dict_offset = i * sizeof(TpDictEntry);
 
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
-		tp_segment_writer_write(&writer, sorted_terms[i]->term, length);
+		tp_segment_writer_write(&writer, sorted_terms[i].term, length);
 		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
 	}
 
@@ -1237,7 +1237,7 @@ tp_write_segment_from_local_memtable(
 	for (i = 0; i < num_terms; i++)
 		write_term_postings(
 				&writer,
-				sorted_terms[i],
+				sorted_terms[i].posting,
 				docmap,
 				&term_blocks[i],
 				&skip_accum);

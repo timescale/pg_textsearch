@@ -2,32 +2,19 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * posting.h - In-memory posting list structures
- *
- * Defines TpPostingEntry and TpPostingList, the core data structures for
- * memtable posting lists stored in DSA shared memory.
+ * posting.h - In-memory posting list structures for DSA shared memory
  */
 #pragma once
 
 #include <postgres.h>
 
-#include <storage/itemptr.h>
 #include <storage/lwlock.h>
 #include <storage/spin.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 
+#include "posting_entry.h"
 #include "state/state.h"
-
-/*
- * Individual document occurrence within a posting list
- */
-typedef struct TpPostingEntry
-{
-	ItemPointerData ctid;	   /* Document heap tuple ID */
-	int32			doc_id;	   /* Internal document ID */
-	int32			frequency; /* Term frequency in document */
-} TpPostingEntry;
 
 /*
  * Posting list for a single term
