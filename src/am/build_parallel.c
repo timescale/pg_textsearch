@@ -651,9 +651,6 @@ tp_parallel_build_worker_main(
 	 */
 	smgrnblocks(RelationGetSmgr(index), MAIN_FORKNUM);
 
-	/* Enable parallel build mode - disables FSM for page allocation */
-	tp_set_parallel_build_mode(true);
-
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);
 
@@ -775,9 +772,6 @@ tp_leader_participate(
 		 "Leader participating as worker %d, attnum=%d",
 		 worker_id,
 		 shared->attnum);
-
-	/* Enable parallel build mode - disables FSM for page allocation */
-	tp_set_parallel_build_mode(true);
 
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);

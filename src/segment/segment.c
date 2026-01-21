@@ -587,29 +587,9 @@ tp_segment_release_direct(TpSegmentDirectAccess *access)
 	}
 }
 
-/* Track FSM reuse statistics for debugging */
-static uint32 fsm_pages_reused = 0;
-static uint32 pages_extended   = 0;
-
-/*
- * Flag to indicate we're in a parallel build context.
- * When true, FSM is not safe to use because workers may have stale
- * views of the relation size, causing "unexpected data beyond EOF" errors.
- */
-static bool in_parallel_build = false;
-
-void
-tp_set_parallel_build_mode(bool enabled)
-{
-	in_parallel_build = enabled;
-}
-
 /*
  * Allocate a single page for segment.
- * First checks the free space map for recycled pages, then extends if needed.
- *
- * During parallel builds, FSM is skipped entirely because workers may see
- * stale relation sizes, leading to "unexpected data beyond EOF" errors.
+ * Checks FSM for recycled pages first, then extends the relation if needed.
  */
 static BlockNumber
 allocate_segment_page(Relation index)
@@ -617,80 +597,26 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/*
-	 * During parallel builds, skip FSM and extend directly.
-	 * FSM is unsafe in parallel context - see comments in
-	 * tp_segment_writer_allocate_page().
-	 */
-	if (!in_parallel_build)
+	/* Try to get a free page from FSM (recycled from compaction) */
+	block = GetFreeIndexPage(index);
+	if (block != InvalidBlockNumber)
 	{
-		/* Try to get a free page from FSM (recycled from compaction) */
-		block = GetFreeIndexPage(index);
-		if (block != InvalidBlockNumber)
-		{
-			BlockNumber nblocks = RelationGetNumberOfBlocks(index);
-
-			if (block >= nblocks)
-			{
-				/*
-				 * FSM returned a page beyond current relation size.
-				 * This can happen if FSM has stale entries. Skip it.
-				 */
-				elog(DEBUG1,
-					 "allocate_segment_page: FSM returned stale page %u "
-					 "(relation has %u blocks)",
-					 block,
-					 nblocks);
-			}
-			else
-			{
-				/* Reuse a previously freed page */
-				buffer = ReadBuffer(index, block);
-				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-				/* Initialize the recycled page */
-				PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-
-				MarkBufferDirty(buffer);
-				UnlockReleaseBuffer(buffer);
-
-				fsm_pages_reused++;
-				return block;
-			}
-		}
+		buffer = ReadBuffer(index, block);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+		return block;
 	}
 
-	/* No free pages available (or parallel build), extend the relation */
+	/* No free pages available, extend the relation */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
-
-	/* Initialize the page header properly */
 	PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
-
-	pages_extended++;
 	return block;
-}
-
-/*
- * Report FSM reuse statistics (called at end of index build)
- */
-void
-tp_report_fsm_stats(void)
-{
-	if (fsm_pages_reused > 0 || pages_extended > 0)
-	{
-		elog(DEBUG1,
-			 "Page allocation stats: %u reused from FSM, %u extended",
-			 fsm_pages_reused,
-			 pages_extended);
-	}
-	/* Reset for next build */
-	fsm_pages_reused = 0;
-	pages_extended	 = 0;
 }
 
 /*
@@ -721,7 +647,8 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 
 /*
  * Allocate a new page for the writer.
- * Uses pre-allocated pool if available, otherwise falls back to FSM/extend.
+ * Uses pre-allocated pool if available (parallel builds), otherwise
+ * FSM/extend.
  */
 static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
@@ -729,69 +656,33 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	BlockNumber new_page;
 	Buffer		buf;
 
-	/* Ensure we have space in the pages array */
 	tp_segment_writer_grow_pages(writer);
 
-	/*
-	 * During parallel builds (when pool is available), use the pool first.
-	 * FSM is not safe to use during parallel builds because workers may see
-	 * stale relation sizes, leading to "unexpected data beyond EOF" errors
-	 * when FSM returns pages that haven't been synced to all workers' views.
-	 *
-	 * For non-parallel builds, FSM is checked in allocate_segment_page().
-	 */
-
-	/* Try to get page from pre-allocated pool */
+	/* Parallel builds use pre-allocated pool to avoid FSM in workers */
 	if (writer->page_pool != NULL && writer->pool_next != NULL)
 	{
 		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
 		if (idx < writer->pool_size)
 		{
-			new_page = writer->page_pool[idx];
-
-			/* Add to our tracking array */
-			writer->pages[writer->pages_allocated] = new_page;
-			writer->pages_allocated++;
-
+			new_page								 = writer->page_pool[idx];
+			writer->pages[writer->pages_allocated++] = new_page;
 			return new_page;
 		}
 
-		/*
-		 * Pool exhausted during parallel build.
-		 * Extend the relation directly - DO NOT use FSM.
-		 *
-		 * FSM is unsafe during parallel builds because:
-		 * 1. Workers may have stale views of relation size
-		 * 2. FSM entries from compaction may reference pages beyond
-		 *    what a worker's cached smgr_targblock knows about
-		 * 3. RelationGetNumberOfBlocks can return a cached value that
-		 *    doesn't match the actual file size visible to the worker
-		 */
-		elog(DEBUG1, "Page pool exhausted, extending relation directly");
-
+		/* Pool exhausted - extend directly (FSM unsafe in parallel workers) */
 		buf = ReadBufferExtended(
 				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 		new_page = BufferGetBlockNumber(buf);
 		PageInit(BufferGetPage(buf), BLCKSZ, 0);
 		MarkBufferDirty(buf);
 		UnlockReleaseBuffer(buf);
-
-		pages_extended++;
-
-		/* Add to our tracking array */
-		writer->pages[writer->pages_allocated] = new_page;
-		writer->pages_allocated++;
-
+		writer->pages[writer->pages_allocated++] = new_page;
 		return new_page;
 	}
 
-	/* Non-parallel path: use allocate_segment_page which checks FSM */
+	/* Non-parallel: use FSM via allocate_segment_page */
 	new_page = allocate_segment_page(writer->index);
-
-	/* Add to our tracking array */
-	writer->pages[writer->pages_allocated] = new_page;
-	writer->pages_allocated++;
-
+	writer->pages[writer->pages_allocated++] = new_page;
 	return new_page;
 }
 

@@ -942,9 +942,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 b);
 	}
 
-	/* Report FSM page reuse statistics */
-	tp_report_fsm_stats();
-
 	/*
 	 * Final spill: Write any remaining memtable data to disk segment.
 	 * This must happen BEFORE destroying the private DSA, otherwise all
