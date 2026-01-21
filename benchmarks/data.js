@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768976511528,
+  "lastUpdate": 1768976513042,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5171,6 +5171,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Index Build Time",
             "value": 20570.837,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 36.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c088e94febb15a9b4901fc522dac675f8f9f89fb",
+          "message": "Fix nightly stress test failures (#157)\n\n## Summary\n- Fix PostgreSQL cache to include install directory (was only caching\nbuild dir)\n- Add LSAN suppression for `save_ps_display_args` false positive\n- Add `issues: write` permission for failure notification job\n\nThe nightly stress tests have been failing since Jan 9 due to the cache\nissue causing `initdb` to fail with \"postgres binary not found\".\n\n## Testing\n- Trigger manual run: `gh workflow run nightly-stress.yml --field\nduration_minutes=5`",
+          "timestamp": "2026-01-20T16:01:09Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c088e94febb15a9b4901fc522dac675f8f9f89fb"
+        },
+        "date": 1768976512654,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 18379.192,
             "unit": "ms"
           },
           {
