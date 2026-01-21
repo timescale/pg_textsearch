@@ -64,27 +64,20 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 #define TP_INDEX_EXPANSION_FACTOR 1.0
 
 /*
- * Worker build state with double-buffering support.
- * Two memtables allow one to be filled while the other is being spilled.
+ * Worker build state - single memtable that gets spilled when full.
  */
 typedef struct TpWorkerBuildState
 {
-	TpLocalMemtable *memtable_a; /* First memtable */
-	TpLocalMemtable *memtable_b; /* Second memtable */
-	TpLocalMemtable *active;	 /* Currently being filled */
-	TpLocalMemtable *spilling;	 /* Being written to segment (NULL if idle) */
+	TpLocalMemtable *memtable; /* Active memtable being filled */
 } TpWorkerBuildState;
 
 /*
- * Initialize double-buffered worker state
+ * Initialize worker state
  */
 static void
 tp_worker_state_init(TpWorkerBuildState *state)
 {
-	state->memtable_a = tp_local_memtable_create();
-	state->memtable_b = tp_local_memtable_create();
-	state->active	  = state->memtable_a;
-	state->spilling	  = NULL;
+	state->memtable = tp_local_memtable_create();
 }
 
 /*
@@ -93,39 +86,9 @@ tp_worker_state_init(TpWorkerBuildState *state)
 static void
 tp_worker_state_destroy(TpWorkerBuildState *state)
 {
-	if (state->memtable_a)
-		tp_local_memtable_destroy(state->memtable_a);
-	if (state->memtable_b)
-		tp_local_memtable_destroy(state->memtable_b);
-	state->memtable_a = NULL;
-	state->memtable_b = NULL;
-	state->active	  = NULL;
-	state->spilling	  = NULL;
-}
-
-/*
- * Get the alternate memtable (the one not currently active)
- */
-static TpLocalMemtable *
-tp_worker_state_get_alternate(TpWorkerBuildState *state)
-{
-	if (state->active == state->memtable_a)
-		return state->memtable_b;
-	else
-		return state->memtable_a;
-}
-
-/*
- * Swap active memtable to the alternate one.
- * Returns the previously active memtable (for spilling).
- */
-static TpLocalMemtable *
-tp_worker_state_swap(TpWorkerBuildState *state)
-{
-	TpLocalMemtable *prev = state->active;
-	state->active		  = tp_worker_state_get_alternate(state);
-	state->spilling		  = prev;
-	return prev;
+	if (state->memtable)
+		tp_local_memtable_destroy(state->memtable);
+	state->memtable = NULL;
 }
 
 /*
@@ -467,8 +430,7 @@ tp_init_parallel_shared(
 	/*
 	 * Per-worker memory budget calculation.
 	 *
-	 * We split maintenance_work_mem across workers, with a factor of 2 for
-	 * double-buffering (each worker can have up to 2 active memtables).
+	 * We split maintenance_work_mem evenly across workers.
 	 * We use 90% of the budget as the actual threshold to provide slop
 	 * and avoid thrashing near the boundary.
 	 */
@@ -479,8 +441,7 @@ tp_init_parallel_shared(
 		int	 total_workers = nworkers + 1; /* background workers + leader */
 
 		/* maintenance_work_mem is in KB, convert to bytes */
-		memory_budget = ((Size)maintenance_work_mem * 1024) / total_workers /
-						2;
+		memory_budget = ((Size)maintenance_work_mem * 1024) / total_workers;
 
 		/* Apply slop factor to avoid thrashing near boundary */
 		shared->memory_budget_per_worker = (Size)(memory_budget *
@@ -549,10 +510,8 @@ tp_preallocate_page_pool(
 /*
  * Worker entry point - called by parallel infrastructure
  *
- * Uses double-buffering: two memtables allow the worker to continue
- * processing documents while a previous memtable is being spilled.
- * In the current synchronous implementation, this primarily provides
- * cleaner code structure and prepares for future async I/O support.
+ * Each worker scans a portion of the heap, builds a local memtable,
+ * and spills to segments when the memory budget is exceeded.
  */
 PGDLLEXPORT void
 tp_parallel_build_worker_main(
@@ -606,38 +565,17 @@ tp_parallel_build_worker_main(
 		 * This ensures we don't exceed the budget, with some tolerance
 		 * for the size of a single document.
 		 */
-		if (MemoryContextMemAllocated(build_state.active->mcxt, true) >=
+		if (MemoryContextMemAllocated(build_state.memtable->mcxt, true) >=
 			shared->memory_budget_per_worker)
 		{
-			TpLocalMemtable *to_spill;
-			TpLocalMemtable *alternate;
-
-			/*
-			 * Double-buffering: swap to alternate memtable and spill.
-			 * If alternate is also full (edge case with very large documents),
-			 * we must spill it first before continuing.
-			 */
-			alternate = tp_worker_state_get_alternate(&build_state);
-			if (alternate->num_docs > 0)
-			{
-				/* Alternate has pending data - spill it first */
-				tp_worker_spill_memtable(
-						alternate, index, shared, worker_id, my_info);
-				tp_local_memtable_clear(alternate);
-			}
-
-			/* Swap: new active is the cleared alternate */
-			to_spill = tp_worker_state_swap(&build_state);
-
-			/* Spill the previous active memtable */
+			/* Spill memtable to segment and clear for reuse */
 			tp_worker_spill_memtable(
-					to_spill, index, shared, worker_id, my_info);
-			tp_local_memtable_clear(to_spill);
-			build_state.spilling = NULL;
+					build_state.memtable, index, shared, worker_id, my_info);
+			tp_local_memtable_clear(build_state.memtable);
 		}
 
 		tp_worker_process_document(
-				build_state.active,
+				build_state.memtable,
 				slot,
 				shared->attnum,
 				shared->text_config_oid);
@@ -647,16 +585,11 @@ tp_parallel_build_worker_main(
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	/* Final spill of remaining data from both memtables */
-	if (build_state.memtable_a->num_docs > 0)
+	/* Final spill of any remaining data */
+	if (build_state.memtable->num_docs > 0)
 	{
 		tp_worker_spill_memtable(
-				build_state.memtable_a, index, shared, worker_id, my_info);
-	}
-	if (build_state.memtable_b->num_docs > 0)
-	{
-		tp_worker_spill_memtable(
-				build_state.memtable_b, index, shared, worker_id, my_info);
+				build_state.memtable, index, shared, worker_id, my_info);
 	}
 
 	/* Update global stats */
@@ -699,7 +632,7 @@ tp_leader_participate(
 
 	my_info = &TpParallelWorkerInfo(shared)[worker_id];
 
-	/* Initialize double-buffered worker state */
+	/* Initialize worker state */
 	tp_worker_state_init(&build_state);
 
 	/* Join parallel table scan */
@@ -712,30 +645,17 @@ tp_leader_participate(
 		/*
 		 * Check memory budget BEFORE processing each document.
 		 */
-		if (MemoryContextMemAllocated(build_state.active->mcxt, true) >=
+		if (MemoryContextMemAllocated(build_state.memtable->mcxt, true) >=
 			shared->memory_budget_per_worker)
 		{
-			TpLocalMemtable *to_spill;
-			TpLocalMemtable *alternate;
-
-			/* Double-buffering: swap and spill */
-			alternate = tp_worker_state_get_alternate(&build_state);
-			if (alternate->num_docs > 0)
-			{
-				tp_worker_spill_memtable(
-						alternate, index, shared, worker_id, my_info);
-				tp_local_memtable_clear(alternate);
-			}
-
-			to_spill = tp_worker_state_swap(&build_state);
+			/* Spill memtable to segment and clear for reuse */
 			tp_worker_spill_memtable(
-					to_spill, index, shared, worker_id, my_info);
-			tp_local_memtable_clear(to_spill);
-			build_state.spilling = NULL;
+					build_state.memtable, index, shared, worker_id, my_info);
+			tp_local_memtable_clear(build_state.memtable);
 		}
 
 		tp_worker_process_document(
-				build_state.active,
+				build_state.memtable,
 				slot,
 				shared->attnum,
 				shared->text_config_oid);
@@ -745,16 +665,11 @@ tp_leader_participate(
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	/* Final spill of remaining data from both memtables */
-	if (build_state.memtable_a->num_docs > 0)
+	/* Final spill of any remaining data */
+	if (build_state.memtable->num_docs > 0)
 	{
 		tp_worker_spill_memtable(
-				build_state.memtable_a, index, shared, worker_id, my_info);
-	}
-	if (build_state.memtable_b->num_docs > 0)
-	{
-		tp_worker_spill_memtable(
-				build_state.memtable_b, index, shared, worker_id, my_info);
+				build_state.memtable, index, shared, worker_id, my_info);
 	}
 
 	/* Update global stats */
