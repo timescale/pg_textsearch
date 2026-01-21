@@ -56,7 +56,7 @@ WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
 -- Verify we can get top-k results with correct ordering
 SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_idx'))::numeric, 4) AS score
 FROM parallel_test
-ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx')
+ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx'), id
 LIMIT 5;
 
 -- Verify index statistics look reasonable

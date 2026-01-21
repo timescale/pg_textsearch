@@ -50,18 +50,9 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 /* Minimum pages to pre-allocate per worker */
 #define TP_MIN_PAGES_PER_WORKER 64
 
-/*
- * Expansion factor for estimating index pages from heap.
- *
- * BM25 indexes typically use 30-50% of heap pages for data, but text-heavy
- * workloads with many unique terms can exceed this. We use 1.0 to provide
- * adequate safety margin. The pool also includes estimated page index pages.
- *
- * If the pool is exhausted during build, an error will be raised suggesting
- * to increase this factor. The unused pool pages are reclaimed via truncation
- * after the build completes.
- */
-#define TP_INDEX_EXPANSION_FACTOR 1.0
+/* GUC: expansion factor for page pool estimation
+ * (pg_textsearch.parallel_build_expansion_factor) */
+extern double tp_parallel_build_expansion_factor;
 
 /*
  * Worker build state - single memtable that gets spilled when full.
@@ -239,7 +230,7 @@ estimate_parallel_pool_pages(BlockNumber heap_pages, int nworkers)
 	int page_index_pages;
 	int estimated_segments;
 
-	data_pages = (int)(heap_pages * TP_INDEX_EXPANSION_FACTOR) +
+	data_pages = (int)(heap_pages * tp_parallel_build_expansion_factor) +
 				 TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
 	entries_per_page   = tp_page_index_entries_per_page();
 	estimated_segments = (nworkers + 1) * 10; /* ~10 segments per worker */
@@ -1367,8 +1358,10 @@ tp_pool_get_page(
 
 	elog(ERROR,
 		 "Parallel build page pool exhausted (used all %d pages). "
-		 "Increase TP_INDEX_EXPANSION_FACTOR to fix this issue.",
-		 shared->total_pool_pages);
+		 "Increase pg_textsearch.parallel_build_expansion_factor (currently "
+		 "%.1f) and retry.",
+		 shared->total_pool_pages,
+		 tp_parallel_build_expansion_factor);
 
 	/* Not reached */
 	return InvalidBlockNumber;
