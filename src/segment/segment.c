@@ -1998,18 +1998,6 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 
 	block = writer->pages[writer->buffer_page];
 
-	/* Validate block number before reading */
-	{
-		BlockNumber nblocks = RelationGetNumberOfBlocks(writer->index);
-		if (block >= nblocks)
-		{
-			elog(ERROR,
-				 "tp_segment_writer_flush: block %u >= nblocks %u",
-				 block,
-				 nblocks);
-		}
-	}
-
 	/* Write current buffer to disk */
 	buffer = ReadBuffer(writer->index, block);
 	LockBuffer(
