@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768890199206,
+  "lastUpdate": 1768976510059,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1141,6 +1141,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c088e94febb15a9b4901fc522dac675f8f9f89fb",
+          "message": "Fix nightly stress test failures (#157)\n\n## Summary\n- Fix PostgreSQL cache to include install directory (was only caching\nbuild dir)\n- Add LSAN suppression for `save_ps_display_args` false positive\n- Add `issues: write` permission for failure notification job\n\nThe nightly stress tests have been failing since Jan 9 due to the cache\nissue causing `initdb` to fail with \"postgres binary not found\".\n\n## Testing\n- Trigger manual run: `gh workflow run nightly-stress.yml --field\nduration_minutes=5`",
+          "timestamp": "2026-01-20T16:01:09Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c088e94febb15a9b4901fc522dac675f8f9f89fb"
+        },
+        "date": 1768976509246,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 255.684,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.45,
             "unit": "ms"
           },
           {
