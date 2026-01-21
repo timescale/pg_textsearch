@@ -91,11 +91,6 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (total_postings < tp_memtable_spill_threshold)
 		return;
 
-	elog(DEBUG1,
-		 "Auto-spill triggered: %ld posting entries >= threshold %d",
-		 (long)total_postings,
-		 tp_memtable_spill_threshold);
-
 	/* Write the segment */
 	segment_root = tp_write_segment(index_state, index_rel);
 
@@ -138,11 +133,6 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		metap->level_counts[0]++;
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
-
-		elog(DEBUG1,
-			 "Auto-spilled memtable to segment at block %u (L0 count: %u)",
-			 segment_root,
-			 metap->level_counts[0]);
 
 		/* Check if L0 needs compaction */
 		tp_maybe_compact_level(index_rel, 0);
@@ -771,10 +761,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		{
 			BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 			reltuples = (double)nblocks * TP_TUPLES_PER_PAGE_ESTIMATE;
-			elog(DEBUG1,
-				 "Table not analyzed, estimating %.0f tuples from %u pages",
-				 reltuples,
-				 nblocks);
 		}
 
 		/*
@@ -785,12 +771,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 #define TP_WARN_NO_PARALLEL_TUPLES 1000000 /* 1M tuples */
 #define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
 #define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
-
-		elog(DEBUG1,
-			 "Parallel build check: nworkers=%d, reltuples=%.0f, min=%d",
-			 nworkers,
-			 reltuples,
-			 TP_MIN_PARALLEL_TUPLES);
 
 		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
@@ -812,21 +792,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					 nworkers);
 			}
 
-			elog(DEBUG1,
-				 "Using parallel index build with %d workers (%.0f tuples)",
-				 nworkers,
-				 reltuples);
 			return tp_build_parallel(
 					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
 		}
-		else if (nworkers > 0)
-		{
-			elog(DEBUG1,
-				 "Skipping parallel build: %.0f tuples < %d minimum",
-				 reltuples,
-				 TP_MIN_PARALLEL_TUPLES);
-		}
-		else if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES)
+
+		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
 		{
 			/*
 			 * Large table but no parallel workers available.
@@ -839,9 +809,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 reltuples);
 		}
 	}
-
-	/* Fall through to serial build */
-	elog(DEBUG1, "Using serial index build (no parallel workers available)");
 
 	/*
 	 * Initialize index state in BUILD mode with private DSA.
@@ -957,10 +924,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			Page			metapage;
 			TpIndexMetaPage metap;
 
-			elog(DEBUG1,
-				 "BUILD MODE: Final spill of %ld posting entries",
-				 (long)memtable->total_postings);
-
 			segment_root = tp_write_segment(index_state, index);
 
 			if (segment_root != InvalidBlockNumber)
@@ -992,10 +955,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				metap->level_counts[0]++;
 				MarkBufferDirty(metabuf);
 				UnlockReleaseBuffer(metabuf);
-
-				elog(DEBUG1,
-					 "BUILD MODE: Final segment written at block %u",
-					 segment_root);
 			}
 		}
 	}

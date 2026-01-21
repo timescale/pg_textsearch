@@ -34,7 +34,7 @@
  * Per-worker segment tracking
  *
  * Each worker maintains its own chain of segments. After the build completes,
- * the leader links all worker chains into L0.
+ * the leader links all worker chains into L0 and runs compaction if needed.
  */
 typedef struct TpWorkerSegmentInfo
 {

@@ -176,12 +176,6 @@ tp_worker_spill_memtable(
 	if (memtable->num_docs == 0)
 		return false;
 
-	elog(DEBUG1,
-		 "Worker %d spilling memtable: %d docs, %lld postings",
-		 worker_id,
-		 memtable->num_docs,
-		 (long long)memtable->total_postings);
-
 	seg_block = tp_write_segment_from_local_memtable(
 			memtable, index, shared, worker_id);
 
@@ -382,10 +376,6 @@ tp_build_parallel(
 	 * Even if no background workers were launched, the leader will scan
 	 * the entire table as worker 0.
 	 */
-	if (launched == 0)
-		elog(DEBUG1,
-			 "No background workers launched, leader will do all work");
-
 	shared->leader_working = true;
 	tp_leader_participate(shared, heap, index, snapshot);
 
@@ -417,7 +407,6 @@ tp_build_parallel(
 		{
 			BlockNumber truncate_to;
 			BlockNumber old_nblocks;
-			uint32		unused	= pool_total - pool_used;
 			ForkNumber	forknum = MAIN_FORKNUM;
 
 			/*
@@ -427,15 +416,6 @@ tp_build_parallel(
 			 */
 			truncate_to = pool[0] + pool_used;
 			old_nblocks = RelationGetNumberOfBlocks(index);
-
-			elog(DEBUG1,
-				 "Truncating index: used %u of %u pool pages, "
-				 "truncating from %u to %u blocks (reclaiming %u pages)",
-				 pool_used,
-				 pool_total,
-				 old_nblocks,
-				 truncate_to,
-				 unused);
 
 			/* Truncate the relation to reclaim unused space */
 #if PG_VERSION_NUM >= 180000
@@ -451,8 +431,6 @@ tp_build_parallel(
 
 			/* Invalidate relation cache to pick up new size */
 			CacheInvalidateRelcache(index);
-
-			elog(DEBUG1, "Truncated index, reclaimed %u pages", unused);
 		}
 		else if (pool_used == 0)
 		{
@@ -507,11 +485,6 @@ tp_init_parallel_shared(
 	shared->b				= b;
 	shared->worker_count	= nworkers + 1; /* nworkers + leader */
 
-	elog(DEBUG1,
-		 "Parallel build shared initialized: attnum=%d, workers=%d",
-		 attnum,
-		 shared->worker_count);
-
 	/*
 	 * Per-worker memory budget calculation.
 	 *
@@ -533,11 +506,6 @@ tp_init_parallel_shared(
 		/* Apply slop factor to avoid thrashing near boundary */
 		shared->memory_budget_per_worker = (Size)(memory_budget *
 												  TP_MEMORY_SLOP_FACTOR);
-
-		elog(DEBUG1,
-			 "Parallel build: %d workers, %zu KB memory budget/worker",
-			 total_workers,
-			 shared->memory_budget_per_worker / 1024);
 	}
 
 	/* Initialize coordination primitives */
@@ -582,10 +550,6 @@ tp_preallocate_page_pool(
 
 	pool = TpParallelPagePool(shared);
 
-	elog(DEBUG1,
-		 "Pre-allocating %d pages for parallel build shared pool",
-		 total_pages);
-
 	/* Extend relation and collect block numbers */
 	for (i = 0; i < total_pages; i++)
 	{
@@ -623,7 +587,6 @@ tp_parallel_build_worker_main(
 	TupleTableSlot		  *slot;
 	TpWorkerBuildState	   build_state;
 	int					   worker_id;
-	int64				   tuples_processed = 0;
 
 	/* Attach to shared memory */
 	shared = (TpParallelBuildShared *)
@@ -636,8 +599,6 @@ tp_parallel_build_worker_main(
 	worker_id = shared->leader_working ? ParallelWorkerNumber + 1
 									   : ParallelWorkerNumber;
 	my_info	  = &TpParallelWorkerInfo(shared)[worker_id];
-
-	elog(DEBUG1, "Parallel build worker %d starting", worker_id);
 
 	/* Open relations */
 	heap  = table_open(shared->heaprelid, AccessShareLock);
@@ -702,7 +663,6 @@ tp_parallel_build_worker_main(
 				shared->attnum,
 				shared->text_config_oid);
 
-		tuples_processed++;
 		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
@@ -730,13 +690,6 @@ tp_parallel_build_worker_main(
 	SpinLockRelease(&shared->mutex);
 	ConditionVariableSignal(&shared->workersdonecv);
 
-	elog(DEBUG1,
-		 "Worker %d done: %ld tuples, %d segments, %ld docs",
-		 worker_id,
-		 (long)tuples_processed,
-		 my_info->segment_count,
-		 (long)my_info->docs_indexed);
-
 	/* Cleanup */
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -761,17 +714,11 @@ tp_leader_participate(
 	TableScanDesc		 scan;
 	TupleTableSlot		*slot;
 	TpWorkerBuildState	 build_state;
-	int64				 tuples_processed = 0;
-	int					 worker_id		  = 0; /* leader is worker 0 */
+	int					 worker_id = 0; /* leader is worker 0 */
 
 	(void)snapshot; /* unused but part of interface */
 
 	my_info = &TpParallelWorkerInfo(shared)[worker_id];
-
-	elog(DEBUG1,
-		 "Leader participating as worker %d, attnum=%d",
-		 worker_id,
-		 shared->attnum);
 
 	/* Initialize double-buffered worker state */
 	tp_worker_state_init(&build_state);
@@ -780,14 +727,9 @@ tp_leader_participate(
 	scan = table_beginscan_parallel(heap, TpParallelTableScan(shared));
 	slot = table_slot_create(heap, NULL);
 
-	elog(DEBUG1, "Leader entering scan loop, attnum=%d", shared->attnum);
-
 	/* Process tuples */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		if (tuples_processed == 0)
-			elog(DEBUG1, "Leader processing first tuple");
-
 		/*
 		 * Check memory budget BEFORE processing each document.
 		 */
@@ -819,11 +761,6 @@ tp_leader_participate(
 				shared->attnum,
 				shared->text_config_oid);
 
-		tuples_processed++;
-		if (tuples_processed % 100000 == 0)
-			elog(DEBUG1,
-				 "Leader: %lld tuples processed",
-				 (long long)tuples_processed);
 		pg_atomic_fetch_add_u64(&shared->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
@@ -850,12 +787,6 @@ tp_leader_participate(
 	shared->workers_done++;
 	SpinLockRelease(&shared->mutex);
 	ConditionVariableSignal(&shared->workersdonecv);
-
-	elog(DEBUG1,
-		 "Leader done: %ld tuples, %d segments, %ld docs",
-		 (long)tuples_processed,
-		 my_info->segment_count,
-		 (long)my_info->docs_indexed);
 
 	/* Cleanup */
 	table_endscan(scan);
@@ -963,7 +894,7 @@ tp_write_segment_from_local_memtable(
 		TpLocalMemtable		  *memtable,
 		Relation			   index,
 		TpParallelBuildShared *shared,
-		int					   worker_id)
+		int					   worker_id __attribute__((unused)))
 {
 	TpSegmentWriter		writer;
 	TpSegmentHeader		header;
@@ -1363,12 +1294,6 @@ tp_write_segment_from_local_memtable(
 	}
 	tp_segment_writer_finish(&writer);
 
-	elog(DEBUG1,
-		 "Worker %d: segment complete, header_block=%u, %d terms",
-		 worker_id,
-		 header_block,
-		 num_terms);
-
 	/* Cleanup */
 	if (writer.pages)
 		pfree(writer.pages);
@@ -1442,11 +1367,6 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 	MarkBufferDirty(metabuf);
 	UnlockReleaseBuffer(metabuf);
 
-	elog(DEBUG1,
-		 "Linked %d segments from %d workers into L0",
-		 total_segments,
-		 shared->worker_count);
-
 	/*
 	 * Check if compaction is needed based on segment count threshold.
 	 *
@@ -1484,11 +1404,6 @@ tp_finalize_parallel_stats(TpParallelBuildShared *shared, Relation index)
 
 	MarkBufferDirty(metabuf);
 	UnlockReleaseBuffer(metabuf);
-
-	elog(DEBUG1,
-		 "Parallel build complete: %lu docs, %lu total length",
-		 (unsigned long)total_docs,
-		 (unsigned long)total_len);
 }
 
 /*
