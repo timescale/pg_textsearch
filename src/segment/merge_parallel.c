@@ -179,7 +179,7 @@ tp_compact_parallel(Relation index)
 	shared = (TpParallelCompactShared *)
 			shm_toc_allocate(pcxt->toc, shmem_size);
 
-	memset(shared, 0, sizeof(TpParallelCompactShared));
+	memset(shared, 0, shmem_size); /* Zero ALL shared memory including results */
 	shared->indexrelid		   = RelationGetRelid(index);
 	shared->segments_per_merge = tp_segments_per_level;
 	shared->total_pool_pages   = total_pool_pages;
@@ -442,7 +442,7 @@ tp_assign_compaction_tasks(TpParallelCompactShared *shared, Relation index)
 
 		/* Collect all segments at this level */
 		current = metap->level_heads[level];
-		while (current != InvalidBlockNumber && seg_idx < count)
+		while (current != InvalidBlockNumber && current != 0 && seg_idx < count)
 		{
 			Buffer			 seg_buf;
 			Page			 seg_page;
@@ -455,7 +455,21 @@ tp_assign_compaction_tasks(TpParallelCompactShared *shared, Relation index)
 			seg_page = BufferGetPage(seg_buf);
 			header	 = (TpSegmentHeader *)((char *)seg_page +
 										   SizeOfPageHeaderData);
-			current	 = header->next_segment;
+
+			/* Validate segment magic to catch corruption early */
+			if (header->magic != TP_SEGMENT_MAGIC)
+			{
+				UnlockReleaseBuffer(seg_buf);
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("invalid segment at block %u during task "
+								"assignment",
+								current),
+						 errdetail("magic=0x%08X, expected 0x%08X",
+								   header->magic, TP_SEGMENT_MAGIC)));
+			}
+
+			current = header->next_segment;
 			UnlockReleaseBuffer(seg_buf);
 		}
 
