@@ -243,40 +243,54 @@ estimate_parallel_pool_pages(BlockNumber heap_pages, int nworkers)
 }
 
 /*
- * Truncate unused pages from pre-allocated pool.
+ * Reclaim unused pages from pre-allocated pool.
  *
- * Pool pages are allocated contiguously, so unused pages are at the end.
- * Truncation reclaims this space immediately.
+ * Instead of truncating unused pages (which would be undone by subsequent
+ * compaction), we record them in the FSM for reuse. This allows compaction
+ * to reuse these pages immediately rather than extending the relation.
+ *
+ * The FSM must be vacuumed after recording to update upper-level pages,
+ * otherwise GetFreeIndexPage won't find the newly recorded pages.
  */
 static void
-truncate_unused_pool_pages(Relation index, TpParallelBuildShared *shared)
+reclaim_unused_pool_pages(Relation index, TpParallelBuildShared *shared)
 {
 	uint32		 pool_used	= pg_atomic_read_u32(&shared->shared_pool_next);
 	uint32		 pool_total = shared->total_pool_pages;
 	BlockNumber *pool		= TpParallelPagePool(shared);
+	uint32		 i;
+	uint32		 pages_reclaimed = 0;
 
-	if (pool_used < pool_total && pool_used > 0)
-	{
-		BlockNumber truncate_to = pool[0] + pool_used;
-		BlockNumber old_nblocks = RelationGetNumberOfBlocks(index);
-		ForkNumber	forknum		= MAIN_FORKNUM;
+	if (pool_used >= pool_total)
+		return; /* All pool pages were used */
 
-#if PG_VERSION_NUM >= 180000
-		smgrtruncate(
-				RelationGetSmgr(index),
-				&forknum,
-				1,
-				&old_nblocks,
-				&truncate_to);
-#else
-		smgrtruncate(RelationGetSmgr(index), &forknum, 1, &truncate_to);
-#endif
-		CacheInvalidateRelcache(index);
-	}
-	else if (pool_used == 0)
+	if (pool_used == 0)
 	{
 		elog(WARNING, "Parallel build used 0 pool pages - no data?");
+		return;
 	}
+
+	/*
+	 * Record unused pool pages in FSM for reuse by compaction.
+	 * Pool pages are allocated contiguously via P_NEW, so unused pages
+	 * are at indices [pool_used, pool_total).
+	 */
+	for (i = pool_used; i < pool_total; i++)
+	{
+		RecordFreeIndexPage(index, pool[i]);
+		pages_reclaimed++;
+	}
+
+	/*
+	 * Update FSM upper-level pages so GetFreeIndexPage can find them.
+	 * Without this, the recorded pages remain invisible to searches.
+	 */
+	if (pages_reclaimed > 0)
+		IndexFreeSpaceMapVacuum(index);
+
+	elog(DEBUG1,
+		 "Parallel build: reclaimed %u unused pool pages to FSM",
+		 pages_reclaimed);
 }
 
 /*
@@ -368,8 +382,8 @@ tp_build_parallel(
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
 
-	/* Reclaim unused pages from the pre-allocated pool */
-	truncate_unused_pool_pages(index, shared);
+	/* Reclaim unused pages from the pre-allocated pool to FSM */
+	reclaim_unused_pool_pages(index, shared);
 
 	/* Link all worker segments into L0 chain */
 	tp_link_all_worker_segments(shared, index);
@@ -1315,8 +1329,10 @@ tp_finalize_parallel_stats(TpParallelBuildShared *shared, Relation index)
 }
 
 /*
- * Get a page from the shared pool (called from segment writer)
- * Falls back to FSM/extend if pool exhausted
+ * Get a page from the shared pool (called from segment writer).
+ *
+ * If the pre-allocated pool is exhausted, dynamically extends the relation.
+ * This ensures builds always succeed even if the initial estimate was low.
  *
  * Note: worker_id parameter is kept for API compatibility but no longer used
  * since all workers share a single pool.
@@ -1325,7 +1341,7 @@ BlockNumber
 tp_pool_get_page(
 		TpParallelBuildShared *shared,
 		int					   worker_id __attribute__((unused)),
-		Relation			   index __attribute__((unused)))
+		Relation			   index)
 {
 	BlockNumber *pool;
 	uint32		 idx;
@@ -1353,16 +1369,41 @@ tp_pool_get_page(
 		return block;
 	}
 
-	/* Pool exhausted */
-	pg_atomic_write_u32(&shared->pool_exhausted, 1);
+	/*
+	 * Pool exhausted - dynamically extend the relation.
+	 *
+	 * ReadBufferExtended with P_NEW handles concurrency internally via the
+	 * buffer manager, so multiple workers can safely call this simultaneously.
+	 * Log a notice on first overflow so users know their estimate was low.
+	 */
+	if (pg_atomic_exchange_u32(&shared->pool_exhausted, 1) == 0)
+	{
+		elog(NOTICE,
+			 "Parallel build pool exhausted (%d pages), extending dynamically. "
+			 "Consider increasing pg_textsearch.parallel_build_expansion_factor "
+			 "(currently %.1f) to avoid this overhead.",
+			 shared->total_pool_pages,
+			 tp_parallel_build_expansion_factor);
+	}
 
-	elog(ERROR,
-		 "Parallel build page pool exhausted (used all %d pages). "
-		 "Increase pg_textsearch.parallel_build_expansion_factor (currently "
-		 "%.1f) and retry.",
-		 shared->total_pool_pages,
-		 tp_parallel_build_expansion_factor);
+	{
+		Buffer buf = ReadBufferExtended(
+				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		block = BufferGetBlockNumber(buf);
+		UnlockReleaseBuffer(buf);
+	}
 
-	/* Not reached */
-	return InvalidBlockNumber;
+	/* Track this dynamically allocated block too */
+	{
+		uint32 current_max;
+		do
+		{
+			current_max = pg_atomic_read_u32(&shared->max_block_used);
+			if (block <= current_max)
+				break;
+		} while (
+				!pg_atomic_compare_exchange_u32(&shared->max_block_used, &current_max, block));
+	}
+
+	return block;
 }

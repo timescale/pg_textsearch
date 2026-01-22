@@ -783,8 +783,9 @@ tp_page_index_entries_per_page(void)
 
 /*
  * Write page index from a pre-allocated pool (for parallel builds).
- * This avoids extending the relation during parallel builds, which is unsafe
- * because workers have stale views of relation size.
+ *
+ * If the pool is exhausted, dynamically extends the relation. This ensures
+ * builds always succeed even if the initial estimate was too conservative.
  */
 BlockNumber
 write_page_index_from_pool(
@@ -802,22 +803,25 @@ write_page_index_from_pool(
 	uint32 num_index_pages	= (num_pages + entries_per_page - 1) /
 							 entries_per_page;
 
-	/* Allocate index pages from pool */
+	/* Allocate index pages from pool, extending if needed */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
 	uint32		 i;
 
 	for (i = 0; i < num_index_pages; i++)
 	{
 		uint32 idx = pg_atomic_fetch_add_u32(pool_next, 1);
-		if (idx >= pool_size)
+		if (idx < pool_size)
 		{
-			pfree(index_pages);
-			elog(ERROR,
-				 "Page pool exhausted while writing page index (need %u more "
-				 "pages). Increase TP_INDEX_EXPANSION_FACTOR.",
-				 num_index_pages - i);
+			index_pages[i] = page_pool[idx];
 		}
-		index_pages[i] = page_pool[idx];
+		else
+		{
+			/* Pool exhausted - dynamically extend the relation */
+			Buffer buf = ReadBufferExtended(
+					index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+			index_pages[i] = BufferGetBlockNumber(buf);
+			UnlockReleaseBuffer(buf);
+		}
 	}
 
 	/* Write index pages in reverse order (so we can chain them) */
