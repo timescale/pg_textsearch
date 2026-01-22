@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769108601429,
+  "lastUpdate": 1769110705036,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1252,6 +1252,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "95f28c8cd59584b198dd6d0bc50e893dda57b1d6",
+          "message": "fix: use FSM for page reclamation and dynamic pool extension\n\nTwo fixes for parallel build page management:\n\n1. After parallel index build completes, unused pre-allocated pool pages\n   were being truncated. However, the subsequent compaction step would\n   then extend the relation again, negating the truncation. Now we record\n   unused pool pages in the Free Space Map (FSM) so they can be reused\n   by compaction.\n\n2. When the pre-allocated page pool is exhausted during build, instead\n   of failing with an error, we now dynamically extend the relation.\n   This ensures builds always succeed even if the initial size estimate\n   was too conservative. A NOTICE is logged on first overflow so users\n   can tune the expansion factor if desired.\n\nThese changes fix the index size regression observed in nightly\nbenchmarks and make parallel builds more robust.",
+          "timestamp": "2026-01-22T18:48:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/95f28c8cd59584b198dd6d0bc50e893dda57b1d6"
+        },
+        "date": 1769110704214,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 260.704,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
             "unit": "ms"
           },
           {
