@@ -1,7 +1,7 @@
 -- Test VACUUM behavior with BM25 indexes
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.4.1 installed
 -- Create test table
 CREATE TABLE vacuum_test (
     id SERIAL PRIMARY KEY,

@@ -2,7 +2,7 @@
 -- This test verifies that concurrent access to shared memory structures is safe
 -- and that operations like inserts, searches, and index building work correctly
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.4.1 installed
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Clean up from any previous tests
@@ -202,19 +202,19 @@ NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.0671
 NOTICE:  BM25 index scan: tid=(0,59), BM25_score=-0.0671
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.0631
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.0631
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.0563
-NOTICE:  BM25 index scan: tid=(0,38), BM25_score=-0.0563
- id |                            content                             |  score  
-----+----------------------------------------------------------------+---------
-  1 | updated database system with enhanced concurrent features      | -3.5477
-  2 | updated database system with enhanced concurrent features      | -3.5477
-  5 | database indexing strategies                                   | -0.0768
-  8 | database concurrent processing improves performance            | -0.0671
- 59 | new concurrent database research paper                         | -0.0671
-  6 | database systems require concurrent access control             | -0.0631
-  7 | concurrent database operations need careful synchronization    | -0.0631
- 20 | test document number 12 contains database and concurrent terms | -0.0563
- 38 | test document number 30 contains database and concurrent terms | -0.0563
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.0563
+ id |                            content                            |  score  
+----+---------------------------------------------------------------+---------
+  1 | updated database system with enhanced concurrent features     | -3.5477
+  2 | updated database system with enhanced concurrent features     | -3.5477
+  5 | database indexing strategies                                  | -0.0768
+  8 | database concurrent processing improves performance           | -0.0671
+ 59 | new concurrent database research paper                        | -0.0671
+  6 | database systems require concurrent access control            | -0.0631
+  7 | concurrent database operations need careful synchronization   | -0.0631
+  9 | test document number 1 contains database and concurrent terms | -0.0563
+ 10 | test document number 2 contains database and concurrent terms | -0.0563
 (9 rows)
 
 -- Test 7: Delete operations

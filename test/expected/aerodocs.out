@@ -4,7 +4,7 @@
 -- Tests both dataset loading and pg_textsearch scoring functionality with the <@> operator
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.4.1 installed
 \set ECHO none
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;

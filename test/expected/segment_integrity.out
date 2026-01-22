@@ -9,7 +9,7 @@
 -- - Document length encoding errors
 -- - Term frequency encoding errors
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.4.1 installed
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;
 -- Create table with enough documents to be meaningful
@@ -244,9 +244,6 @@ FROM pre_merge_scores;
 
 -- This spill triggers merge
 SELECT bm25_spill_index('integrity_test_idx') IS NOT NULL AS merge_spill_ok;
-NOTICE:  Merge: freeing 6 source segment pages to FSM before writing L1
-NOTICE:  Merge: FSM vacuum complete, now writing L1 segment
-NOTICE:  Merged 3 segments from L0 into L1 segment at block 2 (42 terms, freed 6 pages)
  merge_spill_ok 
 ----------------
  t

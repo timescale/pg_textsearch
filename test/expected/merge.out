@@ -6,7 +6,7 @@
 -- 2. L0 -> L1 merge triggered by segments_per_level = 2
 -- 3. Queries across multiple segment levels (L0, L1)
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.4.1 installed
 \set ECHO none
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;
@@ -82,9 +82,6 @@ INSERT INTO merge_test (content) VALUES ('goodbye database friend');
 -- After merge: L0 is empty (cleared), L1 has merged segment
 -- Note: Run with client_min_messages=debug1 to see merge DEBUG messages
 SELECT bm25_spill_index('merge_test_idx') IS NOT NULL AS second_spill;
-NOTICE:  Merge: freeing 4 source segment pages to FSM before writing L1
-NOTICE:  Merge: FSM vacuum complete, now writing L1 segment
-NOTICE:  Merged 2 segments from L0 into L1 segment at block 2 (14 terms, freed 4 pages)
  second_spill 
 --------------
  t
