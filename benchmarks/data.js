@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769062819183,
+  "lastUpdate": 1769108599864,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1215,6 +1215,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "2ae9d52c42fe284f6bcae1850c64e6a769c0ef03",
+          "message": "fix: use FSM instead of truncation for parallel build page reclamation\n\nAfter parallel index build completes, unused pre-allocated pool pages\nwere being truncated. However, the subsequent compaction step would then\nextend the relation again, negating the truncation.\n\nInstead of truncating, record unused pool pages in the Free Space Map\n(FSM) so they can be reused by compaction. This prevents the index size\nregression observed in nightly benchmarks since the parallel build PR\nmerged.\n\nKey changes:\n- Rename truncate_unused_pool_pages to reclaim_unused_pool_pages\n- Use RecordFreeIndexPage to add unused pages to FSM\n- Call IndexFreeSpaceMapVacuum to make pages discoverable",
+          "timestamp": "2026-01-22T18:48:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/2ae9d52c42fe284f6bcae1850c64e6a769c0ef03"
+        },
+        "date": 1769108599067,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 248.565,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.41,
             "unit": "ms"
           },
           {
