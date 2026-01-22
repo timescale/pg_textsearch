@@ -4,7 +4,7 @@
 -- Ensures documents at different block positions across posting lists
 -- are correctly scored.
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.4.0 installed
+INFO:  pg_textsearch v0.5.0-dev installed
 -- ============================================================
 -- TEST: Multi-term documents score correctly across block boundaries
 -- ============================================================
@@ -78,7 +78,6 @@ SELECT 'bmw' as path, * FROM bmw_results ORDER BY score;
  path | id  |        score        
 ------+-----+---------------------
  bmw  | 201 | -1.3151806592941284
- bmw  |   1 | -1.2470827102661133
  bmw  |   2 | -1.2470827102661133
  bmw  |   3 | -1.2470827102661133
  bmw  |   4 | -1.2470827102661133
@@ -87,6 +86,7 @@ SELECT 'bmw' as path, * FROM bmw_results ORDER BY score;
  bmw  |   7 | -1.2470827102661133
  bmw  |   8 | -1.2470827102661133
  bmw  |   9 | -1.2470827102661133
+ bmw  |  10 | -1.2470827102661133
 (10 rows)
 
 -- TEST 1: Doc 201 should be in top 10 of exhaustive (it's the ONLY multi-term doc!)
@@ -121,9 +121,9 @@ SELECT 'results-match' as test,
     CASE WHEN (SELECT COUNT(*) FROM
         (SELECT id FROM exhaustive_results EXCEPT SELECT id FROM bmw_results) x) = 0
     THEN 'PASS' ELSE 'FAIL - RESULTS DIFFER' END as result;
-     test      | result 
----------------+--------
- results-match | PASS
+     test      |        result         
+---------------+-----------------------
+ results-match | FAIL - RESULTS DIFFER
 (1 row)
 
 -- Show what score doc 201 SHOULD have
@@ -199,9 +199,9 @@ SELECT 'bmw-3term' as mode, * FROM bmw_3term ORDER BY score LIMIT 5;
 -----------+-----+---------------------
  bmw-3term | 352 | -2.1109485924243927
  bmw-3term | 151 | -1.8672218322753906
- bmw-3term |   1 | -1.4566887617111206
- bmw-3term |   2 | -1.4566887617111206
  bmw-3term |   3 | -1.4566887617111206
+ bmw-3term |   4 | -1.4566887617111206
+ bmw-3term |   5 | -1.4566887617111206
 (5 rows)
 
 -- TEST 5: Doc 352 (3-term doc) should be #1 in both
@@ -219,9 +219,9 @@ SELECT '3-term-results-match' as test,
     CASE WHEN (SELECT COUNT(*) FROM
         (SELECT id FROM ex_3term EXCEPT SELECT id FROM bmw_3term) x) = 0
     THEN 'PASS' ELSE 'FAIL - 3-TERM RESULTS DIFFER' END as result;
-         test         | result 
-----------------------+--------
- 3-term-results-match | PASS
+         test         |            result            
+----------------------+------------------------------
+ 3-term-results-match | FAIL - 3-TERM RESULTS DIFFER
 (1 row)
 
 DROP TABLE ex_3term, bmw_3term;

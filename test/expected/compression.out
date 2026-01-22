@@ -1,7 +1,7 @@
 -- Test compression functionality
 -- Tests that compression (now default) produces correct results
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.0 installed
+INFO:  pg_textsearch v0.5.0-dev installed
 -- Compression is now on by default
 SHOW pg_textsearch.compress_segments;
  pg_textsearch.compress_segments 
