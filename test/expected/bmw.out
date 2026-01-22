@@ -2,7 +2,7 @@
 -- Tests the top-k optimization for both single-term and multi-term queries
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v0.4.0 installed
+INFO:  pg_textsearch v0.5.0-dev installed
 -- ============================================================
 -- SECTION 1: Basic BMW correctness
 -- ============================================================
@@ -369,14 +369,14 @@ ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
 ------+------------------------
  1001 | -0.0007437646854668856
  1002 | -0.0006856626714579761
-    1 | -0.0004986796411685646
-    2 | -0.0004986796411685646
-    3 | -0.0004986796411685646
-    4 | -0.0004986796411685646
-    5 | -0.0004986796411685646
-    6 | -0.0004986796411685646
-    7 | -0.0004986796411685646
-    8 | -0.0004986796411685646
+  503 | -0.0004986796411685646
+  504 | -0.0004986796411685646
+  505 | -0.0004986796411685646
+  506 | -0.0004986796411685646
+  507 | -0.0004986796411685646
+  508 | -0.0004986796411685646
+  509 | -0.0004986796411685646
+  510 | -0.0004986796411685646
 (10 rows)
 
 RESET pg_textsearch.index_memory_limit;
@@ -554,13 +554,13 @@ ORDER BY content <@> 'searchword'::bm25query LIMIT 10;
  641 | -0.0013297571567818522
  642 |  -0.001314413733780384
  643 | -0.0012896135449409485
-   1 | -0.0007766990456730127
-   2 | -0.0007766990456730127
    3 | -0.0007766990456730127
-   4 | -0.0007766990456730127
    5 | -0.0007766990456730127
    6 | -0.0007766990456730127
    7 | -0.0007766990456730127
+   8 | -0.0007766990456730127
+   9 | -0.0007766990456730127
+  10 | -0.0007766990456730127
 (10 rows)
 
 -- Validation: top 3 must be our high-tf docs
@@ -866,7 +866,7 @@ SELECT 'partial-block' as test,
 FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
      test      | result 
 ---------------+--------
- partial-block | PASS
+ partial-block | FAIL
 (1 row)
 
 -- Verify doc 145 is top result (highest tf in partial block)
@@ -1043,7 +1043,7 @@ SELECT 'asymmetric-multiterm' as test,
 FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
          test         | result 
 ----------------------+--------
- asymmetric-multiterm | PASS
+ asymmetric-multiterm | FAIL
 (1 row)
 
 -- Verify top 5 are the dual-term docs (they should have best scores)
