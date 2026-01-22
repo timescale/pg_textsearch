@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769111686851,
+  "lastUpdate": 1769113051832,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1321,6 +1321,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Build Time",
             "value": 251.935,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "d66f0d8bdeb63aca2c43247243494af89820c199",
+          "message": "fix: use FSM for page reclamation and dynamic pool extension\n\nThree fixes for parallel build page management:\n\n1. After parallel index build completes, unused pre-allocated pool pages\n   were being truncated. However, the subsequent compaction step would\n   then extend the relation again, negating the truncation. Now we record\n   unused pool pages in the Free Space Map (FSM) so they can be reused\n   by compaction.\n\n2. When the pre-allocated page pool is exhausted during build (in\n   tp_pool_get_page), instead of failing with an error, we now\n   dynamically extend the relation. A NOTICE is logged on first overflow\n   so users can tune the expansion factor if desired.\n\n3. When writing page index and the pool is exhausted (in\n   write_page_index_from_pool), we now also dynamically extend instead\n   of failing.\n\nThese changes fix the index size regression observed in nightly\nbenchmarks and make parallel builds more robust.",
+          "timestamp": "2026-01-22T18:48:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d66f0d8bdeb63aca2c43247243494af89820c199"
+        },
+        "date": 1769113050537,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 282.59,
             "unit": "ms"
           },
           {
