@@ -669,7 +669,7 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	/* Find documents matching the query using posting lists */
 	success = tp_memtable_search(scan, index_state, query_vector, metap);
 
-	/* Release the lock - we've extracted all CTIDs we need */
+	/* Release the lock - we have extracted all CTIDs we need */
 	tp_release_index_lock(index_state);
 
 	pfree(metap);
