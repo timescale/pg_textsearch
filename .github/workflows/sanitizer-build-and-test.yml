@@ -2,7 +2,7 @@
 name: Sanitizer test
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
     paths:
       - 'src/**'
       - 'test/**'
@@ -11,7 +11,7 @@ on:
       - 'pg_textsearch.control'
       - '.github/workflows/sanitizer-build-and-test.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
     paths:
       - 'src/**'
       - 'test/**'

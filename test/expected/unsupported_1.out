@@ -1,7 +1,7 @@
 -- Test cases for queries that are NOT YET fully supported
 -- These document known limitations of the current implicit index resolution
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.0 installed
+INFO:  pg_textsearch v0.4.1 installed
 -- Setup test tables
 CREATE TABLE docs (
     id SERIAL PRIMARY KEY,
