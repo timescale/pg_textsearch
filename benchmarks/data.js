@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769111684665,
+  "lastUpdate": 1769111686851,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4721,6 +4721,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 3509.81,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "95f28c8cd59584b198dd6d0bc50e893dda57b1d6",
+          "message": "fix: use FSM for page reclamation and dynamic pool extension\n\nTwo fixes for parallel build page management:\n\n1. After parallel index build completes, unused pre-allocated pool pages\n   were being truncated. However, the subsequent compaction step would\n   then extend the relation again, negating the truncation. Now we record\n   unused pool pages in the Free Space Map (FSM) so they can be reused\n   by compaction.\n\n2. When the pre-allocated page pool is exhausted during build, instead\n   of failing with an error, we now dynamically extend the relation.\n   This ensures builds always succeed even if the initial size estimate\n   was too conservative. A NOTICE is logged on first overflow so users\n   can tune the expansion factor if desired.\n\nThese changes fix the index size regression observed in nightly\nbenchmarks and make parallel builds more robust.",
+          "timestamp": "2026-01-22T18:48:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/95f28c8cd59584b198dd6d0bc50e893dda57b1d6"
+        },
+        "date": 1769111686131,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 347334.746,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.6,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.13,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 6.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 12.75,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 20.57,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 29.45,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 48.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 16.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 3511.14,
             "unit": "MB"
           }
         ]
