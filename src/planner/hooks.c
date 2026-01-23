@@ -720,6 +720,16 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 	}
 	break;
 
+	case T_CustomScan:
+	{
+		CustomScan *cscan = (CustomScan *)plan;
+
+		foreach (lc, cscan->custom_plans)
+			if (plan_has_bm25_indexscan((Plan *)lfirst(lc), oids))
+				return true;
+	}
+	break;
+
 	default:
 		break;
 	}
@@ -771,6 +781,16 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		SubqueryScan *subquery = (SubqueryScan *)plan;
 
 		replace_scores_in_plan(subquery->subplan, oids);
+	}
+	break;
+
+	case T_CustomScan:
+	{
+		CustomScan *cscan = (CustomScan *)plan;
+		ListCell   *lc2;
+
+		foreach (lc2, cscan->custom_plans)
+			replace_scores_in_plan((Plan *)lfirst(lc2), oids);
 	}
 	break;
 
