@@ -121,7 +121,6 @@ jobs:
         echo "shared_preload_libraries = 'timescaledb'" >> tmp_shell_test/data/postgresql.conf || true
         echo "unix_socket_directories = '$PWD/tmp_shell_test'" >> tmp_shell_test/data/postgresql.conf
         pg_ctl start -D tmp_shell_test/data -l tmp_shell_test/data/logfile -w
-        createdb -h $PWD/tmp_shell_test -p 55434 postgres
 
         export PGHOST=$PWD/tmp_shell_test
         export PGPORT=55434
