@@ -36,8 +36,6 @@ CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
 NOTICE:  BM25 index build started for relation parallel_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  Parallel build: reclaimed 89 unused pool pages to FSM (pool_used=3349, pool_total=3438)
-NOTICE:  Parallel build: truncating 89 trailing free pages (nblocks 3439 -> 3350)
 -- Verify index was created
 SELECT 'Index created' AS status
 FROM pg_class

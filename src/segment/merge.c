@@ -1210,7 +1210,10 @@ write_merged_segment(
 }
 
 /*
- * Merge all segments at the specified level into a single segment at level+1.
+ * Merge up to tp_segments_per_level segments at the specified level into a
+ * single segment at level+1. This enables page reuse: after each batch of
+ * segments is merged, their pages are freed to FSM and available for the
+ * next merge batch.
  */
 BlockNumber
 tp_merge_level_segments(Relation index, uint32 level)
@@ -1220,10 +1223,12 @@ tp_merge_level_segments(Relation index, uint32 level)
 	Page			metapage;
 	BlockNumber		first_segment;
 	uint32			segment_count;
+	uint32			segments_to_merge;
 	TpMergeSource  *sources;
 	int				num_sources;
 	int				i;
 	BlockNumber		current;
+	BlockNumber		next_unmerged = InvalidBlockNumber;
 	TpMergedTerm   *merged_terms	 = NULL;
 	uint32			num_merged_terms = 0;
 	uint32			merged_capacity	 = 0;
@@ -1262,14 +1267,24 @@ tp_merge_level_segments(Relation index, uint32 level)
 		return InvalidBlockNumber;
 	}
 
-	elog(DEBUG1, "Merging %u segments at level %u", segment_count, level);
+	/*
+	 * Only merge tp_segments_per_level segments at a time. This allows freed
+	 * pages from this merge to be reused in subsequent merges.
+	 */
+	segments_to_merge = Min(segment_count, (uint32)tp_segments_per_level);
+
+	elog(DEBUG1,
+		 "Merging %u of %u segments at level %u",
+		 segments_to_merge,
+		 segment_count,
+		 level);
 
 	/*
 	 * Allocate page tracking arrays in current context (not merge context)
 	 * so they survive the merge context deletion.
 	 */
-	segment_pages		= palloc0(sizeof(BlockNumber *) * segment_count);
-	segment_page_counts = palloc0(sizeof(uint32) * segment_count);
+	segment_pages		= palloc0(sizeof(BlockNumber *) * segments_to_merge);
+	segment_page_counts = palloc0(sizeof(uint32) * segments_to_merge);
 
 	/* Create memory context for merge operation */
 	merge_ctx = AllocSetContextCreate(
@@ -1277,12 +1292,13 @@ tp_merge_level_segments(Relation index, uint32 level)
 	old_ctx = MemoryContextSwitchTo(merge_ctx);
 
 	/* Allocate array for merge sources */
-	sources		= palloc0(sizeof(TpMergeSource) * segment_count);
+	sources		= palloc0(sizeof(TpMergeSource) * segments_to_merge);
 	num_sources = 0;
 
-	/* Open all segments in the chain */
+	/* Open only the segments we're merging (first segments_to_merge) */
 	current = first_segment;
-	while (current != InvalidBlockNumber && num_sources < (int)segment_count)
+	while (current != InvalidBlockNumber &&
+		   num_sources < (int)segments_to_merge)
 	{
 		TpSegmentReader *reader;
 		BlockNumber		 next;
@@ -1328,6 +1344,9 @@ tp_merge_level_segments(Relation index, uint32 level)
 			break;
 		}
 	}
+
+	/* Track the first unmerged segment (for updating level head later) */
+	next_unmerged = current;
 
 	if (num_sources == 0)
 	{
@@ -1472,16 +1491,17 @@ tp_merge_level_segments(Relation index, uint32 level)
 	}
 
 	/*
-	 * Update metapage: clear source level, add to target level.
+	 * Update metapage: remove merged segments from source level, add merged
+	 * segment to target level.
 	 */
 	metabuf = ReadBuffer(index, 0);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-	/* Clear source level */
-	metap->level_heads[level]  = InvalidBlockNumber;
-	metap->level_counts[level] = 0;
+	/* Update source level: point to first unmerged segment */
+	metap->level_heads[level] = next_unmerged;
+	metap->level_counts[level] -= num_sources;
 
 	/* Add merged segment to target level */
 	if (metap->level_heads[level + 1] != InvalidBlockNumber)
@@ -1504,38 +1524,46 @@ tp_merge_level_segments(Relation index, uint32 level)
 	metap->level_heads[level + 1] = new_segment;
 	metap->level_counts[level + 1]++;
 
-	MarkBufferDirty(metabuf);
-	UnlockReleaseBuffer(metabuf);
-
-	/*
-	 * Free pages from merged source segments. Now that the metapage no longer
-	 * references these segments, their pages can be recycled via the FSM.
-	 */
-	for (i = 0; i < (int)num_segments_tracked; i++)
 	{
-		if (segment_pages[i] && segment_page_counts[i] > 0)
+		/* Capture remaining count before releasing buffer */
+		uint16 remaining_in_level = metap->level_counts[level];
+
+		MarkBufferDirty(metabuf);
+		UnlockReleaseBuffer(metabuf);
+
+		/*
+		 * Free pages from merged source segments. Now that the metapage no
+		 * longer references these segments, their pages can be recycled via
+		 * the FSM.
+		 */
+		for (i = 0; i < (int)num_segments_tracked; i++)
 		{
-			tp_segment_free_pages(
-					index, segment_pages[i], segment_page_counts[i]);
+			if (segment_pages[i] && segment_page_counts[i] > 0)
+			{
+				tp_segment_free_pages(
+						index, segment_pages[i], segment_page_counts[i]);
+			}
 		}
+
+		/*
+		 * Update FSM upper-level pages so searches can find the freed pages.
+		 * Without this, RecordFreeIndexPage only updates leaf pages, but
+		 * GetFreeIndexPage searches from the root down.
+		 */
+		IndexFreeSpaceMapVacuum(index);
+
+		elog(DEBUG1,
+			 "Merged %u segments from L%u into L%u segment at block %u "
+			 "(%u terms, freed %u pages, %u segments remain in L%u)",
+			 num_sources,
+			 level,
+			 level + 1,
+			 new_segment,
+			 num_merged_terms,
+			 total_pages_to_free,
+			 remaining_in_level,
+			 level);
 	}
-
-	/*
-	 * Update FSM upper-level pages so searches can find the freed pages.
-	 * Without this, RecordFreeIndexPage only updates leaf pages, but
-	 * GetFreeIndexPage searches from the root down.
-	 */
-	IndexFreeSpaceMapVacuum(index);
-
-	elog(DEBUG1,
-		 "Merged %u segments from L%u into L%u segment at block %u "
-		 "(%u terms, freed %u pages)",
-		 segment_count,
-		 level,
-		 level + 1,
-		 new_segment,
-		 num_merged_terms,
-		 total_pages_to_free);
 
 	/* Clean up page tracking arrays */
 	for (i = 0; i < (int)num_segments_tracked; i++)
@@ -1551,35 +1579,49 @@ tp_merge_level_segments(Relation index, uint32 level)
 
 /*
  * Check if a level needs compaction and trigger merge if so.
+ *
+ * This function loops, merging tp_segments_per_level segments at a time,
+ * until the level has fewer than tp_segments_per_level segments. This allows
+ * page reuse: after each merge batch, freed pages are available in FSM for
+ * subsequent merges.
  */
 void
 tp_maybe_compact_level(Relation index, uint32 level)
 {
-	TpIndexMetaPage metap;
-	Buffer			metabuf;
-	Page			metapage;
-	uint16			level_count;
-
 	if (level >= TP_MAX_LEVELS - 1)
 		return;
 
-	/* Check if level needs compaction */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	level_count = metap->level_counts[level];
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (level_count < (uint16)tp_segments_per_level)
-		return; /* Level not full */
-
-	/* Merge this level */
-	if (tp_merge_level_segments(index, level) != InvalidBlockNumber)
+	/*
+	 * Loop while level needs compaction. Each iteration merges
+	 * tp_segments_per_level segments, freeing their pages to FSM for reuse.
+	 */
+	while (true)
 	{
-		/* Recursively check next level */
+		TpIndexMetaPage metap;
+		Buffer			metabuf;
+		Page			metapage;
+		uint16			level_count;
+
+		/* Check if level needs compaction */
+		metabuf = ReadBuffer(index, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		level_count = metap->level_counts[level];
+
+		UnlockReleaseBuffer(metabuf);
+
+		if (level_count < (uint16)tp_segments_per_level)
+			break; /* Level below threshold */
+
+		/* Merge tp_segments_per_level segments from this level */
+		if (tp_merge_level_segments(index, level) == InvalidBlockNumber)
+			break; /* Merge failed */
+
+		/* Check next level (may have triggered compaction there) */
 		tp_maybe_compact_level(index, level + 1);
+
+		/* Continue loop to check if current level still needs compaction */
 	}
 }

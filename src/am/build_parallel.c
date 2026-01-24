@@ -47,12 +47,6 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 	tp_docmap_add(docmap, ctid, (uint32)doc_length);
 }
 
-/* Minimum pages to pre-allocate per worker */
-#define TP_MIN_PAGES_PER_WORKER 64
-
-/* GUC: expansion factor for page pool estimation
- * (pg_textsearch.parallel_build_expansion_factor) */
-extern double tp_parallel_build_expansion_factor;
 
 /*
  * Worker build state - single memtable that gets spilled when full.
@@ -61,6 +55,32 @@ typedef struct TpWorkerBuildState
 {
 	TpLocalMemtable *memtable; /* Active memtable being filled */
 } TpWorkerBuildState;
+
+/*
+ * Backend-local pointer to shared state for page allocation.
+ * Set when a parallel worker starts, cleared when it finishes.
+ */
+static TpParallelBuildShared *current_parallel_shared = NULL;
+
+/*
+ * Get a page from the pre-allocated range (for parallel workers).
+ * Returns InvalidBlockNumber if called outside parallel build context
+ * or if the pre-allocated range is exhausted.
+ */
+BlockNumber
+tp_parallel_get_prealloc_page(void)
+{
+	uint32 idx;
+
+	if (current_parallel_shared == NULL)
+		return InvalidBlockNumber;
+
+	idx = pg_atomic_fetch_add_u32(&current_parallel_shared->next_page_idx, 1);
+	if (idx >= current_parallel_shared->total_prealloc_pages)
+		return InvalidBlockNumber; /* Range exhausted */
+
+	return current_parallel_shared->first_prealloc_page + idx;
+}
 
 /*
  * Initialize worker state
@@ -95,9 +115,6 @@ static void tp_init_parallel_shared(
 		double				   b,
 		int					   nworkers);
 
-static void tp_preallocate_page_pool(
-		Relation index, TpParallelBuildShared *shared, int total_pages);
-
 static void tp_leader_participate(
 		TpParallelBuildShared *shared,
 		Relation			   heap,
@@ -107,11 +124,8 @@ static void tp_leader_participate(
 static void
 tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index);
 
-static BlockNumber tp_write_segment_from_local_memtable(
-		TpLocalMemtable		  *memtable,
-		Relation			   index,
-		TpParallelBuildShared *shared,
-		int					   worker_id);
+static BlockNumber
+tp_write_segment_from_local_memtable(TpLocalMemtable *memtable, Relation index);
 
 /*
  * Spill a memtable to disk and chain the resulting segment.
@@ -119,19 +133,16 @@ static BlockNumber tp_write_segment_from_local_memtable(
  */
 static bool
 tp_worker_spill_memtable(
-		TpLocalMemtable		  *memtable,
-		Relation			   index,
-		TpParallelBuildShared *shared,
-		int					   worker_id,
-		TpWorkerSegmentInfo	  *my_info)
+		TpLocalMemtable		*memtable,
+		Relation			 index,
+		TpWorkerSegmentInfo *my_info)
 {
 	BlockNumber seg_block;
 
 	if (memtable->num_docs == 0)
 		return false;
 
-	seg_block = tp_write_segment_from_local_memtable(
-			memtable, index, shared, worker_id);
+	seg_block = tp_write_segment_from_local_memtable(memtable, index);
 
 	if (seg_block == InvalidBlockNumber)
 		return false;
@@ -148,6 +159,13 @@ tp_worker_spill_memtable(
 		Buffer			 tail_buf;
 		Page			 tail_page;
 		TpSegmentHeader *tail_header;
+
+		/*
+		 * In parallel workers, the smgr cache might be stale after other
+		 * workers extended the relation. Force a refresh by querying nblocks.
+		 */
+		if (IsParallelWorker())
+			smgrnblocks(RelationGetSmgr(index), MAIN_FORKNUM);
 
 		tail_buf = ReadBuffer(index, my_info->segment_tail);
 		LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
@@ -172,12 +190,6 @@ tp_worker_spill_memtable(
 static void
 tp_finalize_parallel_stats(TpParallelBuildShared *shared, Relation index);
 
-static BlockNumber tp_write_segment_from_local_memtable(
-		TpLocalMemtable		  *memtable,
-		Relation			   index,
-		TpParallelBuildShared *shared,
-		int					   worker_id);
-
 static void tp_worker_process_document(
 		TpLocalMemtable *memtable,
 		TupleTableSlot	*slot,
@@ -188,8 +200,7 @@ static void tp_worker_process_document(
  * Estimate shared memory needed for parallel build
  */
 Size
-tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages)
+tp_parallel_build_estimate_shmem(Relation heap, Snapshot snapshot, int nworkers)
 {
 	Size size;
 	int	 total_workers;
@@ -206,94 +217,10 @@ tp_parallel_build_estimate_shmem(
 	size = add_size(
 			size, MAXALIGN(sizeof(TpWorkerSegmentInfo) * total_workers));
 
-	/* Shared page pool for all workers */
-	size = add_size(
-			size, MAXALIGN((Size)total_pool_pages * sizeof(BlockNumber)));
-
 	/* Parallel table scan descriptor */
 	size = add_size(size, table_parallelscan_estimate(heap, snapshot));
 
 	return size;
-}
-
-/*
- * Estimate total pages needed for index build page pool.
- *
- * Includes data pages (based on heap size * expansion factor) plus
- * estimated page index pages for multiple segments per worker.
- */
-static int
-estimate_parallel_pool_pages(BlockNumber heap_pages, int nworkers)
-{
-	int data_pages;
-	int entries_per_page;
-	int page_index_pages;
-	int estimated_segments;
-
-	data_pages = (int)(heap_pages * tp_parallel_build_expansion_factor) +
-				 TP_MIN_PAGES_PER_WORKER * (nworkers + 1);
-	entries_per_page   = tp_page_index_entries_per_page();
-	estimated_segments = (nworkers + 1) * 10; /* ~10 segments per worker */
-
-	/* Each segment needs at least 1 page index page, plus data page mapping */
-	page_index_pages = estimated_segments +
-					   (data_pages + entries_per_page - 1) / entries_per_page;
-
-	return data_pages + page_index_pages;
-}
-
-/*
- * Reclaim unused pages from pre-allocated pool.
- *
- * Instead of truncating unused pages (which would be undone by subsequent
- * compaction), we record them in the FSM for reuse. This allows compaction
- * to reuse these pages immediately rather than extending the relation.
- *
- * The FSM must be vacuumed after recording to update upper-level pages,
- * otherwise GetFreeIndexPage won't find the newly recorded pages.
- */
-static void
-reclaim_unused_pool_pages(Relation index, TpParallelBuildShared *shared)
-{
-	uint32		 pool_used	= pg_atomic_read_u32(&shared->shared_pool_next);
-	uint32		 pool_total = shared->total_pool_pages;
-	BlockNumber *pool		= TpParallelPagePool(shared);
-	uint32		 i;
-	uint32		 pages_reclaimed = 0;
-
-	if (pool_used >= pool_total)
-		return; /* All pool pages were used */
-
-	if (pool_used == 0)
-	{
-		elog(WARNING, "Parallel build used 0 pool pages - no data?");
-		return;
-	}
-
-	/*
-	 * Record unused pool pages in FSM for reuse by compaction.
-	 * Pool pages are allocated contiguously via P_NEW, so unused pages
-	 * are at indices [pool_used, pool_total).
-	 */
-	for (i = pool_used; i < pool_total; i++)
-	{
-		RecordFreeIndexPage(index, pool[i]);
-		pages_reclaimed++;
-	}
-
-	/*
-	 * Update FSM upper-level pages so GetFreeIndexPage can find them.
-	 * Without this, the recorded pages remain invisible to searches.
-	 */
-	if (pages_reclaimed > 0)
-		IndexFreeSpaceMapVacuum(index);
-
-	elog(NOTICE,
-		 "Parallel build: reclaimed %u unused pool pages to FSM "
-		 "(pool_used=%u, pool_total=%u)",
-		 pages_reclaimed,
-		 pool_used,
-		 pool_total);
 }
 
 /*
@@ -314,23 +241,18 @@ tp_build_parallel(
 	TpParallelBuildShared *shared;
 	Snapshot			   snapshot;
 	Size				   shmem_size;
-	int					   total_pool_pages;
 	int					   launched;
 
 	/* Ensure reasonable number of workers */
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
-	total_pool_pages = estimate_parallel_pool_pages(
-			RelationGetNumberOfBlocks(heap), nworkers);
-
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
 	snapshot = RegisterSnapshot(snapshot);
 
 	/* Calculate shared memory size */
-	shmem_size = tp_parallel_build_estimate_shmem(
-			heap, snapshot, nworkers, total_pool_pages);
+	shmem_size = tp_parallel_build_estimate_shmem(heap, snapshot, nworkers);
 
 	/* Enter parallel mode and create context */
 	EnterParallelMode();
@@ -354,10 +276,6 @@ tp_build_parallel(
 			k1,
 			b,
 			nworkers);
-	shared->total_pool_pages = total_pool_pages;
-
-	/* Pre-allocate shared page pool */
-	tp_preallocate_page_pool(index, shared, total_pool_pages);
 
 	/* Initialize parallel table scan */
 	table_parallelscan_initialize(heap, TpParallelTableScan(shared), snapshot);
@@ -384,9 +302,6 @@ tp_build_parallel(
 
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
-
-	/* Reclaim unused pages from the pre-allocated pool to FSM */
-	reclaim_unused_pool_pages(index, shared);
 
 	/* Link all worker segments into L0 chain */
 	tp_link_all_worker_segments(shared, index);
@@ -471,7 +386,7 @@ tp_build_parallel(
 		{
 			BlockNumber new_nblocks = max_used_block + 1;
 
-			elog(NOTICE,
+			elog(DEBUG1,
 				 "Parallel build: truncating %u trailing free pages "
 				 "(nblocks %u -> %u)",
 				 nblocks - new_nblocks,
@@ -554,9 +469,6 @@ tp_init_parallel_shared(
 	pg_atomic_init_u64(&shared->tuples_scanned, 0);
 	pg_atomic_init_u64(&shared->total_docs, 0);
 	pg_atomic_init_u64(&shared->total_len, 0);
-	pg_atomic_init_u32(&shared->pool_exhausted, 0);
-	pg_atomic_init_u32(&shared->shared_pool_next, 0);
-	pg_atomic_init_u32(&shared->max_block_used, 0);
 
 	/*
 	 * Initialize worker segment info for all workers (bg workers + leader).
@@ -571,36 +483,45 @@ tp_init_parallel_shared(
 		worker_info[i].docs_indexed	 = 0;
 		worker_info[i].total_len	 = 0;
 	}
-}
 
-/*
- * Pre-allocate shared page pool for all workers
- */
-static void
-tp_preallocate_page_pool(
-		Relation index, TpParallelBuildShared *shared, int total_pages)
-{
-	int			 i;
-	Buffer		 buf;
-	BlockNumber *pool;
-
-	pool = TpParallelPagePool(shared);
-
-	/* Extend relation and collect block numbers */
-	for (i = 0; i < total_pages; i++)
+	/*
+	 * Pre-allocate pages for parallel workers.
+	 *
+	 * We extend the relation now, before workers start, so all workers
+	 * see a consistent file size. This avoids "beyond EOF" errors when
+	 * workers try to access pages extended by other workers.
+	 *
+	 * Estimate: 12 pages per heap page (based on typical workload), plus
+	 * buffer for page index pages and safety margin. BM25 indexes tend to
+	 * be larger than heap due to posting lists and term dictionaries.
+	 */
 	{
-		buf = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		pool[i] = BufferGetBlockNumber(buf);
+		BlockNumber heap_pages	  = RelationGetNumberOfBlocks(heap);
+		uint32		estimated	  = Max((uint32)(heap_pages * 12), 4096);
+		BlockNumber current_pages = RelationGetNumberOfBlocks(index);
+		Buffer		buf;
 
-		/* Initialize page */
-		PageInit(BufferGetPage(buf), BLCKSZ, 0);
-		MarkBufferDirty(buf);
-		UnlockReleaseBuffer(buf);
+		/* Extend the relation by writing zeroed pages */
+		for (uint32 i = 0; i < estimated; i++)
+		{
+			buf = ReadBufferExtended(
+					index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+			PageInit(BufferGetPage(buf), BLCKSZ, 0);
+			MarkBufferDirty(buf);
+			UnlockReleaseBuffer(buf);
+		}
+
+		/* Store pre-allocation info for workers */
+		shared->first_prealloc_page	 = current_pages;
+		shared->total_prealloc_pages = estimated;
+		pg_atomic_init_u32(&shared->next_page_idx, 0);
+
+		elog(DEBUG1,
+			 "Pre-allocated %u pages for parallel build (blocks %u-%u)",
+			 estimated,
+			 current_pages,
+			 current_pages + estimated - 1);
 	}
-
-	/* Flush to ensure durability */
-	smgrimmedsync(RelationGetSmgr(index), MAIN_FORKNUM);
 }
 
 /*
@@ -626,6 +547,9 @@ tp_parallel_build_worker_main(
 	shared = (TpParallelBuildShared *)
 			shm_toc_lookup(toc, TP_PARALLEL_KEY_SHARED, false);
 
+	/* Set backend-local pointer for page allocation */
+	current_parallel_shared = shared;
+
 	/*
 	 * Worker ID assignment: if leader participates, it claims worker_id=0.
 	 * Background workers get IDs starting from 1 to avoid collision.
@@ -638,15 +562,7 @@ tp_parallel_build_worker_main(
 	heap  = table_open(shared->heaprelid, AccessShareLock);
 	index = index_open(shared->indexrelid, RowExclusiveLock);
 
-	/*
-	 * Force smgr to refresh its cached nblocks. The leader pre-allocated pool
-	 * pages which extended the relation, but this worker's smgr cache is
-	 * stale. Without this, ReadBuffer can fail with "unexpected data beyond
-	 * EOF".
-	 */
-	smgrnblocks(RelationGetSmgr(index), MAIN_FORKNUM);
-
-	/* Initialize double-buffered worker state */
+	/* Initialize worker state */
 	tp_worker_state_init(&build_state);
 
 	/* Join parallel table scan */
@@ -665,8 +581,7 @@ tp_parallel_build_worker_main(
 			shared->memory_budget_per_worker)
 		{
 			/* Spill memtable to segment and clear for reuse */
-			tp_worker_spill_memtable(
-					build_state.memtable, index, shared, worker_id, my_info);
+			tp_worker_spill_memtable(build_state.memtable, index, my_info);
 			tp_local_memtable_clear(build_state.memtable);
 		}
 
@@ -684,8 +599,7 @@ tp_parallel_build_worker_main(
 	/* Final spill of any remaining data */
 	if (build_state.memtable->num_docs > 0)
 	{
-		tp_worker_spill_memtable(
-				build_state.memtable, index, shared, worker_id, my_info);
+		tp_worker_spill_memtable(build_state.memtable, index, my_info);
 	}
 
 	/* Update global stats */
@@ -704,6 +618,9 @@ tp_parallel_build_worker_main(
 	tp_worker_state_destroy(&build_state);
 	index_close(index, RowExclusiveLock);
 	table_close(heap, AccessShareLock);
+
+	/* Clear backend-local pointer */
+	current_parallel_shared = NULL;
 }
 
 /*
@@ -726,6 +643,9 @@ tp_leader_participate(
 
 	(void)snapshot; /* unused but part of interface */
 
+	/* Set backend-local pointer for page allocation */
+	current_parallel_shared = shared;
+
 	my_info = &TpParallelWorkerInfo(shared)[worker_id];
 
 	/* Initialize worker state */
@@ -745,8 +665,7 @@ tp_leader_participate(
 			shared->memory_budget_per_worker)
 		{
 			/* Spill memtable to segment and clear for reuse */
-			tp_worker_spill_memtable(
-					build_state.memtable, index, shared, worker_id, my_info);
+			tp_worker_spill_memtable(build_state.memtable, index, my_info);
 			tp_local_memtable_clear(build_state.memtable);
 		}
 
@@ -764,8 +683,7 @@ tp_leader_participate(
 	/* Final spill of any remaining data */
 	if (build_state.memtable->num_docs > 0)
 	{
-		tp_worker_spill_memtable(
-				build_state.memtable, index, shared, worker_id, my_info);
+		tp_worker_spill_memtable(build_state.memtable, index, my_info);
 	}
 
 	/* Update global stats */
@@ -782,6 +700,9 @@ tp_leader_participate(
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 	tp_worker_state_destroy(&build_state);
+
+	/* Clear backend-local pointer */
+	current_parallel_shared = NULL;
 }
 
 /*
@@ -1014,6 +935,49 @@ write_term_postings(
 }
 
 /*
+ * Get buffer for a writer page, either from pinned buffers or by reading.
+ * In parallel workers, uses pre-pinned buffers to avoid smgr cache issues.
+ */
+static Buffer
+get_writer_page_buffer(TpSegmentWriter *writer, Relation index, uint32 page_idx)
+{
+	Buffer buf;
+
+	if (writer->buffers != NULL)
+	{
+		/* Parallel worker: use pinned buffer, just need to lock it */
+		buf = writer->buffers[page_idx];
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	}
+	else
+	{
+		/* Non-parallel: read the buffer */
+		buf = ReadBuffer(index, writer->pages[page_idx]);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	}
+	return buf;
+}
+
+/*
+ * Release buffer for a writer page.
+ * In parallel workers, keeps buffer pinned (just unlocks).
+ */
+static void
+release_writer_page_buffer(TpSegmentWriter *writer, Buffer buf)
+{
+	MarkBufferDirty(buf);
+	if (writer->buffers != NULL)
+	{
+		/* Parallel worker: keep pinned, just unlock */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	}
+	else
+	{
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
  * Update dictionary entries with final skip index offsets.
  * Must be called after postings and skip entries are written.
  */
@@ -1035,7 +999,6 @@ update_dict_entries(
 		uint32		entry_offset;
 		uint32		entry_logical_page;
 		uint32		page_offset;
-		BlockNumber physical_block;
 
 		/* Build the entry */
 		entry.skip_index_offset = header->skip_index_offset +
@@ -1060,18 +1023,14 @@ update_dict_entries(
 							entry_logical_page,
 							writer->pages_allocated)));
 
-		/* Read page if different from current */
+		/* Get page if different from current */
 		if (entry_logical_page != current_page)
 		{
 			if (current_page != UINT32_MAX)
-			{
-				MarkBufferDirty(dict_buf);
-				UnlockReleaseBuffer(dict_buf);
-			}
+				release_writer_page_buffer(writer, dict_buf);
 
-			physical_block = writer->pages[entry_logical_page];
-			dict_buf	   = ReadBuffer(index, physical_block);
-			LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+			dict_buf	 = get_writer_page_buffer(writer, index,
+												  entry_logical_page);
 			current_page = entry_logical_page;
 		}
 
@@ -1093,12 +1052,10 @@ update_dict_entries(
 				char *dest = (char *)page + SizeOfPageHeaderData + page_offset;
 				memcpy(dest, &entry, bytes_on_this_page);
 
-				MarkBufferDirty(dict_buf);
-				UnlockReleaseBuffer(dict_buf);
+				release_writer_page_buffer(writer, dict_buf);
 
-				physical_block = writer->pages[entry_logical_page + 1];
-				dict_buf	   = ReadBuffer(index, physical_block);
-				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				dict_buf = get_writer_page_buffer(writer, index,
+												  entry_logical_page + 1);
 				current_page = entry_logical_page + 1;
 
 				page = BufferGetPage(dict_buf);
@@ -1112,26 +1069,22 @@ update_dict_entries(
 
 	/* Release last page */
 	if (current_page != UINT32_MAX)
-	{
-		MarkBufferDirty(dict_buf);
-		UnlockReleaseBuffer(dict_buf);
-	}
+		release_writer_page_buffer(writer, dict_buf);
 }
 
 /*
  * Write final header to segment.
+ * Uses writer's pinned buffer if available (parallel workers).
  */
 static void
-write_final_header(
-		Relation index, BlockNumber header_block, TpSegmentHeader *header)
+write_final_header(TpSegmentWriter *writer, Relation index,
+				   TpSegmentHeader *header)
 {
-	Buffer buf = ReadBuffer(index, header_block);
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	Buffer buf = get_writer_page_buffer(writer, index, 0);
 	memcpy((char *)BufferGetPage(buf) + SizeOfPageHeaderData,
 		   header,
 		   sizeof(TpSegmentHeader));
-	MarkBufferDirty(buf);
-	UnlockReleaseBuffer(buf);
+	release_writer_page_buffer(writer, buf);
 }
 
 /*
@@ -1142,11 +1095,7 @@ write_final_header(
  *         [fieldnorm] → [ctid map]
  */
 static BlockNumber
-tp_write_segment_from_local_memtable(
-		TpLocalMemtable		  *memtable,
-		Relation			   index,
-		TpParallelBuildShared *shared,
-		int					   worker_id __attribute__((unused)))
+tp_write_segment_from_local_memtable(TpLocalMemtable *memtable, Relation index)
 {
 	TpSegmentWriter		 writer;
 	TpSegmentHeader		 header;
@@ -1178,13 +1127,8 @@ tp_write_segment_from_local_memtable(
 		return InvalidBlockNumber;
 	}
 
-	/* Initialize writer with shared page pool */
-	tp_segment_writer_init_with_pool(
-			&writer,
-			index,
-			TpParallelPagePool(shared),
-			shared->total_pool_pages,
-			&shared->shared_pool_next);
+	/* Initialize writer - uses FSM/P_NEW for page allocation (same as serial) */
+	tp_segment_writer_init(&writer, index);
 
 	header_block = writer.pages[0];
 
@@ -1291,19 +1235,14 @@ tp_write_segment_from_local_memtable(
 	writer.buffer_pos = SizeOfPageHeaderData;
 
 	/* Write page index */
-	header.page_index = write_page_index_from_pool(
-			index,
-			writer.pages,
-			writer.pages_allocated,
-			TpParallelPagePool(shared),
-			shared->total_pool_pages,
-			&shared->shared_pool_next);
+	header.page_index = write_page_index(index, writer.pages,
+										 writer.pages_allocated);
 
 	/* Update dictionary entries with skip offsets */
 	update_dict_entries(&writer, index, &header, term_blocks, num_terms);
 
 	/* Write final header */
-	write_final_header(index, header_block, &header);
+	write_final_header(&writer, index, &header);
 
 	tp_segment_writer_finish(&writer);
 
@@ -1417,86 +1356,4 @@ tp_finalize_parallel_stats(TpParallelBuildShared *shared, Relation index)
 
 	MarkBufferDirty(metabuf);
 	UnlockReleaseBuffer(metabuf);
-}
-
-/*
- * Get a page from the shared pool (called from segment writer).
- *
- * If the pre-allocated pool is exhausted, dynamically extends the relation.
- * This ensures builds always succeed even if the initial estimate was low.
- *
- * Note: worker_id parameter is kept for API compatibility but no longer used
- * since all workers share a single pool.
- */
-BlockNumber
-tp_pool_get_page(
-		TpParallelBuildShared *shared,
-		int					   worker_id __attribute__((unused)),
-		Relation			   index)
-{
-	BlockNumber *pool;
-	uint32		 idx;
-	BlockNumber	 block;
-
-	pool = TpParallelPagePool(shared);
-	idx	 = pg_atomic_fetch_add_u32(&shared->shared_pool_next, 1);
-
-	if (idx < (uint32)shared->total_pool_pages)
-	{
-		block = pool[idx];
-
-		/* Track highest block used for potential truncation */
-		{
-			uint32 current_max;
-			do
-			{
-				current_max = pg_atomic_read_u32(&shared->max_block_used);
-				if (block <= current_max)
-					break;
-			} while (!pg_atomic_compare_exchange_u32(
-					&shared->max_block_used, &current_max, block));
-		}
-
-		return block;
-	}
-
-	/*
-	 * Pool exhausted - dynamically extend the relation.
-	 *
-	 * ReadBufferExtended with P_NEW handles concurrency internally via the
-	 * buffer manager, so multiple workers can safely call this simultaneously.
-	 * Log a notice on first overflow so users know their estimate was low.
-	 */
-	if (pg_atomic_exchange_u32(&shared->pool_exhausted, 1) == 0)
-	{
-		elog(NOTICE,
-			 "Parallel build pool exhausted (%d pages), extending "
-			 "dynamically. "
-			 "Consider increasing "
-			 "pg_textsearch.parallel_build_expansion_factor "
-			 "(currently %.1f) to avoid this overhead.",
-			 shared->total_pool_pages,
-			 tp_parallel_build_expansion_factor);
-	}
-
-	{
-		Buffer buf = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		block = BufferGetBlockNumber(buf);
-		UnlockReleaseBuffer(buf);
-	}
-
-	/* Track this dynamically allocated block too */
-	{
-		uint32 current_max;
-		do
-		{
-			current_max = pg_atomic_read_u32(&shared->max_block_used);
-			if (block <= current_max)
-				break;
-		} while (!pg_atomic_compare_exchange_u32(
-				&shared->max_block_used, &current_max, block));
-	}
-
-	return block;
 }

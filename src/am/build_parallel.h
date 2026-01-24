@@ -9,6 +9,7 @@
 #include <postgres.h>
 
 #include <access/parallel.h>
+#include <access/tableam.h>
 #include <storage/block.h>
 #include <storage/condition_variable.h>
 #include <storage/spin.h>
@@ -78,16 +79,18 @@ typedef struct TpParallelBuildShared
 	pg_atomic_uint64 total_docs;	 /* Total documents indexed */
 	pg_atomic_uint64 total_len;		 /* Sum of all document lengths */
 
-	/* Page pool management - single shared pool for all workers */
-	int32			 total_pool_pages; /* Total pre-allocated pages */
-	pg_atomic_uint32 shared_pool_next; /* Next page index (shared counter) */
-	pg_atomic_uint32 pool_exhausted;   /* Non-zero if pool exhausted */
-	pg_atomic_uint32 max_block_used;   /* Highest block number used */
+	/*
+	 * Pre-allocated page range for parallel workers.
+	 * Leader extends the relation before starting workers, then workers
+	 * use atomic increment to claim pages from this range.
+	 */
+	BlockNumber		 first_prealloc_page;  /* First pre-allocated page */
+	uint32			 total_prealloc_pages; /* Total pages pre-allocated */
+	pg_atomic_uint32 next_page_idx;		   /* Atomic counter for distribution */
 
 	/*
 	 * Variable-length data follows:
 	 * - TpWorkerSegmentInfo worker_info[worker_count]
-	 * - BlockNumber page_pool[total_pool_pages] (shared by all workers)
 	 * - ParallelTableScanDescData (for parallel heap scan)
 	 */
 } TpParallelBuildShared;
@@ -103,17 +106,6 @@ TpParallelWorkerInfo(TpParallelBuildShared *shared)
 }
 
 /*
- * Get pointer to shared page pool
- */
-static inline BlockNumber *
-TpParallelPagePool(TpParallelBuildShared *shared)
-{
-	char *base = (char *)TpParallelWorkerInfo(shared);
-	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	return (BlockNumber *)base;
-}
-
-/*
  * Get pointer to parallel table scan descriptor
  */
 static inline ParallelTableScanDesc
@@ -121,7 +113,6 @@ TpParallelTableScan(TpParallelBuildShared *shared)
 {
 	char *base = (char *)TpParallelWorkerInfo(shared);
 	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	base += MAXALIGN((size_t)shared->total_pool_pages * sizeof(BlockNumber));
 	return (ParallelTableScanDesc)base;
 }
 
@@ -143,10 +134,13 @@ extern struct IndexBuildResult *tp_build_parallel(
 extern PGDLLEXPORT void
 tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
 
-/* Page pool allocation during segment write */
-extern BlockNumber
-tp_pool_get_page(TpParallelBuildShared *shared, int worker_id, Relation index);
-
 /* Estimate shared memory size needed for parallel build */
-extern Size tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages);
+extern Size
+tp_parallel_build_estimate_shmem(Relation heap, Snapshot snapshot, int nworkers);
+
+/*
+ * Get a page from the pre-allocated range (for parallel workers).
+ * Returns InvalidBlockNumber if called outside parallel build context
+ * or if the pre-allocated range is exhausted.
+ */
+extern BlockNumber tp_parallel_get_prealloc_page(void);
