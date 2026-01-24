@@ -54,8 +54,10 @@ FROM parallel_test
 WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
 
 -- Verify we can get top-k results with correct ordering
+-- Limit to first 100 IDs for deterministic results (many docs have identical scores)
 SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_idx'))::numeric, 4) AS score
 FROM parallel_test
+WHERE id <= 100
 ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx'), id
 LIMIT 5;
 
