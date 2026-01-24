@@ -39,12 +39,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
+    - name: Install TimescaleDB
+      run: |
+        # Add TimescaleDB apt repository
+        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        sudo apt-get update
+        # Install TimescaleDB for the specific PostgreSQL version
+        sudo apt-get install -y timescaledb-2-postgresql-${{ matrix.pg_version }} || echo "TimescaleDB installation failed, hypertable tests will be skipped"
+
     - name: Install build dependencies
       run: |
         sudo apt-get install -y build-essential bc
 
     - name: Start PostgreSQL
       run: |
+        # Configure TimescaleDB for shell-based tests
+        echo "shared_preload_libraries = 'timescaledb'" | sudo tee -a /etc/postgresql/${{ matrix.pg_version }}/main/postgresql.conf || true
         sudo systemctl start postgresql
         sudo -u postgres createuser -s $USER
         sudo -u postgres createdb $USER
@@ -73,6 +84,7 @@ jobs:
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_preload_libraries = 'timescaledb'" >> tmp_check_shared/data/postgresql.conf || true
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
 
         # Try to start PostgreSQL and show logs if it fails
@@ -113,6 +125,13 @@ jobs:
           echo "✓ Segment tests passed"
         else
           echo "✗ Segment tests failed"
+          exit 1
+        fi
+        echo "Running hypertable tests..."
+        if (cd test/scripts && ./hypertable.sh); then
+          echo "✓ Hypertable tests passed"
+        else
+          echo "✗ Hypertable tests failed"
           exit 1
         fi
 
