@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769235493151,
+  "lastUpdate": 1769235494748,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5140,6 +5140,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 3512.19,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "24735ab9664f56e47eddfad6e0164c941563108d",
+          "message": "Fix 'too many LWLocks taken' error when scanning hypertables (#164)\n\n## Summary\n- Fixes \"too many LWLocks taken\" error when querying BM25 indexes on\nhypertables with many chunks (e.g., 587 chunks)\n- Releases the per-index LWLock after `tp_memtable_search()` completes\n\nThis is the scan-path equivalent of the build-path fix in b7f6539.\n\n## Problem\nWhen scanning a hypertable with many chunks, each chunk's BM25 index\nscan acquires a per-index LWLock but never releases it until transaction\nend. With 587 chunks, this exceeds Postgres's ~200 lock limit.\n\n## Solution\nRelease the lock immediately after `tp_memtable_search()` returns, since\nwe've already extracted all CTIDs into memory at that point.\n\n## Testing\n- Tested with 587-chunk hypertable (2.2M rows) - query now succeeds\n- All regression tests pass\n- All shell-based tests pass",
+          "timestamp": "2026-01-22T23:28:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/24735ab9664f56e47eddfad6e0164c941563108d"
+        },
+        "date": 1769235494311,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 355470.846,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.17,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.55,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 11.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 18.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 28.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 46.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 16.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 3512.27,
             "unit": "MB"
           }
         ]
