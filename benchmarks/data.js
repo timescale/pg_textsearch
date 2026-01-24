@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769149182699,
+  "lastUpdate": 1769235493151,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1400,6 +1400,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "24735ab9664f56e47eddfad6e0164c941563108d",
+          "message": "Fix 'too many LWLocks taken' error when scanning hypertables (#164)\n\n## Summary\n- Fixes \"too many LWLocks taken\" error when querying BM25 indexes on\nhypertables with many chunks (e.g., 587 chunks)\n- Releases the per-index LWLock after `tp_memtable_search()` completes\n\nThis is the scan-path equivalent of the build-path fix in b7f6539.\n\n## Problem\nWhen scanning a hypertable with many chunks, each chunk's BM25 index\nscan acquires a per-index LWLock but never releases it until transaction\nend. With 587 chunks, this exceeds Postgres's ~200 lock limit.\n\n## Solution\nRelease the lock immediately after `tp_memtable_search()` returns, since\nwe've already extracted all CTIDs into memory at that point.\n\n## Testing\n- Tested with 587-chunk hypertable (2.2M rows) - query now succeeds\n- All regression tests pass\n- All shell-based tests pass",
+          "timestamp": "2026-01-22T23:28:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/24735ab9664f56e47eddfad6e0164c941563108d"
+        },
+        "date": 1769235492120,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 257.369,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.43,
             "unit": "ms"
           },
           {
