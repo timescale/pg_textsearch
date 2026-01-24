@@ -47,7 +47,6 @@ docmap_add_callback(ItemPointer ctid, int32 doc_length, void *arg)
 	tp_docmap_add(docmap, ctid, (uint32)doc_length);
 }
 
-
 /*
  * Worker build state - single memtable that gets spilled when full.
  */
@@ -124,8 +123,8 @@ static void tp_leader_participate(
 static void
 tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index);
 
-static BlockNumber
-tp_write_segment_from_local_memtable(TpLocalMemtable *memtable, Relation index);
+static BlockNumber tp_write_segment_from_local_memtable(
+		TpLocalMemtable *memtable, Relation index);
 
 /*
  * Spill a memtable to disk and chain the resulting segment.
@@ -200,7 +199,8 @@ static void tp_worker_process_document(
  * Estimate shared memory needed for parallel build
  */
 Size
-tp_parallel_build_estimate_shmem(Relation heap, Snapshot snapshot, int nworkers)
+tp_parallel_build_estimate_shmem(
+		Relation heap, Snapshot snapshot, int nworkers)
 {
 	Size size;
 	int	 total_workers;
@@ -939,7 +939,8 @@ write_term_postings(
  * In parallel workers, uses pre-pinned buffers to avoid smgr cache issues.
  */
 static Buffer
-get_writer_page_buffer(TpSegmentWriter *writer, Relation index, uint32 page_idx)
+get_writer_page_buffer(
+		TpSegmentWriter *writer, Relation index, uint32 page_idx)
 {
 	Buffer buf;
 
@@ -1029,8 +1030,8 @@ update_dict_entries(
 			if (current_page != UINT32_MAX)
 				release_writer_page_buffer(writer, dict_buf);
 
-			dict_buf	 = get_writer_page_buffer(writer, index,
-												  entry_logical_page);
+			dict_buf =
+					get_writer_page_buffer(writer, index, entry_logical_page);
 			current_page = entry_logical_page;
 		}
 
@@ -1054,8 +1055,8 @@ update_dict_entries(
 
 				release_writer_page_buffer(writer, dict_buf);
 
-				dict_buf = get_writer_page_buffer(writer, index,
-												  entry_logical_page + 1);
+				dict_buf = get_writer_page_buffer(
+						writer, index, entry_logical_page + 1);
 				current_page = entry_logical_page + 1;
 
 				page = BufferGetPage(dict_buf);
@@ -1077,8 +1078,8 @@ update_dict_entries(
  * Uses writer's pinned buffer if available (parallel workers).
  */
 static void
-write_final_header(TpSegmentWriter *writer, Relation index,
-				   TpSegmentHeader *header)
+write_final_header(
+		TpSegmentWriter *writer, Relation index, TpSegmentHeader *header)
 {
 	Buffer buf = get_writer_page_buffer(writer, index, 0);
 	memcpy((char *)BufferGetPage(buf) + SizeOfPageHeaderData,
@@ -1127,7 +1128,8 @@ tp_write_segment_from_local_memtable(TpLocalMemtable *memtable, Relation index)
 		return InvalidBlockNumber;
 	}
 
-	/* Initialize writer - uses FSM/P_NEW for page allocation (same as serial) */
+	/* Initialize writer - uses FSM/P_NEW for page allocation (same as serial)
+	 */
 	tp_segment_writer_init(&writer, index);
 
 	header_block = writer.pages[0];
@@ -1235,8 +1237,8 @@ tp_write_segment_from_local_memtable(TpLocalMemtable *memtable, Relation index)
 	writer.buffer_pos = SizeOfPageHeaderData;
 
 	/* Write page index */
-	header.page_index = write_page_index(index, writer.pages,
-										 writer.pages_allocated);
+	header.page_index =
+			write_page_index(index, writer.pages, writer.pages_allocated);
 
 	/* Update dictionary entries with skip offsets */
 	update_dict_entries(&writer, index, &header, term_blocks, num_terms);

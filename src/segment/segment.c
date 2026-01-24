@@ -719,9 +719,10 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 		}
 
 		/*
-		 * Pre-allocated range exhausted. Fall back to P_NEW with pinned buffer.
-		 * This may cause issues if multiple workers extend simultaneously,
-		 * but the large pre-allocation should prevent this in normal cases.
+		 * Pre-allocated range exhausted. Fall back to P_NEW with pinned
+		 * buffer. This may cause issues if multiple workers extend
+		 * simultaneously, but the large pre-allocation should prevent this in
+		 * normal cases.
 		 */
 		elog(WARNING,
 			 "Pre-allocated page pool exhausted, falling back to P_NEW");

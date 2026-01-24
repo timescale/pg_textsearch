@@ -86,7 +86,7 @@ typedef struct TpParallelBuildShared
 	 */
 	BlockNumber		 first_prealloc_page;  /* First pre-allocated page */
 	uint32			 total_prealloc_pages; /* Total pages pre-allocated */
-	pg_atomic_uint32 next_page_idx;		   /* Atomic counter for distribution */
+	pg_atomic_uint32 next_page_idx; /* Atomic counter for distribution */
 
 	/*
 	 * Variable-length data follows:
@@ -135,8 +135,8 @@ extern PGDLLEXPORT void
 tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
 
 /* Estimate shared memory size needed for parallel build */
-extern Size
-tp_parallel_build_estimate_shmem(Relation heap, Snapshot snapshot, int nworkers);
+extern Size tp_parallel_build_estimate_shmem(
+		Relation heap, Snapshot snapshot, int nworkers);
 
 /*
  * Get a page from the pre-allocated range (for parallel workers).

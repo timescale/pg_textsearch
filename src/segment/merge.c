@@ -1228,7 +1228,7 @@ tp_merge_level_segments(Relation index, uint32 level)
 	int				num_sources;
 	int				i;
 	BlockNumber		current;
-	BlockNumber		next_unmerged = InvalidBlockNumber;
+	BlockNumber		next_unmerged	 = InvalidBlockNumber;
 	TpMergedTerm   *merged_terms	 = NULL;
 	uint32			num_merged_terms = 0;
 	uint32			merged_capacity	 = 0;
