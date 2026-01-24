@@ -112,26 +112,12 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
 
-        # Start a PostgreSQL instance for shell tests (with TimescaleDB if available)
-        rm -rf tmp_shell_test
-        mkdir -p tmp_shell_test
-        initdb -D tmp_shell_test/data --auth-local=trust --auth-host=trust
-        echo "port = 55434" >> tmp_shell_test/data/postgresql.conf
-        echo "shared_buffers = 256MB" >> tmp_shell_test/data/postgresql.conf
-        echo "shared_preload_libraries = 'timescaledb'" >> tmp_shell_test/data/postgresql.conf || true
-        echo "unix_socket_directories = '$PWD/tmp_shell_test'" >> tmp_shell_test/data/postgresql.conf
-        pg_ctl start -D tmp_shell_test/data -l tmp_shell_test/data/logfile -w
-
-        export PGHOST=$PWD/tmp_shell_test
-        export PGPORT=55434
-
+        # concurrency.sh and segment.sh manage their own PostgreSQL instances
         echo "Running concurrency tests..."
         if (cd test/scripts && ./concurrency.sh); then
           echo "✓ Concurrency tests passed"
         else
           echo "✗ Concurrency tests failed"
-          pg_ctl stop -D tmp_shell_test/data || true
-          rm -rf tmp_shell_test
           exit 1
         fi
         echo "Running segment tests..."
@@ -139,22 +125,32 @@ jobs:
           echo "✓ Segment tests passed"
         else
           echo "✗ Segment tests failed"
-          pg_ctl stop -D tmp_shell_test/data || true
-          rm -rf tmp_shell_test
           exit 1
         fi
+
+        # hypertable.sh needs a PostgreSQL instance with TimescaleDB preloaded
         echo "Running hypertable tests..."
+        rm -rf tmp_hypertable_test
+        mkdir -p tmp_hypertable_test
+        initdb -D tmp_hypertable_test/data --auth-local=trust --auth-host=trust
+        echo "port = 55435" >> tmp_hypertable_test/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_hypertable_test/data/postgresql.conf
+        echo "shared_preload_libraries = 'timescaledb'" >> tmp_hypertable_test/data/postgresql.conf || true
+        echo "unix_socket_directories = '$PWD/tmp_hypertable_test'" >> tmp_hypertable_test/data/postgresql.conf
+        pg_ctl start -D tmp_hypertable_test/data -l tmp_hypertable_test/data/logfile -w
+
+        export PGHOST=$PWD/tmp_hypertable_test
+        export PGPORT=55435
         if (cd test/scripts && ./hypertable.sh); then
           echo "✓ Hypertable tests passed"
         else
           echo "✗ Hypertable tests failed"
-          pg_ctl stop -D tmp_shell_test/data || true
-          rm -rf tmp_shell_test
+          pg_ctl stop -D tmp_hypertable_test/data || true
+          rm -rf tmp_hypertable_test
           exit 1
         fi
-
-        pg_ctl stop -D tmp_shell_test/data
-        rm -rf tmp_shell_test
+        pg_ctl stop -D tmp_hypertable_test/data
+        rm -rf tmp_hypertable_test
 
     - name: Upload test results on failure
       if: failure()
