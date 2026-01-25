@@ -842,10 +842,9 @@ write_term_postings(
 		return 0;
 	}
 
-	/* Calculate number of blocks */
-	num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-	if (num_blocks == 0 && doc_count > 0)
-		num_blocks = 1;
+	/* Calculate number of blocks (ceiling division, always >= 1 for doc_count
+	 * > 0) */
+	num_blocks			   = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
 	term_info->block_count = (uint16)num_blocks;
 
 	/* Convert postings to block format */

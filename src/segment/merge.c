@@ -903,7 +903,7 @@ write_merged_segment(
 	for (i = 0; i < num_terms; i++)
 	{
 		CollectedPosting *postings;
-		uint32			  doc_count;
+		uint32			  doc_count = 0;
 		uint32			  j;
 		uint32			  block_idx;
 		uint32			  num_blocks;

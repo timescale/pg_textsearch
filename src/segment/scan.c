@@ -134,8 +134,7 @@ tp_segment_posting_iterator_init(
 			iter->initialized	 = true;
 			iter->finished		 = (iter->dict_entry.block_count == 0);
 
-			if (term_buffer)
-				pfree(term_buffer);
+			pfree(term_buffer);
 			return true;
 		}
 		else if (cmp < 0)
@@ -148,8 +147,7 @@ tp_segment_posting_iterator_init(
 		}
 	}
 
-	if (term_buffer)
-		pfree(term_buffer);
+	pfree(term_buffer);
 	return false;
 }
 
