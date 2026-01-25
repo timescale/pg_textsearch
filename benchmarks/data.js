@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769308400753,
+  "lastUpdate": 1769321851438,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1474,6 +1474,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.46,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d69525e0963a9960de7d7338c89db7e2391d34db",
+          "message": "Fix Coverity static analysis issues (#170)\n\n## Summary\n\n- Remove dead code in `write_term_postings()` where a condition can\nnever be true\n- Remove redundant null checks before `pfree()` in\n`tp_segment_posting_iterator_init()`\n- Initialize `doc_count` variable to satisfy Coverity's inter-procedural\nanalysis\n\n## Testing\n\n- All SQL regression tests pass\n- Concurrency, recovery, and segment shell tests pass",
+          "timestamp": "2026-01-25T00:48:21Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d69525e0963a9960de7d7338c89db7e2391d34db"
+        },
+        "date": 1769321850591,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 255.757,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
             "unit": "ms"
           },
           {
