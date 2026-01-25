@@ -6,7 +6,7 @@
 -- 2. L0 -> L1 merge triggered by segments_per_level = 2
 -- 3. Queries across multiple segment levels (L0, L1)
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.4.1 installed
+INFO:  pg_textsearch v0.4.2 installed
 \set ECHO none
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;
