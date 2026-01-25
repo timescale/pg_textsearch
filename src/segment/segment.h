@@ -254,7 +254,8 @@ typedef struct TpSegmentReader
 typedef struct TpSegmentWriter
 {
 	Relation	 index;
-	BlockNumber *pages; /* Dynamically allocated array of page blocks */
+	BlockNumber *pages;	  /* Dynamically allocated array of page blocks */
+	Buffer		*buffers; /* Pinned buffers (parallel only, else NULL) */
 	uint32		 pages_allocated; /* Number of pages allocated so far */
 	uint32		 pages_capacity;  /* Capacity of the pages array */
 	uint32		 current_offset;  /* Current write position in logical file */

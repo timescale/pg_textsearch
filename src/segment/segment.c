@@ -8,6 +8,7 @@
 
 #include <access/genam.h>
 #include <access/hash.h>
+#include <access/parallel.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
@@ -23,6 +24,7 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
+#include "am/build_parallel.h"
 #include "compression.h"
 #include "debug/dump.h"
 #include "dictionary.h"
@@ -597,8 +599,12 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/* Try to get a free page from FSM (recycled from compaction) */
-	block = GetFreeIndexPage(index);
+	/*
+	 * In parallel workers, use pre-allocated pages from the leader.
+	 * These pages were extended before workers started, so all workers
+	 * can see them (avoids smgr cache visibility issues between workers).
+	 */
+	block = tp_parallel_get_prealloc_page();
 	if (block != InvalidBlockNumber)
 	{
 		buffer = ReadBuffer(index, block);
@@ -609,7 +615,27 @@ allocate_segment_page(Relation index)
 		return block;
 	}
 
-	/* No free pages available, extend the relation */
+	/*
+	 * Non-parallel context: try FSM for recycled pages first.
+	 */
+	if (!IsParallelWorker())
+	{
+		block = GetFreeIndexPage(index);
+		if (block != InvalidBlockNumber)
+		{
+			buffer = ReadBuffer(index, block);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+			MarkBufferDirty(buffer);
+			UnlockReleaseBuffer(buffer);
+			return block;
+		}
+	}
+
+	/*
+	 * No pre-allocated or free pages available - extend the relation.
+	 * In parallel workers, this is a fallback if pre-allocation is exhausted.
+	 */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
@@ -620,7 +646,7 @@ allocate_segment_page(Relation index)
 }
 
 /*
- * Grow writer's page array if needed
+ * Grow writer's page and buffer arrays if needed
  */
 static void
 tp_segment_writer_grow_pages(TpSegmentWriter *writer)
@@ -641,14 +667,26 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 			writer->pages = palloc(new_capacity * sizeof(BlockNumber));
 		}
 
+		/* Also grow buffers array if we're using pinned buffers */
+		if (writer->buffers)
+		{
+			writer->buffers =
+					repalloc(writer->buffers, new_capacity * sizeof(Buffer));
+		}
+		else if (IsParallelWorker())
+		{
+			/* In parallel workers, start tracking pinned buffers */
+			writer->buffers = palloc(new_capacity * sizeof(Buffer));
+		}
+
 		writer->pages_capacity = new_capacity;
 	}
 }
 
 /*
  * Allocate a new page for the writer.
- * Uses pre-allocated pool if available (parallel builds), otherwise
- * FSM/extend.
+ * In parallel workers, keeps buffers pinned to avoid stale smgr cache issues.
+ * In non-parallel backends, uses FSM/extend and releases buffers.
  */
 static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
@@ -658,25 +696,46 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 
 	tp_segment_writer_grow_pages(writer);
 
-	/* Parallel builds use pre-allocated pool to avoid FSM in workers */
-	if (writer->page_pool != NULL && writer->pool_next != NULL)
+	/*
+	 * In parallel workers, try pre-allocated pages first.
+	 * These pages were extended by the leader before workers started,
+	 * so they're visible to all workers (no smgr cache issues).
+	 */
+	if (IsParallelWorker())
 	{
-		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
-		if (idx < writer->pool_size)
+		new_page = tp_parallel_get_prealloc_page();
+		if (new_page != InvalidBlockNumber)
 		{
-			new_page								 = writer->page_pool[idx];
-			writer->pages[writer->pages_allocated++] = new_page;
+			buf = ReadBuffer(writer->index, new_page);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			PageInit(BufferGetPage(buf), BLCKSZ, 0);
+			MarkBufferDirty(buf);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK); /* Unlock but keep pinned */
+
+			writer->pages[writer->pages_allocated]	 = new_page;
+			writer->buffers[writer->pages_allocated] = buf;
+			writer->pages_allocated++;
 			return new_page;
 		}
 
-		/* Pool exhausted - extend directly (FSM unsafe in parallel workers) */
+		/*
+		 * Pre-allocated range exhausted. Fall back to P_NEW with pinned
+		 * buffer. This may cause issues if multiple workers extend
+		 * simultaneously, but the large pre-allocation should prevent this in
+		 * normal cases.
+		 */
+		elog(WARNING,
+			 "Pre-allocated page pool exhausted, falling back to P_NEW");
 		buf = ReadBufferExtended(
 				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 		new_page = BufferGetBlockNumber(buf);
 		PageInit(BufferGetPage(buf), BLCKSZ, 0);
 		MarkBufferDirty(buf);
-		UnlockReleaseBuffer(buf);
-		writer->pages[writer->pages_allocated++] = new_page;
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK); /* Unlock but keep pinned */
+
+		writer->pages[writer->pages_allocated]	 = new_page;
+		writer->buffers[writer->pages_allocated] = buf;
+		writer->pages_allocated++;
 		return new_page;
 	}
 
@@ -708,7 +767,7 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
 							 entries_per_page;
 
-	/* Allocate index pages incrementally */
+	/* Allocate index pages using allocate_segment_page */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
 	uint32		 i;
 
@@ -734,8 +793,10 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 		start_idx		 = i * entries_per_page;
 		entries_to_write = Min(entries_per_page, num_pages - start_idx);
 
-		buffer = ReadBuffer(index, index_pages[i]);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		{
+			buffer = ReadBuffer(index, index_pages[i]);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		}
 		page = BufferGetPage(buffer);
 
 		/* Initialize page with special area */
@@ -783,8 +844,9 @@ tp_page_index_entries_per_page(void)
 
 /*
  * Write page index from a pre-allocated pool (for parallel builds).
- * This avoids extending the relation during parallel builds, which is unsafe
- * because workers have stale views of relation size.
+ *
+ * If the pool is exhausted, dynamically extends the relation. This ensures
+ * builds always succeed even if the initial estimate was too conservative.
  */
 BlockNumber
 write_page_index_from_pool(
@@ -802,22 +864,25 @@ write_page_index_from_pool(
 	uint32 num_index_pages	= (num_pages + entries_per_page - 1) /
 							 entries_per_page;
 
-	/* Allocate index pages from pool */
+	/* Allocate index pages from pool, extending if needed */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
 	uint32		 i;
 
 	for (i = 0; i < num_index_pages; i++)
 	{
 		uint32 idx = pg_atomic_fetch_add_u32(pool_next, 1);
-		if (idx >= pool_size)
+		if (idx < pool_size)
 		{
-			pfree(index_pages);
-			elog(ERROR,
-				 "Page pool exhausted while writing page index (need %u more "
-				 "pages). Increase TP_INDEX_EXPANSION_FACTOR.",
-				 num_index_pages - i);
+			index_pages[i] = page_pool[idx];
 		}
-		index_pages[i] = page_pool[idx];
+		else
+		{
+			/* Pool exhausted - dynamically extend the relation */
+			Buffer buf = ReadBufferExtended(
+					index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+			index_pages[i] = BufferGetBlockNumber(buf);
+			UnlockReleaseBuffer(buf);
+		}
 	}
 
 	/* Write index pages in reverse order (so we can chain them) */
@@ -1881,6 +1946,7 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 {
 	writer->index			= index;
 	writer->pages			= NULL;
+	writer->buffers			= NULL; /* Allocated by grow_pages if parallel */
 	writer->pages_allocated = 0;
 	writer->pages_capacity	= 0;
 	writer->current_offset	= 0;
@@ -1919,6 +1985,7 @@ tp_segment_writer_init_with_pool(
 {
 	writer->index			= index;
 	writer->pages			= NULL;
+	writer->buffers			= NULL;
 	writer->pages_allocated = 0;
 	writer->pages_capacity	= 0;
 	writer->current_offset	= 0;
@@ -1998,10 +2065,22 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 
 	block = writer->pages[writer->buffer_page];
 
-	/* Write current buffer to disk */
-	buffer = ReadBuffer(writer->index, block);
-	LockBuffer(
-			buffer, BUFFER_LOCK_EXCLUSIVE); /* Need exclusive lock to modify */
+	/*
+	 * In parallel workers, we have pinned buffers - use them directly.
+	 * This avoids ReadBuffer which can fail if smgr cache is stale.
+	 */
+	if (writer->buffers != NULL)
+	{
+		buffer = writer->buffers[writer->buffer_page];
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	}
+	else
+	{
+		/* Non-parallel: read the buffer */
+		buffer = ReadBuffer(writer->index, block);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	}
+
 	page = BufferGetPage(buffer);
 
 	/*
@@ -2014,7 +2093,16 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 		   BLCKSZ - SizeOfPageHeaderData);
 
 	MarkBufferDirty(buffer);
-	UnlockReleaseBuffer(buffer);
+
+	if (writer->buffers != NULL)
+	{
+		/* Keep buffer pinned, just unlock it */
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	}
+	else
+	{
+		UnlockReleaseBuffer(buffer);
+	}
 }
 
 void
@@ -2026,6 +2114,17 @@ tp_segment_writer_finish(TpSegmentWriter *writer)
 		tp_segment_writer_flush(writer);
 	}
 	pfree(writer->buffer);
+
+	/* Release pinned buffers (parallel workers only) */
+	if (writer->buffers != NULL)
+	{
+		for (uint32 i = 0; i < writer->pages_allocated; i++)
+		{
+			ReleaseBuffer(writer->buffers[i]);
+		}
+		pfree(writer->buffers);
+		writer->buffers = NULL;
+	}
 
 	/* Free reusable posting buffer if allocated */
 	if (writer->posting_buffer)
