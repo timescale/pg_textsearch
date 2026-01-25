@@ -125,6 +125,7 @@ jobs:
         shared_buffers = 4GB
         maintenance_work_mem = 1GB
         pg_textsearch.index_memory_limit = 512MB
+        pg_textsearch.parallel_build_expansion_factor = 2.0
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
@@ -821,6 +822,7 @@ jobs:
         max_parallel_workers = $NCPUS
         pg_textsearch.index_memory_limit = 512MB
         pg_textsearch.segments_per_level = 16
+        pg_textsearch.parallel_build_expansion_factor = 2.0
         EOF
 
         # Enable compression if requested

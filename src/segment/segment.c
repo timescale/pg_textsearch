@@ -814,7 +814,8 @@ write_page_index_from_pool(
 			pfree(index_pages);
 			elog(ERROR,
 				 "Page pool exhausted while writing page index (need %u more "
-				 "pages). Increase TP_INDEX_EXPANSION_FACTOR.",
+				 "pages). Increase "
+				 "pg_textsearch.parallel_build_expansion_factor.",
 				 num_index_pages - i);
 		}
 		index_pages[i] = page_pool[idx];
