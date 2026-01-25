@@ -781,7 +781,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			/*
 			 * If the index has no documents, check if this is an
 			 * inheritance parent (e.g., hypertable) and use the first
-			 * child's stats as an approximation.
+			 * child's stats and segments for scoring.
 			 */
 			if (total_docs == 0 && indexed_attnum != InvalidAttrNumber)
 			{
@@ -794,9 +794,30 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 							first_child_idx);
 					if (child_state && child_state->shared)
 					{
+						Relation		child_rel;
+						TpIndexMetaPage child_metap;
+
 						index_state = child_state;
 						total_docs	= child_state->shared->total_docs;
 						total_len	= child_state->shared->total_len;
+
+						/*
+						 * Also switch to the child index for segment access.
+						 * The parent index has no segments, so IDF lookup
+						 * would fail without this.
+						 */
+						child_rel =
+								index_open(first_child_idx, AccessShareLock);
+						child_metap	  = tp_get_metapage(child_rel);
+						first_segment = child_metap->level_heads[0];
+						for (int i = 0; i < TP_MAX_LEVELS; i++)
+							level_heads[i] = child_metap->level_heads[i];
+
+						/* Close parent and switch to child relation */
+						pfree(metap);
+						metap = child_metap;
+						index_close(index_rel, AccessShareLock);
+						index_rel = child_rel;
 					}
 				}
 			}
