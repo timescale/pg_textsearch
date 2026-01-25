@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769235494748,
+  "lastUpdate": 1769305169869,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1437,6 +1437,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "0bce9b22bedead552eaa38ea1cfc5f0bf8c2a64b",
+          "message": "Fix Wikipedia benchmark metric extraction failure\n\nThe Wikipedia benchmark CI was failing because queries.sql didn't produce\nthe structured metric output that extract_metrics.sh expects:\n\n- LATENCY_BUCKET_N: p50=Xms p95=Yms p99=Zms avg=Wms (n=100)\n- THROUGHPUT_RESULT: N queries in X ms (avg Y ms/query)\n\nWithout these patterns, wikipedia_metrics.json had null values for all\nlatency/throughput metrics, causing format_for_action.sh to produce an\nempty array [], which made github-action-benchmark fail.\n\nThis change rewrites queries.sql to match the MS MARCO benchmark format:\n- Creates benchmark_queries table with 800 queries (100 per token bucket)\n- Runs latency benchmarks outputting LATENCY_BUCKET_N metrics\n- Runs throughput benchmarks outputting THROUGHPUT_RESULT metrics\n- Uses representative Wikipedia search queries across 8 token buckets\n\nThis gives Wikipedia the same standardized benchmark format as MS MARCO,\nenabling consistent cross-dataset performance comparison.",
+          "timestamp": "2026-01-25T00:49:21Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0bce9b22bedead552eaa38ea1cfc5f0bf8c2a64b"
+        },
+        "date": 1769305169115,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 258.567,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.46,
             "unit": "ms"
           },
           {
