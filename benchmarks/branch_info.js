@@ -55,5 +55,6 @@ window.BRANCH_INFO = {
   "d66f0d8bdeb63aca2c43247243494af89820c199": "fix-parallel-build-page-reclamation",
   "d6ef453701d36c559e9220af54a9013e5e79df78": "fix-parallel-build-page-reclamation",
   "24735ab9664f56e47eddfad6e0164c941563108d": "main",
-  "0bce9b22bedead552eaa38ea1cfc5f0bf8c2a64b": "fix-wikipedia-benchmark-metrics"
+  "0bce9b22bedead552eaa38ea1cfc5f0bf8c2a64b": "fix-wikipedia-benchmark-metrics",
+  "f985027719b0a0e7a1f5c8ff08bd836200937220": "fix-wikipedia-benchmark-metrics"
 };
