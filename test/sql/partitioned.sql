@@ -302,6 +302,49 @@ SELECT validate_index_vs_standalone(
     'database'
 ) as large_partition_modes_match;
 
+-- =============================================================================
+-- Test 5: Score expression replacement via parent table (MergeAppend)
+--
+-- This tests that the planner hook correctly replaces score expressions when
+-- querying through the parent partitioned table. The query plan uses MergeAppend
+-- to combine results from partition index scans. The planner hook must:
+--   1. Detect BM25 index scans inside MergeAppend children
+--   2. Replace score expressions in SELECT with stub functions that retrieve
+--      cached scores from the index scan
+--
+-- Without proper handling, the SELECT score would use standalone scoring
+-- (which looks up the parent table's index, not partition indexes), resulting
+-- in incorrect or zero scores.
+-- =============================================================================
+
+-- Query across all partitions via parent table with score in both SELECT and ORDER BY
+-- The planner should use MergeAppend with partition index scans
+EXPLAIN (COSTS OFF)
+SELECT content,
+       -(content <@> to_bm25query('database', 'scoring_bm25_idx')) as score
+FROM partitioned_scoring
+ORDER BY content <@> to_bm25query('database', 'scoring_bm25_idx')
+LIMIT 5;
+
+-- Verify scores are non-zero when querying via parent table
+-- If the planner hook fails to replace the score expression, we'd get 0 scores
+SELECT content,
+       ROUND(-(content <@> to_bm25query('database', 'scoring_bm25_idx'))::numeric, 4) as score
+FROM partitioned_scoring
+ORDER BY content <@> to_bm25query('database', 'scoring_bm25_idx')
+LIMIT 5;
+
+-- Verify the returned scores are all non-zero (would fail if planner hook broken)
+SELECT COUNT(*) as nonzero_scores
+FROM (
+    SELECT content,
+           -(content <@> to_bm25query('database', 'scoring_bm25_idx')) as score
+    FROM partitioned_scoring
+    ORDER BY content <@> to_bm25query('database', 'scoring_bm25_idx')
+    LIMIT 5
+) t
+WHERE score > 0;
+
 -- Cleanup
 SET enable_seqscan = on;
 DROP TABLE partitioned_scoring CASCADE;
