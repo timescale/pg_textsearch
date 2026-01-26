@@ -121,8 +121,8 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
         f"-- Test case: {test_name}",
         f"-- Generated BM25 test with {len(documents)} documents and {len(queries)} queries",
         f"-- Testing both bulk build and incremental build modes",
-        "CREATE EXTENSION IF NOT EXISTS tapir;",
-        "SET tapir.log_scores = true;",
+        "CREATE EXTENSION IF NOT EXISTS pg_textsearch;",
+        "SET pg_textsearch.log_scores = true;",
         "SET enable_seqscan = off;",
         ""
     ]
@@ -161,7 +161,7 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
     sql_lines.extend([
         "",
         f"-- Create index after data insertion (bulk build)",
-        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING tapir(content)",
+        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING bm25(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
         ""
     ])
@@ -169,12 +169,12 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
     expected_lines.extend([
         "",
         f"-- Create index after data insertion (bulk build)",
-        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING tapir(content)",
+        f"CREATE INDEX {test_name}_bulk_idx ON {test_name}_bulk USING bm25(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
-        f"NOTICE:  Tapir index build started for relation {test_name}_bulk_idx",
+        f"NOTICE:  BM25 index build started for relation {test_name}_bulk_idx",
         f"NOTICE:  Using text search configuration: {text_config}",
         f"NOTICE:  Using index options: k1={k1:.2f}, b={b:.2f}",
-        f"NOTICE:  Tapir index build completed: {len(documents)} documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
+        f"NOTICE:  BM25 index build completed: {len(documents)} documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
         ""
     ])
 
@@ -182,17 +182,17 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
     for query_idx, query in enumerate(queries):
         sql_lines.extend([
             f"-- Bulk mode query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
+            f"SELECT id, content, ROUND((content <@> to_bm25query('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
             f"FROM {test_name}_bulk",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_bulk_idx'), id;",
+            f"ORDER BY content <@> to_bm25query('{query}', '{test_name}_bulk_idx'), id;",
             ""
         ])
 
         expected_lines.extend([
             f"-- Bulk mode query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
+            f"SELECT id, content, ROUND((content <@> to_bm25query('{query}', '{test_name}_bulk_idx'))::numeric, 4) as score",
             f"FROM {test_name}_bulk",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_bulk_idx'), id;"
+            f"ORDER BY content <@> to_bm25query('{query}', '{test_name}_bulk_idx'), id;"
         ])
 
         # Calculate expected scores
@@ -237,7 +237,7 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
         ");",
         "",
         f"-- Create index before data insertion (incremental build)",
-        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING tapir(content)",
+        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING bm25(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
         "",
         "-- Insert test documents incrementally"
@@ -251,12 +251,12 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
         ");",
         "",
         f"-- Create index before data insertion (incremental build)",
-        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING tapir(content)",
+        f"CREATE INDEX {test_name}_incr_idx ON {test_name}_incr USING bm25(content)",
         f"  WITH (text_config='{text_config}', k1={k1}, b={b});",
-        f"NOTICE:  Tapir index build started for relation {test_name}_incr_idx",
+        f"NOTICE:  BM25 index build started for relation {test_name}_incr_idx",
         f"NOTICE:  Using text search configuration: {text_config}",
         f"NOTICE:  Using index options: k1={k1:.2f}, b={b:.2f}",
-        f"NOTICE:  Tapir index build completed: 0 documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
+        f"NOTICE:  BM25 index build completed: 0 documents, avg_length=XXX, text_config='{text_config}' (k1={k1:.2f}, b={b:.2f})",
         "",
         "-- Insert test documents incrementally"
     ])
@@ -275,17 +275,17 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
     for query_idx, query in enumerate(queries):
         sql_lines.extend([
             f"-- Incremental mode query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
+            f"SELECT id, content, ROUND((content <@> to_bm25query('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
             f"FROM {test_name}_incr",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_incr_idx'), id;",
+            f"ORDER BY content <@> to_bm25query('{query}', '{test_name}_incr_idx'), id;",
             ""
         ])
 
         expected_lines.extend([
             f"-- Incremental mode query {query_idx + 1}: '{query}'",
-            f"SELECT id, content, ROUND((content <@> to_tpquery('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
+            f"SELECT id, content, ROUND((content <@> to_bm25query('{query}', '{test_name}_incr_idx'))::numeric, 4) as score",
             f"FROM {test_name}_incr",
-            f"ORDER BY content <@> to_tpquery('{query}', '{test_name}_incr_idx'), id;"
+            f"ORDER BY content <@> to_bm25query('{query}', '{test_name}_incr_idx'), id;"
         ])
 
         # Calculate expected scores (same as bulk mode)
@@ -325,14 +325,14 @@ def generate_sql_test(test_name: str, documents: List[str], queries: List[str],
         "-- Cleanup",
         f"DROP TABLE {test_name}_bulk CASCADE;",
         f"DROP TABLE {test_name}_incr CASCADE;",
-        "DROP EXTENSION tapir CASCADE;"
+        "DROP EXTENSION pg_textsearch CASCADE;"
     ])
 
     expected_lines.extend([
         "-- Cleanup",
         f"DROP TABLE {test_name}_bulk CASCADE;",
         f"DROP TABLE {test_name}_incr CASCADE;",
-        "DROP EXTENSION tapir CASCADE;"
+        "DROP EXTENSION pg_textsearch CASCADE;"
     ])
 
     return '\n'.join(sql_lines), '\n'.join(expected_lines)

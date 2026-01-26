@@ -283,11 +283,11 @@ tp_build_extract_options(
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("text_config parameter is required for tapir "
+					 errmsg("text_config parameter is required for bm25 "
 							"indexes"),
 					 errhint("Specify text_config when creating the index: "
 							 "CREATE INDEX ... USING "
-							 "tapir(column) WITH (text_config='english')")));
+							 "bm25(column) WITH (text_config='english')")));
 		}
 
 		*k1 = options->k1;
@@ -298,10 +298,10 @@ tp_build_extract_options(
 		/* No options provided - require text_config */
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("text_config parameter is required for tapir indexes"),
+				 errmsg("text_config parameter is required for bm25 indexes"),
 				 errhint("Specify text_config when creating the index: "
 						 "CREATE INDEX ... USING "
-						 "tapir(column) WITH (text_config='english')")));
+						 "bm25(column) WITH (text_config='english')")));
 	}
 }
 
@@ -1010,11 +1010,11 @@ tp_buildempty(Relation index)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("text_config parameter is required for tapir "
+					 errmsg("text_config parameter is required for bm25 "
 							"indexes"),
 					 errhint("Specify text_config when creating the index: "
 							 "CREATE INDEX ... USING "
-							 "tapir(column) WITH (text_config='english')")));
+							 "bm25(column) WITH (text_config='english')")));
 		}
 	}
 	else
@@ -1022,10 +1022,10 @@ tp_buildempty(Relation index)
 		/* No options provided - require text_config */
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("text_config parameter is required for tapir indexes"),
+				 errmsg("text_config parameter is required for bm25 indexes"),
 				 errhint("Specify text_config when creating the index: "
 						 "CREATE INDEX ... USING "
-						 "tapir(column) WITH (text_config='english')")));
+						 "bm25(column) WITH (text_config='english')")));
 	}
 
 	/* Create and initialize the metapage */
