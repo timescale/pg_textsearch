@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769408377230,
+  "lastUpdate": 1769408379238,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5405,6 +5405,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 3510.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3244d05a86658620ecb2d82253ef7916604f839d",
+          "message": "Fix zero scores when querying hypertables with BM25 index (#168)\n\n## Summary\n\nThis PR fixes zero scores when querying hypertables with BM25 indexes.\n\n**Commit 1: Planner hook fix for CustomScan**\n- Add `T_CustomScan` handling in `plan_has_bm25_indexscan()` to detect\nBM25 index scans nested inside custom scans (e.g., TimescaleDB's\nConstraintAwareAppend)\n- Add `T_CustomScan` handling in `replace_scores_in_plan()` to replace\nscore expressions in custom scan children\n\n**Commit 2: Standalone scoring fix for hypertable parent indexes**\n- When using standalone BM25 scoring with a hypertable parent index\nname, the code was falling back to child index stats but NOT switching\nto the child's index relation and segment metadata\n- This caused IDF calculation to fail because it was looking up document\nfrequencies in the parent index's segments (which are empty)\n- The fix switches to the child index for segment access when falling\nback to a child index's state\n\n## Testing\n\n- Verified fix with reproduction case from bug report\n- Added Test 5 in partitioned.sql for MergeAppend score expression\nreplacement\n- Added test/scripts/hypertable.sh for optional TimescaleDB integration\ntesting (runs only if TimescaleDB is installed)\n\n```sql\n-- Both queries now return proper BM25 scores:\n\n-- Query through parent hypertable with ORDER BY\nSELECT content, -(content <@> to_bm25query('database', 'hyper_idx')) as score\nFROM hyper_docs\nORDER BY content <@> to_bm25query('database', 'hyper_idx')\nLIMIT 5;\n\n-- Standalone scoring with parent index name\nSELECT content, (content <@> to_bm25query('database', 'hyper_idx')) as score\nFROM hyper_docs\nWHERE content LIKE '%database%';\n```",
+          "timestamp": "2026-01-25T16:35:30Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3244d05a86658620ecb2d82253ef7916604f839d"
+        },
+        "date": 1769408378568,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 379718.741,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.02,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.23,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 6.59,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 13.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 22.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 29.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 49.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 16.8,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 3510.89,
             "unit": "MB"
           }
         ]
