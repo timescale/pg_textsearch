@@ -49,3 +49,31 @@ extern BlockNumber tp_merge_level_segments(Relation index, uint32 level);
  *   level - The level to check (0 = L0, 1 = L1, etc.)
  */
 extern void tp_maybe_compact_level(Relation index, uint32 level);
+
+/*
+ * Merge specific segments using a shared page pool.
+ *
+ * This is the core merge function used by parallel compaction. It merges
+ * the specified segments into a single segment at target_level, using
+ * pre-allocated pages from the pool rather than extending the relation.
+ *
+ * Parameters:
+ *   index - The index relation
+ *   segments - Array of segment root blocks to merge
+ *   num_segments - Number of segments to merge
+ *   target_level - Level for the output segment
+ *   page_pool - Pre-allocated page pool
+ *   pool_size - Total pages in pool
+ *   pool_next - Atomic counter for next pool page
+ *
+ * Returns:
+ *   The root block of the merged segment, or InvalidBlockNumber on failure.
+ */
+extern BlockNumber tp_merge_segments_to_pool(
+		Relation		  index,
+		BlockNumber		 *segments,
+		uint32			  num_segments,
+		uint32			  target_level,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next);

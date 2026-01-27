@@ -18,6 +18,7 @@
 #include "docmap.h"
 #include "fieldnorm.h"
 #include "merge.h"
+#include "merge_parallel.h"
 #include "pagemapper.h"
 #include "segment.h"
 #include "state/metapage.h"
@@ -1551,6 +1552,9 @@ tp_merge_level_segments(Relation index, uint32 level)
 
 /*
  * Check if a level needs compaction and trigger merge if so.
+ *
+ * At level 0, this may use parallel compaction if there are enough segments
+ * across all levels to benefit from parallelism.
  */
 void
 tp_maybe_compact_level(Relation index, uint32 level)
@@ -1559,9 +1563,21 @@ tp_maybe_compact_level(Relation index, uint32 level)
 	Buffer			metabuf;
 	Page			metapage;
 	uint16			level_count;
+	uint32			total_segments;
 
 	if (level >= TP_MAX_LEVELS - 1)
 		return;
+
+	/*
+	 * At level 0, check if parallel compaction would be beneficial.
+	 * Parallel compaction handles all levels at once, so we only check
+	 * at the entry point.
+	 */
+	if (level == 0 && tp_should_compact_parallel(index, &total_segments))
+	{
+		tp_compact_parallel(index);
+		return;
+	}
 
 	/* Check if level needs compaction */
 	metabuf = ReadBuffer(index, 0);
@@ -1582,4 +1598,583 @@ tp_maybe_compact_level(Relation index, uint32 level)
 		/* Recursively check next level */
 		tp_maybe_compact_level(index, level + 1);
 	}
+}
+
+/*
+ * Write a merged segment using a shared page pool.
+ *
+ * This is similar to write_merged_segment but uses pre-allocated pages
+ * from the pool instead of extending the relation. Used by parallel
+ * compaction workers.
+ */
+static BlockNumber
+write_merged_segment_to_pool(
+		Relation		  index,
+		TpMergedTerm	 *terms,
+		uint32			  num_terms,
+		TpMergeSource	 *sources,
+		int				  num_sources,
+		uint32			  target_level,
+		uint64			  total_tokens,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	TpSegmentWriter		writer;
+	TpSegmentHeader		header;
+	TpDictionary		dict;
+	TpDocMapBuilder	   *docmap;
+	TpMergeDocMapping	doc_mapping;
+	MergeTermBlockInfo *term_blocks;
+	uint32			   *string_offsets;
+	uint32				string_pos;
+	uint32				i;
+	BlockNumber			header_block;
+	BlockNumber			page_index_root;
+	Buffer				header_buf;
+	Page				header_page;
+	TpSegmentHeader	   *existing_header;
+
+	/* Accumulated skip entries for all terms */
+	TpSkipEntry *all_skip_entries;
+	uint32		 skip_entries_count;
+	uint32		 skip_entries_capacity;
+
+	if (num_terms == 0)
+		return InvalidBlockNumber;
+
+	/* Build docmap and direct mapping arrays from source segments */
+	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
+
+	/* Initialize writer with pool */
+	memset(&writer, 0, sizeof(TpSegmentWriter));
+	tp_segment_writer_init_with_pool(
+			&writer, index, page_pool, pool_size, pool_next);
+	header_block = writer.pages[0];
+
+	/* Prepare header placeholder */
+	memset(&header, 0, sizeof(TpSegmentHeader));
+	header.magic		= TP_SEGMENT_MAGIC;
+	header.version		= TP_SEGMENT_FORMAT_VERSION;
+	header.created_at	= GetCurrentTimestamp();
+	header.num_pages	= 0;
+	header.num_terms	= num_terms;
+	header.level		= target_level;
+	header.next_segment = InvalidBlockNumber;
+	header.num_docs		= docmap->num_docs;
+	header.total_tokens = total_tokens;
+
+	/* Write placeholder header */
+	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
+
+	/* Dictionary immediately follows header */
+	header.dictionary_offset = writer.current_offset;
+
+	/* Write dictionary header */
+	dict.num_terms = num_terms;
+	tp_segment_writer_write(
+			&writer, &dict, offsetof(TpDictionary, string_offsets));
+
+	/* Calculate string offsets */
+	string_offsets = palloc0(num_terms * sizeof(uint32));
+	string_pos	   = 0;
+	for (i = 0; i < num_terms; i++)
+	{
+		string_offsets[i] = string_pos;
+		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+	}
+
+	/* Write string offsets array */
+	tp_segment_writer_write(
+			&writer, string_offsets, num_terms * sizeof(uint32));
+
+	/* Write string pool */
+	header.strings_offset = writer.current_offset;
+	for (i = 0; i < num_terms; i++)
+	{
+		uint32 length	   = terms[i].term_len;
+		uint32 dict_offset = i * sizeof(TpDictEntry);
+
+		tp_segment_writer_write(&writer, &length, sizeof(uint32));
+		tp_segment_writer_write(&writer, terms[i].term, length);
+		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
+	}
+
+	/* Record entries offset */
+	header.entries_offset = writer.current_offset;
+
+	/* Write placeholder dict entries */
+	{
+		TpDictEntry placeholder;
+		memset(&placeholder, 0, sizeof(TpDictEntry));
+		for (i = 0; i < num_terms; i++)
+			tp_segment_writer_write(
+					&writer, &placeholder, sizeof(TpDictEntry));
+	}
+
+	/* Postings start here */
+	header.postings_offset = writer.current_offset;
+
+	/* Initialize per-term tracking and skip entry accumulator */
+	term_blocks = palloc0(num_terms * sizeof(MergeTermBlockInfo));
+
+	skip_entries_capacity = 1024;
+	skip_entries_count	  = 0;
+	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+
+	/* Streaming pass: for each term, collect postings and write immediately */
+	for (i = 0; i < num_terms; i++)
+	{
+		CollectedPosting *postings;
+		uint32			  doc_count;
+		uint32			  j;
+		uint32			  block_idx;
+		uint32			  num_blocks;
+		TpBlockPosting	 *block_postings;
+
+		/* Record where this term's postings start */
+		term_blocks[i].posting_offset	= writer.current_offset;
+		term_blocks[i].skip_entry_start = skip_entries_count;
+
+		/* Collect postings for this term only */
+		postings = collect_term_postings(&terms[i], sources, &doc_count);
+		term_blocks[i].doc_freq = doc_count;
+
+		if (doc_count == 0 || postings == NULL)
+		{
+			term_blocks[i].block_count = 0;
+			continue;
+		}
+
+		/* Calculate number of blocks */
+		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		term_blocks[i].block_count = (uint16)num_blocks;
+
+		/* Convert postings to block format */
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+		for (j = 0; j < doc_count; j++)
+		{
+			int	   src_idx	  = postings[j].source_idx;
+			uint32 old_doc_id = postings[j].old_doc_id;
+			uint32 new_doc_id = doc_mapping.old_to_new[src_idx][old_doc_id];
+
+			block_postings[j].doc_id	= new_doc_id;
+			block_postings[j].frequency = postings[j].frequency;
+			block_postings[j].fieldnorm = postings[j].fieldnorm;
+			block_postings[j].reserved	= 0;
+		}
+
+		/* Write posting blocks and build skip entries */
+		for (block_idx = 0; block_idx < num_blocks; block_idx++)
+		{
+			TpSkipEntry skip;
+			uint32		block_start = block_idx * TP_BLOCK_SIZE;
+			uint32 block_end   = Min(block_start + TP_BLOCK_SIZE, doc_count);
+			uint16 max_tf	   = 0;
+			uint8  max_norm	   = 0;
+			uint32 last_doc_id = 0;
+
+			/* Calculate block stats */
+			for (j = block_start; j < block_end; j++)
+			{
+				if (block_postings[j].doc_id > last_doc_id)
+					last_doc_id = block_postings[j].doc_id;
+				if (block_postings[j].frequency > max_tf)
+					max_tf = block_postings[j].frequency;
+				if (block_postings[j].fieldnorm > max_norm)
+					max_norm = block_postings[j].fieldnorm;
+			}
+
+			/* Build skip entry */
+			skip.last_doc_id	= last_doc_id;
+			skip.doc_count		= (uint8)(block_end - block_start);
+			skip.block_max_tf	= max_tf;
+			skip.block_max_norm = max_norm;
+			skip.posting_offset = writer.current_offset;
+			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			/* Write posting block data (compressed or uncompressed) */
+			if (tp_compress_segments)
+			{
+				uint8  compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
+				uint32 compressed_size;
+
+				compressed_size = tp_compress_block(
+						&block_postings[block_start],
+						block_end - block_start,
+						compressed_buf);
+
+				skip.flags = TP_BLOCK_FLAG_DELTA;
+				tp_segment_writer_write(
+						&writer, compressed_buf, compressed_size);
+			}
+			else
+			{
+				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+				tp_segment_writer_write(
+						&writer,
+						&block_postings[block_start],
+						(block_end - block_start) * sizeof(TpBlockPosting));
+			}
+
+			/* Accumulate skip entry */
+			if (skip_entries_count >= skip_entries_capacity)
+			{
+				skip_entries_capacity *= 2;
+				all_skip_entries = repalloc(
+						all_skip_entries,
+						skip_entries_capacity * sizeof(TpSkipEntry));
+			}
+			all_skip_entries[skip_entries_count++] = skip;
+		}
+
+		pfree(block_postings);
+		pfree(postings);
+
+		if ((i % 1000) == 0)
+			CHECK_FOR_INTERRUPTS();
+	}
+
+	/* Skip index starts here */
+	header.skip_index_offset = writer.current_offset;
+
+	/* Write all accumulated skip entries */
+	if (skip_entries_count > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				all_skip_entries,
+				skip_entries_count * sizeof(TpSkipEntry));
+	}
+
+	pfree(all_skip_entries);
+
+	/* Write fieldnorm table */
+	header.fieldnorm_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+	}
+
+	/* Write CTID pages array */
+	header.ctid_pages_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_pages,
+				docmap->num_docs * sizeof(BlockNumber));
+	}
+
+	/* Write CTID offsets array */
+	header.ctid_offsets_offset = writer.current_offset;
+	if (docmap->num_docs > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				docmap->ctid_offsets,
+				docmap->num_docs * sizeof(OffsetNumber));
+	}
+
+	/* Flush and write page index */
+	tp_segment_writer_flush(&writer);
+	writer.buffer_pos = SizeOfPageHeaderData;
+
+	page_index_root = write_page_index_from_pool(
+			index,
+			writer.pages,
+			writer.pages_allocated,
+			page_pool,
+			pool_size,
+			pool_next);
+	header.page_index = page_index_root;
+	header.data_size  = writer.current_offset;
+	header.num_pages  = writer.pages_allocated;
+
+	/* Update dictionary entries with skip offsets */
+	{
+		Buffer dict_buf = InvalidBuffer;
+		uint32 entry_logical_page;
+		uint32 current_page = UINT32_MAX;
+
+		for (i = 0; i < num_terms; i++)
+		{
+			TpDictEntry entry;
+			uint32		entry_offset;
+			uint32		page_offset;
+			BlockNumber physical_block;
+
+			entry.skip_index_offset = header.skip_index_offset +
+									  (term_blocks[i].skip_entry_start *
+									   sizeof(TpSkipEntry));
+			entry.block_count = term_blocks[i].block_count;
+			entry.reserved	  = 0;
+			entry.doc_freq	  = term_blocks[i].doc_freq;
+
+			entry_offset = header.entries_offset + (i * sizeof(TpDictEntry));
+			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
+			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
+
+			if (entry_logical_page != current_page)
+			{
+				if (current_page != UINT32_MAX)
+				{
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+				}
+
+				physical_block = writer.pages[entry_logical_page];
+				dict_buf	   = ReadBuffer(index, physical_block);
+				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				current_page = entry_logical_page;
+			}
+
+			{
+				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
+											page_offset;
+
+				if (bytes_on_this_page >= sizeof(TpDictEntry))
+				{
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					memcpy(dest, &entry, sizeof(TpDictEntry));
+				}
+				else
+				{
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					char *src = (char *)&entry;
+
+					memcpy(dest, src, bytes_on_this_page);
+
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+
+					entry_logical_page++;
+					if (entry_logical_page >= writer.pages_allocated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INTERNAL_ERROR),
+								 errmsg("dict entry spans beyond allocated")));
+
+					physical_block = writer.pages[entry_logical_page];
+					dict_buf	   = ReadBuffer(index, physical_block);
+					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					current_page = entry_logical_page;
+
+					page = BufferGetPage(dict_buf);
+					dest = (char *)page + SizeOfPageHeaderData;
+					memcpy(dest,
+						   src + bytes_on_this_page,
+						   sizeof(TpDictEntry) - bytes_on_this_page);
+				}
+			}
+		}
+
+		if (current_page != UINT32_MAX)
+		{
+			MarkBufferDirty(dict_buf);
+			UnlockReleaseBuffer(dict_buf);
+		}
+	}
+
+	tp_segment_writer_finish(&writer);
+
+	/* Update header on disk */
+	header_buf = ReadBuffer(index, header_block);
+	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+	header_page		= BufferGetPage(header_buf);
+	existing_header = (TpSegmentHeader *)((char *)header_page +
+										  SizeOfPageHeaderData);
+
+	existing_header->dictionary_offset	 = header.dictionary_offset;
+	existing_header->strings_offset		 = header.strings_offset;
+	existing_header->entries_offset		 = header.entries_offset;
+	existing_header->postings_offset	 = header.postings_offset;
+	existing_header->skip_index_offset	 = header.skip_index_offset;
+	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+	existing_header->num_docs			 = header.num_docs;
+	existing_header->data_size			 = header.data_size;
+	existing_header->num_pages			 = header.num_pages;
+	existing_header->page_index			 = header.page_index;
+
+	MarkBufferDirty(header_buf);
+	UnlockReleaseBuffer(header_buf);
+
+	/* Cleanup */
+	pfree(string_offsets);
+	pfree(term_blocks);
+	free_merge_doc_mapping(&doc_mapping);
+	tp_docmap_destroy(docmap);
+	if (writer.pages)
+		pfree(writer.pages);
+
+	return header_block;
+}
+
+/*
+ * Merge specific segments using a shared page pool.
+ *
+ * This is called by parallel compaction workers to merge a set of segments
+ * into a single output segment. Unlike tp_merge_level_segments, this doesn't
+ * update the metapage - that's done by the leader after all workers finish.
+ */
+BlockNumber
+tp_merge_segments_to_pool(
+		Relation		  index,
+		BlockNumber		 *segments,
+		uint32			  num_segments,
+		uint32			  target_level,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	TpMergeSource *sources;
+	int			   num_sources;
+	uint32		   i;
+	BlockNumber	   current;
+	TpMergedTerm  *merged_terms		= NULL;
+	uint32		   num_merged_terms = 0;
+	uint32		   merged_capacity	= 0;
+	uint64		   total_tokens		= 0;
+	BlockNumber	   new_segment;
+	MemoryContext  merge_ctx;
+	MemoryContext  old_ctx;
+
+	if (num_segments == 0)
+		return InvalidBlockNumber;
+
+	/* Create memory context for merge operation */
+	merge_ctx = AllocSetContextCreate(
+			CurrentMemoryContext, "Parallel Merge", ALLOCSET_DEFAULT_SIZES);
+	old_ctx = MemoryContextSwitchTo(merge_ctx);
+
+	/* Allocate array for merge sources */
+	sources		= palloc0(sizeof(TpMergeSource) * num_segments);
+	num_sources = 0;
+
+	/* Open all specified segments */
+	for (i = 0; i < num_segments; i++)
+	{
+		TpSegmentReader *reader;
+
+		current = segments[i];
+		if (current == InvalidBlockNumber)
+			continue;
+
+		reader = tp_segment_open(index, current);
+		if (reader)
+		{
+			uint64 seg_tokens = reader->header->total_tokens;
+			tp_segment_close(reader);
+
+			if (merge_source_init(&sources[num_sources], index, current))
+			{
+				total_tokens += seg_tokens;
+				num_sources++;
+			}
+		}
+	}
+
+	if (num_sources == 0)
+	{
+		MemoryContextSwitchTo(old_ctx);
+		MemoryContextDelete(merge_ctx);
+		return InvalidBlockNumber;
+	}
+
+	/* Perform N-way merge */
+	while (true)
+	{
+		int			  min_idx;
+		const char	 *min_term;
+		TpMergedTerm *current_merged;
+
+		min_idx = merge_find_min_source(sources, num_sources);
+		if (min_idx < 0)
+			break;
+
+		min_term = sources[min_idx].current_term;
+
+		if (num_merged_terms >= merged_capacity)
+		{
+			merged_capacity = merged_capacity == 0 ? 1024
+												   : merged_capacity * 2;
+			if (merged_terms == NULL)
+				merged_terms = palloc(merged_capacity * sizeof(TpMergedTerm));
+			else
+				merged_terms = repalloc(
+						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+		}
+
+		current_merged					 = &merged_terms[num_merged_terms];
+		current_merged->term_len		 = strlen(min_term);
+		current_merged->term			 = pstrdup(min_term);
+		current_merged->segment_refs	 = NULL;
+		current_merged->num_segment_refs = 0;
+		current_merged->segment_refs_capacity = 0;
+		current_merged->posting_offset		  = 0;
+		current_merged->posting_count		  = 0;
+		num_merged_terms++;
+
+		for (i = 0; i < (uint32)num_sources; i++)
+		{
+			if (sources[i].exhausted)
+				continue;
+
+			if (strcmp(sources[i].current_term, current_merged->term) == 0)
+			{
+				merged_term_add_segment_ref(
+						current_merged, i, &sources[i].current_entry);
+				merge_source_advance(&sources[i]);
+			}
+		}
+
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	/* Write merged segment using pool */
+	if (num_merged_terms > 0)
+	{
+		new_segment = write_merged_segment_to_pool(
+				index,
+				merged_terms,
+				num_merged_terms,
+				sources,
+				num_sources,
+				target_level,
+				total_tokens,
+				page_pool,
+				pool_size,
+				pool_next);
+
+		for (i = 0; i < num_merged_terms; i++)
+		{
+			if (merged_terms[i].term)
+				pfree(merged_terms[i].term);
+			if (merged_terms[i].segment_refs)
+				pfree(merged_terms[i].segment_refs);
+		}
+		pfree(merged_terms);
+	}
+	else
+	{
+		new_segment = InvalidBlockNumber;
+	}
+
+	/* Close all sources */
+	for (i = 0; i < (uint32)num_sources; i++)
+	{
+		merge_source_close(&sources[i]);
+	}
+	pfree(sources);
+
+	MemoryContextSwitchTo(old_ctx);
+	MemoryContextDelete(merge_ctx);
+
+	return new_segment;
 }

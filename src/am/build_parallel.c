@@ -469,7 +469,11 @@ tp_init_parallel_shared(
 }
 
 /*
- * Pre-allocate shared page pool for all workers
+ * Pre-allocate shared page pool for all workers.
+ *
+ * Checks FSM for recycled pages first (from previous compaction), then
+ * extends the relation for any remaining pages needed. This runs in the
+ * leader before workers are launched, so FSM access is safe.
  */
 static void
 tp_preallocate_page_pool(
@@ -478,21 +482,39 @@ tp_preallocate_page_pool(
 	int			 i;
 	Buffer		 buf;
 	BlockNumber *pool;
+	BlockNumber	 block;
+	int			 reused = 0;
 
 	pool = TpParallelPagePool(shared);
 
-	/* Extend relation and collect block numbers */
 	for (i = 0; i < total_pages; i++)
 	{
-		buf = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		pool[i] = BufferGetBlockNumber(buf);
+		/* Try FSM first to reuse pages freed by compaction */
+		block = GetFreeIndexPage(index);
+		if (block != InvalidBlockNumber)
+		{
+			buf = ReadBuffer(index, block);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			reused++;
+		}
+		else
+		{
+			/* No free pages, extend the relation */
+			buf = ReadBufferExtended(
+					index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		}
 
-		/* Initialize page */
+		pool[i] = BufferGetBlockNumber(buf);
 		PageInit(BufferGetPage(buf), BLCKSZ, 0);
 		MarkBufferDirty(buf);
 		UnlockReleaseBuffer(buf);
 	}
+
+	if (reused > 0)
+		elog(DEBUG1,
+			 "Parallel build pool: reused %d pages from FSM, extended %d",
+			 reused,
+			 total_pages - reused);
 
 	/* Flush to ensure durability */
 	smgrimmedsync(RelationGetSmgr(index), MAIN_FORKNUM);

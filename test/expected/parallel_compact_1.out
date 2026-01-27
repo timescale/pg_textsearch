@@ -1,0 +1,314 @@
+-- Test parallel compaction functionality
+-- This test verifies that parallel segment compaction works correctly
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.5.0-dev installed
+-- Enable parallel maintenance workers for compaction
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '64MB';
+-- Lower thresholds to trigger more frequent spills and compaction
+SET pg_textsearch.memtable_spill_threshold = 10000;
+SET pg_textsearch.segments_per_level = 4;
+-- Create test table
+CREATE TABLE test_parallel_compact (
+    id serial PRIMARY KEY,
+    content text
+);
+-- Insert enough data to create multiple segments
+-- This should create at least 8 L0 segments to trigger parallel compaction
+INSERT INTO test_parallel_compact (content)
+SELECT 'document ' || i || ' contains words like ' ||
+       md5(i::text) || ' and ' ||
+       md5((i * 2)::text) || ' plus unique term doc' || i
+FROM generate_series(1, 50000) i;
+-- Create the BM25 index (this will create initial segments)
+CREATE INDEX test_parallel_compact_idx ON test_parallel_compact
+    USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation test_parallel_compact_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50000 documents, avg_length=11.13, text_config='english' (k1=1.20, b=0.75)
+-- Check index summary before explicit compaction
+SELECT bm25_summarize_index('test_parallel_compact_idx');
+                           bm25_summarize_index                            
+---------------------------------------------------------------------------
+ Index: test_parallel_compact_idx                                         +
+                                                                          +
+ Corpus Statistics:                                                       +
+   total_docs: 50000                                                      +
+   total_len: 556444                                                      +
+   avg_doc_len: 11.13                                                     +
+                                                                          +
+ BM25 Parameters:                                                         +
+   k1: 1.20                                                               +
+   b: 0.75                                                                +
+                                                                          +
+ Memory Usage:                                                            +
+   DSA total size: 1048576 bytes (1.00 MB)                                +
+                                                                          +
+ Memtable:                                                                +
+   terms: 0                                                               +
+   documents: 0                                                           +
+                                                                          +
+ Recovery Pages:                                                          +
+   pages: 1                                                               +
+   docids: 554                                                            +
+                                                                          +
+ Segments:                                                                +
+   L0 Segment 1: block=508, pages=20, size=0.2MB, terms=2286, docs=553    +
+   L0 Segment 2: block=475, pages=32, size=0.2MB, terms=3714, docs=900    +
+   L0 Segment 3: block=442, pages=32, size=0.2MB, terms=3712, docs=900    +
+   L0 Segment 4: block=409, pages=32, size=0.2MB, terms=3719, docs=899    +
+   L1 Segment 1: block=545, pages=129, size=1.0MB, terms=14825, docs=3595 +
+   L2 Segment 1: block=273, pages=517, size=4.0MB, terms=59193, docs=14386+
+   L2 Segment 2: block=133, pages=517, size=4.0MB, terms=59227, docs=14383+
+   L2 Segment 3: block=2, pages=446, size=3.5MB, terms=51628, docs=14384  +
+   Total: 8 segments, 1725 pages (13.5MB), 198304 terms, 50000 docs       +
+                                                                          +
+ Index Size:                                                              +
+   on-disk: 16875520 bytes                                                +
+ 
+(1 row)
+
+-- Force a spill to ensure segments are on disk
+SELECT bm25_spill_index('test_parallel_compact_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+-- Insert more data to create additional segments
+INSERT INTO test_parallel_compact (content)
+SELECT 'additional document ' || i || ' with more words ' ||
+       md5((i + 50000)::text) || ' and term additionaldoc' || i
+FROM generate_series(1, 50000) i;
+-- Force another spill
+SELECT bm25_spill_index('test_parallel_compact_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+-- Check index summary after more data
+SELECT bm25_summarize_index('test_parallel_compact_idx');
+                             bm25_summarize_index                             
+------------------------------------------------------------------------------
+ Index: test_parallel_compact_idx                                            +
+                                                                             +
+ Corpus Statistics:                                                          +
+   total_docs: 100000                                                        +
+   total_len: 909643                                                         +
+   avg_doc_len: 9.10                                                         +
+                                                                             +
+ BM25 Parameters:                                                            +
+   k1: 1.20                                                                  +
+   b: 0.75                                                                   +
+                                                                             +
+ Memory Usage:                                                               +
+   DSA total size: 1048576 bytes (1.00 MB)                                   +
+                                                                             +
+ Memtable:                                                                   +
+   terms: 0                                                                  +
+   documents: 0                                                              +
+                                                                             +
+ Recovery Pages:                                                             +
+   pages: 1                                                                  +
+   docids: 438                                                               +
+                                                                             +
+ Segments:                                                                   +
+   L0 Segment 1: block=233, pages=12, size=0.1MB, terms=1343, docs=437       +
+   L0 Segment 2: block=195, pages=37, size=0.3MB, terms=4337, docs=1417      +
+   L0 Segment 3: block=157, pages=37, size=0.3MB, terms=4336, docs=1417      +
+   L1 Segment 1: block=467, pages=149, size=1.2MB, terms=17356, docs=5660    +
+   L1 Segment 2: block=313, pages=149, size=1.2MB, terms=17343, docs=5666    +
+   L2 Segment 1: block=2, pages=595, size=4.6MB, terms=69288, docs=22658     +
+   L3 Segment 1: block=545, pages=1765, size=13.8MB, terms=198545, docs=62745+
+   Total: 7 segments, 2744 pages (21.4MB), 312548 terms, 100000 docs         +
+                                                                             +
+ Index Size:                                                                 +
+   on-disk: 32399360 bytes                                                   +
+ 
+(1 row)
+
+-- Test queries work correctly before any manual compaction
+-- Query 1: Single term
+SELECT COUNT(*) FROM test_parallel_compact
+WHERE content <@> 'document' < 0;
+ count  
+--------
+ 100000
+(1 row)
+
+-- Query 2: Multiple terms
+SELECT COUNT(*) FROM test_parallel_compact
+WHERE content <@> 'additional words' < 0;
+ count  
+--------
+ 100000
+(1 row)
+
+-- Query 3: Specific unique term to verify data integrity
+SELECT id, content FROM test_parallel_compact
+WHERE content <@> 'doc1000' < 0
+ORDER BY content <@> 'doc1000'
+LIMIT 5;
+  id  |                                                             content                                                              
+------+----------------------------------------------------------------------------------------------------------------------------------
+ 1000 | document 1000 contains words like a9b7ba70783b617e9998dc4dd82eb3c5 and 08f90c1a417155361a5c4b8d297e0d78 plus unique term doc1000
+(1 row)
+
+-- Insert even more data to trigger cascading compaction (L0 -> L1 -> L2)
+INSERT INTO test_parallel_compact (content)
+SELECT 'cascade document ' || i || ' testing cascading compaction ' ||
+       md5((i + 100000)::text) || ' unique cascadedoc' || i
+FROM generate_series(1, 50000) i;
+SELECT bm25_spill_index('test_parallel_compact_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+-- Final index summary
+SELECT bm25_summarize_index('test_parallel_compact_idx');
+                             bm25_summarize_index                             
+------------------------------------------------------------------------------
+ Index: test_parallel_compact_idx                                            +
+                                                                             +
+ Corpus Statistics:                                                          +
+   total_docs: 150000                                                        +
+   total_len: 1362869                                                        +
+   avg_doc_len: 9.09                                                         +
+                                                                             +
+ BM25 Parameters:                                                            +
+   k1: 1.20                                                                  +
+   b: 0.75                                                                   +
+                                                                             +
+ Memory Usage:                                                               +
+   DSA total size: 1048576 bytes (1.00 MB)                                   +
+                                                                             +
+ Memtable:                                                                   +
+   terms: 0                                                                  +
+   documents: 0                                                              +
+                                                                             +
+ Recovery Pages:                                                             +
+   pages: 1                                                                  +
+   docids: 383                                                               +
+                                                                             +
+ Segments:                                                                   +
+   L1 Segment 1: block=118, pages=108, size=0.8MB, terms=12574, docs=4104    +
+   L3 Segment 1: block=666, pages=2001, size=15.6MB, terms=220758, docs=83151+
+   L3 Segment 2: block=545, pages=1765, size=13.8MB, terms=198545, docs=62745+
+   Total: 3 segments, 3874 pages (30.3MB), 431877 terms, 150000 docs         +
+                                                                             +
+ Index Size:                                                                 +
+   on-disk: 50159616 bytes                                                   +
+ 
+(1 row)
+
+-- Verify query results are still correct after compaction
+SELECT COUNT(*) FROM test_parallel_compact
+WHERE content <@> 'document' < 0;
+ count  
+--------
+ 150000
+(1 row)
+
+SELECT COUNT(*) FROM test_parallel_compact
+WHERE content <@> 'cascade' < 0;
+ count 
+-------
+ 50000
+(1 row)
+
+-- Test with ORDER BY to verify BM25 scoring works correctly
+SELECT id, content <@> 'cascade compaction' AS score
+FROM test_parallel_compact
+WHERE content <@> 'cascade compaction' < 0
+ORDER BY content <@> 'cascade compaction'
+LIMIT 5;
+   id   |        score        
+--------+---------------------
+ 145897 | -2.6174789667129517
+ 145898 | -2.6174789667129517
+ 145899 | -2.6174789667129517
+ 145900 | -2.6174789667129517
+ 145901 | -2.6174789667129517
+(5 rows)
+
+-- Clean up
+DROP TABLE test_parallel_compact;
+-- Test with serial compaction disabled (fallback case)
+SET max_parallel_maintenance_workers = 0;
+SET pg_textsearch.segments_per_level = 4;
+CREATE TABLE test_serial_compact (
+    id serial PRIMARY KEY,
+    content text
+);
+INSERT INTO test_serial_compact (content)
+SELECT 'serial document ' || i || ' with content ' || md5(i::text)
+FROM generate_series(1, 20000) i;
+CREATE INDEX test_serial_compact_idx ON test_serial_compact
+    USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation test_serial_compact_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 20000 documents, avg_length=5.07, text_config='english' (k1=1.20, b=0.75)
+SELECT bm25_spill_index('test_serial_compact_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+SELECT bm25_summarize_index('test_serial_compact_idx');
+                           bm25_summarize_index                           
+--------------------------------------------------------------------------
+ Index: test_serial_compact_idx                                          +
+                                                                         +
+ Corpus Statistics:                                                      +
+   total_docs: 20000                                                     +
+   total_len: 101323                                                     +
+   avg_doc_len: 5.07                                                     +
+                                                                         +
+ BM25 Parameters:                                                        +
+   k1: 1.20                                                              +
+   b: 0.75                                                               +
+                                                                         +
+ Memory Usage:                                                           +
+   DSA total size: 1048576 bytes (1.00 MB)                               +
+                                                                         +
+ Memtable:                                                               +
+   terms: 0                                                              +
+   documents: 0                                                          +
+                                                                         +
+ Recovery Pages:                                                         +
+   pages: 1                                                              +
+   docids: 258                                                           +
+                                                                         +
+ Segments:                                                               +
+   L0 Segment 1: block=81, pages=5, size=0.0MB, terms=538, docs=257      +
+   L0 Segment 2: block=42, pages=36, size=0.3MB, terms=4069, docs=1978   +
+   L0 Segment 3: block=3, pages=36, size=0.3MB, terms=4079, docs=1975    +
+   L1 Segment 1: block=308, pages=142, size=1.1MB, terms=16290, docs=7899+
+   L1 Segment 2: block=157, pages=142, size=1.1MB, terms=16303, docs=7891+
+   Total: 5 segments, 361 pages (2.8MB), 41279 terms, 20000 docs         +
+                                                                         +
+ Index Size:                                                             +
+   on-disk: 3735552 bytes                                                +
+ 
+(1 row)
+
+-- Verify queries work with serial compaction
+SELECT COUNT(*) FROM test_serial_compact
+WHERE content <@> 'serial document' < 0;
+ count 
+-------
+ 20000
+(1 row)
+
+DROP TABLE test_serial_compact;
+-- Reset settings
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.segments_per_level;
+-- Clean up extension
+DROP EXTENSION pg_textsearch CASCADE;

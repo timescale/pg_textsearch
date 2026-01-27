@@ -23,7 +23,7 @@ tp_compute_bit_width(uint32 max_value)
 	if (max_value == 0)
 		return 1;
 
-	while ((1U << bits) <= max_value && bits < 32)
+	while (bits < 32 && (1U << bits) <= max_value)
 		bits++;
 
 	return bits;

@@ -153,7 +153,16 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	 * Validate root_block is within the relation. In Postgres, blocks are
 	 * allocated sequentially from 0 to nblocks-1, so any valid block number
 	 * must be < nblocks. This is the standard way to validate block numbers.
+	 *
+	 * Block 0 is always the metapage and can never be a segment root.
 	 */
+	if (root_block == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("attempted to open block 0 as segment"),
+				 errhint("Block 0 is the metapage. This indicates a bug in "
+						 "segment chain management.")));
+
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (root_block >= nblocks)
 		return NULL;
