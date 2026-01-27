@@ -18,18 +18,12 @@ on:
 
 jobs:
   test-upgrades:
-    # Skip this job until we have compatible old versions to test against.
-    # v0.4.0 introduced segment format v3 (compression), which is incompatible
-    # with all prior releases. When releasing 0.5.0+ with the same segment
-    # format, add '0.4.0' to old_version and remove this 'if: false'.
-    if: false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        # Test upgrades from compatible releases only.
-        old_version: ['0.4.0']  # placeholder - job is disabled via 'if: false'
+        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2']
 
     steps:
     - name: Checkout current code
@@ -142,6 +136,9 @@ jobs:
 
         -- Verify new version
         SELECT extversion AS new_version FROM pg_extension WHERE extname = 'pg_textsearch';
+
+        -- Rebuild indexes (required when upgrading across format changes)
+        REINDEX INDEX idx_upgrade_bm25;
         SQL
 
     - name: Verify upgrade succeeded
@@ -157,7 +154,7 @@ jobs:
           ver text;
         BEGIN
           SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
-          IF ver NOT LIKE '0.4%' THEN
+          IF ver NOT LIKE '0.5%' THEN
             RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %', ver;
           END IF;
           RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;
@@ -242,17 +239,15 @@ jobs:
         pg_ctl -D /tmp/upgrade_test_data stop -m immediate || true
         rm -rf /tmp/upgrade_test_data
 
-  # Test that incompatible upgrades fail gracefully (no crash, proper error message)
+  # Test that truly incompatible upgrades fail gracefully (no crash, proper error)
+  # 0.1.0 has metapage v4→v5 and shmem size changes that cannot be fixed by REINDEX.
+  # Later versions (0.2.0+) can upgrade via REINDEX and are tested in test-upgrades.
   test-incompatible-upgrade:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         pg_version: [17]
-        # Old versions with incompatible on-disk format
-        # - 0.1.0: Metapage v4→v5, shmem size change - truly incompatible
-        # Note: 0.2.0 and 0.3.0 are compatible because recovery rebuilds from
-        # heap, not from old segment format. Segment format v2→v3 doesn't matter.
         old_version: ['0.1.0']
 
     steps:

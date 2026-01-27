@@ -209,6 +209,8 @@ GitHub Actions workflows:
 - `claude-code-review.yml` - AI code review integration
 - `claude.yml` - Claude Code automation
 
+See [RELEASING.md](RELEASING.md) for release instructions.
+
 ## Debug Functions
 
 - `bm25_dump_index(index_name)` - Shows internal index structure with term
