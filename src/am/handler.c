@@ -82,8 +82,9 @@ tp_handler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks		  = false; /* No predicate locking */
 	amroutine->amcanparallel	  = false; /* No parallel scan support yet */
 	amroutine->amcanbuildparallel = true;
-	amroutine->amcaninclude		  = false;		/* No INCLUDE columns */
-	amroutine->amusemaintenanceworkmem = false; /* Use work_mem for builds */
+	amroutine->amcaninclude		  = false; /* No INCLUDE columns */
+	amroutine->amusemaintenanceworkmem =
+			false; /* Vacuum does not use maintenance work mem */
 	amroutine->amsummarizing		   = false;
 	amroutine->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
 	amroutine->amkeytype			   = InvalidOid;
