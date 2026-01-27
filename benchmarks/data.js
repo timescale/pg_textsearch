@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769494673127,
+  "lastUpdate": 1769494675071,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -6648,6 +6648,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 72.28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "SteveLauC",
+            "username": "SteveLauC",
+            "email": "stevelauc@outlook.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "70747956a7287acc6da5743f831c4cfe651e8d22",
+          "message": "chore: clean up legacy am/extension name and remove unused test script (#177)\n\nIn src/am/build.c, there is still code that refers to the legacy access\nmethod and extension name, tapir. This commit updates those references\nto the current names.\n\nscripts/generate_test_case.py is no longer used (replaced by\nvalidation.sql) and thus gets removed.",
+          "timestamp": "2026-01-27T02:08:35Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/70747956a7287acc6da5743f831c4cfe651e8d22"
+        },
+        "date": 1769494674396,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 7931.523,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.12,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.22,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.52,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.6,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.97,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 72.2,
             "unit": "MB"
           }
         ]
