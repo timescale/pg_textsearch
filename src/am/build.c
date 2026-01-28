@@ -1037,12 +1037,9 @@ tp_buildempty(Relation index)
 	tp_init_metapage(metapage, text_config_oid);
 
 	/* Set additional parameters after init */
-	metap			   = (TpIndexMetaPage)PageGetContents(metapage);
-	metap->k1		   = TP_DEFAULT_K1;
-	metap->b		   = TP_DEFAULT_B;
-	metap->total_docs  = 0;
-	metap->total_terms = 0;
-	metap->total_len   = 0;
+	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
+	metap->k1 = TP_DEFAULT_K1;
+	metap->b  = TP_DEFAULT_B;
 
 	MarkBufferDirty(metabuf);
 
