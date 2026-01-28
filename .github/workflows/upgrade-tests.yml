@@ -40,18 +40,15 @@ jobs:
         sudo systemctl stop postgresql
 
     - name: Download old release v${{ matrix.old_version }}
-      id: download
       run: |
         # Download the source tarball from GitHub releases
         DOWNLOAD_URL="https://github.com/timescale/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz"
         echo "Downloading from: $DOWNLOAD_URL"
         if curl -fsSL -o pg_textsearch-old.tar.gz "$DOWNLOAD_URL"; then
-          echo "downloaded=true" >> $GITHUB_OUTPUT
           tar -xzf pg_textsearch-old.tar.gz
           ls -la
         else
           echo "::error::Failed to download v${{ matrix.old_version }}"
-          echo "downloaded=false" >> $GITHUB_OUTPUT
           exit 1
         fi
 
@@ -62,7 +59,6 @@ jobs:
         make clean || true
         make
         sudo make install
-        cd ..
 
     - name: Build current version
       run: |
@@ -145,17 +141,21 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        psql -h /tmp -d upgrade_test << 'SQL'
+        # Extract expected version prefix from control file (e.g., "0.5" from "0.5.0-dev")
+        EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' pg_textsearch.control | cut -d. -f1,2)
+
+        psql -h /tmp -d upgrade_test -v expected_version="$EXPECTED_VERSION" << 'SQL'
         \set ON_ERROR_STOP on
 
         -- Test 1: Verify extension upgraded to expected version
         DO $$
         DECLARE
           ver text;
+          expected text := :'expected_version';
         BEGIN
           SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
-          IF ver NOT LIKE '0.5%' THEN
-            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %', ver;
+          IF ver NOT LIKE expected || '%' THEN
+            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %, expected: %', ver, expected;
           END IF;
           RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;
         END $$;
@@ -277,7 +277,6 @@ jobs:
         make clean || true
         make
         sudo make install
-        cd ..
 
     - name: Build current version
       run: |
