@@ -845,6 +845,7 @@ write_merged_segment(
 	header.dictionary_offset = writer.current_offset;
 
 	/* Write dictionary header */
+	memset(&dict, 0, sizeof(dict));
 	dict.num_terms = num_terms;
 	tp_segment_writer_write(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
