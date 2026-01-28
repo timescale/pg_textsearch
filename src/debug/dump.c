@@ -801,3 +801,414 @@ tp_summarize_index(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
+
+/*
+ * Page map entry - tracks what each page is used for
+ */
+typedef struct PageMapEntry
+{
+	uint8 level;	   /* Segment level (0-7), or 255 for special */
+	uint8 seg_in_lvl;  /* Segment number within level */
+	uint8 page_type;   /* 0=unused, 1=header, 2=pageindex, 3=data */
+	uint8 data_region; /* For data: 0=dict, 1=posting, 2=docmap, 3=skip */
+} PageMapEntry;
+
+#define PAGE_UNUSED	   0
+#define PAGE_METAPAGE  1
+#define PAGE_DOCID	   2
+#define PAGE_SEG_HDR   3
+#define PAGE_SEG_INDEX 4
+#define PAGE_SEG_DATA  5
+
+/* Data regions within segment */
+#define DATA_DICTIONARY 0
+#define DATA_POSTING	1
+#define DATA_DOCMAP		2
+#define DATA_SKIP		3
+
+/* ANSI color codes */
+#define ANSI_RESET	   "\033[0m"
+#define ANSI_BOLD	   "\033[1m"
+#define ANSI_DIM	   "\033[2m"
+#define ANSI_FG_BLACK  "\033[30m"
+#define ANSI_FG_WHITE  "\033[37m"
+#define ANSI_FG_CYAN   "\033[36m"
+#define ANSI_FG_YELLOW "\033[33m"
+#define ANSI_FG_GREEN  "\033[32m"
+#define ANSI_FG_MAGENT "\033[35m"
+#define ANSI_FG_BLUE   "\033[34m"
+#define ANSI_FG_RED	   "\033[31m"
+#define ANSI_BG_CYAN   "\033[46m"
+#define ANSI_BG_YELLOW "\033[43m"
+#define ANSI_BG_GREEN  "\033[42m"
+#define ANSI_BG_MAGENT "\033[45m"
+#define ANSI_BG_BLUE   "\033[44m"
+#define ANSI_BG_WHITE  "\033[47m"
+
+/*
+ * Get segment character: 0-9, a-z, A-Z
+ */
+static char
+get_segment_char(int level, int seg_in_level)
+{
+	int idx = 0;
+	int l;
+
+	/* Compute global segment index across all levels */
+	for (l = 0; l < level; l++)
+		idx += 10; /* Rough estimate, actual count varies */
+
+	idx = level * 10 + seg_in_level;
+
+	if (idx < 10)
+		return '0' + idx;
+	else if (idx < 36)
+		return 'a' + (idx - 10);
+	else if (idx < 62)
+		return 'A' + (idx - 36);
+	else
+		return '#';
+}
+
+/*
+ * Get ANSI color for level
+ */
+static const char *
+get_level_color(int level)
+{
+	switch (level)
+	{
+	case 0:
+		return ANSI_FG_CYAN;
+	case 1:
+		return ANSI_FG_YELLOW;
+	case 2:
+		return ANSI_FG_GREEN;
+	default:
+		return ANSI_FG_MAGENT;
+	}
+}
+
+/*
+ * Dump page map visualization to file
+ */
+void
+tp_dump_page_map_to_file(const char *index_name, const char *filename)
+{
+	Oid				index_oid;
+	Relation		index_rel	 = NULL;
+	TpIndexMetaPage metap		 = NULL;
+	BlockNumber		total_blocks = 0;
+	PageMapEntry   *page_map	 = NULL;
+	FILE		   *fp;
+	int				level;
+	int				line_width = 80;
+	BlockNumber		blk;
+	int				seg_count = 0;
+
+	/* Open output file */
+	fp = fopen(filename, "w");
+	if (!fp)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", filename)));
+	}
+
+	/* Resolve index */
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+	{
+		fprintf(fp, "ERROR: Index '%s' not found\n", index_name);
+		fclose(fp);
+		return;
+	}
+
+	/* Open index and get metapage */
+	index_rel	 = index_open(index_oid, AccessShareLock);
+	total_blocks = RelationGetNumberOfBlocks(index_rel);
+	metap		 = tp_get_metapage(index_rel);
+
+	if (total_blocks == 0)
+	{
+		fprintf(fp, "ERROR: Index has no blocks\n");
+		goto cleanup;
+	}
+
+	/* Allocate page map */
+	page_map = palloc0(total_blocks * sizeof(PageMapEntry));
+
+	/* Mark metapage */
+	page_map[0].page_type = PAGE_METAPAGE;
+
+	/* Mark docid pages */
+	if (metap && metap->first_docid_page != InvalidBlockNumber)
+	{
+		BlockNumber current = metap->first_docid_page;
+		int			count	= 0;
+
+		while (current != InvalidBlockNumber && current < total_blocks &&
+			   count < 10000)
+		{
+			Buffer			   buf;
+			Page			   page;
+			TpDocidPageHeader *hdr;
+
+			page_map[current].page_type = PAGE_DOCID;
+
+			buf = ReadBuffer(index_rel, current);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			hdr	 = (TpDocidPageHeader *)PageGetContents(page);
+
+			if (hdr->magic == TP_DOCID_PAGE_MAGIC)
+				current = hdr->next_page;
+			else
+				current = InvalidBlockNumber;
+
+			UnlockReleaseBuffer(buf);
+			count++;
+		}
+	}
+
+	/* Process all segments */
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber seg_root;
+		int			seg_in_level = 0;
+
+		if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+			continue;
+
+		seg_root = metap->level_heads[level];
+
+		while (seg_root != InvalidBlockNumber)
+		{
+			TpSegmentReader *reader;
+			uint32			 i;
+			uint32			 pages_per_blk;
+			uint32			 dict_end_page;
+			uint32			 posting_end_page;
+			uint32			 skip_end_page;
+
+			reader = tp_segment_open(index_rel, seg_root);
+			if (!reader || !reader->header)
+			{
+				if (reader)
+					tp_segment_close(reader);
+				break;
+			}
+
+			/* Calculate logical page boundaries for different regions */
+			pages_per_blk = BLCKSZ - MAXALIGN(SizeOfPageHeaderData);
+			dict_end_page = (reader->header->postings_offset + pages_per_blk -
+							 1) /
+							pages_per_blk;
+			posting_end_page = (reader->header->skip_index_offset +
+								pages_per_blk - 1) /
+							   pages_per_blk;
+			skip_end_page = (reader->header->fieldnorm_offset + pages_per_blk -
+							 1) /
+							pages_per_blk;
+
+			/* Mark all pages belonging to this segment */
+			for (i = 0; i < reader->num_pages && i < reader->num_pages; i++)
+			{
+				BlockNumber phys_page = reader->page_map[i];
+
+				if (phys_page >= total_blocks)
+					continue;
+
+				page_map[phys_page].level	   = level;
+				page_map[phys_page].seg_in_lvl = seg_in_level;
+
+				if (i == 0)
+				{
+					/* Header page */
+					page_map[phys_page].page_type = PAGE_SEG_HDR;
+				}
+				else if (i < dict_end_page)
+				{
+					page_map[phys_page].page_type	= PAGE_SEG_DATA;
+					page_map[phys_page].data_region = DATA_DICTIONARY;
+				}
+				else if (i < posting_end_page)
+				{
+					page_map[phys_page].page_type	= PAGE_SEG_DATA;
+					page_map[phys_page].data_region = DATA_POSTING;
+				}
+				else if (i < skip_end_page)
+				{
+					page_map[phys_page].page_type	= PAGE_SEG_DATA;
+					page_map[phys_page].data_region = DATA_SKIP;
+				}
+				else
+				{
+					page_map[phys_page].page_type	= PAGE_SEG_DATA;
+					page_map[phys_page].data_region = DATA_DOCMAP;
+				}
+			}
+
+			/* Mark page index pages */
+			if (reader->header->page_index != InvalidBlockNumber)
+			{
+				BlockNumber		   pi_blk = reader->header->page_index;
+				TpPageIndexSpecial pi_special;
+				int				   pi_count = 0;
+
+				while (pi_blk != InvalidBlockNumber && pi_blk < total_blocks &&
+					   pi_count < 1000)
+				{
+					Buffer buf;
+					Page   page;
+
+					page_map[pi_blk].level		= level;
+					page_map[pi_blk].seg_in_lvl = seg_in_level;
+					page_map[pi_blk].page_type	= PAGE_SEG_INDEX;
+
+					buf = ReadBuffer(index_rel, pi_blk);
+					LockBuffer(buf, BUFFER_LOCK_SHARE);
+					page = BufferGetPage(buf);
+					memcpy(&pi_special,
+						   PageGetSpecialPointer(page),
+						   sizeof(TpPageIndexSpecial));
+					UnlockReleaseBuffer(buf);
+
+					pi_blk = pi_special.next_page;
+					pi_count++;
+				}
+			}
+
+			seg_count++;
+			seg_in_level++;
+			seg_root = reader->header->next_segment;
+			tp_segment_close(reader);
+		}
+	}
+
+	/* Write header */
+	fprintf(fp, "Page Map: %s\n", index_name);
+	fprintf(fp,
+			"Total pages: %u (%.1f MB)\n",
+			total_blocks,
+			(double)total_blocks * BLCKSZ / (1024.0 * 1024.0));
+	fprintf(fp, "Segments: %d\n\n", seg_count);
+
+	/* Write legend */
+	fprintf(fp, "Legend:\n");
+	fprintf(fp,
+			"  " ANSI_BOLD "M" ANSI_RESET " = Metapage  " ANSI_FG_BLUE
+			"D" ANSI_RESET " = Docid  " ANSI_DIM "." ANSI_RESET " = Empty\n");
+	fprintf(fp, "  Segments: 0-9, a-z, A-Z (by level order)\n");
+	fprintf(fp,
+			"  Colors: " ANSI_FG_CYAN "L0" ANSI_RESET " " ANSI_FG_YELLOW
+			"L1" ANSI_RESET " " ANSI_FG_GREEN "L2" ANSI_RESET
+			" " ANSI_FG_MAGENT "L3+" ANSI_RESET "\n");
+	fprintf(fp,
+			"  " ANSI_BOLD "Bold" ANSI_RESET "=header  normal=data  " ANSI_DIM
+			"dim" ANSI_RESET "=pageindex\n\n");
+
+	/* Write page map */
+	for (blk = 0; blk < total_blocks; blk++)
+	{
+		PageMapEntry *e = &page_map[blk];
+		char		  c;
+		const char	 *color_start = "";
+		const char	 *color_end	  = ANSI_RESET;
+		const char	 *style		  = "";
+
+		switch (e->page_type)
+		{
+		case PAGE_UNUSED:
+			c			= '.';
+			color_start = ANSI_DIM;
+			break;
+
+		case PAGE_METAPAGE:
+			c			= 'M';
+			color_start = ANSI_BOLD;
+			break;
+
+		case PAGE_DOCID:
+			c			= 'D';
+			color_start = ANSI_FG_BLUE;
+			break;
+
+		case PAGE_SEG_HDR:
+			c			= get_segment_char(e->level, e->seg_in_lvl);
+			color_start = get_level_color(e->level);
+			style		= ANSI_BOLD;
+			break;
+
+		case PAGE_SEG_INDEX:
+			c			= get_segment_char(e->level, e->seg_in_lvl);
+			color_start = get_level_color(e->level);
+			style		= ANSI_DIM;
+			break;
+
+		case PAGE_SEG_DATA:
+			c			= get_segment_char(e->level, e->seg_in_lvl);
+			color_start = get_level_color(e->level);
+			break;
+
+		default:
+			c			= '?';
+			color_start = ANSI_FG_RED;
+			break;
+		}
+
+		fprintf(fp, "%s%s%c%s", color_start, style, c, color_end);
+
+		if ((blk + 1) % line_width == 0)
+			fprintf(fp, "\n");
+	}
+
+	/* Final newline if needed */
+	if (total_blocks % line_width != 0)
+		fprintf(fp, "\n");
+
+	/* Summary statistics */
+	{
+		uint32 used = 0, empty = 0;
+		for (blk = 0; blk < total_blocks; blk++)
+		{
+			if (page_map[blk].page_type == PAGE_UNUSED)
+				empty++;
+			else
+				used++;
+		}
+		fprintf(fp,
+				"\nUsed: %u pages  Empty: %u pages  Utilization: %.1f%%\n",
+				used,
+				empty,
+				100.0 * used / total_blocks);
+	}
+
+cleanup:
+	if (page_map)
+		pfree(page_map);
+	if (metap)
+		pfree(metap);
+	if (index_rel)
+		index_close(index_rel, AccessShareLock);
+	fclose(fp);
+}
+
+/*
+ * tp_dump_page_map - SQL function to dump page map visualization
+ */
+PG_FUNCTION_INFO_V1(tp_dump_page_map);
+
+Datum
+tp_dump_page_map(PG_FUNCTION_ARGS)
+{
+	text *index_name_text = PG_GETARG_TEXT_PP(0);
+	text *filename_text	  = PG_GETARG_TEXT_PP(1);
+	char *index_name	  = text_to_cstring(index_name_text);
+	char *filename		  = text_to_cstring(filename_text);
+
+	tp_dump_page_map_to_file(index_name, filename);
+
+	elog(INFO, "Page map written to %s", filename);
+	PG_RETURN_TEXT_P(cstring_to_text_with_len(filename, strlen(filename)));
+}

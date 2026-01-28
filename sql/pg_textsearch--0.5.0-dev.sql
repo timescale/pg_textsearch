@@ -195,3 +195,9 @@ LANGUAGE C VOLATILE STRICT;
 CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
+
+-- Page map visualization - dumps ANSI-colored page layout to file
+-- Shows which pages belong to which segments, levels, and page types
+CREATE FUNCTION bm25_dump_page_map(index_name text, filepath text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_dump_page_map'
+    LANGUAGE C STRICT STABLE;
