@@ -147,15 +147,20 @@ jobs:
         psql -h /tmp -d upgrade_test -v expected_version="$EXPECTED_VERSION" << 'SQL'
         \set ON_ERROR_STOP on
 
+        -- Store expected version in temp table for use in DO blocks
+        CREATE TEMP TABLE _expected(version_prefix text);
+        INSERT INTO _expected VALUES (:'expected_version');
+
         -- Test 1: Verify extension upgraded to expected version
         DO $$
         DECLARE
           ver text;
-          expected text := :'expected_version';
+          expected text;
         BEGIN
+          SELECT version_prefix INTO expected FROM _expected;
           SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
           IF ver NOT LIKE expected || '%' THEN
-            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %, expected: %', ver, expected;
+            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %, expected: %*', ver, expected;
           END IF;
           RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;
         END $$;
