@@ -48,10 +48,12 @@ tp_segment_posting_iterator_init(
 	char			*term_buffer = NULL;
 	uint32			 buffer_size = 0;
 
-	if (!reader || !reader->header)
+	if (reader == NULL)
 		return false;
 
 	header = reader->header;
+	if (header == NULL)
+		return false;
 
 	iter->reader			  = reader;
 	iter->term				  = term;

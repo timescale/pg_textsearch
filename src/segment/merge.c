@@ -812,8 +812,8 @@ write_merged_segment(
 
 	/* Accumulated skip entries for all terms */
 	TpSkipEntry *all_skip_entries;
-	uint32		 skip_entries_count;
-	uint32		 skip_entries_capacity;
+	uint32		 skip_entries_count	   = 0;
+	uint32		 skip_entries_capacity = 0;
 
 	if (num_terms == 0)
 		return InvalidBlockNumber;

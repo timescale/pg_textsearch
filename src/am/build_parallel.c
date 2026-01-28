@@ -877,12 +877,9 @@ write_term_postings(
 		/* Calculate block stats */
 		for (j = block_start; j < block_end; j++)
 		{
-			if (block_postings[j].doc_id > last_doc_id)
-				last_doc_id = block_postings[j].doc_id;
-			if (block_postings[j].frequency > max_tf)
-				max_tf = block_postings[j].frequency;
-			if (block_postings[j].fieldnorm > max_norm)
-				max_norm = block_postings[j].fieldnorm;
+			last_doc_id = Max(last_doc_id, block_postings[j].doc_id);
+			max_tf		= Max(max_tf, block_postings[j].frequency);
+			max_norm	= Max(max_norm, block_postings[j].fieldnorm);
 		}
 
 		/* Build skip entry */
