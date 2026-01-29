@@ -837,24 +837,25 @@ typedef struct PageMapEntry
  * Using distinct, visible colors that work with black text
  */
 static const int segment_bg_colors[] = {
-	196, /* Red */
-	46,	 /* Green */
-	33,	 /* Blue */
-	226, /* Yellow */
-	201, /* Magenta */
-	51,	 /* Cyan */
-	208, /* Orange */
-	141, /* Light purple */
-	118, /* Lime */
-	213, /* Pink */
-	75,	 /* Sky blue */
-	220, /* Gold */
-	177, /* Violet */
-	119, /* Light green */
-	209, /* Salmon */
-	147, /* Light blue */
+		196, /* Red */
+		46,	 /* Green */
+		33,	 /* Blue */
+		226, /* Yellow */
+		201, /* Magenta */
+		51,	 /* Cyan */
+		208, /* Orange */
+		141, /* Light purple */
+		118, /* Lime */
+		213, /* Pink */
+		75,	 /* Sky blue */
+		220, /* Gold */
+		177, /* Violet */
+		119, /* Light green */
+		209, /* Salmon */
+		147, /* Light blue */
 };
-#define NUM_SEGMENT_COLORS (sizeof(segment_bg_colors) / sizeof(segment_bg_colors[0]))
+#define NUM_SEGMENT_COLORS \
+	(sizeof(segment_bg_colors) / sizeof(segment_bg_colors[0]))
 
 /* Segment info for legend */
 typedef struct SegmentInfo
@@ -912,8 +913,8 @@ get_page_char(PageMapEntry *e)
  * Output format:
  * - Legend at top showing segments organized by level with assigned colors
  * - Box characters indicate page type:
- *   █ = header/metapage/recovery, ▓ = postings, ▒ = dictionary, ░ = skip/docmap
- *   · = empty
+ *   █ = header/metapage/recovery, ▓ = postings, ▒ = dictionary, ░ =
+ * skip/docmap · = empty
  * - Colors distinguish different segments (16 distinct colors, cycling)
  * - Line breaks every 128 characters
  */
@@ -931,7 +932,7 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	int				level;
 	BlockNumber		blk;
 	uint32			page_counts[6] = {0}; /* Counts per page type */
-	int				col			   = 0;  /* Column counter for line breaks */
+	int				col			   = 0;	  /* Column counter for line breaks */
 
 	/* Open output file */
 	fp = fopen(filename, "w");
@@ -1091,8 +1092,8 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 				page_map[phys_page].seg_in_lvl = seg_in_level;
 
 				/* First byte offset of this logical page */
-				page_start_offset =
-					(uint64)i * (BLCKSZ - SizeOfPageHeaderData);
+				page_start_offset = (uint64)i *
+									(BLCKSZ - SizeOfPageHeaderData);
 
 				if (i == 0)
 				{
@@ -1105,8 +1106,7 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 					page_map[phys_page].page_type	= PAGE_SEG_DATA;
 					page_map[phys_page].data_region = DATA_DICTIONARY;
 				}
-				else if (page_start_offset <
-						 reader->header->skip_index_offset)
+				else if (page_start_offset < reader->header->skip_index_offset)
 				{
 					/* Posting lists */
 					page_map[phys_page].page_type	= PAGE_SEG_DATA;
@@ -1219,10 +1219,10 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 
 			for (i = 0; i < num_segments; i++)
 			{
-				SegmentInfo *seg	 = &segments[i];
-				int			 bg		 = segment_bg_colors[i % NUM_SEGMENT_COLORS];
+				SegmentInfo *seg = &segments[i];
+				int			 bg	 = segment_bg_colors[i % NUM_SEGMENT_COLORS];
 				double		 size_mb = (double)seg->num_pages * BLCKSZ /
-								   (1024.0 * 1024.0);
+								 (1024.0 * 1024.0);
 
 				if (seg->level != current_level)
 				{
