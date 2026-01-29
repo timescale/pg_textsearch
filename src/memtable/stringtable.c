@@ -22,6 +22,20 @@
 #include "stringtable.h"
 
 /*
+ * Get string length from key.
+ * For lookup keys (posting_list == Invalid), use the stored len field.
+ * For stored keys, use strlen on the null-terminated DSA string.
+ */
+static inline size_t
+tp_get_key_len(dsa_area *area, const TpStringKey *key)
+{
+	if (key->posting_list == InvalidDsaPointer)
+		return key->len;
+	else
+		return strlen((const char *)dsa_get_address(area, key->term.dp));
+}
+
+/*
  * Hash function for variant string keys (char* or dsa_pointer)
  */
 static dshash_hash
@@ -30,15 +44,16 @@ tp_string_hash_function(const void *key, size_t keysize, void *arg)
 	const TpStringKey *string_key = (const TpStringKey *)key;
 	dsa_area		  *area		  = (dsa_area *)arg;
 	const char		  *str;
+	size_t			   len;
 	dshash_hash		   hash_result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
 	str = tp_get_key_str(area, string_key);
+	len = tp_get_key_len(area, string_key);
 
-	/* Hash the null-terminated string content */
-	hash_result = (dshash_hash)
-			hash_bytes((const unsigned char *)str, strlen(str));
+	/* Hash the string content using explicit length (no strlen needed) */
+	hash_result = (dshash_hash)hash_bytes((const unsigned char *)str, len);
 
 	return hash_result;
 }
@@ -54,6 +69,7 @@ tp_get_key_str(dsa_area *area, const TpStringKey *key)
 
 /*
  * Compare function for variant string keys (char* or dsa_pointer)
+ * Uses explicit lengths to avoid requiring null-terminated strings for lookups.
  */
 static int
 tp_string_compare_function(
@@ -64,11 +80,18 @@ tp_string_compare_function(
 	dsa_area		  *area	 = (dsa_area *)arg;
 	const char		  *str_a = tp_get_key_str(area, key_a);
 	const char		  *str_b = tp_get_key_str(area, key_b);
+	size_t			   len_a = tp_get_key_len(area, key_a);
+	size_t			   len_b = tp_get_key_len(area, key_b);
 	int				   result;
 
 	Assert(keysize == sizeof(TpStringKey));
 
-	result = strcmp(str_a, str_b);
+	/* Compare by length first for efficiency */
+	if (len_a != len_b)
+		return (len_a < len_b) ? -1 : 1;
+
+	/* Same length - compare contents */
+	result = memcmp(str_a, str_b, len_a);
 
 	return result;
 }
@@ -173,9 +196,10 @@ tp_string_table_lookup(
 	if (len == 0)
 		return NULL;
 
-	/* Build lookup key */
+	/* Build lookup key with explicit length (no null termination required) */
 	lookup_key.term.str		= str;
 	lookup_key.posting_list = InvalidDsaPointer;
+	lookup_key.len			= len;
 
 	/* Look up using the stack-allocated key */
 	entry = (TpStringHashEntry *)dshash_find(ht, &lookup_key, false);
@@ -210,9 +234,10 @@ tp_string_table_insert(
 	Assert(str != NULL);
 	Assert(len > 0);
 
-	/* Build lookup key */
+	/* Build lookup key with explicit length (no null termination required) */
 	lookup_key.term.str		= str;
 	lookup_key.posting_list = InvalidDsaPointer;
+	lookup_key.len			= len;
 
 	/* Try to find or insert the entry */
 	entry = (TpStringHashEntry *)
