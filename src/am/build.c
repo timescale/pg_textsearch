@@ -773,7 +773,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 #define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
 #define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
 
-		if (nworkers > 1 && reltuples >= TP_MIN_PARALLEL_TUPLES)
+		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
 			/*
 			 * Warn if table is very large but parallelism is limited.
@@ -798,19 +798,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
 		}
 
-		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers <= 1)
+		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
 		{
 			/*
-			 * Large table but insufficient parallel workers.
-			 * nworkers == 0: max_parallel_maintenance_workers = 0
-			 * nworkers == 1: maintenance_work_mem too low (need 32MB/worker)
-			 * We require 2+ workers for parallel build to be worthwhile.
+			 * Large table but no parallel workers available.
+			 * This is likely due to max_parallel_maintenance_workers = 0.
 			 */
 			elog(NOTICE,
-				 "Large table (%.0f tuples) but parallel build disabled "
-				 "(need 2+ workers). "
-				 "Increase max_parallel_maintenance_workers and "
-				 "maintenance_work_mem (32MB per worker).",
+				 "Large table (%.0f tuples) but parallel build disabled. "
+				 "Set max_parallel_maintenance_workers > 0 for faster index "
+				 "builds.",
 				 reltuples);
 		}
 	}

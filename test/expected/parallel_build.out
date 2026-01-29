@@ -36,24 +36,32 @@ CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
 NOTICE:  BM25 index build started for relation parallel_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-ERROR:  Page pool exhausted while writing page index (need 1 more pages). Increase pg_textsearch.parallel_build_expansion_factor.
 -- Verify index was created
 SELECT 'Index created' AS status
 FROM pg_class
 WHERE relname = 'parallel_test_idx';
- status 
---------
-(0 rows)
+    status     
+---------------
+ Index created
+(1 row)
 
 -- Verify queries work correctly
 SELECT COUNT(*) AS apple_count
 FROM parallel_test
 WHERE content <@> to_bm25query('apple', 'parallel_test_idx') < 0;
-ERROR:  index "parallel_test_idx" does not exist
+ apple_count 
+-------------
+       30000
+(1 row)
+
 SELECT COUNT(*) AS database_count
 FROM parallel_test
 WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
-ERROR:  index "parallel_test_idx" does not exist
+ database_count 
+----------------
+          30000
+(1 row)
+
 -- Verify we can get top-k results with correct ordering
 -- Limit to first 100 IDs for deterministic results (many docs have identical scores)
 SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_idx'))::numeric, 4) AS score
@@ -61,7 +69,15 @@ FROM parallel_test
 WHERE id <= 100
 ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx'), id
 LIMIT 5;
-ERROR:  index "parallel_test_idx" does not exist
+ id |  score  
+----+---------
+ 12 | -3.3033
+ 27 | -3.3033
+ 42 | -3.3033
+ 57 | -3.3033
+ 72 | -3.3033
+(5 rows)
+
 -- Verify index statistics look reasonable
 SELECT bm25_summarize_index('parallel_test_idx') IS NOT NULL AS has_summary;
  has_summary 
@@ -75,7 +91,11 @@ INSERT INTO parallel_test (content) VALUES ('new document after build with uniqu
 SELECT COUNT(*) AS new_doc_found
 FROM parallel_test
 WHERE content <@> to_bm25query('unique', 'parallel_test_idx') < 0;
-ERROR:  index "parallel_test_idx" does not exist
+ new_doc_found 
+---------------
+             1
+(1 row)
+
 -- Cleanup
 DROP TABLE parallel_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
