@@ -140,8 +140,9 @@ jobs:
     - name: Verify upgrade succeeded
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
-
-        # Drop the "warning: overriding command..." message (stderr)
+        
+        # Extract expected version prefix (e.g., "0.5" from "0.5.0-dev")
+        # 2>/dev/null to drop the "warning: overriding command..." message (stderr)
         EXPECTED_VERSION=$(make -s version 2>/dev/null | cut -d. -f1,2)
 
         psql -h /tmp -d upgrade_test -v expected_version="$EXPECTED_VERSION" << 'SQL'
