@@ -1417,6 +1417,15 @@ tp_merge_worker_buffers_to_segment(
 				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
 	}
 
+	/* Flush writer before writing page index and dict entries */
+	tp_segment_writer_flush(&writer);
+
+	/*
+	 * Mark buffer as empty to prevent tp_segment_writer_finish from flushing
+	 * again and overwriting our dict entry updates.
+	 */
+	writer.buffer_pos = SizeOfPageHeaderData;
+
 	/* Page index is written from pool */
 	page_index_root = write_page_index_from_pool(
 			index,
@@ -1430,7 +1439,108 @@ tp_merge_worker_buffers_to_segment(
 	/* Finalize header */
 	header.num_pages = writer.pages_allocated;
 
-	/* Write final header and dict entries */
+	/*
+	 * Write dictionary entries with correct skip_index_offset values.
+	 * Entries may span multiple pages, so we need page-boundary-aware code.
+	 */
+	{
+		Buffer dict_buf		= InvalidBuffer;
+		uint32 current_page = UINT32_MAX;
+
+		for (i = 0; i < num_merged_terms; i++)
+		{
+			TpDictEntry entry;
+			uint32		entry_offset;
+			uint32		entry_logical_page;
+			uint32		page_offset;
+			BlockNumber physical_block;
+
+			/* Build the entry */
+			entry.skip_index_offset = header.skip_index_offset +
+									  (term_blocks[i].skip_entry_start *
+									   sizeof(TpSkipEntry));
+			entry.block_count = term_blocks[i].block_count;
+			entry.reserved	  = 0;
+			entry.doc_freq	  = term_blocks[i].doc_freq;
+
+			/* Calculate where this entry is in the segment */
+			entry_offset = header.entries_offset + (i * sizeof(TpDictEntry));
+			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
+			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
+
+			/* Read page if different from current */
+			if (entry_logical_page != current_page)
+			{
+				if (current_page != UINT32_MAX)
+				{
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+				}
+
+				physical_block = writer.pages[entry_logical_page];
+				dict_buf	   = ReadBuffer(index, physical_block);
+				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				current_page = entry_logical_page;
+			}
+
+			/* Write entry to page - handle page boundary spanning */
+			{
+				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
+											page_offset;
+
+				if (bytes_on_this_page >= sizeof(TpDictEntry))
+				{
+					/* Entry fits entirely on this page */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					memcpy(dest, &entry, sizeof(TpDictEntry));
+				}
+				else
+				{
+					/* Entry spans two pages */
+					Page  page = BufferGetPage(dict_buf);
+					char *dest = (char *)page + SizeOfPageHeaderData +
+								 page_offset;
+					char *src = (char *)&entry;
+
+					/* Write first part to current page */
+					memcpy(dest, src, bytes_on_this_page);
+
+					/* Move to next page */
+					MarkBufferDirty(dict_buf);
+					UnlockReleaseBuffer(dict_buf);
+
+					entry_logical_page++;
+					if (entry_logical_page >= writer.pages_allocated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INTERNAL_ERROR),
+								 errmsg("dict entry spans beyond allocated")));
+
+					physical_block = writer.pages[entry_logical_page];
+					dict_buf	   = ReadBuffer(index, physical_block);
+					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					current_page = entry_logical_page;
+
+					/* Write remaining part to next page */
+					page = BufferGetPage(dict_buf);
+					dest = (char *)page + SizeOfPageHeaderData;
+					memcpy(dest,
+						   src + bytes_on_this_page,
+						   sizeof(TpDictEntry) - bytes_on_this_page);
+				}
+			}
+		}
+
+		/* Release last buffer */
+		if (current_page != UINT32_MAX)
+		{
+			MarkBufferDirty(dict_buf);
+			UnlockReleaseBuffer(dict_buf);
+		}
+	}
+
+	/* Write final header */
 	header_buf = ReadBuffer(index, header_block);
 	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 	header_page		= BufferGetPage(header_buf);
@@ -1438,23 +1548,6 @@ tp_merge_worker_buffers_to_segment(
 										  SizeOfPageHeaderData);
 
 	memcpy(existing_header, &header, sizeof(TpSegmentHeader));
-
-	/* Write dictionary entries */
-	{
-		TpDictEntry *entries = (TpDictEntry *)((char *)header_page +
-											   SizeOfPageHeaderData +
-											   header.entries_offset);
-
-		for (i = 0; i < num_merged_terms; i++)
-		{
-			entries[i].skip_index_offset = header.skip_index_offset +
-										   term_blocks[i].skip_entry_start *
-												   sizeof(TpSkipEntry);
-			entries[i].block_count = term_blocks[i].block_count;
-			entries[i].reserved	   = 0;
-			entries[i].doc_freq	   = term_blocks[i].doc_freq;
-		}
-	}
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
