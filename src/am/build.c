@@ -783,7 +783,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				elog(NOTICE,
 					 "Large table (%.0f tuples) with only %d parallel "
 					 "workers. "
-					 "Consider increasing max_parallel_maintenance_workers and "
+					 "Consider increasing max_parallel_maintenance_workers "
+					 "and "
 					 "maintenance_work_mem (need 32MB per worker) for faster "
 					 "builds.",
 					 reltuples,
