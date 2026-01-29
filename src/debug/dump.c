@@ -738,18 +738,19 @@ tp_dump_index(PG_FUNCTION_ARGS)
 	text *index_name_text = PG_GETARG_TEXT_PP(0);
 	char *index_name	  = text_to_cstring(index_name_text);
 
+	/* All dump functions require superuser */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to dump index")));
+
 	/* Check for optional filename parameter */
 	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
 	{
-		/* File mode - full dump with hex (superuser only) */
+		/* File mode - full dump with hex */
 		text *filename_text = PG_GETARG_TEXT_PP(1);
 		char *filename		= text_to_cstring(filename_text);
 		FILE *fp;
-
-		if (!superuser())
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to write index dump to file")));
 
 		fp = fopen(filename, "w");
 		if (!fp)
@@ -799,6 +800,12 @@ tp_summarize_index(PG_FUNCTION_ARGS)
 	char		  *index_name	   = text_to_cstring(index_name_text);
 	StringInfoData result;
 	DumpOutput	   out;
+
+	/* Superuser only */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to summarize index")));
 
 	initStringInfo(&result);
 	dump_init_string(&out, &result);

@@ -470,7 +470,7 @@ Further language support is available via extensions such as [zhparser](https://
 ### Development Functions
 
 These functions are for debugging and development use only. Their interface may
-change in future releases without notice.
+change in future releases without notice. **All require superuser privileges.**
 
 Function | Description
 --- | ---

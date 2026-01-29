@@ -1,0 +1,56 @@
+-- Test security restrictions on debug functions
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.5.0-dev installed
+-- Create test data
+CREATE TABLE security_test (id serial, content text);
+INSERT INTO security_test (content) VALUES ('test document');
+CREATE INDEX security_test_idx ON security_test USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation security_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
+-- Create a non-superuser role
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_nonsuperuser') THEN
+        EXECUTE 'REASSIGN OWNED BY test_nonsuperuser TO CURRENT_USER';
+        EXECUTE 'DROP OWNED BY test_nonsuperuser CASCADE';
+        DROP ROLE test_nonsuperuser;
+    END IF;
+END $$;
+CREATE ROLE test_nonsuperuser LOGIN;
+GRANT ALL ON TABLE security_test TO test_nonsuperuser;
+GRANT USAGE ON SCHEMA public TO test_nonsuperuser;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO test_nonsuperuser;
+-- Test as superuser (should all work)
+SELECT bm25_dump_index('security_test_idx') IS NOT NULL AS dump_works;
+ dump_works 
+------------
+ t
+(1 row)
+
+SELECT bm25_summarize_index('security_test_idx') IS NOT NULL AS summarize_works;
+ summarize_works 
+-----------------
+ t
+(1 row)
+
+-- Switch to non-superuser
+SET ROLE test_nonsuperuser;
+-- These should all fail with "must be superuser"
+SELECT bm25_dump_index('security_test_idx');
+ERROR:  must be superuser to dump index
+SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
+ERROR:  must be superuser to dump index
+SELECT bm25_summarize_index('security_test_idx');
+ERROR:  must be superuser to summarize index
+SELECT bm25_spill_index('security_test_idx');
+ERROR:  must be superuser to force index spill
+SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
+ERROR:  must be superuser to write page visualization
+-- Reset to superuser
+RESET ROLE;
+-- Cleanup
+DROP TABLE security_test;
+DROP OWNED BY test_nonsuperuser CASCADE;
+DROP ROLE test_nonsuperuser;
