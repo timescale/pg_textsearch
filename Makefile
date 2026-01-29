@@ -51,6 +51,10 @@ MODULE_big = pg_textsearch
 # Include directories, debug flags, and warning flags for unused code
 PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable
 
+# Fetch extension version from the control file
+PG_TEXTSEARCH_VERSION := $(shell awk -F"'" '/^[\t ]*default_version/ {print $$2}' pg_textsearch.control)
+PG_CPPFLAGS += -DPG_TEXTSEARCH_VERSION=\"$(PG_TEXTSEARCH_VERSION)\"
+
 # Uncomment the following line to enable debug index dumps
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
@@ -240,6 +244,9 @@ coverage-report:
 	fi
 	@lcov --summary $(COVERAGE_INFO)
 
+version:
+	@echo "$(PG_TEXTSEARCH_VERSION)"
+
 # Help target
 .PHONY: help
 help:
@@ -282,5 +289,6 @@ help:
 	@echo "  make && make install"
 	@echo "  make test-all"
 	@echo "  make format"
+	@echo "  make version      - Print the extension version"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report version help 
