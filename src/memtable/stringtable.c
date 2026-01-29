@@ -69,7 +69,8 @@ tp_get_key_str(dsa_area *area, const TpStringKey *key)
 
 /*
  * Compare function for variant string keys (char* or dsa_pointer)
- * Uses explicit lengths to avoid requiring null-terminated strings for lookups.
+ * Uses explicit lengths to avoid requiring null-terminated strings for
+ * lookups.
  */
 static int
 tp_string_compare_function(

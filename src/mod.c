@@ -291,7 +291,8 @@ _PG_init(void)
 	 * These must be registered in every process that might use them.
 	 */
 	LWLockRegisterTranche(TP_STRING_HASH_TRANCHE_ID, "tapir_string_hash");
-	LWLockRegisterTranche(TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
+	LWLockRegisterTranche(
+			TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
 }
 
 /*

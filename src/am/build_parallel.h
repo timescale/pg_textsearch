@@ -60,9 +60,9 @@ typedef struct TpWorkerMemtableBuffer
 	dshash_table_handle doc_lengths_handle; /* CTID -> doc length */
 
 	/* Statistics for this buffer */
-	int32 num_docs;	  /* Documents in this buffer */
-	int32 num_terms;  /* Unique terms in this buffer */
-	int64 total_len;  /* Sum of document lengths */
+	int32 num_docs;	   /* Documents in this buffer */
+	int32 num_terms;   /* Unique terms in this buffer */
+	int64 total_len;   /* Sum of document lengths */
 	Size  memory_used; /* Approximate memory used */
 } TpWorkerMemtableBuffer;
 
@@ -82,7 +82,7 @@ typedef struct TpWorkerState
 	ConditionVariable buffer_consumed_cv; /* Leader signals: buffer consumed */
 
 	/* Worker status */
-	pg_atomic_uint32 scan_complete; /* Worker finished scanning */
+	pg_atomic_uint32 scan_complete;	 /* Worker finished scanning */
 	pg_atomic_uint64 tuples_scanned; /* Progress counter */
 } TpWorkerState;
 
