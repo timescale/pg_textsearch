@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769668010757,
+  "lastUpdate": 1769710987797,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1659,6 +1659,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.64,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "276f64750340502e0fbce0f35f23c3cc4a8b93c8",
+          "message": "fix: handle page boundaries when writing dictionary entries in parallel build\n\nThe dictionary entry writing code in tp_merge_worker_buffers_to_segment()\nassumed all entries fit on the first page. With large datasets (150K+ docs),\ndictionary entries span multiple pages, causing \"Invalid logical page\" errors.\n\nFixed by:\n1. Flushing segment writer before writing entries\n2. Using page-boundary-aware code that calculates logical/physical pages\n3. Handling entries that span two pages like merge.c does",
+          "timestamp": "2026-01-29T15:34:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/276f64750340502e0fbce0f35f23c3cc4a8b93c8"
+        },
+        "date": 1769710986353,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 229.995,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.42,
             "unit": "ms"
           },
           {
