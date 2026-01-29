@@ -39,6 +39,7 @@
 #include "build_parallel.h"
 #include "common/hashfn.h"
 #include "constants.h"
+#include "memtable/local_memtable.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -78,6 +79,17 @@ tp_preallocate_page_pool(Relation index, TpParallelBuildShared *shared);
 static void tp_leader_process_buffers(
 		TpParallelBuildShared *shared, Relation index, dsa_area *dsa);
 
+static void tp_accumulate_worker_buffer_to_local(
+		dsa_area			   *dsa,
+		TpWorkerMemtableBuffer *buffer,
+		TpLocalMemtable		   *local_memtable);
+
+static BlockNumber tp_write_segment_from_local_memtable(
+		TpParallelBuildShared *shared,
+		TpLocalMemtable		  *local_memtable,
+		Relation			   index);
+
+/* Legacy function - no longer used but kept for reference */
 static BlockNumber tp_write_segment_from_worker_buffer(
 		TpParallelBuildShared  *shared,
 		TpWorkerMemtableBuffer *buffer,
@@ -657,14 +669,492 @@ tp_parallel_build_worker_main(
 }
 
 /*
- * Leader processes worker buffers and writes segments
+ * Accumulate a worker buffer's contents into a local memtable.
+ *
+ * This copies all terms and postings from the DSA-based worker buffer
+ * into the palloc-based local memtable. The local memtable will be used
+ * to write a single merged segment after all workers complete.
+ */
+static void
+tp_accumulate_worker_buffer_to_local(
+		dsa_area			   *dsa,
+		TpWorkerMemtableBuffer *buffer,
+		TpLocalMemtable		   *local_memtable)
+{
+	dshash_table	  *string_table;
+	dshash_table	  *doclength_table;
+	dshash_seq_status  seq_status;
+	TpStringHashEntry *string_entry;
+	TpDocLengthEntry  *doc_entry;
+	dshash_parameters  params;
+
+	if (buffer->num_docs == 0)
+		return;
+
+	/* Attach to string hash table using parallel-safe parameters */
+	if (buffer->string_hash_handle != 0)
+	{
+		params.key_size			= sizeof(TpStringKey);
+		params.entry_size		= sizeof(TpStringHashEntry);
+		params.hash_function	= tp_worker_string_hash;
+		params.compare_function = tp_worker_string_compare;
+		params.copy_function	= dshash_memcpy;
+		params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
+		string_table =
+				dshash_attach(dsa, &params, buffer->string_hash_handle, dsa);
+
+		/* Iterate through all terms in string table */
+		dshash_seq_init(&seq_status, string_table, false);
+		while ((string_entry = (TpStringHashEntry *)dshash_seq_next(
+						&seq_status)) != NULL)
+		{
+			const char	   *term;
+			size_t			term_len;
+			TpPostingList  *posting_list;
+			TpPostingEntry *entries;
+			int				i;
+
+			term = tp_get_key_str(dsa, &string_entry->key);
+			if (!term)
+				continue;
+
+			term_len = strlen(term);
+
+			/* Get posting list for this term */
+			if (!DsaPointerIsValid(string_entry->key.posting_list))
+				continue;
+
+			posting_list =
+					dsa_get_address(dsa, string_entry->key.posting_list);
+			if (!posting_list || posting_list->doc_count == 0)
+				continue;
+
+			entries = tp_get_posting_entries(dsa, posting_list);
+			if (!entries)
+				continue;
+
+			/* Add each posting entry to the local memtable */
+			for (i = 0; i < posting_list->doc_count; i++)
+			{
+				tp_local_memtable_add_term(
+						local_memtable,
+						term,
+						term_len,
+						&entries[i].ctid,
+						entries[i].frequency);
+			}
+		}
+		dshash_seq_term(&seq_status);
+		dshash_detach(string_table);
+	}
+
+	/* Attach to document lengths hash table */
+	if (buffer->doc_lengths_handle != 0)
+	{
+		params.key_size			= sizeof(ItemPointerData);
+		params.entry_size		= sizeof(TpDocLengthEntry);
+		params.hash_function	= dshash_memhash;
+		params.compare_function = dshash_memcmp;
+		params.copy_function	= dshash_memcpy;
+		params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+		doclength_table =
+				dshash_attach(dsa, &params, buffer->doc_lengths_handle, dsa);
+
+		/* Iterate through all documents and store lengths */
+		dshash_seq_init(&seq_status, doclength_table, false);
+		while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(
+						&seq_status)) != NULL)
+		{
+			tp_local_memtable_store_doc_length(
+					local_memtable, &doc_entry->ctid, doc_entry->doc_length);
+		}
+		dshash_seq_term(&seq_status);
+		dshash_detach(doclength_table);
+	}
+}
+
+/*
+ * Build docmap from local memtable's document lengths
+ */
+static TpDocMapBuilder *
+build_docmap_from_local_memtable(TpLocalMemtable *memtable)
+{
+	TpDocMapBuilder	 *docmap;
+	HASH_SEQ_STATUS	  seq_status;
+	TpLocalDocLength *entry;
+
+	docmap = tp_docmap_create();
+
+	if (!memtable->doc_lengths)
+		return docmap;
+
+	hash_seq_init(&seq_status, memtable->doc_lengths);
+	while ((entry = hash_seq_search(&seq_status)) != NULL)
+	{
+		tp_docmap_add(docmap, &entry->ctid, (uint32)entry->length);
+	}
+
+	tp_docmap_finalize(docmap);
+	return docmap;
+}
+
+/*
+ * Per-term block information for segment writing
+ */
+typedef struct LocalTermBlockInfo
+{
+	uint32 posting_offset;	 /* Absolute offset where postings were written */
+	uint16 block_count;		 /* Number of blocks for this term */
+	uint32 doc_freq;		 /* Document frequency */
+	uint32 skip_entry_start; /* Index into accumulated skip entries array */
+} LocalTermBlockInfo;
+
+/*
+ * Write a segment from a local memtable.
+ *
+ * This is used after all worker buffers have been accumulated into a single
+ * local memtable. Writes one merged segment containing all terms.
+ */
+static BlockNumber
+tp_write_segment_from_local_memtable(
+		TpParallelBuildShared *shared,
+		TpLocalMemtable		  *local_memtable,
+		Relation			   index)
+{
+	TpLocalTermPosting *terms;
+	int					num_terms;
+	BlockNumber			header_block;
+	BlockNumber			page_index_root;
+	TpSegmentWriter		writer;
+	TpSegmentHeader		header;
+	TpDictionary		dict;
+	TpDocMapBuilder	   *docmap;
+	BlockNumber		   *page_pool;
+	pg_atomic_uint32   *pool_next;
+	uint32			   *string_offsets;
+	uint32				string_pos;
+	int					i;
+	Buffer				header_buf;
+	Page				header_page;
+	TpSegmentHeader	   *existing_header;
+	LocalTermBlockInfo *term_blocks;
+	TpSkipEntry		   *all_skip_entries;
+	uint32				skip_entries_count;
+	uint32				skip_entries_capacity;
+
+	if (local_memtable->num_terms == 0)
+		return InvalidBlockNumber;
+
+	/* Build docmap from local memtable */
+	docmap = build_docmap_from_local_memtable(local_memtable);
+
+	/* Get sorted terms from local memtable */
+	terms = tp_local_memtable_get_sorted_terms(local_memtable, &num_terms);
+
+	if (num_terms == 0)
+	{
+		tp_docmap_destroy(docmap);
+		return InvalidBlockNumber;
+	}
+
+	/* Get page pool from shared state */
+	page_pool = TpParallelPagePool(shared);
+	pool_next = &shared->pool_next;
+
+	/* Initialize writer with page pool */
+	tp_segment_writer_init_with_pool(
+			&writer, index, page_pool, shared->total_pool_pages, pool_next);
+
+	if (writer.pages_allocated > 0)
+	{
+		header_block = writer.pages[0];
+	}
+	else
+	{
+		elog(ERROR,
+			 "tp_write_segment_from_local_memtable: "
+			 "Failed to allocate first page");
+	}
+
+	/* Initialize header */
+	memset(&header, 0, sizeof(TpSegmentHeader));
+	header.magic		= TP_SEGMENT_MAGIC;
+	header.version		= TP_SEGMENT_FORMAT_VERSION;
+	header.created_at	= GetCurrentTimestamp();
+	header.num_pages	= 0;
+	header.num_terms	= num_terms;
+	header.level		= 0;
+	header.next_segment = InvalidBlockNumber;
+
+	/* Dictionary immediately follows header */
+	header.dictionary_offset = sizeof(TpSegmentHeader);
+
+	/* Get corpus statistics from accumulated data */
+	header.num_docs		= local_memtable->num_docs;
+	header.total_tokens = local_memtable->total_len;
+
+	/* Write placeholder header */
+	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
+
+	/* Write dictionary section */
+	dict.num_terms = num_terms;
+	tp_segment_writer_write(
+			&writer, &dict, offsetof(TpDictionary, string_offsets));
+
+	/* Build string offsets */
+	string_offsets = palloc0(num_terms * sizeof(uint32));
+	string_pos	   = 0;
+	for (i = 0; i < num_terms; i++)
+	{
+		string_offsets[i] = string_pos;
+		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+	}
+
+	/* Write string offsets array */
+	tp_segment_writer_write(
+			&writer, string_offsets, num_terms * sizeof(uint32));
+
+	/* Write string pool */
+	header.strings_offset = writer.current_offset;
+	for (i = 0; i < num_terms; i++)
+	{
+		uint32 length	   = terms[i].term_len;
+		uint32 dict_offset = i * sizeof(TpDictEntry);
+
+		tp_segment_writer_write(&writer, &length, sizeof(uint32));
+		tp_segment_writer_write(&writer, terms[i].term, length);
+		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
+	}
+
+	/* Record entries offset */
+	header.entries_offset = writer.current_offset;
+
+	/* Write placeholder dict entries */
+	{
+		TpDictEntry placeholder;
+		memset(&placeholder, 0, sizeof(TpDictEntry));
+		for (i = 0; i < num_terms; i++)
+			tp_segment_writer_write(
+					&writer, &placeholder, sizeof(TpDictEntry));
+	}
+
+	/* Postings start here */
+	header.postings_offset = writer.current_offset;
+
+	/* Initialize per-term tracking and skip entry accumulator */
+	term_blocks = palloc0(num_terms * sizeof(LocalTermBlockInfo));
+
+	skip_entries_capacity = 1024;
+	skip_entries_count	  = 0;
+	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+
+	/*
+	 * Streaming pass: for each term, convert postings and write immediately.
+	 * Matches the pattern in segment.c:tp_write_segment().
+	 */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpLocalPosting *posting = terms[i].posting;
+		uint32			doc_count;
+		uint32			block_idx;
+		uint32			num_blocks;
+		TpBlockPosting *block_postings = NULL;
+
+		/* Record where this term's postings start */
+		term_blocks[i].posting_offset	= writer.current_offset;
+		term_blocks[i].skip_entry_start = skip_entries_count;
+
+		if (!posting || posting->doc_count == 0)
+		{
+			term_blocks[i].block_count = 0;
+			term_blocks[i].doc_freq	   = 0;
+			continue;
+		}
+
+		doc_count				= posting->doc_count;
+		term_blocks[i].doc_freq = doc_count;
+		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		term_blocks[i].block_count = (uint16)num_blocks;
+
+		/* Convert postings to block format (one TpBlockPosting per posting) */
+		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+		{
+			int j;
+			for (j = 0; j < (int)doc_count; j++)
+			{
+				TpPostingEntry *src = &posting->entries[j];
+				uint32			doc_id;
+				uint8			norm;
+
+				doc_id = tp_docmap_lookup(docmap, &src->ctid);
+				if (doc_id == UINT32_MAX)
+				{
+					elog(ERROR,
+						 "CTID (%u,%u) not found in docmap",
+						 ItemPointerGetBlockNumber(&src->ctid),
+						 ItemPointerGetOffsetNumber(&src->ctid));
+				}
+
+				norm = tp_docmap_get_fieldnorm(docmap, doc_id);
+
+				block_postings[j].doc_id	= doc_id;
+				block_postings[j].frequency = (uint16)src->frequency;
+				block_postings[j].fieldnorm = norm;
+				block_postings[j].reserved	= 0;
+			}
+		}
+
+		/* Write posting blocks and build skip entries */
+		for (block_idx = 0; block_idx < num_blocks; block_idx++)
+		{
+			TpSkipEntry skip;
+			uint32		block_start = block_idx * TP_BLOCK_SIZE;
+			uint32 block_end = Min(block_start + TP_BLOCK_SIZE, doc_count);
+			uint32 j;
+			uint16 max_tf	   = 0;
+			uint8  max_norm	   = 0;
+			uint32 last_doc_id = 0;
+
+			/* Calculate block stats */
+			for (j = block_start; j < block_end; j++)
+			{
+				if (block_postings[j].doc_id > last_doc_id)
+					last_doc_id = block_postings[j].doc_id;
+				if (block_postings[j].frequency > max_tf)
+					max_tf = block_postings[j].frequency;
+				if (block_postings[j].fieldnorm > max_norm)
+					max_norm = block_postings[j].fieldnorm;
+			}
+
+			/* Build skip entry */
+			skip.last_doc_id	= last_doc_id;
+			skip.doc_count		= (uint8)(block_end - block_start);
+			skip.block_max_tf	= max_tf;
+			skip.block_max_norm = max_norm;
+			skip.posting_offset = writer.current_offset;
+			skip.flags			= TP_BLOCK_FLAG_UNCOMPRESSED;
+			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			/* Write posting block data */
+			tp_segment_writer_write(
+					&writer,
+					&block_postings[block_start],
+					(block_end - block_start) * sizeof(TpBlockPosting));
+
+			/* Accumulate skip entry */
+			if (skip_entries_count >= skip_entries_capacity)
+			{
+				skip_entries_capacity *= 2;
+				all_skip_entries = repalloc(
+						all_skip_entries,
+						skip_entries_capacity * sizeof(TpSkipEntry));
+			}
+			all_skip_entries[skip_entries_count++] = skip;
+		}
+
+		pfree(block_postings);
+	}
+
+	/* Skip index starts here - after all postings */
+	header.skip_index_offset = writer.current_offset;
+
+	/* Write all accumulated skip entries */
+	if (skip_entries_count > 0)
+	{
+		tp_segment_writer_write(
+				&writer,
+				all_skip_entries,
+				skip_entries_count * sizeof(TpSkipEntry));
+	}
+
+	/* Write CTID arrays - use split storage like segment.c */
+	header.ctid_pages_offset = writer.current_offset;
+	tp_segment_writer_write(
+			&writer,
+			docmap->ctid_pages,
+			docmap->num_docs * sizeof(BlockNumber));
+
+	header.ctid_offsets_offset = writer.current_offset;
+	tp_segment_writer_write(
+			&writer,
+			docmap->ctid_offsets,
+			docmap->num_docs * sizeof(OffsetNumber));
+
+	/* Fieldnorms are already encoded in the docmap */
+	header.fieldnorm_offset = writer.current_offset;
+	tp_segment_writer_write(
+			&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+
+	/* Page index is written from pool */
+	page_index_root = write_page_index_from_pool(
+			index,
+			writer.pages,
+			writer.pages_allocated,
+			page_pool,
+			shared->total_pool_pages,
+			pool_next);
+	header.page_index = page_index_root;
+
+	/* Finalize header */
+	header.num_pages = writer.pages_allocated;
+
+	/* Write final header and dict entries */
+	header_buf = ReadBuffer(index, header_block);
+	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+	header_page		= BufferGetPage(header_buf);
+	existing_header = (TpSegmentHeader *)((char *)header_page +
+										  SizeOfPageHeaderData);
+
+	memcpy(existing_header, &header, sizeof(TpSegmentHeader));
+
+	/* Write dictionary entries */
+	{
+		TpDictEntry *entries = (TpDictEntry *)((char *)header_page +
+											   SizeOfPageHeaderData +
+											   header.entries_offset);
+
+		for (i = 0; i < num_terms; i++)
+		{
+			entries[i].skip_index_offset = header.skip_index_offset +
+										   term_blocks[i].skip_entry_start *
+												   sizeof(TpSkipEntry);
+			entries[i].block_count = term_blocks[i].block_count;
+			entries[i].reserved	   = 0;
+			entries[i].doc_freq	   = term_blocks[i].doc_freq;
+		}
+	}
+
+	MarkBufferDirty(header_buf);
+	UnlockReleaseBuffer(header_buf);
+
+	/* Cleanup */
+	pfree(term_blocks);
+	pfree(all_skip_entries);
+	pfree(string_offsets);
+	pfree(terms);
+	tp_docmap_destroy(docmap);
+	tp_segment_writer_finish(&writer);
+
+	return header_block;
+}
+
+/*
+ * Leader processes worker buffers by accumulating into a local memtable,
+ * then writes ONE merged segment at the end.
+ *
+ * This produces a single compact segment similar to serial build, instead
+ * of many small segments that would require compaction.
  */
 static void
 tp_leader_process_buffers(
 		TpParallelBuildShared *shared, Relation index, dsa_area *dsa)
 {
-	TpWorkerState *worker_states = TpParallelWorkerStates(shared);
-	bool		   all_done		 = false;
+	TpWorkerState	*worker_states = TpParallelWorkerStates(shared);
+	TpLocalMemtable *local_memtable;
+	bool			 all_done = false;
+
+	/* Create local memtable to accumulate all worker data */
+	local_memtable = tp_local_memtable_create();
 
 	while (!all_done)
 	{
@@ -682,49 +1172,11 @@ tp_leader_process_buffers(
 
 				if (status == TP_BUFFER_READY)
 				{
-					BlockNumber seg_block;
-
 					found_work = true;
 
-					/* Write segment from this buffer */
-					seg_block = tp_write_segment_from_worker_buffer(
-							shared, buffer, index, dsa);
-
-					if (seg_block != InvalidBlockNumber)
-					{
-						/* Chain into L0 */
-						if (shared->segment_head == InvalidBlockNumber)
-						{
-							shared->segment_head = seg_block;
-							shared->segment_tail = seg_block;
-						}
-						else
-						{
-							/* Link previous tail to new segment */
-							Buffer			 tail_buf;
-							Page			 tail_page;
-							TpSegmentHeader *tail_header;
-
-							tail_buf = ReadBuffer(index, shared->segment_tail);
-							LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-							tail_page = BufferGetPage(tail_buf);
-							tail_header =
-									(TpSegmentHeader *)((char *)tail_page +
-														SizeOfPageHeaderData);
-							tail_header->next_segment = seg_block;
-							MarkBufferDirty(tail_buf);
-							UnlockReleaseBuffer(tail_buf);
-
-							shared->segment_tail = seg_block;
-						}
-						shared->segment_count++;
-					}
-
-					/* Accumulate stats before clearing buffer */
-					pg_atomic_fetch_add_u64(
-							&shared->total_docs, buffer->num_docs);
-					pg_atomic_fetch_add_u64(
-							&shared->total_len, buffer->total_len);
+					/* Accumulate buffer contents to local memtable */
+					tp_accumulate_worker_buffer_to_local(
+							dsa, buffer, local_memtable);
 
 					/* Clear buffer's hash tables for reuse */
 					if (buffer->string_hash_handle != 0)
@@ -733,7 +1185,6 @@ tp_leader_process_buffers(
 						dshash_table	 *new_string_table;
 						dshash_parameters string_params;
 
-						/* Detach and destroy old string table */
 						string_params.key_size	 = sizeof(TpStringKey);
 						string_params.entry_size = sizeof(TpStringHashEntry);
 						string_params.hash_function = tp_worker_string_hash;
@@ -748,7 +1199,6 @@ tp_leader_process_buffers(
 								dsa);
 						dshash_destroy(old_string_table);
 
-						/* Create fresh string table */
 						new_string_table = tp_worker_create_string_table(dsa);
 						buffer->string_hash_handle =
 								dshash_get_hash_table_handle(new_string_table);
@@ -761,7 +1211,6 @@ tp_leader_process_buffers(
 						dshash_table	 *new_doc_table;
 						dshash_parameters doc_params;
 
-						/* Detach and destroy old doc lengths table */
 						doc_params.key_size			= sizeof(ItemPointerData);
 						doc_params.entry_size		= sizeof(TpDocLengthEntry);
 						doc_params.hash_function	= dshash_memhash;
@@ -775,7 +1224,6 @@ tp_leader_process_buffers(
 								dsa);
 						dshash_destroy(old_doc_table);
 
-						/* Create fresh doc lengths table */
 						new_doc_table = tp_worker_create_doclength_table(dsa);
 						buffer->doc_lengths_handle =
 								dshash_get_hash_table_handle(new_doc_table);
@@ -820,42 +1268,40 @@ tp_leader_process_buffers(
 			TpWorkerMemtableBuffer *buffer = &worker_states[i].buffers[j];
 			if (pg_atomic_read_u32(&buffer->status) == TP_BUFFER_READY)
 			{
-				/* Accumulate stats before processing */
-				pg_atomic_fetch_add_u64(&shared->total_docs, buffer->num_docs);
-				pg_atomic_fetch_add_u64(&shared->total_len, buffer->total_len);
-
-				BlockNumber seg_block = tp_write_segment_from_worker_buffer(
-						shared, buffer, index, dsa);
-				if (seg_block != InvalidBlockNumber)
-				{
-					if (shared->segment_head == InvalidBlockNumber)
-					{
-						shared->segment_head = seg_block;
-						shared->segment_tail = seg_block;
-					}
-					else
-					{
-						Buffer			 tail_buf;
-						Page			 tail_page;
-						TpSegmentHeader *tail_header;
-
-						tail_buf = ReadBuffer(index, shared->segment_tail);
-						LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-						tail_page = BufferGetPage(tail_buf);
-						tail_header =
-								(TpSegmentHeader *)((char *)tail_page +
-													SizeOfPageHeaderData);
-						tail_header->next_segment = seg_block;
-						MarkBufferDirty(tail_buf);
-						UnlockReleaseBuffer(tail_buf);
-
-						shared->segment_tail = seg_block;
-					}
-					shared->segment_count++;
-				}
+				tp_accumulate_worker_buffer_to_local(
+						dsa, buffer, local_memtable);
 			}
 		}
 	}
+
+	/* Write ONE merged segment from all accumulated data */
+	if (local_memtable->num_terms > 0)
+	{
+		BlockNumber seg_block;
+
+		elog(DEBUG1,
+			 "Writing merged segment: %d terms, %d docs, %lld total_len",
+			 local_memtable->num_terms,
+			 local_memtable->num_docs,
+			 (long long)local_memtable->total_len);
+
+		seg_block = tp_write_segment_from_local_memtable(
+				shared, local_memtable, index);
+
+		if (seg_block != InvalidBlockNumber)
+		{
+			shared->segment_head  = seg_block;
+			shared->segment_tail  = seg_block;
+			shared->segment_count = 1;
+
+			/* Update corpus statistics in shared state */
+			pg_atomic_write_u64(&shared->total_docs, local_memtable->num_docs);
+			pg_atomic_write_u64(&shared->total_len, local_memtable->total_len);
+		}
+	}
+
+	/* Cleanup */
+	tp_local_memtable_destroy(local_memtable);
 }
 
 /*
