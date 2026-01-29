@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * registry.h - Global registry for shared index states
+ * state/registry.h - Global registry for shared index states
  *
  * Uses a dshash (dynamic shared hash table) to map index OIDs to their
  * shared state DSA pointers. This allows unlimited indexes (bounded only

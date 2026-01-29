@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * docmap.c - Document ID mapping implementation
+ * segment/docmap.c - Document ID mapping implementation
  */
 #include "docmap.h"
 #include "fieldnorm.h"

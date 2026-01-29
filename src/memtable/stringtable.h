@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * stringtable.h - String interning hash table using dshash
+ * memtable/stringtable.h - String interning hash table using dshash
  */
 #pragma once
 

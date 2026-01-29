@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment.c - Disk-based segment implementation
+ * segment/segment.c - Disk-based segment implementation
  */
 #include <postgres.h>
 

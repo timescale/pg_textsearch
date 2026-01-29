@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * fieldnorm.h - Document length quantization for BM25 scoring
+ * segment/fieldnorm.h - Document length quantization for BM25 scoring
  *
  * Uses Lucene's SmallFloat encoding scheme which maps document lengths
  * to a single byte (256 buckets). This reduces storage while maintaining

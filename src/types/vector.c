@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * vector.c - bm25vector data type implementation
+ * types/vector.c - bm25vector data type implementation
  */
 #include <postgres.h>
 

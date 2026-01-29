@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * posting.c - Posting list management for in-memory indexes
+ * memtable/posting.c - Posting list management for in-memory indexes
  */
 #include <postgres.h>
 

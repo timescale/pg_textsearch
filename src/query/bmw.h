@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * bmw.h - Block-Max WAND query optimization
+ * query/bmw.h - Block-Max WAND query optimization
  *
  * Implements early termination for top-k queries by computing upper bounds
  * on block scores and skipping blocks that cannot contribute to results.

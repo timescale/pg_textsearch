@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * dump.c - Index dump and debugging utilities
+ * debug/dump.c - Index dump and debugging utilities
  */
 #include <postgres.h>
 

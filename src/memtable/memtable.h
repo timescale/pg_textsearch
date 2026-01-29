@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable.h - In-memory inverted index structures
+ * memtable/memtable.h - In-memory inverted index structures
  */
 #pragma once
 

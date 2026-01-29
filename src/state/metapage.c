@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * metapage.c - Index metapage operations
+ * state/metapage.c - Index metapage operations
  *
  * Handles metapage initialization, reading, and management. The metapage
  * stores index configuration, statistics, and crash recovery state.

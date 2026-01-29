@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * registry.c - Global registry mapping index OIDs to shared state
+ * state/registry.c - Global registry mapping index OIDs to shared state
  *
  * Uses a dshash (dynamic shared hash table) for O(1) lookups and no
  * limit on the number of indexes (beyond available memory).

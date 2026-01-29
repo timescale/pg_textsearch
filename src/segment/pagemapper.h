@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * pagemapper.h - Segment logical-to-physical address translation
+ * segment/pagemapper.h - Segment logical-to-physical address translation
  *
  * Segments store data as a logical contiguous byte stream, but physically
  * the data is spread across multiple Postgres pages. This module provides

@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * compression.h - Block compression for posting lists
+ * segment/compression.h - Block compression for posting lists
  *
  * Implements delta encoding + bitpacking for posting list compression.
  * Doc IDs are delta-encoded (storing gaps instead of absolute values),

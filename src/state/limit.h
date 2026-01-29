@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * limit.h - Query LIMIT optimization interface
+ * state/limit.h - Query LIMIT optimization interface
  */
 #pragma once
 

@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * stringtable.c - String interning hash table using dshash
+ * memtable/stringtable.c - String interning hash table using dshash
  *
  * Provides efficient string storage with concurrent access. Strings are
  * stored in DSA memory and referenced by dsa_pointer keys.

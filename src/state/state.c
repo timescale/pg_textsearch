@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * state.c - Index state management
+ * state/state.c - Index state management
  *
  * Manages TpLocalIndexState and TpSharedIndexState structures for
  * coordinating index state across backends.

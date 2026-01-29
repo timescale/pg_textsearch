@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * metapage.h - Index metapage structures and operations
+ * state/metapage.h - Index metapage structures and operations
  */
 #pragma once
 

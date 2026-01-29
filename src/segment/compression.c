@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * compression.c - Block compression for posting lists
+ * segment/compression.c - Block compression for posting lists
  *
  * Implements delta encoding + bitpacking for posting list compression.
  * This is a scalar implementation; SIMD optimization can be added later.
