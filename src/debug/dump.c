@@ -920,64 +920,16 @@ get_page_char(PageMapEntry *e)
 }
 
 /*
- * Dump page visualization to file - shows page layout with data types
- *
- * Output format:
- * - Legend at top showing segments organized by level with assigned colors
- * - Letter mnemonics indicate page type:
- *   H=header d=dictionary (blank)=postings s=skip m=docmap i=idx .=empty
- * - Background colors distinguish segments (16-color palette, cycling)
- * - Line breaks every 128 characters
+ * Mark metapage and docid (recovery) pages in the page map.
  */
 static void
-tp_debug_pageviz_to_file(const char *index_name, const char *filename)
+mark_special_pages(
+		Relation		index_rel,
+		TpIndexMetaPage metap,
+		PageMapEntry   *page_map,
+		BlockNumber		total_blocks)
 {
-	Oid				index_oid;
-	Relation		index_rel	 = NULL;
-	TpIndexMetaPage metap		 = NULL;
-	BlockNumber		total_blocks = 0;
-	PageMapEntry   *page_map	 = NULL;
-	SegmentInfo		segments[MAX_SEGMENTS];
-	int				num_segments = 0;
-	FILE		   *fp;
-	int				level;
-	BlockNumber		blk;
-	uint32			page_counts[6] = {0}; /* Counts per page type */
-	int				col			   = 0;	  /* Column counter for line breaks */
-
-	/* Open output file */
-	fp = fopen(filename, "w");
-	if (!fp)
-	{
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m", filename)));
-	}
-
-	/* Resolve index */
-	index_oid = tp_resolve_index_name_shared(index_name);
-	if (!OidIsValid(index_oid))
-	{
-		fprintf(fp, "ERROR: Index '%s' not found\n", index_name);
-		fclose(fp);
-		return;
-	}
-
-	/* Open index and get metapage */
-	index_rel	 = index_open(index_oid, AccessShareLock);
-	total_blocks = RelationGetNumberOfBlocks(index_rel);
-	metap		 = tp_get_metapage(index_rel);
-
-	if (total_blocks == 0)
-	{
-		fprintf(fp, "ERROR: Index has no blocks\n");
-		goto cleanup;
-	}
-
-	/* Allocate page map */
-	page_map = palloc0(total_blocks * sizeof(PageMapEntry));
-
-	/* Mark metapage - use special marker (level=255) */
+	/* Mark metapage */
 	page_map[0].page_type = PAGE_METAPAGE;
 	page_map[0].level	  = 255;
 
@@ -1011,8 +963,19 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 			count++;
 		}
 	}
+}
 
-	/* First pass: collect segment info for legend */
+/*
+ * Collect segment info for the legend (first pass over segments).
+ * Returns the number of segments found.
+ */
+static int
+collect_segment_info(
+		Relation index_rel, TpIndexMetaPage metap, SegmentInfo *segments)
+{
+	int num_segments = 0;
+	int level;
+
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		BlockNumber seg_root;
@@ -1035,7 +998,6 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 				break;
 			}
 
-			/* Record segment info */
 			segments[num_segments].level		= level;
 			segments[num_segments].seg_in_level = seg_in_level;
 			segments[num_segments].global_idx	= num_segments;
@@ -1049,7 +1011,112 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 		}
 	}
 
-	/* Second pass: mark pages with segment info */
+	return num_segments;
+}
+
+/*
+ * Classify a segment page by its data region based on byte offset.
+ */
+static void
+classify_segment_page(
+		PageMapEntry	*entry,
+		TpSegmentReader *reader,
+		uint32			 page_idx,
+		int				 global_idx,
+		int				 seg_in_level)
+{
+	uint64 page_start_offset;
+
+	entry->level	  = global_idx;
+	entry->seg_in_lvl = seg_in_level;
+
+	/* First byte offset of this logical page */
+	page_start_offset = (uint64)page_idx * (BLCKSZ - SizeOfPageHeaderData);
+
+	if (page_idx == 0)
+	{
+		entry->page_type = PAGE_SEG_HDR;
+	}
+	else if (page_start_offset < reader->header->postings_offset)
+	{
+		entry->page_type   = PAGE_SEG_DATA;
+		entry->data_region = DATA_DICTIONARY;
+	}
+	else if (page_start_offset < reader->header->skip_index_offset)
+	{
+		entry->page_type   = PAGE_SEG_DATA;
+		entry->data_region = DATA_POSTING;
+	}
+	else if (page_start_offset < reader->header->fieldnorm_offset)
+	{
+		entry->page_type   = PAGE_SEG_DATA;
+		entry->data_region = DATA_SKIP;
+	}
+	else
+	{
+		entry->page_type   = PAGE_SEG_DATA;
+		entry->data_region = DATA_DOCMAP;
+	}
+}
+
+/*
+ * Mark page index pages for a segment.
+ */
+static void
+mark_page_index_pages(
+		Relation		 index_rel,
+		TpSegmentReader *reader,
+		PageMapEntry	*page_map,
+		BlockNumber		 total_blocks,
+		int				 global_idx,
+		int				 seg_in_level)
+{
+	BlockNumber		   pi_blk;
+	TpPageIndexSpecial pi_special;
+	int				   pi_count = 0;
+
+	if (reader->header->page_index == InvalidBlockNumber)
+		return;
+
+	pi_blk = reader->header->page_index;
+
+	while (pi_blk != InvalidBlockNumber && pi_blk < total_blocks &&
+		   pi_count < 1000)
+	{
+		Buffer buf;
+		Page   page;
+
+		page_map[pi_blk].level		= global_idx;
+		page_map[pi_blk].seg_in_lvl = seg_in_level;
+		page_map[pi_blk].page_type	= PAGE_SEG_INDEX;
+
+		buf = ReadBuffer(index_rel, pi_blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		memcpy(&pi_special,
+			   PageGetSpecialPointer(page),
+			   sizeof(TpPageIndexSpecial));
+		UnlockReleaseBuffer(buf);
+
+		pi_blk = pi_special.next_page;
+		pi_count++;
+	}
+}
+
+/*
+ * Mark all segment pages in the page map (second pass).
+ */
+static void
+mark_segment_pages(
+		Relation		index_rel,
+		TpIndexMetaPage metap,
+		PageMapEntry   *page_map,
+		BlockNumber		total_blocks,
+		SegmentInfo	   *segments,
+		int				num_segments)
+{
+	int level;
+
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		BlockNumber seg_root;
@@ -1085,201 +1152,192 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 				}
 			}
 
-			/*
-			 * Mark all pages belonging to this segment.
-			 * Classify each page by the data region that contains its first
-			 * byte. Use SEGMENT_DATA_PER_PAGE (BLCKSZ - SizeOfPageHeaderData)
-			 * to compute logical byte offsets from page numbers.
-			 */
+			/* Mark data pages */
 			for (i = 0; i < reader->num_pages; i++)
 			{
 				BlockNumber phys_page = reader->page_map[i];
-				uint64		page_start_offset;
 
-				if (phys_page >= total_blocks)
-					continue;
-
-				page_map[phys_page].level	   = global_idx;
-				page_map[phys_page].seg_in_lvl = seg_in_level;
-
-				/* First byte offset of this logical page */
-				page_start_offset = (uint64)i *
-									(BLCKSZ - SizeOfPageHeaderData);
-
-				if (i == 0)
+				if (phys_page < total_blocks)
 				{
-					/* Page 0 contains segment header */
-					page_map[phys_page].page_type = PAGE_SEG_HDR;
-				}
-				else if (page_start_offset < reader->header->postings_offset)
-				{
-					/* Dictionary region (includes strings and entries) */
-					page_map[phys_page].page_type	= PAGE_SEG_DATA;
-					page_map[phys_page].data_region = DATA_DICTIONARY;
-				}
-				else if (page_start_offset < reader->header->skip_index_offset)
-				{
-					/* Posting lists */
-					page_map[phys_page].page_type	= PAGE_SEG_DATA;
-					page_map[phys_page].data_region = DATA_POSTING;
-				}
-				else if (page_start_offset < reader->header->fieldnorm_offset)
-				{
-					/* Skip index */
-					page_map[phys_page].page_type	= PAGE_SEG_DATA;
-					page_map[phys_page].data_region = DATA_SKIP;
-				}
-				else
-				{
-					/* Docmap (fieldnorms + CTIDs) */
-					page_map[phys_page].page_type	= PAGE_SEG_DATA;
-					page_map[phys_page].data_region = DATA_DOCMAP;
+					classify_segment_page(
+							&page_map[phys_page],
+							reader,
+							i,
+							global_idx,
+							seg_in_level);
 				}
 			}
 
 			/* Mark page index pages */
-			if (reader->header->page_index != InvalidBlockNumber)
-			{
-				BlockNumber		   pi_blk = reader->header->page_index;
-				TpPageIndexSpecial pi_special;
-				int				   pi_count = 0;
-
-				while (pi_blk != InvalidBlockNumber && pi_blk < total_blocks &&
-					   pi_count < 1000)
-				{
-					Buffer buf;
-					Page   page;
-
-					page_map[pi_blk].level		= global_idx;
-					page_map[pi_blk].seg_in_lvl = seg_in_level;
-					page_map[pi_blk].page_type	= PAGE_SEG_INDEX;
-
-					buf = ReadBuffer(index_rel, pi_blk);
-					LockBuffer(buf, BUFFER_LOCK_SHARE);
-					page = BufferGetPage(buf);
-					memcpy(&pi_special,
-						   PageGetSpecialPointer(page),
-						   sizeof(TpPageIndexSpecial));
-					UnlockReleaseBuffer(buf);
-
-					pi_blk = pi_special.next_page;
-					pi_count++;
-				}
-			}
+			mark_page_index_pages(
+					index_rel,
+					reader,
+					page_map,
+					total_blocks,
+					global_idx,
+					seg_in_level);
 
 			seg_in_level++;
 			seg_root = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
+}
 
-	/* Count pages by type (including data region subtypes) */
+/* Page counts structure for statistics */
+typedef struct PageCounts
+{
+	uint32 empty;
+	uint32 header;
+	uint32 dict;
+	uint32 post;
+	uint32 skip;
+	uint32 docmap;
+	uint32 idx;
+	uint32 recovery;
+} PageCounts;
+
+/*
+ * Count pages by type.
+ */
+static void
+count_page_types(
+		PageMapEntry *page_map, BlockNumber total_blocks, PageCounts *counts)
+{
+	BlockNumber blk;
+
+	memset(counts, 0, sizeof(PageCounts));
+
+	for (blk = 0; blk < total_blocks; blk++)
 	{
-		uint32 dict_count	= 0;
-		uint32 post_count	= 0;
-		uint32 skip_count	= 0;
-		uint32 docmap_count = 0;
+		PageMapEntry *e = &page_map[blk];
 
-		for (blk = 0; blk < total_blocks; blk++)
+		switch (e->page_type)
 		{
-			PageMapEntry *e = &page_map[blk];
-
-			switch (e->page_type)
+		case PAGE_UNUSED:
+			counts->empty++;
+			break;
+		case PAGE_METAPAGE:
+			/* Metapage counted separately, not in output */
+			break;
+		case PAGE_DOCID:
+			counts->recovery++;
+			break;
+		case PAGE_SEG_HDR:
+			counts->header++;
+			break;
+		case PAGE_SEG_INDEX:
+			counts->idx++;
+			break;
+		case PAGE_SEG_DATA:
+			switch (e->data_region)
 			{
-			case PAGE_UNUSED:
-			case PAGE_METAPAGE:
-			case PAGE_DOCID:
-			case PAGE_SEG_HDR:
-			case PAGE_SEG_INDEX:
-				page_counts[e->page_type]++;
+			case DATA_DICTIONARY:
+				counts->dict++;
 				break;
-			case PAGE_SEG_DATA:
-				switch (e->data_region)
-				{
-				case DATA_DICTIONARY:
-					dict_count++;
-					break;
-				case DATA_POSTING:
-					post_count++;
-					break;
-				case DATA_SKIP:
-					skip_count++;
-					break;
-				case DATA_DOCMAP:
-					docmap_count++;
-					break;
-				}
+			case DATA_POSTING:
+				counts->post++;
+				break;
+			case DATA_SKIP:
+				counts->skip++;
+				break;
+			case DATA_DOCMAP:
+				counts->docmap++;
 				break;
 			}
+			break;
 		}
-
-		/* Write header */
-		fprintf(fp, "# Page Visualization: %s\n", index_name);
-		fprintf(fp,
-				"# Total: %u pages (%.1f MB), %d segments\n",
-				total_blocks,
-				(double)total_blocks * BLCKSZ / (1024.0 * 1024.0),
-				num_segments);
-		fprintf(fp, "#\n");
-
-		/* Segment legend organized by level */
-		fprintf(fp, "# Segments (background color indicates segment):\n");
-		{
-			int current_level = -1;
-			int i;
-
-			for (i = 0; i < num_segments; i++)
-			{
-				SegmentInfo *seg = &segments[i];
-				int			 bg	 = segment_bg_colors[i % NUM_SEGMENT_COLORS];
-				double		 size_mb = (double)seg->num_pages * BLCKSZ /
-								 (1024.0 * 1024.0);
-
-				if (seg->level != current_level)
-				{
-					if (current_level >= 0)
-						fprintf(fp, "\n");
-					fprintf(fp, "#   L%d: ", seg->level);
-					current_level = seg->level;
-				}
-				else
-				{
-					fprintf(fp, "  ");
-				}
-
-				fprintf(fp,
-						"\033[48;5;%dm S%d " ANSI_RESET " (%u pg, %.1fMB)",
-						bg,
-						i,
-						seg->num_pages,
-						size_mb);
-			}
-			fprintf(fp, "\n");
-		}
-
-		fprintf(fp, "#\n");
-		fprintf(fp,
-				"# Special: \033[48;5;15m\033[30mM" ANSI_RESET
-				"=metapage  \033[48;5;33mR" ANSI_RESET "=recovery\n");
-		fprintf(fp,
-				"# Letters: H=header d=dictionary (blank)=postings "
-				"s=skip m=docmap i=idx .=empty\n");
-		fprintf(fp, "#\n");
-		fprintf(fp,
-				"# Page counts: empty=%u header=%u dict=%u post=%u "
-				"skip=%u docmap=%u idx=%u recovery=%u\n",
-				page_counts[PAGE_UNUSED],
-				page_counts[PAGE_SEG_HDR],
-				dict_count,
-				post_count,
-				skip_count,
-				docmap_count,
-				page_counts[PAGE_SEG_INDEX],
-				page_counts[PAGE_DOCID]);
-		fprintf(fp, "#\n");
 	}
+}
 
-	/* Write page map with line breaks every 128 chars */
+/*
+ * Write the header and legend to the output file.
+ */
+static void
+write_pageviz_header(
+		FILE		*fp,
+		const char	*index_name,
+		BlockNumber	 total_blocks,
+		SegmentInfo *segments,
+		int			 num_segments,
+		PageCounts	*counts)
+{
+	int current_level = -1;
+	int i;
+
+	fprintf(fp, "# Page Visualization: %s\n", index_name);
+	fprintf(fp,
+			"# Total: %u pages (%.1f MB), %d segments\n",
+			total_blocks,
+			(double)total_blocks * BLCKSZ / (1024.0 * 1024.0),
+			num_segments);
+	fprintf(fp, "#\n");
+
+	/* Segment legend organized by level */
+	fprintf(fp, "# Segments (background color indicates segment):\n");
+
+	for (i = 0; i < num_segments; i++)
+	{
+		SegmentInfo *seg = &segments[i];
+		int			 bg	 = segment_bg_colors[i % NUM_SEGMENT_COLORS];
+		double size_mb	 = (double)seg->num_pages * BLCKSZ / (1024.0 * 1024.0);
+
+		if (seg->level != current_level)
+		{
+			if (current_level >= 0)
+				fprintf(fp, "\n");
+			fprintf(fp, "#   L%d: ", seg->level);
+			current_level = seg->level;
+		}
+		else
+		{
+			fprintf(fp, "  ");
+		}
+
+		fprintf(fp,
+				"\033[48;5;%dm S%d " ANSI_RESET " (%u pg, %.1fMB)",
+				bg,
+				i,
+				seg->num_pages,
+				size_mb);
+	}
+	fprintf(fp, "\n");
+
+	fprintf(fp, "#\n");
+	fprintf(fp,
+			"# Special: \033[48;5;15m\033[30mM" ANSI_RESET
+			"=metapage  \033[48;5;33mR" ANSI_RESET "=recovery\n");
+	fprintf(fp,
+			"# Letters: H=header d=dictionary (blank)=postings "
+			"s=skip m=docmap i=idx .=empty\n");
+	fprintf(fp, "#\n");
+	fprintf(fp,
+			"# Page counts: empty=%u header=%u dict=%u post=%u "
+			"skip=%u docmap=%u idx=%u recovery=%u\n",
+			counts->empty,
+			counts->header,
+			counts->dict,
+			counts->post,
+			counts->skip,
+			counts->docmap,
+			counts->idx,
+			counts->recovery);
+	fprintf(fp, "#\n");
+}
+
+/*
+ * Write the page map visualization.
+ */
+static void
+write_pageviz_map(
+		FILE		 *fp,
+		PageMapEntry *page_map,
+		BlockNumber	  total_blocks,
+		PageCounts	 *counts)
+{
+	BlockNumber blk;
+	int			col = 0;
+
 	for (blk = 0; blk < total_blocks; blk++)
 	{
 		PageMapEntry *e = &page_map[blk];
@@ -1288,22 +1346,18 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 		switch (e->page_type)
 		{
 		case PAGE_UNUSED:
-			/* No background, just dim dot */
 			fprintf(fp, ANSI_DIM "%c" ANSI_RESET, c);
 			break;
 		case PAGE_METAPAGE:
-			/* White background with black text */
 			fprintf(fp, "\033[48;5;15m\033[30m%c" ANSI_RESET, c);
 			break;
 		case PAGE_DOCID:
-			/* Blue background */
 			fprintf(fp, "\033[48;5;33m%c" ANSI_RESET, c);
 			break;
 		case PAGE_SEG_HDR:
 		case PAGE_SEG_INDEX:
 		case PAGE_SEG_DATA:
 		{
-			/* Use segment-specific background color */
 			int bg = segment_bg_colors[e->level % NUM_SEGMENT_COLORS];
 			fprintf(fp, "\033[48;5;%dm%c" ANSI_RESET, bg, c);
 			break;
@@ -1314,8 +1368,6 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 		}
 
 		col++;
-
-		/* Line break every 128 characters */
 		if (col >= 128)
 		{
 			fprintf(fp, "\n");
@@ -1323,19 +1375,85 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 		}
 	}
 
-	/* Final newline if we didn't just print one */
 	if (col > 0)
 		fprintf(fp, "\n");
 
 	/* Summary line */
 	{
-		uint32 used = total_blocks - page_counts[PAGE_UNUSED];
+		uint32 used = total_blocks - counts->empty;
 		fprintf(fp,
 				"# Used: %u  Empty: %u  Utilization: %.1f%%\n",
 				used,
-				page_counts[PAGE_UNUSED],
+				counts->empty,
 				100.0 * used / total_blocks);
 	}
+}
+
+/*
+ * Dump page visualization to file - main orchestrator.
+ *
+ * Output format:
+ * - Legend at top showing segments organized by level with assigned colors
+ * - Letter mnemonics indicate page type:
+ *   H=header d=dictionary (blank)=postings s=skip m=docmap i=idx .=empty
+ * - Background colors distinguish segments (16-color palette, cycling)
+ * - Line breaks every 128 characters
+ */
+static void
+tp_debug_pageviz_to_file(const char *index_name, const char *filename)
+{
+	Oid				index_oid;
+	Relation		index_rel	 = NULL;
+	TpIndexMetaPage metap		 = NULL;
+	BlockNumber		total_blocks = 0;
+	PageMapEntry   *page_map	 = NULL;
+	SegmentInfo		segments[MAX_SEGMENTS];
+	int				num_segments = 0;
+	PageCounts		counts;
+	FILE		   *fp;
+
+	/* Open output file */
+	fp = fopen(filename, "w");
+	if (!fp)
+	{
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", filename)));
+	}
+
+	/* Resolve index */
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+	{
+		fprintf(fp, "ERROR: Index '%s' not found\n", index_name);
+		fclose(fp);
+		return;
+	}
+
+	/* Open index and get metapage */
+	index_rel	 = index_open(index_oid, AccessShareLock);
+	total_blocks = RelationGetNumberOfBlocks(index_rel);
+	metap		 = tp_get_metapage(index_rel);
+
+	if (total_blocks == 0)
+	{
+		fprintf(fp, "ERROR: Index has no blocks\n");
+		goto cleanup;
+	}
+
+	/* Allocate and build page map */
+	page_map = palloc0(total_blocks * sizeof(PageMapEntry));
+
+	mark_special_pages(index_rel, metap, page_map, total_blocks);
+	num_segments = collect_segment_info(index_rel, metap, segments);
+	mark_segment_pages(
+			index_rel, metap, page_map, total_blocks, segments, num_segments);
+
+	/* Count and write output */
+	count_page_types(page_map, total_blocks, &counts);
+	write_pageviz_header(
+			fp, index_name, total_blocks, segments, num_segments, &counts);
+	write_pageviz_map(fp, page_map, total_blocks, &counts);
 
 cleanup:
 	if (page_map)
