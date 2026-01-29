@@ -879,8 +879,6 @@ typedef struct SegmentInfo
 	BlockNumber root_block;
 } SegmentInfo;
 
-#define MAX_SEGMENTS 64
-
 /*
  * Get character for page type/region
  * Returns single character mnemonic (space for postings to reduce clutter)
@@ -966,10 +964,46 @@ mark_special_pages(
 }
 
 /*
- * Collect segment info for the legend (first pass over segments).
- * Returns the number of segments found.
+ * Count segments in the index.
  */
 static int
+count_segments(Relation index_rel, TpIndexMetaPage metap)
+{
+	int count = 0;
+	int level;
+
+	if (!metap)
+		return 0;
+
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber seg_root = metap->level_heads[level];
+
+		while (seg_root != InvalidBlockNumber)
+		{
+			TpSegmentReader *reader = tp_segment_open(index_rel, seg_root);
+
+			if (!reader || !reader->header)
+			{
+				if (reader)
+					tp_segment_close(reader);
+				break;
+			}
+
+			count++;
+			seg_root = reader->header->next_segment;
+			tp_segment_close(reader);
+		}
+	}
+
+	return count;
+}
+
+/*
+ * Collect segment info for the legend.
+ * Caller must allocate segments array with enough space.
+ */
+static void
 collect_segment_info(
 		Relation index_rel, TpIndexMetaPage metap, SegmentInfo *segments)
 {
@@ -986,7 +1020,7 @@ collect_segment_info(
 
 		seg_root = metap->level_heads[level];
 
-		while (seg_root != InvalidBlockNumber && num_segments < MAX_SEGMENTS)
+		while (seg_root != InvalidBlockNumber)
 		{
 			TpSegmentReader *reader;
 
@@ -1010,8 +1044,6 @@ collect_segment_info(
 			tp_segment_close(reader);
 		}
 	}
-
-	return num_segments;
 }
 
 /*
@@ -1407,7 +1439,7 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	TpIndexMetaPage metap		 = NULL;
 	BlockNumber		total_blocks = 0;
 	PageMapEntry   *page_map	 = NULL;
-	SegmentInfo		segments[MAX_SEGMENTS];
+	SegmentInfo	   *segments	 = NULL;
 	int				num_segments = 0;
 	PageCounts		counts;
 	FILE		   *fp;
@@ -1444,8 +1476,14 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	/* Allocate and build page map */
 	page_map = palloc0(total_blocks * sizeof(PageMapEntry));
 
+	/* Count and allocate segments array */
+	num_segments = count_segments(index_rel, metap);
+	if (num_segments > 0)
+		segments = palloc(num_segments * sizeof(SegmentInfo));
+
 	mark_special_pages(index_rel, metap, page_map, total_blocks);
-	num_segments = collect_segment_info(index_rel, metap, segments);
+	if (num_segments > 0)
+		collect_segment_info(index_rel, metap, segments);
 	mark_segment_pages(
 			index_rel, metap, page_map, total_blocks, segments, num_segments);
 
@@ -1456,6 +1494,8 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	write_pageviz_map(fp, page_map, total_blocks, &counts);
 
 cleanup:
+	if (segments)
+		pfree(segments);
 	if (page_map)
 		pfree(page_map);
 	if (metap)
