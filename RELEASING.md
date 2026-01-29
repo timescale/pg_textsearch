@@ -18,6 +18,7 @@ Change version from `X.Y.Z-dev` to `X.Y.Z` in these files:
 | File | What to update |
 |------|----------------|
 | `pg_textsearch.control` | `default_version` |
+| `mod.c` | `.version` in `PG_MODULE_MAGIC_EXT` |
 | `Makefile` | `DATA` list (SQL filenames) |
 | `README.md` | Status line, image reference |
 | `CLAUDE.md` | `Current Version` |
