@@ -43,3 +43,4 @@ RESET ROLE;
 DROP TABLE security_test;
 DROP OWNED BY test_nonsuperuser CASCADE;
 DROP ROLE test_nonsuperuser;
+DROP EXTENSION pg_textsearch;
