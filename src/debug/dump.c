@@ -924,10 +924,9 @@ get_page_char(PageMapEntry *e)
  *
  * Output format:
  * - Legend at top showing segments organized by level with assigned colors
- * - Box characters indicate page type:
- *   █ = header/metapage/recovery, ▓ = postings, ▒ = dictionary, ░ =
- * skip/docmap · = empty
- * - Colors distinguish different segments (16 distinct colors, cycling)
+ * - Letter mnemonics indicate page type:
+ *   H=header d=dictionary (blank)=postings s=skip m=docmap i=idx .=empty
+ * - Background colors distinguish segments (16-color palette, cycling)
  * - Line breaks every 128 characters
  */
 static void
@@ -1351,10 +1350,9 @@ cleanup:
 /*
  * tp_debug_pageviz - SQL function to dump page visualization
  *
- * Outputs box characters showing page layout (128 chars per line):
- *   █=header/meta ▓=postings ▒=dictionary ░=skip/docmap/idx ·=empty
- * Colors distinguish individual segments (16-color palette)
- * Legend at top shows segment details organized by level
+ * Outputs ANSI-colored page layout (128 chars per line):
+ *   H=header d=dictionary (blank)=postings s=skip m=docmap i=idx .=empty
+ * Background colors distinguish segments (16-color palette)
  */
 PG_FUNCTION_INFO_V1(tp_debug_pageviz);
 
