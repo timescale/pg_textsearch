@@ -35,10 +35,9 @@
 #include <utils/rel.h>
 #include <utils/wait_event.h>
 
-#include "common/hashfn.h"
-
 #include "am.h"
 #include "build_parallel.h"
+#include "common/hashfn.h"
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
@@ -80,21 +79,22 @@ static void tp_leader_process_buffers(
 		TpParallelBuildShared *shared, Relation index, dsa_area *dsa);
 
 static BlockNumber tp_write_segment_from_worker_buffer(
-		TpParallelBuildShared	 *shared,
+		TpParallelBuildShared  *shared,
 		TpWorkerMemtableBuffer *buffer,
-		Relation				  index,
-		dsa_area				 *dsa);
+		Relation				index,
+		dsa_area			   *dsa);
 
 static void tp_worker_process_document(
-		dsa_area			  *dsa,
+		dsa_area			   *dsa,
 		TpWorkerMemtableBuffer *buffer,
-		TupleTableSlot		  *slot,
-		int					   attnum,
-		Oid					   text_config_oid);
+		TupleTableSlot		   *slot,
+		int						attnum,
+		Oid						text_config_oid);
 
 static dshash_table *tp_worker_create_string_table(dsa_area *dsa);
 static dshash_table *tp_worker_create_doclength_table(dsa_area *dsa);
-static uint32 tp_worker_string_hash(const void *key, size_t keysize, void *arg);
+static uint32
+		   tp_worker_string_hash(const void *key, size_t keysize, void *arg);
 static int tp_worker_string_compare(
 		const void *a, const void *b, size_t keysize, void *arg);
 
@@ -160,8 +160,7 @@ tp_build_parallel(
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
 	/* Estimate page pool size */
-	total_pool_pages =
-			estimate_pool_pages(RelationGetNumberOfBlocks(heap));
+	total_pool_pages = estimate_pool_pages(RelationGetNumberOfBlocks(heap));
 
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
@@ -230,7 +229,7 @@ tp_build_parallel(
 
 	/* Truncate unused pool pages */
 	{
-		uint32		pool_used  = pg_atomic_read_u32(&shared->pool_next);
+		uint32		 pool_used = pg_atomic_read_u32(&shared->pool_next);
 		BlockNumber *pool	   = TpParallelPagePool(shared);
 		BlockNumber	 nblocks   = RelationGetNumberOfBlocks(index);
 		BlockNumber	 truncate_to;
@@ -269,8 +268,8 @@ tp_build_parallel(
 
 		metap->level_heads[0]  = shared->segment_head;
 		metap->level_counts[0] = shared->segment_count;
-		metap->total_docs	   = (int32)pg_atomic_read_u64(&shared->total_docs);
-		metap->total_len	   = (int64)pg_atomic_read_u64(&shared->total_len);
+		metap->total_docs = (int32)pg_atomic_read_u64(&shared->total_docs);
+		metap->total_len  = (int64)pg_atomic_read_u64(&shared->total_len);
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
@@ -280,7 +279,7 @@ tp_build_parallel(
 	}
 
 	/* Build result */
-	result = palloc0(sizeof(IndexBuildResult));
+	result				 = palloc0(sizeof(IndexBuildResult));
 	result->heap_tuples	 = (double)pg_atomic_read_u64(&shared->total_docs);
 	result->index_tuples = (double)pg_atomic_read_u64(&shared->total_docs);
 
@@ -328,8 +327,8 @@ tp_init_parallel_shared(
 
 	/* Per-worker memory budget (split maintenance_work_mem across workers) */
 	memory_budget = ((Size)maintenance_work_mem * 1024) / nworkers;
-	shared->memory_budget_per_worker =
-			(Size)(memory_budget * TP_MEMORY_SLOP_FACTOR);
+	shared->memory_budget_per_worker = (Size)(memory_budget *
+											  TP_MEMORY_SLOP_FACTOR);
 
 	/* Initialize coordination primitives */
 	SpinLockInit(&shared->mutex);
@@ -457,8 +456,8 @@ tp_parallel_build_worker_main(
 	int					   active_buf;
 
 	/* Attach to shared memory */
-	shared =
-			(TpParallelBuildShared *)shm_toc_lookup(toc, TP_PARALLEL_KEY_SHARED, false);
+	shared = (TpParallelBuildShared *)
+			shm_toc_lookup(toc, TP_PARALLEL_KEY_SHARED, false);
 
 	worker_id = ParallelWorkerNumber;
 	my_state  = &TpParallelWorkerStates(shared)[worker_id];
@@ -501,7 +500,8 @@ tp_parallel_build_worker_main(
 			while (pg_atomic_read_u32(&buffer->status) != TP_BUFFER_EMPTY)
 			{
 				ConditionVariableSleep(
-						&my_state->buffer_consumed_cv, WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
+						&my_state->buffer_consumed_cv,
+						WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
 			}
 			ConditionVariableCancelSleep();
 
@@ -583,8 +583,7 @@ tp_leader_process_buffers(
 			for (j = 0; j < 2; j++)
 			{
 				TpWorkerMemtableBuffer *buffer = &worker_states[i].buffers[j];
-				uint32					status =
-						pg_atomic_read_u32(&buffer->status);
+				uint32 status = pg_atomic_read_u32(&buffer->status);
 
 				if (status == TP_BUFFER_READY)
 				{
@@ -640,14 +639,18 @@ tp_leader_process_buffers(
 						dshash_parameters string_params;
 
 						/* Detach and destroy old string table */
-						string_params.key_size		   = sizeof(TpStringKey);
-						string_params.entry_size	   = sizeof(TpStringHashEntry);
-						string_params.hash_function	   = tp_worker_string_hash;
-						string_params.compare_function = tp_worker_string_compare;
-						string_params.copy_function	   = dshash_memcpy;
-						string_params.tranche_id	   = TP_STRING_HASH_TRANCHE_ID;
-						old_string_table			   = dshash_attach(
-								  dsa, &string_params, buffer->string_hash_handle, dsa);
+						string_params.key_size	 = sizeof(TpStringKey);
+						string_params.entry_size = sizeof(TpStringHashEntry);
+						string_params.hash_function = tp_worker_string_hash;
+						string_params.compare_function =
+								tp_worker_string_compare;
+						string_params.copy_function = dshash_memcpy;
+						string_params.tranche_id = TP_STRING_HASH_TRANCHE_ID;
+						old_string_table		 = dshash_attach(
+								dsa,
+								&string_params,
+								buffer->string_hash_handle,
+								dsa);
 						dshash_destroy(old_string_table);
 
 						/* Create fresh string table */
@@ -669,9 +672,12 @@ tp_leader_process_buffers(
 						doc_params.hash_function	= dshash_memhash;
 						doc_params.compare_function = dshash_memcmp;
 						doc_params.copy_function	= dshash_memcpy;
-						doc_params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
-						old_doc_table				= dshash_attach(
-								  dsa, &doc_params, buffer->doc_lengths_handle, dsa);
+						doc_params.tranche_id = TP_DOCLENGTH_HASH_TRANCHE_ID;
+						old_doc_table		  = dshash_attach(
+								dsa,
+								&doc_params,
+								buffer->doc_lengths_handle,
+								dsa);
 						dshash_destroy(old_doc_table);
 
 						/* Create fresh doc lengths table */
@@ -703,7 +709,8 @@ tp_leader_process_buffers(
 		if (!found_work && !all_done)
 		{
 			ConditionVariableSleep(
-					&shared->leader_wake_cv, WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
+					&shared->leader_wake_cv,
+					WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
 			ConditionVariableCancelSleep();
 		}
 
@@ -869,11 +876,11 @@ tp_worker_create_doclength_table(dsa_area *dsa)
  */
 static void
 tp_worker_process_document(
-		dsa_area			  *dsa,
+		dsa_area			   *dsa,
 		TpWorkerMemtableBuffer *buffer,
-		TupleTableSlot		  *slot,
-		int					   attnum,
-		Oid					   text_config_oid)
+		TupleTableSlot		   *slot,
+		int						attnum,
+		Oid						text_config_oid)
 {
 	bool		  isnull;
 	Datum		  text_datum;
@@ -936,7 +943,7 @@ tp_worker_process_document(
 		string_params.copy_function	   = dshash_memcpy;
 		string_params.tranche_id	   = TP_STRING_HASH_TRANCHE_ID;
 		string_table				   = dshash_attach(
-					  dsa, &string_params, buffer->string_hash_handle, dsa);
+				  dsa, &string_params, buffer->string_hash_handle, dsa);
 	}
 
 	{
@@ -948,7 +955,7 @@ tp_worker_process_document(
 		doc_params.copy_function	= dshash_memcpy;
 		doc_params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
 		doclength_table				= dshash_attach(
-					dsa, &doc_params, buffer->doc_lengths_handle, dsa);
+				dsa, &doc_params, buffer->doc_lengths_handle, dsa);
 	}
 
 	/* Add each term to the string hash table */
@@ -989,7 +996,7 @@ tp_worker_process_document(
 			char	   *stored_string;
 
 			/* Allocate string in DSA */
-			string_dp = dsa_allocate(dsa, term_len + 1);
+			string_dp	  = dsa_allocate(dsa, term_len + 1);
 			stored_string = dsa_get_address(dsa, string_dp);
 			memcpy(stored_string, term_text, term_len);
 			stored_string[term_len] = '\0';
@@ -1014,7 +1021,7 @@ tp_worker_process_document(
 			new_capacity = posting_list->capacity == 0
 								 ? 8
 								 : posting_list->capacity * 2;
-			new_size = new_capacity * sizeof(TpPostingEntry);
+			new_size	 = new_capacity * sizeof(TpPostingEntry);
 
 			new_entries_dp = dsa_allocate(dsa, new_size);
 			if (!DsaPointerIsValid(new_entries_dp))
@@ -1040,7 +1047,7 @@ tp_worker_process_document(
 		}
 
 		/* Add document to posting list */
-		entries						= dsa_get_address(dsa, posting_list->entries_dp);
+		entries = dsa_get_address(dsa, posting_list->entries_dp);
 		entries[posting_list->doc_count].ctid	   = *ctid;
 		entries[posting_list->doc_count].frequency = frequency;
 		posting_list->doc_count++;
@@ -1055,8 +1062,8 @@ tp_worker_process_document(
 		TpDocLengthEntry *doc_entry;
 		bool			  found;
 
-		doc_entry = dshash_find_or_insert(doclength_table, ctid, &found);
-		doc_entry->ctid		  = *ctid;
+		doc_entry		= dshash_find_or_insert(doclength_table, ctid, &found);
+		doc_entry->ctid = *ctid;
 		doc_entry->doc_length = doc_length;
 		dshash_release_lock(doclength_table, doc_entry);
 
@@ -1169,7 +1176,8 @@ build_dictionary_from_worker_buffer(
 	params.compare_function = tp_worker_string_compare;
 	params.copy_function	= dshash_memcpy;
 	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
-	string_table = dshash_attach(dsa, &params, buffer->string_hash_handle, dsa);
+	string_table =
+			dshash_attach(dsa, &params, buffer->string_hash_handle, dsa);
 
 	/* Allocate initial array */
 	terms = palloc(sizeof(TermInfo) * capacity);
@@ -1222,26 +1230,26 @@ tp_write_segment_from_worker_buffer(
 		Relation				index,
 		dsa_area			   *dsa)
 {
-	TermInfo		  *terms;
-	uint32			   num_terms;
-	BlockNumber		   header_block;
-	BlockNumber		   page_index_root;
-	TpSegmentWriter	   writer;
-	TpSegmentHeader	   header;
-	TpDictionary	   dict;
-	TpDocMapBuilder	  *docmap;
-	BlockNumber		  *page_pool;
-	pg_atomic_uint32  *pool_next;
-	uint32			  *string_offsets;
-	uint32			   string_pos;
-	uint32			   i;
-	Buffer			   header_buf;
-	Page			   header_page;
-	TpSegmentHeader	  *existing_header;
+	TermInfo			*terms;
+	uint32				 num_terms;
+	BlockNumber			 header_block;
+	BlockNumber			 page_index_root;
+	TpSegmentWriter		 writer;
+	TpSegmentHeader		 header;
+	TpDictionary		 dict;
+	TpDocMapBuilder		*docmap;
+	BlockNumber			*page_pool;
+	pg_atomic_uint32	*pool_next;
+	uint32				*string_offsets;
+	uint32				 string_pos;
+	uint32				 i;
+	Buffer				 header_buf;
+	Page				 header_page;
+	TpSegmentHeader		*existing_header;
 	WorkerTermBlockInfo *term_blocks;
-	TpSkipEntry		  *all_skip_entries;
-	uint32			   skip_entries_count;
-	uint32			   skip_entries_capacity;
+	TpSkipEntry			*all_skip_entries;
+	uint32				 skip_entries_count;
+	uint32				 skip_entries_capacity;
 
 	/* Skip if buffer has no data */
 	if (buffer->num_docs == 0)
@@ -1368,12 +1376,12 @@ tp_write_segment_from_worker_buffer(
 
 		if (DsaPointerIsValid(terms[i].posting_list_dp))
 		{
-			posting_list =
-					(TpPostingList *)dsa_get_address(dsa, terms[i].posting_list_dp);
+			posting_list = (TpPostingList *)
+					dsa_get_address(dsa, terms[i].posting_list_dp);
 			if (posting_list && posting_list->doc_count > 0)
 			{
-				entries =
-						(TpPostingEntry *)dsa_get_address(dsa, posting_list->entries_dp);
+				entries = (TpPostingEntry *)
+						dsa_get_address(dsa, posting_list->entries_dp);
 				doc_count = posting_list->doc_count;
 			}
 		}
@@ -1584,7 +1592,8 @@ tp_write_segment_from_worker_buffer(
 
 			/* Write entry to page */
 			{
-				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE - page_offset;
+				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
+											page_offset;
 
 				if (bytes_on_this_page >= sizeof(TpDictEntry))
 				{
@@ -1641,10 +1650,10 @@ tp_write_segment_from_worker_buffer(
 	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 	header_page = BufferGetPage(header_buf);
 
-	existing_header = (TpSegmentHeader *)((char *)header_page +
+	existing_header					= (TpSegmentHeader *)((char *)header_page +
 										  SizeOfPageHeaderData);
-	existing_header->strings_offset		 = header.strings_offset;
-	existing_header->entries_offset		 = header.entries_offset;
+	existing_header->strings_offset = header.strings_offset;
+	existing_header->entries_offset = header.entries_offset;
 	existing_header->postings_offset	 = header.postings_offset;
 	existing_header->skip_index_offset	 = header.skip_index_offset;
 	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;

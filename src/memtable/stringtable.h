@@ -25,7 +25,8 @@ typedef struct TpStringHashEntry TpStringHashEntry;
  *
  * For lookup keys: term.str points to (possibly non-null-terminated) string,
  * len contains the string length.
- * For stored keys: term.dp points to null-terminated DSA string, len is unused.
+ * For stored keys: term.dp points to null-terminated DSA string, len is
+ * unused.
  */
 typedef struct TpStringKey
 {
