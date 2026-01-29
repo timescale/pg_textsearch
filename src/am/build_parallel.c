@@ -295,13 +295,16 @@ tp_build_parallel(
 	 * file isn't shrunk. We truncate to the minimum needed size by finding
 	 * the highest used block from segment locations. This is important for
 	 * parallel builds where we pre-allocate many pages.
+	 *
+	 * We use tp_segment_collect_pages to get ALL pages (data + page index)
+	 * since page index pages can be located anywhere in the file.
 	 */
 	{
-		Buffer			 metabuf;
-		Page			 metapage;
-		TpIndexMetaPage	 metap;
-		BlockNumber		 max_used = 1; /* At least metapage */
-		int				 level;
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage metap;
+		BlockNumber		max_used = 1; /* At least metapage */
+		int				level;
 
 		metabuf	 = ReadBuffer(index, 0);
 		metapage = BufferGetPage(metabuf);
@@ -313,14 +316,33 @@ tp_build_parallel(
 			BlockNumber seg = metap->level_heads[level];
 			while (seg != InvalidBlockNumber)
 			{
-				TpSegmentReader *reader = tp_segment_open(index, seg);
-				BlockNumber		 seg_end;
+				BlockNumber *pages;
+				uint32		 num_pages;
+				uint32		 i;
+				BlockNumber	 next_seg;
 
-				seg_end = seg + reader->header->num_pages;
-				if (seg_end > max_used)
-					max_used = seg_end;
-				seg = reader->header->next_segment;
-				tp_segment_close(reader);
+				/* Collect all pages including page index pages */
+				num_pages = tp_segment_collect_pages(index, seg, &pages);
+
+				/* Find max block number */
+				for (i = 0; i < num_pages; i++)
+				{
+					/* max_used is exclusive (block after the last used) */
+					if (pages[i] + 1 > max_used)
+						max_used = pages[i] + 1;
+				}
+
+				/* Get next segment before freeing pages array */
+				{
+					TpSegmentReader *reader = tp_segment_open(index, seg);
+					next_seg				= reader->header->next_segment;
+					tp_segment_close(reader);
+				}
+
+				if (pages)
+					pfree(pages);
+
+				seg = next_seg;
 			}
 		}
 		ReleaseBuffer(metabuf);
@@ -338,11 +360,12 @@ tp_build_parallel(
 					 nblocks,
 					 nblocks - max_used);
 #if PG_VERSION_NUM >= 180000
-				smgrtruncate(RelationGetSmgr(index),
-							 &forknum,
-							 1,
-							 &nblocks,
-							 &max_used);
+				smgrtruncate(
+						RelationGetSmgr(index),
+						&forknum,
+						1,
+						&nblocks,
+						&max_used);
 #else
 				smgrtruncate(RelationGetSmgr(index), &forknum, 1, &max_used);
 #endif
