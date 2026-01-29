@@ -234,9 +234,21 @@ tp_build_parallel(
 		BlockNumber	 nblocks   = RelationGetNumberOfBlocks(index);
 		BlockNumber	 truncate_to;
 
+		elog(DEBUG1,
+			 "Pool truncation: pool_used=%u, total_pool=%d, pool[0]=%u, "
+			 "nblocks=%u",
+			 pool_used,
+			 shared->total_pool_pages,
+			 pool[0],
+			 nblocks);
+
 		if (pool_used > 0 && pool_used < (uint32)shared->total_pool_pages)
 		{
 			truncate_to = pool[0] + pool_used;
+			elog(DEBUG1,
+				 "Truncating: truncate_to=%u, condition=%s",
+				 truncate_to,
+				 truncate_to < nblocks ? "true" : "false");
 			if (truncate_to < nblocks)
 			{
 				ForkNumber forknum = MAIN_FORKNUM;
@@ -276,6 +288,66 @@ tp_build_parallel(
 
 		/* Run compaction if needed */
 		tp_maybe_compact_level(index, 0);
+	}
+
+	/*
+	 * Final truncation: after compaction, L0 segment pages are freed but the
+	 * file isn't shrunk. We truncate to the minimum needed size by finding
+	 * the highest used block from segment locations. This is important for
+	 * parallel builds where we pre-allocate many pages.
+	 */
+	{
+		Buffer			 metabuf;
+		Page			 metapage;
+		TpIndexMetaPage	 metap;
+		BlockNumber		 max_used = 1; /* At least metapage */
+		int				 level;
+
+		metabuf	 = ReadBuffer(index, 0);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		/* Find highest block used by any segment */
+		for (level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			BlockNumber seg = metap->level_heads[level];
+			while (seg != InvalidBlockNumber)
+			{
+				TpSegmentReader *reader = tp_segment_open(index, seg);
+				BlockNumber		 seg_end;
+
+				seg_end = seg + reader->header->num_pages;
+				if (seg_end > max_used)
+					max_used = seg_end;
+				seg = reader->header->next_segment;
+				tp_segment_close(reader);
+			}
+		}
+		ReleaseBuffer(metabuf);
+
+		/* Truncate if we can save space */
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+			if (max_used < nblocks)
+			{
+				ForkNumber forknum = MAIN_FORKNUM;
+				elog(DEBUG1,
+					 "Final truncation: max_used=%u, nblocks=%u, saving %u "
+					 "pages",
+					 max_used,
+					 nblocks,
+					 nblocks - max_used);
+#if PG_VERSION_NUM >= 180000
+				smgrtruncate(RelationGetSmgr(index),
+							 &forknum,
+							 1,
+							 &nblocks,
+							 &max_used);
+#else
+				smgrtruncate(RelationGetSmgr(index), &forknum, 1, &max_used);
+#endif
+			}
+		}
 	}
 
 	/* Build result */
