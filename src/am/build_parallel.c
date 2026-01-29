@@ -56,8 +56,8 @@ extern double tp_parallel_build_expansion_factor;
 /* GUC: compression for segments */
 extern bool tp_compress_segments;
 
-/* Minimum pages to pre-allocate */
-#define TP_MIN_POOL_PAGES 1024
+/* Minimum pages to pre-allocate (64MB - covers small tables + page index) */
+#define TP_MIN_POOL_PAGES 8192
 
 /* Memory slop factor - use 90% of budget to avoid thrashing */
 #define TP_MEMORY_SLOP_FACTOR 0.9

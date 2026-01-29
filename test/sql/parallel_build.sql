@@ -4,10 +4,9 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 SET enable_seqscan = off;
 
--- Force parallel build settings
+-- Force parallel build settings (need 2+ workers, 32MB per worker)
 SET max_parallel_maintenance_workers = 2;
-SET maintenance_work_mem = '256MB';
-SET pg_textsearch.parallel_build_expansion_factor = 10.0;
+SET maintenance_work_mem = '128MB';
 
 -- Create a table with enough data to trigger parallel build (100K+ tuples)
 CREATE TABLE parallel_test (

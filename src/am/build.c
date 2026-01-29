@@ -663,8 +663,11 @@ tp_process_document(
 		return false;
 	}
 
-	/* Store the docid for crash recovery (only during index build) */
-	tp_add_docid_to_pages(index, ctid);
+	/*
+	 * Skip docid pages during bulk build - they're only needed for crash
+	 * recovery during normal inserts. CREATE INDEX is atomic so if it fails,
+	 * the entire index is discarded.
+	 */
 
 	(*total_docs)++;
 	return true;
@@ -770,7 +773,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 #define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
 #define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
 
-		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
+		if (nworkers > 1 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
 			/*
 			 * Warn if table is very large but parallelism is limited.
@@ -795,16 +798,19 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
 		}
 
-		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
+		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers <= 1)
 		{
 			/*
-			 * Large table but no parallel workers available.
-			 * This is likely due to max_parallel_maintenance_workers = 0.
+			 * Large table but insufficient parallel workers.
+			 * nworkers == 0: max_parallel_maintenance_workers = 0
+			 * nworkers == 1: maintenance_work_mem too low (need 32MB/worker)
+			 * We require 2+ workers for parallel build to be worthwhile.
 			 */
 			elog(NOTICE,
-				 "Large table (%.0f tuples) but parallel build disabled. "
-				 "Set max_parallel_maintenance_workers > 0 for faster index "
-				 "builds.",
+				 "Large table (%.0f tuples) but parallel build disabled "
+				 "(need 2+ workers). "
+				 "Increase max_parallel_maintenance_workers and "
+				 "maintenance_work_mem (32MB per worker).",
 				 reltuples);
 		}
 	}
