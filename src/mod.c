@@ -23,6 +23,7 @@
 #include "constants.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "memtable/stringtable.h"
 #include "planner/hooks.h"
 #include "query/score.h"
 #include "state/registry.h"
@@ -284,6 +285,13 @@ _PG_init(void)
 
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
+
+	/*
+	 * Register LWLock tranches for dshash tables used in parallel builds.
+	 * These must be registered in every process that might use them.
+	 */
+	LWLockRegisterTranche(TP_STRING_HASH_TRANCHE_ID, "tapir_string_hash");
+	LWLockRegisterTranche(TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
 }
 
 /*
