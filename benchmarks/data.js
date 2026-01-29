@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769668009374,
+  "lastUpdate": 1769668010757,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7030,6 +7030,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 72.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "80800439c2112008d6c4b573d5bb2de00e2efcb7",
+          "message": "Add bm25_debug_pageviz() for index page layout visualization (#186)\n\n## Summary\n\nAdds `bm25_debug_pageviz(index_name, filepath)` function to visualize\nindex page layout with ANSI colors. This is useful for debugging index\nsize issues, particularly the page fragmentation in parallel builds.\n\n**Features:**\n- Background colors distinguish different segments (16-color palette)\n- Letter mnemonics for page types: `H`=header, `d`=dictionary, `s`=skip,\n`m`=docmap, `i`=pageindex\n- Blank space with colored background for posting pages (most common\ntype, reduces clutter)\n- Special colors for metapage (white) and recovery pages (blue)\n- Line breaks every 128 characters\n- Legend showing segments by level with color sample, page count, and\nsize\n- Summary with utilization percentage\n\n**Example output header:**\n```\n# Page Visualization: msmarco_bm25_idx\n# Total: 162053 pages (1266.0 MB), 7 segments\n#\n# Segments (background color indicates segment):\n#   L0: S0 (16249 pg, 126.9MB)  S1 (23129 pg, 180.7MB) ...\n#\n# Page counts: empty=5817 header=7 dict=23719 post=109783 ...\n```\n\n**Use case:** Comparing serial vs parallel builds on MS-MARCO 8M:\n- Serial: 162K pages, 5,817 empty (3.6% waste)  \n- Parallel: 512K pages, 360,587 empty (70% waste!)\n\n## Testing\n\n```sql\nSELECT bm25_debug_pageviz('my_index', '/tmp/viz.txt');\n-- View with: less -R /tmp/viz.txt\n```",
+          "timestamp": "2026-01-29T01:54:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/80800439c2112008d6c4b573d5bb2de00e2efcb7"
+        },
+        "date": 1769668010449,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 8197.201,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.15,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.5,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.58,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.95,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 72.27,
             "unit": "MB"
           }
         ]
