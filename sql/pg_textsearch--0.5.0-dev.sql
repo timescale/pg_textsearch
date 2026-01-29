@@ -196,8 +196,9 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
--- Page map visualization - dumps ANSI-colored page layout to file
--- Shows which pages belong to which segments, levels, and page types
-CREATE FUNCTION bm25_dump_page_map(index_name text, filepath text) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_dump_page_map'
+-- Page visualization - dumps ANSI-colored page layout to file
+-- Shows page types: M=meta R=recovery H=header d=dict p=post s=skip m=docmap i=idx .=empty
+-- Colors indicate segment level (cyan=L0, yellow=L1, green=L2, magenta=L3+)
+CREATE FUNCTION bm25_debug_pageviz(index_name text, filepath text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_debug_pageviz'
     LANGUAGE C STRICT STABLE;
