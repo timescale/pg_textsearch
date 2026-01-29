@@ -1,0 +1,62 @@
+Timing is on.
+=== MS MARCO Passage Ranking - Data Loading ===
+Loading ~8.8M passages from MS MARCO collection (no index)
+
+DROP TABLE
+Time: 357.258 ms
+DROP TABLE
+Time: 2.311 ms
+DROP TABLE
+Time: 0.823 ms
+Creating passages table...
+CREATE TABLE
+Time: 6.079 ms
+Creating queries table...
+CREATE TABLE
+Time: 0.957 ms
+Creating relevance judgments table...
+CREATE TABLE
+Time: 0.734 ms
+Loading passages (this may take several minutes)...
+COPY 8841823
+Time: 77765.375 ms (01:17.765)
+Loading queries...
+COPY 10000
+Time: 18.575 ms
+Loading relevance judgments...
+CREATE TABLE
+Time: 2.328 ms
+COPY 7437
+Time: 7.299 ms
+INSERT 0 7437
+Time: 9.064 ms
+DROP TABLE
+Time: 0.813 ms
+Analyzing tables...
+ANALYZE
+Time: 1772.535 ms (00:01.773)
+ANALYZE
+Time: 36.751 ms
+ANALYZE
+Time: 1.727 ms
+
+=== Data Loading Verification ===
+        metric        |  count  
+----------------------+---------
+ Passages loaded:     | 8841823
+ Queries loaded:      | 10000
+ Relevance judgments: | 7437
+(3 rows)
+
+Time: 25147.207 ms (00:25.147)
+
+=== Table Size ===
+    label    | table_size | table_bytes 
+-------------+------------+-------------
+ TABLE_SIZE: | 3432 MB    |  3599097856
+(1 row)
+
+Time: 2.365 ms
+
+=== Data Loading Complete ===
+Run parallel_scaling.sql to benchmark different worker counts

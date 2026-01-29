@@ -60,10 +60,11 @@ typedef struct TpWorkerMemtableBuffer
 	dshash_table_handle doc_lengths_handle; /* CTID -> doc length */
 
 	/* Statistics for this buffer */
-	int32 num_docs;	   /* Documents in this buffer */
-	int32 num_terms;   /* Unique terms in this buffer */
-	int64 total_len;   /* Sum of document lengths */
-	Size  memory_used; /* Approximate memory used */
+	int32 num_docs;		  /* Documents in this buffer */
+	int32 num_terms;	  /* Unique terms in this buffer */
+	int64 total_len;	  /* Sum of document lengths */
+	int64 total_postings; /* Total posting entries (for spill threshold) */
+	Size  memory_used;	  /* Approximate memory used */
 } TpWorkerMemtableBuffer;
 
 /*

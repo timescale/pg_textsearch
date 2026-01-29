@@ -42,6 +42,7 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/merge.h"
@@ -51,6 +52,9 @@
 
 /* GUC: expansion factor for page pool estimation */
 extern double tp_parallel_build_expansion_factor;
+
+/* GUC: compression for segments */
+extern bool tp_compress_segments;
 
 /* Minimum pages to pre-allocate */
 #define TP_MIN_POOL_PAGES 1024
@@ -289,7 +293,7 @@ tp_build_parallel(
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 
-		/* Run compaction if needed */
+		/* Run compaction if needed (threshold is 8 segments per level) */
 		tp_maybe_compact_level(index, 0);
 	}
 
@@ -477,10 +481,11 @@ tp_init_parallel_shared(
 					dshash_get_hash_table_handle(doclength_table);
 			dshash_detach(doclength_table);
 
-			worker_states[i].buffers[j].num_docs	= 0;
-			worker_states[i].buffers[j].num_terms	= 0;
-			worker_states[i].buffers[j].total_len	= 0;
-			worker_states[i].buffers[j].memory_used = 0;
+			worker_states[i].buffers[j].num_docs	   = 0;
+			worker_states[i].buffers[j].num_terms	   = 0;
+			worker_states[i].buffers[j].total_len	   = 0;
+			worker_states[i].buffers[j].total_postings = 0;
+			worker_states[i].buffers[j].memory_used	   = 0;
 		}
 	}
 }
@@ -582,8 +587,12 @@ tp_parallel_build_worker_main(
 	{
 		TpWorkerMemtableBuffer *buffer = &my_state->buffers[active_buf];
 
-		/* Check if we need to switch buffers */
-		if (buffer->memory_used >= shared->memory_budget_per_worker)
+		/*
+		 * Check if we need to switch buffers.
+		 * Use posting count threshold to match serial build's segment sizes.
+		 * Serial uses tp_memtable_spill_threshold (default 32M postings).
+		 */
+		if (buffer->total_postings >= tp_memtable_spill_threshold)
 		{
 			/* Mark current buffer as ready */
 			pg_atomic_write_u32(&buffer->status, TP_BUFFER_READY);
@@ -1350,14 +1359,31 @@ tp_merge_worker_buffers_to_segment(
 			skip.block_max_tf	= max_tf;
 			skip.block_max_norm = max_norm;
 			skip.posting_offset = writer.current_offset;
-			skip.flags			= TP_BLOCK_FLAG_UNCOMPRESSED;
 			memset(skip.reserved, 0, sizeof(skip.reserved));
 
-			/* Write posting block data */
-			tp_segment_writer_write(
-					&writer,
-					&block_postings[block_start],
-					(block_end - block_start) * sizeof(TpBlockPosting));
+			/* Write posting block data (compressed or uncompressed) */
+			if (tp_compress_segments)
+			{
+				uint8  compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
+				uint32 compressed_size;
+
+				compressed_size = tp_compress_block(
+						&block_postings[block_start],
+						block_end - block_start,
+						compressed_buf);
+
+				skip.flags = TP_BLOCK_FLAG_DELTA;
+				tp_segment_writer_write(
+						&writer, compressed_buf, compressed_size);
+			}
+			else
+			{
+				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+				tp_segment_writer_write(
+						&writer,
+						&block_postings[block_start],
+						(block_end - block_start) * sizeof(TpBlockPosting));
+			}
 
 			/* Accumulate skip entry */
 			if (skip_entries_count >= skip_entries_capacity)
@@ -1629,10 +1655,11 @@ clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 	}
 
 	/* Clear buffer stats */
-	buffer->num_docs	= 0;
-	buffer->num_terms	= 0;
-	buffer->total_len	= 0;
-	buffer->memory_used = 0;
+	buffer->num_docs	   = 0;
+	buffer->num_terms	   = 0;
+	buffer->total_len	   = 0;
+	buffer->total_postings = 0;
+	buffer->memory_used	   = 0;
 }
 
 /*
@@ -2084,6 +2111,9 @@ tp_worker_process_document(
 		entries[posting_list->doc_count].frequency = frequency;
 		posting_list->doc_count++;
 		posting_list->doc_freq = posting_list->doc_count;
+
+		/* Track total postings for spill threshold */
+		buffer->total_postings++;
 
 		/* Release lock on string entry */
 		dshash_release_lock(string_table, entry);

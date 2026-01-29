@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-01-29T18:26:37Z",
+  "dataset": "msmarco-sample",
+  "parallel_scaling": {
+    "workers_0": {
+      "build_time_ms": 287027.546,
+      "query_avg_ms": 6.68
+    },
+    "workers_1": {
+      "build_time_ms": 354332.156,
+      "query_avg_ms": 5.19
+    },
+    "workers_2": {
+      "build_time_ms": 351904.903,
+      "query_avg_ms": 5.17
+    },
+    "workers_4": {
+      "build_time_ms": 352858.656,
+      "query_avg_ms": 5.13
+    }
+  }
+}
