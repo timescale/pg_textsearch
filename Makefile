@@ -53,6 +53,8 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-va
 
 # Fetch extension version from the control file
 PG_TEXTSEARCH_VERSION := $(shell awk -F"'" '/^[\t ]*default_version/ {print $$2}' pg_textsearch.control)
+# Fallback to unknown if the above command fails
+PG_TEXTSEARCH_VERSION := $(if $(strip $(PG_TEXTSEARCH_VERSION)),$(PG_TEXTSEARCH_VERSION),unknown)
 PG_CPPFLAGS += -DPG_TEXTSEARCH_VERSION=\"$(PG_TEXTSEARCH_VERSION)\"
 
 # Uncomment the following line to enable debug index dumps
