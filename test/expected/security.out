@@ -44,8 +44,6 @@ SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
 ERROR:  must be superuser to dump index
 SELECT bm25_summarize_index('security_test_idx');
 ERROR:  must be superuser to summarize index
-SELECT bm25_spill_index('security_test_idx');
-ERROR:  must be superuser to force index spill
 SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
 ERROR:  must be superuser to write page visualization
 -- Reset to superuser

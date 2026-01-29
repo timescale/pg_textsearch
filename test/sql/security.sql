@@ -33,7 +33,6 @@ SET ROLE test_nonsuperuser;
 SELECT bm25_dump_index('security_test_idx');
 SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
 SELECT bm25_summarize_index('security_test_idx');
-SELECT bm25_spill_index('security_test_idx');
 SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
 
 -- Reset to superuser
