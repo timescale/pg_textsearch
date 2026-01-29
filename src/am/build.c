@@ -159,6 +159,12 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	BlockNumber		   segment_root;
 	RangeVar		  *rv;
 
+	/* Superuser only - modifies index structure */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to force index spill")));
+
 	/* Parse index name (supports schema.index notation) */
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);

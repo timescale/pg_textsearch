@@ -741,10 +741,15 @@ tp_dump_index(PG_FUNCTION_ARGS)
 	/* Check for optional filename parameter */
 	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
 	{
-		/* File mode - full dump with hex */
+		/* File mode - full dump with hex (superuser only) */
 		text *filename_text = PG_GETARG_TEXT_PP(1);
 		char *filename		= text_to_cstring(filename_text);
 		FILE *fp;
+
+		if (!superuser())
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser to write index dump to file")));
 
 		fp = fopen(filename, "w");
 		if (!fp)
@@ -1353,6 +1358,12 @@ tp_debug_pageviz(PG_FUNCTION_ARGS)
 	text *filename_text	  = PG_GETARG_TEXT_PP(1);
 	char *index_name	  = text_to_cstring(index_name_text);
 	char *filename		  = text_to_cstring(filename_text);
+
+	/* Superuser only - writes to arbitrary file path */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to write page visualization")));
 
 	tp_debug_pageviz_to_file(index_name, filename);
 
