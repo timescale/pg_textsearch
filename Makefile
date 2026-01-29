@@ -246,9 +246,6 @@ coverage-report:
 	fi
 	@lcov --summary $(COVERAGE_INFO)
 
-version:
-	@echo "$(PG_TEXTSEARCH_VERSION)"
-
 # Help target
 .PHONY: help
 help:
@@ -293,4 +290,4 @@ help:
 	@echo "  make format"
 	@echo "  make version      - Print the extension version"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report version help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

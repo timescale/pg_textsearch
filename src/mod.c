@@ -29,14 +29,7 @@
 #include "state/state.h"
 
 #if PG_VERSION_NUM >= 180000
-#ifndef PG_TEXTSEARCH_VERSION
-/*
- * Should always be defined via build system, but keep a fallback here for
- * static analysis tools etc.
- */
-#define PG_TEXTSEARCH_VERSION "unknown"
-#endif
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = PG_TEXTSEARCH_VERSION);
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "0.5.0-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
