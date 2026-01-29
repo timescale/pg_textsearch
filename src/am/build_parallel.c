@@ -1601,7 +1601,8 @@ tp_leader_process_buffers(
 		/*
 		 * Merge if we have ready buffers and either:
 		 * - All workers are done (final merge)
-		 * - We have at least nworkers buffers ready (one per worker on average)
+		 * - We have at least nworkers buffers ready (one per worker on
+		 * average)
 		 *
 		 * This allows the leader to start merging even if some workers are
 		 * lagging - e.g., if one worker has filled both buffers while another
