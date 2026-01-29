@@ -493,9 +493,17 @@ SELECT bm25_dump_index('docs_idx', '/tmp/docs_idx_dump.txt');
 -- Force spill to disk (returns number of entries spilled)
 SELECT bm25_spill_index('docs_idx');
 
--- Generate page layout visualization (view with: cat /tmp/pageviz.txt)
+-- Generate page layout visualization (view with: less -R /tmp/pageviz.txt)
 SELECT bm25_debug_pageviz('docs_idx', '/tmp/pageviz.txt');
 ```
+
+#### Page Visualization
+
+The `bm25_debug_pageviz` function outputs an ANSI-colored map of index pages.
+Background colors indicate segments; letters indicate page types (`H`=header,
+`d`=dictionary, `s`=skip, `m`=docmap, `i`=index, blank=postings, `.`=empty).
+
+<img src="images/pageviz.jpg" width="600" alt="Page visualization example">
 
 ## Contributing
 
