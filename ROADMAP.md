@@ -13,6 +13,7 @@
 | v0.2.0 | Dec 2025 | V2 segment format, skip index, doc ID mapping, benchmark suite |
 | v0.3.0 | Jan 2026 | Block-Max WAND query optimization, 4x faster queries |
 | v0.4.0 | Jan 2026 | Posting list compression (delta encoding + bitpacking), 41% smaller indexes |
+| v0.5.0 | Jan 2026 | Parallel index builds, faster CREATE INDEX on large tables |
 
 ## Upcoming
 
