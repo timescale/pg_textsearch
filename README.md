@@ -14,7 +14,7 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-⚠️ **Pre-release**: v0.5.0-dev - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds index compression; parallel builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
+⚠️ **Pre-release**: v0.5.0-dev - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds parallel index builds. See [ROADMAP.md](ROADMAP.md) for details.
 
 ![Tapir and Friends](images/tapir_and_friends_v0.5.0-dev.png)
 
@@ -241,7 +241,7 @@ CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='englis
 
 You'll see a notice when parallel build is used:
 ```
-NOTICE:  Using parallel index build with 4 workers (1000000 tuples)
+NOTICE:  parallel index build: launched 4 of 4 requested workers
 ```
 
 For partitioned tables, each partition builds its index independently with parallel
