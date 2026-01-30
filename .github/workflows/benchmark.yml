@@ -751,7 +751,7 @@ jobs:
 
   # Full benchmark suite
   full-benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores  # 16 vCPUs, 64 GB RAM for parallel scaling tests
     timeout-minutes: 360  # 6 hours max for full Wikipedia
 
     steps:

@@ -6,9 +6,9 @@
  *
  * Architecture:
  * - Workers scan heap and build memtables in shared DSA memory
+ * - Leader merges memtables into L0 segments and writes to disk
  * - Each worker has two memtables (double-buffering) to avoid blocking
- * - Leader doesn't scan - it reads worker memtables and writes L0 segments
- * - All disk I/O is done by the leader, ensuring contiguous page allocation
+ * - All writes are done by the leader, ensuring contiguous page allocation
  */
 #pragma once
 

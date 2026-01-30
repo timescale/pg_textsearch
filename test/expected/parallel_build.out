@@ -1,18 +1,74 @@
 -- Test case: parallel_build
--- Tests parallel index build with enough data to trigger parallel workers
+-- Tests parallel index build with various worker counts and corner cases
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.5.0-dev installed
 SET enable_seqscan = off;
--- Force parallel build settings (need 2+ workers, 32MB per worker)
-SET max_parallel_maintenance_workers = 2;
-SET maintenance_work_mem = '128MB';
--- Create a table with enough data to trigger parallel build (100K+ tuples)
-CREATE TABLE parallel_test (
+-- Lower threshold so our test tables qualify for parallel build
+SET min_parallel_table_scan_size = 0;
+-- Sufficient memory for parallel workers (32MB per worker + leader)
+SET maintenance_work_mem = '256MB';
+--------------------------------------------------------------------------------
+-- Test 1: Serial build (0 workers)
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE parallel_test_serial (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
--- Insert 150K rows to exceed the 100K threshold for parallel build
-INSERT INTO parallel_test (content)
+INSERT INTO parallel_test_serial (content)
+SELECT 'Document ' || i || ' contains words like apple banana cherry'
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_serial;
+-- Should NOT show "parallel index build" notice (serial build)
+CREATE INDEX parallel_test_serial_idx ON parallel_test_serial USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_serial_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=8.00, text_config='english' (k1=1.20, b=0.75)
+-- Verify queries work
+SELECT COUNT(*) AS apple_count FROM parallel_test_serial
+WHERE content <@> to_bm25query('apple', 'parallel_test_serial_idx') < 0;
+ apple_count 
+-------------
+      100000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 2: Single worker (edge case - minimum parallelism)
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 1;
+CREATE TABLE parallel_test_1worker (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_1worker (content)
+SELECT 'Document ' || i || ' with database query optimization terms'
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_1worker;
+-- Should show "parallel index build: launched 1 of 1 requested workers"
+CREATE INDEX parallel_test_1worker_idx ON parallel_test_1worker USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+SELECT COUNT(*) AS database_count FROM parallel_test_1worker
+WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
+ database_count 
+----------------
+         100000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 3: Two workers (common case)
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+CREATE TABLE parallel_test_2workers (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_2workers (content)
 SELECT 'Document number ' || i || ' contains words like ' ||
        CASE i % 5
            WHEN 0 THEN 'apple banana cherry'
@@ -28,46 +84,55 @@ SELECT 'Document number ' || i || ' contains words like ' ||
            ELSE 'plus different phrases altogether'
        END
 FROM generate_series(1, 150000) AS i;
--- Update statistics so planner knows table size
-ANALYZE parallel_test;
--- Build index (should use parallel workers with 150K tuples)
-CREATE INDEX parallel_test_idx ON parallel_test USING bm25(content)
+ANALYZE parallel_test_2workers;
+-- Should show "parallel index build: launched 2 of 2 requested workers"
+CREATE INDEX parallel_test_2workers_idx ON parallel_test_2workers USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_idx
+NOTICE:  BM25 index build started for relation parallel_test_2workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
--- Verify index was created
-SELECT 'Index created' AS status
-FROM pg_class
-WHERE relname = 'parallel_test_idx';
-    status     
----------------
- Index created
-(1 row)
-
--- Verify queries work correctly
-SELECT COUNT(*) AS apple_count
-FROM parallel_test
-WHERE content <@> to_bm25query('apple', 'parallel_test_idx') < 0;
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+-- Verify all document groups are searchable
+SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
+WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
  apple_count 
 -------------
        30000
 (1 row)
 
-SELECT COUNT(*) AS database_count
-FROM parallel_test
-WHERE content <@> to_bm25query('database', 'parallel_test_idx') < 0;
+SELECT COUNT(*) AS database_count FROM parallel_test_2workers
+WHERE content <@> to_bm25query('database', 'parallel_test_2workers_idx') < 0;
  database_count 
 ----------------
           30000
 (1 row)
 
--- Verify we can get top-k results with correct ordering
--- Limit to first 100 IDs for deterministic results (many docs have identical scores)
-SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_idx'))::numeric, 4) AS score
-FROM parallel_test
+SELECT COUNT(*) AS machine_count FROM parallel_test_2workers
+WHERE content <@> to_bm25query('machine', 'parallel_test_2workers_idx') < 0;
+ machine_count 
+---------------
+         30000
+(1 row)
+
+SELECT COUNT(*) AS distributed_count FROM parallel_test_2workers
+WHERE content <@> to_bm25query('distributed', 'parallel_test_2workers_idx') < 0;
+ distributed_count 
+-------------------
+             30000
+(1 row)
+
+SELECT COUNT(*) AS network_count FROM parallel_test_2workers
+WHERE content <@> to_bm25query('network', 'parallel_test_2workers_idx') < 0;
+ network_count 
+---------------
+         30000
+(1 row)
+
+-- Verify top-k ordering (limit to deterministic results)
+SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx'))::numeric, 4) AS score
+FROM parallel_test_2workers
 WHERE id <= 100
-ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_idx'), id
+ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx'), id
 LIMIT 5;
  id |  score  
 ----+---------
@@ -78,24 +143,244 @@ LIMIT 5;
  72 | -3.3033
 (5 rows)
 
--- Verify index statistics look reasonable
-SELECT bm25_summarize_index('parallel_test_idx') IS NOT NULL AS has_summary;
- has_summary 
--------------
- t
+--------------------------------------------------------------------------------
+-- Test 4: Four workers (higher parallelism)
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 4;
+CREATE TABLE parallel_test_4workers (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_4workers (content)
+SELECT 'Document ' || i || ' with search engine indexing text ' ||
+       CASE i % 7
+           WHEN 0 THEN 'quick brown fox'
+           WHEN 1 THEN 'lazy sleeping dog'
+           WHEN 2 THEN 'postgres full text'
+           WHEN 3 THEN 'inverted index structure'
+           WHEN 4 THEN 'bm25 ranking algorithm'
+           WHEN 5 THEN 'term frequency idf'
+           ELSE 'document relevance score'
+       END
+FROM generate_series(1, 200000) AS i;
+ANALYZE parallel_test_4workers;
+-- Should show "parallel index build: launched N of 4 requested workers"
+-- (may launch fewer if system limits)
+CREATE INDEX parallel_test_4workers_idx ON parallel_test_4workers USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_4workers_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 4 of 4 requested workers
+SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
+WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
+ fox_count 
+-----------
+     28571
 (1 row)
 
--- Test that we can do additional inserts after build
-INSERT INTO parallel_test (content) VALUES ('new document after build with unique terms');
--- Verify the new document is searchable
-SELECT COUNT(*) AS new_doc_found
-FROM parallel_test
-WHERE content <@> to_bm25query('unique', 'parallel_test_idx') < 0;
+SELECT COUNT(*) AS postgres_count FROM parallel_test_4workers
+WHERE content <@> to_bm25query('postgres', 'parallel_test_4workers_idx') < 0;
+ postgres_count 
+----------------
+          28572
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 5: Corner case - very short documents (single term)
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+CREATE TABLE parallel_test_short (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_short (content)
+SELECT CASE i % 10
+           WHEN 0 THEN 'alpha'
+           WHEN 1 THEN 'beta'
+           WHEN 2 THEN 'gamma'
+           WHEN 3 THEN 'delta'
+           WHEN 4 THEN 'epsilon'
+           WHEN 5 THEN 'zeta'
+           WHEN 6 THEN 'eta'
+           WHEN 7 THEN 'theta'
+           WHEN 8 THEN 'iota'
+           ELSE 'kappa'
+       END
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_short;
+CREATE INDEX parallel_test_short_idx ON parallel_test_short USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_short_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+-- Each term should appear in 10% of documents
+SELECT COUNT(*) AS alpha_count FROM parallel_test_short
+WHERE content <@> to_bm25query('alpha', 'parallel_test_short_idx') < 0;
+ alpha_count 
+-------------
+       10000
+(1 row)
+
+SELECT COUNT(*) AS beta_count FROM parallel_test_short
+WHERE content <@> to_bm25query('beta', 'parallel_test_short_idx') < 0;
+ beta_count 
+------------
+      10000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 6: Corner case - documents with many duplicate terms
+--------------------------------------------------------------------------------
+CREATE TABLE parallel_test_dupes (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_dupes (content)
+SELECT repeat('repeat ', (i % 50) + 1) || 'unique' || i
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_dupes;
+CREATE INDEX parallel_test_dupes_idx ON parallel_test_dupes USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_dupes_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+-- "repeat" appears in all documents with varying term frequency
+SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
+WHERE content <@> to_bm25query('repeat', 'parallel_test_dupes_idx') < 0;
+ repeat_count 
+--------------
+       100000
+(1 row)
+
+-- Each "unique" term appears exactly once
+SELECT COUNT(*) AS unique_count FROM parallel_test_dupes
+WHERE content <@> to_bm25query('unique1', 'parallel_test_dupes_idx') < 0;
+ unique_count 
+--------------
+            1
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 7: Corner case - NULL content (should be skipped)
+--------------------------------------------------------------------------------
+CREATE TABLE parallel_test_nulls (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_nulls (content)
+SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE 'document ' || i || ' has content' END
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_nulls;
+CREATE INDEX parallel_test_nulls_idx ON parallel_test_nulls USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_nulls_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+-- Only non-NULL documents should be indexed (90%)
+SELECT COUNT(*) AS document_count FROM parallel_test_nulls
+WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
+ document_count 
+----------------
+          90000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 8: Post-build operations work correctly
+--------------------------------------------------------------------------------
+-- Use the 2-worker table for post-build tests
+-- Additional inserts after parallel build
+INSERT INTO parallel_test_2workers (content)
+VALUES ('completely new unique document inserted after parallel build');
+-- Search for newly inserted content
+SELECT COUNT(*) AS new_doc_found FROM parallel_test_2workers
+WHERE content <@> to_bm25query('completely', 'parallel_test_2workers_idx') < 0;
  new_doc_found 
 ---------------
              1
 (1 row)
 
+-- VACUUM should work
+VACUUM parallel_test_2workers;
+-- Queries still work after VACUUM
+SELECT COUNT(*) AS apple_after_vacuum FROM parallel_test_2workers
+WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
+ apple_after_vacuum 
+--------------------
+              30000
+(1 row)
+
+-- Index stats still available
+SELECT bm25_summarize_index('parallel_test_2workers_idx') IS NOT NULL AS has_summary;
+ has_summary 
+-------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 9: Custom BM25 parameters with parallel build
+--------------------------------------------------------------------------------
+CREATE TABLE parallel_test_custom (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_custom (content)
+SELECT 'Testing custom parameters with document ' || i || ' and some text'
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_custom;
+-- Use non-default k1 and b parameters
+CREATE INDEX parallel_test_custom_idx ON parallel_test_custom USING bm25(content)
+  WITH (text_config='english', k1='1.5', b='0.5');
+NOTICE:  BM25 index build started for relation parallel_test_custom_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.50, b=0.50
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+SELECT COUNT(*) AS custom_count FROM parallel_test_custom
+WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
+ custom_count 
+--------------
+       100000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 10: Below threshold - should use serial even with workers configured
+--------------------------------------------------------------------------------
+-- Table with fewer than 100K rows should use serial build
+CREATE TABLE parallel_test_below_threshold (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+INSERT INTO parallel_test_below_threshold (content)
+SELECT 'Small table document ' || i
+FROM generate_series(1, 50000) AS i;
+ANALYZE parallel_test_below_threshold;
+-- Should NOT show "parallel index build" (below 100K threshold)
+CREATE INDEX parallel_test_below_idx ON parallel_test_below_threshold USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_below_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50000 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
+SELECT COUNT(*) AS small_count FROM parallel_test_below_threshold
+WHERE content <@> to_bm25query('small', 'parallel_test_below_idx') < 0;
+ small_count 
+-------------
+       50000
+(1 row)
+
+--------------------------------------------------------------------------------
 -- Cleanup
-DROP TABLE parallel_test CASCADE;
+--------------------------------------------------------------------------------
+DROP TABLE parallel_test_serial CASCADE;
+DROP TABLE parallel_test_1worker CASCADE;
+DROP TABLE parallel_test_2workers CASCADE;
+DROP TABLE parallel_test_4workers CASCADE;
+DROP TABLE parallel_test_short CASCADE;
+DROP TABLE parallel_test_dupes CASCADE;
+DROP TABLE parallel_test_nulls CASCADE;
+DROP TABLE parallel_test_custom CASCADE;
+DROP TABLE parallel_test_below_threshold CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

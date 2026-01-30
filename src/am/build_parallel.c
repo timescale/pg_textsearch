@@ -188,10 +188,9 @@ tp_build_parallel(
 	LaunchParallelWorkers(pcxt);
 	launched = pcxt->nworkers_launched;
 
-	elog(DEBUG1,
-		 "Parallel index build: requested %d workers, launched %d",
-		 nworkers,
-		 launched);
+	ereport(NOTICE,
+			(errmsg("parallel index build: launched %d of %d requested workers",
+					launched, nworkers)));
 
 	/*
 	 * Leader processes worker memtables and writes segments.
