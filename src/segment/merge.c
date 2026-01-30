@@ -1180,8 +1180,7 @@ write_merged_segment(
 	header_buf = ReadBuffer(index, header_block);
 	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 	header_page		= BufferGetPage(header_buf);
-	existing_header = (TpSegmentHeader *)((char *)header_page +
-										  SizeOfPageHeaderData);
+	existing_header = (TpSegmentHeader *)PageGetContents(header_page);
 
 	existing_header->dictionary_offset	 = header.dictionary_offset;
 	existing_header->strings_offset		 = header.strings_offset;
@@ -1494,9 +1493,8 @@ tp_merge_level_segments(Relation index, uint32 level)
 
 		seg_buf = ReadBuffer(index, new_segment);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page				 = BufferGetPage(seg_buf);
-		seg_header				 = (TpSegmentHeader *)((char *)seg_page +
-										   SizeOfPageHeaderData);
+		seg_page   = BufferGetPage(seg_buf);
+		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 		seg_header->next_segment = metap->level_heads[level + 1];
 		MarkBufferDirty(seg_buf);
 		UnlockReleaseBuffer(seg_buf);

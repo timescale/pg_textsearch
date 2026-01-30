@@ -173,7 +173,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	/* Copy header to reader structure */
 	reader->header = palloc(sizeof(TpSegmentHeader));
 	memcpy(reader->header,
-		   (char *)header_page + SizeOfPageHeaderData,
+		   PageGetContents(header_page),
 		   sizeof(TpSegmentHeader));
 
 	header = reader->header;
@@ -1386,10 +1386,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 	header_page = BufferGetPage(header_buf);
 
-	existing_header					= (TpSegmentHeader *)((char *)header_page +
-										  SizeOfPageHeaderData);
-	existing_header->strings_offset = header.strings_offset;
-	existing_header->entries_offset = header.entries_offset;
+	existing_header = (TpSegmentHeader *)PageGetContents(header_page);
+	existing_header->strings_offset		 = header.strings_offset;
+	existing_header->entries_offset		 = header.entries_offset;
 	existing_header->postings_offset	 = header.postings_offset;
 	existing_header->skip_index_offset	 = header.skip_index_offset;
 	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;

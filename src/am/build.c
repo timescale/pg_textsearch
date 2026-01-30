@@ -121,9 +121,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 			seg_buf = ReadBuffer(index_rel, segment_root);
 			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page				 = BufferGetPage(seg_buf);
-			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
-											   SizeOfPageHeaderData);
+			seg_page   = BufferGetPage(seg_buf);
+			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 			seg_header->next_segment = metap->level_heads[0];
 			MarkBufferDirty(seg_buf);
 			UnlockReleaseBuffer(seg_buf);
@@ -211,9 +210,8 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 			seg_buf = ReadBuffer(index_rel, segment_root);
 			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page				 = BufferGetPage(seg_buf);
-			seg_header				 = (TpSegmentHeader *)((char *)seg_page +
-											   SizeOfPageHeaderData);
+			seg_page   = BufferGetPage(seg_buf);
+			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 			seg_header->next_segment = metap->level_heads[0];
 			MarkBufferDirty(seg_buf);
 			UnlockReleaseBuffer(seg_buf);
@@ -944,8 +942,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					seg_buf = ReadBuffer(index, segment_root);
 					LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
 					seg_page   = BufferGetPage(seg_buf);
-					seg_header = (TpSegmentHeader *)((char *)seg_page +
-													 SizeOfPageHeaderData);
+					seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 					seg_header->next_segment = metap->level_heads[0];
 					MarkBufferDirty(seg_buf);
 					UnlockReleaseBuffer(seg_buf);

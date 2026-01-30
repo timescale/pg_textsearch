@@ -151,9 +151,8 @@ tp_worker_spill_memtable(
 
 		tail_buf = ReadBuffer(index, my_info->segment_tail);
 		LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-		tail_page				  = BufferGetPage(tail_buf);
-		tail_header				  = (TpSegmentHeader *)((char *)tail_page +
-											SizeOfPageHeaderData);
+		tail_page	= BufferGetPage(tail_buf);
+		tail_header = (TpSegmentHeader *)PageGetContents(tail_page);
 		tail_header->next_segment = seg_block;
 		MarkBufferDirty(tail_buf);
 		UnlockReleaseBuffer(tail_buf);
@@ -1021,7 +1020,7 @@ write_final_header(
 {
 	Buffer buf = ReadBuffer(index, header_block);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	memcpy((char *)BufferGetPage(buf) + SizeOfPageHeaderData,
+	memcpy(PageGetContents(BufferGetPage(buf)),
 		   header,
 		   sizeof(TpSegmentHeader));
 	MarkBufferDirty(buf);
@@ -1249,9 +1248,8 @@ tp_link_all_worker_segments(TpParallelBuildShared *shared, Relation index)
 
 			tail_buf = ReadBuffer(index, chain_tail);
 			LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-			tail_page				  = BufferGetPage(tail_buf);
-			tail_header				  = (TpSegmentHeader *)((char *)tail_page +
-												SizeOfPageHeaderData);
+			tail_page	= BufferGetPage(tail_buf);
+			tail_header = (TpSegmentHeader *)PageGetContents(tail_page);
 			tail_header->next_segment = worker_info[i].segment_head;
 			MarkBufferDirty(tail_buf);
 			UnlockReleaseBuffer(tail_buf);
