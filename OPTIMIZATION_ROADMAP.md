@@ -1,8 +1,8 @@
 # pg_textsearch: Storage and Query Optimization Design
 
-**Status**: Mostly implemented (v0.4.0)
+**Status**: Mostly implemented (v0.5.0)
 **Author**: Todd J. Green @ Tiger Data
-**Last updated**: 2026-01-12
+**Last updated**: 2026-01-30
 
 ---
 
@@ -18,16 +18,19 @@ Most high-impact query and indexing optimizations are now implemented:
 | Delta + bitpack compression | ✅ Done (v0.4.0) | 41% smaller indexes |
 | Fieldnorm quantization | ✅ Done (v0.2.0) | 1 byte vs 2-4 bytes per doc |
 | Doc ID mapping | ✅ Done (v0.2.0) | Compact u32 IDs, better compression |
-| Parallel index builds | 🔲 Not started | Faster bulk indexing |
+| Parallel index builds | ✅ Done (v0.5.0) | Faster bulk indexing |
 | SIMD decoding | 🔲 Not started | Minor speedup (~6% of query time) |
 | Dictionary compression | 🔲 Not started | Further size reduction |
+| Write concurrency | 🔲 Not started | Higher concurrent insert throughput |
 
 **Current performance**: Query performance is competitive with other leading
 Postgres-based solutions. See [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html).
 
-**Main remaining work**: Parallel index builds would significantly improve
-bulk indexing performance. The query path is well-optimized; further gains
-would come from SIMD decoding (minor) or dictionary compression (size only).
+**Main remaining work**: Write concurrency is currently limited—inserts are
+essentially serialized through a single memtable lock. Relaxing this would
+improve concurrent insert throughput. The query path is well-optimized;
+further gains would come from SIMD decoding (minor) or dictionary compression
+(size only).
 
 ---
 
