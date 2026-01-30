@@ -19,13 +19,26 @@
 
 ### v1.0.0 - Production Ready (Feb 2026)
 
-First production-quality release.
-
-- Performance tuning and polish
-- Benchmark validation on large datasets
-- Backwards compatibility commitments begin
+First production-quality release:
+- **Feature freeze** and multi-week **QA push**
+- Hold off on **performance tuning**
+- **Benchmark validation** on larger and more diverse datasets written up in blog post
+- **Backwards compatibility** commitments begin
+- Beef up **concurrent stress tests**
+- **Operational readiness** push (pg_dump/restore, pg_upgrade, VACUUM, and replication work correctly or limitations documented)
+- **Documentation improvements**
+- Continued **dogfooding** via Tiger Data internal projects
+- **Soak testing** under sustained load
 
 ### Future (Post v1.0)
 
+Definitely planned:
+- **Continued optimizations**: ongoing task, see [optimization roadmap](OPTIMIZATION_ROADMAP.md)
 - **Boolean queries**: AND/OR/NOT via `@@` operator
-- YOUR IDEA HERE
+- **Background compaction**: needed to avoid write stalls in update-heavy workloads
+
+Potential future work:
+
+- **Multi-tenant support**: tenant-id column supported, required for queries, under the covers there are many separate indexes, but only one from PG's point of view
+- **Positional queries**: major work item
+- **Faceted query optimizations**
