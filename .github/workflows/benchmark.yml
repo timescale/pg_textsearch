@@ -120,10 +120,14 @@ jobs:
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
+        # Parallel build requires maintenance_work_mem >= 32MB * (workers + 1)
+        # 1GB allows up to 31 workers
+        NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
         maintenance_work_mem = 1GB
+        max_parallel_maintenance_workers = $NCPUS
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
@@ -803,6 +807,8 @@ jobs:
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
         # Tune for benchmarking (ubuntu-latest: 4 vCPUs, 16GB RAM)
+        # Parallel build requires maintenance_work_mem >= 32MB * (workers + 1)
+        # 1GB allows up to 31 workers
         NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
