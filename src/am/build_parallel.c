@@ -1468,16 +1468,18 @@ tp_merge_worker_buffers_to_segment(
 
 /*
  * Clear a worker buffer's hash tables for reuse.
- * Destroys old tables and creates fresh empty ones.
+ * Frees all DSA allocations and creates fresh empty tables.
  */
 static void
 clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 {
 	if (buffer->string_hash_handle != 0)
 	{
-		dshash_table	 *old_string_table;
-		dshash_table	 *new_string_table;
-		dshash_parameters string_params;
+		dshash_table	  *old_string_table;
+		dshash_table	  *new_string_table;
+		dshash_parameters  string_params;
+		dshash_seq_status  seq_status;
+		TpStringHashEntry *entry;
 
 		string_params.key_size		   = sizeof(TpStringKey);
 		string_params.entry_size	   = sizeof(TpStringHashEntry);
@@ -1487,6 +1489,21 @@ clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 		string_params.tranche_id	   = TP_STRING_HASH_TRANCHE_ID;
 		old_string_table			   = dshash_attach(
 				  dsa, &string_params, buffer->string_hash_handle, dsa);
+
+		/* Free all DSA allocations before destroying hash table */
+		dshash_seq_init(&seq_status, old_string_table, true);
+		while ((entry = (TpStringHashEntry *)dshash_seq_next(&seq_status)) !=
+			   NULL)
+		{
+			/* Free the term string */
+			if (DsaPointerIsValid(entry->key.term.dp))
+				dsa_free(dsa, entry->key.term.dp);
+
+			/* Free posting list and its entries array */
+			tp_free_posting_list(dsa, entry->key.posting_list);
+		}
+		dshash_seq_term(&seq_status);
+
 		dshash_destroy(old_string_table);
 
 		new_string_table		   = tp_worker_create_string_table(dsa);
@@ -1509,6 +1526,7 @@ clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 		doc_params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
 		old_doc_table				= dshash_attach(
 				  dsa, &doc_params, buffer->doc_lengths_handle, dsa);
+		/* No DSA allocations in doc length entries - just destroy */
 		dshash_destroy(old_doc_table);
 
 		new_doc_table			   = tp_worker_create_doclength_table(dsa);
@@ -1918,7 +1936,9 @@ tp_worker_process_document(
 			char	   *stored_string;
 
 			/* Allocate string in DSA */
-			string_dp	  = dsa_allocate(dsa, term_len + 1);
+			string_dp = dsa_allocate(dsa, term_len + 1);
+			if (!DsaPointerIsValid(string_dp))
+				elog(ERROR, "Failed to allocate term string in worker");
 			stored_string = dsa_get_address(dsa, string_dp);
 			memcpy(stored_string, term_text, term_len);
 			stored_string[term_len] = '\0';
