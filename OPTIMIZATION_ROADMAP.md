@@ -22,6 +22,7 @@ Most high-impact query and indexing optimizations are now implemented:
 | SIMD decoding | 🔲 Not started | Minor speedup (~6% of query time) |
 | Dictionary compression | 🔲 Not started | Further size reduction |
 | Write concurrency | 🔲 Not started | Higher concurrent insert throughput |
+| Many-token query optimization | 🔲 Not started | Faster 8+ term queries (see BMW limitations) |
 
 **Current performance**: Query performance is competitive with other leading
 Postgres-based solutions. See [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html).
