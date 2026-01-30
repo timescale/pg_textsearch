@@ -115,10 +115,6 @@ typedef struct TpParallelBuildShared
 	ConditionVariable leader_wake_cv; /* Wake leader when work available */
 	int32			  workers_done;	  /* Number of workers finished */
 
-	/* Page pool for segment writes (leader only) */
-	int32			 total_pool_pages; /* Total pre-allocated pages */
-	pg_atomic_uint32 pool_next;		   /* Next page index */
-
 	/* Aggregate statistics */
 	pg_atomic_uint64 total_docs; /* Total documents indexed */
 	pg_atomic_uint64 total_len;	 /* Sum of all document lengths */
@@ -131,7 +127,6 @@ typedef struct TpParallelBuildShared
 	/*
 	 * Variable-length data follows:
 	 * - TpWorkerState worker_states[nworkers]
-	 * - BlockNumber page_pool[total_pool_pages]
 	 * - ParallelTableScanDescData (for parallel heap scan)
 	 */
 } TpParallelBuildShared;
@@ -147,17 +142,6 @@ TpParallelWorkerStates(TpParallelBuildShared *shared)
 }
 
 /*
- * Get pointer to page pool
- */
-static inline BlockNumber *
-TpParallelPagePool(TpParallelBuildShared *shared)
-{
-	char *base = (char *)TpParallelWorkerStates(shared);
-	base += MAXALIGN(sizeof(TpWorkerState) * shared->nworkers);
-	return (BlockNumber *)base;
-}
-
-/*
  * Get pointer to parallel table scan descriptor
  */
 static inline ParallelTableScanDesc
@@ -165,7 +149,6 @@ TpParallelTableScan(TpParallelBuildShared *shared)
 {
 	char *base = (char *)TpParallelWorkerStates(shared);
 	base += MAXALIGN(sizeof(TpWorkerState) * shared->nworkers);
-	base += MAXALIGN((size_t)shared->total_pool_pages * sizeof(BlockNumber));
 	return (ParallelTableScanDesc)base;
 }
 
@@ -187,9 +170,6 @@ extern struct IndexBuildResult *tp_build_parallel(
 extern PGDLLEXPORT void
 tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
 
-/* Page pool allocation during segment write */
-extern BlockNumber tp_pool_get_page(TpParallelBuildShared *shared);
-
 /* Estimate shared memory size needed for parallel build */
 extern Size tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages);
+		Relation heap, Snapshot snapshot, int nworkers);

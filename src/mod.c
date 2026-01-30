@@ -64,12 +64,6 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  */
 bool tp_compress_segments = true;
 
-/*
- * Multiplier for estimating index pages from heap size during parallel builds.
- * BM25 indexes are typically 30-50% of heap size; 0.5 provides safety margin.
- */
-double tp_parallel_build_expansion_factor = 0.5;
-
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -214,22 +208,6 @@ _PG_init(void)
 			"improves query performance by reducing I/O.",
 			&tp_compress_segments,
 			true,		 /* default on - benchmarks show net benefit */
-			PGC_USERSET, /* Can be changed per session */
-			0,
-			NULL,
-			NULL,
-			NULL);
-
-	DefineCustomRealVariable(
-			"pg_textsearch.parallel_build_expansion_factor",
-			"Multiplier for parallel build page pool size",
-			"Controls how many index pages to pre-allocate for parallel "
-			"builds, as a multiple of heap size. BM25 indexes are typically "
-			"30-50% of heap size; 0.5 provides safety margin.",
-			&tp_parallel_build_expansion_factor,
-			0.5,		 /* default */
-			0.1,		 /* min */
-			10.0,		 /* max */
 			PGC_USERSET, /* Can be changed per session */
 			0,
 			NULL,

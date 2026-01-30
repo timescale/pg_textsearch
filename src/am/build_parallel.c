@@ -8,10 +8,10 @@
  * - Workers scan the heap and build memtables in shared DSA memory
  * - Each worker has two memtables (double-buffering) for flow control
  * - Leader doesn't scan - it processes worker memtables and writes segments
- * - All disk I/O is done by the leader, ensuring contiguous page allocation
+ * - All disk I/O is done by the leader using P_NEW for dynamic allocation
  *
- * This design avoids fragmentation by having a single writer (the leader)
- * that allocates pages sequentially from the pre-allocated pool.
+ * This design maximizes parallelism by overlapping heap scanning (workers)
+ * with segment writing (leader).
  */
 #include <postgres.h>
 
@@ -50,14 +50,8 @@
 #include "segment/segment.h"
 #include "state/metapage.h"
 
-/* GUC: expansion factor for page pool estimation */
-extern double tp_parallel_build_expansion_factor;
-
 /* GUC: compression for segments */
 extern bool tp_compress_segments;
-
-/* Minimum pages to pre-allocate (64MB - covers small tables + page index) */
-#define TP_MIN_POOL_PAGES 8192
 
 /* Memory slop factor - use 90% of budget to avoid thrashing */
 #define TP_MEMORY_SLOP_FACTOR 0.9
@@ -75,9 +69,6 @@ static void tp_init_parallel_shared(
 		double				   b,
 		int					   nworkers,
 		dsa_area			  *dsa);
-
-static void
-tp_preallocate_page_pool(Relation index, TpParallelBuildShared *shared);
 
 static void tp_leader_process_buffers(
 		TpParallelBuildShared *shared, Relation index, dsa_area *dsa);
@@ -106,21 +97,11 @@ static TermInfo *build_dictionary_from_worker_buffer(
 		dsa_area *dsa, TpWorkerMemtableBuffer *buffer, uint32 *num_terms);
 
 /*
- * Estimate total pages needed for index build page pool
- */
-static int
-estimate_pool_pages(BlockNumber heap_pages)
-{
-	int pages = (int)(heap_pages * tp_parallel_build_expansion_factor);
-	return Max(pages, TP_MIN_POOL_PAGES);
-}
-
-/*
  * Estimate shared memory needed for parallel build
  */
 Size
 tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages)
+		Relation heap, Snapshot snapshot, int nworkers)
 {
 	Size size;
 
@@ -129,10 +110,6 @@ tp_parallel_build_estimate_shmem(
 
 	/* Per-worker state array */
 	size = add_size(size, MAXALIGN(sizeof(TpWorkerState) * nworkers));
-
-	/* Page pool */
-	size = add_size(
-			size, MAXALIGN((Size)total_pool_pages * sizeof(BlockNumber)));
 
 	/* Parallel table scan descriptor */
 	size = add_size(size, table_parallelscan_estimate(heap, snapshot));
@@ -158,7 +135,6 @@ tp_build_parallel(
 	TpParallelBuildShared *shared;
 	Snapshot			   snapshot;
 	Size				   shmem_size;
-	int					   total_pool_pages;
 	dsa_area			  *dsa;
 	int					   launched;
 
@@ -166,16 +142,12 @@ tp_build_parallel(
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
-	/* Estimate page pool size */
-	total_pool_pages = estimate_pool_pages(RelationGetNumberOfBlocks(heap));
-
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
 	snapshot = RegisterSnapshot(snapshot);
 
 	/* Calculate shared memory size */
-	shmem_size = tp_parallel_build_estimate_shmem(
-			heap, snapshot, nworkers, total_pool_pages);
+	shmem_size = tp_parallel_build_estimate_shmem(heap, snapshot, nworkers);
 
 	/* Enter parallel mode and create context */
 	EnterParallelMode();
@@ -205,10 +177,6 @@ tp_build_parallel(
 			b,
 			nworkers,
 			dsa);
-	shared->total_pool_pages = total_pool_pages;
-
-	/* Pre-allocate page pool */
-	tp_preallocate_page_pool(index, shared);
 
 	/* Initialize parallel table scan */
 	table_parallelscan_initialize(heap, TpParallelTableScan(shared), snapshot);
@@ -233,46 +201,6 @@ tp_build_parallel(
 
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
-
-	/* Truncate unused pool pages */
-	{
-		uint32		 pool_used = pg_atomic_read_u32(&shared->pool_next);
-		BlockNumber *pool	   = TpParallelPagePool(shared);
-		BlockNumber	 nblocks   = RelationGetNumberOfBlocks(index);
-		BlockNumber	 truncate_to;
-
-		elog(DEBUG1,
-			 "Pool truncation: pool_used=%u, total_pool=%d, pool[0]=%u, "
-			 "nblocks=%u",
-			 pool_used,
-			 shared->total_pool_pages,
-			 pool[0],
-			 nblocks);
-
-		if (pool_used > 0 && pool_used < (uint32)shared->total_pool_pages)
-		{
-			truncate_to = pool[0] + pool_used;
-			elog(DEBUG1,
-				 "Truncating: truncate_to=%u, condition=%s",
-				 truncate_to,
-				 truncate_to < nblocks ? "true" : "false");
-			if (truncate_to < nblocks)
-			{
-				ForkNumber forknum = MAIN_FORKNUM;
-#if PG_VERSION_NUM >= 180000
-				smgrtruncate(
-						RelationGetSmgr(index),
-						&forknum,
-						1,
-						&nblocks,
-						&truncate_to);
-#else
-				smgrtruncate(
-						RelationGetSmgr(index), &forknum, 1, &truncate_to);
-#endif
-			}
-		}
-	}
 
 	/* Update metapage with L0 chain and statistics */
 	{
@@ -300,8 +228,7 @@ tp_build_parallel(
 	/*
 	 * Final truncation: after compaction, L0 segment pages are freed but the
 	 * file isn't shrunk. We truncate to the minimum needed size by finding
-	 * the highest used block from segment locations. This is important for
-	 * parallel builds where we pre-allocate many pages.
+	 * the highest used block from segment locations.
 	 *
 	 * We use tp_segment_collect_pages to get ALL pages (data + page index)
 	 * since page index pages can be located anywhere in the file.
@@ -438,7 +365,6 @@ tp_init_parallel_shared(
 	shared->workers_done = 0;
 
 	/* Initialize atomic counters */
-	pg_atomic_init_u32(&shared->pool_next, 0);
 	pg_atomic_init_u64(&shared->total_docs, 0);
 	pg_atomic_init_u64(&shared->total_len, 0);
 
@@ -488,58 +414,6 @@ tp_init_parallel_shared(
 			worker_states[i].buffers[j].memory_used	   = 0;
 		}
 	}
-}
-
-/*
- * Pre-allocate page pool for segment writes
- */
-static void
-tp_preallocate_page_pool(Relation index, TpParallelBuildShared *shared)
-{
-	BlockNumber *pool;
-	int			 i;
-
-	pool = TpParallelPagePool(shared);
-
-	/* Extend relation and collect block numbers */
-	for (i = 0; i < shared->total_pool_pages; i++)
-	{
-		Buffer buf = ReadBufferExtended(
-				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		pool[i] = BufferGetBlockNumber(buf);
-		PageInit(BufferGetPage(buf), BLCKSZ, 0);
-		MarkBufferDirty(buf);
-		UnlockReleaseBuffer(buf);
-	}
-
-	/* Flush to ensure durability */
-	smgrimmedsync(RelationGetSmgr(index), MAIN_FORKNUM);
-
-	elog(DEBUG1,
-		 "Pre-allocated %d pages for parallel build (blocks %u-%u)",
-		 shared->total_pool_pages,
-		 pool[0],
-		 pool[shared->total_pool_pages - 1]);
-}
-
-/*
- * Get a page from the pool (called by leader during segment write)
- */
-BlockNumber
-tp_pool_get_page(TpParallelBuildShared *shared)
-{
-	BlockNumber *pool = TpParallelPagePool(shared);
-	uint32		 idx  = pg_atomic_fetch_add_u32(&shared->pool_next, 1);
-
-	if (idx >= (uint32)shared->total_pool_pages)
-	{
-		elog(ERROR,
-			 "Parallel build page pool exhausted (%d pages). "
-			 "Increase pg_textsearch.parallel_build_expansion_factor.",
-			 shared->total_pool_pages);
-	}
-
-	return pool[idx];
 }
 
 /*
@@ -1075,8 +949,6 @@ tp_merge_worker_buffers_to_segment(
 	TpSegmentWriter		 writer;
 	TpSegmentHeader		 header;
 	TpDictionary		 dict;
-	BlockNumber			*page_pool;
-	pg_atomic_uint32	*pool_next;
 	uint32				*string_offsets;
 	uint32				 string_pos;
 	uint32				 i;
@@ -1186,13 +1058,8 @@ tp_merge_worker_buffers_to_segment(
 		return InvalidBlockNumber;
 	}
 
-	/* Get page pool from shared state */
-	page_pool = TpParallelPagePool(shared);
-	pool_next = &shared->pool_next;
-
-	/* Initialize writer with page pool */
-	tp_segment_writer_init_with_pool(
-			&writer, index, page_pool, shared->total_pool_pages, pool_next);
+	/* Initialize segment writer - will extend relation as needed */
+	tp_segment_writer_init(&writer, index);
 
 	if (writer.pages_allocated > 0)
 	{
@@ -1452,14 +1319,9 @@ tp_merge_worker_buffers_to_segment(
 	 */
 	writer.buffer_pos = SizeOfPageHeaderData;
 
-	/* Page index is written from pool */
-	page_index_root = write_page_index_from_pool(
-			index,
-			writer.pages,
-			writer.pages_allocated,
-			page_pool,
-			shared->total_pool_pages,
-			pool_next);
+	/* Write page index (extends relation as needed) */
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
 	header.page_index = page_index_root;
 
 	/* Finalize header */
