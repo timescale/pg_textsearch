@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769739679586,
+  "lastUpdate": 1769741835281,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1765,6 +1765,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Build Time",
             "value": 252.506,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "a9cf8f4b5aa880608a7dfbc736429b2693a6028e",
+          "message": "chore: add max_parallel_maintenance_workers to Cranfield benchmark\n\nAlso add comments explaining the maintenance_work_mem requirement\nfor parallel builds (32MB per worker + leader).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-30T01:59:09Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a9cf8f4b5aa880608a7dfbc736429b2693a6028e"
+        },
+        "date": 1769741833864,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 261.247,
             "unit": "ms"
           },
           {
