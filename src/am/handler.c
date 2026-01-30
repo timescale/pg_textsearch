@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * am/handler.c - BM25 access method handler and options
+ * handler.c - BM25 access method handler and options
  */
 #include <postgres.h>
 

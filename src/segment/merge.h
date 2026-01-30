@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment_merge.h - Segment merge for LSM-style compaction
+ * merge.h - Segment merge for LSM-style compaction
  */
 #pragma once
 

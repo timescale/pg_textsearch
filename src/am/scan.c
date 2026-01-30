@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * am/scan.c - BM25 index scan operations
+ * scan.c - BM25 index scan operations
  */
 #include <postgres.h>
 

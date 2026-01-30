@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * planner/cost.h - Cost estimation for BM25 index scans
+ * cost.h - Cost estimation for BM25 index scans
  */
 #pragma once
 

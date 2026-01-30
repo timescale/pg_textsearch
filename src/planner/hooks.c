@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * planner/hooks.c - Parse analysis and planner hooks
+ * hooks.c - Parse analysis and planner hooks
  *
  * When queries use the <@> operator without an explicit index, this hook
  * identifies the column being scored and finds a suitable BM25 index.

@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * am/vacuum.c - BM25 index vacuum and maintenance operations
+ * vacuum.c - BM25 index vacuum and maintenance operations
  */
 #include <postgres.h>
 

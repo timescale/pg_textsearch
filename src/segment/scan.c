@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * segment/scan.c - Zero-copy scan execution for segments
+ * scan.c - Zero-copy scan execution for segments
  */
 #include <postgres.h>
 

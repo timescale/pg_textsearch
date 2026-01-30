@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * am/build_parallel.c - Parallel index build implementation
+ * build_parallel.c - Parallel index build implementation
  *
  * Architecture:
  * - Workers scan the heap and build memtables in shared DSA memory
