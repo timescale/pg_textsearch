@@ -8,7 +8,7 @@
  * - Workers scan the heap and build memtables in shared DSA memory
  * - Each worker has two memtables (double-buffering) for flow control
  * - Leader doesn't scan - it processes worker memtables and writes segments
- * - All disk I/O is done by the leader using P_NEW for dynamic allocation
+ * - All index writes done by leader, ensuring sequential page allocation
  *
  * This design maximizes parallelism by overlapping heap scanning (workers)
  * with segment writing (leader).
