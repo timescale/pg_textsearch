@@ -663,8 +663,11 @@ tp_process_document(
 		return false;
 	}
 
-	/* Store the docid for crash recovery (only during index build) */
-	tp_add_docid_to_pages(index, ctid);
+	/*
+	 * Skip docid pages during bulk build - they're only needed for crash
+	 * recovery during normal inserts. CREATE INDEX is atomic so if it fails,
+	 * the entire index is discarded.
+	 */
 
 	(*total_docs)++;
 	return true;
@@ -784,8 +787,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					 "Large table (%.0f tuples) with only %d parallel "
 					 "workers. "
 					 "Consider increasing max_parallel_maintenance_workers "
-					 "for "
-					 "faster index builds.",
+					 "and "
+					 "maintenance_work_mem (need 32MB per worker) for faster "
+					 "builds.",
 					 reltuples,
 					 nworkers);
 			}
@@ -802,8 +806,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 */
 			elog(NOTICE,
 				 "Large table (%.0f tuples) but parallel build disabled. "
-				 "Set max_parallel_maintenance_workers > 0 for faster index "
-				 "builds.",
+				 "Set max_parallel_maintenance_workers > 0 and ensure "
+				 "maintenance_work_mem >= 64MB for faster builds.",
 				 reltuples);
 		}
 	}

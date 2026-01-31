@@ -120,12 +120,14 @@ jobs:
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
+        # Parallel build requires maintenance_work_mem >= 32MB * (workers + 1)
+        # 1GB allows up to 31 workers
+        NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 4GB
         maintenance_work_mem = 1GB
-        pg_textsearch.index_memory_limit = 512MB
-        pg_textsearch.parallel_build_expansion_factor = 2.0
+        max_parallel_maintenance_workers = $NCPUS
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
@@ -749,7 +751,7 @@ jobs:
 
   # Full benchmark suite
   full-benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores  # 16 vCPUs, 64 GB RAM for parallel scaling tests
     timeout-minutes: 360  # 6 hours max for full Wikipedia
 
     steps:
@@ -805,6 +807,8 @@ jobs:
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
 
         # Tune for benchmarking (ubuntu-latest: 4 vCPUs, 16GB RAM)
+        # Parallel build requires maintenance_work_mem >= 32MB * (workers + 1)
+        # 1GB allows up to 31 workers
         NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
         unix_socket_directories = '$PWD/tmp_bench/socket'
@@ -820,9 +824,7 @@ jobs:
         max_parallel_maintenance_workers = $NCPUS
         max_parallel_workers_per_gather = $NCPUS
         max_parallel_workers = $NCPUS
-        pg_textsearch.index_memory_limit = 512MB
         pg_textsearch.segments_per_level = 16
-        pg_textsearch.parallel_build_expansion_factor = 2.0
         EOF
 
         # Enable compression if requested

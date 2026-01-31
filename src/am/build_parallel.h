@@ -3,15 +3,23 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * am/build_parallel.h - Parallel index build structures
+ *
+ * Architecture:
+ * - Workers scan heap and build memtables in shared DSA memory
+ * - Leader merges memtables into L0 segments and writes to disk
+ * - Each worker has two memtables (double-buffering) to avoid blocking
+ * - All writes are done by the leader, ensuring contiguous page allocation
  */
 #pragma once
 
 #include <postgres.h>
 
 #include <access/parallel.h>
+#include <lib/dshash.h>
 #include <storage/block.h>
 #include <storage/condition_variable.h>
 #include <storage/spin.h>
+#include <utils/dsa.h>
 #include <utils/relcache.h>
 
 /*
@@ -23,35 +31,64 @@
 /*
  * Shared memory keys for parallel build TOC
  */
-#define TP_PARALLEL_KEY_SHARED		 UINT64CONST(0xB175DA7A00000001)
-#define TP_PARALLEL_KEY_WORKER_INFO	 UINT64CONST(0xB175DA7A00000002)
-#define TP_PARALLEL_KEY_PAGE_POOLS	 UINT64CONST(0xB175DA7A00000003)
-#define TP_PARALLEL_KEY_TABLE_SCAN	 UINT64CONST(0xB175DA7A00000004)
-#define TP_PARALLEL_KEY_WAL_USAGE	 UINT64CONST(0xB175DA7A00000005)
-#define TP_PARALLEL_KEY_BUFFER_USAGE UINT64CONST(0xB175DA7A00000006)
+#define TP_PARALLEL_KEY_SHARED	   UINT64CONST(0xB175DA7A00000001)
+#define TP_PARALLEL_KEY_TABLE_SCAN UINT64CONST(0xB175DA7A00000004)
 
 /*
- * Per-worker segment tracking
- *
- * Each worker maintains its own chain of segments. After the build completes,
- * the leader links all worker chains into L0 and runs compaction if needed.
+ * Worker memtable buffer status
  */
-typedef struct TpWorkerSegmentInfo
+typedef enum TpWorkerBufferStatus
 {
-	BlockNumber segment_head;  /* First segment written by this worker */
-	BlockNumber segment_tail;  /* Last segment (for chaining) */
-	int32		segment_count; /* Number of segments written */
+	TP_BUFFER_EMPTY = 0, /* Buffer available for worker to fill */
+	TP_BUFFER_FILLING,	 /* Worker is currently filling this buffer */
+	TP_BUFFER_READY,	 /* Buffer has data, leader can process it */
+	TP_BUFFER_DONE		 /* Worker is done, no more data coming */
+} TpWorkerBufferStatus;
 
-	/* Statistics accumulated by this worker */
-	int64 docs_indexed; /* Documents processed */
-	int64 total_len;	/* Sum of document lengths */
-} TpWorkerSegmentInfo;
+/*
+ * Per-worker memtable buffer info
+ *
+ * Each worker has two buffers for double-buffering. The worker fills one
+ * while the leader processes the other.
+ */
+typedef struct TpWorkerMemtableBuffer
+{
+	pg_atomic_uint32 status; /* TpWorkerBufferStatus */
+
+	/* Memtable data (stored in shared DSA) */
+	dshash_table_handle string_hash_handle; /* Term -> posting list */
+	dshash_table_handle doc_lengths_handle; /* CTID -> doc length */
+
+	/* Statistics for this buffer */
+	int32 num_docs;		  /* Documents in this buffer */
+	int64 total_len;	  /* Sum of document lengths */
+	int64 total_postings; /* Total posting entries (for spill threshold) */
+} TpWorkerMemtableBuffer;
+
+/*
+ * Per-worker state in shared memory
+ */
+typedef struct TpWorkerState
+{
+	/* Double-buffered memtables */
+	TpWorkerMemtableBuffer buffers[2];
+
+	/* Which buffer the worker is currently filling (0 or 1) */
+	pg_atomic_uint32 active_buffer;
+
+	/* Signaling */
+	ConditionVariable buffer_ready_cv;	  /* Worker signals: buffer ready */
+	ConditionVariable buffer_consumed_cv; /* Leader signals: buffer consumed */
+
+	/* Worker status */
+	pg_atomic_uint32 scan_complete;	 /* Worker finished scanning */
+	pg_atomic_uint64 tuples_scanned; /* Progress counter */
+} TpWorkerState;
 
 /*
  * Shared state for parallel index build
  *
  * Stored in DSM segment, accessible to all workers and leader.
- * All mutable fields must be accessed atomically or under mutex.
  */
 typedef struct TpParallelBuildShared
 {
@@ -62,55 +99,41 @@ typedef struct TpParallelBuildShared
 	AttrNumber attnum;			/* Attribute number of indexed column */
 	double	   k1;				/* BM25 k1 parameter */
 	double	   b;				/* BM25 b parameter */
-	int32	   worker_count;	/* Total workers (including leader) */
+	int32	   nworkers;		/* Number of background workers (not including
+								   leader) */
 
-	/* Per-worker memory budget for memtable (in bytes) */
-	Size memory_budget_per_worker;
+	/* DSA for shared memtable allocations */
+	dsa_handle memtable_dsa_handle; /* Handle for attaching to DSA */
 
-	/* Worker coordination */
-	slock_t			  mutex;		 /* Protects mutable scalar fields */
-	ConditionVariable workersdonecv; /* Signaled when worker completes */
-	int32			  workers_done;	 /* Number of workers finished */
-	bool leader_working; /* True if leader participates as worker */
+	/* Leader coordination */
+	slock_t			  mutex;		  /* Protects mutable scalar fields */
+	ConditionVariable leader_wake_cv; /* Wake leader when work available */
+	int32			  workers_done;	  /* Number of workers finished */
 
-	/* Aggregate statistics (updated atomically) */
-	pg_atomic_uint64 tuples_scanned; /* Progress counter */
-	pg_atomic_uint64 total_docs;	 /* Total documents indexed */
-	pg_atomic_uint64 total_len;		 /* Sum of all document lengths */
+	/* Aggregate statistics */
+	pg_atomic_uint64 total_docs; /* Total documents indexed */
+	pg_atomic_uint64 total_len;	 /* Sum of all document lengths */
 
-	/* Page pool management - single shared pool for all workers */
-	int32			 total_pool_pages; /* Total pre-allocated pages */
-	pg_atomic_uint32 shared_pool_next; /* Next page index (shared counter) */
-	pg_atomic_uint32 pool_exhausted;   /* Non-zero if pool exhausted */
-	pg_atomic_uint32 max_block_used;   /* Highest block number used */
+	/* L0 segment tracking (leader writes these) */
+	BlockNumber segment_head;  /* First L0 segment */
+	BlockNumber segment_tail;  /* Last L0 segment (for chaining) */
+	int32		segment_count; /* Number of L0 segments written */
 
 	/*
 	 * Variable-length data follows:
-	 * - TpWorkerSegmentInfo worker_info[worker_count]
-	 * - BlockNumber page_pool[total_pool_pages] (shared by all workers)
+	 * - TpWorkerState worker_states[nworkers]
 	 * - ParallelTableScanDescData (for parallel heap scan)
 	 */
 } TpParallelBuildShared;
 
 /*
- * Get pointer to worker info array
+ * Get pointer to worker state array
  */
-static inline TpWorkerSegmentInfo *
-TpParallelWorkerInfo(TpParallelBuildShared *shared)
+static inline TpWorkerState *
+TpParallelWorkerStates(TpParallelBuildShared *shared)
 {
-	return (TpWorkerSegmentInfo *)((char *)shared +
-								   MAXALIGN(sizeof(TpParallelBuildShared)));
-}
-
-/*
- * Get pointer to shared page pool
- */
-static inline BlockNumber *
-TpParallelPagePool(TpParallelBuildShared *shared)
-{
-	char *base = (char *)TpParallelWorkerInfo(shared);
-	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	return (BlockNumber *)base;
+	return (TpWorkerState *)((char *)shared +
+							 MAXALIGN(sizeof(TpParallelBuildShared)));
 }
 
 /*
@@ -119,9 +142,8 @@ TpParallelPagePool(TpParallelBuildShared *shared)
 static inline ParallelTableScanDesc
 TpParallelTableScan(TpParallelBuildShared *shared)
 {
-	char *base = (char *)TpParallelWorkerInfo(shared);
-	base += MAXALIGN(sizeof(TpWorkerSegmentInfo) * shared->worker_count);
-	base += MAXALIGN((size_t)shared->total_pool_pages * sizeof(BlockNumber));
+	char *base = (char *)TpParallelWorkerStates(shared);
+	base += MAXALIGN(sizeof(TpWorkerState) * shared->nworkers);
 	return (ParallelTableScanDesc)base;
 }
 
@@ -143,10 +165,6 @@ extern struct IndexBuildResult *tp_build_parallel(
 extern PGDLLEXPORT void
 tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc);
 
-/* Page pool allocation during segment write */
-extern BlockNumber
-tp_pool_get_page(TpParallelBuildShared *shared, int worker_id, Relation index);
-
 /* Estimate shared memory size needed for parallel build */
 extern Size tp_parallel_build_estimate_shmem(
-		Relation heap, Snapshot snapshot, int nworkers, int total_pool_pages);
+		Relation heap, Snapshot snapshot, int nworkers);

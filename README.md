@@ -14,7 +14,7 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-⚠️ **Pre-release**: v0.5.0-dev - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds index compression; parallel builds coming soon. See [ROADMAP.md](ROADMAP.md) for details.
+⚠️ **Pre-release**: v0.5.0-dev - GA expected Feb 2026. Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds parallel index builds. See [ROADMAP.md](ROADMAP.md) for details.
 
 ![Tapir and Friends](images/tapir_and_friends_v0.5.0-dev.png)
 
@@ -234,14 +234,18 @@ Postgres automatically uses parallel workers based on table size and configurati
 ```sql
 -- Configure parallel workers (optional, uses server defaults otherwise)
 SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '256MB';  -- At least 64MB required for parallel builds
 
 -- Create index (parallel workers used automatically for large tables)
 CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
 ```
 
+**Note:** The planner requires `maintenance_work_mem >= 64MB` to enable parallel index
+builds. With insufficient memory, builds fall back to serial mode silently.
+
 You'll see a notice when parallel build is used:
 ```
-NOTICE:  Using parallel index build with 4 workers (1000000 tuples)
+NOTICE:  parallel index build: launched 4 of 4 requested workers
 ```
 
 For partitioned tables, each partition builds its index independently with parallel

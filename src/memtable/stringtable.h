@@ -20,8 +20,13 @@ typedef struct TpStringHashEntry TpStringHashEntry;
 /*
  * Key structure that supports both lookup via char* and storage via
  * dsa_pointer. posting_list is set to InvalidDsaPointer for lookup keys and
- * non-InvalidDsaPointer for table entry keys.  Tricky but voids allocations
+ * non-InvalidDsaPointer for table entry keys.  Tricky but avoids allocations
  * for lookups while saving space in the hash table.
+ *
+ * For lookup keys: term.str points to (possibly non-null-terminated) string,
+ * len contains the string length.
+ * For stored keys: term.dp points to null-terminated DSA string, len is
+ * unused.
  */
 typedef struct TpStringKey
 {
@@ -32,6 +37,7 @@ typedef struct TpStringKey
 	} term;
 
 	dsa_pointer posting_list;
+	uint32		len; /* String length for lookup keys (avoids strlen) */
 } TpStringKey;
 
 /* Helper function to get the string from a key */
