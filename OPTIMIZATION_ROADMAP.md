@@ -29,9 +29,10 @@ Postgres-based solutions. See [benchmarks](https://timescale.github.io/pg_textse
 
 **Main remaining work**: Write concurrency is currently limited—inserts are
 essentially serialized through a single memtable lock. Relaxing this would
-improve concurrent insert throughput. The query path is well-optimized;
-further gains would come from SIMD decoding (minor) or dictionary compression
-(size only).
+improve concurrent insert throughput. Many-token queries (8+ terms) are slower
+than they could be—our current BMW implementation evaluates all terms at each
+candidate document; a buffered union approach could reduce overhead. Further
+gains would come from SIMD decoding (minor) or dictionary compression (size).
 
 ---
 

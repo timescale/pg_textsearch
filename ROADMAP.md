@@ -36,6 +36,7 @@ Definitely planned:
 - **Continued optimizations**: ongoing task, see [optimization roadmap](OPTIMIZATION_ROADMAP.md)
 - **Boolean queries**: AND/OR/NOT via `@@` operator
 - **Background compaction**: needed to avoid write stalls in update-heavy workloads
+- **Expression index** support
 
 Potential future work:
 
