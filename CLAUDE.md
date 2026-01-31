@@ -143,6 +143,8 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill | 100000 |
 | `pg_textsearch.memtable_spill_threshold` | Posting entries to trigger spill | 32000000 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
+| `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
+
 
 ### Index Options
 
@@ -219,6 +221,7 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_summarize_index(index_name)` - Shows high-level index statistics
 - `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
   returns number of entries spilled
+- `bm25_debug_pageviz(index_name, file_path)` - Generate page layout visualization
 
 ## Parallel Index Build
 
