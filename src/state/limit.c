@@ -141,28 +141,3 @@ tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit)
 
 	return true;
 }
-
-/*
- * Initialize GUC parameters for the limits module
- *
- * Called from _PG_init() in mod.c during extension initialization
- */
-void
-tp_limits_init(void)
-{
-	DefineCustomIntVariable(
-			"pg_textsearch.default_limit",
-			"Default limit for BM25 queries when no LIMIT is detected",
-			"Controls the maximum number of documents to process when no "
-			"LIMIT "
-			"clause is present",
-			&tp_default_limit,
-			TP_DEFAULT_QUERY_LIMIT, /* default 1000 */
-			1,						/* min 1 */
-			TP_MAX_QUERY_LIMIT,		/* max 100k */
-			PGC_USERSET,
-			0,
-			NULL,
-			NULL,
-			NULL);
-}
