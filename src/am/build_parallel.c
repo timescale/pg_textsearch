@@ -53,9 +53,6 @@
 /* GUC: compression for segments */
 extern bool tp_compress_segments;
 
-/* Memory slop factor - use 90% of budget to avoid thrashing */
-#define TP_MEMORY_SLOP_FACTOR 0.9
-
 /*
  * Forward declarations
  */
@@ -74,7 +71,6 @@ static void tp_leader_process_buffers(
 		TpParallelBuildShared *shared, Relation index, dsa_area *dsa);
 
 static BlockNumber tp_merge_worker_buffers_to_segment(
-		TpParallelBuildShared	*shared,
 		TpWorkerMemtableBuffer **buffers,
 		int						 num_buffers,
 		Relation				 index,
@@ -144,7 +140,10 @@ tp_build_parallel(
 
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
+#if PG_VERSION_NUM >= 180000
+	/* PG18: Must register the snapshot for index builds */
 	snapshot = RegisterSnapshot(snapshot);
+#endif
 
 	/* Calculate shared memory size */
 	shmem_size = tp_parallel_build_estimate_shmem(heap, snapshot, nworkers);
@@ -161,7 +160,7 @@ tp_build_parallel(
 	InitializeParallelDSM(pcxt);
 
 	/* Create DSA for shared memtable allocations */
-	dsa = dsa_create(LWTRANCHE_PARALLEL_HASH_JOIN);
+	dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
 	dsa_pin(dsa);
 	dsa_pin_mapping(dsa);
 
@@ -317,7 +316,9 @@ tp_build_parallel(
 	dsa_detach(dsa);
 	DestroyParallelContext(pcxt);
 	ExitParallelMode();
+#if PG_VERSION_NUM >= 180000
 	UnregisterSnapshot(snapshot);
+#endif
 
 	return result;
 }
@@ -339,7 +340,6 @@ tp_init_parallel_shared(
 {
 	TpWorkerState *worker_states;
 	int			   i;
-	Size		   memory_budget;
 
 	memset(shared, 0, sizeof(TpParallelBuildShared));
 
@@ -354,11 +354,6 @@ tp_init_parallel_shared(
 
 	/* DSA handle for workers to attach */
 	shared->memtable_dsa_handle = dsa_get_handle(dsa);
-
-	/* Per-worker memory budget (split maintenance_work_mem across workers) */
-	memory_budget = ((Size)maintenance_work_mem * 1024) / nworkers;
-	shared->memory_budget_per_worker = (Size)(memory_budget *
-											  TP_MEMORY_SLOP_FACTOR);
 
 	/* Initialize coordination primitives */
 	SpinLockInit(&shared->mutex);
@@ -409,10 +404,8 @@ tp_init_parallel_shared(
 			dshash_detach(doclength_table);
 
 			worker_states[i].buffers[j].num_docs	   = 0;
-			worker_states[i].buffers[j].num_terms	   = 0;
 			worker_states[i].buffers[j].total_len	   = 0;
 			worker_states[i].buffers[j].total_postings = 0;
-			worker_states[i].buffers[j].memory_used	   = 0;
 		}
 	}
 }
@@ -484,6 +477,7 @@ tp_parallel_build_worker_main(
 				ConditionVariableSleep(
 						&my_state->buffer_consumed_cv,
 						WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
+				CHECK_FOR_INTERRUPTS();
 			}
 			ConditionVariableCancelSleep();
 
@@ -892,7 +886,7 @@ build_merged_docmap_from_buffers(
 		dshash_seq_status		seq_status;
 		TpDocLengthEntry	   *doc_entry;
 
-		if (buffer->doc_lengths_handle == 0)
+		if (buffer->doc_lengths_handle == DSHASH_HANDLE_INVALID)
 			continue;
 
 		doclength_table =
@@ -933,7 +927,6 @@ typedef struct MergeTermBlockInfo
  */
 static BlockNumber
 tp_merge_worker_buffers_to_segment(
-		TpParallelBuildShared	*shared,
 		TpWorkerMemtableBuffer **buffers,
 		int						 num_buffers,
 		Relation				 index,
@@ -960,8 +953,7 @@ tp_merge_worker_buffers_to_segment(
 	TpSkipEntry			*all_skip_entries;
 	uint32				 skip_entries_count;
 	uint32				 skip_entries_capacity;
-	uint32				 total_docs = 0;
-	int64				 total_len	= 0;
+	int64				 total_len = 0;
 
 	if (num_buffers == 0)
 		return InvalidBlockNumber;
@@ -972,7 +964,6 @@ tp_merge_worker_buffers_to_segment(
 	{
 		if (worker_merge_source_init(&sources[num_sources], dsa, buffers[i]))
 		{
-			total_docs += buffers[i]->num_docs;
 			total_len += buffers[i]->total_len;
 			num_sources++;
 		}
@@ -1473,7 +1464,7 @@ tp_merge_worker_buffers_to_segment(
 static void
 clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 {
-	if (buffer->string_hash_handle != 0)
+	if (buffer->string_hash_handle != DSHASH_HANDLE_INVALID)
 	{
 		dshash_table	  *old_string_table;
 		dshash_table	  *new_string_table;
@@ -1512,7 +1503,7 @@ clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 		dshash_detach(new_string_table);
 	}
 
-	if (buffer->doc_lengths_handle != 0)
+	if (buffer->doc_lengths_handle != DSHASH_HANDLE_INVALID)
 	{
 		dshash_table	 *old_doc_table;
 		dshash_table	 *new_doc_table;
@@ -1537,10 +1528,8 @@ clear_worker_buffer(dsa_area *dsa, TpWorkerMemtableBuffer *buffer)
 
 	/* Clear buffer stats */
 	buffer->num_docs	   = 0;
-	buffer->num_terms	   = 0;
 	buffer->total_len	   = 0;
 	buffer->total_postings = 0;
-	buffer->memory_used	   = 0;
 }
 
 /*
@@ -1620,7 +1609,7 @@ tp_leader_process_buffers(
 
 			/* Merge ready buffers directly to segment */
 			seg_block = tp_merge_worker_buffers_to_segment(
-					shared, ready_buffers, num_ready, index, dsa);
+					ready_buffers, num_ready, index, dsa);
 
 			if (seg_block != InvalidBlockNumber)
 			{
@@ -1703,10 +1692,6 @@ tp_leader_process_buffers(
 	pfree(ready_buffers);
 }
 
-/*
- * dshash parameters for string table (parallel-safe version)
- * Uses LWTRANCHE_PARALLEL_HASH_JOIN which is registered in parallel workers.
- */
 /*
  * Get string and length from key.
  * Lookup keys use explicit len field; stored keys use strlen on DSA string.
@@ -1833,7 +1818,6 @@ tp_worker_process_document(
 	int			  i;
 	dshash_table *string_table;
 	dshash_table *doclength_table;
-	Size		  memory_delta = 0;
 
 	/* Get text value */
 	text_datum = slot_getattr(slot, attnum, &isnull);
@@ -1946,9 +1930,6 @@ tp_worker_process_document(
 			/* Convert key from lookup (char*) to storage (dsa_pointer) */
 			entry->key.term.dp		= string_dp;
 			entry->key.posting_list = tp_alloc_posting_list(dsa);
-
-			buffer->num_terms++;
-			memory_delta += term_len + 1 + sizeof(TpPostingList) + 64;
 		}
 
 		posting_list = dsa_get_address(dsa, entry->key.posting_list);
@@ -1985,7 +1966,6 @@ tp_worker_process_document(
 
 			posting_list->entries_dp = new_entries_dp;
 			posting_list->capacity	 = new_capacity;
-			memory_delta += new_size;
 		}
 
 		/* Add document to posting list */
@@ -2011,9 +1991,6 @@ tp_worker_process_document(
 		doc_entry->ctid = *ctid;
 		doc_entry->doc_length = doc_length;
 		dshash_release_lock(doclength_table, doc_entry);
-
-		if (!found)
-			memory_delta += sizeof(TpDocLengthEntry);
 	}
 
 	/* Detach from hash tables */
@@ -2023,7 +2000,6 @@ tp_worker_process_document(
 	/* Update statistics */
 	buffer->num_docs++;
 	buffer->total_len += doc_length;
-	buffer->memory_used += memory_delta;
 }
 
 /*
@@ -2052,7 +2028,7 @@ build_dictionary_from_worker_buffer(
 	uint32			   capacity = 1024;
 	dshash_parameters  params;
 
-	if (buffer->string_hash_handle == 0)
+	if (buffer->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
 		*num_terms = 0;
 		return NULL;

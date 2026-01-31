@@ -806,8 +806,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 */
 			elog(NOTICE,
 				 "Large table (%.0f tuples) but parallel build disabled. "
-				 "Set max_parallel_maintenance_workers > 0 for faster index "
-				 "builds.",
+				 "Set max_parallel_maintenance_workers > 0 and ensure "
+				 "maintenance_work_mem >= 64MB for faster builds.",
 				 reltuples);
 		}
 	}

@@ -61,10 +61,8 @@ typedef struct TpWorkerMemtableBuffer
 
 	/* Statistics for this buffer */
 	int32 num_docs;		  /* Documents in this buffer */
-	int32 num_terms;	  /* Unique terms in this buffer */
 	int64 total_len;	  /* Sum of document lengths */
 	int64 total_postings; /* Total posting entries (for spill threshold) */
-	Size  memory_used;	  /* Approximate memory used */
 } TpWorkerMemtableBuffer;
 
 /*
@@ -103,9 +101,6 @@ typedef struct TpParallelBuildShared
 	double	   b;				/* BM25 b parameter */
 	int32	   nworkers;		/* Number of background workers (not including
 								   leader) */
-
-	/* Per-worker memory budget for memtable (in bytes) */
-	Size memory_budget_per_worker;
 
 	/* DSA for shared memtable allocations */
 	dsa_handle memtable_dsa_handle; /* Handle for attaching to DSA */
