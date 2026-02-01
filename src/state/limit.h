@@ -46,8 +46,3 @@ void tp_cleanup_query_limits(void);
  * LIMIT pushdown analysis for cost estimation
  */
 bool tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit);
-
-/*
- * Module initialization
- */
-void tp_limits_init(void);
