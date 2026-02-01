@@ -15,6 +15,7 @@
 #   --download  - Download dataset if not present
 #   --load      - Load data and create index (drops existing)
 #   --query     - Run query benchmarks only
+#   --validate  - Validate query results against precomputed ground truth
 #   --report    - Generate markdown report
 #   --port PORT - Postgres port (default: 5433 for release build)
 
@@ -34,6 +35,7 @@ DATASET=""
 DO_DOWNLOAD=false
 DO_LOAD=false
 DO_QUERY=false
+DO_VALIDATE=false
 DO_REPORT=false
 
 # Parse arguments
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --query)
             DO_QUERY=true
+            shift
+            ;;
+        --validate)
+            DO_VALIDATE=true
             shift
             ;;
         --report)
@@ -76,6 +82,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --download  - Download dataset if not present"
             echo "  --load      - Load data and create index"
             echo "  --query     - Run query benchmarks"
+            echo "  --validate  - Validate results against precomputed ground truth"
             echo "  --report    - Generate markdown report"
             echo "  --port PORT - Postgres port (default: 5433)"
             exit 0
@@ -88,11 +95,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Default: run everything if no specific action requested
-if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_REPORT; then
+if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_VALIDATE && ! $DO_REPORT; then
     DO_DOWNLOAD=true
     DO_LOAD=true
     DO_QUERY=true
     DO_REPORT=true
+    # Note: validation is opt-in, not run by default
 fi
 
 if [ -z "$DATASET" ]; then
@@ -175,6 +183,40 @@ run_benchmark() {
             echo ""
             echo "Query benchmark time: ${query_time}s"
             echo "QUERY_TIME_${dataset}=${query_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        fi
+    fi
+
+    # Validation
+    if $DO_VALIDATE; then
+        local ground_truth_file="$dataset_dir/ground_truth.tsv"
+        local validate_script="$dataset_dir/validate_queries.sql"
+
+        if [ -f "$validate_script" ]; then
+            if [ -f "$ground_truth_file" ]; then
+                echo ""
+                echo "--- Validating $dataset query results ---"
+                local validate_log="$RESULTS_DIR/${dataset}_validation_${TIMESTAMP}.log"
+
+                psql -f "$validate_script" 2>&1 | tee "$validate_log"
+
+                # Check for validation failures
+                if grep -q "VALIDATION FAILED" "$validate_log"; then
+                    echo ""
+                    echo "WARNING: Validation failures detected!"
+                    echo "VALIDATION_${dataset}=FAILED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+                else
+                    echo ""
+                    echo "Validation passed"
+                    echo "VALIDATION_${dataset}=PASSED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+                fi
+            else
+                echo ""
+                echo "--- Skipping validation: ground_truth.tsv not found ---"
+                echo "Generate ground truth with: psql -f $dataset_dir/precompute_ground_truth.sql"
+            fi
+        else
+            echo ""
+            echo "--- Skipping validation: validate_queries.sql not found ---"
         fi
     fi
 }
