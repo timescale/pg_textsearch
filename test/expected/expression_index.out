@@ -2,10 +2,17 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v0.5.0-dev installed
 SET enable_seqscan = off;
+CREATE TABLE owners (
+    id serial PRIMARY KEY,
+    name text
+);
 CREATE TABLE product_logs (
     id serial PRIMARY KEY,
     data jsonb
 );
+INSERT INTO owners (name) VALUES
+    ('Ada Lovelace'),
+    ('Grace Hopper');
 INSERT INTO product_logs (data) VALUES
     ('{"title": "Super Widget", "details": "High performance widget for database engineers"}'),
     ('{"title": "Mega Gadget", "details": "Optimized gadget with low latency"}');
@@ -16,10 +23,11 @@ NOTICE:  BM25 index build started for relation idx_json_details
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=4.50, text_config='english' (k1=1.20, b=0.75)
+-- Basic ORDER BY uses implicit index resolution for the expression index.
 EXPLAIN (COSTS OFF)
 SELECT id
 FROM product_logs
-ORDER BY (data->>'details') <@> to_bm25query('widget')
+ORDER BY (data->>'details') <@> 'widget'
 LIMIT 2;
                                        QUERY PLAN                                        
 -----------------------------------------------------------------------------------------
@@ -37,5 +45,33 @@ LIMIT 2;
   1 | High performance widget for database engineers
 (1 row)
 
+-- Varno normalization: indexed table is second in the range table list.
+EXPLAIN (COSTS OFF)
+SELECT l.id
+FROM owners o
+JOIN product_logs l ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget'
+LIMIT 2;
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ Limit
+   ->  Nested Loop
+         ->  Index Scan using idx_json_details on product_logs l
+               Order By: ((data ->> 'details'::text) <@> 'idx_json_details:widget'::bm25query)
+         ->  Index Only Scan using owners_pkey on owners o
+               Index Cond: (id = l.id)
+(6 rows)
+
+SELECT l.id, l.data->>'details' AS details
+FROM owners o
+JOIN product_logs l ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget', l.id
+LIMIT 2;
+ id |                    details                     
+----+------------------------------------------------
+  1 | High performance widget for database engineers
+(1 row)
+
 DROP TABLE product_logs CASCADE;
+DROP TABLE owners CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

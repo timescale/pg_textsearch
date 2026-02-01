@@ -4,10 +4,19 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 SET enable_seqscan = off;
 
+CREATE TABLE owners (
+    id serial PRIMARY KEY,
+    name text
+);
+
 CREATE TABLE product_logs (
     id serial PRIMARY KEY,
     data jsonb
 );
+
+INSERT INTO owners (name) VALUES
+    ('Ada Lovelace'),
+    ('Grace Hopper');
 
 INSERT INTO product_logs (data) VALUES
     ('{"title": "Super Widget", "details": "High performance widget for database engineers"}'),
@@ -17,10 +26,11 @@ CREATE INDEX idx_json_details ON product_logs
 USING bm25 ((data->>'details'))
 WITH (text_config='english', k1=1.2, b=0.75);
 
+-- Basic ORDER BY uses implicit index resolution for the expression index.
 EXPLAIN (COSTS OFF)
 SELECT id
 FROM product_logs
-ORDER BY (data->>'details') <@> to_bm25query('widget')
+ORDER BY (data->>'details') <@> 'widget'
 LIMIT 2;
 
 SELECT id, data->>'details' AS details
@@ -28,5 +38,20 @@ FROM product_logs
 ORDER BY (data->>'details') <@> 'widget', id
 LIMIT 2;
 
+-- Varno normalization: indexed table is second in the range table list.
+EXPLAIN (COSTS OFF)
+SELECT l.id
+FROM owners o
+JOIN product_logs l ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget'
+LIMIT 2;
+
+SELECT l.id, l.data->>'details' AS details
+FROM owners o
+JOIN product_logs l ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget', l.id
+LIMIT 2;
+
 DROP TABLE product_logs CASCADE;
+DROP TABLE owners CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
