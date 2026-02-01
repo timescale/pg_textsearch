@@ -957,6 +957,7 @@ tp_rebuild_posting_lists_from_docids(
 
 			/* Place the tuple into the scan tuple slot */
 			ExecStoreBufferHeapTuple(tuple, slot, heap_buf);
+			GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
 			/* Extract the text_datum */
 			FormIndexDatum(index_info, slot, estate, text_datum, isnull);
 
@@ -983,6 +984,7 @@ tp_rebuild_posting_lists_from_docids(
 				}
 			}
 
+			ReleaseBuffer(heap_buf);
 			ExecClearTuple(slot);
 			ResetExprContext(econtext);
 		}

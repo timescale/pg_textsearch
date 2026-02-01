@@ -641,6 +641,7 @@ tp_process_document(
 	ItemPointer ctid;
 	int32		doc_length;
 
+	GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
 	FormIndexDatum(index_info, slot, estate, text_datum, isnull);
 
 	if (isnull[0])

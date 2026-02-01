@@ -1828,6 +1828,7 @@ tp_worker_process_document(
 	dshash_table *doclength_table;
 
 	/* Get text value */
+	GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
 	FormIndexDatum(index_info, slot, estate, text_datum, isnull);
 	if (isnull[0])
 		return; /* Skip NULL documents */
