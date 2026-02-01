@@ -785,7 +785,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			}
 
 			return tp_build_parallel(
-					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+					heap, index, text_config_oid, k1, b, nworkers);
 		}
 
 		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)

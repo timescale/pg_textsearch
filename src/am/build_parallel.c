@@ -448,6 +448,10 @@ tp_parallel_build_worker_main(
 	pg_atomic_write_u32(
 			&my_state->buffers[active_buf].status, TP_BUFFER_FILLING);
 
+	/* Set up executor state and context for expression evaluation */
+	estate	 = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+
 	/* Process tuples */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
