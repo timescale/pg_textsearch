@@ -72,6 +72,56 @@ LIMIT 2;
   1 | High performance widget for database engineers
 (1 row)
 
+-- Parallel build for expression indexes.
+-- Lower thresholds so the table qualifies for parallel build.
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = '256MB';
+SET max_parallel_maintenance_workers = 2;
+CREATE TABLE product_logs_parallel (
+    id serial PRIMARY KEY,
+    data jsonb
+);
+INSERT INTO product_logs_parallel (data)
+SELECT jsonb_build_object(
+           'title', 'Product ' || i,
+           'details', 'Parallel build widget details ' || i ||
+                      ' for full text search'
+       )
+FROM generate_series(1, 100000) AS i;
+ANALYZE product_logs_parallel;
+CREATE INDEX product_logs_parallel_idx ON product_logs_parallel
+USING bm25 ((data->>'details'))
+WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation product_logs_parallel_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM product_logs_parallel
+ORDER BY (data->>'details') <@> 'widget'
+LIMIT 5;
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using product_logs_parallel_idx on product_logs_parallel
+         Order By: ((data ->> 'details'::text) <@> 'product_logs_parallel_idx:widget'::bm25query)
+(3 rows)
+
+SELECT id
+FROM product_logs_parallel
+ORDER BY (data->>'details') <@> 'widget', id
+LIMIT 5;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+(5 rows)
+
 DROP TABLE product_logs CASCADE;
 DROP TABLE owners CASCADE;
+DROP TABLE product_logs_parallel CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
