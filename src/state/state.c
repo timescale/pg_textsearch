@@ -12,6 +12,7 @@
 #include <access/genam.h>
 #include <access/heapam.h>
 #include <access/relation.h>
+#include <catalog/index.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -846,12 +847,12 @@ tp_rebuild_posting_lists_from_docids(
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
 	Relation		   heap_rel;
-	EState			  *estate	  = NULL;
-	ExprContext		  *econtext	  = NULL;
-	ExprState		  *expr_state = NULL;
-	TupleTableSlot	  *slot		  = NULL;
-	List			  *indexExprs = NULL;
-	AttrNumber		   attnum;
+	IndexInfo		  *index_info;
+	TupleTableSlot	  *slot		= NULL;
+	EState			  *estate	= NULL;
+	ExprContext		  *econtext = NULL;
+	Datum			   text_datum[INDEX_MAX_KEYS];
+	bool			   isnull[INDEX_MAX_KEYS];
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
@@ -864,28 +865,11 @@ tp_rebuild_posting_lists_from_docids(
 		 index_rel->rd_id);
 
 	/* Open the heap relation to fetch document text */
-	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
-
-	attnum = index_rel->rd_index->indkey.values[0];
-
-	/* If is an expr index, be ready to evaluate exprs */
-	if (attnum == 0)
-	{
-		indexExprs = RelationGetIndexExpressions(index_rel);
-
-		if (indexExprs && list_length(indexExprs) > 0)
-		{
-			/* bm25 is not a multi-column index, so take the first expr */
-			Expr *expr = (Expr *)linitial(indexExprs);
-
-			estate	 = CreateExecutorState();
-			econtext = GetPerTupleExprContext(estate);
-
-			slot = table_slot_create(heap_rel, NULL);
-
-			expr_state = ExecInitExpr(expr, NULL);
-		}
-	}
+	heap_rel   = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+	index_info = BuildIndexInfo(index_rel);
+	estate	   = CreateExecutorState();
+	econtext   = GetPerTupleExprContext(estate);
+	slot	   = table_slot_create(heap_rel, NULL);
 
 	current_page = metap->first_docid_page;
 
@@ -925,8 +909,6 @@ tp_rebuild_posting_lists_from_docids(
 			HeapTuple	  tuple = &tuple_data;
 			Buffer		  heap_buf;
 			bool		  valid;
-			Datum		  text_datum;
-			bool		  isnull;
 			text		 *document_text;
 			int32		  doc_length;
 			BlockNumber	  heap_blkno;
@@ -973,24 +955,13 @@ tp_rebuild_posting_lists_from_docids(
 				continue; /* Skip invalid documents */
 			}
 
-			/* Extract text from the indexed column. */
-			if (attnum == 0)
-			{
-				ExecStoreBufferHeapTuple(tuple, slot, heap_buf);
+			/* Place the tuple into the scan tuple slot */
+			ExecStoreBufferHeapTuple(tuple, slot, heap_buf);
+			FormIndexDatum(index_info, slot, estate, text_datum, isnull);
 
-				econtext->ecxt_scantuple = slot;
-				text_datum				 = ExecEvalExprSwitchContext(
-						  expr_state, econtext, &isnull);
-			}
-			else
+			if (!isnull[0])
 			{
-				text_datum = heap_getattr(
-						tuple, attnum, RelationGetDescr(heap_rel), &isnull);
-			}
-
-			if (!isnull)
-			{
-				document_text = DatumGetTextPP(text_datum);
+				document_text = DatumGetTextPP(text_datum[0]);
 
 				/*
 				 * Use shared helper to process document text and rebuild
@@ -1012,8 +983,7 @@ tp_rebuild_posting_lists_from_docids(
 			}
 
 			ReleaseBuffer(heap_buf);
-			if (econtext)
-				ResetExprContext(econtext);
+			ResetExprContext(econtext);
 		}
 
 		/* Move to next page */
@@ -1022,12 +992,8 @@ tp_rebuild_posting_lists_from_docids(
 		UnlockReleaseBuffer(docid_buf);
 	}
 
-	if (slot)
-		ExecDropSingleTupleTableSlot(slot);
-	if (estate)
-		FreeExecutorState(estate);
-	if (indexExprs)
-		list_free(indexExprs);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
 	relation_close(heap_rel, AccessShareLock);
 
 	/* Log recovery completion */
