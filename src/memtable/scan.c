@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable/scan.c - Memtable scan operations
+ * scan.c - Memtable scan operations
  *
  * This module provides the search interface for scanning the memtable
  * (and segments) during index scans.

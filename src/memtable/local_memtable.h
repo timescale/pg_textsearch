@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable/local_memtable.h - Per-worker local memtable for parallel builds
+ * local_memtable.h - Per-worker local memtable for parallel builds
  *
  * Unlike the shared DSA-based memtable, a local memtable uses palloc'd memory
  * private to a single backend. This eliminates contention during parallel

@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable/posting_entry.h - Common posting entry type
+ * posting_entry.h - Common posting entry type
  *
  * This type is shared between the DSA-based shared memtable and the
  * palloc-based local memtable used in parallel builds.

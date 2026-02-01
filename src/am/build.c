@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * am/build.c - BM25 index build, insert, and spill operations
+ * build.c - BM25 index build, insert, and spill operations
  */
 #include <postgres.h>
 

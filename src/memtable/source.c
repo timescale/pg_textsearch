@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * memtable/source.c - Memtable implementation of TpDataSource
+ * source.c - Memtable implementation of TpDataSource
  */
 #include <postgres.h>
 
