@@ -93,14 +93,13 @@ typedef struct TpWorkerState
 typedef struct TpParallelBuildShared
 {
 	/* Immutable configuration (set before workers launch) */
-	Oid		   heaprelid;		/* Heap relation OID */
-	Oid		   indexrelid;		/* Index relation OID */
-	Oid		   text_config_oid; /* Text search configuration OID */
-	AttrNumber attnum;			/* Attribute number of indexed column */
-	double	   k1;				/* BM25 k1 parameter */
-	double	   b;				/* BM25 b parameter */
-	int32	   nworkers;		/* Number of background workers (not including
-								   leader) */
+	Oid	   heaprelid;		/* Heap relation OID */
+	Oid	   indexrelid;		/* Index relation OID */
+	Oid	   text_config_oid; /* Text search configuration OID */
+	double k1;				/* BM25 k1 parameter */
+	double b;				/* BM25 b parameter */
+	int32  nworkers;		/* Number of background workers (not including
+							   leader) */
 
 	/* DSA for shared memtable allocations */
 	dsa_handle memtable_dsa_handle; /* Handle for attaching to DSA */
@@ -153,13 +152,12 @@ TpParallelTableScan(TpParallelBuildShared *shared)
 
 /* Main parallel build entry point */
 extern struct IndexBuildResult *tp_build_parallel(
-		Relation		  heap,
-		Relation		  index,
-		struct IndexInfo *indexInfo,
-		Oid				  text_config_oid,
-		double			  k1,
-		double			  b,
-		int				  nworkers);
+		Relation heap,
+		Relation index,
+		Oid		 text_config_oid,
+		double	 k1,
+		double	 b,
+		int		 nworkers);
 
 /* Worker entry point (called by parallel infrastructure) */
 extern PGDLLEXPORT void
