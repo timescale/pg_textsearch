@@ -1,4 +1,4 @@
--- pg_textsearch extension version 0.5.0-dev
+-- pg_textsearch extension version 0.5.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -181,7 +181,7 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
 -- Display version info
 DO $$
 BEGIN
-    RAISE INFO 'pg_textsearch v0.5.0-dev installed';
+    RAISE INFO 'pg_textsearch v0.5.0 installed';
 END
 $$;
 

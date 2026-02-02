@@ -1,7 +1,7 @@
 -- Test lock upgrade from shared to exclusive within a single transaction
 -- This exercises the tp_acquire_index_lock upgrade path
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.5.0 installed
 -- Create test table and index
 CREATE TABLE lock_upgrade_test (
     id SERIAL PRIMARY KEY,

@@ -1,6 +1,6 @@
 -- Test unlogged index behavior and initialization fork creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.5.0 installed
 -- Create UNLOGGED table and index
 CREATE UNLOGGED TABLE unlogged_test (
     id SERIAL PRIMARY KEY,

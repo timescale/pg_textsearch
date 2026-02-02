@@ -1,6 +1,6 @@
 -- Test parameter "text_config" accepts qualified names
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.5.0 installed
 -- Create table
 CREATE TABLE text_config_tbl (
     id SERIAL PRIMARY KEY,

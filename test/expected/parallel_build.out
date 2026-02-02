@@ -1,7 +1,7 @@
 -- Test case: parallel_build
 -- Tests parallel index build with various worker counts and corner cases
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.5.0-dev installed
+INFO:  pg_textsearch v0.5.0 installed
 SET enable_seqscan = off;
 -- Lower threshold so our test tables qualify for parallel build
 SET min_parallel_table_scan_size = 0;
