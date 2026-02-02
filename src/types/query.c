@@ -253,8 +253,10 @@ tpquery_out(PG_FUNCTION_ARGS)
 
 /*
  * tpquery receive function (binary input)
- * Binary format: version (1 byte) + index_oid (4 bytes) + query_text_len (4
- * bytes) + query_text
+ * Binary format v1: version (1 byte) + index_oid (4 bytes) + query_text_len
+ *                   (4 bytes) + query_text
+ * Binary format v2: version (1 byte) + flags (1 byte) + index_oid (4 bytes) +
+ *                   query_text_len (4 bytes) + query_text
  */
 Datum
 tpquery_recv(PG_FUNCTION_ARGS)
@@ -262,20 +264,26 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	StringInfo buf = (StringInfo)PG_GETARG_POINTER(0);
 	TpQuery	  *result;
 	uint8	   version;
+	uint8	   flags = 0;
 	Oid		   index_oid;
 	int32	   query_text_len;
 	char	  *query_text;
+	bool	   explicit_index;
 
 	/* Read and validate version */
 	version = pq_getmsgbyte(buf);
-	if (version != TPQUERY_VERSION)
+	if (version != 1 && version != 2)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
 				 errmsg("unsupported bm25query binary format version %u",
 						version),
-				 errhint("Expected version %u. This may indicate data from "
-						 "an incompatible pg_textsearch version.",
-						 TPQUERY_VERSION)));
+				 errhint("Expected version 1 or 2. This may indicate data "
+						 "from "
+						 "an incompatible pg_textsearch version.")));
+
+	/* Read flags for v2+ */
+	if (version >= 2)
+		flags = pq_getmsgbyte(buf);
 
 	index_oid	   = pq_getmsgint(buf, sizeof(Oid));
 	query_text_len = pq_getmsgint(buf, sizeof(int32));
@@ -290,7 +298,8 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	pq_copymsgbytes(buf, query_text, query_text_len);
 	query_text[query_text_len] = '\0';
 
-	result = create_tpquery(query_text, index_oid);
+	explicit_index = (flags & TPQUERY_FLAG_EXPLICIT_INDEX) != 0;
+	result = create_tpquery_explicit(query_text, index_oid, explicit_index);
 	pfree(query_text);
 
 	PG_RETURN_POINTER(result);
@@ -298,8 +307,8 @@ tpquery_recv(PG_FUNCTION_ARGS)
 
 /*
  * tpquery send function (binary output)
- * Binary format: version (1 byte) + index_oid (4 bytes) + query_text_len (4
- * bytes) + query_text
+ * Binary format v2: version (1 byte) + flags (1 byte) + index_oid (4 bytes) +
+ *                   query_text_len (4 bytes) + query_text
  */
 Datum
 tpquery_send(PG_FUNCTION_ARGS)
@@ -310,6 +319,7 @@ tpquery_send(PG_FUNCTION_ARGS)
 
 	pq_begintypsend(&buf);
 	pq_sendint8(&buf, TPQUERY_VERSION);
+	pq_sendint8(&buf, tpquery->flags);
 	pq_sendint32(&buf, tpquery->index_oid);
 	pq_sendint32(&buf, tpquery->query_text_len);
 
@@ -1024,21 +1034,23 @@ tpquery_eq(PG_FUNCTION_ARGS)
 }
 
 /*
- * Utility function to create a tpquery with resolved index OID
+ * Utility function to create a tpquery with resolved index OID and flags.
  */
 TpQuery *
-create_tpquery(const char *query_text, Oid index_oid)
+create_tpquery_explicit(
+		const char *query_text, Oid index_oid, bool explicit_index)
 {
 	TpQuery *result;
 	int		 query_text_len = strlen(query_text);
 	int		 total_size;
 
-	/* Calculate total size: header + version + oid + text_len + text + null */
+	/* Calculate total size */
 	total_size = offsetof(TpQuery, data) + query_text_len + 1;
 
 	result = (TpQuery *)palloc0(total_size);
 	SET_VARSIZE(result, total_size);
 	result->version		   = TPQUERY_VERSION;
+	result->flags		   = explicit_index ? TPQUERY_FLAG_EXPLICIT_INDEX : 0;
 	result->index_oid	   = index_oid;
 	result->query_text_len = query_text_len;
 
@@ -1050,7 +1062,18 @@ create_tpquery(const char *query_text, Oid index_oid)
 }
 
 /*
- * Create a tpquery from index name (resolves name to OID)
+ * Utility function to create a tpquery with resolved index OID.
+ * Index is marked as NOT explicit (for implicit resolution).
+ */
+TpQuery *
+create_tpquery(const char *query_text, Oid index_oid)
+{
+	return create_tpquery_explicit(query_text, index_oid, false);
+}
+
+/*
+ * Create a tpquery from index name (resolves name to OID).
+ * Index is marked as EXPLICIT since user provided the name.
  *
  * Partitioned indexes are allowed - they will be resolved to the
  * appropriate partition index at scan time.
@@ -1058,7 +1081,8 @@ create_tpquery(const char *query_text, Oid index_oid)
 TpQuery *
 create_tpquery_from_name(const char *query_text, const char *index_name)
 {
-	Oid index_oid = InvalidOid;
+	Oid	 index_oid		= InvalidOid;
+	bool explicit_index = false;
 
 	if (index_name != NULL)
 	{
@@ -1069,9 +1093,10 @@ create_tpquery_from_name(const char *query_text, const char *index_name)
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("index \"%s\" does not exist", index_name)));
 		}
+		explicit_index = true;
 	}
 
-	return create_tpquery(query_text, index_oid);
+	return create_tpquery_explicit(query_text, index_oid, explicit_index);
 }
 
 /*
@@ -1099,6 +1124,20 @@ bool
 tpquery_has_index(TpQuery *tpquery)
 {
 	return OidIsValid(tpquery->index_oid);
+}
+
+/*
+ * Check if tpquery has an explicitly specified index.
+ * Returns true only if user called to_bm25query(text, index_name).
+ * Returns false for implicitly resolved indexes.
+ */
+bool
+tpquery_is_explicit_index(TpQuery *tpquery)
+{
+	/* Version 1 didn't have flags, treat as non-explicit */
+	if (tpquery->version < 2)
+		return false;
+	return (tpquery->flags & TPQUERY_FLAG_EXPLICIT_INDEX) != 0;
 }
 
 /*

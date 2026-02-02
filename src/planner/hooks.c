@@ -17,6 +17,7 @@
 #include <catalog/namespace.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_index.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
 #include <catalog/pg_proc.h>
 #include <catalog/pg_type.h>
@@ -178,6 +179,42 @@ get_bm25_oids(BM25OidCache *cache)
 }
 
 /*
+ * Check if an index is on a specific column of a table.
+ * Returns true if the index is on the given table and column.
+ */
+static bool
+index_is_on_column(Oid index_oid, Oid relid, AttrNumber attnum)
+{
+	HeapTuple	  idx_tuple;
+	Form_pg_index idx_form;
+	bool		  result = false;
+
+	idx_tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(idx_tuple))
+		return false;
+
+	idx_form = (Form_pg_index)GETSTRUCT(idx_tuple);
+
+	/* Check if index is on the correct table */
+	if (idx_form->indrelid == relid)
+	{
+		/* Check if index is on the correct column */
+		int nkeys = idx_form->indnatts;
+		for (int i = 0; i < nkeys; i++)
+		{
+			if (idx_form->indkey.values[i] == attnum)
+			{
+				result = true;
+				break;
+			}
+		}
+	}
+
+	ReleaseSysCache(idx_tuple);
+	return result;
+}
+
+/*
  * Find BM25 index for a column.
  */
 static Oid
@@ -328,6 +365,7 @@ create_opexpr(Oid opno, Node *left, Node *right, Oid inputcollid, int location)
 /*
  * Transform text <@> bm25query with unresolved index.
  * Returns transformed OpExpr or NULL if no transformation needed.
+ * Also validates that explicit indexes are on the correct column.
  */
 static Node *
 transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
@@ -361,8 +399,47 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 		return NULL;
 
 	tpquery = (TpQuery *)DatumGetPointer(constNode->constvalue);
+
+	/*
+	 * If the bm25query has an explicit index, validate that the index is on
+	 * the column being queried. This catches cases where the user specifies
+	 * an index that is on a different column (GitHub issue #194).
+	 */
 	if (OidIsValid(tpquery->index_oid))
-		return NULL; /* Already resolved */
+	{
+		if (IsA(left, Var))
+		{
+			Var		  *var = (Var *)left;
+			Oid		   relid;
+			AttrNumber attnum;
+
+			if (get_var_relation_and_attnum(
+						var, context->query, &relid, &attnum))
+			{
+				if (!index_is_on_column(tpquery->index_oid, relid, attnum))
+				{
+					char *index_name = get_rel_name(tpquery->index_oid);
+					char *col_name	 = get_attname(relid, attnum, false);
+					char *table_name = get_rel_name(relid);
+
+					ereport(ERROR,
+							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+							 errmsg("index \"%s\" is not on column \"%s\"",
+									index_name ? index_name : "(unknown)",
+									col_name ? col_name : "(unknown)"),
+							 errdetail("The explicitly specified index is not "
+									   "built on the column being searched."),
+							 errhint("Use an index that is built on column "
+									 "\"%s\" of table \"%s\", or omit the "
+									 "index name to use automatic index "
+									 "resolution.",
+									 col_name ? col_name : "(unknown)",
+									 table_name ? table_name : "(unknown)")));
+				}
+			}
+		}
+		return NULL; /* Already resolved, validation passed */
+	}
 
 	if (!IsA(left, Var))
 		return NULL;
@@ -800,6 +877,288 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 }
 
 /*
+ * Extract a TpQuery from an expression, if present.
+ * Returns NULL if the expression doesn't contain a bm25query constant.
+ */
+static TpQuery *
+extract_tpquery_from_expr(Node *node, BM25OidCache *oids)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr *)node;
+
+		if (opexpr->opno == oids->text_tpquery_operator_oid &&
+			list_length(opexpr->args) == 2)
+		{
+			Node *right = lsecond(opexpr->args);
+
+			if (IsA(right, Const))
+			{
+				Const *constNode = (Const *)right;
+
+				if (constNode->consttype == oids->tpquery_type_oid &&
+					!constNode->constisnull)
+				{
+					return (TpQuery *)DatumGetPointer(constNode->constvalue);
+				}
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/*
+ * Find a TpQuery in a list of expressions.
+ * Returns NULL if no bm25query constant found.
+ */
+static TpQuery *
+find_tpquery_in_list(List *exprlist, BM25OidCache *oids)
+{
+	ListCell *lc;
+
+	foreach (lc, exprlist)
+	{
+		Node	*node	 = (Node *)lfirst(lc);
+		TpQuery *tpquery = extract_tpquery_from_expr(node, oids);
+
+		if (tpquery != NULL)
+			return tpquery;
+	}
+
+	return NULL;
+}
+
+/*
+ * Check if scan_index is a descendant of specified_index (for partitioned
+ * tables). Returns true if specified_index is a partitioned index and
+ * scan_index is one of its descendants (child, grandchild, etc.).
+ *
+ * This walks up the inheritance chain from scan_index to see if it eventually
+ * reaches specified_index.
+ */
+static bool
+is_child_partition_index(Oid specified_index_oid, Oid scan_index_oid)
+{
+	char relkind;
+	Oid	 current_oid;
+	int	 depth;
+
+	/* Check if specified index is a partitioned index */
+	relkind = get_rel_relkind(specified_index_oid);
+	if (relkind != RELKIND_PARTITIONED_INDEX)
+		return false;
+
+	/*
+	 * Walk up the inheritance chain from scan_index_oid. At each step, look
+	 * up the parent in pg_inherits. If we reach specified_index_oid, return
+	 * true. Limit depth to prevent infinite loops.
+	 */
+	current_oid = scan_index_oid;
+	for (depth = 0; depth < 100; depth++)
+	{
+		Relation	inhrel;
+		SysScanDesc scan;
+		HeapTuple	tuple;
+		ScanKeyData skey;
+		Oid			parent_oid = InvalidOid;
+
+		inhrel = table_open(InheritsRelationId, AccessShareLock);
+
+		ScanKeyInit(
+				&skey,
+				Anum_pg_inherits_inhrelid,
+				BTEqualStrategyNumber,
+				F_OIDEQ,
+				ObjectIdGetDatum(current_oid));
+
+		scan = systable_beginscan(
+				inhrel, InheritsRelidSeqnoIndexId, true, NULL, 1, &skey);
+
+		tuple = systable_getnext(scan);
+		if (tuple != NULL)
+		{
+			Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
+			parent_oid				 = inhform->inhparent;
+		}
+
+		systable_endscan(scan);
+		table_close(inhrel, AccessShareLock);
+
+		if (!OidIsValid(parent_oid))
+			return false; /* No parent, reached top without finding match */
+
+		if (parent_oid == specified_index_oid)
+			return true; /* Found the specified index in the chain */
+
+		current_oid = parent_oid;
+	}
+
+	return false; /* Depth limit exceeded */
+}
+
+/*
+ * Check an IndexScan node for explicit index mismatch.
+ * If the IndexScan uses a different index than what's specified in the
+ * bm25query, raise an error (if explicit) or warning (if implicit).
+ *
+ * Exception: partitioned indexes - if the specified index is a partitioned
+ * index and the scan uses a child partition index, that's allowed.
+ */
+static void
+validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
+{
+	TpQuery	 *tpquery;
+	Oid		  specified_index_oid;
+	HeapTuple classTuple;
+	Oid		  indexamid;
+
+	/* First check this is a BM25 index scan */
+	classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indexscan->indexid));
+	if (!HeapTupleIsValid(classTuple))
+		return;
+
+	indexamid = ((Form_pg_class)GETSTRUCT(classTuple))->relam;
+	ReleaseSysCache(classTuple);
+
+	if (indexamid != oids->bm25_am_oid)
+		return; /* Not a BM25 index scan */
+
+	/* Look for bm25query in the indexorderby expressions */
+	tpquery = find_tpquery_in_list(indexscan->indexorderby, oids);
+	if (tpquery == NULL)
+	{
+		/* Also check the indexqual */
+		tpquery = find_tpquery_in_list(indexscan->indexqual, oids);
+	}
+
+	if (tpquery == NULL)
+		return; /* No bm25query found */
+
+	specified_index_oid = get_tpquery_index_oid(tpquery);
+	if (!OidIsValid(specified_index_oid))
+		return; /* No index specified in query */
+
+	/* Validate they match */
+	if (specified_index_oid != indexscan->indexid)
+	{
+		char *specified_name;
+		char *scan_name;
+
+		/*
+		 * Allow partitioned indexes: if specified is parent and scan is child
+		 */
+		if (is_child_partition_index(specified_index_oid, indexscan->indexid))
+			return; /* Child partition index - allowed */
+
+		specified_name = get_rel_name(specified_index_oid);
+		scan_name	   = get_rel_name(indexscan->indexid);
+
+		/*
+		 * Check if the index was explicitly specified by the user via
+		 * to_bm25query(text, index_name). If so, error. If it was implicitly
+		 * resolved (e.g., from text <@> text syntax), just warn.
+		 */
+		if (tpquery_is_explicit_index(tpquery))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("query specifies index \"%s\" but planner chose "
+							"index \"%s\"",
+							specified_name ? specified_name : "(unknown)",
+							scan_name ? scan_name : "(unknown)"),
+					 errdetail("When an explicit index is specified in "
+							   "to_bm25query(), that index must be used for "
+							   "the scan to ensure consistent tokenization."),
+					 errhint("Use a planner hint to force the specified "
+							 "index, or remove the explicit index name to let "
+							 "the planner choose automatically.")));
+		}
+		else
+		{
+			ereport(WARNING,
+					(errmsg("planner chose index \"%s\" instead of \"%s\"",
+							scan_name ? scan_name : "(unknown)",
+							specified_name ? specified_name : "(unknown)"),
+					 errhint("If this is not desired, use a planner hint to "
+							 "force a specific index, or use explicit "
+							 "to_bm25query('query', 'index_name').")));
+		}
+	}
+}
+
+/*
+ * Validate that when an explicit index is specified in bm25query, the planner
+ * uses that same index for the scan. This fixes GitHub issue #183.
+ *
+ * Walks the plan tree looking for BM25 IndexScan nodes and validates their
+ * ORDER BY expressions.
+ */
+static void
+validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
+{
+	ListCell *lc;
+
+	if (plan == NULL)
+		return;
+
+	/* Check this node if it's an IndexScan */
+	if (IsA(plan, IndexScan))
+	{
+		validate_indexscan_explicit_index((IndexScan *)plan, oids);
+	}
+
+	/* Recurse into child plans */
+	validate_explicit_index_usage(plan->lefttree, oids);
+	validate_explicit_index_usage(plan->righttree, oids);
+
+	/* Handle plan-specific children */
+	switch (nodeTag(plan))
+	{
+	case T_Append:
+	{
+		Append *append = (Append *)plan;
+
+		foreach (lc, append->appendplans)
+			validate_explicit_index_usage((Plan *)lfirst(lc), oids);
+	}
+	break;
+
+	case T_MergeAppend:
+	{
+		MergeAppend *merge = (MergeAppend *)plan;
+
+		foreach (lc, merge->mergeplans)
+			validate_explicit_index_usage((Plan *)lfirst(lc), oids);
+	}
+	break;
+
+	case T_SubqueryScan:
+	{
+		SubqueryScan *subquery = (SubqueryScan *)plan;
+
+		validate_explicit_index_usage(subquery->subplan, oids);
+	}
+	break;
+
+	case T_CustomScan:
+	{
+		CustomScan *cscan = (CustomScan *)plan;
+
+		foreach (lc, cscan->custom_plans)
+			validate_explicit_index_usage((Plan *)lfirst(lc), oids);
+	}
+	break;
+
+	default:
+		break;
+	}
+}
+
+/*
  * Planner hook: called after standard_planner produces the plan.
  */
 static PlannedStmt *
@@ -824,6 +1183,9 @@ tp_planner_hook(
 	if (get_bm25_oids(&oid_cache) && result->planTree != NULL &&
 		plan_has_bm25_indexscan(result->planTree, &oid_cache))
 	{
+		/* Validate explicit index matches planned index (GitHub #183) */
+		validate_explicit_index_usage(result->planTree, &oid_cache);
+
 		replace_scores_in_plan(result->planTree, &oid_cache);
 	}
 

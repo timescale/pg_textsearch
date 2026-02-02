@@ -301,18 +301,9 @@ SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_en
 FROM multi_idx_test
 ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
 LIMIT 10;
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.2723
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0118
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5636
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5059
- id |            content             | english_score 
-----+--------------------------------+---------------
-  5 | hello database world           |       -1.1063
-  1 | hello world from the test      |       -1.1063
-  3 | hello from another document    |       -0.5531
-  4 | world of databases and indexes |       -0.5531
-(4 rows)
-
+ERROR:  query specifies index "multi_idx_english" but planner chose index "multi_idx_simple"
+DETAIL:  When an explicit index is specified in to_bm25query(), that index must be used for the scan to ensure consistent tokenization.
+HINT:  Use a planner hint to force the specified index, or remove the explicit index name to let the planner choose automatically.
 -- Query using the Simple index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test

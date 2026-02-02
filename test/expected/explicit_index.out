@@ -1,0 +1,124 @@
+-- Test explicit index name in to_bm25query
+-- Validates fixes for GitHub issues #183 and #194
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v0.5.0-dev installed
+-----------------------------------------------------------------------
+-- Issue #194: to_bm25query with explicit index ignores index column
+-- Using an index on a different column should error
+-----------------------------------------------------------------------
+-- Create table with TWO text columns
+CREATE TABLE explicit_index_test (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    content TEXT
+);
+-- Index on 'content' column only
+CREATE INDEX content_idx ON explicit_index_test USING bm25 (content)
+    WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation content_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert test data
+INSERT INTO explicit_index_test (title, content) VALUES
+    ('rust c java', 'postgres mysql'),
+    ('python ruby', 'redis mongodb');
+-- This should ERROR: using content_idx to search 'title' column
+-- The index is on 'content' but we're searching 'title'
+SELECT * FROM explicit_index_test
+    ORDER BY title <@> to_bm25query('postgres', 'content_idx');
+ERROR:  index "content_idx" is not on column "title"
+DETAIL:  The explicitly specified index is not built on the column being searched.
+HINT:  Use an index that is built on column "title" of table "explicit_index_test", or omit the index name to use automatic index resolution.
+-- Positive test: using correct column should work
+SELECT id, content <@> to_bm25query('postgres', 'content_idx') AS score
+FROM explicit_index_test
+ORDER BY score
+LIMIT 10;
+ id |        score        
+----+---------------------
+  1 | -0.6931471824645996
+(1 row)
+
+-- Clean up
+DROP TABLE explicit_index_test;
+-----------------------------------------------------------------------
+-- Issue #183: to_bm25query with explicit index name does not force
+-- planner to use that index
+-----------------------------------------------------------------------
+-- Create table
+CREATE TABLE multi_index_test (
+    id SERIAL PRIMARY KEY,
+    category_id INT,
+    content TEXT
+);
+-- Insert test data - enough rows to make planner consider index choices
+INSERT INTO multi_index_test (category_id, content)
+SELECT
+    (i % 10),
+    'Les ressources humaines gèrent les employés et leurs contrats de travail'
+FROM generate_series(1, 1000) i;
+-- Create two BM25 indexes with different text configurations on same column
+CREATE INDEX content_idx_french ON multi_index_test USING bm25 (content)
+    WITH (text_config = 'french');
+NOTICE:  BM25 index build started for relation content_idx_french
+NOTICE:  Using text search configuration: french
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=9.00, text_config='french' (k1=1.20, b=0.75)
+CREATE INDEX content_idx_simple ON multi_index_test USING bm25 (content)
+    WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation content_idx_simple
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=11.00, text_config='simple' (k1=1.20, b=0.75)
+-- Analyze for statistics
+ANALYZE multi_index_test;
+-- Query explicitly requesting the French index
+-- This should ERROR if planner chooses different index
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> to_bm25query('ressources', 'content_idx_french') AS score
+FROM multi_index_test
+WHERE category_id = 1
+ORDER BY score
+LIMIT 10;
+ERROR:  query specifies index "content_idx_french" but planner chose index "content_idx_simple"
+DETAIL:  When an explicit index is specified in to_bm25query(), that index must be used for the scan to ensure consistent tokenization.
+HINT:  Use a planner hint to force the specified index, or remove the explicit index name to let the planner choose automatically.
+-- Positive test: without explicit index, implicit resolution works
+-- (uses first found index, with a warning about multiple indexes)
+SELECT id, content <@> 'ressources' AS score
+FROM multi_index_test
+WHERE category_id = 1
+ORDER BY score
+LIMIT 3;
+WARNING:  multiple BM25 indexes exist on the same column
+HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
+WARNING:  planner chose index "content_idx_simple" instead of "content_idx_french"
+HINT:  If this is not desired, use a planner hint to force a specific index, or use explicit to_bm25query('query', 'index_name').
+ id |         score          
+----+------------------------
+  1 | -0.0004996252828277647
+ 11 | -0.0004996252828277647
+ 21 | -0.0004996252828277647
+(3 rows)
+
+-- Positive test: explicit index matching the scanned index works
+-- Drop the simple index so french is the only choice
+DROP INDEX content_idx_simple;
+EXPLAIN (COSTS OFF)
+SELECT id, content <@> to_bm25query('ressources', 'content_idx_french') AS score
+FROM multi_index_test
+WHERE category_id = 1
+ORDER BY score
+LIMIT 10;
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using content_idx_french on multi_index_test
+         Order By: (content <@> 'content_idx_french:ressources'::bm25query)
+         Filter: (category_id = 1)
+(4 rows)
+
+-- Clean up
+DROP TABLE multi_index_test;
+DROP EXTENSION pg_textsearch CASCADE;
