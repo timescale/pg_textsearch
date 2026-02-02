@@ -66,7 +66,7 @@ CREATE INDEX content_idx_simple ON multi_index_test USING bm25 (content)
 ANALYZE multi_index_test;
 
 -- Query explicitly requesting the French index
--- This should ERROR if planner chooses different index
+-- The planner should use content_idx_french as specified
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> to_bm25query('ressources', 'content_idx_french') AS score
 FROM multi_index_test

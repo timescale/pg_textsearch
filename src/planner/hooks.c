@@ -27,6 +27,8 @@
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
 #include <optimizer/optimizer.h>
+#include <optimizer/pathnode.h>
+#include <optimizer/paths.h>
 #include <optimizer/planner.h>
 #include <parser/analyze.h>
 #include <parser/parse_func.h>
@@ -47,6 +49,7 @@
 /* Previous hooks in chain */
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 static planner_hook_type			prev_planner_hook			 = NULL;
+static set_rel_pathlist_hook_type	prev_set_rel_pathlist_hook	 = NULL;
 
 /*
  * Structure to hold looked-up OIDs for a query
@@ -75,12 +78,43 @@ static BM25OidCache cached_oids;
 static bool			invalidation_registered = false;
 
 /*
+ * Structure to track explicit index requirements for a relation/column.
+ * Used during planning to force the planner to use the specified index.
+ */
+typedef struct ExplicitIndexRequirement
+{
+	Oid	 relid;				 /* Table OID */
+	Oid	 required_index_oid; /* The index that must be used */
+	bool is_explicit;		 /* true if from to_bm25query with index name */
+} ExplicitIndexRequirement;
+
+/*
+ * Planning context - stores explicit index requirements during planning.
+ * This is set before standard_planner and cleared after.
+ */
+typedef struct PlanningContext
+{
+	List *explicit_indexes; /* List of ExplicitIndexRequirement */
+	Oid	  bm25_am_oid;		/* Cached BM25 access method OID */
+} PlanningContext;
+
+static PlanningContext *current_planning_context = NULL;
+
+/*
+ * Flag to track if the current query has any BM25 operators.
+ * Set during post_parse_analyze, used in planner_hook to skip expensive
+ * plan tree walks for non-BM25 queries.
+ */
+static bool query_has_bm25_operators = false;
+
+/*
  * Context for query tree mutation
  */
 typedef struct ResolveIndexContext
 {
 	Query		 *query;
 	BM25OidCache *oid_cache;
+	bool		  found_bm25_operator; /* Set to true if any BM25 op found */
 } ResolveIndexContext;
 
 /*
@@ -380,6 +414,9 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 
 	if (opexpr->opno != oids->text_tpquery_operator_oid)
 		return NULL;
+
+	/* Mark that we found a BM25 operator for later optimization */
+	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -476,6 +513,9 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 
 	if (opexpr->opno != oids->text_text_operator_oid)
 		return NULL;
+
+	/* Mark that we found a BM25 operator for later optimization */
+	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -603,8 +643,9 @@ resolve_indexes_in_query(Query *query)
 	if (!get_bm25_oids(&oid_cache))
 		return;
 
-	context.query	  = query;
-	context.oid_cache = &oid_cache;
+	context.query				= query;
+	context.oid_cache			= &oid_cache;
+	context.found_bm25_operator = false;
 
 	/* Process target list */
 	resolve_indexes_in_targetlist(query, &context);
@@ -620,10 +661,22 @@ resolve_indexes_in_query(Query *query)
 
 	/* Process subqueries */
 	resolve_indexes_in_subqueries(query);
+
+	/*
+	 * Track if this query has BM25 operators for the planner hook.
+	 * This avoids expensive plan tree walks for non-BM25 queries.
+	 */
+	if (context.found_bm25_operator)
+		query_has_bm25_operators = true;
 }
 
 /*
  * Post parse analysis hook function.
+ *
+ * Performance note: For non-BM25 queries, this does minimal work - just a
+ * cached OID lookup and a quick walk of expressions to check operator OIDs.
+ * Expensive operations (syscache lookups, index resolution) only happen
+ * for actual BM25 operator expressions.
  */
 static void
 tp_post_parse_analyze_hook(
@@ -631,6 +684,9 @@ tp_post_parse_analyze_hook(
 		Query			   *query,
 		JumbleState *jstate pg_attribute_unused())
 {
+	/* Reset flag for this query - will be set if BM25 operators found */
+	query_has_bm25_operators = false;
+
 	resolve_indexes_in_query(query);
 
 	if (prev_post_parse_analyze_hook)
@@ -1001,6 +1057,303 @@ is_child_partition_index(Oid specified_index_oid, Oid scan_index_oid)
 }
 
 /*
+ * Get the table OID that an index is built on.
+ */
+static Oid
+get_index_table_oid(Oid index_oid)
+{
+	HeapTuple	  idx_tuple;
+	Form_pg_index idx_form;
+	Oid			  result = InvalidOid;
+
+	idx_tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (HeapTupleIsValid(idx_tuple))
+	{
+		idx_form = (Form_pg_index)GETSTRUCT(idx_tuple);
+		result	 = idx_form->indrelid;
+		ReleaseSysCache(idx_tuple);
+	}
+	return result;
+}
+
+/*
+ * Check if an index is a BM25 index.
+ */
+static bool
+is_bm25_index(Oid index_oid, Oid bm25_am_oid)
+{
+	HeapTuple classTuple;
+	bool	  result = false;
+
+	classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(index_oid));
+	if (HeapTupleIsValid(classTuple))
+	{
+		Form_pg_class classForm = (Form_pg_class)GETSTRUCT(classTuple);
+		result					= (classForm->relam == bm25_am_oid);
+		ReleaseSysCache(classTuple);
+	}
+	return result;
+}
+
+/*
+ * Walker context for collecting explicit index requirements from a query.
+ */
+typedef struct CollectExplicitIndexContext
+{
+	BM25OidCache *oid_cache;
+	List		 *requirements; /* List of ExplicitIndexRequirement */
+} CollectExplicitIndexContext;
+
+/*
+ * Walker to find explicit index requirements in query expressions.
+ */
+static bool
+collect_explicit_indexes_walker(
+		Node *node, CollectExplicitIndexContext *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr *)node;
+
+		if (opexpr->opno == context->oid_cache->text_tpquery_operator_oid &&
+			list_length(opexpr->args) == 2)
+		{
+			Node *right = lsecond(opexpr->args);
+
+			/*
+			 * Try to fold FuncExpr (e.g., to_bm25query()) to a Const.
+			 * This is needed because parse analysis may not have folded
+			 * the function call if the index was already explicit.
+			 */
+			if (IsA(right, FuncExpr))
+				right = eval_const_expressions(NULL, right);
+
+			if (IsA(right, Const))
+			{
+				Const *constNode = (Const *)right;
+
+				if (constNode->consttype ==
+							context->oid_cache->tpquery_type_oid &&
+					!constNode->constisnull)
+				{
+					TpQuery *tpquery = (TpQuery *)DatumGetPointer(
+							constNode->constvalue);
+					Oid index_oid = get_tpquery_index_oid(tpquery);
+
+					if (OidIsValid(index_oid))
+					{
+						ExplicitIndexRequirement *req;
+						Oid						  table_oid;
+
+						table_oid = get_index_table_oid(index_oid);
+						if (OidIsValid(table_oid))
+						{
+							req = palloc(sizeof(ExplicitIndexRequirement));
+							req->relid				= table_oid;
+							req->required_index_oid = index_oid;
+							req->is_explicit = tpquery_is_explicit_index(
+									tpquery);
+							context->requirements =
+									lappend(context->requirements, req);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return expression_tree_walker(
+			node, collect_explicit_indexes_walker, context);
+}
+
+/*
+ * Collect all explicit index requirements from a query.
+ *
+ * Performance note: This walks the query tree, which is O(n) where n is the
+ * number of nodes. However, the per-node work is minimal - just a type check
+ * and integer comparison for non-BM25 queries. The expensive work (folding
+ * FuncExpr, syscache lookups) only happens for actual BM25 operator
+ * expressions with explicit index names, which is rare.
+ */
+static List *
+collect_explicit_index_requirements(Query *parse, BM25OidCache *oid_cache)
+{
+	CollectExplicitIndexContext context;
+
+	context.oid_cache	 = oid_cache;
+	context.requirements = NIL;
+
+	/* Walk the entire query tree */
+	query_tree_walker(parse, collect_explicit_indexes_walker, &context, 0);
+
+	return context.requirements;
+}
+
+/*
+ * Find an explicit index requirement for a given relation.
+ * Returns NULL if no explicit requirement exists.
+ */
+static ExplicitIndexRequirement *
+find_explicit_requirement_for_rel(Oid relid)
+{
+	ListCell *lc;
+
+	if (current_planning_context == NULL)
+		return NULL;
+
+	foreach (lc, current_planning_context->explicit_indexes)
+	{
+		ExplicitIndexRequirement *req = (ExplicitIndexRequirement *)lfirst(lc);
+
+		if (req->relid == relid)
+			return req;
+	}
+
+	return NULL;
+}
+
+/*
+ * Check if a path uses a specific BM25 index.
+ * Returns the index OID if it's a BM25 IndexPath, InvalidOid otherwise.
+ */
+static Oid
+get_path_bm25_index_oid(Path *path, Oid bm25_am_oid)
+{
+	if (IsA(path, IndexPath))
+	{
+		IndexPath *indexpath = (IndexPath *)path;
+
+		if (is_bm25_index(indexpath->indexinfo->indexoid, bm25_am_oid))
+			return indexpath->indexinfo->indexoid;
+	}
+	return InvalidOid;
+}
+
+/*
+ * Find the IndexOptInfo for a specific index in the relation's indexlist.
+ */
+static IndexOptInfo *
+find_index_opt_info(RelOptInfo *rel, Oid index_oid)
+{
+	ListCell *lc;
+
+	foreach (lc, rel->indexlist)
+	{
+		IndexOptInfo *indexinfo = (IndexOptInfo *)lfirst(lc);
+
+		if (indexinfo->indexoid == index_oid)
+			return indexinfo;
+	}
+
+	return NULL;
+}
+
+/*
+ * set_rel_pathlist_hook: Replace BM25 IndexPaths that use the wrong index.
+ *
+ * When a query specifies an explicit BM25 index via to_bm25query(), we need
+ * to ensure the planner uses that index. This hook finds BM25 IndexPaths
+ * using the wrong index and updates them to use the correct one.
+ *
+ * For partitioned tables, we allow child partition indexes of the specified
+ * parent index.
+ *
+ * Performance note: This hook returns immediately for non-BM25 queries since
+ * current_planning_context will be NULL (we only set it when there are
+ * explicit index requirements). The overhead for non-BM25 queries is just
+ * a single pointer comparison.
+ */
+static void
+tp_set_rel_pathlist_hook(
+		PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	ExplicitIndexRequirement *req;
+	IndexOptInfo			 *correct_indexinfo;
+	ListCell				 *lc;
+
+	/* Call previous hook first */
+	if (prev_set_rel_pathlist_hook)
+		prev_set_rel_pathlist_hook(root, rel, rti, rte);
+
+	/* Only process base relations */
+	if (rel->reloptkind != RELOPT_BASEREL)
+		return;
+
+	/* Check if we have planning context */
+	if (current_planning_context == NULL)
+		return;
+
+	/* Find explicit requirement for this relation */
+	req = find_explicit_requirement_for_rel(rte->relid);
+	if (req == NULL || !req->is_explicit)
+		return;
+
+	/* Find the IndexOptInfo for the correct index */
+	correct_indexinfo = find_index_opt_info(rel, req->required_index_oid);
+	if (correct_indexinfo == NULL)
+	{
+		/* Required index not found in relation's indexlist - can't fix */
+		return;
+	}
+
+	/*
+	 * Find BM25 IndexPaths using the wrong index and update them to use
+	 * the correct index. Since both indexes are on the same column with
+	 * compatible operators, we can safely swap the indexinfo pointer.
+	 */
+	foreach (lc, rel->pathlist)
+	{
+		Path *path = (Path *)lfirst(lc);
+		Oid	  index_oid;
+
+		if (!IsA(path, IndexPath))
+			continue;
+
+		index_oid = get_path_bm25_index_oid(
+				path, current_planning_context->bm25_am_oid);
+
+		if (!OidIsValid(index_oid))
+			continue; /* Not a BM25 index path */
+
+		if (index_oid == req->required_index_oid)
+			continue; /* Already using correct index */
+
+		if (is_child_partition_index(req->required_index_oid, index_oid))
+			continue; /* Child partition of required index */
+
+		/* Swap to the correct index */
+		((IndexPath *)path)->indexinfo = correct_indexinfo;
+	}
+
+	/* Same for partial paths */
+	foreach (lc, rel->partial_pathlist)
+	{
+		Path *path = (Path *)lfirst(lc);
+		Oid	  index_oid;
+
+		if (!IsA(path, IndexPath))
+			continue;
+
+		index_oid = get_path_bm25_index_oid(
+				path, current_planning_context->bm25_am_oid);
+
+		if (!OidIsValid(index_oid))
+			continue;
+
+		if (index_oid == req->required_index_oid)
+			continue;
+
+		if (is_child_partition_index(req->required_index_oid, index_oid))
+			continue;
+
+		((IndexPath *)path)->indexinfo = correct_indexinfo;
+	}
+}
+
+/*
  * Check an IndexScan node for explicit index mismatch.
  * If the IndexScan uses a different index than what's specified in the
  * bm25query, raise an error (if explicit) or warning (if implicit).
@@ -1159,7 +1512,10 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
 }
 
 /*
- * Planner hook: called after standard_planner produces the plan.
+ * Planner hook: sets up planning context and post-processes the plan.
+ *
+ * We set up the planning context BEFORE calling standard_planner so that
+ * set_rel_pathlist_hook can filter out unwanted BM25 index paths.
  */
 static PlannedStmt *
 tp_planner_hook(
@@ -1168,22 +1524,85 @@ tp_planner_hook(
 		int			  cursorOptions,
 		ParamListInfo boundParams)
 {
-	PlannedStmt *result;
-	BM25OidCache oid_cache;
+	PlannedStmt		*result;
+	BM25OidCache	 oid_cache;
+	PlanningContext	 planning_context;
+	PlanningContext *saved_context;
+	List			*explicit_indexes;
+
+	/* Get BM25 OIDs - if extension not installed, just pass through */
+	if (!get_bm25_oids(&oid_cache))
+	{
+		if (prev_planner_hook)
+			return prev_planner_hook(
+					parse, query_string, cursorOptions, boundParams);
+		else
+			return standard_planner(
+					parse, query_string, cursorOptions, boundParams);
+	}
+
+	/*
+	 * Collect explicit index requirements from the query. This walks the
+	 * query tree looking for to_bm25query() calls with explicit index names.
+	 *
+	 * Performance optimization: Only set up the planning context if we
+	 * actually find explicit requirements. For non-BM25 queries or queries
+	 * without explicit index names, this avoids any overhead in the
+	 * set_rel_pathlist_hook.
+	 */
+	explicit_indexes = collect_explicit_index_requirements(parse, &oid_cache);
+
+	if (explicit_indexes != NIL)
+	{
+		planning_context.explicit_indexes = explicit_indexes;
+		planning_context.bm25_am_oid	  = oid_cache.bm25_am_oid;
+
+		/* Save and set current planning context */
+		saved_context			 = current_planning_context;
+		current_planning_context = &planning_context;
+	}
+	else
+	{
+		saved_context = NULL;
+	}
 
 	/* Call previous hook or standard planner */
-	if (prev_planner_hook)
-		result = prev_planner_hook(
-				parse, query_string, cursorOptions, boundParams);
-	else
-		result = standard_planner(
-				parse, query_string, cursorOptions, boundParams);
+	PG_TRY();
+	{
+		if (prev_planner_hook)
+			result = prev_planner_hook(
+					parse, query_string, cursorOptions, boundParams);
+		else
+			result = standard_planner(
+					parse, query_string, cursorOptions, boundParams);
+	}
+	PG_FINALLY();
+	{
+		/* Restore previous context and clean up if we set one up */
+		if (explicit_indexes != NIL)
+		{
+			current_planning_context = saved_context;
+			list_free_deep(explicit_indexes);
+		}
+	}
+	PG_END_TRY();
 
-	/* Only process if we have our extension's OIDs and BM25 index scan */
-	if (get_bm25_oids(&oid_cache) && result->planTree != NULL &&
+	/*
+	 * Post-process the plan if it may have BM25 index scans.
+	 *
+	 * Performance optimization: Only check for BM25 IndexScans if the
+	 * post_parse_analyze hook found BM25 operators. This avoids expensive
+	 * syscache lookups in plan_has_bm25_indexscan() for non-BM25 queries.
+	 */
+	if (query_has_bm25_operators && result->planTree != NULL &&
 		plan_has_bm25_indexscan(result->planTree, &oid_cache))
 	{
-		/* Validate explicit index matches planned index (GitHub #183) */
+		/*
+		 * Validate implicit index resolution - for explicit indexes, the
+		 * set_rel_pathlist_hook should have already forced the correct index.
+		 * This validation catches cases where implicit resolution picked a
+		 * different index than the planner chose.
+		 */
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
 		replace_scores_in_plan(result->planTree, &oid_cache);
@@ -1200,6 +1619,9 @@ tp_planner_hook_init(void)
 {
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
 	post_parse_analyze_hook		 = tp_post_parse_analyze_hook;
+
+	prev_set_rel_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook	   = tp_set_rel_pathlist_hook;
 
 	prev_planner_hook = planner_hook;
 	planner_hook	  = tp_planner_hook;
