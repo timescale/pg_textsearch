@@ -12,12 +12,17 @@
 #   all         - Run all benchmarks
 #
 # Options:
-#   --download  - Download dataset if not present
-#   --load      - Load data and create index (drops existing)
-#   --query     - Run query benchmarks only
-#   --validate  - Validate query results against precomputed ground truth
-#   --report    - Generate markdown report
-#   --port PORT - Postgres port (default: 5433 for release build)
+#   --download     - Download dataset if not present
+#   --load         - Load data and create index (drops existing)
+#   --query        - Run query benchmarks only
+#   --skip-validate - Skip validation (not recommended)
+#   --report       - Generate markdown report
+#   --port PORT    - Postgres port (default: 5433 for release build)
+#
+# Validation:
+#   Validation runs automatically after queries if ground_truth.tsv exists.
+#   A benchmark FAILS if score match rate is < 100% (within 5% tolerance).
+#   Generate ground truth with: psql -f <dataset>/precompute_ground_truth.sql
 
 set -e
 
@@ -35,8 +40,9 @@ DATASET=""
 DO_DOWNLOAD=false
 DO_LOAD=false
 DO_QUERY=false
-DO_VALIDATE=false
+SKIP_VALIDATE=false
 DO_REPORT=false
+VALIDATION_FAILED=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -57,8 +63,8 @@ while [[ $# -gt 0 ]]; do
             DO_QUERY=true
             shift
             ;;
-        --validate)
-            DO_VALIDATE=true
+        --skip-validate)
+            SKIP_VALIDATE=true
             shift
             ;;
         --report)
@@ -79,12 +85,14 @@ while [[ $# -gt 0 ]]; do
             echo "  all         - Run all benchmarks"
             echo ""
             echo "Options:"
-            echo "  --download  - Download dataset if not present"
-            echo "  --load      - Load data and create index"
-            echo "  --query     - Run query benchmarks"
-            echo "  --validate  - Validate results against precomputed ground truth"
-            echo "  --report    - Generate markdown report"
-            echo "  --port PORT - Postgres port (default: 5433)"
+            echo "  --download       - Download dataset if not present"
+            echo "  --load           - Load data and create index"
+            echo "  --query          - Run query benchmarks"
+            echo "  --skip-validate  - Skip validation (not recommended)"
+            echo "  --report         - Generate markdown report"
+            echo "  --port PORT      - Postgres port (default: 5433)"
+            echo ""
+            echo "Validation runs automatically after queries. Fails if score match < 100%."
             exit 0
             ;;
         *)
@@ -95,12 +103,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Default: run everything if no specific action requested
-if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_VALIDATE && ! $DO_REPORT; then
+if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_REPORT; then
     DO_DOWNLOAD=true
     DO_LOAD=true
     DO_QUERY=true
     DO_REPORT=true
-    # Note: validation is opt-in, not run by default
 fi
 
 if [ -z "$DATASET" ]; then
@@ -186,8 +193,8 @@ run_benchmark() {
         fi
     fi
 
-    # Validation
-    if $DO_VALIDATE; then
+    # Validation (runs automatically after queries unless --skip-validate)
+    if $DO_QUERY && ! $SKIP_VALIDATE; then
         local ground_truth_file="$dataset_dir/ground_truth.tsv"
         local validate_script="$dataset_dir/validate_queries.sql"
 
@@ -199,24 +206,28 @@ run_benchmark() {
 
                 psql -f "$validate_script" 2>&1 | tee "$validate_log"
 
-                # Check for validation failures
+                # Check for validation failures (score match rate must be 100%)
                 if grep -q "VALIDATION FAILED" "$validate_log"; then
                     echo ""
-                    echo "WARNING: Validation failures detected!"
+                    echo "ERROR: Validation FAILED for $dataset!"
+                    echo "Score match rate < 100% indicates BM25 scoring bugs."
                     echo "VALIDATION_${dataset}=FAILED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+                    VALIDATION_FAILED=true
                 else
                     echo ""
-                    echo "Validation passed"
+                    echo "Validation PASSED for $dataset"
                     echo "VALIDATION_${dataset}=PASSED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
                 fi
             else
                 echo ""
                 echo "--- Skipping validation: ground_truth.tsv not found ---"
                 echo "Generate ground truth with: psql -f $dataset_dir/precompute_ground_truth.sql"
+                echo "VALIDATION_${dataset}=SKIPPED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
             fi
         else
             echo ""
             echo "--- Skipping validation: validate_queries.sql not found ---"
+            echo "VALIDATION_${dataset}=SKIPPED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
         fi
     fi
 }
@@ -248,16 +259,17 @@ EOF
     if [ -f "$metrics_file" ]; then
         echo "### Timing Results" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
-        echo "| Dataset | Load Time | Query Time |" >> "$REPORT_FILE"
-        echo "|---------|-----------|------------|" >> "$REPORT_FILE"
+        echo "| Dataset | Load Time | Query Time | Validation |" >> "$REPORT_FILE"
+        echo "|---------|-----------|------------|------------|" >> "$REPORT_FILE"
 
         source "$metrics_file"
 
         for ds in msmarco wikipedia cranfield; do
             load_var="LOAD_TIME_${ds}"
             query_var="QUERY_TIME_${ds}"
-            if [ -n "${!load_var}" ] || [ -n "${!query_var}" ]; then
-                echo "| $ds | ${!load_var:-N/A}s | ${!query_var:-N/A}s |" >> "$REPORT_FILE"
+            validation_var="VALIDATION_${ds}"
+            if [ -n "${!load_var}" ] || [ -n "${!query_var}" ] || [ -n "${!validation_var}" ]; then
+                echo "| $ds | ${!load_var:-N/A}s | ${!query_var:-N/A}s | ${!validation_var:-N/A} |" >> "$REPORT_FILE"
             fi
         done
 
@@ -302,3 +314,11 @@ fi
 echo ""
 echo "=== Benchmark Complete ==="
 echo "Results in: $RESULTS_DIR"
+
+# Exit with failure if any validation failed
+if $VALIDATION_FAILED; then
+    echo ""
+    echo "ERROR: One or more validations FAILED!"
+    echo "This indicates BM25 scoring bugs that need investigation."
+    exit 1
+fi
