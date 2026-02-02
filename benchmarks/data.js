@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769927259362,
+  "lastUpdate": 1770014184461,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1918,6 +1918,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "60604649c2cef4b638c318a545bbbe6f72801d93",
+          "message": "ci: use standard runners for benchmarks (#193)\n\n## Summary\n- Reverts benchmark workflow from `ubuntu-latest-16-cores` to standard\n`ubuntu-latest` runners\n- Adjusts PostgreSQL memory settings to fit within ~7GB RAM limit\n- Fixes jobs that were queueing indefinitely due to unavailable 16-core\nrunners\n\n## Changes\n| Setting | Before | After |\n|---------|--------|-------|\n| Runner | ubuntu-latest-16-cores | ubuntu-latest |\n| shared_buffers | 4GB | 1GB |\n| effective_cache_size | 12GB | 4GB |\n| maintenance_work_mem | 1GB | 512MB |\n| work_mem | 128MB | 64MB |\n| wal_buffers | 64MB | 16MB |\n\nThe 512MB maintenance_work_mem is still well above the 64MB minimum\nrequired for parallel index builds.\n\n## Testing\nManually triggered workflow succeeded and results look reasonable.",
+          "timestamp": "2026-02-01T01:48:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/60604649c2cef4b638c318a545bbbe6f72801d93"
+        },
+        "date": 1770014183842,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 277.214,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.44,
             "unit": "ms"
           },
           {
