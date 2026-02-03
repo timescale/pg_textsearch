@@ -1,7 +1,7 @@
 -- Additional coverage tests for untested code paths
 -- Tests debug functions, segment dump, and text<@>text operator
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-NOTICE:  extension "pg_textsearch" already exists, skipping
+INFO:  pg_textsearch v0.5.0 installed
 -- =============================================================================
 -- Test 1: Basic debug functions with memtable-only data
 -- =============================================================================
