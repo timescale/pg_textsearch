@@ -137,6 +137,29 @@ Same as index build, while re-indexing the heap tuples, we need to invoke the
 executor to evalute the expression. This part follows the pattern mentioned
 earlier.
 
+### Explicit index validatioin
+
+When user explicitly specify the index to use, we need to validate that index
+is actually built for the referenced column/expression.
+
+PR [#195](https://github.com/timescale/pg_textsearch/pull/195) implemented this 
+for column index, the logic needs to be extended to support expression index:
+
+1. Get the index OID
+2. Find the corresponding pg_index tuple
+3. Check if this index is built on the specified table
+4. Depending on the LHS of <@>:
+   1. a column (Var), check pg_index.indkey
+   2. an expr, check pg_index.indexprs
+
+Much of the required logic is similar to what we already do during index
+resolution:
+
+1. Extract relation OID from expr, check edge cases
+2. Normalize `Var.varno`
+
+This code could likely be reused or factored out to avoid duplication.
+
 ### Tests
 
 We should cover the following cases:
