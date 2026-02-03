@@ -1,13 +1,9 @@
 -- Test CREATE INDEX CONCURRENTLY with bm25 indexes
 --
--- NOTE: CREATE INDEX CONCURRENTLY is currently accepted syntactically but
--- has a known bug where documents may be indexed twice during the validation
--- phase. This causes duplicate results in queries. A proper fix requires
--- implementing the ambulkdelete callback to correctly report existing TIDs
--- to the validate_index phase.
---
--- This test verifies the current behavior: CIC completes successfully and
--- the index is marked valid, even though it may have duplicate entries.
+-- CIC requires proper ambulkdelete callback implementation to report all
+-- indexed TIDs during validation phase. This ensures the validate_index
+-- function can determine which tuples are already indexed and avoid
+-- duplicating entries.
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
@@ -32,6 +28,10 @@ CREATE INDEX CONCURRENTLY cic_basic_idx ON cic_basic USING bm25(content)
 
 -- Verify index is valid (indisvalid = true)
 SELECT indisvalid FROM pg_index WHERE indexrelid = 'cic_basic_idx'::regclass;
+
+-- Verify no duplicate entries (this was a bug symptom before the fix)
+SELECT COUNT(*) = 1 AS no_duplicates FROM cic_basic
+WHERE content <@> to_bm25query('database', 'cic_basic_idx') < 0;
 
 -- Verify index is used in query plan
 EXPLAIN (COSTS OFF) SELECT id FROM cic_basic

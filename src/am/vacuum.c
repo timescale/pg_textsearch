@@ -85,6 +85,10 @@ tp_bulkdelete_segment_ctids(
 	BlockNumber segment_root = first_segment;
 	int64		count		 = 0;
 
+	elog(DEBUG1,
+		 "tp_bulkdelete_segment_ctids: starting at block %u",
+		 first_segment);
+
 	while (segment_root != InvalidBlockNumber)
 	{
 		TpSegmentReader *reader;
@@ -145,6 +149,11 @@ tp_bulkdelete(
 	int64			   memtable_count = 0;
 	int64			   segment_count  = 0;
 
+	elog(DEBUG1,
+		 "tp_bulkdelete: called for %s, callback=%s",
+		 RelationGetRelationName(info->index),
+		 callback ? "provided" : "NULL");
+
 	/* Initialize stats structure if not provided */
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
@@ -197,9 +206,10 @@ tp_bulkdelete(
 		}
 	}
 
-	/* Suppress unused variable warnings - counts used for debugging */
-	(void)memtable_count;
-	(void)segment_count;
+	elog(DEBUG1,
+		 "tp_bulkdelete: found %lld memtable CTIDs, %lld segment CTIDs",
+		 (long long)memtable_count,
+		 (long long)segment_count);
 
 	/* Fill in statistics */
 	stats->num_pages		= 1; /* Minimal pages (just metapage) */
