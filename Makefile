@@ -1,5 +1,5 @@
 EXTENSION = pg_textsearch
-DATA = sql/pg_textsearch--0.5.0.sql \
+DATA = sql/pg_textsearch--1.0.0-dev.sql \
        sql/pg_textsearch--0.0.1--0.0.2.sql \
        sql/pg_textsearch--0.0.2--0.0.3.sql \
        sql/pg_textsearch--0.0.3--0.0.4.sql \
@@ -10,7 +10,8 @@ DATA = sql/pg_textsearch--0.5.0.sql \
        sql/pg_textsearch--0.3.0--0.4.0.sql \
        sql/pg_textsearch--0.4.0--0.4.1.sql \
        sql/pg_textsearch--0.4.1--0.4.2.sql \
-       sql/pg_textsearch--0.4.2--0.5.0.sql
+       sql/pg_textsearch--0.4.2--0.5.0.sql \
+       sql/pg_textsearch--0.5.0--1.0.0-dev.sql
 
 # Source files organized by directory
 OBJS = \

@@ -14,11 +14,9 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-⚠️ **Pre-release**: v0.5.0 - This is expected to be the last pre-release before GA (v1.0.0). Query performance is competitive with other leading Postgres-based solutions; see [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html). This release adds parallel index builds. See [ROADMAP.md](ROADMAP.md) for details.
+🚧 **Development**: v1.0.0-dev - Working toward GA. See [ROADMAP.md](ROADMAP.md) for details.
 
-![Tapir and Friends](images/tapir_and_friends_v0.5.0.png)
-
-*The theme of v0.5.0 is parallel indexing.*
+![Tapir and Friends](images/tapir_and_friends_v1.0.0-dev.png)
 
 ## Historical note
 
