@@ -239,6 +239,25 @@ ERROR:  text <@> tpquery operator requires index
 HINT:  Use to_tpquery(text, index_name) for standalone scoring
 \set ON_ERROR_STOP on
 -- =====================================================================
+-- If expr does not reference any relation, index resolution should be
+-- skipped, and the query should fail at runtime
+-- =====================================================================
+\set ON_ERROR_STOP off
+SELECT l.id
+FROM expr_idx_product_logs l
+ORDER BY ('constant') <@> 'query'
+LIMIT 2;
+ERROR:  no BM25 index found for text <@> text expression
+DETAIL:  Create a BM25 index on the column or use ORDER BY.
+HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
+SELECT l.id
+FROM expr_idx_product_logs l
+ORDER BY ('constant') <@> bm25query('query')
+LIMIT 2;
+ERROR:  text <@> tpquery operator requires index
+HINT:  Use to_tpquery(text, index_name) for standalone scoring
+\set ON_ERROR_STOP on
+-- =====================================================================
 -- Cleanup
 -- =====================================================================
 DROP TABLE expr_idx_product_logs CASCADE;

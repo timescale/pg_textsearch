@@ -159,6 +159,7 @@ USING bm25 ((length(data->>'details')))
 WITH (text_config='english', k1=1.2, b=0.75);
 \set ON_ERROR_STOP on
 
+
 -- =====================================================================
 -- If expr references 2 relations, index resolution should be skipped
 -- And the query should fail at runtime
@@ -176,6 +177,24 @@ ON o.id = l.id
 ORDER BY (l.data->>'details' || o.id::text) <@> bm25query('query')
 LIMIT 2;
 \set ON_ERROR_STOP on
+
+
+-- =====================================================================
+-- If expr does not reference any relation, index resolution should be
+-- skipped, and the query should fail at runtime
+-- =====================================================================
+\set ON_ERROR_STOP off
+SELECT l.id
+FROM expr_idx_product_logs l
+ORDER BY ('constant') <@> 'query'
+LIMIT 2;
+
+SELECT l.id
+FROM expr_idx_product_logs l
+ORDER BY ('constant') <@> bm25query('query')
+LIMIT 2;
+\set ON_ERROR_STOP on
+
 
 -- =====================================================================
 -- Cleanup
