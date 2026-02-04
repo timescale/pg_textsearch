@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770100117580,
+  "lastUpdate": 1770186461755,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -1992,6 +1992,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1a23bc6bbb06dcec0c7e6efa50b2a51c08882926",
+          "message": "Release v0.5.0 (#197)\n\n## Summary\n- Update version from 0.5.0-dev to 0.5.0 across all files\n- Rename SQL files and banner image to remove -dev suffix\n- Update README: this is expected to be the last pre-release before GA\n(v1.0.0)\n- Update test expected outputs for minor ordering/warning differences\n\n## Testing\n- `make test` passes (40/40 tests)\n- `make format-check` passes",
+          "timestamp": "2026-02-02T19:09:57Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1a23bc6bbb06dcec0c7e6efa50b2a51c08882926"
+        },
+        "date": 1770186461092,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 247.23,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.43,
             "unit": "ms"
           },
           {
