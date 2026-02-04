@@ -22,6 +22,13 @@ CREATE INDEX expr_idx_idx_json_details ON expr_idx_product_logs
 USING bm25 ((data->>'details'))
 WITH (text_config='english', k1=1.2, b=0.75);
 
+-- Check if index is used by the planner
+EXPLAIN (COSTS OFF)
+SELECT id, data->>'details' AS details
+FROM expr_idx_product_logs
+ORDER BY (data->>'details') <@> 'widget', id
+LIMIT 2;
+
 -- Index resolution: expr <@> 'query'
 SELECT id, data->>'details' AS details
 FROM expr_idx_product_logs
@@ -59,6 +66,12 @@ CREATE INDEX expr_idx_idx_news ON expr_idx_news
 USING bm25 ((coalesce(title, '') || ' ' || coalesce(content, '')))
 WITH (text_config='english', k1=1.2, b=0.75);
 
+EXPLAIN (COSTS OFF)
+SELECT title
+FROM expr_idx_news
+ORDER BY ((coalesce(title, '') || ' ' || coalesce(content, ''))) <@> 'foo', title
+LIMIT 3;
+
 SELECT title
 FROM expr_idx_news
 ORDER BY ((coalesce(title, '') || ' ' || coalesce(content, ''))) <@> 'foo', title
@@ -86,6 +99,13 @@ CREATE TABLE expr_idx_owners (
 INSERT INTO expr_idx_owners(name) VALUES
     ('Ada Lovelace'),
     ('Grace Hopper');
+
+EXPLAIN (COSTS OFF)
+SELECT l.id
+FROM expr_idx_owners o JOIN expr_idx_product_logs l 
+ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget', l.id
+LIMIT 2;
 
 SELECT l.id
 FROM expr_idx_owners o JOIN expr_idx_product_logs l 
@@ -133,6 +153,12 @@ ANALYZE expr_idx_product_logs_parallel;
 CREATE INDEX expr_idx_product_logs_parallel_idx ON expr_idx_product_logs_parallel
 USING bm25 ((data->>'details'))
 WITH (text_config='english', k1=1.2, b=0.75);
+
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM expr_idx_product_logs_parallel
+ORDER BY (data->>'details') <@> 'widget', id
+LIMIT 5;
 
 SELECT id
 FROM expr_idx_product_logs_parallel

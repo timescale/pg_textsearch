@@ -22,6 +22,22 @@ NOTICE:  BM25 index build started for relation expr_idx_idx_json_details
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=4.50, text_config='english' (k1=1.20, b=0.75)
+-- Check if index is used by the planner
+EXPLAIN (COSTS OFF)
+SELECT id, data->>'details' AS details
+FROM expr_idx_product_logs
+ORDER BY (data->>'details') <@> 'widget', id
+LIMIT 2;
+                                               QUERY PLAN                                               
+--------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Incremental Sort
+         Sort Key: (bm25_get_current_score()), id
+         Presorted Key: (bm25_get_current_score())
+         ->  Index Scan using expr_idx_idx_json_details on expr_idx_product_logs
+               Order By: ((data ->> 'details'::text) <@> 'expr_idx_idx_json_details:widget'::bm25query)
+(6 rows)
+
 -- Index resolution: expr <@> 'query'
 SELECT id, data->>'details' AS details
 FROM expr_idx_product_logs
@@ -71,6 +87,21 @@ NOTICE:  BM25 index build started for relation expr_idx_idx_news
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 4 documents, avg_length=5.75, text_config='english' (k1=1.20, b=0.75)
+EXPLAIN (COSTS OFF)
+SELECT title
+FROM expr_idx_news
+ORDER BY ((coalesce(title, '') || ' ' || coalesce(content, ''))) <@> 'foo', title
+LIMIT 3;
+                                                                 QUERY PLAN                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Incremental Sort
+         Sort Key: (bm25_get_current_score()), title
+         Presorted Key: (bm25_get_current_score())
+         ->  Index Scan using expr_idx_idx_news on expr_idx_news
+               Order By: (((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text)) <@> 'expr_idx_idx_news:foo'::bm25query)
+(6 rows)
+
 SELECT title
 FROM expr_idx_news
 ORDER BY ((coalesce(title, '') || ' ' || coalesce(content, ''))) <@> 'foo', title
@@ -111,6 +142,25 @@ CREATE TABLE expr_idx_owners (
 INSERT INTO expr_idx_owners(name) VALUES
     ('Ada Lovelace'),
     ('Grace Hopper');
+EXPLAIN (COSTS OFF)
+SELECT l.id
+FROM expr_idx_owners o JOIN expr_idx_product_logs l 
+ON o.id = l.id
+ORDER BY (l.data->>'details') <@> 'widget', l.id
+LIMIT 2;
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Incremental Sort
+         Sort Key: (bm25_get_current_score()), l.id
+         Presorted Key: (bm25_get_current_score())
+         ->  Nested Loop
+               ->  Index Scan using expr_idx_idx_json_details on expr_idx_product_logs l
+                     Order By: ((data ->> 'details'::text) <@> 'expr_idx_idx_json_details:widget'::bm25query)
+               ->  Index Only Scan using expr_idx_owners_pkey on expr_idx_owners o
+                     Index Cond: (id = l.id)
+(9 rows)
+
 SELECT l.id
 FROM expr_idx_owners o JOIN expr_idx_product_logs l 
 ON o.id = l.id
@@ -168,6 +218,21 @@ NOTICE:  BM25 index build started for relation expr_idx_product_logs_parallel_id
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM expr_idx_product_logs_parallel
+ORDER BY (data->>'details') <@> 'widget', id
+LIMIT 5;
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Incremental Sort
+         Sort Key: (bm25_get_current_score()), id
+         Presorted Key: (bm25_get_current_score())
+         ->  Index Scan using expr_idx_product_logs_parallel_idx on expr_idx_product_logs_parallel
+               Order By: ((data ->> 'details'::text) <@> 'expr_idx_product_logs_parallel_idx:widget'::bm25query)
+(6 rows)
+
 SELECT id
 FROM expr_idx_product_logs_parallel
 ORDER BY (data->>'details') <@> 'widget', id
