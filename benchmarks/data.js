@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770186463122,
+  "lastUpdate": 1770186464430,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -8935,6 +8935,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1a23bc6bbb06dcec0c7e6efa50b2a51c08882926",
+          "message": "Release v0.5.0 (#197)\n\n## Summary\n- Update version from 0.5.0-dev to 0.5.0 across all files\n- Rename SQL files and banner image to remove -dev suffix\n- Update README: this is expected to be the last pre-release before GA\n(v1.0.0)\n- Update test expected outputs for minor ordering/warning differences\n\n## Testing\n- `make test` passes (40/40 tests)\n- `make format-check` passes",
+          "timestamp": "2026-02-02T19:09:57Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1a23bc6bbb06dcec0c7e6efa50b2a51c08882926"
+        },
+        "date": 1770186464151,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 11794.723,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.23,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.73,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.33,
             "unit": "ms"
           },
           {
