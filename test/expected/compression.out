@@ -334,3 +334,4 @@ WHERE content <@> to_bm25query('date', 'mixed_idx2') < 0;
 
 -- Clean up
 DROP TABLE mixed_docs2;
+DROP EXTENSION pg_textsearch CASCADE;
