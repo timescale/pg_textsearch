@@ -24,7 +24,7 @@ INSERT INTO cic_basic (content) VALUES
 
 -- Create index concurrently - should complete without error
 CREATE INDEX CONCURRENTLY cic_basic_idx ON cic_basic USING bm25(content)
-  WITH (text_config='english');
+  WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify index is valid (indisvalid = true)
 SELECT indisvalid FROM pg_index WHERE indexrelid = 'cic_basic_idx'::regclass;
@@ -51,7 +51,7 @@ SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'cic_basic_idx';
 -- Test 3: Recreate with regular CREATE INDEX for comparison
 --------------------------------------------------------------------------------
 CREATE INDEX cic_basic_idx ON cic_basic USING bm25(content)
-  WITH (text_config='english');
+  WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Verify index is valid
 SELECT indisvalid FROM pg_index WHERE indexrelid = 'cic_basic_idx'::regclass;

@@ -60,7 +60,6 @@ tp_bulkdelete_memtable_ctids(
 	{
 		if (ItemPointerIsValid(&entry->ctid))
 		{
-			/* Call the callback - returns true if tuple should be deleted */
 			(void)callback(&entry->ctid, callback_state);
 			count++;
 		}
