@@ -1,16 +1,8 @@
 # Run regression tests under memory sanitizer
+# NOTE: PR checks are consolidated in ci.yml. This workflow runs on main only.
 name: Sanitizer test
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'src/**'
-      - 'test/**'
-      - 'sql/**'
-      - 'Makefile'
-      - 'pg_textsearch.control'
-      - '.github/workflows/sanitizer-build-and-test.yml'
-  pull_request:
     branches: [ main ]
     paths:
       - 'src/**'

@@ -1,12 +1,8 @@
 name: pgspot Security Check
 
+# NOTE: PR checks are consolidated in ci.yml. This workflow runs on main only.
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'sql/**'
-      - '.github/workflows/pgspot.yml'
-  pull_request:
     branches: [ main ]
     paths:
       - 'sql/**'

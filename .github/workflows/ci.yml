@@ -9,6 +9,7 @@ on:
       - 'sql/**'
       - 'Makefile'
       - 'pg_textsearch.control'
+      - '.clang-format'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [ main ]
@@ -18,7 +19,9 @@ on:
       - 'sql/**'
       - 'Makefile'
       - 'pg_textsearch.control'
+      - '.clang-format'
       - '.github/workflows/ci.yml'
+  workflow_dispatch:
 
 jobs:
   test:
@@ -236,10 +239,415 @@ jobs:
           test/tmp_concurrent_test/postgres.log
         retention-days: 7
 
+  format-check:
+    name: Check C Code Formatting
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+
+    - name: Check formatting
+      run: |
+        # Find all C source and header files
+        find src -name "*.c" -o -name "*.h" | while read file; do
+          echo "Checking $file"
+          if ! clang-format --dry-run --Werror "$file" > /dev/null 2>&1; then
+            echo "❌ $file is not properly formatted"
+            echo "Expected format:"
+            clang-format "$file"
+            exit 1
+          else
+            echo "✅ $file is properly formatted"
+          fi
+        done
+
+    - name: Suggest formatting command
+      if: failure()
+      run: |
+        echo ""
+        echo "To fix formatting issues, run:"
+        echo "  make format"
+        echo ""
+        echo "Or format individual files:"
+        echo "  clang-format -i src/filename.c"
+
+  sanitizer:
+    name: PG${{ matrix.pg }} Sanitizer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["17.2", "18.1"]
+
+    env:
+      PG_SRC_DIR: "pgbuild"
+      PG_INSTALL_DIR: "postgresql"
+      extra_packages: "clang-15 llvm-15"
+      CC: "clang-15"
+      CXX: "clang-15"
+      CFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+      CXXFLAGS: "-g -fsanitize=address,undefined -fno-omit-frame-pointer -Og -fno-inline-functions"
+      LDFLAGS: "-fsanitize=address,undefined"
+      ASAN_OPTIONS: "detect_leaks=0 abort_on_error=1 exitcode=27 log_path=${{ github.workspace }}/sanitizer_logs/asan print_stacktrace=1 check_initialization_order=1"
+      UBSAN_OPTIONS: "halt_on_error=1 exitcode=27 print_stacktrace=1 log_path=${{ github.workspace }}/sanitizer_logs/ubsan print_summary=1"
+
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y flex bison build-essential libssl-dev \
+          libreadline-dev systemd-coredump gdb ${{ env.extra_packages }}
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Create sanitizer logs directory
+      run: mkdir -p ${{ github.workspace }}/sanitizer_logs
+
+    - name: Get date for caching
+      id: get-date
+      run: echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
+
+    - name: Cache PostgreSQL ${{ matrix.pg }}
+      id: cache-postgresql
+      uses: actions/cache@v4
+      with:
+        path: ~/${{ env.PG_SRC_DIR }}
+        key: "Sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+
+    - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
+      if: steps.cache-postgresql.outputs.cache-hit != 'true'
+      run: |
+        wget -q -O postgresql.tar.bz2 \
+          https://ftp.postgresql.org/pub/source/v${{ matrix.pg }}/postgresql-${{ matrix.pg }}.tar.bz2
+        mkdir -p ~/$PG_SRC_DIR
+        tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
+
+        # Add instrumentation to the Postgres memory contexts.
+        # PG18 moved stack_is_too_deep() to a different file, so we need
+        # different patches for PG17 vs PG18+.
+        # For more details, see:
+        # https://github.com/timescale/eng-database/wiki/Using-Address-Sanitizer
+        PG_MAJOR=$(echo "${{ matrix.pg }}" | sed -e 's![.].*!!')
+        if [ ${PG_MAJOR} -lt 18 ]; then
+          echo "Applying PG17 ASAN patch..."
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+        else
+          echo "Applying PG18+ ASAN patch..."
+          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
+        fi
+
+        cd ~/$PG_SRC_DIR
+        ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
+          --with-openssl --without-readline --without-zlib --without-libxml
+        make -j$(nproc)
+
+    - name: Install PostgreSQL ${{ matrix.pg }}
+      run: |
+        cd ~/$PG_SRC_DIR
+        make install
+        ~/$PG_INSTALL_DIR/bin/pg_config --version
+
+    - name: Verify sanitizers are enabled
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        echo "Verifying PostgreSQL was built with sanitizers..."
+
+        # Check if postgres binary contains sanitizer symbols
+        echo "Checking for AddressSanitizer symbols..."
+        if nm ~/$PG_INSTALL_DIR/bin/postgres | grep -i asan > /dev/null; then
+          echo "AddressSanitizer symbols found in postgres binary"
+        else
+          echo "AddressSanitizer symbols NOT found in postgres binary"
+          echo "This suggests PostgreSQL was not built with -fsanitize=address"
+          exit 1
+        fi
+
+        # Test that sanitizers are actually working by triggering a known issue
+        echo "Testing sanitizer detection with intentional buffer overflow..."
+        cat > test_sanitizer.c << 'EOF'
+        #include <stdio.h>
+        #include <stdlib.h>
+        int main() {
+            char *buf = malloc(10);
+            buf[10] = 'x';  // Buffer overflow - should be caught by AddressSanitizer
+            free(buf);
+            return 0;
+        }
+        EOF
+
+        # Compile and run test - should fail with sanitizer error
+        $CC $CFLAGS test_sanitizer.c -o test_sanitizer
+        if ./test_sanitizer; then
+          echo "WARNING: Sanitizer test did not catch buffer overflow!"
+        else
+          echo "Sanitizer correctly caught buffer overflow (exit code $?)"
+        fi
+        rm -f test_sanitizer test_sanitizer.c
+
+    - name: Build and install pg_textsearch
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+        make clean
+        make
+        make install
+
+    - name: Run regression tests
+      run: |
+        export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
+
+        # Set up test database
+        rm -rf tmp_sanitizer_test
+        mkdir -p tmp_sanitizer_test
+        initdb -D tmp_sanitizer_test/data --auth-local=trust
+
+        # Configure PostgreSQL
+        echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
+
+        # Start PostgreSQL
+        pg_ctl start -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile -w
+
+        # Create test database and run tests
+        createdb -h $PWD/tmp_sanitizer_test -p 55433 contrib_regression
+
+        echo "Running SQL regression tests under sanitizer..."
+        make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
+
+        # Run shell-based tests under sanitizer (more likely to find memory issues)
+        echo "Running concurrency tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./concurrency.sh
+        "
+
+        echo "Running crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./recovery.sh
+        "
+
+        # Clean up
+        pg_ctl stop -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile
+
+    - name: Collect sanitizer reports
+      if: always()
+      run: |
+        echo "Collecting all sanitizer logs..."
+        find ${{ github.workspace }}/sanitizer_logs -type f 2>/dev/null | \
+          head -20 | while read file; do
+          echo "=== $file ==="
+          head -100 "$file" 2>/dev/null || echo "(file not readable or empty)"
+          echo
+        done
+
+    - name: Upload sanitizer logs and test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer-logs-pg${{ matrix.pg }}
+        path: |
+          ${{ github.workspace }}/sanitizer_logs/
+          test/regression.diffs
+          test/regression.out
+          test/results/
+          tmp_sanitizer_test/data/logfile
+        retention-days: 7
+
+    - name: Upload failure artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer-failure-debug-pg${{ matrix.pg }}
+        path: |
+          tmp_sanitizer_test/
+          test/scripts/tmp_*
+        retention-days: 7
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 17
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates gnupg
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Install coverage tools
+      run: |
+        sudo apt-get install -y lcov build-essential bc
+
+    - name: Build extension with coverage instrumentation
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        # Build with coverage flags - disable optimization for accurate line counts
+        make PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
+        sudo env "PATH=$PATH" make install
+
+    - name: Setup test database
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_check_shared
+        mkdir -p tmp_check_shared
+        initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
+        echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
+        echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
+        pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
+        createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
+
+    - name: Zero coverage counters
+      run: |
+        lcov --zerocounters --directory .
+
+    - name: Run SQL regression tests
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make test PGHOST=$PWD/tmp_check_shared PGPORT=55433 || true
+        # Stop and restart Postgres to flush coverage data from backend
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile
+        pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
+
+    - name: Run shell-based tests
+      timeout-minutes: 10
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        # Run concurrency tests
+        (cd test/scripts && ./concurrency.sh) || true
+        # Run segment tests
+        (cd test/scripts && ./segment.sh) || true
+        # Run recovery tests (exercises tp_rebuild_index_from_disk)
+        (cd test/scripts && ./recovery.sh) || true
+
+    - name: Stop PostgreSQL and flush coverage
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+
+    - name: Capture coverage data
+      run: |
+        # Capture coverage from all .gcda files
+        lcov --capture \
+             --directory . \
+             --output-file coverage.info \
+             --base-directory $PWD \
+             --no-external \
+             --ignore-errors mismatch
+
+        # Remove test files from coverage report (we only care about src/)
+        lcov --remove coverage.info \
+             '*/test/*' \
+             '*/tmp_check_shared/*' \
+             --output-file coverage.info \
+             --ignore-errors unused
+
+        # Show summary
+        lcov --list coverage.info
+
+    - name: Generate HTML report
+      run: |
+        genhtml coverage.info \
+                --output-directory coverage-html \
+                --title "pg_textsearch Coverage" \
+                --legend \
+                --show-details
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.info
+        fail_ci_if_error: false
+        verbose: true
+
+    - name: Upload HTML coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage-html/
+        retention-days: 30
+
+    - name: Upload lcov info file
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-lcov
+        path: coverage.info
+        retention-days: 30
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+        rm -rf tmp_check_shared
+
+    - name: Coverage summary
+      run: |
+        echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Download the HTML report from the artifacts to see detailed line-by-line coverage." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        # Extract and display summary stats
+        if [ -f coverage.info ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+  pgspot:
+    name: Check Extension SQL
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install pgspot
+      run: pip install pgspot
+
+    - name: Run pgspot
+      run: |
+        # Check extension SQL files
+        # Ignore PS017 (unqualified object reference) - false positives for
+        # type/operator definitions that reference types being created
+        has_errors=0
+        for sql_file in sql/pg_textsearch--*.sql; do
+          echo "Checking $sql_file"
+          if ! pgspot --ignore PS017 "$sql_file"; then
+            has_errors=1
+          fi
+        done
+        exit $has_errors
+
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, build-test-multiple-configs, performance-test]
+    needs: [test, build-test-multiple-configs, performance-test, format-check, sanitizer, coverage, pgspot]
     if: always()
     steps:
       - name: Check all jobs succeeded
