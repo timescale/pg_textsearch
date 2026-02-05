@@ -25,12 +25,14 @@
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
+#include <nodes/print.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/planner.h>
 #include <parser/analyze.h>
 #include <parser/parse_func.h>
 #include <parser/parse_oper.h>
 #include <parser/parsetree.h>
+#include <rewrite/rewriteManip.h>
 #include <utils/builtins.h>
 #include <utils/catcache.h>
 #include <utils/fmgroids.h>
@@ -178,10 +180,61 @@ get_bm25_oids(BM25OidCache *cache)
 }
 
 /*
- * Find BM25 index for a column.
+ * bm25_key_matches_query
+ *      Check if a specific index key definition matches the query expression.
+ *
+ * This helper handles both simple column indexes (e.g., USING bm25(col)) and
+ * expression indexes (e.g., USING bm25(lower(col))).
+ *
+ * Inputs:
+ * - idx_attnum: Attribute number from pg_index.indkey[i] (0 for
+ *    expressions).
+ * - idx_expr: Deserialized expression tree if idx_attnum == 0,
+ *   else NULL.
+ * - query_attnum: Attribute number extracted from query if it's a
+ *   Var, otherwise InvalidAttrNumber.
+ * - query_expr: The full expression tree from the query.
+ */
+static bool
+bm25_key_matches_query(
+		AttrNumber idx_attnum,
+		Node	  *idx_expr,
+		AttrNumber query_attnum,
+		Node	  *query_expr)
+{
+	/* Index was built on a column */
+	if (idx_attnum != 0)
+	{
+		return idx_attnum == query_attnum;
+	}
+
+	/* It is an expression index */
+	if (idx_expr != NULL)
+	{
+		return equal(idx_expr, query_expr);
+	}
+
+	return false;
+}
+
+/*
+ * If a bm25 index is built on the relation specified relid, return its
+ * OID. The index could be built
+ *
+ * - directly on a column, then attnum is that column's attribute number.
+ *   Otherwise, it is InvalidAttrNumber.
+ * - on expr, then attnum is InvalidAttrNumber as well.
+ *
+ * If multiple indexes exist, the current implementation returns the last
+ * one found.
  */
 static Oid
-find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
+find_bm25_index(
+		Oid		   relid,
+		AttrNumber attnum,
+		int		   rt_index,
+		Node	  *expr,
+		Oid		   bm25_am_oid)
 {
 	Relation	indexRelation;
 	SysScanDesc scan;
@@ -211,6 +264,7 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 		Oid			  indexOid	= indexForm->indexrelid;
 		HeapTuple	  classTuple;
 		Form_pg_class classForm;
+		int			  nkeys = indexForm->indnatts;
 
 		classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indexOid));
 		if (!HeapTupleIsValid(classTuple))
@@ -220,11 +274,63 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 
 		if (classForm->relam == bm25_am_oid)
 		{
-			int nkeys = indexForm->indnatts;
+			/* Get the expression array */
+			List	 *indexExprs = NIL;
+			ListCell *lc_expr	 = NULL;
+			{
+				bool  isnull;
+				Datum exprsDatum = SysCacheGetAttr(
+						INDEXRELID,
+						indexTuple,
+						Anum_pg_index_indexprs,
+						&isnull);
+				if (!isnull)
+				{
+					char *exprsString = TextDatumGetCString(exprsDatum);
+					indexExprs		  = (List *)stringToNode(exprsString);
+					lc_expr			  = list_head(indexExprs);
+					pfree(exprsString);
+				}
+			}
 
 			for (int i = 0; i < nkeys; i++)
 			{
-				if (indexForm->indkey.values[i] == attnum)
+				AttrNumber idx_attnum = indexForm->indkey.values[i];
+				Node	  *idx_expr	  = NULL;
+
+				if (idx_attnum == 0)
+				{
+					if (lc_expr != NULL)
+					{
+						idx_expr = (Node *)lfirst(lc_expr);
+						lc_expr	 = lnext(indexExprs, lc_expr);
+
+						/*
+						 * Var nodes in pg_index.indexprs always have varno set
+						 * to 1 because when you
+						 *
+						 * CREATE INDEX idx ON article USING bm25
+						 * (lower(content)) WITH (...)
+						 *
+						 * article has RT index 1, and the Var node in
+						 * lower(content) therefore has varno = 1. This does
+						 * not hold for queries. For example:
+						 *
+						 * SELECT * FROM author, article ORDER BY
+						 * lower(content) <@> 'some content'
+						 *
+						 * Since "article" now has RT index 2 in the query,
+						 * Var.varno is also 2.
+						 *
+						 * To fix this, we update the Var nodes in idx_expr to
+						 * set their varno to the table's RT index in the query
+						 * tree.
+						 */
+						ChangeVarNodes(idx_expr, 1, rt_index, 0);
+					}
+				}
+
+				if (bm25_key_matches_query(idx_attnum, idx_expr, attnum, expr))
 				{
 					index_count++;
 					if (result == InvalidOid)
@@ -270,19 +376,107 @@ get_var_relation_and_attnum(
 }
 
 /*
- * Find BM25 index OID from a Var node representing the indexed column.
+ * For index resolution, if there is a BM25 index built on expr for a
+ * relation, this function extracts that relation's OID and its RT index
+ * in query.rtable.
+ *
+ * Return true is the extraction is successful.
+ */
+static bool
+get_expr_relation_and_rtable_index(
+		Node *expr, Query *query, Oid *relid_out, int *rt_index_out)
+{
+	List		  *vars;
+	int			   varno = 0;
+	RangeTblEntry *rte;
+	ListCell	  *lc;
+
+	vars = pull_var_clause(expr, 0);
+	if (vars == NIL || list_length(vars) == 0)
+	{
+		list_free(vars);
+		return false;
+	}
+	/*
+	 * If multiple Var nodes exist in expr, they should reference the same
+	 * relation as Postgres restricts this.
+	 */
+	foreach (lc, vars)
+	{
+		Var *v = lfirst_node(Var, lc);
+		/* Var should reference relations in the current Query */
+		if (v->varlevelsup != 0)
+		{
+			list_free(vars);
+			return false;
+		}
+
+		if (varno == 0)
+		{
+			varno = v->varno;
+		}
+		else if (varno != v->varno)
+		{
+			list_free(vars);
+			return false;
+		}
+	}
+
+	if (varno < 1 || varno > list_length(query->rtable))
+	{
+		list_free(vars);
+		return false;
+	}
+
+	rte = rt_fetch(varno, query->rtable);
+	if (rte->rtekind != RTE_RELATION)
+	{
+		list_free(vars);
+		return false;
+	}
+
+	*relid_out	  = rte->relid;
+	*rt_index_out = varno;
+
+	list_free(vars);
+	return true;
+}
+
+/*
+ * Index resolution.
+ *
+ * If there is a bm25 index built for expr, find it and return its OID.
+ * InvalidOid is returned if we couldn't find such an index. If multiple
+ * indexes are built on expr, current implementation returns the last one.
  */
 static Oid
-find_index_for_var(Var *var, ResolveIndexContext *context)
+find_index_for_expr(Node *expr, ResolveIndexContext *context)
 {
-	Oid		   relid;
-	AttrNumber attnum;
+	Oid relid;
+	/* RT index starts from 1, set it to 0 in case it won't be initialized */
+	int		   rt_index	 = 0;
+	AttrNumber attnum	 = InvalidAttrNumber;
+	bool	   extracted = false;
 
-	if (!get_var_relation_and_attnum(var, context->query, &relid, &attnum))
-		return InvalidOid;
+	/*
+	 * Get the relid and possibly an attribute number if expr is a Var node
+	 */
+	if (IsA(expr, Var))
+	{
+		if (!get_var_relation_and_attnum(
+					(Var *)expr, context->query, &relid, &attnum))
+			return InvalidOid;
+	}
+	else
+	{
+		extracted = get_expr_relation_and_rtable_index(
+				expr, context->query, &relid, &rt_index);
+		if (!extracted)
+			return InvalidOid;
+	}
 
-	return find_bm25_index_for_column(
-			relid, attnum, context->oid_cache->bm25_am_oid);
+	return find_bm25_index(
+			relid, attnum, rt_index, expr, context->oid_cache->bm25_am_oid);
 }
 
 /*
@@ -364,10 +558,7 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	if (OidIsValid(tpquery->index_oid))
 		return NULL; /* Already resolved */
 
-	if (!IsA(left, Var))
-		return NULL;
-
-	index_oid = find_index_for_var((Var *)left, context);
+	index_oid = find_index_for_expr(left, context);
 	if (!OidIsValid(index_oid))
 		return NULL;
 
@@ -390,7 +581,6 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	BM25OidCache *oids = context->oid_cache;
 	Node		 *left;
 	Node		 *right;
-	Var			 *var;
 	Const		 *text_const;
 	Oid			  index_oid;
 	char		 *query_text;
@@ -405,16 +595,15 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	left  = linitial(opexpr->args);
 	right = lsecond(opexpr->args);
 
-	if (!IsA(left, Var) || !IsA(right, Const))
+	if (!IsA(right, Const))
 		return NULL;
 
-	var		   = (Var *)left;
 	text_const = (Const *)right;
 
 	if (text_const->consttype != TEXTOID || text_const->constisnull)
 		return NULL;
 
-	index_oid = find_index_for_var(var, context);
+	index_oid = find_index_for_expr(left, context);
 	if (!OidIsValid(index_oid))
 		return NULL;
 

@@ -21,6 +21,7 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <commands/progress.h>
+#include <executor/executor.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -61,7 +62,6 @@ static void tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
-		AttrNumber			   attnum,
 		double				   k1,
 		double				   b,
 		int					   nworkers,
@@ -80,7 +80,8 @@ static void tp_worker_process_document(
 		dsa_area			   *dsa,
 		TpWorkerMemtableBuffer *buffer,
 		TupleTableSlot		   *slot,
-		int						attnum,
+		IndexInfo			   *index_info,
+		EState				   *estate,
 		Oid						text_config_oid);
 
 static dshash_table *tp_worker_create_string_table(dsa_area *dsa);
@@ -118,13 +119,12 @@ tp_parallel_build_estimate_shmem(
  */
 IndexBuildResult *
 tp_build_parallel(
-		Relation   heap,
-		Relation   index,
-		IndexInfo *indexInfo,
-		Oid		   text_config_oid,
-		double	   k1,
-		double	   b,
-		int		   nworkers)
+		Relation heap,
+		Relation index,
+		Oid		 text_config_oid,
+		double	 k1,
+		double	 b,
+		int		 nworkers)
 {
 	IndexBuildResult	  *result;
 	ParallelContext		  *pcxt;
@@ -167,15 +167,7 @@ tp_build_parallel(
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
 	tp_init_parallel_shared(
-			shared,
-			heap,
-			index,
-			text_config_oid,
-			indexInfo->ii_IndexAttrNumbers[0],
-			k1,
-			b,
-			nworkers,
-			dsa);
+			shared, heap, index, text_config_oid, k1, b, nworkers, dsa);
 
 	/* Initialize parallel table scan */
 	table_parallelscan_initialize(heap, TpParallelTableScan(shared), snapshot);
@@ -332,7 +324,6 @@ tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
-		AttrNumber			   attnum,
 		double				   k1,
 		double				   b,
 		int					   nworkers,
@@ -347,7 +338,6 @@ tp_init_parallel_shared(
 	shared->heaprelid		= RelationGetRelid(heap);
 	shared->indexrelid		= RelationGetRelid(index);
 	shared->text_config_oid = text_config_oid;
-	shared->attnum			= attnum;
 	shared->k1				= k1;
 	shared->b				= b;
 	shared->nworkers		= nworkers;
@@ -420,11 +410,15 @@ tp_parallel_build_worker_main(
 	TpParallelBuildShared *shared;
 	TpWorkerState		  *my_state;
 	Relation			   heap;
+	Relation			   index;
+	IndexInfo			  *index_info;
 	TableScanDesc		   scan;
 	TupleTableSlot		  *slot;
 	dsa_area			  *dsa;
 	int					   worker_id;
 	int					   active_buf;
+	EState				  *estate	= NULL;
+	ExprContext			  *econtext = NULL;
 
 	/* Attach to shared memory */
 	shared = (TpParallelBuildShared *)
@@ -440,6 +434,10 @@ tp_parallel_build_worker_main(
 	/* Open heap relation */
 	heap = table_open(shared->heaprelid, AccessShareLock);
 
+	/* Open index relation and build IndexInfo */
+	index	   = index_open(shared->indexrelid, AccessShareLock);
+	index_info = BuildIndexInfo(index);
+
 	/* Join parallel table scan */
 	scan = table_beginscan_parallel(heap, TpParallelTableScan(shared));
 	slot = table_slot_create(heap, NULL);
@@ -449,6 +447,10 @@ tp_parallel_build_worker_main(
 	pg_atomic_write_u32(&my_state->active_buffer, active_buf);
 	pg_atomic_write_u32(
 			&my_state->buffers[active_buf].status, TP_BUFFER_FILLING);
+
+	/* Set up executor state and context for expression evaluation */
+	estate	 = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
 
 	/* Process tuples */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -491,9 +493,12 @@ tp_parallel_build_worker_main(
 				dsa,
 				&my_state->buffers[active_buf],
 				slot,
-				shared->attnum,
+				index_info,
+				estate,
 				shared->text_config_oid);
 
+		/* free per-tuple memory */
+		ResetExprContext(econtext);
 		pg_atomic_fetch_add_u64(&my_state->tuples_scanned, 1);
 
 		CHECK_FOR_INTERRUPTS();
@@ -532,8 +537,10 @@ tp_parallel_build_worker_main(
 
 	/* Cleanup */
 	table_endscan(scan);
+	FreeExecutorState(estate);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
 	dsa_detach(dsa);
 }
 
@@ -1804,11 +1811,12 @@ tp_worker_process_document(
 		dsa_area			   *dsa,
 		TpWorkerMemtableBuffer *buffer,
 		TupleTableSlot		   *slot,
-		int						attnum,
+		IndexInfo			   *index_info,
+		EState				   *estate,
 		Oid						text_config_oid)
 {
-	bool		  isnull;
-	Datum		  text_datum;
+	bool		  isnull[INDEX_MAX_KEYS];
+	Datum		  text_datum[INDEX_MAX_KEYS];
 	text		 *document_text;
 	ItemPointer	  ctid;
 	Datum		  tsvector_datum;
@@ -1820,11 +1828,12 @@ tp_worker_process_document(
 	dshash_table *doclength_table;
 
 	/* Get text value */
-	text_datum = slot_getattr(slot, attnum, &isnull);
-	if (isnull)
-		return;
+	GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
+	FormIndexDatum(index_info, slot, estate, text_datum, isnull);
+	if (isnull[0])
+		return; /* Skip NULL documents */
 
-	document_text = DatumGetTextP(text_datum);
+	document_text = DatumGetTextP(text_datum[0]);
 	ctid		  = &slot->tts_tid;
 
 	if (!ItemPointerIsValid(ctid))

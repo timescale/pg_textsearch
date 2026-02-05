@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/tableam.h>
+#include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
 #include <executor/spi.h>
@@ -26,6 +27,7 @@
 #include "am.h"
 #include "build_parallel.h"
 #include "constants.h"
+#include "executor/executor.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -626,26 +628,26 @@ tp_process_document_text(
 static bool
 tp_process_document(
 		TupleTableSlot	  *slot,
-		IndexInfo		  *indexInfo,
+		IndexInfo		  *index_info,
+		EState			  *estate,
 		Oid				   text_config_oid,
 		TpLocalIndexState *index_state,
 		Relation		   index,
 		uint64			  *total_docs)
 {
-	bool		isnull;
-	Datum		text_datum;
+	bool		isnull[INDEX_MAX_KEYS];
+	Datum		text_datum[INDEX_MAX_KEYS];
 	text	   *document_text;
 	ItemPointer ctid;
 	int32		doc_length;
 
-	/* Get the text column value (first indexed column) */
-	text_datum =
-			slot_getattr(slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
+	GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
+	FormIndexDatum(index_info, slot, estate, text_datum, isnull);
 
-	if (isnull)
+	if (isnull[0])
 		return false; /* Skip NULL documents */
 
-	document_text = DatumGetTextPP(text_datum);
+	document_text = DatumGetTextPP(text_datum[0]);
 
 	/* Ensure the slot is materialized to get the TID */
 	slot_getallattrs(slot);
@@ -689,6 +691,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	EState			  *estate	= NULL;
+	ExprContext		  *econtext = NULL;
 
 	/* BM25 index build started */
 	elog(NOTICE,
@@ -701,19 +705,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * with different block layout than the old one.
 	 */
 	tp_invalidate_docid_cache();
-
-	/*
-	 * Check for expression indexes - BM25 indexes must be on a direct column
-	 * reference, not an expression like lower(content).
-	 */
-	if (indexInfo->ii_IndexAttrNumbers[0] == 0)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 indexes on expressions are not supported"),
-				 errhint("Create the index on a column directly, e.g., "
-						 "CREATE INDEX ... USING bm25(content)")));
-	}
 
 	/* Report initialization phase */
 	pgstat_progress_update_param(
@@ -795,7 +786,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			}
 
 			return tp_build_parallel(
-					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+					heap, index, text_config_oid, k1, b, nworkers);
 		}
 
 		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
@@ -839,16 +830,24 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Prepare to scan table */
 	snapshot = tp_setup_table_scan(heap, &scan, &slot);
 
+	/* Set up excutor state and context */
+	estate	 = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+
 	/* Process each document in the heap */
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		tp_process_document(
 				slot,
 				indexInfo,
+				estate,
 				text_config_oid,
 				index_state,
 				index,
 				&total_docs);
+
+		/* free per-tuple memory */
+		ResetExprContext(econtext);
 
 		/* Report progress every TP_PROGRESS_REPORT_INTERVAL tuples */
 		if (total_docs % TP_PROGRESS_REPORT_INTERVAL == 0)
@@ -865,6 +864,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, total_docs);
 
 	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
 	table_endscan(scan);
 
 #if PG_VERSION_NUM >= 180000
@@ -1096,7 +1096,11 @@ tp_insert(
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	}
 
-	/* Extract text from first column */
+	/*
+	 * Extract text from first value
+	 * If this is an expression index, PostgreSQL evaluates the expression
+	 * and put the value there.
+	 */
 	document_text = DatumGetTextPP(values[0]);
 
 	/* Vectorize the document */

@@ -82,16 +82,7 @@ LIMIT 3;
 DROP INDEX docs_bm25_simple_idx;
 
 -- =============================================================================
--- LIMITATION 3: Expression indexes are not supported
--- =============================================================================
-
-\echo 'Test: Expression index - should fail with error'
-
-CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
-    WITH (text_config='simple');
-
--- =============================================================================
--- LIMITATION 4: Aggregate functions on scores require explicit to_bm25query()
+-- LIMITATION 3: Aggregate functions on scores require explicit to_bm25query()
 -- =============================================================================
 
 \echo 'Test: Aggregate on scores with explicit index'
@@ -101,7 +92,7 @@ SELECT COUNT(*) as matching_docs,
 FROM docs;
 
 -- =============================================================================
--- LIMITATION 5: text <@> text operator doesn't use index scans
+-- LIMITATION 4: text <@> text operator doesn't use index scans
 -- The planner hook transforms text <@> text to text <@> bm25query, but the
 -- transformed expression doesn't match for index ordered scans.
 -- Workaround: Use to_bm25query() function (with or without index name).

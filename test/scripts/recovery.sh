@@ -156,13 +156,19 @@ INSERT INTO crash_test_docs (content, category) VALUES
 
 CREATE INDEX crash_idx ON crash_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+
+CREATE INDEX crash_expr_idx ON crash_test_docs USING bm25((lower(content)))
+  WITH (text_config='english', k1=1.2, b=0.75);
 EOF
 
     # Verify initial search works and capture baseline results
     log "Verifying initial search functionality..."
 
-    # Test 1: Search for 'database' - should return documents with database-related content
+    # Test 1: Search for 'database' using the base index
     INITIAL_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+
+    # Test 2: Search for 'database' using the expression index (implicit resolution)
+    INITIAL_EXPR_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY lower(content) <@> to_bm25query('database') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     # Count results and validate
     INITIAL_COUNT=$(echo "$INITIAL_RESULTS" | wc -l | tr -d ' ')
@@ -173,8 +179,17 @@ EOF
     log "Initial search test passed (found $INITIAL_COUNT documents)"
     log "Sample results: $(echo "$INITIAL_RESULTS" | head -2 | tr '\n' '; ')..."
 
+    INITIAL_EXPR_COUNT=$(echo "$INITIAL_EXPR_RESULTS" | wc -l | tr -d ' ')
+    if [ "$INITIAL_EXPR_COUNT" -eq 0 ]; then
+        error "Initial expression search returned no results - this indicates a problem"
+    fi
+
+    log "Initial expression search test passed (found $INITIAL_EXPR_COUNT documents)"
+    log "Sample expr results: $(echo "$INITIAL_EXPR_RESULTS" | head -2 | tr '\n' '; ')..."
+
     # Store expected results for comparison after recovery
     echo "$INITIAL_RESULTS" > "${DATA_DIR}/expected_results.txt"
+    echo "$INITIAL_EXPR_RESULTS" > "${DATA_DIR}/expected_expr_results.txt"
 
     # Phase 2: Simulate crash during operation
     log "Phase 2: Simulating crash..."
@@ -199,8 +214,9 @@ EOF
     # Verify data consistency after crash
     log "Verifying data consistency after recovery..."
 
-    # Test same query as before crash
+    # Test same queries as before crash
     RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('database', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    RECOVERY_EXPR_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY lower(content) <@> 'database' LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     RECOVERY_COUNT=$(echo "$RECOVERY_RESULTS" | wc -l | tr -d ' ')
     if [ "$RECOVERY_COUNT" -eq 0 ]; then
@@ -220,7 +236,25 @@ EOF
         fi
     fi
 
+    if [ -f "${DATA_DIR}/expected_expr_results.txt" ]; then
+        EXPECTED_EXPR_RESULTS=$(cat "${DATA_DIR}/expected_expr_results.txt")
+        if [ "$RECOVERY_EXPR_RESULTS" != "$EXPECTED_EXPR_RESULTS" ]; then
+            warn "Expression search results differ after recovery:"
+            warn "Expected: $(echo "$EXPECTED_EXPR_RESULTS" | head -2 | tr '\n' '; ')..."
+            warn "Got: $(echo "$RECOVERY_EXPR_RESULTS" | head -2 | tr '\n' '; ')..."
+        else
+            log "Expression search results match pre-crash baseline perfectly"
+        fi
+    fi
+
     log "Recovery search test passed (found $RECOVERY_COUNT documents)"
+
+    RECOVERY_EXPR_COUNT=$(echo "$RECOVERY_EXPR_RESULTS" | wc -l | tr -d ' ')
+    if [ "$RECOVERY_EXPR_COUNT" -eq 0 ]; then
+        error "Recovery expression search returned no results - recovery failed!"
+    fi
+
+    log "Recovery expression search test passed (found $RECOVERY_EXPR_COUNT documents)"
 
     # Test that we can still insert and search
     log "Testing post-recovery functionality..."
@@ -228,6 +262,7 @@ EOF
 
     # Test search for 'algorithms' which should find multiple documents
     POST_RECOVERY_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('algorithms', 'crash_idx') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    POST_RECOVERY_EXPR_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY lower(content) <@> to_bm25query('algorithms') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     POST_RECOVERY_COUNT=$(echo "$POST_RECOVERY_RESULTS" | wc -l | tr -d ' ')
     if [ "$POST_RECOVERY_COUNT" -eq 0 ]; then
@@ -237,14 +272,27 @@ EOF
     log "Post-recovery insert and search test passed (found $POST_RECOVERY_COUNT documents)"
     log "Sample results: $(echo "$POST_RECOVERY_RESULTS" | head -2 | tr '\n' '; ')..."
 
+    POST_RECOVERY_EXPR_COUNT=$(echo "$POST_RECOVERY_EXPR_RESULTS" | wc -l | tr -d ' ')
+    if [ "$POST_RECOVERY_EXPR_COUNT" -eq 0 ]; then
+        error "Post-recovery expression search returned no results - functionality broken!"
+    fi
+
+    log "Post-recovery expression search test passed (found $POST_RECOVERY_EXPR_COUNT documents)"
+    log "Sample expr results: $(echo "$POST_RECOVERY_EXPR_RESULTS" | head -2 | tr '\n' '; ')..."
+
     # Test debug dump functionality after recovery - this exposes the bug
     log "Phase 4: Testing debug dump functionality after recovery..."
 
     # This is the critical test that should expose the recovery bug
     DEBUG_RESULT=$(run_sql "SELECT bm25_dump_index('crash_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
+    DEBUG_EXPR_RESULT=$(run_sql "SELECT bm25_dump_index('crash_expr_idx');" 2>&1 | head -5 || echo "FAILED: Debug dump crashed")
 
     if echo "$DEBUG_RESULT" | grep -q "FAILED\|ERROR\|connection.*lost"; then
         error "Debug dump failed after recovery - this exposes the recovery bug!"
+    fi
+
+    if echo "$DEBUG_EXPR_RESULT" | grep -q "FAILED\|ERROR\|connection.*lost"; then
+        error "Debug dump for expression index failed after recovery - this exposes the recovery bug!"
     fi
 
     log "Debug dump test passed - recovery working correctly"
@@ -252,12 +300,15 @@ EOF
     # Test index rebuild scenario
     log "Phase 5: Testing index rebuild after crash..."
 
-    # Drop and recreate index to test rebuild from heap
+    # Drop and recreate indexes to test rebuild from heap
     run_sql "DROP INDEX crash_idx;"
+    run_sql "DROP INDEX crash_expr_idx;"
     run_sql "CREATE INDEX crash_idx_rebuilt ON crash_test_docs USING bm25(content) WITH (text_config='english', k1=1.2, b=0.75);"
+    run_sql "CREATE INDEX crash_expr_idx_rebuilt ON crash_test_docs USING bm25((lower(content))) WITH (text_config='english', k1=1.2, b=0.75);"
 
     # Test rebuild with 'systems' query to verify full functionality
     REBUILD_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY content <@> to_bm25query('systems', 'crash_idx_rebuilt') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
+    REBUILD_EXPR_RESULTS=$(run_sql "SELECT id, content FROM crash_test_docs ORDER BY lower(content) <@> to_bm25query('systems') LIMIT 5;" | grep -E "^\s*[0-9]+\s*\|" || echo "")
 
     REBUILD_COUNT=$(echo "$REBUILD_RESULTS" | wc -l | tr -d ' ')
     if [ "$REBUILD_COUNT" -eq 0 ]; then
@@ -266,6 +317,14 @@ EOF
 
     log "Index rebuild test passed (found $REBUILD_COUNT documents)"
     log "Sample results: $(echo "$REBUILD_RESULTS" | head -2 | tr '\n' '; ')..."
+
+    REBUILD_EXPR_COUNT=$(echo "$REBUILD_EXPR_RESULTS" | wc -l | tr -d ' ')
+    if [ "$REBUILD_EXPR_COUNT" -eq 0 ]; then
+        error "Expression index rebuild search returned no results - rebuild failed!"
+    fi
+
+    log "Expression index rebuild test passed (found $REBUILD_EXPR_COUNT documents)"
+    log "Sample expr results: $(echo "$REBUILD_EXPR_RESULTS" | head -2 | tr '\n' '; ')..."
 }
 
 main() {
