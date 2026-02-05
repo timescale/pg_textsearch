@@ -109,7 +109,11 @@ test-stress:
 	@echo "Running stress tests..."
 	@cd test/scripts && ./stress.sh
 
-test-shell: test-concurrency test-recovery test-segment
+test-cic:
+	@echo "Running CREATE INDEX CONCURRENTLY tests..."
+	@cd test/scripts && ./cic.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -261,6 +265,7 @@ help:
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make test-stress      - Run long-running stress tests"
+	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -284,4 +289,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
