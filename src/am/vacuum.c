@@ -175,17 +175,19 @@ tp_bulkdelete(
 
 		/* Iterate memtable CTIDs */
 		if (index_state != NULL)
-			tp_bulkdelete_memtable_ctids(index_state, callback, callback_state);
+			tp_bulkdelete_memtable_ctids(
+					index_state, callback, callback_state);
 
 		/* Iterate segment CTIDs at all levels */
 		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			if (metap->level_heads[level] != InvalidBlockNumber)
 			{
-				tp_bulkdelete_segment_ctids(info->index,
-											metap->level_heads[level],
-											callback,
-											callback_state);
+				tp_bulkdelete_segment_ctids(
+						info->index,
+						metap->level_heads[level],
+						callback,
+						callback_state);
 			}
 		}
 	}
