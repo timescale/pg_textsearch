@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770273095009,
+  "lastUpdate": 1770273096793,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -9121,6 +9121,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
             "value": 0.73,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "SteveLauC",
+            "username": "SteveLauC",
+            "email": "stevelauc@outlook.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b0eea09b625cbbca5db98be033582c06e04f9cd7",
+          "message": "refactor: remove unused tp_limits_init() (#190)\n\nGUC parameter 'pg_textsearch.default_limit' is initialized in\n_PG_init(), this tp_limits_init() is not used, so remove it.",
+          "timestamp": "2026-02-05T05:09:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b0eea09b625cbbca5db98be033582c06e04f9cd7"
+        },
+        "date": 1770273096488,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 12195.966,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.23,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.44,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.74,
             "unit": "ms"
           },
           {
