@@ -151,6 +151,10 @@ git checkout -b bump-to-0.4.0-dev
 
 Update files with `0.4.0-dev`, create new SQL files, etc.
 
+**Don't forget**: Add the just-released version to the `old_version` matrix in
+`.github/workflows/upgrade-tests.yml` so future releases are tested for upgrade
+compatibility from this version.
+
 ## SQL Upgrade Path Requirements
 
 Every release must have an upgrade path from the previous stable release
