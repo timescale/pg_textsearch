@@ -84,10 +84,6 @@ tp_bulkdelete_segment_ctids(
 	BlockNumber segment_root = first_segment;
 	int64		count		 = 0;
 
-	elog(DEBUG1,
-		 "tp_bulkdelete_segment_ctids: starting at block %u",
-		 first_segment);
-
 	while (segment_root != InvalidBlockNumber)
 	{
 		TpSegmentReader *reader;
@@ -145,13 +141,6 @@ tp_bulkdelete(
 {
 	TpIndexMetaPage	   metap;
 	TpLocalIndexState *index_state;
-	int64			   memtable_count = 0;
-	int64			   segment_count  = 0;
-
-	elog(DEBUG1,
-		 "tp_bulkdelete: called for %s, callback=%s",
-		 RelationGetRelationName(info->index),
-		 callback ? "provided" : "NULL");
 
 	/* Initialize stats structure if not provided */
 	if (stats == NULL)
@@ -186,29 +175,20 @@ tp_bulkdelete(
 
 		/* Iterate memtable CTIDs */
 		if (index_state != NULL)
-		{
-			memtable_count = tp_bulkdelete_memtable_ctids(
-					index_state, callback, callback_state);
-		}
+			tp_bulkdelete_memtable_ctids(index_state, callback, callback_state);
 
 		/* Iterate segment CTIDs at all levels */
 		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			if (metap->level_heads[level] != InvalidBlockNumber)
 			{
-				segment_count += tp_bulkdelete_segment_ctids(
-						info->index,
-						metap->level_heads[level],
-						callback,
-						callback_state);
+				tp_bulkdelete_segment_ctids(info->index,
+											metap->level_heads[level],
+											callback,
+											callback_state);
 			}
 		}
 	}
-
-	elog(DEBUG1,
-		 "tp_bulkdelete: found %lld memtable CTIDs, %lld segment CTIDs",
-		 (long long)memtable_count,
-		 (long long)segment_count);
 
 	/* Fill in statistics */
 	stats->num_pages		= 1; /* Minimal pages (just metapage) */
