@@ -235,3 +235,21 @@ jobs:
         path: |
           test/tmp_concurrent_test/postgres.log
         retention-days: 7
+
+  # Umbrella job for branch protection rules
+  all-tests-passed:
+    runs-on: ubuntu-latest
+    needs: [test, build-test-multiple-configs, performance-test]
+    if: always()
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
+          if [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more jobs were cancelled"
+            exit 1
+          fi
+          echo "All checks passed!"
