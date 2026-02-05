@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770186464430,
+  "lastUpdate": 1770273093572,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2029,6 +2029,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "SteveLauC",
+            "username": "SteveLauC",
+            "email": "stevelauc@outlook.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b0eea09b625cbbca5db98be033582c06e04f9cd7",
+          "message": "refactor: remove unused tp_limits_init() (#190)\n\nGUC parameter 'pg_textsearch.default_limit' is initialized in\n_PG_init(), this tp_limits_init() is not used, so remove it.",
+          "timestamp": "2026-02-05T05:09:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b0eea09b625cbbca5db98be033582c06e04f9cd7"
+        },
+        "date": 1770273092906,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 266.186,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.41,
             "unit": "ms"
           },
           {
