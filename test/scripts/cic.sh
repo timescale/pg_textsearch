@@ -51,6 +51,10 @@ shared_buffers = 128MB
 unix_socket_directories = '${DATA_DIR}'
 listen_addresses = 'localhost'
 log_min_messages = warning
+
+# Lower thresholds to trigger multiple memtable spills during CIC tests
+pg_textsearch.bulk_load_threshold = 10000
+pg_textsearch.memtable_spill_threshold = 100000
 EOF
 
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w || error "Failed to start PostgreSQL"
@@ -71,14 +75,17 @@ run_sql_quiet() {
 test_cic_with_inserts() {
     log "Test 1: CREATE INDEX CONCURRENTLY with concurrent INSERTs"
 
-    # Create table with initial data
+    # Create table with initial data - use enough rows to trigger memtable spills
+    # bulk_load_threshold is 100000 terms, so we need lots of documents with many terms
     run_sql_quiet "DROP TABLE IF EXISTS cic_test CASCADE;"
     run_sql_quiet "CREATE TABLE cic_test (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "INSERT INTO cic_test (content)
-        SELECT 'initial document number ' || i || ' about database search'
-        FROM generate_series(1, 500) AS i;"
+        SELECT 'initial document number ' || i || ' about database search optimization with ' ||
+               'additional text to make indexing trigger memtable spills and exercise the ' ||
+               'concurrent index build code paths thoroughly term' || (i % 1000)
+        FROM generate_series(1, 100000) AS i;"
 
-    info "Created table with 500 initial documents"
+    info "Created table with 100000 initial documents"
 
     # Start CIC in background
     local cic_output="${DATA_DIR}/cic_output.txt"
@@ -121,9 +128,14 @@ test_cic_with_inserts() {
     local index_count=$(run_sql "SELECT COUNT(*) FROM cic_test WHERE content <@> to_bm25query('database', 'cic_test_idx') < 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
 
     info "Table count for 'database': $table_count, Index count: $index_count"
+    info "Performed $insert_count concurrent inserts during CIC"
 
     if [ "$table_count" != "$index_count" ]; then
         error "Mismatch: table has $table_count rows with 'database', index returns $index_count"
+    fi
+
+    if [ "$insert_count" -lt 5 ]; then
+        warn "Only $insert_count concurrent inserts - CIC may have been too fast"
     fi
 
     log "✅ Test 1 passed: CIC with concurrent inserts works correctly"
@@ -137,10 +149,10 @@ test_cic_with_updates() {
     run_sql_quiet "DROP TABLE IF EXISTS cic_test CASCADE;"
     run_sql_quiet "CREATE TABLE cic_test (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "INSERT INTO cic_test (content)
-        SELECT 'document ' || i || ' original content about searching'
-        FROM generate_series(1, 500) AS i;"
+        SELECT 'document ' || i || ' original content about searching with more words to trigger spills term' || (i % 500)
+        FROM generate_series(1, 100000) AS i;"
 
-    info "Created table with 500 documents"
+    info "Created table with 100000 documents"
 
     # Start CIC in background
     local cic_output="${DATA_DIR}/cic_output.txt"
@@ -156,11 +168,11 @@ test_cic_with_updates() {
     # Concurrent updates while CIC is running
     local update_count=0
     while kill -0 $cic_pid 2>/dev/null; do
-        local id=$((RANDOM % 500 + 1))
+        local id=$((RANDOM % 100000 + 1))
         run_sql_quiet "UPDATE cic_test SET content = 'updated document $id with modified search terms'
                        WHERE id = $id;"
         update_count=$((update_count + 1))
-        sleep 0.01
+        sleep 0.005
     done
 
     wait $cic_pid
@@ -189,6 +201,10 @@ test_cic_with_updates() {
         error "Mismatch: $updated_count rows have 'modified', index returns $index_updated"
     fi
 
+    if [ "$update_count" -lt 5 ]; then
+        warn "Only $update_count concurrent updates - CIC may have been too fast"
+    fi
+
     log "✅ Test 2 passed: CIC with concurrent updates works correctly"
     run_sql_quiet "DROP TABLE cic_test CASCADE;"
 }
@@ -200,10 +216,10 @@ test_cic_with_deletes() {
     run_sql_quiet "DROP TABLE IF EXISTS cic_test CASCADE;"
     run_sql_quiet "CREATE TABLE cic_test (id SERIAL PRIMARY KEY, content TEXT);"
     run_sql_quiet "INSERT INTO cic_test (content)
-        SELECT 'document ' || i || ' deletable content about search'
-        FROM generate_series(1, 1000) AS i;"
+        SELECT 'document ' || i || ' deletable content about search with extra text to trigger spills term' || (i % 500)
+        FROM generate_series(1, 100000) AS i;"
 
-    info "Created table with 1000 documents"
+    info "Created table with 100000 documents"
 
     # Start CIC in background
     local cic_output="${DATA_DIR}/cic_output.txt"
@@ -263,10 +279,10 @@ test_cic_with_mixed_ops() {
     run_sql_quiet "DROP TABLE IF EXISTS cic_test CASCADE;"
     run_sql_quiet "CREATE TABLE cic_test (id SERIAL PRIMARY KEY, content TEXT, category INT);"
     run_sql_quiet "INSERT INTO cic_test (content, category)
-        SELECT 'document ' || i || ' mixed content about indexing', i % 10
-        FROM generate_series(1, 500) AS i;"
+        SELECT 'document ' || i || ' mixed content about indexing with additional terms term' || (i % 500), i % 10
+        FROM generate_series(1, 100000) AS i;"
 
-    info "Created table with 500 documents"
+    info "Created table with 100000 documents"
 
     # Start CIC in background
     local cic_output="${DATA_DIR}/cic_output.txt"
@@ -299,11 +315,11 @@ test_cic_with_mixed_ops() {
     {
         local count=0
         while kill -0 $cic_pid 2>/dev/null; do
-            local id=$((RANDOM % 500 + 1))
+            local id=$((RANDOM % 100000 + 1))
             run_sql_quiet "UPDATE cic_test SET content = 'updated during cic $count for testing'
                            WHERE id = $id;"
             count=$((count + 1))
-            sleep 0.02
+            sleep 0.01
         done
         info "Update worker: updated $count rows"
     } &
@@ -313,9 +329,9 @@ test_cic_with_mixed_ops() {
     {
         local count=0
         while kill -0 $cic_pid 2>/dev/null; do
-            run_sql_quiet "DELETE FROM cic_test WHERE category = $((count % 10)) AND id > 400 LIMIT 1;"
+            run_sql_quiet "DELETE FROM cic_test WHERE category = $((count % 10)) AND id > 90000 LIMIT 1;"
             count=$((count + 1))
-            sleep 0.03
+            sleep 0.02
         done
         info "Delete worker: deleted up to $count rows"
     } &
@@ -394,16 +410,16 @@ test_cic_with_mixed_ops() {
 test_multiple_cic() {
     log "Test 5: Multiple concurrent CREATE INDEX CONCURRENTLY operations"
 
-    # Create multiple tables
+    # Create multiple tables with enough data to trigger spills
     for i in 1 2 3; do
         run_sql_quiet "DROP TABLE IF EXISTS cic_multi_$i CASCADE;"
         run_sql_quiet "CREATE TABLE cic_multi_$i (id SERIAL PRIMARY KEY, content TEXT);"
         run_sql_quiet "INSERT INTO cic_multi_$i (content)
-            SELECT 'table $i document ' || j || ' with searchable content'
-            FROM generate_series(1, 200) AS j;"
+            SELECT 'table $i document ' || j || ' with searchable content and extra terms term' || (j % 500)
+            FROM generate_series(1, 50000) AS j;"
     done
 
-    info "Created 3 tables with 200 documents each"
+    info "Created 3 tables with 50000 documents each"
 
     # Start CIC on all tables concurrently
     local pids=""
@@ -443,8 +459,8 @@ test_multiple_cic() {
         local count=$(run_sql "SELECT COUNT(*) FROM cic_multi_$i WHERE content <@> to_bm25query('searchable', 'cic_multi_${i}_idx') < 0;" | grep -E "^\s*[0-9]+\s*$" | tr -d ' ')
         info "Table cic_multi_$i: $count documents found via index"
 
-        if [ "$count" != "200" ]; then
-            error "Expected 200 documents in cic_multi_$i, found $count"
+        if [ "$count" != "50000" ]; then
+            error "Expected 50000 documents in cic_multi_$i, found $count"
         fi
     done
 
