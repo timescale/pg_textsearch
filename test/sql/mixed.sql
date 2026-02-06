@@ -202,13 +202,13 @@ INSERT INTO multi_idx_test (content) VALUES
 -- Query using the English index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
 FROM multi_idx_test
-ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english'), id
 LIMIT 10;
 
 -- Query using the Simple index
 SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
 FROM multi_idx_test
-ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple')
+ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple'), id
 LIMIT 10;
 
 -- Verify both indexes exist and function independently

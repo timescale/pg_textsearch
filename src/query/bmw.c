@@ -1050,8 +1050,7 @@ find_wand_pivot(
  * the pivot.
  */
 static float4
-compute_block_max_at_pivot(
-		TpTermState *terms, int pivot_len, uint32 pivot_doc_id)
+compute_block_max_at_pivot(TpTermState *terms, int pivot_len)
 {
 	float4 upper_bound = 0.0f;
 	int	   i;
@@ -1157,6 +1156,118 @@ block_max_skip_advance(
 }
 
 /*
+ * Seek all pre-pivot terms [0..pivot_len-1] to pivot_doc_id.
+ *
+ * Returns true if all pivot terms are aligned at pivot_doc_id.
+ * Returns false if a term was exhausted or overshot, requiring
+ * a re-pivot. Updates active_count on term exhaustion.
+ */
+static bool
+seek_to_pivot(
+		TpTermState *terms,
+		int			 term_count,
+		int			 pivot_len,
+		uint32		 pivot_doc_id,
+		int			*active_count)
+{
+	int i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		uint32 doc_id = term_current_doc_id(&terms[i]);
+
+		if (doc_id == UINT32_MAX)
+		{
+			(*active_count)--;
+			return false;
+		}
+
+		if (doc_id < pivot_doc_id)
+		{
+			if (!seek_term_to_doc(&terms[i], pivot_doc_id))
+			{
+				(*active_count)--;
+				restore_ordering(terms, term_count, i);
+				return false;
+			}
+			/*
+			 * After seek, term may have moved past pivot.
+			 * restore_ordering will reposition it correctly.
+			 */
+			restore_ordering(terms, term_count, i);
+			/*
+			 * A new term slid into position i, re-check it.
+			 */
+			i--;
+			continue;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * Verify all pivot terms are exactly at pivot_doc_id.
+ *
+ * After seeking, some terms may have overshot past the pivot.
+ * Returns true only if all [0..pivot_len-1] are at pivot_doc_id.
+ */
+static bool
+verify_pivot_alignment(TpTermState *terms, int pivot_len, uint32 pivot_doc_id)
+{
+	int i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		if (term_current_doc_id(&terms[i]) != pivot_doc_id)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Score a single document at pivot_doc_id across pivot terms.
+ *
+ * Only scores terms [0..pivot_len-1] because terms past pivot_len
+ * have doc_id > pivot_doc_id by construction (seek_to_pivot only
+ * advances pre-pivot terms; post-pivot terms stay put).
+ */
+static float4
+score_pivot_document(
+		TpTermState *terms,
+		int			 pivot_len,
+		float4		 k1,
+		float4		 b,
+		float4		 avg_doc_len)
+{
+	float4 doc_score = 0.0f;
+	int	   i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		TpTermState	   *ts = &terms[i];
+		TpBlockPosting *bp;
+		float4			term_score;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+
+		bp		   = &ts->iter.block_postings[ts->iter.current_in_block];
+		term_score = compute_bm25_score(
+							 ts->idf,
+							 bp->frequency,
+							 (int32)decode_fieldnorm(bp->fieldnorm),
+							 k1,
+							 b,
+							 avg_doc_len) *
+					 ts->query_freq;
+		doc_score += term_score;
+	}
+
+	return doc_score;
+}
+
+/*
  * Score segment postings for multiple terms using WAND traversal.
  *
  * Classic WAND: terms are sorted by current doc_id. We walk from
@@ -1201,7 +1312,6 @@ score_segment_multi_term_bmw(
 		float4 threshold;
 		float4 block_upper;
 		float4 doc_score;
-		bool   all_aligned;
 		int	   i;
 
 		threshold = tp_topk_threshold(heap);
@@ -1211,56 +1321,13 @@ score_segment_multi_term_bmw(
 					terms, term_count, threshold, &pivot_len, &pivot_doc_id))
 			break; /* No term combination can beat threshold */
 
-		/*
-		 * Step 2: Seek pre-pivot terms to pivot_doc_id.
-		 *
-		 * Terms [0..pivot_len-1] are at or before pivot_doc_id
-		 * (by construction of the sorted order). Seek any that
-		 * are before the pivot forward.
-		 */
-		all_aligned = true;
-		for (i = 0; i < pivot_len; i++)
-		{
-			uint32 doc_id = term_current_doc_id(&terms[i]);
-
-			if (doc_id == UINT32_MAX)
-			{
-				active_count--;
-				all_aligned = false;
-				break;
-			}
-
-			if (doc_id < pivot_doc_id)
-			{
-				if (!seek_term_to_doc(&terms[i], pivot_doc_id))
-				{
-					active_count--;
-					restore_ordering(terms, term_count, i);
-					all_aligned = false;
-					break;
-				}
-				/*
-				 * After seek, term may have moved past pivot.
-				 * restore_ordering will reposition it correctly.
-				 */
-				restore_ordering(terms, term_count, i);
-				/*
-				 * A new term slid into position i, re-check it.
-				 */
-				i--;
-				continue;
-			}
-		}
-
-		if (!all_aligned)
+		/* Step 2: Seek pre-pivot terms to pivot_doc_id */
+		if (!seek_to_pivot(
+					terms, term_count, pivot_len, pivot_doc_id, &active_count))
 			continue; /* Re-pivot with updated positions */
 
-		/*
-		 * Step 3: Block-max refinement.
-		 * Check if block-level upper bound still beats threshold.
-		 */
-		block_upper =
-				compute_block_max_at_pivot(terms, pivot_len, pivot_doc_id);
+		/* Step 3: Block-max refinement */
+		block_upper = compute_block_max_at_pivot(terms, pivot_len);
 
 		if (block_upper <= threshold)
 		{
@@ -1272,49 +1339,12 @@ score_segment_multi_term_bmw(
 		if (stats)
 			stats->blocks_scanned++;
 
-		/*
-		 * Step 4: Verify alignment.
-		 * All pivot terms must be AT pivot_doc_id (seeks may
-		 * have overshot). If any are past it, re-pivot.
-		 */
-		all_aligned = true;
-		for (i = 0; i < pivot_len; i++)
-		{
-			if (term_current_doc_id(&terms[i]) != pivot_doc_id)
-			{
-				all_aligned = false;
-				break;
-			}
-		}
-
-		if (!all_aligned)
+		/* Step 4: Verify all pivot terms are at pivot_doc_id */
+		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
 			continue; /* Re-pivot with new positions */
 
-		/*
-		 * Step 5: Score the pivot document.
-		 * All pivot terms are confirmed at pivot_doc_id.
-		 */
-		doc_score = 0.0f;
-		for (i = 0; i < pivot_len; i++)
-		{
-			TpTermState	   *ts = &terms[i];
-			TpBlockPosting *bp;
-			float4			term_score;
-
-			if (!ts->found || ts->iter.finished)
-				continue;
-
-			bp		   = &ts->iter.block_postings[ts->iter.current_in_block];
-			term_score = compute_bm25_score(
-								 ts->idf,
-								 bp->frequency,
-								 (int32)decode_fieldnorm(bp->fieldnorm),
-								 k1,
-								 b,
-								 avg_doc_len) *
-						 ts->query_freq;
-			doc_score += term_score;
-		}
+		/* Step 5: Score the pivot document */
+		doc_score = score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
 
 		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
 			tp_topk_add_segment(
