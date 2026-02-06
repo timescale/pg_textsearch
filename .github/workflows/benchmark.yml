@@ -6,7 +6,7 @@ permissions:
 
 env:
   # System X (competitive baseline) version for benchmarking
-  SYSTEM_X_VERSION: "0.20.6"
+  SYSTEM_X_VERSION: "0.21.6"
 
 on:
   # Nightly benchmark
