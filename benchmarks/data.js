@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770401654461,
+  "lastUpdate": 1770411036841,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7306,6 +7306,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1189.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "d2d715519a1a15cc5ca73eec533120019a8915b0",
+          "message": "feat: implement WAND pivot selection for multi-term queries\n\nReplace the min-doc-id pivot approach with classic WAND pivot\nselection. Terms are sorted by current doc_id and max_scores are\naccumulated until the threshold is exceeded, skipping large ranges\nof documents that can't contribute to top-k results.\n\nKey changes:\n- Add max_score (global max across all blocks) to TpTermState\n- Sort terms by doc_id, maintain order via linear insertion\n- find_wand_pivot walks sorted terms to find true WAND pivot\n- Block-max refinement with Tantivy-style skip advancement\n- 8-term validation test (BMW vs exhaustive + BM25 reference)\n\nAddresses #192.",
+          "timestamp": "2026-02-06T20:40:45Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d2d715519a1a15cc5ca73eec533120019a8915b0"
+        },
+        "date": 1770411036179,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 262924.691,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.25,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.11,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.66,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.33,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 8.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 19.35,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 29.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 11.07,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1189.47,
             "unit": "MB"
           }
         ]
