@@ -1445,7 +1445,7 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 
 /*
  * Validate that when an explicit index is specified in bm25query, the planner
- * uses that same index for the scan. This fixes GitHub issue #183.
+ * uses that same index for the scan.
  *
  * Walks the plan tree looking for BM25 IndexScan nodes and validates their
  * ORDER BY expressions.
