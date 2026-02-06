@@ -21,7 +21,7 @@
 #
 # Validation:
 #   Validation runs automatically after queries if ground_truth.tsv exists.
-#   A benchmark FAILS if score match rate is < 100% (within 5% tolerance).
+#   A benchmark FAILS if scores don't match to 4 decimal places.
 #   Generate ground truth with: psql -f <dataset>/precompute_ground_truth.sql
 
 set -e
@@ -92,7 +92,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --report         - Generate markdown report"
             echo "  --port PORT      - Postgres port (default: 5433)"
             echo ""
-            echo "Validation runs automatically after queries. Fails if score match < 100%."
+            echo "Validation runs automatically after queries. Fails if scores don't match to 4 decimal places."
             exit 0
             ;;
         *)
@@ -206,11 +206,11 @@ run_benchmark() {
 
                 psql -f "$validate_script" 2>&1 | tee "$validate_log"
 
-                # Check for validation failures (score match rate must be 100%)
+                # Check for validation failures (scores must match to 4 decimal places)
                 if grep -q "VALIDATION FAILED" "$validate_log"; then
                     echo ""
                     echo "ERROR: Validation FAILED for $dataset!"
-                    echo "Score match rate < 100% indicates BM25 scoring bugs."
+                    echo "Scores don't match to 4 decimal places - indicates BM25 scoring bugs."
                     echo "VALIDATION_${dataset}=FAILED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
                     VALIDATION_FAILED=true
                 else

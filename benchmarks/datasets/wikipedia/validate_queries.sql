@@ -6,7 +6,7 @@
 --
 -- Validates:
 --   1. Same documents appear in top-10 (order may vary for ties)
---   2. BM25 scores match within tolerance (5% relative difference)
+--   2. BM25 scores match to 4 decimal places
 
 \set ON_ERROR_STOP on
 \timing on
@@ -30,11 +30,11 @@ SELECT 'Loaded ' || COUNT(DISTINCT query_id) || ' queries, ' || COUNT(*) || ' re
 FROM ground_truth;
 
 -- Validation function that handles ties properly
--- Uses relative tolerance (percentage) since BM25 scores vary widely in magnitude
+-- Compares scores to specified decimal places (default 4)
 CREATE OR REPLACE FUNCTION validate_single_query(
     p_query_id int,
     p_query_text text,
-    p_relative_tolerance float8 DEFAULT 0.05  -- 5% relative difference allowed
+    p_decimal_places int DEFAULT 4
 ) RETURNS TABLE(
     query_id int,
     docs_match boolean,
@@ -85,29 +85,25 @@ BEGIN
     FROM unnest(v_tapir_docs) d
     WHERE d NOT IN (SELECT gt2.doc_id FROM ground_truth gt2 WHERE gt2.query_id = p_query_id);
 
-    -- Compare scores for matching documents
+    -- Compare scores for matching documents (to N decimal places)
     FOR r IN
         SELECT
             gt.doc_id,
             gt.score as gt_score,
             t.score as tapir_score,
             ABS(gt.score - t.score) as abs_diff,
-            -- Relative difference as percentage of the larger score
-            CASE WHEN GREATEST(ABS(gt.score), ABS(t.score)) > 0
-                 THEN ABS(gt.score - t.score) / GREATEST(ABS(gt.score), ABS(t.score))
-                 ELSE 0 END as rel_diff
+            ROUND(gt.score::numeric, p_decimal_places) as gt_rounded,
+            ROUND(t.score::numeric, p_decimal_places) as tapir_rounded
         FROM ground_truth gt
         JOIN tapir_results t ON gt.doc_id = t.doc_id
         WHERE gt.query_id = p_query_id
     LOOP
-        IF r.rel_diff > p_relative_tolerance THEN
+        IF r.gt_rounded != r.tapir_rounded THEN
             v_all_scores_match := false;
             v_details := v_details || 'doc ' || r.doc_id::text || ': ' ||
-                round((r.rel_diff * 100)::numeric, 1)::text || '% diff (gt=' ||
-                round(r.gt_score::numeric, 2)::text || ', tapir=' ||
-                round(r.tapir_score::numeric, 2)::text || '); ';
+                'gt=' || r.gt_rounded::text || ', tapir=' || r.tapir_rounded::text || '; ';
         END IF;
-        v_max_score_diff := GREATEST(v_max_score_diff, r.rel_diff);
+        v_max_score_diff := GREATEST(v_max_score_diff, r.abs_diff);
     END LOOP;
 
     -- Build result
@@ -154,7 +150,7 @@ SELECT
     SUM(CASE WHEN scores_match THEN 1 ELSE 0 END) as scores_match_count,
     round(100.0 * SUM(CASE WHEN docs_match THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as docs_match_pct,
     round(100.0 * SUM(CASE WHEN scores_match THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as scores_match_pct,
-    round((MAX(max_score_diff) * 100)::numeric, 2) as worst_diff_pct
+    round(MAX(max_score_diff)::numeric, 6) as worst_abs_diff
 FROM validation_results;
 
 -- Check for failures and report
@@ -173,10 +169,10 @@ BEGIN
     v_score_match_pct := 100.0 * (v_total - v_score_failures) / NULLIF(v_total, 0);
 
     IF v_score_match_pct < 100.0 THEN
-        RAISE NOTICE 'VALIDATION FAILED: Score match rate %.1f%% (% of % queries have score differences > 5%%)',
+        RAISE NOTICE 'VALIDATION FAILED: Score match rate %.1f%% (% of % queries have scores differing beyond 4 decimal places)',
             v_score_match_pct, v_score_failures, v_total;
     ELSE
-        RAISE NOTICE 'VALIDATION PASSED: All % queries have scores within 5%% tolerance', v_total;
+        RAISE NOTICE 'VALIDATION PASSED: All % queries have scores matching to 4 decimal places', v_total;
     END IF;
 END;
 $$;
@@ -190,7 +186,7 @@ SELECT
     scores_match,
     missing_docs,
     extra_docs,
-    round((max_score_diff * 100)::numeric, 2) as max_diff_pct,
+    round(max_score_diff::numeric, 6) as max_abs_diff,
     left(details, 200) as details
 FROM validation_results
 WHERE NOT docs_match OR NOT scores_match
