@@ -37,20 +37,25 @@ DO $$
 DECLARE
     v_summary text;
     v_total_docs bigint;
+    v_total_len bigint;
     v_avg_doc_len float8;
 BEGIN
     SELECT bm25_summarize_index('wikipedia_bm25_idx') INTO v_summary;
 
-    -- Parse total_docs and avg_doc_len from summary
+    -- Parse total_docs and total_len from summary
+    -- IMPORTANT: Compute avg_doc_len from total_len/total_docs for full precision.
+    -- Do NOT parse the displayed avg_doc_len which is rounded for display.
     v_total_docs := (regexp_match(v_summary, 'total_docs: (\d+)'))[1]::bigint;
-    v_avg_doc_len := (regexp_match(v_summary, 'avg_doc_len: ([\d.]+)'))[1]::float8;
+    v_total_len := (regexp_match(v_summary, 'total_len: (\d+)'))[1]::bigint;
+    v_avg_doc_len := v_total_len::float8 / v_total_docs::float8;
 
     -- Store in temp table for use by compute function
     DROP TABLE IF EXISTS corpus_stats;
     CREATE TABLE corpus_stats AS
     SELECT v_total_docs as total_docs, v_avg_doc_len as avg_doc_len;
 
-    RAISE NOTICE 'Corpus stats: total_docs=%, avg_doc_len=%', v_total_docs, v_avg_doc_len;
+    RAISE NOTICE 'Corpus stats: total_docs=%, total_len=%, avg_doc_len=%',
+        v_total_docs, v_total_len, v_avg_doc_len;
 END;
 $$;
 
