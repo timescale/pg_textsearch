@@ -438,49 +438,55 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	tpquery = (TpQuery *)DatumGetPointer(constNode->constvalue);
 
 	/*
+	 * The left operand of <@> must be a column reference for both index
+	 * resolution and index scan support.
+	 */
+	if (!IsA(left, Var))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("left operand of <@> must be a table column"),
+				 errhint("Use column_name <@> bm25query, not a constant "
+						 "or expression.")));
+	}
+
+	/*
 	 * If the bm25query has an explicit index, validate that the index is on
 	 * the column being queried. This catches cases where the user specifies
 	 * an index that is on a different column.
 	 */
 	if (OidIsValid(tpquery->index_oid))
 	{
-		if (IsA(left, Var))
+		Var		  *var = (Var *)left;
+		Oid		   relid;
+		AttrNumber attnum;
+
+		if (get_var_relation_and_attnum(var, context->query, &relid, &attnum))
 		{
-			Var		  *var = (Var *)left;
-			Oid		   relid;
-			AttrNumber attnum;
-
-			if (get_var_relation_and_attnum(
-						var, context->query, &relid, &attnum))
+			if (!index_is_on_column(tpquery->index_oid, relid, attnum))
 			{
-				if (!index_is_on_column(tpquery->index_oid, relid, attnum))
-				{
-					char *index_name = get_rel_name(tpquery->index_oid);
-					char *col_name	 = get_attname(relid, attnum, false);
-					char *table_name = get_rel_name(relid);
+				char *index_name = get_rel_name(tpquery->index_oid);
+				char *col_name	 = get_attname(relid, attnum, false);
+				char *table_name = get_rel_name(relid);
 
-					ereport(ERROR,
-							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-							 errmsg("index \"%s\" is not on column \"%s\"",
-									index_name ? index_name : "(unknown)",
-									col_name ? col_name : "(unknown)"),
-							 errdetail(
-									 "The explicitly specified index is not "
-									 "built on the column being searched."),
-							 errhint("Use an index that is built on column "
-									 "\"%s\" of table \"%s\", or omit the "
-									 "index name to use automatic index "
-									 "resolution.",
-									 col_name ? col_name : "(unknown)",
-									 table_name ? table_name : "(unknown)")));
-				}
+				ereport(ERROR,
+						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+						 errmsg("index \"%s\" is not on column \"%s\"",
+								index_name ? index_name : "(unknown)",
+								col_name ? col_name : "(unknown)"),
+						 errdetail(
+								 "The explicitly specified index is not "
+								 "built on the column being searched."),
+						 errhint("Use an index that is built on column "
+								 "\"%s\" of table \"%s\", or omit the "
+								 "index name to use automatic index "
+								 "resolution.",
+								 col_name ? col_name : "(unknown)",
+								 table_name ? table_name : "(unknown)")));
 			}
 		}
 		return NULL; /* Already resolved, validation passed */
 	}
-
-	if (!IsA(left, Var))
-		return NULL;
 
 	index_oid = find_index_for_var((Var *)left, context);
 	if (!OidIsValid(index_oid))
@@ -523,7 +529,16 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	left  = linitial(opexpr->args);
 	right = lsecond(opexpr->args);
 
-	if (!IsA(left, Var) || !IsA(right, Const))
+	if (!IsA(left, Var))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("left operand of <@> must be a table column"),
+				 errhint("Use column_name <@> 'query text', not a "
+						 "constant or expression.")));
+	}
+
+	if (!IsA(right, Const))
 		return NULL;
 
 	var		   = (Var *)left;

@@ -34,6 +34,9 @@ FROM explicit_index_test
 ORDER BY score
 LIMIT 10;
 
+-- This should ERROR: left operand is a constant, not a column
+SELECT 'hello' <@> to_bm25query('postgres', 'content_idx') AS score;
+
 -- Clean up
 DROP TABLE explicit_index_test;
 
