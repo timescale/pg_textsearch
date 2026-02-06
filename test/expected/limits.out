@@ -148,6 +148,7 @@ NOTICE:  BM25 index scan: tid=(0,19), BM25_score=-1.3915
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.1663
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.9394
 NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
+NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.9394
          title         |  score  
 -----------------------+---------
  Database Architecture | -2.3309
@@ -156,7 +157,8 @@ NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-0.9394
  System Performance    | -1.3915
  Database Performance  | -0.9394
  Query Optimization    | -0.9394
-(6 rows)
+ Database Security     | -0.9394
+(7 rows)
 
 -- Test 4: No LIMIT (should use default behavior)
 -- Note: Query plan varies by PG version - not testing EXPLAIN here

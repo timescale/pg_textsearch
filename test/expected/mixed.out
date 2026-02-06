@@ -204,6 +204,7 @@ NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.0631
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.0631
 NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.0563
 NOTICE:  BM25 index scan: tid=(0,38), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-0.0563
  id |                            content                             |  score  
 ----+----------------------------------------------------------------+---------
   1 | updated database system with enhanced concurrent features      | -3.5477
@@ -215,7 +216,8 @@ NOTICE:  BM25 index scan: tid=(0,38), BM25_score=-0.0563
   7 | concurrent database operations need careful synchronization    | -0.0631
  20 | test document number 12 contains database and concurrent terms | -0.0563
  38 | test document number 30 contains database and concurrent terms | -0.0563
-(9 rows)
+ 16 | test document number 8 contains database and concurrent terms  | -0.0563
+(10 rows)
 
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'

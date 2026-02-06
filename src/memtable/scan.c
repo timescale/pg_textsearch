@@ -110,8 +110,9 @@ tp_memtable_search(
 			so->result_ctids,
 			&so->result_scores);
 
-	so->result_count = result_count;
-	so->current_pos	 = 0;
+	so->result_count	 = result_count;
+	so->current_pos		 = 0;
+	so->max_results_used = max_results;
 
 	/* Free the query terms array and individual term strings */
 	for (int i = 0; i < entry_count; i++)

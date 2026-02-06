@@ -36,7 +36,8 @@ typedef struct TpScanOpaqueData
 	bool		eof_reached;   /* End of scan flag */
 
 	/* LIMIT optimization */
-	int limit; /* Query LIMIT value, -1 if none */
+	int limit;			  /* Query LIMIT value, -1 if none */
+	int max_results_used; /* Internal limit used for current batch */
 } TpScanOpaqueData;
 
 typedef TpScanOpaqueData *TpScanOpaque;

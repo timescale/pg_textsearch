@@ -465,8 +465,9 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 			CurrentMemoryContext,
 			"Tapir Scan Context",
 			ALLOCSET_DEFAULT_SIZES);
-	so->limit	 = -1; /* Initialize limit to -1 (no limit) */
-	scan->opaque = so;
+	so->limit			 = -1; /* Initialize limit to -1 (no limit) */
+	so->max_results_used = 0;
+	scan->opaque		 = so;
 
 	/*
 	 * Custom index AMs must allocate ORDER BY arrays themselves.
@@ -708,9 +709,40 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 	}
 
-	/* Check if we've reached the end */
+	/* Check if we've reached the end of current result set */
 	if (so->current_pos >= so->result_count || so->eof_reached)
-		return false;
+	{
+		/*
+		 * If result_count hit the internal limit, there may be more
+		 * documents.  Double the limit and re-execute the scoring
+		 * query, skipping already-returned results.
+		 */
+		if (!so->eof_reached && so->result_count > 0 &&
+			so->result_count >= so->max_results_used &&
+			so->max_results_used < TP_MAX_QUERY_LIMIT)
+		{
+			int old_count = so->result_count;
+			int new_limit = so->max_results_used * 2;
+
+			if (new_limit > TP_MAX_QUERY_LIMIT)
+				new_limit = TP_MAX_QUERY_LIMIT;
+
+			so->limit = new_limit;
+			if (tp_execute_scoring_query(scan) && so->result_count > old_count)
+			{
+				/* Skip already-returned results */
+				so->current_pos = old_count;
+				/* Fall through to return next tuple */
+			}
+			else
+			{
+				so->eof_reached = true;
+				return false;
+			}
+		}
+		else
+			return false;
+	}
 
 	Assert(so->scan_context != NULL);
 	Assert(so->result_ctids != NULL);

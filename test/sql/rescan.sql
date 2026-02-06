@@ -1,0 +1,253 @@
+-- Test: iterative index scan (rescan with increasing limit)
+--
+-- Demonstrates and tests the interaction between LIMIT, WHERE clause
+-- post-filtering, and the index's internal result limit.
+--
+-- The core problem: the index computes top-k results in one shot.
+-- When a WHERE clause filters out rows, fewer than LIMIT rows may be
+-- returned even though qualifying rows exist in the table.
+--
+-- The fix: when the executor exhausts the index's result set without
+-- satisfying LIMIT, the index rescans with a larger internal limit
+-- (exponential backoff: 2x, 4x, ...) until enough rows are found.
+
+SET log_duration = off;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+SET client_min_messages = NOTICE;
+SET enable_seqscan = false;
+
+------------------------------------------------------------------------
+-- Setup: table with two categories, deliberately skewed BM25 scores
+------------------------------------------------------------------------
+
+CREATE TABLE rescan_test (
+    id SERIAL PRIMARY KEY,
+    category TEXT,
+    content TEXT
+);
+
+-- 30 'common' rows: high BM25 score for 'database' (term appears 3x,
+-- short document)
+INSERT INTO rescan_test (category, content)
+SELECT 'common',
+       'database database database management optimization'
+FROM generate_series(1, 30);
+
+-- 20 'rare' rows: lower BM25 score for 'database' (term appears 1x,
+-- longer document, diluted by other terms)
+INSERT INTO rescan_test (category, content)
+SELECT 'rare',
+       'the modern application framework provides a database '
+       'connection pooling layer for enterprise deployments'
+FROM generate_series(1, 20);
+
+CREATE INDEX rescan_idx ON rescan_test
+USING bm25(content) WITH (text_config='english');
+
+------------------------------------------------------------------------
+-- Baseline: without WHERE, LIMIT works correctly
+------------------------------------------------------------------------
+
+-- Should return exactly 5 rows
+SELECT COUNT(*) AS without_where
+FROM (
+    SELECT id FROM rescan_test
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 5
+) q;
+
+------------------------------------------------------------------------
+-- Test 1: LIMIT + WHERE — complete miss
+--
+-- LIMIT 5 is pushed down to the index (no indexclauses to prevent it).
+-- The index returns top-5 results, all 'common' rows (higher score).
+-- WHERE category='rare' filters out all 5 — returns 0 rows.
+--
+-- After fix: index rescans with larger limit until 5 'rare' rows found.
+------------------------------------------------------------------------
+
+SELECT COUNT(*) AS with_where_complete_miss
+FROM (
+    SELECT id, category FROM rescan_test
+    WHERE category = 'rare'
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 5
+) q;
+
+------------------------------------------------------------------------
+-- Test 2: default_limit + WHERE — same problem without explicit LIMIT
+--
+-- When no LIMIT clause, the default_limit (set low here) controls
+-- how many results the index computes.  WHERE can still starve results.
+------------------------------------------------------------------------
+
+SET pg_textsearch.default_limit = 10;
+
+SELECT COUNT(*) AS default_limit_miss
+FROM (
+    SELECT id, category FROM rescan_test
+    WHERE category = 'rare'
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+) q;
+
+-- Reset to normal
+SET pg_textsearch.default_limit = 1000;
+
+------------------------------------------------------------------------
+-- Test 3: partial miss — some results pass, but fewer than LIMIT
+--
+-- Mix categories so that some top-k results pass the filter.
+------------------------------------------------------------------------
+
+INSERT INTO rescan_test (category, content) VALUES
+    ('mixed', 'database systems and database optimization techniques'),
+    ('mixed', 'database management in enterprise systems');
+
+-- Refresh index knowledge
+REINDEX INDEX rescan_idx;
+
+-- Ask for 10 'mixed' rows but only 2 exist.  With a small internal
+-- limit, the index may not even find those 2 among the top-k results.
+SET pg_textsearch.default_limit = 5;
+
+SELECT COUNT(*) AS partial_miss
+FROM (
+    SELECT id, category FROM rescan_test
+    WHERE category = 'mixed'
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 10
+) q;
+
+SET pg_textsearch.default_limit = 1000;
+
+------------------------------------------------------------------------
+-- Test 4: verify result ordering after rescan
+--
+-- Even when the index rescans with a larger limit, results must still
+-- be returned in correct BM25 score order.
+------------------------------------------------------------------------
+
+-- All 20 'rare' rows should be returned, in score order (they all
+-- have the same score, so order by id is acceptable as tiebreaker)
+SELECT id, category,
+       ROUND((content <@> to_bm25query('database', 'rescan_idx'))::numeric, 4) AS score
+FROM rescan_test
+WHERE category = 'rare'
+ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+LIMIT 5;
+
+------------------------------------------------------------------------
+-- Test 5: large table with aggressive filtering
+--
+-- Scale up to make the problem more realistic.  With 500 total rows
+-- and only 10 matching the filter, the index needs multiple rescans.
+------------------------------------------------------------------------
+
+CREATE TABLE rescan_large (
+    id SERIAL PRIMARY KEY,
+    tag INT,
+    content TEXT
+);
+
+-- 490 rows with tag=0, high score for 'server'
+INSERT INTO rescan_large (tag, content)
+SELECT 0, 'server cluster server configuration server deployment'
+FROM generate_series(1, 490);
+
+-- 10 rows with tag=1, lower score for 'server'
+INSERT INTO rescan_large (tag, content)
+SELECT 1,
+       'the application connects to a server through a '
+       'load balanced proxy for high availability'
+FROM generate_series(1, 10);
+
+CREATE INDEX rescan_large_idx ON rescan_large
+USING bm25(content) WITH (text_config='english');
+
+-- Ask for 8 rows with tag=1.  Only 10 exist out of 500 total.
+-- The index must scan deep enough to find them.
+SELECT COUNT(*) AS large_table_filter
+FROM (
+    SELECT id FROM rescan_large
+    WHERE tag = 1
+    ORDER BY content <@> to_bm25query('server', 'rescan_large_idx')
+    LIMIT 8
+) q;
+
+------------------------------------------------------------------------
+-- Test 6: WHERE on indexed column's table, not a separate column
+--
+-- Even when the WHERE references the same table, if it's not an
+-- index qual, the same problem applies.
+------------------------------------------------------------------------
+
+SELECT COUNT(*) AS where_on_id
+FROM (
+    SELECT id FROM rescan_large
+    WHERE id > 495
+    ORDER BY content <@> to_bm25query('server', 'rescan_large_idx')
+    LIMIT 3
+) q;
+
+------------------------------------------------------------------------
+-- Test 7: LIMIT + OFFSET + WHERE
+--
+-- OFFSET makes this harder: we need to skip rows AND satisfy LIMIT,
+-- so the index needs even more candidates.
+------------------------------------------------------------------------
+
+SELECT COUNT(*) AS limit_offset_where
+FROM (
+    SELECT id FROM rescan_test
+    WHERE category = 'rare'
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 3 OFFSET 2
+) q;
+
+------------------------------------------------------------------------
+-- Test 8: multiple backoffs required
+--
+-- With default_limit=5, finding 3 rows with tag=1 among 500 rows
+-- requires the limit to grow: 5 -> 10 -> 20 -> 40 -> 80 -> 160 ->
+-- 320 -> 640.  That's 7 doublings.  The NOTICE trace messages from
+-- the rescan code confirm each backoff step.
+------------------------------------------------------------------------
+
+SET pg_textsearch.default_limit = 5;
+
+SELECT COUNT(*) AS multi_backoff
+FROM (
+    SELECT id FROM rescan_large
+    WHERE tag = 1
+    ORDER BY content <@> to_bm25query('server', 'rescan_large_idx')
+    LIMIT 3
+) q;
+
+SET pg_textsearch.default_limit = 1000;
+
+------------------------------------------------------------------------
+-- Test 9: backoff terminates when all matching rows exhausted
+--
+-- Ask for 20 rows with tag=1, but only 10 exist.  The index should
+-- keep doubling until it has scanned all 500 docs, then stop.
+------------------------------------------------------------------------
+
+SET pg_textsearch.default_limit = 5;
+
+SELECT COUNT(*) AS exhausted_backoff
+FROM (
+    SELECT id FROM rescan_large
+    WHERE tag = 1
+    ORDER BY content <@> to_bm25query('server', 'rescan_large_idx')
+    LIMIT 20
+) q;
+
+SET pg_textsearch.default_limit = 1000;
+
+------------------------------------------------------------------------
+-- Cleanup
+------------------------------------------------------------------------
+DROP TABLE rescan_test CASCADE;
+DROP TABLE rescan_large CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;
