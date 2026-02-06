@@ -1128,7 +1128,8 @@ tpquery_has_index(TpQuery *tpquery)
 
 /*
  * Check if tpquery has an explicitly specified index.
- * Returns true only if user called to_bm25query(text, index_name).
+ * Returns true if the user specified an index via to_bm25query(text,
+ * index_name) or bm25query('index_name:text').
  * Returns false for implicitly resolved indexes.
  */
 bool
