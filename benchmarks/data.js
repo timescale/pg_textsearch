@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770359320705,
+  "lastUpdate": 1770359322447,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -9312,6 +9312,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
             "value": 0.74,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "03969c526b74a012e38d5f140b008bf15459ed37",
+          "message": "fix: implement CREATE INDEX CONCURRENTLY support (#200)\n\n## Summary\n\n- Implement proper `ambulkdelete` callback to report all indexed CTIDs\nduring CIC validation\n- Add SQL test verifying CIC works correctly without duplicate entries\n- Add shell script tests for concurrent table operations during CIC\n\n## Background\n\nCREATE INDEX CONCURRENTLY requires the `ambulkdelete` callback to report\nall existing TIDs so `validate_index` can determine which rows need to\nbe inserted. Without this, all rows would be re-inserted causing\nduplicates.\n\nThe fix adds two helper functions in `vacuum.c`:\n- `tp_bulkdelete_memtable_ctids`: iterates through document lengths\ndshash to collect memtable CTIDs\n- `tp_bulkdelete_segment_ctids`: iterates through segment document maps\nto collect segment CTIDs\n\n## Testing\n\n- SQL test `test/sql/concurrent_build.sql`:\n  - Basic CIC index creation\n  - Verification that index is marked valid\n  - Verification that no duplicate entries are produced\n  - DROP INDEX CONCURRENTLY\n  - Regular CREATE INDEX for comparison\n\n- Shell test `test/scripts/cic.sh`:\n  - Concurrent INSERTs during CIC (100k documents)\n  - Concurrent UPDATEs during CIC\n  - Concurrent DELETEs during CIC\n  - Mixed concurrent operations during CIC\n  - Multiple concurrent CIC operations\n- Configured with lower spill thresholds to trigger multiple memtable\nspills",
+          "timestamp": "2026-02-05T23:57:38Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/03969c526b74a012e38d5f140b008bf15459ed37"
+        },
+        "date": 1770359321942,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 12692.346,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.22,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.38,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.44,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.72,
             "unit": "ms"
           },
           {
