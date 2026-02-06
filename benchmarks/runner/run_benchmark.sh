@@ -12,11 +12,17 @@
 #   all         - Run all benchmarks
 #
 # Options:
-#   --download  - Download dataset if not present
-#   --load      - Load data and create index (drops existing)
-#   --query     - Run query benchmarks only
-#   --report    - Generate markdown report
-#   --port PORT - Postgres port (default: 5433 for release build)
+#   --download     - Download dataset if not present
+#   --load         - Load data and create index (drops existing)
+#   --query        - Run query benchmarks only
+#   --skip-validate - Skip validation (not recommended)
+#   --report       - Generate markdown report
+#   --port PORT    - Postgres port (default: 5433 for release build)
+#
+# Validation:
+#   Validation runs automatically after queries if ground_truth.tsv exists.
+#   A benchmark FAILS if scores don't match to 4 decimal places.
+#   Generate ground truth with: psql -f <dataset>/precompute_ground_truth.sql
 
 set -e
 
@@ -34,7 +40,9 @@ DATASET=""
 DO_DOWNLOAD=false
 DO_LOAD=false
 DO_QUERY=false
+SKIP_VALIDATE=false
 DO_REPORT=false
+VALIDATION_FAILED=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -55,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             DO_QUERY=true
             shift
             ;;
+        --skip-validate)
+            SKIP_VALIDATE=true
+            shift
+            ;;
         --report)
             DO_REPORT=true
             shift
@@ -73,11 +85,14 @@ while [[ $# -gt 0 ]]; do
             echo "  all         - Run all benchmarks"
             echo ""
             echo "Options:"
-            echo "  --download  - Download dataset if not present"
-            echo "  --load      - Load data and create index"
-            echo "  --query     - Run query benchmarks"
-            echo "  --report    - Generate markdown report"
-            echo "  --port PORT - Postgres port (default: 5433)"
+            echo "  --download       - Download dataset if not present"
+            echo "  --load           - Load data and create index"
+            echo "  --query          - Run query benchmarks"
+            echo "  --skip-validate  - Skip validation (not recommended)"
+            echo "  --report         - Generate markdown report"
+            echo "  --port PORT      - Postgres port (default: 5433)"
+            echo ""
+            echo "Validation runs automatically after queries. Fails if scores don't match to 4 decimal places."
             exit 0
             ;;
         *)
@@ -177,6 +192,44 @@ run_benchmark() {
             echo "QUERY_TIME_${dataset}=${query_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
         fi
     fi
+
+    # Validation (runs automatically after queries unless --skip-validate)
+    if $DO_QUERY && ! $SKIP_VALIDATE; then
+        local ground_truth_file="$dataset_dir/ground_truth.tsv"
+        local validate_script="$dataset_dir/validate_queries.sql"
+
+        if [ -f "$validate_script" ]; then
+            if [ -f "$ground_truth_file" ]; then
+                echo ""
+                echo "--- Validating $dataset query results ---"
+                local validate_log="$RESULTS_DIR/${dataset}_validation_${TIMESTAMP}.log"
+
+                psql -f "$validate_script" 2>&1 | tee "$validate_log"
+
+                # Check for validation failures (scores must match to 4 decimal places)
+                if grep -q "VALIDATION FAILED" "$validate_log"; then
+                    echo ""
+                    echo "ERROR: Validation FAILED for $dataset!"
+                    echo "Scores don't match to 4 decimal places - indicates BM25 scoring bugs."
+                    echo "VALIDATION_${dataset}=FAILED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+                    VALIDATION_FAILED=true
+                else
+                    echo ""
+                    echo "Validation PASSED for $dataset"
+                    echo "VALIDATION_${dataset}=PASSED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+                fi
+            else
+                echo ""
+                echo "--- Skipping validation: ground_truth.tsv not found ---"
+                echo "Generate ground truth with: psql -f $dataset_dir/precompute_ground_truth.sql"
+                echo "VALIDATION_${dataset}=SKIPPED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+            fi
+        else
+            echo ""
+            echo "--- Skipping validation: validate_queries.sql not found ---"
+            echo "VALIDATION_${dataset}=SKIPPED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        fi
+    fi
 }
 
 # Function to generate report
@@ -206,16 +259,17 @@ EOF
     if [ -f "$metrics_file" ]; then
         echo "### Timing Results" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
-        echo "| Dataset | Load Time | Query Time |" >> "$REPORT_FILE"
-        echo "|---------|-----------|------------|" >> "$REPORT_FILE"
+        echo "| Dataset | Load Time | Query Time | Validation |" >> "$REPORT_FILE"
+        echo "|---------|-----------|------------|------------|" >> "$REPORT_FILE"
 
         source "$metrics_file"
 
         for ds in msmarco wikipedia cranfield; do
             load_var="LOAD_TIME_${ds}"
             query_var="QUERY_TIME_${ds}"
-            if [ -n "${!load_var}" ] || [ -n "${!query_var}" ]; then
-                echo "| $ds | ${!load_var:-N/A}s | ${!query_var:-N/A}s |" >> "$REPORT_FILE"
+            validation_var="VALIDATION_${ds}"
+            if [ -n "${!load_var}" ] || [ -n "${!query_var}" ] || [ -n "${!validation_var}" ]; then
+                echo "| $ds | ${!load_var:-N/A}s | ${!query_var:-N/A}s | ${!validation_var:-N/A} |" >> "$REPORT_FILE"
             fi
         done
 
@@ -260,3 +314,11 @@ fi
 echo ""
 echo "=== Benchmark Complete ==="
 echo "Results in: $RESULTS_DIR"
+
+# Exit with failure if any validation failed
+if $VALIDATION_FAILED; then
+    echo ""
+    echo "ERROR: One or more validations FAILED!"
+    echo "This indicates BM25 scoring bugs that need investigation."
+    exit 1
+fi
