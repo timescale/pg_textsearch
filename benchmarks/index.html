@@ -275,7 +275,8 @@
             ];
 
             // Filter to only include metrics with doc count (new format)
-            const hasDocCount = (name) => name.includes(' docs)');
+            // Exclude 99.9K docs - one-time benchmark that's no longer relevant
+            const hasDocCount = (name) => name.includes(' docs)') && !name.includes('99.9K docs');
 
             suiteOrder.forEach(suiteName => {
                 const suiteData = window.BENCHMARK_DATA.entries[suiteName];
