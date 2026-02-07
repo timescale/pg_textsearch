@@ -301,10 +301,10 @@ SELECT * FROM (
     ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
     LIMIT 10
 ) sub ORDER BY english_score, id;
-NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.2723
-NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.0118
-NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5636
-NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5059
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-1.1063
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-1.1063
+NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-0.5531
+NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.5531
  id |            content             | english_score 
 ----+--------------------------------+---------------
   1 | hello world from the test      |       -1.1063

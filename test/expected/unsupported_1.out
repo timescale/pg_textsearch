@@ -81,6 +81,8 @@ ORDER BY content <@> 'database'
 LIMIT 3;
 WARNING:  multiple BM25 indexes exist on the same column
 HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
+WARNING:  planner chose index "docs_bm25_simple_idx" instead of "docs_bm25_idx"
+HINT:  If this is not desired, use a planner hint to force a specific index, or use explicit to_bm25query('query', 'index_name').
                              QUERY PLAN                              
 ---------------------------------------------------------------------
  Limit
