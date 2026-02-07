@@ -136,11 +136,13 @@ UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 
--- Verify search finds updated documents
-SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
-FROM concurrent_test_docs
-ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
-LIMIT 10;
+-- Verify search finds updated documents (LIMIT 8 avoids tie at -0.0563)
+SELECT * FROM (
+    SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
+    FROM concurrent_test_docs
+    ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
+    LIMIT 8
+) sub ORDER BY score, id;
 
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'
@@ -200,16 +202,20 @@ INSERT INTO multi_idx_test (content) VALUES
 ('hello database world');
 
 -- Query using the English index
-SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
-FROM multi_idx_test
-ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english'), id
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_english'))::numeric, 4) as english_score
+    FROM multi_idx_test
+    ORDER BY content <@> to_bm25query('hello world', 'multi_idx_english')
+    LIMIT 10
+) sub ORDER BY english_score, id;
 
 -- Query using the Simple index
-SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
-FROM multi_idx_test
-ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple'), id
-LIMIT 10;
+SELECT * FROM (
+    SELECT id, content, ROUND((content <@> to_bm25query('hello world', 'multi_idx_simple'))::numeric, 4) as simple_score
+    FROM multi_idx_test
+    ORDER BY content <@> to_bm25query('hello world', 'multi_idx_simple')
+    LIMIT 10
+) sub ORDER BY simple_score, id;
 
 -- Verify both indexes exist and function independently
 SELECT
