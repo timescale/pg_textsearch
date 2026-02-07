@@ -69,5 +69,6 @@ window.BRANCH_INFO = {
   "b0eea09b625cbbca5db98be033582c06e04f9cd7": "main",
   "03969c526b74a012e38d5f140b008bf15459ed37": "main",
   "07b8656acdb9099d4496a7d4f5a9a3657f28a0aa": "fix-benchmark-runners",
-  "d2d715519a1a15cc5ca73eec533120019a8915b0": "feat/wand-pivot-selection"
+  "d2d715519a1a15cc5ca73eec533120019a8915b0": "feat/wand-pivot-selection",
+  "753eed5ee0018203154314a9e6a6a6ebc1bd1ac7": "main"
 };
