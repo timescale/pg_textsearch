@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770532139127,
+  "lastUpdate": 1770532140420,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -9967,6 +9967,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "348671dc23717a8278b564a3e1d5b6ad7fb02199",
+          "message": "feat: iterative index scan with exponential backoff (#209)\n\nCloses #143\n\n## Summary\n\n- When a WHERE clause post-filters BM25 index results, the one-shot\ntop-k scan could return fewer rows than LIMIT requests (or zero rows),\neven when qualifying rows exist in the table\n- Fix: `tp_gettuple` now doubles the internal limit and re-executes the\nscoring query when results are exhausted, skipping already-returned rows\n- Terminates when `result_count < max_results_used` (all matching docs\nfound) or the limit reaches `TP_MAX_QUERY_LIMIT`\n\n## Testing\n\nNew `rescan.sql` regression test with 9 scenarios:\n- Complete miss (all top-k filtered out by WHERE)\n- Default limit + WHERE (no explicit LIMIT)\n- Partial miss (some results pass filter)\n- Result ordering preserved after rescan\n- Large table with aggressive filtering (500 rows, 2% match rate)\n- WHERE on non-indexed column\n- LIMIT + OFFSET + WHERE\n- Multiple backoffs required (8 doublings with default_limit=5)\n- Backoff terminates when all matching rows exhausted\n\nUpdated expected output for `limits` and `mixed` tests which now\ncorrectly return additional rows that the rescan finds.",
+          "timestamp": "2026-02-07T15:53:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/348671dc23717a8278b564a3e1d5b6ad7fb02199"
+        },
+        "date": 1770532140111,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 11622.318,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.17,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.71,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.33,
             "unit": "ms"
           },
           {
