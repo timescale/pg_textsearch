@@ -38,7 +38,6 @@ SELECT 'rare',
 FROM generate_series(1, 20);
 CREATE INDEX rescan_idx ON rescan_test
 USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation rescan_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 50 documents, avg_length=7.00, text_config='english' (k1=1.20, b=0.75)
@@ -108,7 +107,6 @@ INSERT INTO rescan_test (category, content) VALUES
     ('mixed', 'database management in enterprise systems');
 -- Refresh index knowledge
 REINDEX INDEX rescan_idx;
-NOTICE:  BM25 index build started for relation rescan_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 52 documents, avg_length=6.90, text_config='english' (k1=1.20, b=0.75)
@@ -174,7 +172,6 @@ SELECT 1,
 FROM generate_series(1, 10);
 CREATE INDEX rescan_large_idx ON rescan_large
 USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation rescan_large_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=6.04, text_config='english' (k1=1.20, b=0.75)

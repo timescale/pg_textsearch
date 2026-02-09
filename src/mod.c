@@ -13,9 +13,12 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
+#include <nodes/parsenodes.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
+#include <tcop/utility.h>
+#include <utils/elog.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
 
@@ -73,6 +76,12 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 /* Shared memory request hook */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 
+/* Previous ProcessUtility hook */
+static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+
+/* Previous emit_log hook */
+static emit_log_hook_type prev_emit_log_hook = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -89,6 +98,20 @@ static void tp_object_access(
 
 /* Transaction callback to release index locks */
 static void tp_xact_callback(XactEvent event, void *arg);
+
+/* ProcessUtility hook for tracking CREATE INDEX USING bm25 */
+static void tp_process_utility(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc);
+
+/* emit_log hook for suppressing "word is too long" warnings */
+static void tp_emit_log_hook(ErrorData *edata);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -262,6 +285,14 @@ _PG_init(void)
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
 
+	/* Install ProcessUtility hook for partitioned build tracking */
+	prev_process_utility_hook = ProcessUtility_hook;
+	ProcessUtility_hook		  = tp_process_utility;
+
+	/* Install emit_log hook for suppressing "word too long" noise */
+	prev_emit_log_hook = emit_log_hook;
+	emit_log_hook	   = tp_emit_log_hook;
+
 	/*
 	 * Register LWLock tranches for dshash tables used in parallel builds.
 	 * These must be registered in every process that might use them.
@@ -377,4 +408,115 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		/* Nothing to do for these events */
 		break;
 	}
+}
+
+/*
+ * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
+ * with build progress tracking. This collapses per-partition
+ * NOTICEs into a single summary for partitioned tables.
+ */
+static void
+tp_process_utility(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc)
+{
+	Node *parsetree = pstmt->utilityStmt;
+
+	if (IsA(parsetree, IndexStmt))
+	{
+		IndexStmt *stmt = (IndexStmt *)parsetree;
+
+		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
+		{
+			tp_build_progress_begin();
+
+			PG_TRY();
+			{
+				if (prev_process_utility_hook)
+					prev_process_utility_hook(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+				else
+					standard_ProcessUtility(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+			}
+			PG_CATCH();
+			{
+				tp_build_progress_reset();
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			tp_build_progress_end();
+			return;
+		}
+	}
+
+	/* Not a bm25 CREATE INDEX - pass through */
+	if (prev_process_utility_hook)
+		prev_process_utility_hook(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc);
+	else
+		standard_ProcessUtility(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc);
+}
+
+/*
+ * emit_log hook - intercept "word is too long" NOTICEs from
+ * to_tsvector() during active build progress and count them
+ * instead of emitting individually.
+ */
+static void
+tp_emit_log_hook(ErrorData *edata)
+{
+	if (tp_build_progress_is_active() && edata->elevel == NOTICE &&
+		edata->message_id &&
+		strstr(edata->message_id, "word is too long") != NULL)
+	{
+		tp_build_progress_count_long_word();
+		edata->output_to_client = false;
+		edata->output_to_server = false;
+
+		/* Chain to previous hook */
+		if (prev_emit_log_hook)
+			prev_emit_log_hook(edata);
+		return;
+	}
+
+	/* Chain to previous hook */
+	if (prev_emit_log_hook)
+		prev_emit_log_hook(edata);
 }

@@ -10,7 +10,6 @@ CREATE TABLE implicit_docs (
 );
 CREATE INDEX implicit_docs_idx ON implicit_docs USING bm25(content)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation implicit_docs_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -72,13 +71,11 @@ CREATE TABLE multi_col_docs (
 );
 CREATE INDEX multi_col_title_idx ON multi_col_docs USING bm25(title)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation multi_col_title_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 CREATE INDEX multi_col_body_idx ON multi_col_docs USING bm25(body)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation multi_col_body_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -114,7 +111,6 @@ CREATE TABLE implicit_schema.schema_docs (
 );
 CREATE INDEX schema_docs_idx ON implicit_schema.schema_docs USING bm25(content)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation schema_docs_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

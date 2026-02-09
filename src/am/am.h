@@ -105,6 +105,13 @@ bool tp_process_document_text(
 /* IDF sum calculation for average IDF */
 void tp_calculate_idf_sum(TpLocalIndexState *index_state);
 
+/* Build progress tracking for partitioned tables */
+void tp_build_progress_begin(void);
+void tp_build_progress_end(void);
+void tp_build_progress_reset(void);
+bool tp_build_progress_is_active(void);
+void tp_build_progress_count_long_word(void);
+
 /*
  * Scan functions (am/scan.c)
  */
