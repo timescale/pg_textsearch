@@ -572,6 +572,9 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 			opexpr->location);
 }
 
+/* Forward declaration */
+static void resolve_indexes_in_query(Query *query);
+
 /*
  * Mutator function to resolve unresolved tpquery constants.
  */
@@ -598,6 +601,20 @@ resolve_index_mutator(Node *node, ResolveIndexContext *context)
 			return result;
 	}
 
+	/*
+	 * expression_tree_mutator does not descend into SubLink
+	 * subselects (they are Query nodes, not expression nodes).
+	 * Process them here so implicit resolution works inside
+	 * subqueries of DML statements like DELETE and UPDATE.
+	 */
+	if (IsA(node, SubLink))
+	{
+		SubLink *sublink = (SubLink *)node;
+
+		if (sublink->subselect && IsA(sublink->subselect, Query))
+			resolve_indexes_in_query((Query *)sublink->subselect);
+	}
+
 	return expression_tree_mutator(node, resolve_index_mutator, context);
 }
 
@@ -619,9 +636,6 @@ resolve_indexes_in_targetlist(Query *query, ResolveIndexContext *context)
 		tle->expr = (Expr *)resolve_index_mutator((Node *)tle->expr, context);
 	}
 }
-
-/* Forward declaration */
-static void resolve_indexes_in_query(Query *query);
 
 /*
  * Process subqueries in CTEs and FROM clause.

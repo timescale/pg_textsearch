@@ -128,6 +128,51 @@ EXECUTE explicit_search('database');
 
 DEALLOCATE explicit_search;
 
+-- Test 11: Implicit text <@> text in DELETE subquery (issue #213)
+-- The implicit form should work inside subqueries of DML statements
+DELETE FROM implicit_docs WHERE id = (
+  SELECT id FROM implicit_docs ORDER BY content <@> 'database' LIMIT 1
+);
+
+-- Verify the top-scoring document for 'database' was deleted
+SELECT id, content
+FROM implicit_docs
+ORDER BY content <@> 'database'
+LIMIT 3;
+
+-- Re-insert the deleted row for subsequent tests
+INSERT INTO implicit_docs (content) VALUES ('database system design');
+
+-- Test 12: Implicit text <@> text in UPDATE subquery
+UPDATE implicit_docs
+SET content = 'updated via subquery'
+WHERE id = (
+  SELECT id FROM implicit_docs ORDER BY content <@> 'hello' LIMIT 1
+);
+
+-- Verify the update happened to the top-scoring 'hello' document
+SELECT id, content FROM implicit_docs ORDER BY id;
+
+-- Test 13: Implicit form in UPDATE SET subquery
+UPDATE implicit_docs
+SET content = (
+  SELECT content FROM implicit_docs
+  ORDER BY content <@> 'database' LIMIT 1
+)
+WHERE id = (SELECT max(id) FROM implicit_docs);
+
+SELECT id, content FROM implicit_docs ORDER BY id;
+
+-- Test 14: Nested subquery (exercises recursive SubLink handling)
+SELECT id, content FROM implicit_docs
+WHERE id IN (
+  SELECT id FROM implicit_docs
+  WHERE id = (
+    SELECT id FROM implicit_docs
+    ORDER BY content <@> 'database' LIMIT 1
+  )
+);
+
 -- Cleanup
 DROP TABLE implicit_schema.schema_docs CASCADE;
 DROP SCHEMA implicit_schema CASCADE;
