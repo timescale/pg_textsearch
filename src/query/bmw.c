@@ -591,6 +591,9 @@ typedef struct TpTermState
 	float4		idf;
 	int32		query_freq; /* Query term frequency (for boosting) */
 
+	/* Global maximum score across all blocks (for WAND pivot) */
+	float4 max_score;
+
 	/* Segment-specific state (reset per segment) */
 	bool					 found; /* Term found in current segment */
 	TpSegmentPostingIterator iter;	/* Iterator (contains dict_entry) */
@@ -868,6 +871,7 @@ init_segment_term_states(
 		TpTermState *ts = &terms[term_idx];
 
 		ts->found			   = false;
+		ts->max_score		   = 0.0f;
 		ts->block_max_scores   = NULL;
 		ts->block_last_doc_ids = NULL;
 
@@ -893,7 +897,12 @@ init_segment_term_states(
 				ts->block_max_scores[block_idx] = tp_compute_block_max_score(
 						&skip, ts->idf, k1, b, avg_doc_len);
 				ts->block_last_doc_ids[block_idx] = skip.last_doc_id;
+
+				if (ts->block_max_scores[block_idx] > ts->max_score)
+					ts->max_score = ts->block_max_scores[block_idx];
 			}
+
+			ts->max_score *= ts->query_freq;
 		}
 
 		if (tp_segment_posting_iterator_load_block(&ts->iter))
@@ -923,85 +932,315 @@ cleanup_segment_term_states(TpTermState *terms, int term_count)
 }
 
 /*
- * Find minimum doc_id across all active term iterators.
- * Returns UINT32_MAX if all iterators are exhausted.
+ * Compare terms by current doc_id for initial sort.
+ * Exhausted terms (UINT32_MAX) sort to the end.
  */
-static uint32
-find_pivot_doc_id(TpTermState *terms, int term_count)
+static int
+compare_term_doc_id(const void *a, const void *b)
 {
-	uint32 min_doc_id = UINT32_MAX;
-	int	   term_idx;
+	const TpTermState *ta = (const TpTermState *)a;
+	const TpTermState *tb = (const TpTermState *)b;
+	uint32			   da = term_current_doc_id((TpTermState *)ta);
+	uint32			   db = term_current_doc_id((TpTermState *)tb);
 
-	for (term_idx = 0; term_idx < term_count; term_idx++)
-	{
-		uint32 doc_id = term_current_doc_id(&terms[term_idx]);
-		if (doc_id < min_doc_id)
-			min_doc_id = doc_id;
-	}
-	return min_doc_id;
+	if (da < db)
+		return -1;
+	if (da > db)
+		return 1;
+	return 0;
 }
 
 /*
- * Compute maximum possible score for a pivot document.
- * Uses block-max scores from current blocks of each term.
+ * Sort term states by current doc_id.
+ * Used once after init_segment_term_states.
  */
-static float4
-compute_pivot_max_score(
-		TpTermState *terms, int term_count, uint32 pivot_doc_id)
+static void
+sort_terms_by_doc_id(TpTermState *terms, int term_count)
 {
-	float4 max_possible = 0.0f;
-	int	   term_idx;
+	qsort(terms, term_count, sizeof(TpTermState), compare_term_doc_id);
+}
 
-	for (term_idx = 0; term_idx < term_count; term_idx++)
+/*
+ * Restore sorted order after term at position 'ord' advanced.
+ * The term's doc_id increased, so it may need to move right.
+ * Uses linear insertion -- O(1) typical, O(T) worst case.
+ */
+static void
+restore_ordering(TpTermState *terms, int term_count, int ord)
+{
+	TpTermState tmp;
+	uint32		doc_id = term_current_doc_id(&terms[ord]);
+	int			i;
+
+	for (i = ord + 1; i < term_count; i++)
 	{
-		TpTermState *ts		= &terms[term_idx];
-		uint32		 doc_id = term_current_doc_id(ts);
+		if (term_current_doc_id(&terms[i]) >= doc_id)
+			break;
+	}
 
-		/* Only include terms that are at or before the pivot */
-		if (doc_id > pivot_doc_id)
-			continue;
+	/* Term needs to move from ord to i-1 */
+	if (i > ord + 1)
+	{
+		tmp = terms[ord];
+		memmove(&terms[ord],
+				&terms[ord + 1],
+				(i - ord - 1) * sizeof(TpTermState));
+		terms[i - 1] = tmp;
+	}
+}
 
-		if (ts->block_max_scores != NULL &&
-			ts->iter.current_block < ts->iter.dict_entry.block_count)
+/*
+ * WAND pivot selection.
+ *
+ * Given terms sorted by current doc_id, walk from lowest doc_id
+ * accumulating each term's max_score. When the sum exceeds
+ * threshold, we've found the pivot.
+ *
+ * Returns true if a pivot was found, false if no term combination
+ * can beat threshold. Sets *pivot_len_out to the number of terms
+ * participating (terms[0..pivot_len-1]) and *pivot_doc_id_out to
+ * the pivot document.
+ */
+static bool
+find_wand_pivot(
+		TpTermState *terms,
+		int			 term_count,
+		float4		 threshold,
+		int			*pivot_len_out,
+		uint32		*pivot_doc_id_out)
+{
+	float4 accumulated = 0.0f;
+	int	   i;
+
+	for (i = 0; i < term_count; i++)
+	{
+		uint32 doc_id = term_current_doc_id(&terms[i]);
+		if (doc_id == UINT32_MAX)
+			break; /* No more active terms */
+
+		accumulated += terms[i].max_score;
+		if (accumulated > threshold)
 		{
-			max_possible += ts->block_max_scores[ts->iter.current_block] *
-							ts->query_freq;
+			/*
+			 * Found pivot: terms[i] is the pivot term.
+			 * Include any subsequent terms at the same doc_id.
+			 */
+			uint32 pivot_doc = doc_id;
+			int	   pivot_len = i + 1;
+
+			while (pivot_len < term_count &&
+				   term_current_doc_id(&terms[pivot_len]) == pivot_doc)
+				pivot_len++;
+
+			*pivot_len_out	  = pivot_len;
+			*pivot_doc_id_out = pivot_doc;
+			return true;
 		}
 	}
 
-	return max_possible;
+	return false; /* Can't beat threshold */
 }
 
 /*
- * Score a pivot document by accumulating BM25 contributions from all terms.
- * Advances iterators past the pivot and returns the score.
- * Sets *ctid_out to the document's CTID and *active_count is updated.
+ * Compute block-max score upper bound at pivot.
+ *
+ * After WAND pivot selection using global max_scores, refine
+ * with actual block-level upper bounds. Only considers terms
+ * [0..pivot_len-1] since they're the only ones at or before
+ * the pivot.
+ */
+static float4
+compute_block_max_at_pivot(TpTermState *terms, int pivot_len)
+{
+	float4 upper_bound = 0.0f;
+	int	   i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		TpTermState *ts = &terms[i];
+		uint16		 block;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+		if (ts->block_max_scores == NULL)
+			continue;
+
+		block = ts->iter.current_block;
+		if (block < ts->iter.dict_entry.block_count)
+			upper_bound += ts->block_max_scores[block] * ts->query_freq;
+	}
+
+	return upper_bound;
+}
+
+/*
+ * When block-max upper bound < threshold, advance one scorer.
+ *
+ * Strategy (following Tantivy):
+ * 1. Find the term with highest max_score among pivot terms
+ * 2. Find the minimum last_doc_id of current blocks among
+ *    pivot terms (next interesting boundary)
+ * 3. Seek that term to min(boundary+1, first non-pivot doc)
+ * 4. Restore sorted order
+ */
+static void
+block_max_skip_advance(
+		TpTermState *terms,
+		int			 term_count,
+		int			 pivot_len,
+		int			*active_count,
+		TpBMWStats	*stats)
+{
+	int	   best_scorer	  = -1;
+	float4 best_max_score = -1.0f;
+	uint32 min_block_end  = UINT32_MAX;
+	uint32 seek_target;
+	int	   i;
+
+	/* Find scorer with highest max_score and minimum block end */
+	for (i = 0; i < pivot_len; i++)
+	{
+		TpTermState *ts = &terms[i];
+		uint32		 doc_id;
+		uint16		 block;
+		uint32		 block_last;
+
+		doc_id = term_current_doc_id(ts);
+		if (doc_id == UINT32_MAX)
+			continue;
+
+		if (terms[i].max_score > best_max_score)
+		{
+			best_max_score = terms[i].max_score;
+			best_scorer	   = i;
+		}
+
+		block = ts->iter.current_block;
+		if (ts->block_last_doc_ids != NULL &&
+			block < ts->iter.dict_entry.block_count)
+		{
+			block_last = ts->block_last_doc_ids[block];
+			if (block_last < min_block_end)
+				min_block_end = block_last;
+		}
+	}
+
+	if (best_scorer < 0)
+		return;
+
+	/* Seek target: past current blocks, capped by non-pivot */
+	if (min_block_end == UINT32_MAX)
+		seek_target = term_current_doc_id(&terms[best_scorer]) + 1;
+	else
+		seek_target = min_block_end + 1;
+
+	/* Don't skip past the first non-pivot term */
+	if (pivot_len < term_count)
+	{
+		uint32 next_doc = term_current_doc_id(&terms[pivot_len]);
+		if (next_doc < seek_target)
+			seek_target = next_doc;
+	}
+
+	/* Seek the best scorer */
+	if (!seek_term_to_doc(&terms[best_scorer], seek_target))
+		(*active_count)--;
+
+	restore_ordering(terms, term_count, best_scorer);
+
+	if (stats)
+	{
+		stats->blocks_skipped++;
+		stats->seeks_performed++;
+	}
+}
+
+/*
+ * Seek pre-pivot terms to pivot_doc_id.
+ * Returns true if all terms are still active, false if a term
+ * was exhausted (caller should re-pivot).
+ */
+static bool
+seek_to_pivot(
+		TpTermState *terms,
+		int			 term_count,
+		int			 pivot_len,
+		uint32		 pivot_doc_id,
+		int			*active_count)
+{
+	int i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		uint32 doc_id = term_current_doc_id(&terms[i]);
+
+		if (doc_id == UINT32_MAX)
+		{
+			(*active_count)--;
+			return false;
+		}
+
+		if (doc_id < pivot_doc_id)
+		{
+			if (!seek_term_to_doc(&terms[i], pivot_doc_id))
+			{
+				(*active_count)--;
+				restore_ordering(terms, term_count, i);
+				return false;
+			}
+			restore_ordering(terms, term_count, i);
+			i--; /* Re-check: a new term slid into position i */
+			continue;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * Verify all pivot terms are aligned at pivot_doc_id.
+ * Seeks may have overshot; if any term is past pivot, return false
+ * so the caller can re-pivot.
+ */
+static bool
+verify_pivot_alignment(TpTermState *terms, int pivot_len, uint32 pivot_doc_id)
+{
+	int i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		if (term_current_doc_id(&terms[i]) != pivot_doc_id)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Score pivot document by accumulating BM25 contributions from
+ * all confirmed pivot terms.
+ *
+ * Only called after verify_pivot_alignment confirms all pivot
+ * terms are positioned at pivot_doc_id, so each term's current
+ * posting is guaranteed to be the pivot document.
  */
 static float4
 score_pivot_document(
-		TpTermState		*terms,
-		int				 term_count,
-		uint32			 pivot_doc_id,
-		TpSegmentReader *reader,
-		float4			 k1,
-		float4			 b,
-		float4			 avg_doc_len,
-		ItemPointerData *ctid_out,
-		int				*active_count)
+		TpTermState *terms,
+		int			 pivot_len,
+		float4		 k1,
+		float4		 b,
+		float4		 avg_doc_len)
 {
 	float4 doc_score = 0.0f;
-	bool   have_ctid = false;
-	int	   term_idx;
+	int	   i;
 
-	for (term_idx = 0; term_idx < term_count; term_idx++)
+	for (i = 0; i < pivot_len; i++)
 	{
-		TpTermState	   *ts = &terms[term_idx];
-		uint32			doc_id;
+		TpTermState	   *ts = &terms[i];
 		TpBlockPosting *bp;
 		float4			term_score;
 
-		doc_id = term_current_doc_id(ts);
-		if (doc_id != pivot_doc_id)
+		if (!ts->found || ts->iter.finished)
 			continue;
 
 		bp		   = &ts->iter.block_postings[ts->iter.current_in_block];
@@ -1013,131 +1252,23 @@ score_pivot_document(
 							 b,
 							 avg_doc_len) *
 					 ts->query_freq;
-
 		doc_score += term_score;
-
-		if (!have_ctid)
-		{
-			/*
-			 * Resolve CTID if cached, otherwise leave invalid for lazy
-			 * loading. When lazy loading, CTIDs are resolved later via
-			 * tp_topk_resolve_ctids.
-			 */
-			if (reader->cached_ctid_pages != NULL)
-			{
-				Assert(pivot_doc_id < reader->cached_num_docs);
-				ItemPointerSet(
-						ctid_out,
-						reader->cached_ctid_pages[pivot_doc_id],
-						reader->cached_ctid_offsets[pivot_doc_id]);
-			}
-			else
-			{
-				ItemPointerSetInvalid(ctid_out);
-			}
-			have_ctid = true;
-		}
-
-		if (!advance_term_iterator(ts))
-			(*active_count)--;
 	}
-
-	if (!have_ctid)
-		ItemPointerSetInvalid(ctid_out);
 
 	return doc_score;
 }
 
 /*
- * Find the minimum doc ID among terms NOT at the pivot.
- * Returns UINT32_MAX if all active terms are at the pivot.
- */
-static uint32
-find_next_candidate_doc_id(TpTermState *terms, int term_count, uint32 pivot)
-{
-	uint32 min_doc_id = UINT32_MAX;
-	int	   term_idx;
-
-	for (term_idx = 0; term_idx < term_count; term_idx++)
-	{
-		uint32 doc_id = term_current_doc_id(&terms[term_idx]);
-		if (doc_id > pivot && doc_id < min_doc_id)
-			min_doc_id = doc_id;
-	}
-
-	return min_doc_id;
-}
-
-/*
- * Advance all iterators at the pivot past the current document.
+ * Score segment postings for multiple terms using WAND traversal.
  *
- * Uses WAND-style seeking: instead of advancing by 1, seek to the next
- * candidate doc ID (minimum among terms not at pivot). This is O(log blocks)
- * instead of O(blocks).
- */
-static void
-skip_pivot_document(
-		TpTermState *terms,
-		int			 term_count,
-		uint32		 pivot_doc_id,
-		int			*active_count,
-		TpBMWStats	*stats)
-{
-	uint32 next_candidate;
-	int	   term_idx;
-
-	/* Find next promising doc ID and seek to it */
-	next_candidate =
-			find_next_candidate_doc_id(terms, term_count, pivot_doc_id);
-	if (next_candidate == UINT32_MAX)
-		next_candidate = pivot_doc_id + 1;
-
-	/* Advance all terms at pivot to the next candidate */
-	for (term_idx = 0; term_idx < term_count; term_idx++)
-	{
-		TpTermState *ts		= &terms[term_idx];
-		uint32		 doc_id = term_current_doc_id(ts);
-		uint32		 skip_distance;
-
-		if (doc_id != pivot_doc_id)
-			continue;
-
-		skip_distance = next_candidate - pivot_doc_id;
-
-		if (skip_distance > 1)
-		{
-			/* Use binary search seek */
-			if (!seek_term_to_doc(ts, next_candidate))
-				(*active_count)--;
-
-			if (stats)
-			{
-				uint32 landed_doc = term_current_doc_id(ts);
-				stats->seeks_performed++;
-				stats->docs_seeked += (next_candidate - pivot_doc_id - 1);
-				/* Avoid overflow: landed_doc - pivot_doc_id <= 1 is equivalent
-				 * to landed_doc <= pivot_doc_id + 1 */
-				if (landed_doc - pivot_doc_id <= 1)
-					stats->seek_to_same_doc++;
-			}
-		}
-		else
-		{
-			/* Linear advance (skip_distance == 1) */
-			if (!advance_term_iterator(ts))
-				(*active_count)--;
-
-			if (stats)
-				stats->linear_advances++;
-		}
-	}
-}
-
-/*
- * Score segment postings for multiple terms using WAND-style traversal.
+ * Classic WAND: terms are sorted by current doc_id. We walk from
+ * lowest doc_id, accumulating max_scores until the threshold is
+ * exceeded to find the "pivot" document. This skips large doc_id
+ * ranges that can't contribute to top-k results.
  *
- * Uses doc-ID ordered traversal to correctly accumulate scores across all
- * terms. Block-max optimization prunes documents that can't beat threshold.
+ * Block-max refinement then checks if block-level upper bounds
+ * at the pivot still beat the threshold, and uses Tantivy-style
+ * skip advancement when they don't.
  */
 static void
 score_segment_multi_term_bmw(
@@ -1155,57 +1286,81 @@ score_segment_multi_term_bmw(
 	active_count = init_segment_term_states(
 			terms, term_count, reader, k1, b, avg_doc_len);
 
-	/* WAND-style doc-ID ordered traversal */
+	if (active_count == 0)
+	{
+		cleanup_segment_term_states(terms, term_count);
+		return;
+	}
+
+	/* Sort terms by current doc_id for WAND traversal */
+	sort_terms_by_doc_id(terms, term_count);
+
+	/* WAND main loop */
 	while (active_count > 0)
 	{
-		uint32			pivot_doc_id;
-		float4			max_possible;
-		float4			threshold;
-		ItemPointerData pivot_ctid;
-		float4			doc_score;
-
-		pivot_doc_id = find_pivot_doc_id(terms, term_count);
-		if (pivot_doc_id == UINT32_MAX)
-			break;
+		int	   pivot_len;
+		uint32 pivot_doc_id;
+		float4 threshold;
+		float4 block_upper;
+		float4 doc_score;
+		int	   i;
 
 		threshold = tp_topk_threshold(heap);
-		max_possible =
-				compute_pivot_max_score(terms, term_count, pivot_doc_id);
 
-		if (max_possible < threshold)
+		/* Step 1: Find WAND pivot */
+		if (!find_wand_pivot(
+					terms, term_count, threshold, &pivot_len, &pivot_doc_id))
+			break; /* No term combination can beat threshold */
+
+		/* Step 2: Seek pre-pivot terms to pivot_doc_id */
+		if (!seek_to_pivot(
+					terms, term_count, pivot_len, pivot_doc_id, &active_count))
+			continue; /* Re-pivot with updated positions */
+
+		/*
+		 * Step 3: Block-max refinement.
+		 * Check if block-level upper bound still beats threshold.
+		 */
+		block_upper = compute_block_max_at_pivot(terms, pivot_len);
+
+		if (block_upper <= threshold)
 		{
-			skip_pivot_document(
-					terms, term_count, pivot_doc_id, &active_count, stats);
-			if (stats)
-				stats->blocks_skipped++;
+			block_max_skip_advance(
+					terms, term_count, pivot_len, &active_count, stats);
 			continue;
 		}
 
 		if (stats)
 			stats->blocks_scanned++;
 
-		doc_score = score_pivot_document(
-				terms,
-				term_count,
-				pivot_doc_id,
-				reader,
-				k1,
-				b,
-				avg_doc_len,
-				&pivot_ctid,
-				&active_count);
+		/* Step 4: Verify all pivot terms are at pivot_doc_id */
+		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
+			continue; /* Re-pivot with new positions */
 
-		/*
-		 * doc_score > 0 means at least one term matched the pivot document.
-		 * (Scores are positive internally; negated at output for Postgres ASC)
-		 * Use tp_topk_add_segment for deferred CTID resolution.
-		 */
+		/* Step 5: Score the pivot document */
+		doc_score = score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
+
 		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
 			tp_topk_add_segment(
 					heap, reader->root_block, pivot_doc_id, doc_score);
 
 		if (stats)
 			stats->segment_docs_scored++;
+
+		/*
+		 * Step 6: Advance all pivot terms past pivot_doc_id.
+		 * Iterate backward so restore_ordering shifts don't
+		 * skip any terms.
+		 */
+		for (i = pivot_len - 1; i >= 0; i--)
+		{
+			if (term_current_doc_id(&terms[i]) == pivot_doc_id)
+			{
+				if (!advance_term_iterator(&terms[i]))
+					active_count--;
+				restore_ordering(terms, term_count, i);
+			}
+		}
 	}
 
 	cleanup_segment_term_states(terms, term_count);

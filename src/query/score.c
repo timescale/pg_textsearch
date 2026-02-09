@@ -502,8 +502,7 @@ tp_score_documents(
 			elog(LOG,
 				 "BMW stats: memtable=%lu docs, segments=%lu docs "
 				 "(blocks: %lu scanned, %lu skipped, %.1f%% skip), "
-				 "seeks=%lu (docs_seeked=%lu, linear=%lu, same_doc=%lu), "
-				 "results=%lu",
+				 "seeks=%lu, results=%lu",
 				 (unsigned long)stats.memtable_docs,
 				 (unsigned long)stats.segment_docs_scored,
 				 (unsigned long)stats.blocks_scanned,
@@ -514,9 +513,6 @@ tp_score_documents(
 									stats.blocks_skipped)
 						 : 0.0,
 				 (unsigned long)stats.seeks_performed,
-				 (unsigned long)stats.docs_seeked,
-				 (unsigned long)stats.linear_advances,
-				 (unsigned long)stats.seek_to_same_doc,
 				 (unsigned long)stats.docs_in_results);
 		}
 
@@ -587,8 +583,7 @@ tp_score_documents(
 				elog(LOG,
 					 "BMW stats: memtable=%lu docs, segments=%lu docs "
 					 "(blocks: %lu scanned, %lu skipped, %.1f%% skip), "
-					 "seeks=%lu (docs_seeked=%lu, linear=%lu, same_doc=%lu), "
-					 "results=%lu",
+					 "seeks=%lu, results=%lu",
 					 (unsigned long)stats.memtable_docs,
 					 (unsigned long)stats.segment_docs_scored,
 					 (unsigned long)stats.blocks_scanned,
@@ -599,9 +594,6 @@ tp_score_documents(
 										stats.blocks_skipped)
 							 : 0.0,
 					 (unsigned long)stats.seeks_performed,
-					 (unsigned long)stats.docs_seeked,
-					 (unsigned long)stats.linear_advances,
-					 (unsigned long)stats.seek_to_same_doc,
 					 (unsigned long)stats.docs_in_results);
 			}
 
