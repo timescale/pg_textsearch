@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770618909954,
+  "lastUpdate": 1770618911538,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7648,6 +7648,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1190.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "348671dc23717a8278b564a3e1d5b6ad7fb02199",
+          "message": "feat: iterative index scan with exponential backoff (#209)\n\nCloses #143\n\n## Summary\n\n- When a WHERE clause post-filters BM25 index results, the one-shot\ntop-k scan could return fewer rows than LIMIT requests (or zero rows),\neven when qualifying rows exist in the table\n- Fix: `tp_gettuple` now doubles the internal limit and re-executes the\nscoring query when results are exhausted, skipping already-returned rows\n- Terminates when `result_count < max_results_used` (all matching docs\nfound) or the limit reaches `TP_MAX_QUERY_LIMIT`\n\n## Testing\n\nNew `rescan.sql` regression test with 9 scenarios:\n- Complete miss (all top-k filtered out by WHERE)\n- Default limit + WHERE (no explicit LIMIT)\n- Partial miss (some results pass filter)\n- Result ordering preserved after rescan\n- Large table with aggressive filtering (500 rows, 2% match rate)\n- WHERE on non-indexed column\n- LIMIT + OFFSET + WHERE\n- Multiple backoffs required (8 doublings with default_limit=5)\n- Backoff terminates when all matching rows exhausted\n\nUpdated expected output for `limits` and `mixed` tests which now\ncorrectly return additional rows that the rescan finds.",
+          "timestamp": "2026-02-07T15:53:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/348671dc23717a8278b564a3e1d5b6ad7fb02199"
+        },
+        "date": 1770618911148,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 274855.29,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.63,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 6.43,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 13.37,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 18.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 30.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 48.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 16.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1189.49,
             "unit": "MB"
           }
         ]
