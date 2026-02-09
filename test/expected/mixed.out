@@ -189,22 +189,38 @@ Test 6: Update operations
 UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
--- Verify search finds updated documents (LIMIT 2: both updated docs)
--- Disable log_scores to avoid planner-dependent NOTICE output
-SET pg_textsearch.log_scores = false;
+-- Verify search finds updated documents
 SELECT * FROM (
     SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
     FROM concurrent_test_docs
     ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
-    LIMIT 2
+    LIMIT 10
 ) sub ORDER BY score, id;
- id |                          content                          |  score  
-----+-----------------------------------------------------------+---------
-  1 | updated database system with enhanced concurrent features | -3.5477
-  2 | updated database system with enhanced concurrent features | -3.5477
-(2 rows)
+NOTICE:  BM25 index scan: tid=(0,60), BM25_score=-3.5477
+NOTICE:  BM25 index scan: tid=(0,61), BM25_score=-3.5477
+NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-0.0768
+NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-0.0716
+NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.0671
+NOTICE:  BM25 index scan: tid=(0,59), BM25_score=-0.0671
+NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.0631
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.0631
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.0563
+ id |                            content                            |  score  
+----+---------------------------------------------------------------+---------
+  1 | updated database system with enhanced concurrent features     | -3.5477
+  2 | updated database system with enhanced concurrent features     | -3.5477
+  5 | database indexing strategies                                  | -0.0768
+  8 | database concurrent processing improves performance           | -0.0671
+ 59 | new concurrent database research paper                        | -0.0671
+  6 | database systems require concurrent access control            | -0.0631
+  7 | concurrent database operations need careful synchronization   | -0.0631
+  9 | test document number 1 contains database and concurrent terms | -0.0563
+ 10 | test document number 2 contains database and concurrent terms | -0.0563
+ 11 | test document number 3 contains database and concurrent terms | -0.0563
+(10 rows)
 
-SET pg_textsearch.log_scores = true;
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'
 Test 7: Delete operations

@@ -90,15 +90,31 @@ heap_swap(TpTopKHeap *heap, int i, int j)
 
 /*
  * Compare two heap entries for min-heap ordering.
- * Returns true if entry at position a should be the parent of entry at b.
+ * Returns true if entry at position a should be closer to the root
+ * (i.e., is a weaker result that should be evicted first).
  *
- * For min-heap: lower score = should be parent (closer to root).
- * Tie-breaking by CTID happens after CTIDs are resolved at extraction time.
+ * Primary: lower score = weaker = closer to root.
+ * Secondary: among equal scores, higher CTID = weaker (lower CTID wins
+ * ties in the final output). For segment entries whose CTIDs are not
+ * yet resolved, doc_id within the segment is a reliable proxy.
  */
 static inline bool
 heap_less(TpTopKHeap *heap, int a, int b)
 {
-	return heap->scores[a] < heap->scores[b];
+	if (heap->scores[a] < heap->scores[b])
+		return true;
+	if (heap->scores[a] > heap->scores[b])
+		return false;
+
+	/* Equal scores: higher CTID is weaker (closer to root) */
+	if (ItemPointerIsValid(&heap->ctids[a]) &&
+		ItemPointerIsValid(&heap->ctids[b]))
+		return ItemPointerCompare(&heap->ctids[a], &heap->ctids[b]) > 0;
+
+	/* Segment entries: doc_id proxy (higher doc_id = weaker) */
+	if (heap->doc_ids[a] != heap->doc_ids[b])
+		return heap->doc_ids[a] > heap->doc_ids[b];
+	return heap->seg_blocks[a] > heap->seg_blocks[b];
 }
 
 /*
@@ -111,8 +127,7 @@ heap_sift_up(TpTopKHeap *heap, int i)
 	while (i > 0)
 	{
 		int parent = (i - 1) / 2;
-		if (heap_less(heap, parent, i) ||
-			(!heap_less(heap, i, parent) && parent <= i))
+		if (!heap_less(heap, i, parent))
 			break;
 		heap_swap(heap, i, parent);
 		i = parent;
@@ -146,6 +161,35 @@ heap_sift_down(TpTopKHeap *heap, int i)
 }
 
 /*
+ * Check if a candidate entry should replace the heap root.
+ *
+ * Higher score always wins. For equal scores, lower CTID wins
+ * (matching the extraction sort order). When CTIDs are not both
+ * available (memtable vs segment), doc_id serves as proxy.
+ */
+static inline bool
+heap_beats_root(
+		TpTopKHeap *heap, float4 score, ItemPointerData *ctid, uint32 doc_id)
+{
+	if (score > heap->scores[0])
+		return true;
+	if (score < heap->scores[0])
+		return false;
+
+	/* Equal score: lower CTID beats higher CTID */
+	if (ctid && ItemPointerIsValid(ctid) &&
+		ItemPointerIsValid(&heap->ctids[0]))
+		return ItemPointerCompare(ctid, &heap->ctids[0]) < 0;
+
+	/* Both segment entries: lower doc_id proxy */
+	if (ctid == NULL && !ItemPointerIsValid(&heap->ctids[0]))
+		return doc_id < heap->doc_ids[0];
+
+	/* Mixed memtable/segment: can't compare, don't evict */
+	return false;
+}
+
+/*
  * Add a memtable result to the top-k heap.
  * CTID is known immediately for memtable entries.
  */
@@ -162,9 +206,9 @@ tp_topk_add_memtable(TpTopKHeap *heap, ItemPointerData ctid, float4 score)
 		heap->scores[i]		= score;
 		heap_sift_up(heap, i);
 	}
-	else if (score > heap->scores[0])
+	else if (heap_beats_root(heap, score, &ctid, 0))
 	{
-		/* Heap full but new entry beats minimum */
+		/* Heap full but new entry beats root */
 		heap->ctids[0]		= ctid;
 		heap->seg_blocks[0] = InvalidBlockNumber;
 		heap->doc_ids[0]	= 0;
@@ -192,9 +236,9 @@ tp_topk_add_segment(
 		heap->scores[i]		= score;
 		heap_sift_up(heap, i);
 	}
-	else if (score > heap->scores[0])
+	else if (heap_beats_root(heap, score, NULL, doc_id))
 	{
-		/* Heap full but new entry beats minimum */
+		/* Heap full but new entry beats root */
 		ItemPointerSetInvalid(&heap->ctids[0]);
 		heap->seg_blocks[0] = seg_block;
 		heap->doc_ids[0]	= doc_id;
