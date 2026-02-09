@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770681447209,
+  "lastUpdate": 1770681448835,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10349,6 +10349,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "74d725b6bdf5e4edae71f20b305ad05133819dca",
+          "message": "feat: implement WAND pivot selection for multi-term queries (#210)\n\n## Summary\n\n- Replace min-doc-id pivot with classic WAND pivot selection for\nmulti-term BMW queries\n- Terms sorted by current doc_id; walk accumulating max_scores until\nthreshold exceeded, skipping large doc_id ranges that can't contribute\nto top-k\n- Block-max refinement with Tantivy-style skip advancement (advance\nhighest-value scorer past block boundary)\n- Linear insertion maintains sorted order — O(1) typical for low term\ncounts, preserving existing performance\n\n## Motivation\n\n8+ term queries (MS-MARCO p50) are 18% slower than System X. The old\napproach found the minimum doc_id and checked all terms, evaluating many\ndocuments that couldn't beat the threshold. Classic WAND skips these\nentirely.\n\n## Changes\n\n- `src/query/bmw.c`: Add `max_score` to TpTermState, sort\ninfrastructure, `find_wand_pivot`, block-max refinement, rewritten main\nloop\n- `test/sql/wand.sql`: 8-term validation test (BMW vs exhaustive + BM25\nreference)\n\n## Testing\n\n- All regression tests pass\n- All shell tests pass (concurrency, recovery, CIC)\n- BM25 scores verified identical to reference implementation\n- MS-MARCO benchmark indicates query improvement across the board\n\nAddresses #192.",
+          "timestamp": "2026-02-09T23:41:48Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/74d725b6bdf5e4edae71f20b305ad05133819dca"
+        },
+        "date": 1770681448408,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 14272.436,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.17,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.38,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.55,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.28,
             "unit": "ms"
           },
           {
