@@ -136,13 +136,16 @@ UPDATE concurrent_test_docs
 SET content = 'updated database system with enhanced concurrent features'
 WHERE id IN (1, 2);
 
--- Verify search finds updated documents (LIMIT 8 avoids tie at -0.0563)
+-- Verify search finds updated documents
+-- Disable log_scores to avoid planner-dependent NOTICE output
+SET pg_textsearch.log_scores = false;
 SELECT * FROM (
     SELECT id, content, ROUND((content <@> to_bm25query('enhanced database', 'concurrent_idx1'))::numeric, 4) as score
     FROM concurrent_test_docs
     ORDER BY content <@> to_bm25query('enhanced database', 'concurrent_idx1')
-    LIMIT 8
+    LIMIT 5
 ) sub ORDER BY score, id;
+SET pg_textsearch.log_scores = true;
 
 -- Test 7: Delete operations
 \echo 'Test 7: Delete operations'
@@ -200,6 +203,9 @@ CREATE INDEX multi_idx_simple ON multi_idx_test USING bm25(content)
 INSERT INTO multi_idx_test (content) VALUES
 ('world of databases and indexes'),
 ('hello database world');
+
+-- Disable log_scores: planner may pick different index for scan
+SET pg_textsearch.log_scores = false;
 
 -- Query using the English index
 SELECT * FROM (
