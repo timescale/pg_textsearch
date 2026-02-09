@@ -10,7 +10,6 @@ CREATE TABLE text_config_tbl (
 -- and the text configuration can be found by Postgres
 CREATE INDEX text_config_idx1 ON text_config_tbl USING bm25 (content) 
     WITH (text_config = 'pg_catalog.english', k1=1.2, b=0.75);
-NOTICE:  BM25 index build started for relation text_config_idx1
 NOTICE:  Using text search configuration: pg_catalog.english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='pg_catalog.english' (k1=1.20, b=0.75)

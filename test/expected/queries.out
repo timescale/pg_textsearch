@@ -27,7 +27,6 @@ INSERT INTO articles (title, content, category) VALUES
     ('Big Data Analytics', 'big data analytics platforms and tools for processing massive datasets efficiently', 'technology');
 -- Create pg_textsearch index with text_config
 CREATE INDEX articles_tapir_idx ON articles USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation articles_tapir_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 12 documents, avg_length=9.17, text_config='english' (k1=1.20, b=0.75)
