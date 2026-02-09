@@ -73,4 +73,60 @@ SELECT validate_bm25_scoring('three_term', 'content', 'three_term_idx',
 
 DROP TABLE three_term;
 
+-- ============================================================
+-- TEST: 8+ term queries with WAND pivot selection
+-- ============================================================
+-- Validates that WAND pivot selection produces correct results
+-- for many-term queries across multiple blocks.
+
+CREATE TABLE wand_many_terms (id SERIAL PRIMARY KEY, content TEXT);
+CREATE INDEX wand_many_terms_idx ON wand_many_terms USING bm25(content)
+    WITH (text_config='english');
+
+-- Create 500 docs with varying term coverage
+INSERT INTO wand_many_terms (content)
+SELECT
+    CASE
+        WHEN i % 100 = 0 THEN
+            'alpha beta gamma delta epsilon zeta eta theta'
+        WHEN i % 50 = 0 THEN
+            'alpha beta gamma delta epsilon zeta'
+        WHEN i % 10 = 0 THEN
+            'alpha beta gamma delta'
+        WHEN i % 5 = 0 THEN
+            'alpha beta gamma'
+        WHEN i % 2 = 0 THEN
+            'alpha beta'
+        ELSE
+            'alpha'
+    END || ' document ' || i
+FROM generate_series(1, 500) i;
+
+SELECT bm25_spill_index('wand_many_terms_idx');
+
+-- 8-term query: WAND vs exhaustive (LIMIT 10 avoids tie boundary)
+WITH bmw AS (
+    SELECT id, content <@> 'alpha beta gamma delta epsilon zeta eta theta'::bm25query as score
+    FROM wand_many_terms
+    ORDER BY content <@> 'alpha beta gamma delta epsilon zeta eta theta'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'alpha beta gamma delta epsilon zeta eta theta'::bm25query as score
+        FROM wand_many_terms
+        ORDER BY content <@> 'alpha beta gamma delta epsilon zeta eta theta'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'wand-8-term' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+-- Validate scores match reference BM25 computation
+SELECT validate_bm25_scoring('wand_many_terms', 'content',
+    'wand_many_terms_idx',
+    'alpha beta gamma delta epsilon zeta eta theta',
+    'english', 1.2, 0.75) as eight_term_valid;
+
+DROP TABLE wand_many_terms;
+
 DROP EXTENSION pg_textsearch CASCADE;

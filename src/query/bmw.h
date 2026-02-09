@@ -112,11 +112,7 @@ typedef struct TpBMWStats
 	uint64 segment_docs_scored; /* Documents scored from segments */
 	uint64 docs_in_results;		/* Documents in final results */
 
-	/* WAND seek statistics */
-	uint64 seeks_performed;	 /* Binary search seeks executed */
-	uint64 docs_seeked;		 /* Total doc IDs skipped via seeking */
-	uint64 linear_advances;	 /* Single-doc advances (no seek benefit) */
-	uint64 seek_to_same_doc; /* Seeks that landed on same/next doc */
+	uint64 seeks_performed; /* Binary search seeks executed */
 } TpBMWStats;
 
 /*
