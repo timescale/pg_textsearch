@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770618913114,
+  "lastUpdate": 1770681445559,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2251,6 +2251,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
             "value": 2.36,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "74d725b6bdf5e4edae71f20b305ad05133819dca",
+          "message": "feat: implement WAND pivot selection for multi-term queries (#210)\n\n## Summary\n\n- Replace min-doc-id pivot with classic WAND pivot selection for\nmulti-term BMW queries\n- Terms sorted by current doc_id; walk accumulating max_scores until\nthreshold exceeded, skipping large doc_id ranges that can't contribute\nto top-k\n- Block-max refinement with Tantivy-style skip advancement (advance\nhighest-value scorer past block boundary)\n- Linear insertion maintains sorted order — O(1) typical for low term\ncounts, preserving existing performance\n\n## Motivation\n\n8+ term queries (MS-MARCO p50) are 18% slower than System X. The old\napproach found the minimum doc_id and checked all terms, evaluating many\ndocuments that couldn't beat the threshold. Classic WAND skips these\nentirely.\n\n## Changes\n\n- `src/query/bmw.c`: Add `max_score` to TpTermState, sort\ninfrastructure, `find_wand_pivot`, block-max refinement, rewritten main\nloop\n- `test/sql/wand.sql`: 8-term validation test (BMW vs exhaustive + BM25\nreference)\n\n## Testing\n\n- All regression tests pass\n- All shell tests pass (concurrency, recovery, CIC)\n- BM25 scores verified identical to reference implementation\n- MS-MARCO benchmark indicates query improvement across the board\n\nAddresses #192.",
+          "timestamp": "2026-02-09T23:41:48Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/74d725b6bdf5e4edae71f20b305ad05133819dca"
+        },
+        "date": 1770681444670,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 250.276,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 2.34,
             "unit": "ms"
           },
           {
