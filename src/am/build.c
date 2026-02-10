@@ -35,13 +35,6 @@
 #include "state/state.h"
 #include "types/vector.h"
 
-/* Tapir-specific build phases */
-#define TP_PHASE_LOADING 2
-#define TP_PHASE_WRITING 3
-
-/* Progress reporting interval (tuples) */
-#define TP_PROGRESS_REPORT_INTERVAL 1000
-
 /*
  * Build phase name for progress reporting
  */
