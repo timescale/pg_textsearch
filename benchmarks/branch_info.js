@@ -72,5 +72,6 @@ window.BRANCH_INFO = {
   "d2d715519a1a15cc5ca73eec533120019a8915b0": "feat/wand-pivot-selection",
   "753eed5ee0018203154314a9e6a6a6ebc1bd1ac7": "main",
   "348671dc23717a8278b564a3e1d5b6ad7fb02199": "main",
-  "74d725b6bdf5e4edae71f20b305ad05133819dca": "main"
+  "74d725b6bdf5e4edae71f20b305ad05133819dca": "main",
+  "23831b5decf5e26f0d5813e985bc5f2d36b178c3": "main"
 };
