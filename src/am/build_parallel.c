@@ -221,9 +221,9 @@ tp_build_parallel(
 			PROGRESS_CREATEIDX_TUPLES_DONE,
 			(int64)pg_atomic_read_u64(&shared->total_docs));
 
-	/* Report writing phase (compaction + truncation) */
+	/* Report compacting phase (metapage update, compaction, truncation) */
 	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 
 	/* Update metapage with L0 chain and statistics */
 	{
