@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770705759357,
+  "lastUpdate": 1770705761000,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10540,6 +10540,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "23831b5decf5e26f0d5813e985bc5f2d36b178c3",
+          "message": "docs: update benchmark comparison with Feb 9 results (#217)\n\n## Summary\n- Update comparison page with results after WAND pivot selection merge\n(PR #210)\n- pg_textsearch now faster than System X across all 8 token buckets\n(previously lost on 8+ tokens)\n- Overall throughput improved from 1.8x to 2.8x faster\n- System X version updated from 0.20.6 to 0.21.6\n\n## Key changes in numbers\n- 8+ token p50: 49.03 ms → 27.95 ms (43% faster than previous, now beats\nSystem X's 41.23 ms)\n- 7 token p50: 30.06 ms → 18.02 ms (40% faster)\n- Throughput: 16.65 ms/q → 10.48 ms/q (vs System X 29.18 ms/q)\n\n## Testing\n- Numbers extracted from benchmark run\n[#21845385796](https://github.com/timescale/pg_textsearch/actions/runs/21845385796)\n- gh-pages branch still needs a matching update after this merges",
+          "timestamp": "2026-02-10T03:01:14Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/23831b5decf5e26f0d5813e985bc5f2d36b178c3"
+        },
+        "date": 1770705760565,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 12354.724,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.17,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.22,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.39,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.6,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.29,
             "unit": "ms"
           },
           {
