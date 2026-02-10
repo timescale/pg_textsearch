@@ -27,6 +27,7 @@
 #include <storage/condition_variable.h>
 #include <storage/smgr.h>
 #include <tsearch/ts_type.h>
+#include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/guc.h>
@@ -138,6 +139,19 @@ tp_build_parallel(
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
+	/* Report loading phase */
+	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+
+	/* Report estimated tuple count for progress tracking */
+	{
+		double reltuples  = heap->rd_rel->reltuples;
+		int64  tuples_est = (reltuples > 0) ? (int64)reltuples : 0;
+
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_TOTAL, tuples_est);
+	}
+
 	/* Get snapshot for parallel scan */
 	snapshot = GetTransactionSnapshot();
 #if PG_VERSION_NUM >= 180000
@@ -201,6 +215,15 @@ tp_build_parallel(
 
 	/* Wait for all workers to finish */
 	WaitForParallelWorkersToFinish(pcxt);
+
+	/* Report final tuple count */
+	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_TUPLES_DONE,
+			(int64)pg_atomic_read_u64(&shared->total_docs));
+
+	/* Report compacting phase (metapage update, compaction, truncation) */
+	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 
 	/* Update metapage with L0 chain and statistics */
 	{
@@ -1564,7 +1587,15 @@ tp_leader_process_buffers(
 
 	while (!all_done)
 	{
-		int i;
+		int	   i;
+		uint64 tuples_scanned = 0;
+
+		/* Report tuple-level progress from worker counters */
+		for (i = 0; i < shared->nworkers; i++)
+			tuples_scanned += pg_atomic_read_u64(
+					&worker_states[i].tuples_scanned);
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_DONE, tuples_scanned);
 
 		/* Collect all currently ready buffers */
 		num_ready = 0;

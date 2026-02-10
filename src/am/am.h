@@ -51,6 +51,14 @@ typedef struct TpOptions
 	double b;				   /* BM25 b parameter */
 } TpOptions;
 
+/* Tapir-specific build phases for progress reporting */
+#define TP_PHASE_LOADING	2
+#define TP_PHASE_WRITING	3
+#define TP_PHASE_COMPACTING 4
+
+/* Progress reporting interval (tuples) */
+#define TP_PROGRESS_REPORT_INTERVAL 1000
+
 /* Forward declarations */
 struct IndexInfo;
 struct PlannerInfo;

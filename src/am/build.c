@@ -35,13 +35,6 @@
 #include "state/state.h"
 #include "types/vector.h"
 
-/* Tapir-specific build phases */
-#define TP_PHASE_LOADING 2
-#define TP_PHASE_WRITING 3
-
-/* Progress reporting interval (tuples) */
-#define TP_PROGRESS_REPORT_INTERVAL 1000
-
 /*
  * Build phase name for progress reporting
  */
@@ -56,6 +49,8 @@ tp_buildphasename(int64 phase)
 		return "loading tuples";
 	case TP_PHASE_WRITING:
 		return "writing index";
+	case TP_PHASE_COMPACTING:
+		return "compacting segments";
 	default:
 		return NULL;
 	}
@@ -134,7 +129,11 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		UnlockReleaseBuffer(metabuf);
 
 		/* Check if L0 needs compaction */
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 		tp_maybe_compact_level(index_rel, 0);
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
 }
 
