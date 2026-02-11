@@ -1734,7 +1734,8 @@ tp_dump_segment_to_output(
 						uint32		k;
 						uint32		postings_to_show;
 
-						tp_segment_read_skip_entry(reader, &entry, j, &skip);
+						tp_segment_read_skip_entry(
+								reader, entry.skip_index_offset, j, &skip);
 
 						dump_printf(
 								out,

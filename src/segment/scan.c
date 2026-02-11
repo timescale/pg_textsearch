@@ -23,7 +23,7 @@
 void
 tp_segment_read_skip_entry(
 		TpSegmentReader *reader,
-		TpDictEntry		*dict_entry,
+		uint64			 skip_index_offset,
 		uint16			 block_idx,
 		TpSkipEntry		*skip)
 {
@@ -33,7 +33,7 @@ tp_segment_read_skip_entry(
 	{
 		TpSkipEntryV3 v3;
 
-		skip_offset = dict_entry->skip_index_offset +
+		skip_offset = skip_index_offset +
 					  (uint64)block_idx * sizeof(TpSkipEntryV3);
 		tp_segment_read(reader, skip_offset, &v3, sizeof(TpSkipEntryV3));
 
@@ -48,7 +48,7 @@ tp_segment_read_skip_entry(
 	}
 	else
 	{
-		skip_offset = dict_entry->skip_index_offset +
+		skip_offset = skip_index_offset +
 					  (uint64)block_idx * sizeof(TpSkipEntry);
 		tp_segment_read(reader, skip_offset, skip, sizeof(TpSkipEntry));
 	}
@@ -196,7 +196,7 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 	/* Read skip entry for current block (version-aware) */
 	tp_segment_read_skip_entry(
 			iter->reader,
-			&iter->dict_entry,
+			iter->dict_entry.skip_index_offset,
 			iter->current_block,
 			&iter->skip_entry);
 
@@ -448,7 +448,7 @@ tp_segment_posting_iterator_seek(
 
 		/* Read skip entry to get last_doc_id */
 		tp_segment_read_skip_entry(
-				iter->reader, &iter->dict_entry, mid, &skip);
+				iter->reader, iter->dict_entry.skip_index_offset, mid, &skip);
 
 		if (skip.last_doc_id < target_doc_id)
 		{
