@@ -168,6 +168,62 @@ SELECT bm25_dump_index('coverage_idx', '/tmp/test_dump.txt') IS NOT NULL
 \! rm -f /tmp/test_dump.txt
 
 -- =============================================================================
+-- Test 12: Segment BMW seek (exercises segment/scan.c seek path)
+-- Uses ORDER BY ... LIMIT to trigger top-k BMW with segment data
+-- =============================================================================
+
+-- We already have segment data from Test 5; add more for multi-block
+INSERT INTO coverage_docs (content)
+SELECT 'seek test document with term alpha ' || i
+FROM generate_series(1, 200) AS i;
+
+SELECT bm25_spill_index('coverage_idx');
+
+-- ORDER BY score LIMIT triggers BMW seek path on segments
+SELECT id FROM coverage_docs
+WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
+ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
+LIMIT 5;
+
+-- Multi-term BMW seek with segment data
+SELECT id FROM coverage_docs
+WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
+ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
+LIMIT 3;
+
+-- =============================================================================
+-- Test 13: tpquery_in with index name prefix (exercises query.c parsing)
+-- =============================================================================
+
+-- Cast string with index:query format to bm25query type
+SELECT 'coverage_idx:hello world'::bm25query IS NOT NULL
+    AS tpquery_in_with_index;
+
+-- =============================================================================
+-- Test 14: BMW stats logging with segment ORDER BY LIMIT queries
+-- =============================================================================
+
+SET pg_textsearch.log_bmw_stats = true;
+
+-- Single-term with ORDER BY LIMIT (BMW seek on segments)
+SELECT count(*) FROM (
+    SELECT id FROM coverage_docs
+    WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
+    ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
+    LIMIT 10
+) sub;
+
+-- Multi-term with ORDER BY LIMIT
+SELECT count(*) FROM (
+    SELECT id FROM coverage_docs
+    WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
+    ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
+    LIMIT 10
+) sub;
+
+SET pg_textsearch.log_bmw_stats = false;
+
+-- =============================================================================
 -- Cleanup
 -- =============================================================================
 
