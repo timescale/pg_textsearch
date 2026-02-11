@@ -139,6 +139,32 @@ tp_build_parallel(
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
 
+	/*
+	 * Cap workers based on memory budget.  Each worker needs at
+	 * least 32MB of DSA for its two double-buffered memtables.
+	 * We allow maintenance_work_mem (total) to be shared across
+	 * workers, requiring a minimum of 32MB per worker.
+	 */
+	{
+		int mwm_mb		   = maintenance_work_mem / 1024;
+		int max_affordable = mwm_mb / 32;
+
+		if (max_affordable < 1)
+			max_affordable = 1;
+		if (nworkers > max_affordable)
+		{
+			ereport(NOTICE,
+					(errmsg("parallel index build: reducing "
+							"workers from %d to %d to fit "
+							"memory budget (increase "
+							"maintenance_work_mem to allow "
+							"more workers)",
+							nworkers,
+							max_affordable)));
+			nworkers = max_affordable;
+		}
+	}
+
 	/* Report loading phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
@@ -177,6 +203,33 @@ tp_build_parallel(
 	dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
 	dsa_pin(dsa);
 	dsa_pin_mapping(dsa);
+
+	/*
+	 * Set a DSA size limit so that if memory usage exceeds what
+	 * we expect, workers get a clear ERROR instead of the machine
+	 * OOMing.  Formula: nworkers * 2 buffers * threshold * 24
+	 * bytes/posting * 1.5 headroom, capped at maintenance_work_mem
+	 * * 8.  Floor of 1 GB.
+	 */
+	{
+		Size formula_limit = (Size)nworkers * 2 *
+							 (Size)tp_memtable_spill_threshold * 24;
+		Size mwm_cap = (Size)maintenance_work_mem * (Size)1024 * 8;
+		Size dsa_limit;
+
+		/* Add 50% headroom for hash table overhead */
+		formula_limit = formula_limit + formula_limit / 2;
+
+		dsa_limit = Min(formula_limit, mwm_cap);
+		if (dsa_limit < (Size)1024 * 1024 * 1024)
+			dsa_limit = (Size)1024 * 1024 * 1024;
+
+		dsa_set_size_limit(dsa, dsa_limit);
+
+		elog(DEBUG1,
+			 "parallel build: DSA size limit set to %zu MB",
+			 dsa_limit / (1024 * 1024));
+	}
 
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
@@ -1499,6 +1552,8 @@ tp_merge_worker_buffers_to_segment(
 	pfree(string_offsets);
 	tp_docmap_destroy(docmap);
 	tp_segment_writer_finish(&writer);
+	if (writer.pages)
+		pfree(writer.pages);
 
 	return header_block;
 }
@@ -1654,16 +1709,35 @@ tp_leader_process_buffers(
 		 */
 		if (num_ready > 0 && (all_done || num_ready >= shared->nworkers))
 		{
-			BlockNumber seg_block;
+			BlockNumber	  seg_block;
+			MemoryContext merge_ctx;
+			MemoryContext old_ctx;
 
 			elog(DEBUG1,
 				 "Merging %d ready buffers (all_done=%d)",
 				 num_ready,
 				 all_done);
 
+			/*
+			 * Run each merge cycle in a dedicated memory context.
+			 * This ensures all leader-side palloc's (docmap,
+			 * merged_terms, chunk buffers, skip entries, etc.)
+			 * are truly freed back to the OS when the context is
+			 * deleted, rather than accumulating on the AllocSet
+			 * freelist.
+			 */
+			merge_ctx = AllocSetContextCreate(
+					CurrentMemoryContext,
+					"ParallelBuildMerge",
+					ALLOCSET_DEFAULT_SIZES);
+			old_ctx = MemoryContextSwitchTo(merge_ctx);
+
 			/* Merge ready buffers directly to segment */
 			seg_block = tp_merge_worker_buffers_to_segment(
 					ready_buffers, num_ready, index, dsa);
+
+			MemoryContextSwitchTo(old_ctx);
+			MemoryContextDelete(merge_ctx);
 
 			if (seg_block != InvalidBlockNumber)
 			{
@@ -1725,6 +1799,14 @@ tp_leader_process_buffers(
 					}
 				}
 			}
+
+			/*
+			 * After clearing buffers (which frees DSA pointers),
+			 * trim the DSA to release fully-unused segments back
+			 * to the OS.  Without this, dsa_free() only recycles
+			 * space internally and RSS grows monotonically.
+			 */
+			dsa_trim(dsa);
 		}
 		else if (!all_done)
 		{
