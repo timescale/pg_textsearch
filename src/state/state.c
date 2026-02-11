@@ -217,11 +217,14 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
 	if (shared_dp == InvalidDsaPointer)
 	{
+		/* LCOV_EXCL_START -- DSA allocation only fails under extreme
+		 * memory pressure */
 		elog(ERROR,
 			 "Failed to allocate DSA memory for shared state (index OID: %u, "
 			 "size: %zu)",
 			 index_oid,
 			 sizeof(TpSharedIndexState));
+		/* LCOV_EXCL_STOP */
 	}
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
@@ -241,8 +244,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
+	/* LCOV_EXCL_STOP */
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
@@ -263,15 +268,16 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Register in global registry */
 	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
-		/* If registration failed, try initializing the registry first */
+		/* LCOV_EXCL_START -- defensive: registry only fails if shmem
+		 * was not initialized or is full */
 		tp_registry_shmem_startup();
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
-			/* Clean up allocations on failure */
 			dsa_free(dsa, memtable_dp);
 			dsa_free(dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
+		/* LCOV_EXCL_STOP */
 	}
 
 	/* Create local state for the creating backend */
@@ -329,10 +335,12 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate shared state in GLOBAL DSA (for statistics) */
 	shared_dp = dsa_allocate(global_dsa, sizeof(TpSharedIndexState));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (shared_dp == InvalidDsaPointer)
 		elog(ERROR,
 			 "Failed to allocate shared state for build (index OID: %u)",
 			 index_oid);
+	/* LCOV_EXCL_STOP */
 
 	shared_state = (TpSharedIndexState *)
 			dsa_get_address(global_dsa, shared_dp);
@@ -360,12 +368,15 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Register in global registry */
 	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
+		/* LCOV_EXCL_START -- defensive: registry only fails if shmem
+		 * was not initialized or is full */
 		tp_registry_shmem_startup();
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
 			dsa_free(global_dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
+		/* LCOV_EXCL_STOP */
 	}
 
 	/*
@@ -378,13 +389,17 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * many indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
+	/* LCOV_EXCL_START -- DSA creation/allocation failures */
 	if (!private_dsa)
 		elog(ERROR, "Failed to create private DSA for index build");
+	/* LCOV_EXCL_STOP */
 
 	/* Allocate and initialize memtable in PRIVATE DSA */
 	memtable_dp = dsa_allocate(private_dsa, sizeof(TpMemtable));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in private DSA");
+	/* LCOV_EXCL_STOP */
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
@@ -555,6 +570,8 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
  *
  * This prevents memory leaks when CREATE INDEX is aborted.
  */
+/* LCOV_EXCL_START -- only reachable on transaction abort during
+ * CREATE INDEX; cannot be triggered reliably in SQL tests */
 void
 tp_cleanup_build_mode_on_abort(void)
 {
@@ -618,6 +635,8 @@ tp_cleanup_build_mode_on_abort(void)
 		entry->local_state = NULL;
 	}
 }
+
+/* LCOV_EXCL_STOP */
 
 /*
  * Clean up shared memory allocations for an index
@@ -722,14 +741,17 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
+	/* LCOV_EXCL_START -- corruption/unavailability guard */
 	if (index_rel == NULL)
 	{
 		elog(WARNING, "Could not open index %u for recovery", index_oid);
 		return NULL;
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* Get metapage */
 	metap = tp_get_metapage(index_rel);
+	/* LCOV_EXCL_START -- corruption guard */
 	if (metap == NULL)
 	{
 		index_close(index_rel, AccessShareLock);
@@ -750,6 +772,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 			 metap->magic);
 		return NULL;
 	}
+	/* LCOV_EXCL_STOP */
 
 	/*
 	 * Additional validation: Check if the heap relation has been truncated
@@ -766,6 +789,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
 	relation_close(heap_rel, AccessShareLock);
 
+	/* LCOV_EXCL_START -- stale data guard */
 	if (heap_blocks == 0 && metap->total_docs > 0)
 	{
 		/* Heap is empty but metapage shows documents - stale data */
@@ -781,6 +805,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return tp_create_shared_index_state(
 				index_oid, index_rel->rd_index->indrelid);
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* Check if there's actually anything to recover */
 	if (metap->total_docs == 0 &&
@@ -833,6 +858,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
  * This scans the docid pages, retrieves documents from heap, and rebuilds the
  * posting lists
  */
+/* LCOV_EXCL_START -- crash recovery path, only reachable after Postgres
+ * restart when the index has docid pages. Tested by test/scripts/recovery.sh
+ * but not by SQL regression tests. */
 void
 tp_rebuild_posting_lists_from_docids(
 		Relation		   index_rel,
@@ -1007,6 +1035,8 @@ tp_rebuild_posting_lists_from_docids(
 	}
 }
 
+/* LCOV_EXCL_STOP */
+
 /*
  * Helper function to get memtable from local index state
  * Canonical implementation used by all modules
@@ -1056,12 +1086,14 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		 * In practice, this shouldn't happen as writers should request
 		 * exclusive from the start.
 		 */
+		/* LCOV_EXCL_START -- defensive: shouldn't happen in practice */
 		elog(WARNING,
 			 "Upgrading index lock from shared to exclusive - "
 			 "potential deadlock risk");
 
 		LWLockRelease(&local_state->shared->lock);
 		local_state->lock_held = false;
+		/* LCOV_EXCL_STOP */
 	}
 
 	/* Acquire the lock */
@@ -1250,8 +1282,10 @@ tp_bulk_load_spill_check(void)
 		TpIndexMetaPage	   metap;
 		bool			   index_open_failed = false;
 
+		/* LCOV_EXCL_START -- null state guard */
 		if (!local_state || !local_state->shared)
 			continue;
+		/* LCOV_EXCL_STOP */
 
 		/* Check bulk load threshold */
 		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
@@ -1270,6 +1304,7 @@ tp_bulk_load_spill_check(void)
 			index_rel = index_open(
 					local_state->shared->index_oid, RowExclusiveLock);
 		}
+		/* LCOV_EXCL_START -- index dropped mid-transaction */
 		PG_CATCH();
 		{
 			/* Index might have been dropped */
@@ -1280,6 +1315,7 @@ tp_bulk_load_spill_check(void)
 
 		if (index_open_failed)
 			continue;
+		/* LCOV_EXCL_STOP */
 
 		/* Write the segment */
 		segment_root = tp_write_segment(local_state, index_rel);

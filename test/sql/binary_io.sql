@@ -42,9 +42,31 @@ FROM query_export e
 JOIN query_import i ON e.id = i.id
 ORDER BY e.id;
 
+-- =============================================================================
+-- Test bm25vector binary I/O (exercises vector.c recv/send functions)
+-- =============================================================================
+
+-- Create table with bm25vector column for binary copy test
+CREATE TABLE vector_export (id serial, v bm25vector);
+INSERT INTO vector_export (v) VALUES
+    ('binary_io_idx:{hello:1,world:2}'::bm25vector),
+    ('binary_io_idx:{database:3,search:1}'::bm25vector);
+
+-- Export via COPY BINARY (exercises bm25vector_send)
+COPY vector_export TO '/tmp/vector_export.bin' WITH (FORMAT binary);
+
+-- Import via COPY BINARY (exercises bm25vector_recv)
+CREATE TABLE vector_import (id int, v bm25vector);
+COPY vector_import FROM '/tmp/vector_export.bin' WITH (FORMAT binary);
+
+-- Verify round-trip
+SELECT COUNT(*) AS vector_imported_count FROM vector_import;
+
 -- Clean up
-\! rm -f /tmp/query_export.bin
+\! rm -f /tmp/query_export.bin /tmp/vector_export.bin
 DROP TABLE query_export;
 DROP TABLE query_import;
+DROP TABLE vector_export;
+DROP TABLE vector_import;
 DROP TABLE binary_io_docs CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

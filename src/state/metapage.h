@@ -70,9 +70,6 @@ typedef struct TpDocidPageHeader
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
-extern void
-tp_update_metapage_stats(Relation index, int32 doc_delta, int64 len_delta);
-
 /*
  * Document ID operations for crash recovery
  */

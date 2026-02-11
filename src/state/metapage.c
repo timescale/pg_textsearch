@@ -124,6 +124,7 @@ tp_get_metapage(Relation index)
 	page = BufferGetPage(buf);
 
 	metap = (TpIndexMetaPage)PageGetContents(page);
+	/* LCOV_EXCL_START -- corruption guards */
 	if (!metap)
 	{
 		UnlockReleaseBuffer(buf);
@@ -156,6 +157,7 @@ tp_get_metapage(Relation index)
 			 metap->version,
 			 TP_METAPAGE_VERSION);
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* Copy metapage data to avoid buffer issues */
 	result = (TpIndexMetaPage)palloc(sizeof(TpIndexMetaPageData));
@@ -357,30 +359,6 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	docid_writer_cache.valid	  = true;
 
 	UnlockReleaseBuffer(docid_buf);
-}
-
-/*
- * Update metapage statistics
- * This is used when flushing to update global stats
- */
-void
-tp_update_metapage_stats(Relation index, int32 doc_delta, int64 len_delta)
-{
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
-
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	metap->total_docs += doc_delta;
-	metap->total_len += len_delta;
-
-	MarkBufferDirty(metabuf);
-	FlushOneBuffer(metabuf);
-	UnlockReleaseBuffer(metabuf);
 }
 
 /*

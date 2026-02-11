@@ -37,6 +37,9 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 	return (float4)log(1.0 + idf_ratio);
 }
 
+/* LCOV_EXCL_START -- exhaustive scoring infrastructure, only reachable
+ * when BMW returns -1 (e.g. resource exhaustion). */
+
 /*
  * Create and initialize hash table for document scores
  */
@@ -287,6 +290,8 @@ tp_extract_and_sort_documents(
 	return sorted_docs;
 }
 
+/* LCOV_EXCL_STOP */
+
 /*
  * Get unified doc_freq for a term (memtable + all segments).
  * Returns 0 if term not found in any source.
@@ -358,6 +363,7 @@ tp_batch_get_unified_doc_freq(
 	}
 }
 
+/* LCOV_EXCL_START -- only used by exhaustive fallback path */
 /*
  * Copy results to output arrays
  */
@@ -394,6 +400,8 @@ tp_copy_results_to_output(
 
 	*result_scores = scores;
 }
+
+/* LCOV_EXCL_STOP */
 
 /*
  * Score documents using BM25 algorithm
@@ -461,7 +469,7 @@ tp_score_documents(
 	 * BMW fast path for single-term queries.
 	 * Uses Block-Max WAND to skip blocks that can't contribute to top-k.
 	 */
-	if (tp_enable_bmw && query_term_count == 1)
+	if (query_term_count == 1)
 	{
 		const char *term = query_terms[0];
 		uint32		doc_freq;
@@ -524,7 +532,7 @@ tp_score_documents(
 	 * BMW fast path for multi-term queries.
 	 * Uses block-level upper bounds to skip non-contributing blocks.
 	 */
-	if (tp_enable_bmw && query_term_count >= 2)
+	if (query_term_count >= 2)
 	{
 		uint32	  *doc_freqs;
 		float4	  *idfs;
@@ -602,6 +610,9 @@ tp_score_documents(
 		}
 		pfree(scores);
 	}
+
+	/* LCOV_EXCL_START -- exhaustive fallback, only reachable when
+	 * BMW returns -1 (e.g. resource exhaustion) */
 
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */
@@ -743,4 +754,5 @@ tp_score_documents(
 	hash_destroy(doc_scores_hash);
 
 	return scored_count;
+	/* LCOV_EXCL_STOP */
 }

@@ -92,8 +92,7 @@ WHERE content <@> to_bm25query('zephyr', 'compression_idx') < 0;
    100
 (1 row)
 
--- Test with BMW optimization enabled (default)
-SET pg_textsearch.enable_bmw = on;
+-- Test BMW query with compressed segments
 SELECT id FROM compression_docs
 WHERE content <@> to_bm25query('fox', 'compression_idx') < 0
 ORDER BY content <@> to_bm25query('fox', 'compression_idx')
@@ -107,23 +106,6 @@ LIMIT 5;
   5
 (5 rows)
 
--- Test with BMW disabled to exercise different code path
-SET pg_textsearch.enable_bmw = off;
-SELECT id FROM compression_docs
-WHERE content <@> to_bm25query('fox', 'compression_idx') < 0
-ORDER BY content <@> to_bm25query('fox', 'compression_idx')
-LIMIT 5;
- id 
-----
-  1
-  2
-  3
-  4
-  5
-(5 rows)
-
--- Reset settings
-SET pg_textsearch.enable_bmw = on;
 -- Clean up
 DROP TABLE compression_docs;
 -- Test that compression can be disabled
@@ -234,26 +216,8 @@ WHERE content <@> to_bm25query('delta', 'mixed_idx') < 0;
    150
 (1 row)
 
--- Test with BMW on and off
-SET pg_textsearch.enable_bmw = on;
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('alpha', 'mixed_idx') < 0;
- count 
--------
-   300
-(1 row)
-
-SET pg_textsearch.enable_bmw = off;
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('alpha', 'mixed_idx') < 0;
- count 
--------
-   300
-(1 row)
-
 -- Turn compression back on, add more data, and trigger merge
 SET pg_textsearch.compress_segments = on;
-SET pg_textsearch.enable_bmw = on;
 INSERT INTO mixed_docs (content)
 SELECT 'alpha zeta theta document ' || i
 FROM generate_series(301, 450) AS i;
