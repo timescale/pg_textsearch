@@ -27,9 +27,31 @@ tp_segment_read_skip_entry(
 		uint16			 block_idx,
 		TpSkipEntry		*skip)
 {
-	uint32 skip_offset = dict_entry->skip_index_offset +
-						 (block_idx * sizeof(TpSkipEntry));
-	tp_segment_read(reader, skip_offset, skip, sizeof(TpSkipEntry));
+	uint64 skip_offset;
+
+	if (reader->segment_version <= TP_SEGMENT_FORMAT_VERSION_3)
+	{
+		TpSkipEntryV3 v3;
+
+		skip_offset = dict_entry->skip_index_offset +
+					  (uint64)block_idx * sizeof(TpSkipEntryV3);
+		tp_segment_read(reader, skip_offset, &v3, sizeof(TpSkipEntryV3));
+
+		/* Widen V3 fields to V4 */
+		skip->last_doc_id	 = v3.last_doc_id;
+		skip->doc_count		 = v3.doc_count;
+		skip->block_max_tf	 = v3.block_max_tf;
+		skip->block_max_norm = v3.block_max_norm;
+		skip->posting_offset = (uint64)v3.posting_offset;
+		skip->flags			 = v3.flags;
+		memcpy(skip->reserved, v3.reserved, sizeof(v3.reserved));
+	}
+	else
+	{
+		skip_offset = dict_entry->skip_index_offset +
+					  (uint64)block_idx * sizeof(TpSkipEntry);
+		tp_segment_read(reader, skip_offset, skip, sizeof(TpSkipEntry));
+	}
 }
 
 /*
@@ -123,12 +145,8 @@ tp_segment_posting_iterator_init(
 
 		if (cmp == 0)
 		{
-			/* Found! Read dictionary entry */
-			tp_segment_read(
-					reader,
-					header->entries_offset + (mid * sizeof(TpDictEntry)),
-					&iter->dict_entry,
-					sizeof(TpDictEntry));
+			/* Found! Read dictionary entry (version-aware) */
+			tp_segment_read_dict_entry(reader, header, mid, &iter->dict_entry);
 
 			iter->dict_entry_idx = mid;
 			iter->initialized	 = true;
@@ -161,7 +179,6 @@ tp_segment_posting_iterator_init(
 bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 {
-	uint32 skip_offset;
 	uint32 block_size;
 	uint32 block_bytes;
 
@@ -176,11 +193,12 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 		iter->block_postings   = NULL;
 	}
 
-	/* Read skip entry for current block (small, always copy) */
-	skip_offset = iter->dict_entry.skip_index_offset +
-				  (iter->current_block * sizeof(TpSkipEntry));
-	tp_segment_read(
-			iter->reader, skip_offset, &iter->skip_entry, sizeof(TpSkipEntry));
+	/* Read skip entry for current block (version-aware) */
+	tp_segment_read_skip_entry(
+			iter->reader,
+			&iter->dict_entry,
+			iter->current_block,
+			&iter->skip_entry);
 
 	block_size	= iter->skip_entry.doc_count;
 	block_bytes = block_size * sizeof(TpBlockPosting);
@@ -664,11 +682,7 @@ tp_segment_get_doc_freq(
 			if (cmp == 0)
 			{
 				TpDictEntry dict_entry;
-				tp_segment_read(
-						reader,
-						header->entries_offset + (mid * sizeof(TpDictEntry)),
-						&dict_entry,
-						sizeof(TpDictEntry));
+				tp_segment_read_dict_entry(reader, header, mid, &dict_entry);
 				doc_freq += dict_entry.doc_freq;
 				break;
 			}
@@ -790,12 +804,8 @@ tp_batch_get_segment_doc_freq(
 				{
 					/* Found - read dict entry and add doc_freq */
 					TpDictEntry dict_entry;
-					tp_segment_read(
-							reader,
-							header->entries_offset +
-									(mid * sizeof(TpDictEntry)),
-							&dict_entry,
-							sizeof(TpDictEntry));
+					tp_segment_read_dict_entry(
+							reader, header, mid, &dict_entry);
 					doc_freqs[term_idx] += dict_entry.doc_freq;
 					break;
 				}

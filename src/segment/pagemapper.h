@@ -30,25 +30,25 @@
  * Convert a logical byte offset to logical page number.
  */
 static inline uint32
-tp_logical_page(uint32 logical_offset)
+tp_logical_page(uint64 logical_offset)
 {
-	return logical_offset / SEGMENT_DATA_PER_PAGE;
+	return (uint32)(logical_offset / SEGMENT_DATA_PER_PAGE);
 }
 
 /*
  * Convert a logical byte offset to offset within the logical page.
  */
 static inline uint32
-tp_page_offset(uint32 logical_offset)
+tp_page_offset(uint64 logical_offset)
 {
-	return logical_offset % SEGMENT_DATA_PER_PAGE;
+	return (uint32)(logical_offset % SEGMENT_DATA_PER_PAGE);
 }
 
 /*
  * Calculate bytes remaining on current page from given offset.
  */
 static inline uint32
-tp_bytes_remaining_on_page(uint32 logical_offset)
+tp_bytes_remaining_on_page(uint64 logical_offset)
 {
 	return SEGMENT_DATA_PER_PAGE - tp_page_offset(logical_offset);
 }
@@ -58,7 +58,7 @@ tp_bytes_remaining_on_page(uint32 logical_offset)
  * within a single page. Useful for zero-copy access patterns.
  */
 static inline bool
-tp_fits_on_page(uint32 logical_offset, uint32 len)
+tp_fits_on_page(uint64 logical_offset, uint32 len)
 {
 	return tp_page_offset(logical_offset) + len <= SEGMENT_DATA_PER_PAGE;
 }
