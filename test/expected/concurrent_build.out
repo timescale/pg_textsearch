@@ -21,6 +21,7 @@ INSERT INTO cic_basic (content) VALUES
 -- Create index concurrently - should complete without error
 CREATE INDEX CONCURRENTLY cic_basic_idx ON cic_basic USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation cic_basic_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=5.00, text_config='english' (k1=1.20, b=0.75)
@@ -68,6 +69,7 @@ SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'cic_basic_idx';
 --------------------------------------------------------------------------------
 CREATE INDEX cic_basic_idx ON cic_basic USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation cic_basic_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=5.00, text_config='english' (k1=1.20, b=0.75)

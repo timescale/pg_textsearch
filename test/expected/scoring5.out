@@ -18,6 +18,7 @@ INSERT INTO scoring5_bulk (content) VALUES ('goodbye nerds');
 -- Create index after data insertion (bulk build)
 CREATE INDEX scoring5_bulk_idx ON scoring5_bulk USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation scoring5_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=2.33, text_config='english' (k1=1.20, b=0.75)
@@ -101,6 +102,7 @@ CREATE TABLE scoring5_incr (
 -- Create index before data insertion (incremental build)
 CREATE INDEX scoring5_incr_idx ON scoring5_incr USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation scoring5_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

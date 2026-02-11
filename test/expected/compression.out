@@ -17,6 +17,7 @@ CREATE TABLE compression_docs (
 -- Create BM25 index
 CREATE INDEX compression_idx ON compression_docs
     USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation compression_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -122,6 +123,7 @@ CREATE TABLE uncompressed_docs (
 );
 CREATE INDEX uncompressed_idx ON uncompressed_docs
     USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation uncompressed_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -156,6 +158,7 @@ CREATE TABLE mixed_docs (
 );
 CREATE INDEX mixed_idx ON mixed_docs
     USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation mixed_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -245,6 +248,7 @@ CREATE TABLE mixed_docs2 (
 );
 CREATE INDEX mixed_idx2 ON mixed_docs2
     USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation mixed_idx2
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

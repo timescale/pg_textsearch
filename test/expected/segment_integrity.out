@@ -19,6 +19,7 @@ CREATE TABLE integrity_test (
 );
 CREATE INDEX integrity_test_idx ON integrity_test USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation integrity_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

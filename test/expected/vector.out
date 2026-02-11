@@ -22,6 +22,7 @@ INSERT INTO test_docs (content) VALUES
     ('postgresql full text search');
 -- Create pg_textsearch index
 CREATE INDEX docs_vector_idx ON test_docs USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation docs_vector_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.20, text_config='english' (k1=1.20, b=0.75)
@@ -94,6 +95,7 @@ NOTICE:  BM25 index scan: tid=(0,1), BM25_score=-2.8453
 
 -- Test with another index using simple config
 CREATE INDEX docs_simple_idx ON test_docs USING bm25(content) WITH (text_config='simple');
+NOTICE:  BM25 index build started for relation docs_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=4.00, text_config='simple' (k1=1.20, b=0.75)

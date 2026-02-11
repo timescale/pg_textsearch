@@ -34,6 +34,7 @@ INSERT INTO concurrent_test_docs (content, category) VALUES
 -- Create index after initial data
 CREATE INDEX concurrent_idx1 ON concurrent_test_docs USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation concurrent_idx1
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.80, text_config='english' (k1=1.20, b=0.75)
@@ -86,6 +87,7 @@ INSERT INTO concurrent_test_docs2 (content, priority) VALUES
 ('concurrent system design patterns', 2);
 CREATE INDEX concurrent_idx2 ON concurrent_test_docs2 USING bm25(content)
   WITH (text_config='english', k1=1.5, b=0.8);
+NOTICE:  BM25 index build started for relation concurrent_idx2
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.80
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.50, b=0.80)
@@ -202,21 +204,21 @@ NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-0.0671
 NOTICE:  BM25 index scan: tid=(0,59), BM25_score=-0.0671
 NOTICE:  BM25 index scan: tid=(0,6), BM25_score=-0.0631
 NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-0.0631
-NOTICE:  BM25 index scan: tid=(0,20), BM25_score=-0.0563
-NOTICE:  BM25 index scan: tid=(0,38), BM25_score=-0.0563
-NOTICE:  BM25 index scan: tid=(0,16), BM25_score=-0.0563
- id |                            content                             |  score  
-----+----------------------------------------------------------------+---------
-  1 | updated database system with enhanced concurrent features      | -3.5477
-  2 | updated database system with enhanced concurrent features      | -3.5477
-  5 | database indexing strategies                                   | -0.0768
-  8 | database concurrent processing improves performance            | -0.0671
- 59 | new concurrent database research paper                         | -0.0671
-  6 | database systems require concurrent access control             | -0.0631
-  7 | concurrent database operations need careful synchronization    | -0.0631
- 16 | test document number 8 contains database and concurrent terms  | -0.0563
- 20 | test document number 12 contains database and concurrent terms | -0.0563
- 38 | test document number 30 contains database and concurrent terms | -0.0563
+NOTICE:  BM25 index scan: tid=(0,9), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.0563
+NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-0.0563
+ id |                            content                            |  score  
+----+---------------------------------------------------------------+---------
+  1 | updated database system with enhanced concurrent features     | -3.5477
+  2 | updated database system with enhanced concurrent features     | -3.5477
+  5 | database indexing strategies                                  | -0.0768
+  8 | database concurrent processing improves performance           | -0.0671
+ 59 | new concurrent database research paper                        | -0.0671
+  6 | database systems require concurrent access control            | -0.0631
+  7 | concurrent database operations need careful synchronization   | -0.0631
+  9 | test document number 1 contains database and concurrent terms | -0.0563
+ 10 | test document number 2 contains database and concurrent terms | -0.0563
+ 11 | test document number 3 contains database and concurrent terms | -0.0563
 (10 rows)
 
 -- Test 7: Delete operations
@@ -284,6 +286,7 @@ INSERT INTO multi_idx_test (content) VALUES
 -- Create English index first (only BM25 index, planner must use it)
 CREATE INDEX multi_idx_english ON multi_idx_test USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation multi_idx_english
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='english' (k1=1.20, b=0.75)
@@ -310,6 +313,7 @@ SELECT * FROM (
 -- Now create Simple index too
 CREATE INDEX multi_idx_simple ON multi_idx_test USING bm25(content)
   WITH (text_config='simple', k1=1.5, b=0.8);
+NOTICE:  BM25 index build started for relation multi_idx_simple
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.50, b=0.80
 NOTICE:  BM25 index build completed: 5 documents, avg_length=4.40, text_config='simple' (k1=1.50, b=0.80)
