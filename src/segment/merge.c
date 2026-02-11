@@ -316,12 +316,11 @@ posting_source_load_block(TpPostingMergeSource *ps)
 		return false;
 
 	/* Read skip entry for current block (version-aware) */
-	{
-		TpDictEntry tmp_dict;
-		tmp_dict.skip_index_offset = ps->skip_index_offset;
-		tp_segment_read_skip_entry(
-				ps->reader, &tmp_dict, ps->current_block, &ps->skip_entry);
-	}
+	tp_segment_read_skip_entry(
+			ps->reader,
+			ps->skip_index_offset,
+			ps->current_block,
+			&ps->skip_entry);
 
 	/*
 	 * Ensure we have enough buffer space. We reuse the buffer between blocks,

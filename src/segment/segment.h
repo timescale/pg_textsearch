@@ -491,7 +491,7 @@ extern void tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter);
 /* Read a skip entry by block index */
 extern void tp_segment_read_skip_entry(
 		TpSegmentReader *reader,
-		TpDictEntry		*dict_entry,
+		uint64			 skip_index_offset,
 		uint16			 block_idx,
 		TpSkipEntry		*skip);
 

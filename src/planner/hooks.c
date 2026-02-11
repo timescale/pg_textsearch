@@ -474,8 +474,9 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 						 errmsg("index \"%s\" is not on column \"%s\"",
 								index_name ? index_name : "(unknown)",
 								col_name ? col_name : "(unknown)"),
-						 errdetail("The explicitly specified index is not "
-								   "built on the column being searched."),
+						 errdetail(
+								 "The explicitly specified index is not "
+								 "built on the column being searched."),
 						 errhint("Use an index that is built on column "
 								 "\"%s\" of table \"%s\", or omit the "
 								 "index name to use automatic index "
@@ -1458,9 +1459,10 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 							"index \"%s\"",
 							specified_name ? specified_name : "(unknown)",
 							scan_name ? scan_name : "(unknown)"),
-					 errdetail("When an explicit index is specified in "
-							   "to_bm25query(), that index must be used for "
-							   "the scan to ensure consistent tokenization."),
+					 errdetail(
+							 "When an explicit index is specified in "
+							 "to_bm25query(), that index must be used for "
+							 "the scan to ensure consistent tokenization."),
 					 errhint("Use a planner hint to force the specified "
 							 "index, or remove the explicit index name to let "
 							 "the planner choose automatically.")));

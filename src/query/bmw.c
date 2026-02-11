@@ -492,7 +492,8 @@ score_segment_single_term_bmw(
 	for (i = 0; i < block_count; i++)
 	{
 		TpSkipEntry skip;
-		tp_segment_read_skip_entry(reader, dict_entry, i, &skip);
+		tp_segment_read_skip_entry(
+				reader, dict_entry->skip_index_offset, i, &skip);
 		block_max_scores[i] =
 				tp_compute_block_max_score(&skip, idf, k1, b, avg_doc_len);
 	}
@@ -937,7 +938,10 @@ init_segment_term_states(
 			{
 				TpSkipEntry skip;
 				tp_segment_read_skip_entry(
-						reader, &ts->iter.dict_entry, block_idx, &skip);
+						reader,
+						ts->iter.dict_entry.skip_index_offset,
+						block_idx,
+						&skip);
 				ts->block_max_scores[block_idx] = tp_compute_block_max_score(
 						&skip, ts->idf, k1, b, avg_doc_len);
 				ts->block_last_doc_ids[block_idx] = skip.last_doc_id;
