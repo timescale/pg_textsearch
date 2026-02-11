@@ -26,6 +26,29 @@ WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
 -- Check index summary shows segment data
 SELECT bm25_summarize_index('bulk_load_idx') IS NOT NULL AS has_summary;
 
+-- =============================================================================
+-- Test 2: Double bulk load spill with pre-existing L0 segment
+-- Exercises state.c segment chain linking in tp_bulk_load_spill_check
+-- =============================================================================
+
+-- First, create a segment by spilling the existing memtable
+SELECT bm25_spill_index('bulk_load_idx');
+
+-- Now insert more data in a single transaction with low threshold
+-- This triggers bulk_load_spill_check with a pre-existing L0 chain
+BEGIN;
+INSERT INTO bulk_load_test (content)
+SELECT 'secondbatch' || i || ' more content for spill'
+FROM generate_series(1, 200) AS i;
+COMMIT;
+
+-- Verify both batches are searchable
+SELECT count(*) FROM bulk_load_test
+WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
+
+SELECT count(*) FROM bulk_load_test
+WHERE content <@> to_bm25query('secondbatch1', 'bulk_load_idx') < 0;
+
 -- Reset threshold
 SET pg_textsearch.bulk_load_threshold = 100000;
 

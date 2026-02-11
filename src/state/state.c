@@ -217,11 +217,14 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
 	if (shared_dp == InvalidDsaPointer)
 	{
+		/* LCOV_EXCL_START -- DSA allocation only fails under extreme
+		 * memory pressure */
 		elog(ERROR,
 			 "Failed to allocate DSA memory for shared state (index OID: %u, "
 			 "size: %zu)",
 			 index_oid,
 			 sizeof(TpSharedIndexState));
+		/* LCOV_EXCL_STOP */
 	}
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
@@ -241,8 +244,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
+	/* LCOV_EXCL_STOP */
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
@@ -330,10 +335,12 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	/* Allocate shared state in GLOBAL DSA (for statistics) */
 	shared_dp = dsa_allocate(global_dsa, sizeof(TpSharedIndexState));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (shared_dp == InvalidDsaPointer)
 		elog(ERROR,
 			 "Failed to allocate shared state for build (index OID: %u)",
 			 index_oid);
+	/* LCOV_EXCL_STOP */
 
 	shared_state = (TpSharedIndexState *)
 			dsa_get_address(global_dsa, shared_dp);
@@ -382,13 +389,17 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * many indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
+	/* LCOV_EXCL_START -- DSA creation/allocation failures */
 	if (!private_dsa)
 		elog(ERROR, "Failed to create private DSA for index build");
+	/* LCOV_EXCL_STOP */
 
 	/* Allocate and initialize memtable in PRIVATE DSA */
 	memtable_dp = dsa_allocate(private_dsa, sizeof(TpMemtable));
+	/* LCOV_EXCL_START -- DSA allocation failure */
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in private DSA");
+	/* LCOV_EXCL_STOP */
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
@@ -559,6 +570,8 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
  *
  * This prevents memory leaks when CREATE INDEX is aborted.
  */
+/* LCOV_EXCL_START -- only reachable on transaction abort during
+ * CREATE INDEX; cannot be triggered reliably in SQL tests */
 void
 tp_cleanup_build_mode_on_abort(void)
 {
@@ -622,6 +635,8 @@ tp_cleanup_build_mode_on_abort(void)
 		entry->local_state = NULL;
 	}
 }
+
+/* LCOV_EXCL_STOP */
 
 /*
  * Clean up shared memory allocations for an index
@@ -843,6 +858,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
  * This scans the docid pages, retrieves documents from heap, and rebuilds the
  * posting lists
  */
+/* LCOV_EXCL_START -- crash recovery path, only reachable after Postgres
+ * restart when the index has docid pages. Tested by test/scripts/recovery.sh
+ * but not by SQL regression tests. */
 void
 tp_rebuild_posting_lists_from_docids(
 		Relation		   index_rel,
@@ -1018,6 +1036,8 @@ tp_rebuild_posting_lists_from_docids(
 		local_state->terms_added_this_xact = 0;
 	}
 }
+
+/* LCOV_EXCL_STOP */
 
 /*
  * Helper function to get memtable from local index state
