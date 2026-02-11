@@ -263,15 +263,16 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Register in global registry */
 	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
-		/* If registration failed, try initializing the registry first */
+		/* LCOV_EXCL_START -- defensive: registry only fails if shmem
+		 * was not initialized or is full */
 		tp_registry_shmem_startup();
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
-			/* Clean up allocations on failure */
 			dsa_free(dsa, memtable_dp);
 			dsa_free(dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
+		/* LCOV_EXCL_STOP */
 	}
 
 	/* Create local state for the creating backend */
@@ -360,12 +361,15 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Register in global registry */
 	if (!tp_registry_register(index_oid, shared_state, shared_dp))
 	{
+		/* LCOV_EXCL_START -- defensive: registry only fails if shmem
+		 * was not initialized or is full */
 		tp_registry_shmem_startup();
 		if (!tp_registry_register(index_oid, shared_state, shared_dp))
 		{
 			dsa_free(global_dsa, shared_dp);
 			elog(ERROR, "Failed to register index %u", index_oid);
 		}
+		/* LCOV_EXCL_STOP */
 	}
 
 	/*

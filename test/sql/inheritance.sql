@@ -78,4 +78,48 @@ SELECT bm25_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_do
 
 -- Cleanup
 DROP TABLE regular_docs CASCADE;
+
+-- =============================================================================
+-- Test 3: Inheritance scoring via find_first_child_bm25_index
+-- When querying a parent index that has 0 docs, the scoring code
+-- falls back to the first child's BM25 index for actual scoring.
+-- =============================================================================
+CREATE TABLE inh_parent (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+CREATE TABLE inh_child (
+    category TEXT DEFAULT 'cat1'
+) INHERITS (inh_parent);
+
+-- Insert data only into child
+INSERT INTO inh_child (content) VALUES
+    ('the quick brown fox jumps over the lazy dog'),
+    ('postgresql full text search engine'),
+    ('database query optimization techniques'),
+    ('information retrieval and ranking');
+
+-- Create BM25 index on parent (will have 0 docs since data is in child)
+\set VERBOSITY terse
+CREATE INDEX inh_parent_bm25 ON inh_parent USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- Create BM25 index on child (will have the actual data)
+CREATE INDEX inh_child_bm25 ON inh_child USING bm25(content)
+    WITH (text_config='english');
+
+-- Query via parent index — should fall back to child index
+-- This exercises find_first_child_bm25_index in query.c
+SELECT content,
+       content <@> to_bm25query('fox', 'inh_parent_bm25') AS score
+FROM inh_parent
+WHERE content <@> to_bm25query('fox', 'inh_parent_bm25') < 0
+ORDER BY content <@> to_bm25query('fox', 'inh_parent_bm25')
+LIMIT 3;
+
+-- Cleanup
+DROP TABLE inh_child CASCADE;
+DROP TABLE inh_parent CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

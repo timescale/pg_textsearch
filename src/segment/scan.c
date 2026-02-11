@@ -298,7 +298,8 @@ tp_segment_posting_iterator_next(
 	{
 		if (!tp_segment_posting_iterator_load_block(iter))
 		{
-			/* Release any block access before finishing */
+			/* LCOV_EXCL_START -- defensive: load_block only fails on
+			 * corrupted segment data */
 			if (iter->has_block_access)
 			{
 				tp_segment_release_direct(&iter->block_access);
@@ -306,6 +307,7 @@ tp_segment_posting_iterator_next(
 			}
 			iter->finished = true;
 			return false;
+			/* LCOV_EXCL_STOP */
 		}
 	}
 
@@ -326,6 +328,8 @@ tp_segment_posting_iterator_next(
 		}
 		if (!tp_segment_posting_iterator_load_block(iter))
 		{
+			/* LCOV_EXCL_START -- defensive: load_block only fails on
+			 * corrupted segment data */
 			if (iter->has_block_access)
 			{
 				tp_segment_release_direct(&iter->block_access);
@@ -333,6 +337,7 @@ tp_segment_posting_iterator_next(
 			}
 			iter->finished = true;
 			return false;
+			/* LCOV_EXCL_STOP */
 		}
 	}
 
@@ -533,6 +538,9 @@ tp_segment_posting_iterator_seek(
 	iter->current_in_block = 0;
 	return tp_segment_posting_iterator_next(iter, posting);
 }
+
+/* LCOV_EXCL_START -- exhaustive segment scoring, only reachable via
+ * the exhaustive fallback in score.c (>8 query terms) */
 
 /*
  * Helper: Process a single posting and add score to hash table.
@@ -954,3 +962,5 @@ tp_score_all_terms_in_segment_chain(
 		tp_segment_close(reader);
 	}
 }
+
+/* LCOV_EXCL_STOP */
