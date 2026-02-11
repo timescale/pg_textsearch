@@ -217,6 +217,7 @@ coverage: coverage-build
 		--output-file $(COVERAGE_INFO) \
 		--base-directory $(shell pwd) \
 		--no-external \
+		--rc branch_coverage=1 \
 		--ignore-errors mismatch 2>/dev/null || \
 		lcov --capture \
 			--directory . \
@@ -225,6 +226,7 @@ coverage: coverage-build
 			--no-external
 	@lcov --remove $(COVERAGE_INFO) '*/test/*' \
 		--output-file $(COVERAGE_INFO) \
+		--rc branch_coverage=1 \
 		--ignore-errors unused 2>/dev/null || \
 		lcov --remove $(COVERAGE_INFO) '*/test/*' \
 			--output-file $(COVERAGE_INFO)
@@ -233,17 +235,18 @@ coverage: coverage-build
 		--output-directory $(COVERAGE_DIR) \
 		--title "pg_textsearch Coverage" \
 		--legend \
-		--show-details
+		--show-details \
+		--rc branch_coverage=1
 	@echo ""
 	@echo "Coverage report generated in $(COVERAGE_DIR)/index.html"
-	@lcov --summary $(COVERAGE_INFO)
+	@lcov --summary $(COVERAGE_INFO) --rc branch_coverage=1
 
 coverage-report:
 	@if [ ! -f $(COVERAGE_INFO) ]; then \
 		echo "No coverage data found. Run 'make coverage' first."; \
 		exit 1; \
 	fi
-	@lcov --summary $(COVERAGE_INFO)
+	@lcov --summary $(COVERAGE_INFO) --rc branch_coverage=1
 
 # Help target
 .PHONY: help
