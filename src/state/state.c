@@ -901,7 +901,6 @@ tp_rebuild_posting_lists_from_docids(
 		/*
 		 * Validate this is actually a docid page and not stale data.
 		 */
-		/* LCOV_EXCL_START -- corruption guard */
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
 			UnlockReleaseBuffer(docid_buf);
@@ -913,7 +912,6 @@ tp_rebuild_posting_lists_from_docids(
 				 docid_header->magic);
 			break; /* Stop recovery - we've hit invalid/stale data */
 		}
-		/* LCOV_EXCL_STOP */
 
 		/* Get docids array with proper alignment */
 		docids = (ItemPointer)((char *)docid_header +
