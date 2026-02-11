@@ -150,9 +150,14 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 		return;
 	}
 
-	/* Collect all entries from hash table */
-	entries = palloc(sizeof(TpDocMapEntry) * builder->num_docs);
-	i		= 0;
+	/*
+	 * Collect all entries from hash table.
+	 * Use HUGE allocation since this can exceed MaxAllocSize for
+	 * very large segments (e.g., 138M docs * 16 bytes = 2.2GB).
+	 */
+	entries = palloc_extended(
+			sizeof(TpDocMapEntry) * builder->num_docs, MCXT_ALLOC_HUGE);
+	i = 0;
 
 	hash_seq_init(&scan, builder->ctid_to_id);
 	while ((entry = (TpDocMapEntry *)hash_seq_search(&scan)) != NULL)

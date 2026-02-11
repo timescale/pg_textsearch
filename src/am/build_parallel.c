@@ -816,24 +816,43 @@ typedef struct TpCollectedBufferPosting
 } TpCollectedBufferPosting;
 
 /*
- * Collect postings for a term using N-way merge across multiple buffers.
+ * Estimate total posting count for a term across all buffer sources.
  */
-static TpCollectedBufferPosting *
-collect_buffer_term_postings(
-		TpMergedBufferTerm *term, TpWorkerMergeSource *sources, uint32 *count)
+static uint64
+estimate_buffer_term_postings(
+		TpMergedBufferTerm *term, TpWorkerMergeSource *sources)
 {
-	TpBufferPostingSource	 *psources;
-	TpCollectedBufferPosting *postings;
-	uint32					  capacity = 64;
-	uint32					  num	   = 0;
-	uint32					  i;
+	uint64 total = 0;
+	uint32 i;
 
-	*count = 0;
+	for (i = 0; i < term->num_buffer_refs; i++)
+	{
+		TpBufferTermRef		*ref	= &term->buffer_refs[i];
+		TpWorkerMergeSource *source = &sources[ref->source_idx];
+		dsa_pointer			 dp		= ref->posting_list_dp;
+		TpPostingList		*pl;
 
-	if (term->num_buffer_refs == 0)
-		return NULL;
+		if (!DsaPointerIsValid(dp))
+			continue;
 
-	/* Initialize posting sources */
+		pl = dsa_get_address(source->dsa, dp);
+		if (pl)
+			total += pl->doc_count;
+	}
+
+	return total;
+}
+
+/*
+ * Initialize N-way merge posting sources for a buffer term.
+ */
+static TpBufferPostingSource *
+init_buffer_term_posting_sources(
+		TpMergedBufferTerm *term, TpWorkerMergeSource *sources)
+{
+	TpBufferPostingSource *psources;
+	uint32				   i;
+
 	psources = palloc(sizeof(TpBufferPostingSource) * term->num_buffer_refs);
 	for (i = 0; i < term->num_buffer_refs; i++)
 	{
@@ -844,7 +863,44 @@ collect_buffer_term_postings(
 				&psources[i], source->dsa, ref->posting_list_dp);
 	}
 
-	postings = palloc(sizeof(TpCollectedBufferPosting) * capacity);
+	return psources;
+}
+
+/*
+ * Collect postings for a term using N-way merge across multiple
+ * buffers. Pre-computes exact capacity to avoid unbounded repalloc.
+ *
+ * Returns NULL if term has no postings or if the posting list is
+ * too large to fit in a single allocation (caller must use chunked
+ * path for large terms).
+ */
+static TpCollectedBufferPosting *
+collect_buffer_term_postings(
+		TpMergedBufferTerm *term, TpWorkerMergeSource *sources, uint32 *count)
+{
+	TpBufferPostingSource	 *psources;
+	TpCollectedBufferPosting *postings;
+	uint64					  total_count;
+	uint32					  num = 0;
+
+	*count = 0;
+
+	if (term->num_buffer_refs == 0)
+		return NULL;
+
+	total_count = estimate_buffer_term_postings(term, sources);
+	if (total_count == 0)
+		return NULL;
+
+	/*
+	 * If the term would exceed MaxAllocSize, return NULL to signal
+	 * the caller to use the chunked streaming path instead.
+	 */
+	if (total_count * sizeof(TpCollectedBufferPosting) > MaxAllocSize)
+		return NULL;
+
+	psources = init_buffer_term_posting_sources(term, sources);
+	postings = palloc(sizeof(TpCollectedBufferPosting) * (uint32)total_count);
 
 	/* N-way merge: find min CTID, collect, advance */
 	while (true)
@@ -854,15 +910,6 @@ collect_buffer_term_postings(
 		if (min_idx < 0)
 			break;
 
-		/* Grow array if needed */
-		if (num >= capacity)
-		{
-			capacity *= 2;
-			postings = repalloc(
-					postings, sizeof(TpCollectedBufferPosting) * capacity);
-		}
-
-		/* Copy posting */
 		memcpy(&postings[num].ctid,
 			   &psources[min_idx].entries[psources[min_idx].current_idx].ctid,
 			   sizeof(ItemPointerData));
@@ -935,7 +982,7 @@ build_merged_docmap_from_buffers(
  */
 typedef struct MergeTermBlockInfo
 {
-	uint32 posting_offset;	 /* Absolute offset where postings were written */
+	uint64 posting_offset;	 /* Absolute offset where postings were written */
 	uint16 block_count;		 /* Number of blocks for this term */
 	uint32 doc_freq;		 /* Document frequency */
 	uint32 skip_entry_start; /* Index into accumulated skip entries array */
@@ -1022,11 +1069,16 @@ tp_merge_worker_buffers_to_segment(
 		{
 			merged_capacity = merged_capacity == 0 ? 1024
 												   : merged_capacity * 2;
+			/*
+			 * Use HUGE allocations since vocabulary can exceed
+			 * MaxAllocSize when merging many large buffers.
+			 */
 			if (merged_terms == NULL)
-				merged_terms = palloc(
-						merged_capacity * sizeof(TpMergedBufferTerm));
+				merged_terms = palloc_extended(
+						merged_capacity * sizeof(TpMergedBufferTerm),
+						MCXT_ALLOC_HUGE);
 			else
-				merged_terms = repalloc(
+				merged_terms = repalloc_huge(
 						merged_terms,
 						merged_capacity * sizeof(TpMergedBufferTerm));
 		}
@@ -1161,130 +1213,238 @@ tp_merge_worker_buffers_to_segment(
 	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
 
 	/*
-	 * Streaming pass: for each term, collect postings via N-way merge and
-	 * write immediately.
+	 * Write posting blocks from a TpBlockPosting array and accumulate
+	 * skip entries. Used by both the bulk and chunked code paths.
+	 */
+#define WRITE_POSTING_BLOCKS(bp_array, bp_count, total_doc_count)               \
+	do                                                                          \
+	{                                                                           \
+		uint32 _nblocks = ((bp_count) + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;     \
+		uint32 _bidx;                                                           \
+		for (_bidx = 0; _bidx < _nblocks; _bidx++)                              \
+		{                                                                       \
+			TpSkipEntry _skip;                                                  \
+			uint32		_bstart		= _bidx * TP_BLOCK_SIZE;                    \
+			uint32		_bend		= Min(_bstart + TP_BLOCK_SIZE, (bp_count)); \
+			uint16		_max_tf		= 0;                                        \
+			uint8		_max_norm	= 0;                                        \
+			uint32		_last_docid = 0;                                        \
+			uint32		_k;                                                     \
+			for (_k = _bstart; _k < _bend; _k++)                                \
+			{                                                                   \
+				if ((bp_array)[_k].doc_id > _last_docid)                        \
+					_last_docid = (bp_array)[_k].doc_id;                        \
+				if ((bp_array)[_k].frequency > _max_tf)                         \
+					_max_tf = (bp_array)[_k].frequency;                         \
+				if ((bp_array)[_k].fieldnorm > _max_norm)                       \
+					_max_norm = (bp_array)[_k].fieldnorm;                       \
+			}                                                                   \
+			_skip.last_doc_id	 = _last_docid;                                 \
+			_skip.doc_count		 = (uint8)(_bend - _bstart);                    \
+			_skip.block_max_tf	 = _max_tf;                                     \
+			_skip.block_max_norm = _max_norm;                                   \
+			_skip.posting_offset = writer.current_offset;                       \
+			memset(_skip.reserved, 0, sizeof(_skip.reserved));                  \
+			if (tp_compress_segments)                                           \
+			{                                                                   \
+				uint8  _cbuf[TP_MAX_COMPRESSED_BLOCK_SIZE];                     \
+				uint32 _csize = tp_compress_block(                              \
+						&(bp_array)[_bstart], _bend - _bstart, _cbuf);          \
+				_skip.flags = TP_BLOCK_FLAG_DELTA;                              \
+				tp_segment_writer_write(&writer, _cbuf, _csize);                \
+			}                                                                   \
+			else                                                                \
+			{                                                                   \
+				_skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;                       \
+				tp_segment_writer_write(                                        \
+						&writer,                                                \
+						&(bp_array)[_bstart],                                   \
+						(_bend - _bstart) * sizeof(TpBlockPosting));            \
+			}                                                                   \
+			if (skip_entries_count >= skip_entries_capacity)                    \
+			{                                                                   \
+				skip_entries_capacity *= 2;                                     \
+				all_skip_entries = repalloc_huge(                               \
+						all_skip_entries,                                       \
+						skip_entries_capacity * sizeof(TpSkipEntry));           \
+			}                                                                   \
+			all_skip_entries[skip_entries_count++] = _skip;                     \
+		}                                                                       \
+	} while (0)
+
+	/*
+	 * For each term, collect postings via N-way merge and write
+	 * blocks. Small terms use bulk collection; terms that would
+	 * exceed MaxAllocSize use chunked processing.
 	 */
 	for (i = 0; i < num_merged_terms; i++)
 	{
 		TpCollectedBufferPosting *postings;
 		uint32					  doc_count = 0;
-		uint32					  j;
-		uint32					  block_idx;
-		uint32					  num_blocks;
-		TpBlockPosting			 *block_postings;
 
 		/* Record where this term's postings start */
 		term_blocks[i].posting_offset	= writer.current_offset;
 		term_blocks[i].skip_entry_start = skip_entries_count;
 
-		/* Collect postings for this term via N-way merge */
+		/* Try bulk collection (returns NULL if too large) */
 		postings = collect_buffer_term_postings(
 				&merged_terms[i], sources, &doc_count);
-		term_blocks[i].doc_freq = doc_count;
 
-		if (doc_count == 0 || postings == NULL)
+		if (doc_count == 0 && postings == NULL)
 		{
-			term_blocks[i].block_count = 0;
-			continue;
+			/*
+			 * Either no buffer refs, or term exceeds MaxAllocSize.
+			 * Check which case and handle accordingly.
+			 */
+			uint64 est =
+					estimate_buffer_term_postings(&merged_terms[i], sources);
+
+			if (est == 0)
+			{
+				/* Truly empty term */
+				term_blocks[i].doc_freq	   = 0;
+				term_blocks[i].block_count = 0;
+				continue;
+			}
+
+			/*
+			 * Large term: use chunked processing. Collect and
+			 * convert postings in fixed-size chunks, writing
+			 * blocks as each chunk fills. This keeps memory
+			 * usage bounded while maintaining correct block
+			 * layout.
+			 */
+			{
+				TpBufferPostingSource	 *psources;
+				uint32					  chunk_cap;
+				TpCollectedBufferPosting *chunk;
+				TpBlockPosting			 *chunk_bp;
+				uint32					  chunk_num;
+				uint32					  total_blocks = 0;
+				uint32					  j;
+
+				/*
+				 * Chunk size: 8M postings (~64MB for collected,
+				 * ~64MB for block postings). Well within
+				 * MaxAllocSize.
+				 */
+				chunk_cap = 8 * 1024 * 1024;
+				chunk = palloc(sizeof(TpCollectedBufferPosting) * chunk_cap);
+				chunk_bp = palloc(sizeof(TpBlockPosting) * chunk_cap);
+
+				psources = init_buffer_term_posting_sources(
+						&merged_terms[i], sources);
+				doc_count = 0;
+
+				while (true)
+				{
+					uint32 num_blocks;
+
+					/* Fill chunk from N-way merge */
+					chunk_num = 0;
+					while (chunk_num < chunk_cap)
+					{
+						int min_idx = find_min_buffer_posting_source(
+								psources, merged_terms[i].num_buffer_refs);
+						if (min_idx < 0)
+							break;
+
+						memcpy(&chunk[chunk_num].ctid,
+							   &psources[min_idx]
+										.entries[psources[min_idx].current_idx]
+										.ctid,
+							   sizeof(ItemPointerData));
+						chunk[chunk_num].frequency =
+								psources[min_idx]
+										.entries[psources[min_idx].current_idx]
+										.frequency;
+						chunk_num++;
+						buffer_posting_source_advance(&psources[min_idx]);
+					}
+
+					if (chunk_num == 0)
+						break;
+
+					/* Convert chunk to block format */
+					for (j = 0; j < chunk_num; j++)
+					{
+						uint32 did = tp_docmap_lookup(docmap, &chunk[j].ctid);
+						if (did == UINT32_MAX)
+							elog(ERROR,
+								 "CTID (%u,%u) not found "
+								 "in docmap",
+								 ItemPointerGetBlockNumber(&chunk[j].ctid),
+								 ItemPointerGetOffsetNumber(&chunk[j].ctid));
+
+						chunk_bp[j].doc_id	  = did;
+						chunk_bp[j].frequency = chunk[j].frequency;
+						chunk_bp[j].fieldnorm =
+								tp_docmap_get_fieldnorm(docmap, did);
+						chunk_bp[j].reserved = 0;
+					}
+
+					/* Write blocks from this chunk */
+					num_blocks = (chunk_num + TP_BLOCK_SIZE - 1) /
+								 TP_BLOCK_SIZE;
+					WRITE_POSTING_BLOCKS(chunk_bp, chunk_num, doc_count);
+					total_blocks += num_blocks;
+					doc_count += chunk_num;
+				}
+
+				pfree(psources);
+				pfree(chunk);
+				pfree(chunk_bp);
+
+				term_blocks[i].doc_freq	   = doc_count;
+				term_blocks[i].block_count = (uint16)total_blocks;
+			}
 		}
-
-		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		term_blocks[i].block_count = (uint16)num_blocks;
-
-		/* Convert postings to block format */
-		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
-		for (j = 0; j < doc_count; j++)
+		else
 		{
-			uint32 doc_id = tp_docmap_lookup(docmap, &postings[j].ctid);
-			uint8  norm;
+			/* Normal bulk path: collect succeeded */
+			uint32			num_blocks;
+			TpBlockPosting *block_postings;
+			uint32			j;
 
-			if (doc_id == UINT32_MAX)
+			term_blocks[i].doc_freq = doc_count;
+
+			num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+			term_blocks[i].block_count = (uint16)num_blocks;
+
+			/* Convert postings to block format */
+			block_postings = palloc(doc_count * sizeof(TpBlockPosting));
+			for (j = 0; j < doc_count; j++)
 			{
-				elog(ERROR,
-					 "CTID (%u,%u) not found in docmap",
-					 ItemPointerGetBlockNumber(&postings[j].ctid),
-					 ItemPointerGetOffsetNumber(&postings[j].ctid));
+				uint32 did = tp_docmap_lookup(docmap, &postings[j].ctid);
+				uint8  norm;
+
+				if (did == UINT32_MAX)
+					elog(ERROR,
+						 "CTID (%u,%u) not found in docmap",
+						 ItemPointerGetBlockNumber(&postings[j].ctid),
+						 ItemPointerGetOffsetNumber(&postings[j].ctid));
+
+				norm = tp_docmap_get_fieldnorm(docmap, did);
+
+				block_postings[j].doc_id	= did;
+				block_postings[j].frequency = postings[j].frequency;
+				block_postings[j].fieldnorm = norm;
+				block_postings[j].reserved	= 0;
 			}
 
-			norm = tp_docmap_get_fieldnorm(docmap, doc_id);
+			/* Write blocks */
+			WRITE_POSTING_BLOCKS(block_postings, doc_count, doc_count);
 
-			block_postings[j].doc_id	= doc_id;
-			block_postings[j].frequency = postings[j].frequency;
-			block_postings[j].fieldnorm = norm;
-			block_postings[j].reserved	= 0;
+			pfree(block_postings);
+			pfree(postings);
 		}
-
-		/* Write posting blocks and build skip entries */
-		for (block_idx = 0; block_idx < num_blocks; block_idx++)
-		{
-			TpSkipEntry skip;
-			uint32		block_start = block_idx * TP_BLOCK_SIZE;
-			uint32 block_end   = Min(block_start + TP_BLOCK_SIZE, doc_count);
-			uint16 max_tf	   = 0;
-			uint8  max_norm	   = 0;
-			uint32 last_doc_id = 0;
-
-			/* Calculate block stats */
-			for (j = block_start; j < block_end; j++)
-			{
-				if (block_postings[j].doc_id > last_doc_id)
-					last_doc_id = block_postings[j].doc_id;
-				if (block_postings[j].frequency > max_tf)
-					max_tf = block_postings[j].frequency;
-				if (block_postings[j].fieldnorm > max_norm)
-					max_norm = block_postings[j].fieldnorm;
-			}
-
-			/* Build skip entry */
-			skip.last_doc_id	= last_doc_id;
-			skip.doc_count		= (uint8)(block_end - block_start);
-			skip.block_max_tf	= max_tf;
-			skip.block_max_norm = max_norm;
-			skip.posting_offset = writer.current_offset;
-			memset(skip.reserved, 0, sizeof(skip.reserved));
-
-			/* Write posting block data (compressed or uncompressed) */
-			if (tp_compress_segments)
-			{
-				uint8  compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
-				uint32 compressed_size;
-
-				compressed_size = tp_compress_block(
-						&block_postings[block_start],
-						block_end - block_start,
-						compressed_buf);
-
-				skip.flags = TP_BLOCK_FLAG_DELTA;
-				tp_segment_writer_write(
-						&writer, compressed_buf, compressed_size);
-			}
-			else
-			{
-				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-				tp_segment_writer_write(
-						&writer,
-						&block_postings[block_start],
-						(block_end - block_start) * sizeof(TpBlockPosting));
-			}
-
-			/* Accumulate skip entry */
-			if (skip_entries_count >= skip_entries_capacity)
-			{
-				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
-						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
-			}
-			all_skip_entries[skip_entries_count++] = skip;
-		}
-
-		pfree(block_postings);
-		pfree(postings);
 
 		/* Check for interrupt during long merges */
 		if ((i % 1000) == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
+
+#undef WRITE_POSTING_BLOCKS
 
 	/* Skip index starts here - after all postings */
 	header.skip_index_offset = writer.current_offset;
@@ -1353,23 +1513,26 @@ tp_merge_worker_buffers_to_segment(
 		for (i = 0; i < num_merged_terms; i++)
 		{
 			TpDictEntry entry;
-			uint32		entry_offset;
+			uint64		entry_offset;
 			uint32		entry_logical_page;
 			uint32		page_offset;
 			BlockNumber physical_block;
 
 			/* Build the entry */
-			entry.skip_index_offset = header.skip_index_offset +
-									  (term_blocks[i].skip_entry_start *
-									   sizeof(TpSkipEntry));
+			entry.skip_index_offset =
+					header.skip_index_offset +
+					((uint64)term_blocks[i].skip_entry_start *
+					 sizeof(TpSkipEntry));
 			entry.block_count = term_blocks[i].block_count;
 			entry.reserved	  = 0;
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset + (i * sizeof(TpDictEntry));
-			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
-			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
+			entry_offset = header.entries_offset +
+						   ((uint64)i * sizeof(TpDictEntry));
+			entry_logical_page = (uint32)(entry_offset /
+										  SEGMENT_DATA_PER_PAGE);
+			page_offset = (uint32)(entry_offset % SEGMENT_DATA_PER_PAGE);
 
 			/* Read page if different from current */
 			if (entry_logical_page != current_page)
