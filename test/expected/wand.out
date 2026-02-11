@@ -12,6 +12,7 @@ WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
 -- ============================================================
 CREATE TABLE bmw_bug (id SERIAL PRIMARY KEY, content TEXT);
 CREATE INDEX bmw_bug_idx ON bmw_bug USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_bug_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -53,6 +54,7 @@ DROP TABLE bmw_bug;
 CREATE TABLE three_term (id SERIAL PRIMARY KEY, content TEXT);
 CREATE INDEX three_term_idx ON three_term USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation three_term_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -90,6 +92,7 @@ DROP TABLE three_term;
 CREATE TABLE wand_many_terms (id SERIAL PRIMARY KEY, content TEXT);
 CREATE INDEX wand_many_terms_idx ON wand_many_terms USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation wand_many_terms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

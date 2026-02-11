@@ -18,6 +18,7 @@ INSERT INTO deletion_test (content) VALUES
 CREATE INDEX deletion_idx ON deletion_test
 USING bm25 (content)
 WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation deletion_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.20, b=0.75)

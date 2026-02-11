@@ -8,6 +8,7 @@ SET pg_textsearch.bulk_load_threshold = 100;
 CREATE TABLE bulk_load_test (id serial PRIMARY KEY, content text);
 CREATE INDEX bulk_load_idx ON bulk_load_test USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bulk_load_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

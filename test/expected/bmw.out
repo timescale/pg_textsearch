@@ -19,6 +19,7 @@ INSERT INTO bmw_basic (content) VALUES
     ('apple apple banana banana');   -- id=7, tf=2
 CREATE INDEX bmw_basic_idx ON bmw_basic USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_basic_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 7 documents, avg_length=2.43, text_config='english' (k1=1.20, b=0.75)
@@ -47,6 +48,7 @@ INSERT INTO bmw_empty (content) VALUES
     ('lion tiger bear');
 CREATE INDEX bmw_empty_idx ON bmw_empty USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_empty_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
@@ -92,6 +94,7 @@ INSERT INTO bmw_ties (content) VALUES
     ('exact same length');     -- id=5, same length
 CREATE INDEX bmw_ties_idx ON bmw_ties USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_ties_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
@@ -120,6 +123,7 @@ SELECT 'test document number ' || i
 FROM generate_series(1, 20) i;
 CREATE INDEX bmw_limits_idx ON bmw_limits USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_limits_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 20 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
@@ -169,6 +173,7 @@ INSERT INTO bmw_multi (content) VALUES
     ('gamma gamma gamma gamma');    -- id=7, high tf for gamma
 CREATE INDEX bmw_multi_idx ON bmw_multi USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multi_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 7 documents, avg_length=2.57, text_config='english' (k1=1.20, b=0.75)
@@ -234,6 +239,7 @@ INSERT INTO bmw_8term (content) VALUES
     ('two four six eight ten');
 CREATE INDEX bmw_8term_idx ON bmw_8term USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_8term_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=5.60, text_config='english' (k1=1.20, b=0.75)
@@ -278,6 +284,7 @@ INSERT INTO bmw_lengths (content) VALUES
     ('word ' || repeat('filler ', 500));                -- id=5, word + filler
 CREATE INDEX bmw_lengths_idx ON bmw_lengths USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_lengths_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=122.60, text_config='english' (k1=1.20, b=0.75)
@@ -309,6 +316,7 @@ INSERT INTO bmw_highfreq (content) VALUES
     (repeat('keyword ', 200));    -- id=5, tf=200
 CREATE INDEX bmw_highfreq_idx ON bmw_highfreq USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_highfreq_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=72.20, text_config='english' (k1=1.20, b=0.75)
@@ -341,6 +349,7 @@ SELECT 'segment document ' || i || ' with searchterm'
 FROM generate_series(1, 500) i;
 CREATE INDEX bmw_hybrid_idx ON bmw_hybrid USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_hybrid_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
@@ -361,14 +370,14 @@ ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
 ------+------------------------
  1001 | -0.0007437646854668856
  1002 | -0.0006856626714579761
+  551 | -0.0004986796411685646
+  501 | -0.0004986796411685646
+  502 | -0.0004986796411685646
   503 | -0.0004986796411685646
   504 | -0.0004986796411685646
   505 | -0.0004986796411685646
   506 | -0.0004986796411685646
   507 | -0.0004986796411685646
-  508 | -0.0004986796411685646
-  509 | -0.0004986796411685646
-  510 | -0.0004986796411685646
 (10 rows)
 
 RESET pg_textsearch.index_memory_limit;
@@ -400,6 +409,7 @@ FROM generate_series(1, 1000) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_validate_idx ON bmw_validate USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_validate_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1000 documents, avg_length=5.80, text_config='english' (k1=1.20, b=0.75)
@@ -486,6 +496,7 @@ FROM generate_series(1, 500) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_monotonic_idx ON bmw_monotonic USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_monotonic_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=3.14, text_config='english' (k1=1.20, b=0.75)
@@ -529,6 +540,7 @@ INSERT INTO bmw_blocks (content) VALUES
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_blocks_idx ON bmw_blocks USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_blocks_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 643 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
@@ -543,13 +555,13 @@ ORDER BY content <@> 'searchword'::bm25query LIMIT 10;
  641 | -0.0013297571567818522
  642 |  -0.001314413733780384
  643 | -0.0012896135449409485
+   1 | -0.0007766990456730127
+   2 | -0.0007766990456730127
    3 | -0.0007766990456730127
+   4 | -0.0007766990456730127
    5 | -0.0007766990456730127
    6 | -0.0007766990456730127
    7 | -0.0007766990456730127
-   8 | -0.0007766990456730127
-   9 | -0.0007766990456730127
-  10 | -0.0007766990456730127
 (10 rows)
 
 -- Validation: top 3 must be our high-tf docs
@@ -580,6 +592,7 @@ INSERT INTO bmw_repeat (content) VALUES
     ('dog dog dog');
 CREATE INDEX bmw_repeat_idx ON bmw_repeat USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_repeat_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
@@ -607,6 +620,7 @@ INSERT INTO bmw_unicode (content) VALUES
     ('simple ascii text');
 CREATE INDEX bmw_unicode_idx ON bmw_unicode USING bm25(content)
     WITH (text_config='simple');  -- simple config for unicode
+NOTICE:  BM25 index build started for relation bmw_unicode_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=2.60, text_config='simple' (k1=1.20, b=0.75)
@@ -654,6 +668,7 @@ FROM generate_series(1, 1000) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_scattered_idx ON bmw_scattered USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_scattered_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1000 documents, avg_length=3.93, text_config='english' (k1=1.20, b=0.75)
@@ -729,6 +744,7 @@ FROM generate_series(1, 1000) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_multi_scattered_idx ON bmw_multi_scattered USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multi_scattered_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1000 documents, avg_length=3.96, text_config='english' (k1=1.20, b=0.75)
@@ -766,6 +782,7 @@ SELECT 'first segment batch ' || i || ' targetword'
 FROM generate_series(1, 300) i;
 CREATE INDEX bmw_multiseg_idx ON bmw_multiseg USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_multiseg_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 300 documents, avg_length=5.00, text_config='english' (k1=1.20, b=0.75)
@@ -826,6 +843,7 @@ FROM generate_series(1, 150) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_partial_idx ON bmw_partial USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_partial_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 150 documents, avg_length=3.05, text_config='english' (k1=1.20, b=0.75)
@@ -864,6 +882,7 @@ SELECT 'segment content common word doc' || i
 FROM generate_series(1, 200) i;
 CREATE INDEX bmw_memonly_idx ON bmw_memonly USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_memonly_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 200 documents, avg_length=5.00, text_config='english' (k1=1.20, b=0.75)
@@ -934,6 +953,7 @@ FROM generate_series(1, 500) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_sparse_idx ON bmw_sparse USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_sparse_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
@@ -987,6 +1007,7 @@ FROM generate_series(1, 500) i;
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_asymmetric_idx ON bmw_asymmetric USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_asymmetric_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
@@ -1028,6 +1049,7 @@ SELECT 'threshold test word' FROM generate_series(1, 200);
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_threshold_idx ON bmw_threshold USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_threshold_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 200 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
@@ -1074,6 +1096,7 @@ INSERT INTO bmw_simul (content) VALUES ('alpha only final');
 SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_simul_idx ON bmw_simul USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation bmw_simul_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 101 documents, avg_length=3.98, text_config='english' (k1=1.20, b=0.75)

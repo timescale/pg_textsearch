@@ -10,6 +10,7 @@ CREATE TABLE implicit_docs (
 );
 CREATE INDEX implicit_docs_idx ON implicit_docs USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation implicit_docs_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -71,11 +72,13 @@ CREATE TABLE multi_col_docs (
 );
 CREATE INDEX multi_col_title_idx ON multi_col_docs USING bm25(title)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation multi_col_title_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
 CREATE INDEX multi_col_body_idx ON multi_col_docs USING bm25(body)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation multi_col_body_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -111,6 +114,7 @@ CREATE TABLE implicit_schema.schema_docs (
 );
 CREATE INDEX schema_docs_idx ON implicit_schema.schema_docs USING bm25(content)
     WITH (text_config='english');
+NOTICE:  BM25 index build started for relation schema_docs_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -190,19 +194,15 @@ DEALLOCATE explicit_search;
 DELETE FROM implicit_docs WHERE id = (
   SELECT id FROM implicit_docs ORDER BY content <@> 'database' LIMIT 1
 );
-ERROR:  no BM25 index found for text <@> text expression
-DETAIL:  Create a BM25 index on the column or use ORDER BY.
-HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
 -- Verify the top-scoring document for 'database' was deleted
 SELECT id, content
 FROM implicit_docs
 ORDER BY content <@> 'database'
 LIMIT 3;
- id |        content         
-----+------------------------
-  2 | database system design
+ id |       content        
+----+----------------------
   3 | hello database world
-(2 rows)
+(1 row)
 
 -- Re-insert the deleted row for subsequent tests
 INSERT INTO implicit_docs (content) VALUES ('database system design');
@@ -212,18 +212,14 @@ SET content = 'updated via subquery'
 WHERE id = (
   SELECT id FROM implicit_docs ORDER BY content <@> 'hello' LIMIT 1
 );
-ERROR:  no BM25 index found for text <@> text expression
-DETAIL:  Create a BM25 index on the column or use ORDER BY.
-HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
 -- Verify the update happened to the top-scoring 'hello' document
 SELECT id, content FROM implicit_docs ORDER BY id;
  id |        content         
 ----+------------------------
-  1 | hello world example
-  2 | database system design
+  1 | updated via subquery
   3 | hello database world
   4 | database system design
-(4 rows)
+(3 rows)
 
 -- Test 13: Implicit form in UPDATE SET subquery
 UPDATE implicit_docs
@@ -232,17 +228,13 @@ SET content = (
   ORDER BY content <@> 'database' LIMIT 1
 )
 WHERE id = (SELECT max(id) FROM implicit_docs);
-ERROR:  no BM25 index found for text <@> text expression
-DETAIL:  Create a BM25 index on the column or use ORDER BY.
-HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
 SELECT id, content FROM implicit_docs ORDER BY id;
- id |        content         
-----+------------------------
-  1 | hello world example
-  2 | database system design
+ id |       content        
+----+----------------------
+  1 | updated via subquery
   3 | hello database world
-  4 | database system design
-(4 rows)
+  4 | hello database world
+(3 rows)
 
 -- Test 14: Nested subquery (exercises recursive SubLink handling)
 SELECT id, content FROM implicit_docs
@@ -253,9 +245,11 @@ WHERE id IN (
     ORDER BY content <@> 'database' LIMIT 1
   )
 );
-ERROR:  no BM25 index found for text <@> text expression
-DETAIL:  Create a BM25 index on the column or use ORDER BY.
-HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
+ id |       content        
+----+----------------------
+  3 | hello database world
+(1 row)
+
 -- Cleanup
 DROP TABLE implicit_schema.schema_docs CASCADE;
 DROP SCHEMA implicit_schema CASCADE;
