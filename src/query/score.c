@@ -461,7 +461,7 @@ tp_score_documents(
 	 * BMW fast path for single-term queries.
 	 * Uses Block-Max WAND to skip blocks that can't contribute to top-k.
 	 */
-	if (tp_enable_bmw && query_term_count == 1)
+	if (query_term_count == 1)
 	{
 		const char *term = query_terms[0];
 		uint32		doc_freq;
@@ -524,7 +524,7 @@ tp_score_documents(
 	 * BMW fast path for multi-term queries.
 	 * Uses block-level upper bounds to skip non-contributing blocks.
 	 */
-	if (tp_enable_bmw && query_term_count >= 2)
+	if (query_term_count >= 2)
 	{
 		uint32	  *doc_freqs;
 		float4	  *idfs;

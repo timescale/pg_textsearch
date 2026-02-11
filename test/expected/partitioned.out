@@ -41,7 +41,6 @@ INSERT INTO partition_2024 (content, created_at) VALUES
 -- This creates an index with auto-generated name like partition_2024_content_idx
 CREATE INDEX partitioned_bm25_idx ON partitioned_docs USING bm25(content)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation partition_2024_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
@@ -58,7 +57,6 @@ WHERE indrelid = 'partition_2024'::regclass
 -- Create another partition after index exists
 CREATE TABLE partition_2025 PARTITION OF partitioned_docs
     FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
-NOTICE:  BM25 index build started for relation partition_2025_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -143,14 +141,9 @@ INSERT INTO subpart_docs_eu (content, region, created_at) VALUES
 -- Create index on top-level partitioned table
 CREATE INDEX subpart_bm25_idx ON subpart_docs USING bm25(content)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation subpart_docs_eu_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
-NOTICE:  BM25 index build started for relation subpart_docs_us_2024_content_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents across 2 partitions, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
 -- Verify indexes were created at all levels
 SELECT c.relname, c.relkind
 FROM pg_class c
@@ -240,14 +233,9 @@ INSERT INTO partition_large (content, partition_key) VALUES
 -- Create index on partitioned table
 CREATE INDEX scoring_bm25_idx ON partitioned_scoring USING bm25(content)
     WITH (text_config='english');
-NOTICE:  BM25 index build started for relation partition_small_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='english' (k1=1.20, b=0.75)
-NOTICE:  BM25 index build started for relation partition_large_content_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 10 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 13 documents across 2 partitions, avg_length=3.08, text_config='english' (k1=1.20, b=0.75)
 -- Get the auto-generated partition index names
 SELECT
     i.indrelid::regclass as partition_table,

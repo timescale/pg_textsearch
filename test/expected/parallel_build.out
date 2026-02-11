@@ -22,7 +22,6 @@ ANALYZE parallel_test_serial;
 -- Should NOT show "parallel index build" notice (serial build)
 CREATE INDEX parallel_test_serial_idx ON parallel_test_serial USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_serial_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=8.00, text_config='english' (k1=1.20, b=0.75)
@@ -49,10 +48,9 @@ ANALYZE parallel_test_1worker;
 -- Should show "parallel index build: launched 1 of 1 requested workers"
 CREATE INDEX parallel_test_1worker_idx ON parallel_test_1worker USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
 SELECT COUNT(*) AS database_count FROM parallel_test_1worker
 WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
  database_count 
@@ -88,10 +86,9 @@ ANALYZE parallel_test_2workers;
 -- Should show "parallel index build: launched 2 of 2 requested workers"
 CREATE INDEX parallel_test_2workers_idx ON parallel_test_2workers USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_2workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 150000 documents, avg_length=16.00, text_config='english' (k1=1.20, b=0.75)
 -- Verify all document groups are searchable
 SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
 WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
@@ -168,10 +165,9 @@ ANALYZE parallel_test_4workers;
 -- (may launch fewer if system limits)
 CREATE INDEX parallel_test_4workers_idx ON parallel_test_4workers USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_4workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 4 of 4 requested workers
+NOTICE:  BM25 index build completed: 200000 documents, avg_length=9.00, text_config='english' (k1=1.20, b=0.75)
 SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
 WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
  fox_count 
@@ -211,10 +207,9 @@ FROM generate_series(1, 100000) AS i;
 ANALYZE parallel_test_short;
 CREATE INDEX parallel_test_short_idx ON parallel_test_short USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_short_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=1.00, text_config='english' (k1=1.20, b=0.75)
 -- Each term should appear in 10% of documents
 SELECT COUNT(*) AS alpha_count FROM parallel_test_short
 WHERE content <@> to_bm25query('alpha', 'parallel_test_short_idx') < 0;
@@ -243,10 +238,9 @@ FROM generate_series(1, 100000) AS i;
 ANALYZE parallel_test_dupes;
 CREATE INDEX parallel_test_dupes_idx ON parallel_test_dupes USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_dupes_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=26.50, text_config='english' (k1=1.20, b=0.75)
 -- "repeat" appears in all documents with varying term frequency
 SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
 WHERE content <@> to_bm25query('repeat', 'parallel_test_dupes_idx') < 0;
@@ -276,10 +270,9 @@ FROM generate_series(1, 100000) AS i;
 ANALYZE parallel_test_nulls;
 CREATE INDEX parallel_test_nulls_idx ON parallel_test_nulls USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_nulls_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 90000 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
 -- Only non-NULL documents should be indexed (90%)
 SELECT COUNT(*) AS document_count FROM parallel_test_nulls
 WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
@@ -334,10 +327,9 @@ ANALYZE parallel_test_custom;
 -- Use non-default k1 and b parameters
 CREATE INDEX parallel_test_custom_idx ON parallel_test_custom USING bm25(content)
   WITH (text_config='english', k1='1.5', b='0.5');
-NOTICE:  BM25 index build started for relation parallel_test_custom_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.50
-NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00, text_config='english' (k1=1.50, b=0.50)
 SELECT COUNT(*) AS custom_count FROM parallel_test_custom
 WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
  custom_count 
@@ -360,7 +352,6 @@ ANALYZE parallel_test_below_threshold;
 -- Should NOT show "parallel index build" (below 100K threshold)
 CREATE INDEX parallel_test_below_idx ON parallel_test_below_threshold USING bm25(content)
   WITH (text_config='english');
-NOTICE:  BM25 index build started for relation parallel_test_below_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 50000 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)

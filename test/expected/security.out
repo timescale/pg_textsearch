@@ -5,7 +5,6 @@ WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
 CREATE TABLE security_test (id serial, content text);
 INSERT INTO security_test (content) VALUES ('test document');
 CREATE INDEX security_test_idx ON security_test USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation security_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)

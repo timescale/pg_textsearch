@@ -21,7 +21,6 @@ INSERT INTO categories (doc_id, category) VALUES
     (2, 'science'),
     (3, 'technology');
 CREATE INDEX docs_bm25_idx ON docs USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation docs_bm25_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
@@ -68,7 +67,6 @@ LIMIT 5;
 Test: Multiple BM25 indexes on same column
 CREATE INDEX docs_bm25_simple_idx ON docs USING bm25(content)
     WITH (text_config='simple');
-NOTICE:  BM25 index build started for relation docs_bm25_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='simple' (k1=1.20, b=0.75)
@@ -111,7 +109,6 @@ DROP INDEX docs_bm25_simple_idx;
 Test: Expression index - should fail with error
 CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
     WITH (text_config='simple');
-NOTICE:  BM25 index build started for relation docs_lower_idx
 ERROR:  BM25 indexes on expressions are not supported
 HINT:  Create the index on a column directly, e.g., CREATE INDEX ... USING bm25(content)
 -- =============================================================================
