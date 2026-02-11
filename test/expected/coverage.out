@@ -305,6 +305,66 @@ SELECT count(*) FROM (
 
 SET pg_textsearch.log_bmw_stats = false;
 -- =============================================================================
+-- Test 15: Plain text ORDER BY (exercises scan.c sk_subtype == TEXTOID)
+-- =============================================================================
+SET enable_seqscan = off;
+-- The implicit text <@> text form in ORDER BY
+SELECT id FROM coverage_docs
+WHERE content <@> 'alpha'::text < 0
+ORDER BY content <@> 'alpha'::text
+LIMIT 3;
+ id  
+-----
+ 106
+ 107
+ 108
+(3 rows)
+
+SET enable_seqscan = on;
+-- =============================================================================
+-- Test 16: HAVING clause with BM25 operator (exercises hooks.c havingQual)
+-- =============================================================================
+-- Use BM25 operator in HAVING clause
+SELECT left(content, 20) AS prefix, count(*) AS cnt
+FROM coverage_docs
+WHERE content <@> to_bm25query('document', 'coverage_idx') < 0
+GROUP BY left(content, 20)
+HAVING count(*) > 1
+ORDER BY cnt DESC
+LIMIT 3;
+        prefix        | cnt 
+----------------------+-----
+ seek test document w | 200
+(1 row)
+
+-- =============================================================================
+-- Test 17: Build-mode spill (exercises state.c tp_clear_memtable build path)
+-- =============================================================================
+-- Create table with enough data to trigger mid-build spill
+CREATE TABLE build_spill_test (id serial PRIMARY KEY, content text);
+INSERT INTO build_spill_test (content)
+SELECT 'buildspill unique term' || i || ' extra words for document ' || i
+FROM generate_series(1, 500) AS i;
+-- Set very low spill threshold so CREATE INDEX spills during build
+SET pg_textsearch.memtable_spill_threshold = 100;
+CREATE INDEX build_spill_idx ON build_spill_test USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation build_spill_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 500 documents, avg_length=7.00, text_config='english' (k1=1.20, b=0.75)
+-- Reset threshold
+SET pg_textsearch.memtable_spill_threshold = 32000000;
+-- Verify index works after build-mode spill
+SELECT count(*) FROM build_spill_test
+WHERE content <@> to_bm25query('buildspill', 'build_spill_idx') < 0;
+ count 
+-------
+   500
+(1 row)
+
+DROP TABLE build_spill_test;
+-- =============================================================================
 -- Cleanup
 -- =============================================================================
 DROP TABLE coverage_docs CASCADE;
