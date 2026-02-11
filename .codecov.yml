@@ -9,15 +9,12 @@ coverage:
   status:
     project:
       default:
-        # Only fail CI if coverage drops significantly
-        threshold: 5%
-        # Don't block PRs on coverage
-        informational: true
+        # Fail if overall coverage drops by more than 1%
+        threshold: 1%
     patch:
       default:
-        # Coverage on changed lines
-        threshold: 50%
-        informational: true
+        # Require at least 80% coverage on changed lines
+        target: 80%
 
 # Ignore test files in coverage reports
 ignore:

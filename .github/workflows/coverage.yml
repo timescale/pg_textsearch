@@ -1,6 +1,5 @@
 name: Code Coverage
 
-# NOTE: PR checks are consolidated in ci.yml. This workflow runs on main only.
 on:
   push:
     branches: [ main ]
@@ -10,7 +9,13 @@ on:
       - 'sql/**'
       - 'Makefile'
       - '.github/workflows/coverage.yml'
-  # Allow manual trigger
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'sql/**'
+      - 'Makefile'
+      - '.github/workflows/coverage.yml'
   workflow_dispatch:
 
 jobs:
@@ -91,6 +96,7 @@ jobs:
              --output-file coverage.info \
              --base-directory $PWD \
              --no-external \
+             --rc branch_coverage=1 \
              --ignore-errors mismatch
 
         # Remove test files from coverage report (we only care about src/)
@@ -98,10 +104,11 @@ jobs:
              '*/test/*' \
              '*/tmp_check_shared/*' \
              --output-file coverage.info \
+             --rc branch_coverage=1 \
              --ignore-errors unused
 
         # Show summary
-        lcov --list coverage.info
+        lcov --list coverage.info --rc branch_coverage=1
 
     - name: Generate HTML report
       run: |
@@ -109,7 +116,8 @@ jobs:
                 --output-directory coverage-html \
                 --title "pg_textsearch Coverage" \
                 --legend \
-                --show-details
+                --show-details \
+                --rc branch_coverage=1
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
@@ -149,6 +157,6 @@ jobs:
         # Extract and display summary stats
         if [ -f coverage.info ]; then
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info --rc branch_coverage=1 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
