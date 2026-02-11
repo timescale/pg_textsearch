@@ -13,7 +13,6 @@ INSERT INTO lock_upgrade_test (content) VALUES
     ('query optimization techniques');
 CREATE INDEX lock_upgrade_idx ON lock_upgrade_test USING bm25(content)
     WITH (text_config='english', k1=1.2, b=0.75);
-NOTICE:  BM25 index build started for relation lock_upgrade_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.67, text_config='english' (k1=1.20, b=0.75)

@@ -88,6 +88,86 @@ SELECT bm25_spill_index('coverage_idx');
 SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
 
 -- =============================================================================
+-- Test 6: Page visualization (exercises dump.c pageviz code)
+-- =============================================================================
+
+-- bm25_debug_pageviz writes page layout to file
+SELECT bm25_debug_pageviz('coverage_idx', '/tmp/test_pageviz.txt');
+
+-- Verify it wrote something
+\! test -s /tmp/test_pageviz.txt && echo 'pageviz file exists'
+
+-- Clean up temp file
+\! rm -f /tmp/test_pageviz.txt
+
+-- =============================================================================
+-- Test 7: Score logging (exercises am/scan.c log_scores path)
+-- =============================================================================
+
+SET pg_textsearch.log_scores = true;
+
+SELECT content <@> to_bm25query('hello', 'coverage_idx') AS score
+FROM coverage_docs
+WHERE content <@> to_bm25query('hello', 'coverage_idx') < 0
+ORDER BY content <@> to_bm25query('hello', 'coverage_idx')
+LIMIT 1;
+
+SET pg_textsearch.log_scores = false;
+
+-- =============================================================================
+-- Test 8: BMW stats logging (exercises score.c bmw_stats path)
+-- =============================================================================
+
+SET pg_textsearch.log_bmw_stats = true;
+
+-- Single-term query
+SELECT count(*) FROM coverage_docs
+WHERE content <@> to_bm25query('hello', 'coverage_idx') < 0;
+
+-- Multi-term query
+SELECT count(*) FROM coverage_docs
+WHERE content <@> to_bm25query('hello world', 'coverage_idx') < 0;
+
+SET pg_textsearch.log_bmw_stats = false;
+
+-- =============================================================================
+-- Test 9: AM handler property callbacks (exercises handler.c tp_property)
+-- =============================================================================
+
+-- Test pg_indexam_has_property for our access method
+SELECT pg_indexam_has_property(am.oid, 'can_order') AS can_order,
+       pg_indexam_has_property(am.oid, 'can_unique') AS can_unique
+FROM pg_am am WHERE am.amname = 'bm25';
+
+-- Test index-level properties
+SELECT pg_index_has_property('coverage_idx'::regclass, 'clusterable') AS clusterable,
+       pg_index_has_property('coverage_idx'::regclass, 'index_scan') AS index_scan;
+
+-- Test column-level property (distance_orderable triggers tp_property)
+SELECT pg_index_column_has_property('coverage_idx'::regclass, 1,
+    'distance_orderable') AS dist_orderable;
+
+-- =============================================================================
+-- Test 10: AM validate error path (exercises handler.c tp_validate)
+-- =============================================================================
+
+-- Try creating a bm25 index on integer column (should fail validation)
+CREATE TABLE validate_test (id serial, num integer);
+CREATE INDEX validate_test_idx ON validate_test USING bm25(num)
+    WITH (text_config='english');
+DROP TABLE validate_test;
+
+-- =============================================================================
+-- Test 11: bm25_dump_index to file (exercises file output path)
+-- =============================================================================
+
+SELECT bm25_dump_index('coverage_idx', '/tmp/test_dump.txt') IS NOT NULL
+    AS dump_to_file;
+
+\! test -s /tmp/test_dump.txt && echo 'dump file exists'
+\! rm -f /tmp/test_dump.txt
+
+-- =============================================================================
 -- Cleanup
 -- =============================================================================
 

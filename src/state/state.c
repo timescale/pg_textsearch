@@ -722,14 +722,17 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
+	/* LCOV_EXCL_START -- corruption/unavailability guard */
 	if (index_rel == NULL)
 	{
 		elog(WARNING, "Could not open index %u for recovery", index_oid);
 		return NULL;
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* Get metapage */
 	metap = tp_get_metapage(index_rel);
+	/* LCOV_EXCL_START -- corruption guard */
 	if (metap == NULL)
 	{
 		index_close(index_rel, AccessShareLock);
@@ -750,6 +753,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 			 metap->magic);
 		return NULL;
 	}
+	/* LCOV_EXCL_STOP */
 
 	/*
 	 * Additional validation: Check if the heap relation has been truncated
@@ -766,6 +770,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
 	relation_close(heap_rel, AccessShareLock);
 
+	/* LCOV_EXCL_START -- stale data guard */
 	if (heap_blocks == 0 && metap->total_docs > 0)
 	{
 		/* Heap is empty but metapage shows documents - stale data */
@@ -781,6 +786,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return tp_create_shared_index_state(
 				index_oid, index_rel->rd_index->indrelid);
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* Check if there's actually anything to recover */
 	if (metap->total_docs == 0 &&
@@ -873,6 +879,7 @@ tp_rebuild_posting_lists_from_docids(
 		/*
 		 * Validate this is actually a docid page and not stale data.
 		 */
+		/* LCOV_EXCL_START -- corruption guard */
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
 			UnlockReleaseBuffer(docid_buf);
@@ -884,6 +891,7 @@ tp_rebuild_posting_lists_from_docids(
 				 docid_header->magic);
 			break; /* Stop recovery - we've hit invalid/stale data */
 		}
+		/* LCOV_EXCL_STOP */
 
 		/* Get docids array with proper alignment */
 		docids = (ItemPointer)((char *)docid_header +
@@ -1056,12 +1064,14 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		 * In practice, this shouldn't happen as writers should request
 		 * exclusive from the start.
 		 */
+		/* LCOV_EXCL_START -- defensive: shouldn't happen in practice */
 		elog(WARNING,
 			 "Upgrading index lock from shared to exclusive - "
 			 "potential deadlock risk");
 
 		LWLockRelease(&local_state->shared->lock);
 		local_state->lock_held = false;
+		/* LCOV_EXCL_STOP */
 	}
 
 	/* Acquire the lock */
@@ -1250,8 +1260,10 @@ tp_bulk_load_spill_check(void)
 		TpIndexMetaPage	   metap;
 		bool			   index_open_failed = false;
 
+		/* LCOV_EXCL_START -- null state guard */
 		if (!local_state || !local_state->shared)
 			continue;
+		/* LCOV_EXCL_STOP */
 
 		/* Check bulk load threshold */
 		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
@@ -1270,6 +1282,7 @@ tp_bulk_load_spill_check(void)
 			index_rel = index_open(
 					local_state->shared->index_oid, RowExclusiveLock);
 		}
+		/* LCOV_EXCL_START -- index dropped mid-transaction */
 		PG_CATCH();
 		{
 			/* Index might have been dropped */
@@ -1280,6 +1293,7 @@ tp_bulk_load_spill_check(void)
 
 		if (index_open_failed)
 			continue;
+		/* LCOV_EXCL_STOP */
 
 		/* Write the segment */
 		segment_root = tp_write_segment(local_state, index_rel);

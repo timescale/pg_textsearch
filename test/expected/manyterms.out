@@ -9,7 +9,6 @@ SET pg_textsearch.log_scores = true;
 CREATE TABLE manyterms_test (id serial, content text);
 -- Create index to initialize hash table with small initial size
 CREATE INDEX manyterms_idx ON manyterms_test USING bm25(content) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation manyterms_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)

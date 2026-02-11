@@ -15,7 +15,6 @@ CREATE TABLE explicit_index_test (
 -- Index on 'content' column only
 CREATE INDEX content_idx ON explicit_index_test USING bm25 (content)
     WITH (text_config = 'english');
-NOTICE:  BM25 index build started for relation content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
@@ -65,13 +64,11 @@ FROM generate_series(1, 1000) i;
 -- Create two BM25 indexes with different text configurations on same column
 CREATE INDEX content_idx_french ON multi_index_test USING bm25 (content)
     WITH (text_config = 'french');
-NOTICE:  BM25 index build started for relation content_idx_french
 NOTICE:  Using text search configuration: french
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1000 documents, avg_length=9.00, text_config='french' (k1=1.20, b=0.75)
 CREATE INDEX content_idx_simple ON multi_index_test USING bm25 (content)
     WITH (text_config = 'simple');
-NOTICE:  BM25 index build started for relation content_idx_simple
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1000 documents, avg_length=11.00, text_config='simple' (k1=1.20, b=0.75)

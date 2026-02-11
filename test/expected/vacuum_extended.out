@@ -1,0 +1,97 @@
+-- Extended vacuum tests for BM25 indexes
+-- Exercises vacuum paths with segments, bulk deletes, and empty indexes
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+-- =============================================================================
+-- Test 1: Vacuum with segments present
+-- =============================================================================
+CREATE TABLE vacuum_seg_test (id serial PRIMARY KEY, content text);
+CREATE INDEX vacuum_seg_idx ON vacuum_seg_test USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert data and force segment creation
+INSERT INTO vacuum_seg_test (content)
+SELECT 'vacuum segment test document number ' || i
+FROM generate_series(1, 200) AS i;
+SELECT bm25_spill_index('vacuum_seg_idx');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+-- Delete half the documents
+DELETE FROM vacuum_seg_test WHERE id <= 100;
+-- VACUUM with segments on disk
+VACUUM vacuum_seg_test;
+-- Verify search still works after vacuum with segments
+SELECT count(*) FROM vacuum_seg_test
+WHERE content <@> to_bm25query('vacuum', 'vacuum_seg_idx') < 0;
+ count 
+-------
+   100
+(1 row)
+
+-- =============================================================================
+-- Test 2: VACUUM FULL with segments (forces index rebuild)
+-- =============================================================================
+\set VERBOSITY terse
+VACUUM FULL vacuum_seg_test;
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 100 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
+\set VERBOSITY default
+-- Verify search works after VACUUM FULL rebuild
+SELECT count(*) FROM vacuum_seg_test
+WHERE content <@> to_bm25query('vacuum', 'vacuum_seg_idx') < 0;
+ count 
+-------
+   100
+(1 row)
+
+DROP TABLE vacuum_seg_test;
+-- =============================================================================
+-- Test 3: Vacuum on empty index
+-- =============================================================================
+CREATE TABLE vacuum_empty_test (id serial PRIMARY KEY, content text);
+CREATE INDEX vacuum_empty_idx ON vacuum_empty_test USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Vacuum empty index (should be a no-op)
+VACUUM vacuum_empty_test;
+-- Insert one doc, delete it, vacuum
+INSERT INTO vacuum_empty_test (content) VALUES ('single document');
+DELETE FROM vacuum_empty_test;
+VACUUM vacuum_empty_test;
+DROP TABLE vacuum_empty_test;
+-- =============================================================================
+-- Test 4: Bulk delete from memtable (exercises tp_bulkdelete_memtable_ctids)
+-- =============================================================================
+CREATE TABLE vacuum_bulk_test (id serial PRIMARY KEY, content text);
+CREATE INDEX vacuum_bulk_idx ON vacuum_bulk_test USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+-- Insert docs (stays in memtable)
+INSERT INTO vacuum_bulk_test (content)
+SELECT 'bulk delete test term' || (i % 10) || ' document ' || i
+FROM generate_series(1, 50) AS i;
+-- Delete most of them
+DELETE FROM vacuum_bulk_test WHERE id > 5;
+-- Vacuum to clean up memtable entries
+VACUUM vacuum_bulk_test;
+-- Verify remaining docs are searchable
+SELECT count(*) FROM vacuum_bulk_test
+WHERE content <@> to_bm25query('bulk', 'vacuum_bulk_idx') < 0;
+ count 
+-------
+     5
+(1 row)
+
+DROP TABLE vacuum_bulk_test;
+-- Clean up
+DROP EXTENSION pg_textsearch CASCADE;

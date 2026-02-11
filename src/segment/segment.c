@@ -62,6 +62,7 @@ read_term_at_index(
 	uint32		  string_offset;
 
 	/* Check for overflow when calculating string offset */
+	/* LCOV_EXCL_START -- corruption guard */
 	if (string_offsets[index] > UINT32_MAX - header->strings_offset)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -70,6 +71,7 @@ read_term_at_index(
 						 "String offset %u + base %u would overflow",
 						 string_offsets[index],
 						 header->strings_offset)));
+	/* LCOV_EXCL_STOP */
 
 	string_offset = header->strings_offset + string_offsets[index];
 
@@ -78,6 +80,7 @@ read_term_at_index(
 			reader, string_offset, &string_entry.length, sizeof(uint32));
 
 	/* Check for overflow when adding sizeof(uint32) */
+	/* LCOV_EXCL_START -- corruption guard */
 	if (string_offset > UINT32_MAX - sizeof(uint32))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -85,6 +88,7 @@ read_term_at_index(
 				 errdetail(
 						 "String offset %u + sizeof(uint32) would overflow",
 						 string_offset)));
+	/* LCOV_EXCL_STOP */
 
 	/* Allocate buffer and read term text */
 	term_text = palloc(string_entry.length + 1);
@@ -111,17 +115,21 @@ read_dict_entry(
 	uint32 offset_increment;
 	uint32 entry_offset;
 
+	/* LCOV_EXCL_START -- corruption guard */
 	if (index > UINT32_MAX / sizeof(TpDictEntry))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("dictionary entry index overflow")));
+	/* LCOV_EXCL_STOP */
 
 	offset_increment = index * sizeof(TpDictEntry);
 
+	/* LCOV_EXCL_START -- corruption guard */
 	if (offset_increment > UINT32_MAX - header->entries_offset)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("dictionary entry offset overflow")));
+	/* LCOV_EXCL_STOP */
 
 	entry_offset = header->entries_offset + offset_increment;
 	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
@@ -179,6 +187,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	header = reader->header;
 
 	/* Validate header magic number */
+	/* LCOV_EXCL_START -- corruption guard */
 	if (header->magic != TP_SEGMENT_MAGIC)
 	{
 		UnlockReleaseBuffer(header_buf);
@@ -192,6 +201,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 						 header->magic,
 						 TP_SEGMENT_MAGIC)));
 	}
+	/* LCOV_EXCL_STOP */
 
 	reader->num_pages = header->num_pages;
 	reader->nblocks	  = nblocks;
@@ -219,6 +229,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		special = (TpPageIndexSpecial *)PageGetSpecialPointer(index_page);
 
 		/* Validate magic number and page type */
+		/* LCOV_EXCL_START -- corruption guard */
 		if (special->magic != TP_PAGE_INDEX_MAGIC ||
 			special->page_type != TP_PAGE_FILE_INDEX)
 		{
@@ -239,6 +250,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 							 special->page_type,
 							 TP_PAGE_FILE_INDEX)));
 		}
+		/* LCOV_EXCL_STOP */
 
 		/* Get pointer to page entries array */
 		page_entries = (BlockNumber *)((char *)index_page +
@@ -252,6 +264,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 			BlockNumber page_block = page_entries[i];
 
 			/* Validate block number is within relation bounds */
+			/* LCOV_EXCL_START -- corruption guard */
 			if (page_block >= nblocks)
 			{
 				UnlockReleaseBuffer(index_buf);
@@ -268,6 +281,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 								 pages_loaded,
 								 nblocks)));
 			}
+			/* LCOV_EXCL_STOP */
 			reader->page_map[pages_loaded++] = page_block;
 		}
 
@@ -277,6 +291,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		UnlockReleaseBuffer(index_buf);
 	}
 
+	/* LCOV_EXCL_START -- corruption guard */
 	if (pages_loaded != reader->num_pages)
 	{
 		/* Free allocated memory before erroring out */
@@ -293,6 +308,7 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 						 pages_loaded),
 				 errhint("The index may be corrupted and should be rebuilt")));
 	}
+	/* LCOV_EXCL_STOP */
 
 	/*
 	 * Optionally preload CTID arrays into memory for result lookup.
