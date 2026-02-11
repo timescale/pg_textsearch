@@ -16,6 +16,7 @@
 #include <catalog/pg_inherits.h>
 #include <parser/parse_type.h>
 #include <parser/scansup.h>
+#include <pgstat.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
@@ -696,6 +697,13 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && !so->eof_reached)
 	{
+		/* Count index scan for pg_stat_user_indexes */
+		pgstat_count_index_scan(scan->indexRelation);
+#if PG_VERSION_NUM >= 180000
+		if (scan->instrument)
+			scan->instrument->nsearches++;
+#endif
+
 		if (!tp_execute_scoring_query(scan))
 		{
 			so->eof_reached = true;
