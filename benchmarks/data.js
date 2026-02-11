@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770791664036,
+  "lastUpdate": 1770791665366,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -7990,6 +7990,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1189.47,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "db94e895c547b5558cc2989336f09ea0ad130343",
+          "message": "ci: run coverage on PRs and enable branch coverage (#221)\n\n## Summary\n- Run the coverage workflow on `pull_request` events (same path filters\nas push) so Codecov can post diff coverage comments on PRs\n- Enable lcov branch coverage (`--rc branch_coverage=1`) in CI and\nMakefile targets\n\n## Testing\n- This PR itself will trigger the coverage workflow, confirming it works\non PRs\n- Branch coverage data will appear in the lcov summary and HTML report",
+          "timestamp": "2026-02-11T03:49:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/db94e895c547b5558cc2989336f09ea0ad130343"
+        },
+        "date": 1770791665052,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 276022.095,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.48,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.58,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.15,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.01,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 4.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 6.84,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 9.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 14.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 5.48,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1202.54,
             "unit": "MB"
           }
         ]
