@@ -148,7 +148,7 @@ SELECT pg_index_column_has_property('coverage_idx'::regclass, 1,
     'distance_orderable') AS dist_orderable;
 
 -- =============================================================================
--- Test 10: AM validate error path (exercises handler.c tp_validate)
+-- Test 10: AM validate error path (exercises opclass resolution)
 -- =============================================================================
 
 -- Try creating a bm25 index on integer column (should fail validation)
@@ -238,7 +238,7 @@ LIMIT 3;
 SET enable_seqscan = on;
 
 -- =============================================================================
--- Test 16: HAVING clause with BM25 operator (exercises hooks.c havingQual)
+-- Test 16: GROUP BY / HAVING with BM25 operator
 -- =============================================================================
 
 -- Use BM25 operator in HAVING clause

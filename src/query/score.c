@@ -38,7 +38,7 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 }
 
 /* LCOV_EXCL_START -- exhaustive scoring infrastructure, only reachable
- * when BMW returns -1 (>8 query terms). BMW always handles 1-8 terms. */
+ * when BMW returns -1 (e.g. resource exhaustion). */
 
 /*
  * Create and initialize hash table for document scores
@@ -612,7 +612,7 @@ tp_score_documents(
 	}
 
 	/* LCOV_EXCL_START -- exhaustive fallback, only reachable when
-	 * multi-term BMW returns -1 (>8 terms) */
+	 * BMW returns -1 (e.g. resource exhaustion) */
 
 	/* Create hash table for accumulating document scores - needed for both
 	 * memtable and segment searches */

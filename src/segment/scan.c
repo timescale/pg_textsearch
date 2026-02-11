@@ -522,7 +522,7 @@ tp_segment_posting_iterator_seek(
 }
 
 /* LCOV_EXCL_START -- exhaustive segment scoring, only reachable via
- * the exhaustive fallback in score.c (>8 query terms) */
+ * the exhaustive fallback in score.c (e.g. resource exhaustion) */
 
 /*
  * Helper: Process a single posting and add score to hash table.
