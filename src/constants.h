@@ -20,7 +20,7 @@
  * Each page type has its own version for independent evolution.
  */
 #define TP_METAPAGE_VERSION \
-	5 /* Bumped for V2 segment format (block storage) */
+	6 /* Bumped for BMW block_max_norm fix (min not max) */
 #define TP_DOCID_PAGE_VERSION 1 /* Initial version */
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
 
