@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770878056727,
+  "lastUpdate": 1770878058362,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10922,6 +10922,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
             "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "db94e895c547b5558cc2989336f09ea0ad130343",
+          "message": "ci: run coverage on PRs and enable branch coverage (#221)\n\n## Summary\n- Run the coverage workflow on `pull_request` events (same path filters\nas push) so Codecov can post diff coverage comments on PRs\n- Enable lcov branch coverage (`--rc branch_coverage=1`) in CI and\nMakefile targets\n\n## Testing\n- This PR itself will trigger the coverage workflow, confirming it works\non PRs\n- Branch coverage data will appear in the lcov summary and HTML report",
+          "timestamp": "2026-02-11T03:49:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/db94e895c547b5558cc2989336f09ea0ad130343"
+        },
+        "date": 1770878057932,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 14363.156,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.11,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.16,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.55,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Throughput (800 queries, avg ms/query)",
+            "value": 0.28,
             "unit": "ms"
           },
           {
