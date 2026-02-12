@@ -27,8 +27,8 @@ echo ""
 
 # Show initial configuration (skip if parameters not available)
 echo "=== Initial Configuration ==="
-psql -c "SHOW tapir.index_memory_limit;" 2>/dev/null || echo "tapir.index_memory_limit: (parameter not visible)"
-psql -c "SHOW tapir.default_limit;" 2>/dev/null || echo "tapir.default_limit: (parameter not visible)"
+psql -c "SHOW pg_textsearch.bulk_load_threshold;" 2>/dev/null || echo "pg_textsearch.bulk_load_threshold: (parameter not visible)"
+psql -c "SHOW pg_textsearch.memtable_spill_threshold;" 2>/dev/null || echo "pg_textsearch.memtable_spill_threshold: (parameter not visible)"
 echo ""
 
 # Choose benchmark size based on argument
