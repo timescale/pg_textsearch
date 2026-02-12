@@ -1,4 +1,4 @@
--- Test memory limit enforcement for pg_textsearch indexes
+-- Test bulk insert with auto-spill for pg_textsearch indexes
 
 -- Create extension if not exists
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
@@ -7,14 +7,11 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 DROP TABLE IF EXISTS memory_test CASCADE;
 CREATE TABLE memory_test (id serial PRIMARY KEY, content text);
 
--- Set a very low memory limit (1MB) to trigger the limit
-SET pg_textsearch.index_memory_limit = 1;
-
 -- Suppress auto-spill NOTICE messages during test to avoid non-deterministic output
 -- (The exact DSA memory values vary between runs)
 SET client_min_messages = WARNING;
 
--- Create an index with the low memory limit
+-- Create an index
 CREATE INDEX idx_memory_test
 ON memory_test
 USING bm25(content)
@@ -27,8 +24,9 @@ VALUES ('This is a test document with some content');
 INSERT INTO memory_test (content)
 VALUES ('Another document with different words');
 
--- Try to insert many documents with lots of unique terms to exceed memory
--- With auto-spill, this should succeed by spilling to disk segments
+-- Insert many documents with lots of unique terms to exercise auto-spill.
+-- With 1000 docs * 100 unique terms = 100K terms per transaction,
+-- this should trigger the bulk_load_threshold (default 100K).
 DO $$
 DECLARE
     i integer;
@@ -58,9 +56,6 @@ FROM memory_test
 WHERE content <@> 'test' < -0.001
 ORDER BY content <@> 'test'
 LIMIT 5;
-
--- Reset to default memory limit
-RESET pg_textsearch.index_memory_limit;
 
 -- Clean up
 DROP TABLE memory_test CASCADE;

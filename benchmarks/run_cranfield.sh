@@ -39,8 +39,7 @@ echo ""
 
 # Show initial configuration (skip if parameters not available)
 echo "=== Initial Configuration ==="
-psql -c "SHOW tapir.index_memory_limit;" 2>/dev/null || echo "tapir.index_memory_limit: (parameter not visible)"
-psql -c "SHOW tapir.default_limit;" 2>/dev/null || echo "tapir.default_limit: (parameter not visible)"
+psql -c "SHOW pg_textsearch.default_limit;" 2>/dev/null || echo "pg_textsearch.default_limit: (parameter not visible)"
 echo ""
 
 # Phase 1: Load Cranfield dataset

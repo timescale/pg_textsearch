@@ -258,10 +258,7 @@ DROP TABLE bmw_highfreq;
 
 CREATE TABLE bmw_hybrid (id SERIAL PRIMARY KEY, content TEXT);
 
--- Set low memory to force segment spill
-SET pg_textsearch.index_memory_limit = '64kB';
-
--- Insert batch 1 (will go to segment after spill)
+-- Insert batch 1 (will go to segment via CREATE INDEX)
 INSERT INTO bmw_hybrid (content)
 SELECT 'segment document ' || i || ' with searchterm'
 FROM generate_series(1, 500) i;
@@ -269,10 +266,12 @@ FROM generate_series(1, 500) i;
 CREATE INDEX bmw_hybrid_idx ON bmw_hybrid USING bm25(content)
     WITH (text_config='english');
 
--- Force spill by inserting more
+-- Batch 2: insert and spill to create a second segment
 INSERT INTO bmw_hybrid (content)
 SELECT 'more segment data ' || i || ' searchterm'
 FROM generate_series(501, 1000) i;
+
+SELECT bm25_spill_index('bmw_hybrid_idx');
 
 -- Insert recent data (stays in memtable)
 INSERT INTO bmw_hybrid (content) VALUES
@@ -284,8 +283,6 @@ INSERT INTO bmw_hybrid (content) VALUES
 SELECT id, content <@> 'searchterm'::bm25query as score
 FROM bmw_hybrid
 ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
-
-RESET pg_textsearch.index_memory_limit;
 DROP TABLE bmw_hybrid;
 
 -- ============================================================
@@ -315,10 +312,8 @@ SELECT
 FROM generate_series(1, 1000) i;
 
 -- Force to segment with low memory limit
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_validate_idx ON bmw_validate USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: BMW (LIMIT) should match exhaustive (subquery LIMIT)
 -- Single-term
@@ -391,10 +386,8 @@ SELECT
     END || ' doc' || i
 FROM generate_series(1, 500) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_monotonic_idx ON bmw_monotonic USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: Scores must be monotonically descending (more negative)
 -- This tests that BMW correctly orders results from multiple blocks
@@ -433,10 +426,8 @@ INSERT INTO bmw_blocks (content) VALUES
     ('searchword searchword searchword searchword'),             -- id=642, tf=4
     ('searchword searchword searchword');                        -- id=643, tf=3
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_blocks_idx ON bmw_blocks USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: High-tf docs (641,642,643) must be in top results
 -- This validates block-max scoring finds them across multiple blocks
@@ -534,10 +525,8 @@ SELECT
     END || ' doc' || i
 FROM generate_series(1, 1000) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_scattered_idx ON bmw_scattered USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- The top-10 should include docs 100,200,300,400,500,600,700,800,900,1000
 -- These are spread across 8 different blocks (1000/128 = ~8 blocks)
@@ -590,10 +579,8 @@ SELECT
     END || ' doc' || i
 FROM generate_series(1, 1000) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_multi_scattered_idx ON bmw_multi_scattered USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Multi-term query - top results should come from scattered positions
 WITH bmw AS (
@@ -620,9 +607,7 @@ DROP TABLE bmw_multi_scattered;
 
 CREATE TABLE bmw_multiseg (id SERIAL PRIMARY KEY, content TEXT);
 
-SET pg_textsearch.index_memory_limit = '64kB';
-
--- Batch 1 -> segment 1
+-- Batch 1 -> segment 1 (via CREATE INDEX)
 INSERT INTO bmw_multiseg (content)
 SELECT 'first segment batch ' || i || ' targetword'
 FROM generate_series(1, 300) i;
@@ -635,14 +620,14 @@ INSERT INTO bmw_multiseg (content)
 SELECT 'second segment batch ' || i || ' targetword targetword'
 FROM generate_series(301, 600) i;
 
--- Batch 3 -> segment 3 or memtable
+SELECT bm25_spill_index('bmw_multiseg_idx');
+
+-- Batch 3 -> memtable (not spilled)
 INSERT INTO bmw_multiseg (content)
 SELECT 'third batch ' || i || ' targetword targetword targetword'
 FROM generate_series(601, 700) i;
 
-RESET pg_textsearch.index_memory_limit;
-
--- Test: Should find best results across all segments
+-- Test: Should find best results across all segments + memtable
 -- Third batch has highest tf, should rank first
 SELECT id, content <@> 'targetword'::bm25query as score
 FROM bmw_multiseg
@@ -675,10 +660,8 @@ SELECT
     END
 FROM generate_series(1, 150) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_partial_idx ON bmw_partial USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: Should find high-tf docs from BOTH blocks
 -- Doc 145 (tf=5) should be #1, docs 1-5 (tf=4) should follow
@@ -702,8 +685,6 @@ DROP TABLE bmw_partial;
 
 CREATE TABLE bmw_memonly (id SERIAL PRIMARY KEY, content TEXT);
 
-SET pg_textsearch.index_memory_limit = '64kB';
-
 -- Insert docs that will go to segment (common term)
 INSERT INTO bmw_memonly (content)
 SELECT 'segment content common word doc' || i
@@ -721,7 +702,6 @@ INSERT INTO bmw_memonly (content) VALUES
     ('uniquememterm uniquememterm'),                -- tf=2
     ('uniquememterm');                              -- tf=1
 
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: Query for memtable-only term should work
 SELECT id, content <@> 'uniquememterm'::bm25query as score
@@ -760,10 +740,8 @@ SELECT
     END
 FROM generate_series(1, 500) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_sparse_idx ON bmw_sparse USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: Should find all 10 sparse docs
 SELECT 'sparse-count' as test,
@@ -807,10 +785,8 @@ SELECT
     END
 FROM generate_series(1, 500) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_asymmetric_idx ON bmw_asymmetric USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: "common rare" should find only the 5 docs with both terms at top
 -- (they have higher combined score than single-term docs)
@@ -842,10 +818,8 @@ CREATE TABLE bmw_threshold (id SERIAL PRIMARY KEY, content TEXT);
 INSERT INTO bmw_threshold (content)
 SELECT 'threshold test word' FROM generate_series(1, 200);
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_threshold_idx ON bmw_threshold USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: With 200 identical-score docs, LIMIT 10 should return 10
 -- and they should be ordered by CTID (id 1-10)
@@ -883,10 +857,8 @@ SELECT 'alpha beta both terms doc' || i FROM generate_series(1, 100) i;
 -- Add one doc with only alpha at end
 INSERT INTO bmw_simul (content) VALUES ('alpha only final');
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_simul_idx ON bmw_simul USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Test: Should handle simultaneous exhaustion correctly
 WITH bmw AS (
@@ -938,10 +910,8 @@ SELECT
     END
 FROM generate_series(1, 500) i;
 
-SET pg_textsearch.index_memory_limit = '64kB';
 CREATE INDEX bmw_length_variance_idx ON bmw_length_variance USING bm25(content)
     WITH (text_config='english');
-RESET pg_textsearch.index_memory_limit;
 
 -- Single-term: BMW must match exhaustive for "unicorn"
 WITH bmw AS (
