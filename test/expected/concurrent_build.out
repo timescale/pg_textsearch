@@ -5,7 +5,7 @@
 -- function can determine which tuples are already indexed and avoid
 -- duplicating entries.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 SET enable_seqscan = off;
 --------------------------------------------------------------------------------
 -- Test 1: Basic CREATE INDEX CONCURRENTLY

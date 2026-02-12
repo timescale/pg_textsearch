@@ -1,6 +1,6 @@
 -- Test binary I/O for bm25query type (COPY BINARY)
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Create a table and index for testing
 CREATE TABLE binary_io_docs (id SERIAL PRIMARY KEY, content TEXT);
 INSERT INTO binary_io_docs (content) VALUES

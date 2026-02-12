@@ -1,7 +1,7 @@
 -- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Test bm25vector type exists

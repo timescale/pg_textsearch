@@ -5,7 +5,7 @@
 -- The bug triggers during document processing when per-index locks accumulate.
 -- With 200 partitions and data, the old code would exceed MAX_SIMUL_LWLOCKS.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Create a partitioned table with 200 partitions
 -- (200 is enough to trigger the bug - old limit was ~142 partitions)
 CREATE TABLE docs_many_parts (

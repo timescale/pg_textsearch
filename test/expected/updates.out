@@ -2,7 +2,7 @@
 -- This test reproduces the NULL index_state crash reported in production
 -- Install the extension if not already installed
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Test basic UPDATE operations
 CREATE TABLE update_test (
     id SERIAL PRIMARY KEY,
