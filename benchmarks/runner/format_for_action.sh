@@ -122,12 +122,21 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
-    # Throughput (average latency across 800 queries)
+    # Throughput (average latency across all queries)
     (if .metrics.throughput.avg_ms_per_query != null then
         {
-            name: "\($dataset) - Throughput (800 queries, avg ms/query)",
+            name: "\($dataset) - Throughput (avg ms/query)",
             unit: "ms",
             value: .metrics.throughput.avg_ms_per_query
+        }
+    else empty end),
+
+    # Weighted-average latency (p50, MS-MARCO distribution)
+    (if .metrics.weighted_latency.weighted_p50_ms != null then
+        {
+            name: "\($dataset) - Weighted Latency (p50, ms)",
+            unit: "ms",
+            value: .metrics.weighted_latency.weighted_p50_ms
         }
     else empty end),
 

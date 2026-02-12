@@ -112,6 +112,16 @@ if [ -n "$THROUGHPUT_LINE" ]; then
     THROUGHPUT_AVG_MS=$(echo "$THROUGHPUT_LINE" | grep -oE "avg [0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
 
+# Extract weighted-average latency
+# Format: "WEIGHTED_LATENCY_RESULT: weighted_p50=XX.XXms weighted_avg=YY.YYms"
+WEIGHTED_LINE=$(grep -E "WEIGHTED_LATENCY_RESULT:" "$LOG_FILE" 2>/dev/null | head -1 || echo "")
+WEIGHTED_P50_MS=""
+WEIGHTED_AVG_MS=""
+if [ -n "$WEIGHTED_LINE" ]; then
+    WEIGHTED_P50_MS=$(echo "$WEIGHTED_LINE" | grep -oE "weighted_p50=[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
+    WEIGHTED_AVG_MS=$(echo "$WEIGHTED_LINE" | grep -oE "weighted_avg=[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
+fi
+
 # Build JSON output
 cat > "$OUTPUT_FILE" << EOJSON
 {
@@ -140,6 +150,10 @@ cat > "$OUTPUT_FILE" << EOJSON
       "num_queries": $(num_or_null "$THROUGHPUT_NUM_QUERIES"),
       "total_ms": $(num_or_null "$THROUGHPUT_TOTAL_MS"),
       "avg_ms_per_query": $(num_or_null "$THROUGHPUT_AVG_MS")
+    },
+    "weighted_latency": {
+      "weighted_p50_ms": $(num_or_null "$WEIGHTED_P50_MS"),
+      "weighted_avg_ms": $(num_or_null "$WEIGHTED_AVG_MS")
     }
   }
 }
