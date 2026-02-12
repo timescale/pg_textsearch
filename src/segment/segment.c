@@ -1058,7 +1058,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			uint32 block_end = Min(block_start + TP_BLOCK_SIZE, doc_count);
 			uint32 j;
 			uint16 max_tf	   = 0;
-			uint8  max_norm	   = 0;
+			uint8  min_norm	   = 255;
 			uint32 last_doc_id = 0;
 
 			/* Calculate block stats */
@@ -1068,15 +1068,15 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					last_doc_id = block_postings[j].doc_id;
 				if (block_postings[j].frequency > max_tf)
 					max_tf = block_postings[j].frequency;
-				if (block_postings[j].fieldnorm > max_norm)
-					max_norm = block_postings[j].fieldnorm;
+				if (block_postings[j].fieldnorm < min_norm)
+					min_norm = block_postings[j].fieldnorm;
 			}
 
 			/* Build skip entry with actual posting offset */
 			skip.last_doc_id	= last_doc_id;
 			skip.doc_count		= (uint8)(block_end - block_start);
 			skip.block_max_tf	= max_tf;
-			skip.block_max_norm = max_norm;
+			skip.block_max_norm = min_norm;
 			skip.posting_offset = writer.current_offset;
 			memset(skip.reserved, 0, sizeof(skip.reserved));
 

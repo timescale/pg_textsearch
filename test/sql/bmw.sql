@@ -908,6 +908,92 @@ FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
 DROP TABLE bmw_simul;
 
 -- ============================================================
+-- SECTION 24: Document length variance within blocks
+-- ============================================================
+-- When a block contains a mix of very short and very long docs,
+-- the block-max upper bound must use the shortest doc's length
+-- (lowest fieldnorm) to produce a valid BM25 upper bound.
+-- This test catches bugs where the longest doc's fieldnorm is
+-- used instead, making the upper bound too tight and causing
+-- BMW to incorrectly skip blocks with high-scoring short docs.
+
+CREATE TABLE bmw_length_variance (id SERIAL PRIMARY KEY, content TEXT);
+
+-- Create 500 docs with high length variance within each 128-doc block.
+-- Short docs (3 words) are interleaved with long docs (100+ words).
+-- A rare term "unicorn" appears only in a few short docs, scattered
+-- across blocks. These short docs should score highest for "unicorn"
+-- because BM25 penalizes longer documents.
+INSERT INTO bmw_length_variance (content)
+SELECT
+    CASE
+        -- Rare term in short docs at positions that span multiple blocks
+        WHEN i IN (10, 140, 270, 400) THEN 'unicorn magic sparkle doc' || i
+        -- Long docs with padding (pushes block fieldnorm high)
+        WHEN i % 3 = 0 THEN 'common words here doc' || i || ' ' || repeat('padding ', 100)
+        -- Medium docs
+        WHEN i % 3 = 1 THEN 'common words here with more content doc' || i
+        -- Short docs without the rare term
+        ELSE 'common words here doc' || i
+    END
+FROM generate_series(1, 500) i;
+
+SET pg_textsearch.index_memory_limit = '64kB';
+CREATE INDEX bmw_length_variance_idx ON bmw_length_variance USING bm25(content)
+    WITH (text_config='english');
+RESET pg_textsearch.index_memory_limit;
+
+-- Single-term: BMW must match exhaustive for "unicorn"
+WITH bmw AS (
+    SELECT id, content <@> 'unicorn'::bm25query as score
+    FROM bmw_length_variance
+    ORDER BY content <@> 'unicorn'::bm25query LIMIT 10
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'unicorn'::bm25query as score
+        FROM bmw_length_variance
+        ORDER BY content <@> 'unicorn'::bm25query
+    ) x LIMIT 10
+)
+SELECT 'length-variance-single-term' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+-- Multi-term: "common unicorn" -- the rare "unicorn" term has high IDF,
+-- so short docs with "unicorn" should dominate. BMW must not skip their
+-- blocks just because long docs in the same block deflate the upper bound.
+
+-- Verify the unicorn docs are top-4 for "common unicorn"
+WITH top4 AS (
+    SELECT id FROM bmw_length_variance
+    ORDER BY content <@> 'common unicorn'::bm25query LIMIT 4
+)
+SELECT 'length-variance-top4' as test,
+    CASE WHEN (SELECT COUNT(*) FROM top4
+               WHERE id IN (10, 140, 270, 400)) = 4
+         THEN 'PASS' ELSE 'FAIL' END as result;
+
+-- BMW vs exhaustive with enough LIMIT to avoid tie boundary
+WITH bmw AS (
+    SELECT id, content <@> 'common unicorn'::bm25query as score
+    FROM bmw_length_variance
+    ORDER BY content <@> 'common unicorn'::bm25query LIMIT 20
+),
+exhaustive AS (
+    SELECT id, score FROM (
+        SELECT id, content <@> 'common unicorn'::bm25query as score
+        FROM bmw_length_variance
+        ORDER BY content <@> 'common unicorn'::bm25query
+    ) x LIMIT 20
+)
+SELECT 'length-variance-bmw-exhaustive' as test,
+    CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END as result
+FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
+
+DROP TABLE bmw_length_variance;
+
+-- ============================================================
 -- Cleanup
 -- ============================================================
 DROP EXTENSION pg_textsearch CASCADE;

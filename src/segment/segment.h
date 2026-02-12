@@ -164,7 +164,7 @@ typedef struct TpSkipEntry
 	uint32 last_doc_id;	   /* Last segment-local doc ID in block */
 	uint8  doc_count;	   /* Number of docs in block (1-128) */
 	uint16 block_max_tf;   /* Max term frequency in block (for BMW) */
-	uint8  block_max_norm; /* Fieldnorm ID of max-scoring doc (for BMW) */
+	uint8  block_max_norm; /* Min fieldnorm in block (shortest doc, for BMW) */
 	uint32 posting_offset; /* Byte offset from segment start to block data */
 	uint8  flags;		   /* Compression type, etc. */
 	uint8  reserved[3];	   /* Future use, ensures 16-byte alignment */
