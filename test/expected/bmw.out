@@ -358,7 +358,7 @@ FROM generate_series(501, 1000) i;
 SELECT bm25_spill_index('bmw_hybrid_idx');
  bm25_spill_index 
 ------------------
-                7
+                8
 (1 row)
 
 -- Insert recent data (stays in memtable)
