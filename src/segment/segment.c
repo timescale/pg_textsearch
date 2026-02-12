@@ -11,6 +11,7 @@
 #include <access/table.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
+#include <inttypes.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <stdio.h>
@@ -59,32 +60,13 @@ read_term_at_index(
 {
 	TpStringEntry string_entry;
 	char		 *term_text;
-	uint32		  string_offset;
-
-	/* Check for overflow when calculating string offset */
-	if (string_offsets[index] > UINT32_MAX - header->strings_offset)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("string offset overflow detected"),
-				 errdetail(
-						 "String offset %u + base %u would overflow",
-						 string_offsets[index],
-						 header->strings_offset)));
+	uint64		  string_offset;
 
 	string_offset = header->strings_offset + string_offsets[index];
 
 	/* Read string length */
 	tp_segment_read(
 			reader, string_offset, &string_entry.length, sizeof(uint32));
-
-	/* Check for overflow when adding sizeof(uint32) */
-	if (string_offset > UINT32_MAX - sizeof(uint32))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("string data offset overflow detected"),
-				 errdetail(
-						 "String offset %u + sizeof(uint32) would overflow",
-						 string_offset)));
 
 	/* Allocate buffer and read term text */
 	term_text = palloc(string_entry.length + 1);
@@ -99,32 +81,38 @@ read_term_at_index(
 }
 
 /*
- * Helper function to read a dictionary entry at a given index
+ * Version-aware dictionary entry reader.
+ * V3 segments have 12-byte TpDictEntryV3; V4 have 16-byte TpDictEntry.
  */
-static void
-read_dict_entry(
+void
+tp_segment_read_dict_entry(
 		TpSegmentReader *reader,
 		TpSegmentHeader *header,
 		uint32			 index,
 		TpDictEntry		*entry)
 {
-	uint32 offset_increment;
-	uint32 entry_offset;
+	uint64 entry_offset;
 
-	if (index > UINT32_MAX / sizeof(TpDictEntry))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("dictionary entry index overflow")));
+	if (reader->segment_version <= TP_SEGMENT_FORMAT_VERSION_3)
+	{
+		TpDictEntryV3 v3;
 
-	offset_increment = index * sizeof(TpDictEntry);
+		entry_offset = header->entries_offset +
+					   (uint64)index * sizeof(TpDictEntryV3);
+		tp_segment_read(reader, entry_offset, &v3, sizeof(TpDictEntryV3));
 
-	if (offset_increment > UINT32_MAX - header->entries_offset)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("dictionary entry offset overflow")));
-
-	entry_offset = header->entries_offset + offset_increment;
-	tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
+		/* Widen V3 fields to V4 */
+		entry->skip_index_offset = (uint64)v3.skip_index_offset;
+		entry->block_count		 = v3.block_count;
+		entry->reserved			 = v3.reserved;
+		entry->doc_freq			 = v3.doc_freq;
+	}
+	else
+	{
+		entry_offset = header->entries_offset +
+					   (uint64)index * sizeof(TpDictEntry);
+		tp_segment_read(reader, entry_offset, entry, sizeof(TpDictEntry));
+	}
 }
 
 /*
@@ -170,27 +158,86 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	LockBuffer(header_buf, BUFFER_LOCK_SHARE);
 	header_page = BufferGetPage(header_buf);
 
-	/* Copy header to reader structure */
-	reader->header = palloc(sizeof(TpSegmentHeader));
-	memcpy(reader->header,
-		   PageGetContents(header_page),
-		   sizeof(TpSegmentHeader));
-
-	header = reader->header;
-
-	/* Validate header magic number */
-	if (header->magic != TP_SEGMENT_MAGIC)
+	/*
+	 * Read raw magic and version first to determine format, then
+	 * read the correct header struct and widen to V4 if needed.
+	 */
 	{
-		UnlockReleaseBuffer(header_buf);
-		pfree(reader->header);
-		pfree(reader);
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid segment header at block %u", root_block),
-				 errdetail(
-						 "magic=0x%08X, expected 0x%08X",
-						 header->magic,
-						 TP_SEGMENT_MAGIC)));
+		uint32 raw_magic;
+		uint32 raw_version;
+
+		memcpy(&raw_magic, PageGetContents(header_page), sizeof(uint32));
+		memcpy(&raw_version,
+			   (char *)PageGetContents(header_page) + sizeof(uint32),
+			   sizeof(uint32));
+
+		/* Validate magic before version dispatch */
+		if (raw_magic != TP_SEGMENT_MAGIC)
+		{
+			UnlockReleaseBuffer(header_buf);
+			pfree(reader);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid segment header at block %u", root_block),
+					 errdetail(
+							 "magic=0x%08X, expected 0x%08X",
+							 raw_magic,
+							 TP_SEGMENT_MAGIC)));
+		}
+
+		reader->segment_version = raw_version;
+		reader->header			= palloc(sizeof(TpSegmentHeader));
+
+		if (raw_version <= TP_SEGMENT_FORMAT_VERSION_3)
+		{
+			/* V3: read legacy struct and widen to V4 */
+			TpSegmentHeaderV3 v3;
+
+			memcpy(&v3,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeaderV3));
+
+			header						= reader->header;
+			header->magic				= v3.magic;
+			header->version				= v3.version;
+			header->created_at			= v3.created_at;
+			header->num_pages			= v3.num_pages;
+			header->data_size			= (uint64)v3.data_size;
+			header->level				= v3.level;
+			header->next_segment		= v3.next_segment;
+			header->dictionary_offset	= (uint64)v3.dictionary_offset;
+			header->strings_offset		= (uint64)v3.strings_offset;
+			header->entries_offset		= (uint64)v3.entries_offset;
+			header->postings_offset		= (uint64)v3.postings_offset;
+			header->skip_index_offset	= (uint64)v3.skip_index_offset;
+			header->fieldnorm_offset	= (uint64)v3.fieldnorm_offset;
+			header->ctid_pages_offset	= (uint64)v3.ctid_pages_offset;
+			header->ctid_offsets_offset = (uint64)v3.ctid_offsets_offset;
+			header->num_terms			= v3.num_terms;
+			header->num_docs			= v3.num_docs;
+			header->total_tokens		= v3.total_tokens;
+			header->page_index			= v3.page_index;
+		}
+		else if (raw_version == TP_SEGMENT_FORMAT_VERSION)
+		{
+			/* V4: direct copy */
+			memcpy(reader->header,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeader));
+			header = reader->header;
+		}
+		else
+		{
+			UnlockReleaseBuffer(header_buf);
+			pfree(reader->header);
+			pfree(reader);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("unsupported segment format version %u "
+							"at block %u",
+							raw_version,
+							root_block)));
+		}
 	}
 
 	reader->num_pages = header->num_pages;
@@ -411,15 +458,15 @@ tp_segment_close(TpSegmentReader *reader)
 
 void
 tp_segment_read(
-		TpSegmentReader *reader, uint32 logical_offset, void *dest, uint32 len)
+		TpSegmentReader *reader, uint64 logical_offset, void *dest, uint32 len)
 {
 	char  *dest_ptr	  = (char *)dest;
 	uint32 bytes_read = 0;
 
 	while (bytes_read < len)
 	{
-		uint32 logical_page = logical_offset / SEGMENT_DATA_PER_PAGE;
-		uint32 page_offset	= logical_offset % SEGMENT_DATA_PER_PAGE;
+		uint32 logical_page = (uint32)(logical_offset / SEGMENT_DATA_PER_PAGE);
+		uint32 page_offset	= (uint32)(logical_offset % SEGMENT_DATA_PER_PAGE);
 		uint32 to_read;
 		Buffer buf;
 		Page   page;
@@ -442,7 +489,8 @@ tp_segment_read(
 			if (logical_page >= reader->num_pages)
 			{
 				elog(ERROR,
-					 "Invalid logical page %u (max %u), logical_offset=%u, "
+					 "Invalid logical page %u (max %u), "
+					 "logical_offset=%" PRIu64 ", "
 					 "BLCKSZ=%d, reader->num_pages=%u",
 					 logical_page,
 					 reader->num_pages > 0 ? reader->num_pages - 1 : 0,
@@ -511,14 +559,14 @@ tp_segment_read(
 bool
 tp_segment_get_direct(
 		TpSegmentReader		  *reader,
-		uint32				   logical_offset,
+		uint64				   logical_offset,
 		uint32				   len,
 		TpSegmentDirectAccess *access)
 {
-	uint32		logical_page = logical_offset / SEGMENT_DATA_PER_PAGE;
-	uint32		page_offset	 = logical_offset % SEGMENT_DATA_PER_PAGE;
-	Buffer		buf;
-	Page		page;
+	uint32 logical_page = (uint32)(logical_offset / SEGMENT_DATA_PER_PAGE);
+	uint32 page_offset	= (uint32)(logical_offset % SEGMENT_DATA_PER_PAGE);
+	Buffer buf;
+	Page   page;
 	BlockNumber physical_block;
 
 	/* Initialize access structure to invalid state */
@@ -847,7 +895,7 @@ build_docmap_from_memtable(TpLocalIndexState *state)
  */
 typedef struct TermBlockInfo
 {
-	uint32 posting_offset;	 /* Absolute offset where postings were written */
+	uint64 posting_offset;	 /* Absolute offset where postings were written */
 	uint16 block_count;		 /* Number of blocks for this term */
 	uint32 doc_freq;		 /* Document frequency */
 	uint32 skip_entry_start; /* Index into accumulated skip entries array */
@@ -1108,7 +1156,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			if (skip_entries_count >= skip_entries_capacity)
 			{
 				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
+				all_skip_entries = repalloc_huge(
 						all_skip_entries,
 						skip_entries_capacity * sizeof(TpSkipEntry));
 			}
@@ -1192,22 +1240,25 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		for (i = 0; i < num_terms; i++)
 		{
 			TpDictEntry entry;
-			uint32		entry_offset;
+			uint64		entry_offset;
 			uint32		page_offset;
 			BlockNumber physical_block;
 
 			/* Build the entry */
-			entry.skip_index_offset = header.skip_index_offset +
-									  (term_blocks[i].skip_entry_start *
-									   sizeof(TpSkipEntry));
+			entry.skip_index_offset =
+					header.skip_index_offset +
+					((uint64)term_blocks[i].skip_entry_start *
+					 sizeof(TpSkipEntry));
 			entry.block_count = term_blocks[i].block_count;
 			entry.reserved	  = 0;
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset + (i * sizeof(TpDictEntry));
-			entry_logical_page = entry_offset / SEGMENT_DATA_PER_PAGE;
-			page_offset		   = entry_offset % SEGMENT_DATA_PER_PAGE;
+			entry_offset = header.entries_offset +
+						   ((uint64)i * sizeof(TpDictEntry));
+			entry_logical_page = (uint32)(entry_offset /
+										  SEGMENT_DATA_PER_PAGE);
+			page_offset = (uint32)(entry_offset % SEGMENT_DATA_PER_PAGE);
 
 			/* Bounds check */
 			if (entry_logical_page >= writer.pages_allocated)
@@ -1455,10 +1506,47 @@ tp_dump_segment_to_output(
 	LockBuffer(header_buf, BUFFER_LOCK_SHARE);
 	header_page = BufferGetPage(header_buf);
 
-	/* Copy header from page */
-	memcpy(&header,
-		   (char *)header_page + SizeOfPageHeaderData,
-		   sizeof(TpSegmentHeader));
+	/* Version-aware header read */
+	{
+		uint32 raw_version;
+		memcpy(&raw_version,
+			   (char *)PageGetContents(header_page) + sizeof(uint32),
+			   sizeof(uint32));
+
+		if (raw_version <= TP_SEGMENT_FORMAT_VERSION_3)
+		{
+			TpSegmentHeaderV3 v3;
+			memcpy(&v3,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeaderV3));
+
+			header.magic			   = v3.magic;
+			header.version			   = v3.version;
+			header.created_at		   = v3.created_at;
+			header.num_pages		   = v3.num_pages;
+			header.data_size		   = (uint64)v3.data_size;
+			header.level			   = v3.level;
+			header.next_segment		   = v3.next_segment;
+			header.dictionary_offset   = (uint64)v3.dictionary_offset;
+			header.strings_offset	   = (uint64)v3.strings_offset;
+			header.entries_offset	   = (uint64)v3.entries_offset;
+			header.postings_offset	   = (uint64)v3.postings_offset;
+			header.skip_index_offset   = (uint64)v3.skip_index_offset;
+			header.fieldnorm_offset	   = (uint64)v3.fieldnorm_offset;
+			header.ctid_pages_offset   = (uint64)v3.ctid_pages_offset;
+			header.ctid_offsets_offset = (uint64)v3.ctid_offsets_offset;
+			header.num_terms		   = v3.num_terms;
+			header.num_docs			   = v3.num_docs;
+			header.total_tokens		   = v3.total_tokens;
+			header.page_index		   = v3.page_index;
+		}
+		else
+		{
+			memcpy(&header,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeader));
+		}
+	}
 
 	/* Hex dump in full mode (file output) */
 	if (out->full_dump)
@@ -1499,7 +1587,7 @@ tp_dump_segment_to_output(
 			header.magic == TP_SEGMENT_MAGIC ? "VALID" : "INVALID!");
 	dump_printf(out, "Version: %u\n", header.version);
 	dump_printf(out, "Pages: %u\n", header.num_pages);
-	dump_printf(out, "Data size: %u bytes\n", header.data_size);
+	dump_printf(out, "Data size: %" PRIu64 " bytes\n", header.data_size);
 	dump_printf(out, "Level: %u\n", header.level);
 	dump_printf(out, "Page index: block %u\n", header.page_index);
 
@@ -1514,14 +1602,21 @@ tp_dump_segment_to_output(
 
 	/* Section offsets */
 	dump_printf(out, "\n=== SECTION OFFSETS ===\n");
-	dump_printf(out, "Dictionary offset: %u\n", header.dictionary_offset);
-	dump_printf(out, "Strings offset: %u\n", header.strings_offset);
-	dump_printf(out, "Entries offset: %u\n", header.entries_offset);
-	dump_printf(out, "Skip index offset: %u\n", header.skip_index_offset);
-	dump_printf(out, "Postings offset: %u\n", header.postings_offset);
-	dump_printf(out, "Fieldnorm offset: %u\n", header.fieldnorm_offset);
-	dump_printf(out, "CTID pages offset: %u\n", header.ctid_pages_offset);
-	dump_printf(out, "CTID offsets offset: %u\n", header.ctid_offsets_offset);
+	dump_printf(
+			out, "Dictionary offset: %" PRIu64 "\n", header.dictionary_offset);
+	dump_printf(out, "Strings offset: %" PRIu64 "\n", header.strings_offset);
+	dump_printf(out, "Entries offset: %" PRIu64 "\n", header.entries_offset);
+	dump_printf(
+			out, "Skip index offset: %" PRIu64 "\n", header.skip_index_offset);
+	dump_printf(out, "Postings offset: %" PRIu64 "\n", header.postings_offset);
+	dump_printf(
+			out, "Fieldnorm offset: %" PRIu64 "\n", header.fieldnorm_offset);
+	dump_printf(
+			out, "CTID pages offset: %" PRIu64 "\n", header.ctid_pages_offset);
+	dump_printf(
+			out,
+			"CTID offsets offset: %" PRIu64 "\n",
+			header.ctid_offsets_offset);
 
 	/* Page layout summary */
 	if (header.data_size > 0)
@@ -1615,7 +1710,7 @@ tp_dump_segment_to_output(
 			{
 				/* Block-based storage */
 				TpDictEntry entry;
-				read_dict_entry(reader, &header, i, &entry);
+				tp_segment_read_dict_entry(reader, &header, i, &entry);
 
 				dump_printf(
 						out,
@@ -1636,20 +1731,17 @@ tp_dump_segment_to_output(
 					for (j = 0; j < blocks_to_show; j++)
 					{
 						TpSkipEntry skip;
-						uint32		skip_off;
 						uint32		k;
 						uint32		postings_to_show;
 
-						skip_off = entry.skip_index_offset +
-								   j * sizeof(TpSkipEntry);
-						tp_segment_read(
-								reader, skip_off, &skip, sizeof(TpSkipEntry));
+						tp_segment_read_skip_entry(
+								reader, entry.skip_index_offset, j, &skip);
 
 						dump_printf(
 								out,
 								"         Block %u: docs=%u, "
 								"last_doc=%u, max_tf=%u, "
-								"offset=%u\n",
+								"offset=%" PRIu64 "\n",
 								j,
 								skip.doc_count,
 								skip.last_doc_id,

@@ -42,12 +42,40 @@ typedef struct TpPageIndexSpecial
 } TpPageIndexSpecial;
 
 /*
- * Segment format version
+ * Segment format versions
  */
-#define TP_SEGMENT_FORMAT_VERSION 3 /* Block compression support */
+#define TP_SEGMENT_FORMAT_VERSION_3 3 /* Legacy: uint32 offsets */
+#define TP_SEGMENT_FORMAT_VERSION	4 /* Current: uint64 offsets */
 
 /*
- * Segment header - stored on the first page
+ * V3 legacy segment header - preserved for reading old segments.
+ * All offsets are uint32, limiting segments to 4GB.
+ */
+typedef struct TpSegmentHeaderV3
+{
+	uint32		magic;
+	uint32		version;
+	TimestampTz created_at;
+	uint32		num_pages;
+	uint32		data_size;
+	uint32		level;
+	BlockNumber next_segment;
+	uint32		dictionary_offset;
+	uint32		strings_offset;
+	uint32		entries_offset;
+	uint32		postings_offset;
+	uint32		skip_index_offset;
+	uint32		fieldnorm_offset;
+	uint32		ctid_pages_offset;
+	uint32		ctid_offsets_offset;
+	uint32		num_terms;
+	uint32		num_docs;
+	uint64		total_tokens;
+	BlockNumber page_index;
+} TpSegmentHeaderV3;
+
+/*
+ * Segment header - stored on the first page (V4: uint64 offsets)
  */
 typedef struct TpSegmentHeader
 {
@@ -56,24 +84,23 @@ typedef struct TpSegmentHeader
 	uint32		version;	/* Format version */
 	TimestampTz created_at; /* Creation time */
 	uint32		num_pages;	/* Total pages in segment */
-	uint32		data_size;	/* Total data bytes */
+	uint64		data_size;	/* Total data bytes */
 
 	/* Segment management */
 	uint32		level;		  /* Storage level (0 for memtable flush) */
 	BlockNumber next_segment; /* Next segment in chain */
 
 	/* Section offsets in logical file */
-	uint32 dictionary_offset; /* Offset to TpDictionary */
-	uint32 strings_offset;	  /* Offset to string pool */
-	uint32 entries_offset;	  /* Offset to TpDictEntry array */
-	uint32 postings_offset;	  /* Offset to posting data (blocks) */
+	uint64 dictionary_offset; /* Offset to TpDictionary */
+	uint64 strings_offset;	  /* Offset to string pool */
+	uint64 entries_offset;	  /* Offset to TpDictEntry array */
+	uint64 postings_offset;	  /* Offset to posting data (blocks) */
 
 	/* Block storage offsets */
-	uint32 skip_index_offset;	/* Offset to skip index (TpSkipEntry arrays) */
-	uint32 fieldnorm_offset;	/* Offset to fieldnorm table (1 byte/doc) */
-	uint32 ctid_pages_offset;	/* Offset to BlockNumber array (4 bytes/doc) */
-	uint32 ctid_offsets_offset; /* Offset to OffsetNumber array (2 bytes/doc)
-								 */
+	uint64 skip_index_offset;	/* Offset to skip index */
+	uint64 fieldnorm_offset;	/* Offset to fieldnorm table */
+	uint64 ctid_pages_offset;	/* Offset to BlockNumber array */
+	uint64 ctid_offsets_offset; /* Offset to OffsetNumber array */
 
 	/* Corpus statistics */
 	uint32 num_terms;	 /* Total unique terms */
@@ -118,7 +145,18 @@ typedef struct TpStringEntry
 } TpStringEntry;
 
 /*
- * Dictionary entry - 12 bytes, block-based storage
+ * V3 legacy dictionary entry - 12 bytes
+ */
+typedef struct TpDictEntryV3
+{
+	uint32 skip_index_offset;
+	uint16 block_count;
+	uint16 reserved;
+	uint32 doc_freq;
+} __attribute__((aligned(4))) TpDictEntryV3;
+
+/*
+ * Dictionary entry - 16 bytes, block-based storage (V4: uint64 offset)
  *
  * Points to skip index instead of raw postings. The skip index
  * contains block_count TpSkipEntry structures, each pointing to
@@ -126,11 +164,11 @@ typedef struct TpStringEntry
  */
 typedef struct TpDictEntry
 {
-	uint32 skip_index_offset; /* Offset to TpSkipEntry array for this term */
+	uint64 skip_index_offset; /* Offset to TpSkipEntry array for this term */
 	uint16 block_count;		  /* Number of blocks (and skip entries) */
 	uint16 reserved;		  /* Padding */
 	uint32 doc_freq;		  /* Document frequency for IDF */
-} __attribute__((aligned(4))) TpDictEntry;
+} __attribute__((aligned(8))) TpDictEntry;
 
 /*
  * Segment posting - output format for iteration
@@ -154,7 +192,21 @@ typedef struct TpSegmentPosting
 #define TP_BLOCK_SIZE 128 /* Documents per block (matches Tantivy) */
 
 /*
- * Skip index entry - 16 bytes per block
+ * V3 legacy skip index entry - 16 bytes per block
+ */
+typedef struct TpSkipEntryV3
+{
+	uint32 last_doc_id;
+	uint8  doc_count;
+	uint16 block_max_tf;
+	uint8  block_max_norm;
+	uint32 posting_offset;
+	uint8  flags;
+	uint8  reserved[3];
+} __attribute__((packed)) TpSkipEntryV3;
+
+/*
+ * Skip index entry - 20 bytes per block (V4: uint64 posting_offset)
  *
  * Stored separately from posting data for cache efficiency during BMW.
  * The skip index is a dense array of these entries, one per block.
@@ -165,9 +217,9 @@ typedef struct TpSkipEntry
 	uint8  doc_count;	   /* Number of docs in block (1-128) */
 	uint16 block_max_tf;   /* Max term frequency in block (for BMW) */
 	uint8  block_max_norm; /* Min fieldnorm in block (shortest doc, for BMW) */
-	uint32 posting_offset; /* Byte offset from segment start to block data */
+	uint64 posting_offset; /* Byte offset from segment start to block data */
 	uint8  flags;		   /* Compression type, etc. */
-	uint8  reserved[3];	   /* Future use, ensures 16-byte alignment */
+	uint8  reserved[3];	   /* Future use */
 } __attribute__((packed)) TpSkipEntry;
 
 /* Skip entry flags */
@@ -175,6 +227,21 @@ typedef struct TpSkipEntry
 #define TP_BLOCK_FLAG_DELTA		   0x01 /* Delta-encoded doc IDs */
 #define TP_BLOCK_FLAG_FOR		   0x02 /* Frame-of-reference (Phase 3) */
 #define TP_BLOCK_FLAG_PFOR		   0x03 /* Patched FOR (Phase 3) */
+
+/* Version-aware struct size helpers */
+static inline size_t
+tp_dict_entry_size(uint32 version)
+{
+	return (version <= TP_SEGMENT_FORMAT_VERSION_3) ? sizeof(TpDictEntryV3)
+													: sizeof(TpDictEntry);
+}
+
+static inline size_t
+tp_skip_entry_size(uint32 version)
+{
+	return (version <= TP_SEGMENT_FORMAT_VERSION_3) ? sizeof(TpSkipEntryV3)
+													: sizeof(TpSkipEntry);
+}
 
 /*
  * Block posting entry - 8 bytes, used in uncompressed blocks
@@ -225,6 +292,7 @@ typedef struct TpSegmentReader
 {
 	Relation	index;
 	BlockNumber root_block;
+	uint32		segment_version; /* On-disk format version */
 
 	/* Cached header */
 	TpSegmentHeader *header;
@@ -257,7 +325,7 @@ typedef struct TpSegmentWriter
 	BlockNumber *pages; /* Dynamically allocated array of page blocks */
 	uint32		 pages_allocated; /* Number of pages allocated so far */
 	uint32		 pages_capacity;  /* Capacity of the pages array */
-	uint32		 current_offset;  /* Current write position in logical file */
+	uint64		 current_offset;  /* Current write position in logical file */
 	char		*buffer;		  /* Write buffer (one page) */
 	uint32		 buffer_page;	  /* Which logical page is in buffer */
 	uint32		 buffer_pos;	  /* Position within buffer */
@@ -300,7 +368,7 @@ tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
 extern void				tp_segment_read(
 					TpSegmentReader *reader,
-					uint32			 logical_offset,
+					uint64			 logical_offset,
 					void			*dest,
 					uint32			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
@@ -320,10 +388,17 @@ typedef struct TpSegmentDirectAccess
 
 extern bool tp_segment_get_direct(
 		TpSegmentReader		  *reader,
-		uint32				   logical_offset,
+		uint64				   logical_offset,
 		uint32				   len,
 		TpSegmentDirectAccess *access);
 extern void tp_segment_release_direct(TpSegmentDirectAccess *access);
+
+/* Version-aware dictionary entry reader */
+extern void tp_segment_read_dict_entry(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		TpDictEntry		*entry);
 
 /* Debug functions */
 struct DumpOutput; /* Forward declaration */
@@ -416,7 +491,7 @@ extern void tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter);
 /* Read a skip entry by block index */
 extern void tp_segment_read_skip_entry(
 		TpSegmentReader *reader,
-		TpDictEntry		*dict_entry,
+		uint64			 skip_index_offset,
 		uint16			 block_idx,
 		TpSkipEntry		*skip);
 
