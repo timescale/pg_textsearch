@@ -2,7 +2,7 @@
 -- Tests the top-k optimization for both single-term and multi-term queries
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 \set ECHO none
 -- ============================================================
 -- SECTION 1: Basic BMW correctness

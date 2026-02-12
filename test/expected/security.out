@@ -1,6 +1,6 @@
 -- Test security restrictions on debug functions
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Create test data
 CREATE TABLE security_test (id serial, content text);
 INSERT INTO security_test (content) VALUES ('test document');

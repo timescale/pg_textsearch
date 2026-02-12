@@ -1,4 +1,4 @@
--- pg_textsearch extension version 1.0.0-dev
+-- pg_textsearch extension version 0.5.1
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -181,7 +181,7 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
 -- Display version info (with prerelease warning)
 DO $$
 BEGIN
-    RAISE WARNING 'pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.';
+    RAISE WARNING 'pg_textsearch v0.5.1 is a prerelease. Do not use in production.';
 END
 $$;
 

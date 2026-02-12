@@ -16,7 +16,7 @@
 -- partition-local statistics.
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Load validation functions
 \set ECHO none
 SET enable_seqscan = off;

@@ -1,7 +1,7 @@
 -- Test implicit index resolution via planner hook
 -- Tests that to_bm25query() without an index name automatically finds the BM25 index
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 SET enable_seqscan = off;
 -- Create test table with BM25 index
 CREATE TABLE implicit_docs (

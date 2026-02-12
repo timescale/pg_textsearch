@@ -1,7 +1,7 @@
 -- Test explicit index name in to_bm25query
 -- Validates fixes for GitHub issues #183 and #194
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -----------------------------------------------------------------------
 -- Issue #194: to_bm25query with explicit index ignores index column
 -- Using an index on a different column should error

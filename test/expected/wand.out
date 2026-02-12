@@ -5,7 +5,7 @@
 -- are correctly scored. Uses validation.sql to verify scores match
 -- the reference BM25 implementation.
 CREATE EXTENSION pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 \set ECHO none
 -- ============================================================
 -- TEST: Multi-term documents score correctly across block boundaries

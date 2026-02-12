@@ -1,6 +1,6 @@
 -- Test that BM25 index scans report statistics to pg_stat_user_indexes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Create a test table with BM25 index
 CREATE TABLE test_pgstats (id serial PRIMARY KEY, content text);
 CREATE INDEX test_pgstats_idx ON test_pgstats

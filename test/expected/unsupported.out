@@ -1,7 +1,7 @@
 -- Test cases for queries that are NOT YET fully supported
 -- These document known limitations of the current implicit index resolution
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.5.1 is a prerelease. Do not use in production.
 -- Setup test tables
 CREATE TABLE docs (
     id SERIAL PRIMARY KEY,
