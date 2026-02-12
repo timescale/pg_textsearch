@@ -44,3 +44,4 @@ SELECT idx_scan > 1 AS multiple_scans
 
 -- Cleanup
 DROP TABLE test_pgstats;
+DROP EXTENSION pg_textsearch CASCADE;
