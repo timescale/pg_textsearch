@@ -147,12 +147,21 @@ DROP FUNCTION benchmark_bucket;
 -- v1 queries after to_tsvector: 1=3.5%, 2=16.3%, 3=30.2%,
 -- 4=26.1%, 5=14.2%, 6=5.9%, 7=2.2%, 8+=1.5%
 \echo ''
-\echo '=== Weighted-Average Query Latency ==='
+\echo '=== Weighted-Average Query Latency & Throughput ==='
 SELECT 'WEIGHTED_LATENCY_RESULT: weighted_p50='
     || round(SUM(b.p50_ms * w.weight) / SUM(w.weight), 2)
     || 'ms weighted_avg='
     || round(SUM(b.avg_ms * w.weight) / SUM(w.weight), 2)
     || 'ms' as result
+FROM bucket_results b
+JOIN (VALUES
+    (1, 35638), (2, 165033), (3, 304887), (4, 264177),
+    (5, 143765), (6, 59558), (7, 22595), (8, 15252)
+) AS w(bucket, weight) ON b.bucket = w.bucket;
+
+SELECT 'WEIGHTED_THROUGHPUT_RESULT: '
+    || round(SUM(b.avg_ms * w.weight) / SUM(w.weight), 2)
+    || ' ms/query' as result
 FROM bucket_results b
 JOIN (VALUES
     (1, 35638), (2, 165033), (3, 304887), (4, 264177),

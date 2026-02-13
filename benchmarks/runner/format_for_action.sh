@@ -140,6 +140,15 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
+    # Weighted throughput (avg ms/query, MS-MARCO distribution)
+    (if .metrics.weighted_throughput.avg_ms_per_query != null then
+        {
+            name: "\($dataset) - Weighted Throughput (avg ms/query)",
+            unit: "ms",
+            value: .metrics.weighted_throughput.avg_ms_per_query
+        }
+    else empty end),
+
     # Index size (in MB for readability)
     (if .metrics.index_size_bytes != null then
         {

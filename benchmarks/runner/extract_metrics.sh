@@ -122,6 +122,14 @@ if [ -n "$WEIGHTED_LINE" ]; then
     WEIGHTED_AVG_MS=$(echo "$WEIGHTED_LINE" | grep -oE "weighted_avg=[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
 
+# Extract weighted throughput
+# Format: "WEIGHTED_THROUGHPUT_RESULT: XX.XX ms/query"
+WEIGHTED_THROUGHPUT_LINE=$(grep -E "WEIGHTED_THROUGHPUT_RESULT:" "$LOG_FILE" 2>/dev/null | head -1 || echo "")
+WEIGHTED_THROUGHPUT_MS=""
+if [ -n "$WEIGHTED_THROUGHPUT_LINE" ]; then
+    WEIGHTED_THROUGHPUT_MS=$(echo "$WEIGHTED_THROUGHPUT_LINE" | grep -oE "[0-9]+\.[0-9]+ ms/query" | grep -oE "[0-9]+\.[0-9]+" || echo "")
+fi
+
 # Build JSON output
 cat > "$OUTPUT_FILE" << EOJSON
 {
@@ -154,6 +162,9 @@ cat > "$OUTPUT_FILE" << EOJSON
     "weighted_latency": {
       "weighted_p50_ms": $(num_or_null "$WEIGHTED_P50_MS"),
       "weighted_avg_ms": $(num_or_null "$WEIGHTED_AVG_MS")
+    },
+    "weighted_throughput": {
+      "avg_ms_per_query": $(num_or_null "$WEIGHTED_THROUGHPUT_MS")
     }
   }
 }
