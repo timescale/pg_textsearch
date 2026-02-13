@@ -96,6 +96,18 @@
             <tr><td>Query token buckets</td><td>1, 2, 3, 4, 5, 6, 7, 8+</td></tr>
         </table>
 
+        <h3>MS MARCO v2</h3>
+        <p>
+            The <a href="https://microsoft.github.io/msmarco/">MS MARCO v2</a> passage ranking
+            dataset scales the primary benchmark to 138 million passages for large-corpus testing.
+        </p>
+        <table>
+            <tr><th>Metric</th><th>Value</th></tr>
+            <tr><td>Documents</td><td>138,364,198</td></tr>
+            <tr><td>Test queries</td><td>691 (sampled from dev set)</td></tr>
+            <tr><td>Query token buckets</td><td>1, 2, 3, 4, 5, 6, 7, 8+</td></tr>
+        </table>
+
         <h3>Wikipedia</h3>
         <p>
             Wikipedia article abstracts provide longer documents for testing scalability.
@@ -149,8 +161,31 @@ random_page_cost = 1.1</code></pre>
 
         <h3>Throughput</h3>
         <p>
-            Total time to execute all 800 test queries sequentially, reported as
+            Total time to execute all test queries sequentially, reported as
             average milliseconds per query.
+        </p>
+
+        <h3>Weighted-Average Latency</h3>
+        <p>
+            A single summary metric that weights per-bucket p50 latencies by the
+            observed query-length distribution from MS&nbsp;MARCO&nbsp;v1
+            (1,010,905 queries after <code>to_tsvector</code>). This reflects
+            realistic workload performance more accurately than an equal-weight
+            average across buckets.
+        </p>
+        <table>
+            <tr><th>Token Bucket</th><th>Queries</th><th>Weight</th></tr>
+            <tr><td>1</td><td>35,638</td><td>3.5%</td></tr>
+            <tr><td>2</td><td>165,033</td><td>16.3%</td></tr>
+            <tr><td>3</td><td>304,887</td><td>30.2%</td></tr>
+            <tr><td>4</td><td>264,177</td><td>26.1%</td></tr>
+            <tr><td>5</td><td>143,765</td><td>14.2%</td></tr>
+            <tr><td>6</td><td>59,558</td><td>5.9%</td></tr>
+            <tr><td>7</td><td>22,595</td><td>2.2%</td></tr>
+            <tr><td>8+</td><td>15,252</td><td>1.5%</td></tr>
+        </table>
+        <p>
+            Formula: <code>weighted_p50 = &Sigma;(bucket_p50 &times; weight) / &Sigma;(weight)</code>
         </p>
 
         <h2>Benchmark Procedure</h2>

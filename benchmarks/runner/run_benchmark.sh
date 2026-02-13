@@ -7,6 +7,7 @@
 #
 # Datasets:
 #   msmarco     - MS MARCO Passage Ranking (8.8M passages)
+#   msmarco-v2  - MS MARCO v2 Passage Ranking (138M passages)
 #   wikipedia   - Wikipedia articles
 #   cranfield   - Cranfield collection (1,400 docs) - for quick validation
 #   all         - Run all benchmarks
@@ -47,7 +48,7 @@ VALIDATION_FAILED=false
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        msmarco|wikipedia|cranfield|all)
+        msmarco|msmarco-v2|wikipedia|cranfield|all)
             DATASET="$1"
             shift
             ;;
@@ -80,6 +81,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Datasets:"
             echo "  msmarco     - MS MARCO Passage Ranking (8.8M passages)"
+            echo "  msmarco-v2  - MS MARCO v2 Passage Ranking (138M passages)"
             echo "  wikipedia   - Wikipedia articles"
             echo "  cranfield   - Cranfield collection (1,400 docs)"
             echo "  all         - Run all benchmarks"
@@ -264,7 +266,7 @@ EOF
 
         source "$metrics_file"
 
-        for ds in msmarco wikipedia cranfield; do
+        for ds in msmarco msmarco-v2 wikipedia cranfield; do
             load_var="LOAD_TIME_${ds}"
             query_var="QUERY_TIME_${ds}"
             validation_var="VALIDATION_${ds}"
@@ -299,7 +301,7 @@ EOF
 
 # Run benchmarks
 if [ "$DATASET" = "all" ]; then
-    for ds in cranfield msmarco wikipedia; do
+    for ds in cranfield msmarco msmarco-v2 wikipedia; do
         run_benchmark "$ds"
     done
 else

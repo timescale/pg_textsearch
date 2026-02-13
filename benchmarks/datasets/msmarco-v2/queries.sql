@@ -1,11 +1,11 @@
--- MS MARCO Passage Ranking - Query Benchmarks
--- Runs various query workloads against the indexed MS MARCO collection
+-- MS MARCO v2 Passage Ranking - Query Benchmarks
+-- Runs various query workloads against the indexed MS MARCO v2 collection
 -- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO Query Benchmarks ==='
+\echo '=== MS MARCO v2 Query Benchmarks ==='
 \echo ''
 
 -- Load benchmark queries (pre-sampled by token count)
@@ -16,7 +16,7 @@ CREATE TABLE benchmark_queries (
     query_text TEXT,
     token_bucket INTEGER
 );
-\copy benchmark_queries FROM 'benchmarks/datasets/msmarco/benchmark_queries.tsv' WITH (FORMAT text, DELIMITER E'\t')
+\copy benchmark_queries FROM 'benchmarks/datasets/msmarco-v2/benchmark_queries.tsv' WITH (FORMAT text, DELIMITER E'\t')
 
 -- Verify load
 SELECT 'Loaded ' || COUNT(*) || ' benchmark queries' as status FROM benchmark_queries;
@@ -30,8 +30,8 @@ DECLARE
     q record;
 BEGIN
     FOR q IN SELECT query_text FROM benchmark_queries ORDER BY random() LIMIT 50 LOOP
-        EXECUTE 'SELECT passage_id FROM msmarco_passages
-                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
+        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages
+                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_v2_bm25_idx'')
                  LIMIT 10' USING q.query_text;
     END LOOP;
 END;
@@ -69,8 +69,8 @@ BEGIN
 
     FOR q IN SELECT query_text FROM benchmark_queries WHERE token_bucket = bucket ORDER BY query_id LOOP
         start_ts := clock_timestamp();
-        EXECUTE 'SELECT COUNT(*) FROM (SELECT passage_id FROM msmarco_passages
-                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
+        EXECUTE 'SELECT COUNT(*) FROM (SELECT passage_id FROM msmarco_v2_passages
+                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_v2_bm25_idx'')
                  LIMIT 10) t' INTO result_count USING q.query_text;
         end_ts := clock_timestamp();
         times := array_append(times, EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
@@ -171,11 +171,10 @@ JOIN (VALUES
 DROP TABLE bucket_results;
 
 -- ============================================================
--- Benchmark 2: Query Throughput (800 benchmark queries)
+-- Benchmark 2: Query Throughput (3 iterations)
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 2: Query Throughput (800 queries, 3 iterations) ==='
-\echo 'Running all 800 benchmark queries with warmup'
+\echo '=== Benchmark 2: Query Throughput (3 iterations) ==='
 
 -- Helper function for throughput benchmark
 CREATE OR REPLACE FUNCTION benchmark_throughput(iterations int DEFAULT 3)
@@ -193,8 +192,8 @@ BEGIN
 
     -- Warmup: run all queries once
     FOR q IN SELECT query_text FROM benchmark_queries ORDER BY query_id LOOP
-        EXECUTE 'SELECT passage_id FROM msmarco_passages
-                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
+        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages
+                 ORDER BY passage_text <@> to_bm25query($1, ''msmarco_v2_bm25_idx'')
                  LIMIT 10' USING q.query_text;
     END LOOP;
 
@@ -203,8 +202,8 @@ BEGIN
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
         FOR q IN SELECT query_text FROM benchmark_queries ORDER BY query_id LOOP
-            EXECUTE 'SELECT passage_id FROM msmarco_passages
-                     ORDER BY passage_text <@> to_bm25query($1, ''msmarco_bm25_idx'')
+            EXECUTE 'SELECT passage_id FROM msmarco_v2_passages
+                     ORDER BY passage_text <@> to_bm25query($1, ''msmarco_v2_bm25_idx'')
                      LIMIT 10' USING q.query_text;
         END LOOP;
         end_ts := clock_timestamp();
@@ -227,19 +226,19 @@ FROM benchmark_throughput();
 DROP FUNCTION benchmark_throughput;
 
 -- ============================================================
--- Benchmark 3: Index Statistics
+-- Index Statistics
 -- ============================================================
 \echo ''
-\echo '=== Benchmark 3: Index Statistics ==='
+\echo '=== Index Statistics ==='
 
 SELECT
-    'msmarco_bm25_idx' as index_name,
-    pg_size_pretty(pg_relation_size('msmarco_bm25_idx')) as index_size,
-    pg_size_pretty(pg_relation_size('msmarco_passages')) as table_size,
-    (SELECT COUNT(*) FROM msmarco_passages) as num_documents;
+    'msmarco_v2_bm25_idx' as index_name,
+    pg_size_pretty(pg_relation_size('msmarco_v2_bm25_idx')) as index_size,
+    pg_size_pretty(pg_relation_size('msmarco_v2_passages')) as table_size,
+    (SELECT COUNT(*) FROM msmarco_v2_passages) as num_documents;
 
 -- Cleanup
 DROP TABLE benchmark_queries;
 
 \echo ''
-\echo '=== MS MARCO Query Benchmarks Complete ==='
+\echo '=== MS MARCO v2 Query Benchmarks Complete ==='
