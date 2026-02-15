@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771136890050,
+  "lastUpdate": 1771136891636,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -8446,6 +8446,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1189.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "40fb42f8d40623496cc1bf363b990e7968dc6596",
+          "message": "fix: report index scan statistics via pgstat counters (#224)\n\n## Summary\n\n- Add `pgstat_count_index_scan()` call in `tp_gettuple()` so that\n`pg_stat_user_indexes.idx_scan` is incremented for BM25 index scans\n- Add `IndexScanInstrumentation` support (`nsearches++`) for PG18+\nEXPLAIN ANALYZE reporting\n- Add `pgstats` regression test verifying `idx_scan` and `idx_tup_read`\ncounters\n\nThe BM25 access method was not calling `pgstat_count_index_scan()`,\nwhich is each AM's responsibility (btree does it in `_bt_first()`,\npgvector in its `gettuple`). The core only handles\n`pgstat_count_index_tuples()` (for `idx_tup_read`) and\n`pgstat_count_heap_fetch()` (for `idx_tup_fetch`).\n\nCloses #223\n\n## Testing\n\nNew regression test (`test/sql/pgstats.sql`) that:\n1. Creates a table with a BM25 index\n2. Runs queries and verifies `idx_scan > 0` and `idx_tup_read > 0`\n3. Runs a second query and verifies `idx_scan > 1`",
+          "timestamp": "2026-02-12T18:17:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/40fb42f8d40623496cc1bf363b990e7968dc6596"
+        },
+        "date": 1771136891238,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 270483.419,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.63,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 5.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 6.89,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 9.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 14.16,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Throughput (800 queries, avg ms/query)",
+            "value": 5.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1204.11,
             "unit": "MB"
           }
         ]
