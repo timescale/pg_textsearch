@@ -34,6 +34,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
+    - name: Install TimescaleDB
+      run: |
+        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y timescaledb-2-postgresql-17 || echo "TimescaleDB installation failed, hypertable tests will be skipped"
+
     - name: Install coverage tools
       run: |
         sudo apt-get install -y lcov build-essential bc
@@ -87,6 +94,24 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+
+    - name: Run hypertable tests (exercises CustomScan code paths)
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_hypertable_test
+        mkdir -p tmp_hypertable_test
+        initdb -D tmp_hypertable_test/data --auth-local=trust --auth-host=trust
+        echo "port = 55434" >> tmp_hypertable_test/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_hypertable_test/data/postgresql.conf
+        echo "shared_preload_libraries = 'timescaledb'" >> tmp_hypertable_test/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_hypertable_test'" >> tmp_hypertable_test/data/postgresql.conf
+        pg_ctl start -D tmp_hypertable_test/data -l tmp_hypertable_test/data/logfile -w
+        export PGHOST=$PWD/tmp_hypertable_test
+        export PGPORT=55434
+        (cd test/scripts && ./hypertable.sh) || true
+        pg_ctl stop -D tmp_hypertable_test/data || true
+        rm -rf tmp_hypertable_test
 
     - name: Capture coverage data
       run: |

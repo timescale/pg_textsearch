@@ -886,7 +886,6 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 	}
 	break;
 
-	/* LCOV_EXCL_START -- CustomScan only from other extensions */
 	case T_CustomScan:
 	{
 		CustomScan *cscan = (CustomScan *)plan;
@@ -896,7 +895,6 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 				return true;
 	}
 	break;
-		/* LCOV_EXCL_STOP */
 
 	default:
 		break;
@@ -952,7 +950,6 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	}
 	break;
 
-	/* LCOV_EXCL_START -- CustomScan only from other extensions */
 	case T_CustomScan:
 	{
 		CustomScan *cscan = (CustomScan *)plan;
@@ -962,7 +959,6 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 			replace_scores_in_plan((Plan *)lfirst(lc2), oids);
 	}
 	break;
-		/* LCOV_EXCL_STOP */
 
 	default:
 		break;
@@ -1542,7 +1538,6 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
 	}
 	break;
 
-	/* LCOV_EXCL_START -- CustomScan only from other extensions */
 	case T_CustomScan:
 	{
 		CustomScan *cscan = (CustomScan *)plan;
@@ -1551,7 +1546,6 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
 			validate_explicit_index_usage((Plan *)lfirst(lc), oids);
 	}
 	break;
-		/* LCOV_EXCL_STOP */
 
 	default:
 		break;
