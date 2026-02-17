@@ -9,12 +9,11 @@ coverage:
   status:
     project:
       default:
-        # Fail if overall coverage drops by more than 1%
+        target: 85%
         threshold: 1%
     patch:
       default:
-        # Require at least 80% coverage on changed lines
-        target: 80%
+        target: 85%
 
 # Ignore test files in coverage reports
 ignore:
