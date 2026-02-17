@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771310496469,
+  "lastUpdate": 1771358491685,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2589,6 +2589,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Size",
             "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "957c07c15894f2711b1b9645a439bbb8f8a72fa3",
+          "message": "chore: remove DEBUG1 elog from parallel build DSA limit",
+          "timestamp": "2026-02-17T19:50:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/957c07c15894f2711b1b9645a439bbb8f8a72fa3"
+        },
+        "date": 1771358490918,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 263.263,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.34,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
             "unit": "MB"
           }
         ]
