@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771358491685,
+  "lastUpdate": 1771358493309,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -11996,6 +11996,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 36.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "957c07c15894f2711b1b9645a439bbb8f8a72fa3",
+          "message": "chore: remove DEBUG1 elog from parallel build DSA limit",
+          "timestamp": "2026-02-17T19:50:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/957c07c15894f2711b1b9645a439bbb8f8a72fa3"
+        },
+        "date": 1771358492993,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 11736.804,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.1,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.16,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.23,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.54,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.23,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 38.66,
             "unit": "MB"
           }
         ]
