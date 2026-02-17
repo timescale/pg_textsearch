@@ -1112,16 +1112,11 @@ tp_merge_worker_buffers_to_segment(
 		{
 			merged_capacity = merged_capacity == 0 ? 1024
 												   : merged_capacity * 2;
-			/*
-			 * Use HUGE allocations since vocabulary can exceed
-			 * MaxAllocSize when merging many large buffers.
-			 */
 			if (merged_terms == NULL)
-				merged_terms = palloc_extended(
-						merged_capacity * sizeof(TpMergedBufferTerm),
-						MCXT_ALLOC_HUGE);
+				merged_terms = palloc(
+						merged_capacity * sizeof(TpMergedBufferTerm));
 			else
-				merged_terms = repalloc_huge(
+				merged_terms = repalloc(
 						merged_terms,
 						merged_capacity * sizeof(TpMergedBufferTerm));
 		}
@@ -1661,7 +1656,8 @@ tp_leader_process_buffers(
 
 	/* Allocate array to track ready buffers */
 	max_ready	  = shared->nworkers * 2; /* 2 buffers per worker */
-	ready_buffers = palloc(sizeof(TpWorkerMemtableBuffer *) * max_ready);
+	ready_buffers = (TpWorkerMemtableBuffer **)palloc(
+			sizeof(TpWorkerMemtableBuffer *) * max_ready);
 
 	while (!all_done)
 	{
@@ -1825,7 +1821,7 @@ tp_leader_process_buffers(
 	pg_atomic_write_u64(&shared->total_len, total_len);
 
 	/* Cleanup */
-	pfree(ready_buffers);
+	pfree((void *)ready_buffers);
 }
 
 /*

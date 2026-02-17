@@ -546,7 +546,7 @@ build_merged_docmap(
 
 	/* Initialize mapping arrays */
 	mapping->num_sources = num_sources;
-	mapping->old_to_new	 = palloc0(num_sources * sizeof(uint32 *));
+	mapping->old_to_new	 = (uint32 **)palloc0(num_sources * sizeof(uint32 *));
 
 	/* First pass: add all documents to docmap (doc_ids are temporary) */
 	for (i = 0; i < num_sources; i++)
@@ -676,7 +676,7 @@ free_merge_doc_mapping(TpMergeDocMapping *mapping)
 		if (mapping->old_to_new[i])
 			pfree(mapping->old_to_new[i]);
 	}
-	pfree(mapping->old_to_new);
+	pfree((void *)mapping->old_to_new);
 }
 
 /*
@@ -1291,7 +1291,8 @@ tp_merge_level_segments(Relation index, uint32 level)
 	 * Allocate page tracking arrays in current context (not merge context)
 	 * so they survive the merge context deletion.
 	 */
-	segment_pages		= palloc0(sizeof(BlockNumber *) * segment_count);
+	segment_pages = (BlockNumber **)palloc0(
+			sizeof(BlockNumber *) * segment_count);
 	segment_page_counts = palloc0(sizeof(uint32) * segment_count);
 
 	/* Create memory context for merge operation */
@@ -1363,7 +1364,7 @@ tp_merge_level_segments(Relation index, uint32 level)
 			if (segment_pages[i])
 				pfree(segment_pages[i]);
 		}
-		pfree(segment_pages);
+		pfree((void *)segment_pages);
 		pfree(segment_page_counts);
 
 		return InvalidBlockNumber;
@@ -1388,16 +1389,10 @@ tp_merge_level_segments(Relation index, uint32 level)
 		{
 			merged_capacity = merged_capacity == 0 ? 1024
 												   : merged_capacity * 2;
-			/*
-			 * Use HUGE allocations since vocabulary can exceed
-			 * MaxAllocSize when merging many large segments.
-			 */
 			if (merged_terms == NULL)
-				merged_terms = palloc_extended(
-						merged_capacity * sizeof(TpMergedTerm),
-						MCXT_ALLOC_HUGE);
+				merged_terms = palloc(merged_capacity * sizeof(TpMergedTerm));
 			else
-				merged_terms = repalloc_huge(
+				merged_terms = repalloc(
 						merged_terms, merged_capacity * sizeof(TpMergedTerm));
 		}
 
@@ -1493,7 +1488,7 @@ tp_merge_level_segments(Relation index, uint32 level)
 			if (segment_pages[i])
 				pfree(segment_pages[i]);
 		}
-		pfree(segment_pages);
+		pfree((void *)segment_pages);
 		pfree(segment_page_counts);
 
 		return InvalidBlockNumber;
@@ -1570,7 +1565,7 @@ tp_merge_level_segments(Relation index, uint32 level)
 		if (segment_pages[i])
 			pfree(segment_pages[i]);
 	}
-	pfree(segment_pages);
+	pfree((void *)segment_pages);
 	pfree(segment_page_counts);
 
 	return new_segment;
