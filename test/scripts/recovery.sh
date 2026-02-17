@@ -34,7 +34,8 @@ error() {
 cleanup() {
     log "Cleaning up test environment..."
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+        pg_ctl stop -D "${DATA_DIR}" -m fast &>/dev/null ||
+            pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
     rm -rf "${DATA_DIR}"
     exit 0

@@ -719,11 +719,8 @@ tp_post_parse_analyze_hook(
 
 	resolve_indexes_in_query(query);
 
-	/* LCOV_EXCL_START -- only reachable if another extension chains
-	 * the post_parse_analyze_hook */
 	if (prev_post_parse_analyze_hook)
 		prev_post_parse_analyze_hook(pstate, query, jstate);
-	/* LCOV_EXCL_STOP */
 }
 
 /* ============================================================================
@@ -1368,10 +1365,8 @@ static void
 tp_set_rel_pathlist_hook(
 		PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
-	/* LCOV_EXCL_START -- only if another extension chains the hook */
 	if (prev_set_rel_pathlist_hook)
 		prev_set_rel_pathlist_hook(root, rel, rti, rte);
-	/* LCOV_EXCL_STOP */
 
 	/* Only process base relations */
 	if (rel->reloptkind != RELOPT_BASEREL)
@@ -1574,11 +1569,9 @@ tp_planner_hook(
 	/* Get BM25 OIDs - if extension not installed, just pass through */
 	if (!get_bm25_oids(&oid_cache))
 	{
-		/* LCOV_EXCL_START -- only if another extension chains the hook */
 		if (prev_planner_hook)
 			return prev_planner_hook(
 					parse, query_string, cursorOptions, boundParams);
-		/* LCOV_EXCL_STOP */
 		else
 			return standard_planner(
 					parse, query_string, cursorOptions, boundParams);
@@ -1612,11 +1605,9 @@ tp_planner_hook(
 	/* Call previous hook or standard planner */
 	PG_TRY();
 	{
-		/* LCOV_EXCL_START -- only if another extension chains the hook */
 		if (prev_planner_hook)
 			result = prev_planner_hook(
 					parse, query_string, cursorOptions, boundParams);
-		/* LCOV_EXCL_STOP */
 		else
 			result = standard_planner(
 					parse, query_string, cursorOptions, boundParams);

@@ -63,7 +63,8 @@ cleanup() {
     jobs -p | xargs -r kill 2>/dev/null || true
 
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+        pg_ctl stop -D "${DATA_DIR}" -m fast &>/dev/null ||
+            pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
     rm -rf "${DATA_DIR}"
     exit $exit_code

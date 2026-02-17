@@ -124,7 +124,6 @@ tp_get_metapage(Relation index)
 	page = BufferGetPage(buf);
 
 	metap = (TpIndexMetaPage)PageGetContents(page);
-	/* LCOV_EXCL_START -- corruption guards */
 	if (!metap)
 	{
 		UnlockReleaseBuffer(buf);
@@ -157,7 +156,6 @@ tp_get_metapage(Relation index)
 			 metap->version,
 			 TP_METAPAGE_VERSION);
 	}
-	/* LCOV_EXCL_STOP */
 
 	/* Copy metapage data to avoid buffer issues */
 	result = (TpIndexMetaPage)palloc(sizeof(TpIndexMetaPageData));

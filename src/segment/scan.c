@@ -296,8 +296,7 @@ tp_segment_posting_iterator_next(
 	{
 		if (!tp_segment_posting_iterator_load_block(iter))
 		{
-			/* LCOV_EXCL_START -- defensive: load_block only fails on
-			 * corrupted segment data */
+			/* load_block only fails on corrupted segment data */
 			if (iter->has_block_access)
 			{
 				tp_segment_release_direct(&iter->block_access);
@@ -305,7 +304,6 @@ tp_segment_posting_iterator_next(
 			}
 			iter->finished = true;
 			return false;
-			/* LCOV_EXCL_STOP */
 		}
 	}
 
@@ -326,8 +324,7 @@ tp_segment_posting_iterator_next(
 		}
 		if (!tp_segment_posting_iterator_load_block(iter))
 		{
-			/* LCOV_EXCL_START -- defensive: load_block only fails on
-			 * corrupted segment data */
+			/* load_block only fails on corrupted segment data */
 			if (iter->has_block_access)
 			{
 				tp_segment_release_direct(&iter->block_access);
@@ -335,7 +332,6 @@ tp_segment_posting_iterator_next(
 			}
 			iter->finished = true;
 			return false;
-			/* LCOV_EXCL_STOP */
 		}
 	}
 

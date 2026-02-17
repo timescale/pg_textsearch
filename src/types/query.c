@@ -991,13 +991,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		/* LCOV_EXCL_START -- defensive error cleanup */
 		if (metap)
 			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RE_THROW();
-		/* LCOV_EXCL_STOP */
 	}
 	PG_END_TRY();
 

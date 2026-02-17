@@ -63,7 +63,8 @@ cleanup() {
 
     # Stop PostgreSQL
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+        pg_ctl stop -D "${DATA_DIR}" -m fast &>/dev/null ||
+            pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
 
     # Clean up temp directory
