@@ -204,29 +204,6 @@ tp_build_parallel(
 	dsa_pin(dsa);
 	dsa_pin_mapping(dsa);
 
-	/*
-	 * Set a DSA size limit so that if memory usage exceeds what
-	 * we expect, workers get a clear ERROR instead of the machine
-	 * OOMing.  Formula: nworkers * 2 buffers * threshold * 24
-	 * bytes/posting * 1.5 headroom, capped at maintenance_work_mem
-	 * * 8.  Floor of 1 GB.
-	 */
-	{
-		Size formula_limit = (Size)nworkers * 2 *
-							 (Size)tp_memtable_spill_threshold * 24;
-		Size mwm_cap = (Size)maintenance_work_mem * (Size)1024 * 8;
-		Size dsa_limit;
-
-		/* Add 50% headroom for hash table overhead */
-		formula_limit = formula_limit + formula_limit / 2;
-
-		dsa_limit = Min(formula_limit, mwm_cap);
-		if (dsa_limit < (Size)1024 * 1024 * 1024)
-			dsa_limit = (Size)1024 * 1024 * 1024;
-
-		dsa_set_size_limit(dsa, dsa_limit);
-	}
-
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
 	tp_init_parallel_shared(
