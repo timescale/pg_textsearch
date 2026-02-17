@@ -14,7 +14,7 @@ typedef struct TpLocalIndexState TpLocalIndexState;
 
 /*
  * Document score entry for query result accumulation.
- * Used by both segment/scan.c and types/score.c for BM25 scoring.
+ * Used by bmw.c for BM25 scoring.
  */
 typedef struct DocumentScoreEntry
 {
@@ -40,17 +40,3 @@ extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);
 
 /* GUC variable for BMW stats logging - defined in mod.c */
 extern bool tp_log_bmw_stats;
-
-/*
- * Initialize HASHCTL for document score hash tables.
- * Uses ItemPointerData as key (CTID).
- */
-static inline void
-tp_init_doc_hash_ctl(HASHCTL *ctl, Size entry_size, MemoryContext memctx)
-{
-	memset(ctl, 0, sizeof(HASHCTL));
-	ctl->keysize   = sizeof(ItemPointerData);
-	ctl->entrysize = entry_size;
-	if (memctx != NULL)
-		ctl->hcxt = memctx;
-}
