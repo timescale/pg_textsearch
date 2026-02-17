@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771358662321,
+  "lastUpdate": 1771360729551,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2663,6 +2663,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Size",
             "value": 0.62,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "ef25897405c9392a9c24da1345530a861639cedd",
+          "message": "fix: remove DSA size limit from parallel build\n\nThe limit was too restrictive: workers ignore maintenance_work_mem\nand each buffer can hold up to tp_memtable_spill_threshold postings\n(~384 MB), so with 4 workers the 1 GB floor was easily exceeded.\nProper memory bounding requires reworking the spill threshold to\nrespect maintenance_work_mem, which is a larger follow-up.",
+          "timestamp": "2026-02-17T20:24:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/ef25897405c9392a9c24da1345530a861639cedd"
+        },
+        "date": 1771360728833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 255.692,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.37,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
             "unit": "MB"
           }
         ]
