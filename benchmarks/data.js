@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771358493309,
+  "lastUpdate": 1771358658662,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2626,6 +2626,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Size",
             "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0f9564cb42f873ad58264c58e6b10aedeabacb6c",
+          "message": "bench: add MS MARCO v2 dataset and weighted-average latency metric (#226)\n\n## Summary\n\n- Add benchmark infrastructure for the **MS MARCO v2** passage ranking\ndataset (138M passages) with download, load, query, and System X\ncomparison scripts\n- Introduce **weighted-average query latency** as a new tracked metric\nacross all benchmark datasets (MS MARCO v1, v2, Wikipedia)\n- Per-bucket p50 latencies are weighted by the observed MS-MARCO v1\nlexeme distribution (1M queries: 3-token mode at 30%, mean 3.7 tokens)\nto produce a single summary number that reflects realistic workload\nperformance\n\n### Files changed\n\n**New (MS MARCO v2 benchmark infrastructure):**\n- `benchmarks/datasets/msmarco-v2/` — download, load, query scripts +\nbenchmark queries TSV\n- `benchmarks/datasets/msmarco-v2/systemx/` — System X (ParadeDB)\ncomparison scripts\n\n**Modified (weighted-average metric):**\n- `benchmarks/datasets/msmarco/queries.sql` — add weighted-average\ncomputation\n- `benchmarks/datasets/wikipedia/queries.sql` — add weighted-average\ncomputation\n- `benchmarks/runner/extract_metrics.sh` — extract\n`WEIGHTED_LATENCY_RESULT` from logs\n- `benchmarks/runner/format_for_action.sh` — report weighted latency in\ngithub-action-benchmark format\n- `benchmarks/runner/run_benchmark.sh` — add msmarco-v2 as a dataset\noption\n- `benchmarks/gh-pages/methodology.html` — document weighted methodology\n+ MS MARCO v2 dataset\n\n### Distribution weights (MS-MARCO v1, 1,010,905 queries)\n\n| Tokens | Count | Weight |\n|--------|-------|--------|\n| 1 | 35,638 | 3.5% |\n| 2 | 165,033 | 16.3% |\n| 3 | 304,887 | 30.2% |\n| 4 | 264,177 | 26.1% |\n| 5 | 143,765 | 14.2% |\n| 6 | 59,558 | 5.9% |\n| 7 | 22,595 | 2.2% |\n| 8+ | 15,252 | 1.5% |",
+          "timestamp": "2026-02-17T18:51:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0f9564cb42f873ad58264c58e6b10aedeabacb6c"
+        },
+        "date": 1771358657717,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 266.413,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.43,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.62,
             "unit": "MB"
           }
         ]
