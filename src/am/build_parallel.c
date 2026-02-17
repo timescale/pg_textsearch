@@ -225,10 +225,6 @@ tp_build_parallel(
 			dsa_limit = (Size)1024 * 1024 * 1024;
 
 		dsa_set_size_limit(dsa, dsa_limit);
-
-		elog(DEBUG1,
-			 "parallel build: DSA size limit set to %zu MB",
-			 dsa_limit / (1024 * 1024));
 	}
 
 	/* Allocate and initialize shared state */
