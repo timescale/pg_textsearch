@@ -584,7 +584,10 @@ build_merged_docmap(
 		ms->cursor	 = 0;
 
 		if (ms->num_docs == 0 || header->ctid_pages_offset == 0)
+		{
+			ms->num_docs = 0; /* Exclude from N-way merge */
 			continue;
+		}
 
 		total_docs += ms->num_docs;
 		mapping->old_to_new[i] = palloc(ms->num_docs * sizeof(uint32));
@@ -1372,56 +1375,68 @@ tp_merge_level_segments(Relation index, uint32 level)
 	sources		= palloc0(sizeof(TpMergeSource) * segment_count);
 	num_sources = 0;
 
-	/* Open all segments in the chain */
-	current = first_segment;
-	while (current != InvalidBlockNumber && num_sources < (int)segment_count)
+	/*
+	 * Walk the chain, consuming exactly segment_count segments.
+	 * Track segments_walked separately from num_sources because
+	 * merge_source_init can fail (e.g. empty segment), in which
+	 * case we still consumed the segment from the chain.
+	 */
 	{
-		TpSegmentReader *reader;
-		BlockNumber		 next;
-		uint64			 seg_tokens;
+		uint32 segments_walked = 0;
 
-		reader = tp_segment_open(index, current);
-		if (reader)
+		current = first_segment;
+		while (current != InvalidBlockNumber &&
+			   segments_walked < segment_count)
 		{
-			/* Get stats and next pointer, then close this reader */
-			next	   = reader->header->next_segment;
-			seg_tokens = reader->header->total_tokens;
-			tp_segment_close(reader);
+			TpSegmentReader *reader;
+			BlockNumber		 next;
+			uint64			 seg_tokens;
 
-			/*
-			 * Collect pages from this segment for later freeing.
-			 * Allocate in parent context so it survives merge context delete.
-			 */
+			reader = tp_segment_open(index, current);
+			if (reader)
 			{
-				MemoryContext save_ctx = MemoryContextSwitchTo(old_ctx);
-				uint32		  page_count;
+				next	   = reader->header->next_segment;
+				seg_tokens = reader->header->total_tokens;
+				tp_segment_close(reader);
 
-				page_count = tp_segment_collect_pages(
-						index, current, &segment_pages[num_segments_tracked]);
-				segment_page_counts[num_segments_tracked] = page_count;
-				total_pages_to_free += page_count;
-				num_segments_tracked++;
+				/*
+				 * Collect pages for later freeing (parent context).
+				 */
+				{
+					MemoryContext save_ctx = MemoryContextSwitchTo(old_ctx);
+					uint32		  page_count;
 
-				MemoryContextSwitchTo(save_ctx);
+					page_count = tp_segment_collect_pages(
+							index,
+							current,
+							&segment_pages[num_segments_tracked]);
+					segment_page_counts[num_segments_tracked] = page_count;
+					total_pages_to_free += page_count;
+					num_segments_tracked++;
+
+					MemoryContextSwitchTo(save_ctx);
+				}
+
+				if (merge_source_init(&sources[num_sources], index, current))
+				{
+					total_tokens += seg_tokens;
+					num_sources++;
+				}
+
+				current = next;
 			}
-
-			/* Now init merge source (which opens its own reader) */
-			if (merge_source_init(&sources[num_sources], index, current))
+			else
 			{
-				/* Accumulate corpus statistics only for successful inits */
-				total_tokens += seg_tokens;
-				num_sources++;
+				break;
 			}
+			segments_walked++;
+		}
 
-			current = next;
-		}
-		else
-		{
-			break;
-		}
+		/* Update segment_count to reflect actual segments consumed */
+		segment_count = segments_walked;
 	}
 
-	/* Remember the first unmerged segment (may be InvalidBlockNumber) */
+	/* First unmerged segment (may be InvalidBlockNumber) */
 	remainder_head = current;
 
 	if (num_sources == 0)
