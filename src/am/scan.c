@@ -761,7 +761,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	/* Additional validation - check for obviously invalid block numbers */
 	blknum = BlockIdGetBlockNumber(
 			&(so->result_ctids[so->current_pos].ip_blkid));
-	if (blknum == InvalidBlockNumber || blknum > TP_MAX_BLOCK_NUMBER)
+	if (blknum == InvalidBlockNumber)
 	{
 		/* Skip this result and try the next one */
 		so->current_pos++;
