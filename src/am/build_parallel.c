@@ -573,8 +573,8 @@ tp_build_parallel(
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 
-		/* Compact L0 if it exceeds the threshold */
-		tp_maybe_compact_level(index, 0);
+		/* Compact all segments into one per level */
+		tp_compact_all(index);
 	}
 
 	/*

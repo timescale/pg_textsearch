@@ -34,18 +34,30 @@ struct TpLocalIndexState;
  * Note: The caller is responsible for holding an appropriate lock on the
  * index relation. This function modifies the metapage to update level chains.
  */
-extern BlockNumber tp_merge_level_segments(Relation index, uint32 level);
+extern BlockNumber
+tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
 
 /*
  * Check if a level needs compaction and trigger merge if so.
  *
  * Called after adding a segment to check if the level has reached
- * tp_segments_per_level. If so, merges all segments at that level
- * into one segment at the next level, then recursively checks the
- * next level.
+ * tp_segments_per_level. If so, merges up to segments_per_level
+ * segments per batch, then recursively checks the next level.
  *
  * Parameters:
  *   index - The index relation (must be opened with appropriate lock)
  *   level - The level to check (0 = L0, 1 = L1, etc.)
  */
 extern void tp_maybe_compact_level(Relation index, uint32 level);
+
+/*
+ * Compact all segments across all levels into one segment per level.
+ *
+ * Unlike tp_maybe_compact_level, this ignores the segments_per_level
+ * threshold and merges ALL segments at each level in one batch.
+ * Used after parallel index build to produce a fully compacted index.
+ *
+ * Parameters:
+ *   index - The index relation (must be opened with appropriate lock)
+ */
+extern void tp_compact_all(Relation index);

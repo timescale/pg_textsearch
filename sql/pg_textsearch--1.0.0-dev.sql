@@ -210,6 +210,12 @@ RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
 LANGUAGE C VOLATILE STRICT;
 
+-- Force-compact all segments regardless of segments_per_level threshold
+CREATE FUNCTION bm25_compact_index(index_name text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'tp_compact_index'
+LANGUAGE C VOLATILE STRICT;
+
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'

@@ -1289,12 +1289,12 @@ write_merged_segment(
 }
 
 /*
- * Merge up to segments_per_level segments from the specified level
- * into a single segment at level+1.  Returns the new segment's
- * header block, or InvalidBlockNumber on failure.
+ * Merge up to max_merge segments from the specified level into a
+ * single segment at level+1.  Returns the new segment's header
+ * block, or InvalidBlockNumber on failure.
  */
 BlockNumber
-tp_merge_level_segments(Relation index, uint32 level)
+tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 {
 	TpIndexMetaPage metap;
 	Buffer			metabuf;
@@ -1346,11 +1346,11 @@ tp_merge_level_segments(Relation index, uint32 level)
 	}
 
 	/*
-	 * Merge at most segments_per_level segments per batch.
-	 * If the level has more (e.g. 24 after parallel build with
-	 * threshold 8), tp_maybe_compact_level will call us repeatedly.
+	 * Merge at most max_merge segments per batch.  For normal
+	 * compaction this is segments_per_level; for post-build
+	 * compaction it can be UINT32_MAX to merge everything.
 	 */
-	segment_count = Min(total_at_level, (uint32)tp_segments_per_level);
+	segment_count = Min(total_at_level, max_merge);
 
 	elog(DEBUG1,
 		 "Merging %u of %u segments at level %u",
@@ -1698,7 +1698,9 @@ tp_maybe_compact_level(Relation index, uint32 level)
 	 */
 	while (level_count >= (uint16)tp_segments_per_level)
 	{
-		if (tp_merge_level_segments(index, level) == InvalidBlockNumber)
+		if (tp_merge_level_segments(
+					index, level, (uint32)tp_segments_per_level) ==
+			InvalidBlockNumber)
 			break;
 
 		/* Re-read the level count after merge */
@@ -1712,4 +1714,33 @@ tp_maybe_compact_level(Relation index, uint32 level)
 
 	/* Check if next level now needs compaction */
 	tp_maybe_compact_level(index, level + 1);
+}
+
+/*
+ * Compact all segments across all levels into one segment per level.
+ * Merges ALL segments at each level in a single batch, ignoring the
+ * segments_per_level threshold.  Used after parallel index build.
+ */
+void
+tp_compact_all(Relation index)
+{
+	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage metap;
+		uint16			count;
+
+		metabuf = ReadBuffer(index, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+		count	 = metap->level_counts[level];
+		UnlockReleaseBuffer(metabuf);
+
+		if (count < 2)
+			break; /* Nothing to merge at this level or above */
+
+		tp_merge_level_segments(index, level, UINT32_MAX);
+	}
 }

@@ -344,6 +344,39 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 }
 
+PG_FUNCTION_INFO_V1(tp_compact_index);
+
+/*
+ * SQL-callable: bm25_compact_index(index_name text) → void
+ *
+ * Force-compact all segments, merging every level fully regardless
+ * of the segments_per_level threshold.  Useful after parallel index
+ * build or when benchmarking with a single-segment layout.
+ */
+Datum
+tp_compact_index(PG_FUNCTION_ARGS)
+{
+	text	 *index_name_text = PG_GETARG_TEXT_PP(0);
+	char	 *index_name	  = text_to_cstring(index_name_text);
+	Oid		  index_oid;
+	Relation  index_rel;
+	RangeVar *rv;
+
+	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
+	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
+
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" does not exist", index_name)));
+
+	index_rel = index_open(index_oid, RowExclusiveLock);
+	tp_compact_all(index_rel);
+	index_close(index_rel, RowExclusiveLock);
+
+	PG_RETURN_VOID();
+}
+
 /*
  * Helper: Extract options from index relation
  */
