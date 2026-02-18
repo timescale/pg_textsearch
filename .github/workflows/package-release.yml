@@ -244,7 +244,7 @@ jobs:
         # Extract and check the actual binary architecture
         mkdir -p check-arch
         dpkg-deb -x dist/*.deb check-arch/
-        file check-arch/usr/lib/postgresql/*/lib/pg_textsearch.so | grep -E "(x86-64|aarch64)" || true
+        file check-arch/usr/lib/postgresql/*/lib/pg_textsearch-*.so | grep -E "(x86-64|aarch64)" || true
         rm -rf check-arch
 
     - name: Verify PostgreSQL version in package

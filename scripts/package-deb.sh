@@ -39,10 +39,11 @@ SHAREDIR=$($PG_CONFIG --sharedir)
 mkdir -p "${BUILDDIR}${LIBDIR}"
 mkdir -p "${BUILDDIR}${SHAREDIR}/extension"
 
-# Copy extension files
-cp "${BASEDIR}/pg_textsearch.so" "${BUILDDIR}${LIBDIR}/" || \
-   cp "${BASEDIR}/pg_textsearch.dylib" "${BUILDDIR}${LIBDIR}/" || \
-   { echo "Error: Could not find pg_textsearch library"; exit 1; }
+# Copy extension library (versioned binary name)
+EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' "${BASEDIR}/pg_textsearch.control")
+cp "${BASEDIR}/pg_textsearch-${EXTVERSION}.so" "${BUILDDIR}${LIBDIR}/" || \
+   cp "${BASEDIR}/pg_textsearch-${EXTVERSION}.dylib" "${BUILDDIR}${LIBDIR}/" || \
+   { echo "Error: Could not find pg_textsearch-${EXTVERSION} library"; exit 1; }
 
 cp "${BASEDIR}/pg_textsearch.control" "${BUILDDIR}${SHAREDIR}/extension/"
 # Copy all SQL files for the extension

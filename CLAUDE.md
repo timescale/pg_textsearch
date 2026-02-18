@@ -12,6 +12,11 @@ for scalability.
 
 **Current Version**: 1.0.0-dev
 
+**Versioned Binary**: The shared library includes the version in its filename
+(e.g., `pg_textsearch-1.0.0-dev.so`). When bumping versions, update both
+`default_version` and `module_pathname` in `pg_textsearch.control`. See
+[RELEASING.md](RELEASING.md) for details.
+
 **Postgres Version Support**: 17, 18 (tested in CI)
 
 **Schema Organization**: Currently uses public schema. Future versions may
