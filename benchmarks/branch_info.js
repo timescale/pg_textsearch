@@ -80,5 +80,6 @@ window.BRANCH_INFO = {
   "0f9564cb42f873ad58264c58e6b10aedeabacb6c": "main",
   "ef25897405c9392a9c24da1345530a861639cedd": "feat/v4-uint64-segment-offsets",
   "b37eaabf08782a40680bdb28ea7549f97608a229": "main",
-  "4406522689a2136402cc151fb3bda302304fe840": "feat/arena-build-rewrite"
+  "4406522689a2136402cc151fb3bda302304fe840": "feat/arena-build-rewrite",
+  "7bd2c53318e928db5e7a64ce4fa4db9c3ea77d7a": "feat/arena-build-rewrite"
 };
