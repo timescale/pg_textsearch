@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771443617522,
+  "lastUpdate": 1771445673358,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2769,6 +2769,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.28,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7bd2c53318e928db5e7a64ce4fa4db9c3ea77d7a",
+          "message": "bench: disable parallel build in MS MARCO benchmark for deterministic segments\n\nThe benchmark should produce a deterministic segment layout regardless\nof the machine's parallelism settings, so query performance results\nare comparable across runs and branches.",
+          "timestamp": "2026-02-18T19:58:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7bd2c53318e928db5e7a64ce4fa4db9c3ea77d7a"
+        },
+        "date": 1771445671877,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 211.68,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.23,
             "unit": "ms"
           },
           {
