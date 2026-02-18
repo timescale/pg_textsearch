@@ -16,7 +16,7 @@ CREATE INDEX idx_update_test_content ON update_test
 NOTICE:  BM25 index build started for relation idx_update_test_content
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert initial data
 INSERT INTO update_test (content, meta) VALUES
     ('The quick brown fox jumps over the lazy dog', '{"type": "test", "version": 1}'::jsonb),
@@ -133,7 +133,7 @@ $$;
 NOTICE:  BM25 index build started for relation idx_update_parent_content
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Clean up
 DROP TABLE IF EXISTS update_child;
 DROP TABLE IF EXISTS update_parent;

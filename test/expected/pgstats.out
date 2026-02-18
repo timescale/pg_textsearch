@@ -8,7 +8,7 @@ CREATE INDEX test_pgstats_idx ON test_pgstats
 NOTICE:  BM25 index build started for relation test_pgstats_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 INSERT INTO test_pgstats (content) VALUES
     ('the quick brown fox'),
     ('jumped over the lazy dog'),

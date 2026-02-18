@@ -21,7 +21,7 @@ WITH (text_config = 'english');
 NOTICE:  BM25 index build started for relation deletion_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60
 -- Initial search - should find documents with "test"
 -- Note: WHERE with score comparison requires explicit index reference
 SELECT id, substring(content, 1, 40) as content_preview

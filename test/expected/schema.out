@@ -21,7 +21,7 @@ CREATE INDEX articles_idx ON docs.articles USING bm25(content)
 NOTICE:  BM25 index build started for relation articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67
 -- Test 1: Unqualified index name (not in search path - should fail)
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'articles_idx'))::numeric, 4) as score
 FROM docs.articles
@@ -66,7 +66,7 @@ CREATE INDEX public_articles_idx ON public_articles USING bm25(content)
 NOTICE:  BM25 index build started for relation public_articles_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50
 -- Unqualified index name works for public schema tables
 SELECT id, content, ROUND((content <@> to_bm25query('hello', 'public_articles_idx'))::numeric, 4) as score
 FROM public_articles
@@ -87,7 +87,7 @@ CREATE INDEX ON bar.baz USING bm25(content)
 NOTICE:  BM25 index build started for relation baz_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- INSERTs work correctly with schema-qualified tables
 INSERT INTO bar.baz VALUES('really');
 INSERT INTO bar.baz VALUES('testing schemas');
@@ -122,7 +122,7 @@ CREATE INDEX ON edge_case.demo USING bm25(content) WITH (text_config='english');
 NOTICE:  BM25 index build started for relation demo_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert exactly 2 documents, one with "testing"
 INSERT INTO edge_case.demo VALUES('really');
 INSERT INTO edge_case.demo VALUES('testing schemas');

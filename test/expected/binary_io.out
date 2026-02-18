@@ -11,7 +11,7 @@ CREATE INDEX binary_io_idx ON binary_io_docs USING bm25(content)
 NOTICE:  BM25 index build started for relation binary_io_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 2 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=3.00
 -- Create a table with bm25query column
 CREATE TABLE query_export (id SERIAL, q bm25query);
 -- Insert some queries

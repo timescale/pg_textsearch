@@ -20,7 +20,7 @@ CREATE INDEX compression_idx ON compression_docs
 NOTICE:  BM25 index build started for relation compression_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert enough documents to create multiple blocks (block size is 128)
 -- We need at least 128+ docs with the same term to test block compression
 INSERT INTO compression_docs (content)
@@ -126,7 +126,7 @@ CREATE INDEX uncompressed_idx ON uncompressed_docs
 NOTICE:  BM25 index build started for relation uncompressed_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 INSERT INTO uncompressed_docs (content)
 SELECT 'testing uncompressed segments ' || i
 FROM generate_series(1, 150) AS i;
@@ -161,7 +161,7 @@ CREATE INDEX mixed_idx ON mixed_docs
 NOTICE:  BM25 index build started for relation mixed_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert first batch with compression ON
 INSERT INTO mixed_docs (content)
 SELECT 'alpha beta gamma document ' || i
@@ -251,7 +251,7 @@ CREATE INDEX mixed_idx2 ON mixed_docs2
 NOTICE:  BM25 index build started for relation mixed_idx2
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- First batch uncompressed
 INSERT INTO mixed_docs2 (content)
 SELECT 'apple banana cherry ' || i

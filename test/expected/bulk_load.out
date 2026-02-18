@@ -11,7 +11,7 @@ CREATE INDEX bulk_load_idx ON bulk_load_test USING bm25(content)
 NOTICE:  BM25 index build started for relation bulk_load_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert enough distinct terms in one transaction to exceed threshold
 -- With threshold=100, this should trigger auto-spill at commit
 BEGIN;

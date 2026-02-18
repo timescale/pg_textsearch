@@ -41,7 +41,7 @@ USING bm25(content) WITH (text_config='english');
 NOTICE:  BM25 index build started for relation rescan_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 50 documents, avg_length=7.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 50 documents, avg_length=7.00
 ------------------------------------------------------------------------
 -- Baseline: without WHERE, LIMIT works correctly
 ------------------------------------------------------------------------
@@ -111,7 +111,7 @@ REINDEX INDEX rescan_idx;
 NOTICE:  BM25 index build started for relation rescan_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 52 documents, avg_length=6.90, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 52 documents, avg_length=6.90
 -- Ask for 10 'mixed' rows but only 2 exist.  With a small internal
 -- limit, the index may not even find those 2 among the top-k results.
 SET pg_textsearch.default_limit = 5;
@@ -177,7 +177,7 @@ USING bm25(content) WITH (text_config='english');
 NOTICE:  BM25 index build started for relation rescan_large_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 500 documents, avg_length=6.04, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 500 documents, avg_length=6.04
 -- Ask for 8 rows with tag=1.  Only 10 exist out of 500 total.
 -- The index must scan deep enough to find them.
 SELECT COUNT(*) AS large_table_filter

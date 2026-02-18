@@ -21,7 +21,7 @@ CREATE INDEX scoring5_bulk_idx ON scoring5_bulk USING bm25(content)
 NOTICE:  BM25 index build started for relation scoring5_bulk_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 3 documents, avg_length=2.33, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 3 documents, avg_length=2.33
 -- Bulk mode query 1: 'hello'
 SELECT id, content, ROUND((content <@> 'hello')::numeric, 4) as score
 FROM scoring5_bulk
@@ -105,7 +105,7 @@ CREATE INDEX scoring5_incr_idx ON scoring5_incr USING bm25(content)
 NOTICE:  BM25 index build started for relation scoring5_incr_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert test documents incrementally
 INSERT INTO scoring5_incr (content) VALUES ('hello world');
 INSERT INTO scoring5_incr (content) VALUES ('goodbye cruel world');

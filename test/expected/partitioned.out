@@ -44,7 +44,7 @@ CREATE INDEX partitioned_bm25_idx ON partitioned_docs USING bm25(content)
 NOTICE:  BM25 index build started for relation partition_2024_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00
 -- Verify the auto-created partition index works (using the generated name)
 SELECT indexrelid::regclass as index_name
 FROM pg_index
@@ -61,7 +61,7 @@ CREATE TABLE partition_2025 PARTITION OF partitioned_docs
 NOTICE:  BM25 index build started for relation partition_2025_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert data into new partition
 INSERT INTO partition_2025 (content, created_at) VALUES
     ('Data in the 2025 partition', '2025-06-15');
@@ -146,11 +146,7 @@ CREATE INDEX subpart_bm25_idx ON subpart_docs USING bm25(content)
 NOTICE:  BM25 index build started for relation subpart_docs_eu_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00, text_config='english' (k1=1.20, b=0.75)
-NOTICE:  BM25 index build started for relation subpart_docs_us_2024_content_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents across 2 partitions, avg_length=2.50
 -- Verify indexes were created at all levels
 SELECT c.relname, c.relkind
 FROM pg_class c
@@ -243,11 +239,7 @@ CREATE INDEX scoring_bm25_idx ON partitioned_scoring USING bm25(content)
 NOTICE:  BM25 index build started for relation partition_small_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33, text_config='english' (k1=1.20, b=0.75)
-NOTICE:  BM25 index build started for relation partition_large_content_idx
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 10 documents, avg_length=3.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 13 documents across 2 partitions, avg_length=3.08
 -- Get the auto-generated partition index names
 SELECT
     i.indrelid::regclass as partition_table,

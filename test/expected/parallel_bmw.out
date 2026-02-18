@@ -55,6 +55,7 @@ NOTICE:  BM25 index build started for relation parallel_bmw_test_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 150000 documents, avg_length=4.91
 --------------------------------------------------------------------------------
 -- Test 1: BMW top-k must find short docs despite them being in later blocks
 --------------------------------------------------------------------------------

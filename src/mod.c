@@ -13,9 +13,11 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <miscadmin.h>
+#include <nodes/parsenodes.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
+#include <tcop/utility.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
 
@@ -70,6 +72,9 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 /* Shared memory request hook */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 
+/* Previous ProcessUtility hook */
+static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -86,6 +91,17 @@ static void tp_object_access(
 
 /* Transaction callback to release index locks */
 static void tp_xact_callback(XactEvent event, void *arg);
+
+/* ProcessUtility hook for tracking CREATE INDEX USING bm25 */
+static void tp_process_utility(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -246,6 +262,10 @@ _PG_init(void)
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
 
+	/* Install ProcessUtility hook for partitioned build tracking */
+	prev_process_utility_hook = ProcessUtility_hook;
+	ProcessUtility_hook		  = tp_process_utility;
+
 	/*
 	 * Register LWLock tranches for dshash tables used in parallel builds.
 	 * These must be registered in every process that might use them.
@@ -361,4 +381,79 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		/* Nothing to do for these events */
 		break;
 	}
+}
+
+/*
+ * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
+ * with build progress tracking. This collapses per-partition
+ * NOTICEs into a single summary for partitioned tables.
+ */
+static void
+tp_process_utility(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc)
+{
+	Node *parsetree = pstmt->utilityStmt;
+
+	if (IsA(parsetree, IndexStmt))
+	{
+		IndexStmt *stmt = (IndexStmt *)parsetree;
+
+		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
+		{
+			tp_build_progress_begin();
+
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			tp_build_progress_end();
+			return;
+		}
+	}
+
+	/* Not a bm25 CREATE INDEX - pass through */
+	if (prev_process_utility_hook)
+		prev_process_utility_hook(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc);
+	else
+		standard_ProcessUtility(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc);
 }

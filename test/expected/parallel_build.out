@@ -25,7 +25,7 @@ CREATE INDEX parallel_test_serial_idx ON parallel_test_serial USING bm25(content
 NOTICE:  BM25 index build started for relation parallel_test_serial_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 100000 documents, avg_length=8.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=8.00
 -- Verify queries work
 SELECT COUNT(*) AS apple_count FROM parallel_test_serial
 WHERE content <@> to_bm25query('apple', 'parallel_test_serial_idx') < 0;
@@ -53,6 +53,7 @@ NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
 SELECT COUNT(*) AS database_count FROM parallel_test_1worker
 WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
  database_count 
@@ -92,6 +93,7 @@ NOTICE:  BM25 index build started for relation parallel_test_2workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 150000 documents, avg_length=16.00
 -- Verify all document groups are searchable
 SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
 WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
@@ -172,6 +174,7 @@ NOTICE:  BM25 index build started for relation parallel_test_4workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 4 of 4 requested workers
+NOTICE:  BM25 index build completed: 200000 documents, avg_length=9.00
 SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
 WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
  fox_count 
@@ -215,6 +218,7 @@ NOTICE:  BM25 index build started for relation parallel_test_short_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=1.00
 -- Each term should appear in 10% of documents
 SELECT COUNT(*) AS alpha_count FROM parallel_test_short
 WHERE content <@> to_bm25query('alpha', 'parallel_test_short_idx') < 0;
@@ -247,6 +251,7 @@ NOTICE:  BM25 index build started for relation parallel_test_dupes_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=26.50
 -- "repeat" appears in all documents with varying term frequency
 SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
 WHERE content <@> to_bm25query('repeat', 'parallel_test_dupes_idx') < 0;
@@ -280,6 +285,7 @@ NOTICE:  BM25 index build started for relation parallel_test_nulls_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 90000 documents, avg_length=3.00
 -- Only non-NULL documents should be indexed (90%)
 SELECT COUNT(*) AS document_count FROM parallel_test_nulls
 WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
@@ -338,6 +344,7 @@ NOTICE:  BM25 index build started for relation parallel_test_custom_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.50
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
 SELECT COUNT(*) AS custom_count FROM parallel_test_custom
 WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
  custom_count 
@@ -363,7 +370,7 @@ CREATE INDEX parallel_test_below_idx ON parallel_test_below_threshold USING bm25
 NOTICE:  BM25 index build started for relation parallel_test_below_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 50000 documents, avg_length=4.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 50000 documents, avg_length=4.00
 SELECT COUNT(*) AS small_count FROM parallel_test_below_threshold
 WHERE content <@> to_bm25query('small', 'parallel_test_below_idx') < 0;
  small_count 

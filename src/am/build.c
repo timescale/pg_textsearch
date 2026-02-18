@@ -36,6 +36,63 @@
 #include "types/vector.h"
 
 /*
+ * Build progress tracking for partitioned tables.
+ *
+ * When creating a BM25 index on a partitioned table, tp_build()
+ * is called once per partition. Without tracking, each call emits
+ * repeated NOTICE messages, producing many lines of noise. This
+ * state aggregates statistics across partitions and emits a
+ * single summary.
+ *
+ * Activated by ProcessUtility_hook in mod.c when it detects
+ * CREATE INDEX USING bm25.
+ */
+static struct
+{
+	bool   active;
+	int	   partition_count;
+	uint64 total_docs;
+	uint64 total_len;
+} build_progress;
+
+void
+tp_build_progress_begin(void)
+{
+	memset(&build_progress, 0, sizeof(build_progress));
+	build_progress.active = true;
+}
+
+void
+tp_build_progress_end(void)
+{
+	double avg_len = 0.0;
+
+	if (!build_progress.active)
+		return;
+
+	build_progress.active = false;
+
+	if (build_progress.total_docs > 0)
+		avg_len = (double)build_progress.total_len /
+				  (double)build_progress.total_docs;
+
+	if (build_progress.partition_count > 1)
+		elog(NOTICE,
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents across %d partitions,"
+			 " avg_length=%.2f",
+			 build_progress.total_docs,
+			 build_progress.partition_count,
+			 avg_len);
+	else
+		elog(NOTICE,
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f",
+			 build_progress.total_docs,
+			 avg_len);
+}
+
+/*
  * Build phase name for progress reporting
  */
 char *
@@ -689,10 +746,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
 
-	/* BM25 index build started */
-	elog(NOTICE,
-		 "BM25 index build started for relation %s",
-		 RelationGetRelationName(index));
+	/* Show "started" for first partition only (suppresses duplicates) */
+	if (!build_progress.active || build_progress.partition_count == 0)
+		elog(NOTICE,
+			 "BM25 index build started for relation %s",
+			 RelationGetRelationName(index));
 
 	/*
 	 * Invalidate docid cache to prevent stale entries from a previous build.
@@ -723,10 +781,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_extract_options(
 			index, &text_config_name, &text_config_oid, &k1, &b);
 
-	/* Log configuration being used */
-	if (text_config_name)
-		elog(NOTICE, "Using text search configuration: %s", text_config_name);
-	elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
+	/* Log configuration (only for first partition when active) */
+	if (!build_progress.active || build_progress.partition_count == 0)
+	{
+		if (text_config_name)
+			elog(NOTICE,
+				 "Using text search configuration: %s",
+				 text_config_name);
+		elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
+	}
 
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
@@ -774,38 +837,66 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
 		{
+			IndexBuildResult *par_result;
+
 			/*
 			 * Warn if table is very large but parallelism is limited.
-			 * Users may not realize max_parallel_maintenance_workers
-			 * constrains index build parallelism.
+			 * Suppress during partitioned builds to reduce noise.
 			 */
-			if (reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
+			if (!build_progress.active &&
+				reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
 				nworkers <= TP_WARN_FEW_WORKERS_MIN)
 			{
 				elog(NOTICE,
 					 "Large table (%.0f tuples) with only %d parallel "
 					 "workers. "
-					 "Consider increasing max_parallel_maintenance_workers "
+					 "Consider increasing "
+					 "max_parallel_maintenance_workers "
 					 "and "
-					 "maintenance_work_mem (need 32MB per worker) for faster "
-					 "builds.",
+					 "maintenance_work_mem (need 32MB per worker) "
+					 "for faster builds.",
 					 reltuples,
 					 nworkers);
 			}
 
-			return tp_build_parallel(
+			par_result = tp_build_parallel(
 					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+
+			/* Accumulate stats for build progress */
+			if (build_progress.active)
+			{
+				Buffer			metabuf;
+				Page			metapage;
+				TpIndexMetaPage metap;
+
+				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+				metapage = BufferGetPage(metabuf);
+				metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+				build_progress.total_docs += (uint64)metap->total_docs;
+				build_progress.total_len += (uint64)metap->total_len;
+				build_progress.partition_count++;
+
+				UnlockReleaseBuffer(metabuf);
+			}
+
+			return par_result;
 		}
 
-		if (reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
+		if (!build_progress.active &&
+			reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
 		{
 			/*
 			 * Large table but no parallel workers available.
-			 * This is likely due to max_parallel_maintenance_workers = 0.
+			 * This is likely due to
+			 * max_parallel_maintenance_workers = 0.
 			 */
 			elog(NOTICE,
-				 "Large table (%.0f tuples) but parallel build disabled. "
-				 "Set max_parallel_maintenance_workers > 0 and ensure "
+				 "Large table (%.0f tuples) but parallel build "
+				 "disabled. "
+				 "Set max_parallel_maintenance_workers > 0 and "
+				 "ensure "
 				 "maintenance_work_mem >= 64MB for faster builds.",
 				 reltuples);
 		}
@@ -885,29 +976,20 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	result->heap_tuples = total_docs;
 	result->index_tuples = total_docs;
 
-	if (OidIsValid(text_config_oid))
+	if (build_progress.active)
 	{
-		elog(NOTICE,
-			 "BM25 index build completed: " UINT64_FORMAT
-			 " documents, avg_length=%.2f, "
-			 "text_config='%s' (k1=%.2f, b=%.2f)",
-			 total_docs,
-			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
-			 text_config_name ? text_config_name : "unknown",
-			 k1,
-			 b);
+		/* Accumulate stats for aggregated summary */
+		build_progress.total_docs += total_docs;
+		build_progress.total_len += total_len;
+		build_progress.partition_count++;
 	}
 	else
 	{
 		elog(NOTICE,
 			 "BM25 index build completed: " UINT64_FORMAT
-			 " documents, avg_length=%.2f "
-			 "(text_config=%s, k1=%.2f, b=%.2f)",
+			 " documents, avg_length=%.2f",
 			 total_docs,
-			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0,
-			 text_config_name,
-			 k1,
-			 b);
+			 total_len > 0 ? (float4)(total_len / (double)total_docs) : 0.0);
 	}
 
 	/*

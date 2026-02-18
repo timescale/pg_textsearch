@@ -44,7 +44,7 @@ CREATE INDEX parent_bm25_idx ON parent_docs USING bm25(content)
 NOTICE:  BM25 index build started for relation parent_bm25_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 \set VERBOSITY default
 -- BM25 index on child table should work
 CREATE INDEX child1_bm25_idx ON child_docs1 USING bm25(content)
@@ -52,7 +52,7 @@ CREATE INDEX child1_bm25_idx ON child_docs1 USING bm25(content)
 NOTICE:  BM25 index build started for relation child1_bm25_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 2 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=6.00
 -- Verify child index was created successfully with correct document count
 SELECT bm25_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
  has_two_docs 
@@ -89,7 +89,7 @@ CREATE INDEX regular_bm25_idx ON regular_docs USING bm25(content)
 NOTICE:  BM25 index build started for relation regular_bm25_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 2 documents, avg_length=3.50, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 2 documents, avg_length=3.50
 -- Verify regular index works
 SELECT bm25_dump_index('regular_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
  has_two_docs 
@@ -124,7 +124,7 @@ CREATE INDEX inh_parent_bm25 ON inh_parent USING bm25(content)
 NOTICE:  BM25 index build started for relation inh_parent_bm25
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 \set VERBOSITY default
 -- Create BM25 index on child (will have the actual data)
 CREATE INDEX inh_child_bm25 ON inh_child USING bm25(content)
@@ -132,7 +132,7 @@ CREATE INDEX inh_child_bm25 ON inh_child USING bm25(content)
 NOTICE:  BM25 index build started for relation inh_child_bm25
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 4 documents, avg_length=4.50, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 4 documents, avg_length=4.50
 -- Query via parent index — should fall back to child index
 -- This exercises find_first_child_bm25_index in query.c
 SELECT content,
