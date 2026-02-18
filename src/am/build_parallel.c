@@ -552,13 +552,8 @@ tp_build_parallel(
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
 
-		/*
-		 * Skip compaction during parallel build. With many workers,
-		 * L0 may have dozens of segments whose total corpus exceeds
-		 * the single-segment merge limit (palloc MaxAllocSize). The
-		 * segments are fully usable for queries as-is; compaction
-		 * happens incrementally during subsequent DML operations.
-		 */
+		/* Compact L0 if it exceeds the threshold */
+		tp_maybe_compact_level(index, 0);
 	}
 
 	/*

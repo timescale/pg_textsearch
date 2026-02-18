@@ -531,134 +531,187 @@ typedef struct TpMergeDocMapping
 } TpMergeDocMapping;
 
 /*
- * Build merged docmap from source segment CTID arrays.
- * Also builds direct mapping arrays for fast old→new doc_id lookup.
+ * Per-source state for the streaming N-way merge of docmaps.
+ */
+typedef struct TpDocmapMergeSource
+{
+	BlockNumber	 *ctid_pages;	/* CTID page numbers (4 bytes/doc) */
+	OffsetNumber *ctid_offsets; /* CTID tuple offsets (2 bytes/doc) */
+	uint8		 *fieldnorms;	/* Encoded fieldnorms (1 byte/doc) */
+	uint32		  num_docs;		/* Total docs in this source */
+	uint32		  cursor;		/* Current position in arrays */
+	bool		  owns_arrays;	/* True if we allocated the arrays */
+} TpDocmapMergeSource;
+
+/*
+ * Build merged docmap using streaming N-way merge of sorted CTID arrays.
+ * Also builds direct mapping arrays for fast old->new doc_id lookup.
  *
- * IMPORTANT: The mapping is built AFTER finalize because finalize
- * reassigns doc_ids in CTID order (the docmap invariant).
+ * Each source segment maintains the invariant that doc_ids are in CTID
+ * order. An N-way merge of these sorted streams produces the global
+ * CTID order without needing a hash table, reducing memory from ~5.5GB
+ * to ~2.5GB for 138M documents across 24 segments.
  */
 static TpDocMapBuilder *
 build_merged_docmap(
 		TpMergeSource *sources, int num_sources, TpMergeDocMapping *mapping)
 {
-	TpDocMapBuilder *docmap = tp_docmap_create();
-	int				 i;
+	TpDocMapBuilder		*docmap;
+	TpDocmapMergeSource *msources;
+	uint32				 total_docs = 0;
+	BlockNumber			*out_pages;
+	OffsetNumber		*out_offsets;
+	uint8				*out_fieldnorms;
+	uint32				 new_doc_id = 0;
+	int					 i;
 
 	/* Initialize mapping arrays */
 	mapping->num_sources = num_sources;
 	mapping->old_to_new	 = (uint32 **)palloc0(num_sources * sizeof(uint32 *));
 
-	/* First pass: add all documents to docmap (doc_ids are temporary) */
+	/*
+	 * Step 1: Load source CTID and fieldnorm arrays.
+	 * Reuse the reader's cached arrays when available to avoid
+	 * redundant copies.
+	 */
+	msources = palloc0(num_sources * sizeof(TpDocmapMergeSource));
 	for (i = 0; i < num_sources; i++)
 	{
-		TpSegmentHeader *header = sources[i].reader->header;
-		uint32			 num_docs;
-		uint32			 j;
+		TpSegmentHeader		*header = sources[i].reader->header;
+		TpDocmapMergeSource *ms		= &msources[i];
 
-		if (header->ctid_pages_offset == 0)
+		ms->num_docs = header->num_docs;
+		ms->cursor	 = 0;
+
+		if (ms->num_docs == 0 || header->ctid_pages_offset == 0)
 			continue;
 
-		num_docs = header->num_docs;
+		total_docs += ms->num_docs;
+		mapping->old_to_new[i] = palloc(ms->num_docs * sizeof(uint32));
 
-		/* Allocate mapping array for this source */
-		mapping->old_to_new[i] = palloc(num_docs * sizeof(uint32));
-
-		for (j = 0; j < num_docs; j++)
+		/* CTID arrays: use cached if available, else bulk-read */
+		if (sources[i].reader->cached_ctid_pages != NULL)
 		{
-			ItemPointerData ctid;
-			BlockNumber		page;
-			OffsetNumber	offset;
-			uint8			fieldnorm;
-			uint32			doc_length;
-
-			/*
-			 * Read CTID from split arrays.
-			 * Use cached arrays if available.
-			 */
-			if (sources[i].reader->cached_ctid_pages != NULL)
-			{
-				page   = sources[i].reader->cached_ctid_pages[j];
-				offset = sources[i].reader->cached_ctid_offsets[j];
-			}
-			else
-			{
-				tp_segment_read(
-						sources[i].reader,
-						header->ctid_pages_offset + (j * sizeof(BlockNumber)),
-						&page,
-						sizeof(BlockNumber));
-				tp_segment_read(
-						sources[i].reader,
-						header->ctid_offsets_offset +
-								(j * sizeof(OffsetNumber)),
-						&offset,
-						sizeof(OffsetNumber));
-			}
-			ItemPointerSet(&ctid, page, offset);
-
-			/* Read fieldnorm to get doc length */
+			ms->ctid_pages	 = sources[i].reader->cached_ctid_pages;
+			ms->ctid_offsets = sources[i].reader->cached_ctid_offsets;
+			ms->owns_arrays	 = false;
+		}
+		else
+		{
+			ms->ctid_pages = palloc(ms->num_docs * sizeof(BlockNumber));
 			tp_segment_read(
 					sources[i].reader,
-					header->fieldnorm_offset + j,
-					&fieldnorm,
-					sizeof(uint8));
-			doc_length = decode_fieldnorm(fieldnorm);
+					header->ctid_pages_offset,
+					ms->ctid_pages,
+					ms->num_docs * sizeof(BlockNumber));
 
-			/* Add to merged docmap (doc_id assigned here is temporary) */
-			tp_docmap_add(docmap, &ctid, doc_length);
+			ms->ctid_offsets = palloc(ms->num_docs * sizeof(OffsetNumber));
+			tp_segment_read(
+					sources[i].reader,
+					header->ctid_offsets_offset,
+					ms->ctid_offsets,
+					ms->num_docs * sizeof(OffsetNumber));
+			ms->owns_arrays = true;
 		}
+
+		/* Fieldnorms: always bulk-read (not cached by reader) */
+		ms->fieldnorms = palloc(ms->num_docs * sizeof(uint8));
+		tp_segment_read(
+				sources[i].reader,
+				header->fieldnorm_offset,
+				ms->fieldnorms,
+				ms->num_docs * sizeof(uint8));
 	}
 
-	/* Finalize: reassigns doc_ids in CTID order */
-	tp_docmap_finalize(docmap);
+	/* Step 2: Allocate output arrays */
+	if (total_docs > 0)
+	{
+		out_pages	   = palloc(total_docs * sizeof(BlockNumber));
+		out_offsets	   = palloc(total_docs * sizeof(OffsetNumber));
+		out_fieldnorms = palloc(total_docs * sizeof(uint8));
+	}
+	else
+	{
+		out_pages	   = NULL;
+		out_offsets	   = NULL;
+		out_fieldnorms = NULL;
+	}
 
 	/*
-	 * Second pass: build old→new mapping using finalized doc_ids.
-	 * After finalize, tp_docmap_lookup returns the correct CTID-sorted doc_id.
+	 * Step 3: N-way merge.
+	 * Each source's docs are already in CTID order. We find the
+	 * source with the smallest current CTID via linear scan (N is
+	 * small, typically <= 24) and emit docs sequentially.
 	 */
+	while (new_doc_id < total_docs)
+	{
+		int			 min_src = -1;
+		BlockNumber	 min_page;
+		OffsetNumber min_offset;
+
+		/* Find source with smallest current CTID */
+		for (i = 0; i < num_sources; i++)
+		{
+			TpDocmapMergeSource *ms = &msources[i];
+			BlockNumber			 pg;
+			OffsetNumber		 off;
+
+			if (ms->cursor >= ms->num_docs)
+				continue;
+
+			pg	= ms->ctid_pages[ms->cursor];
+			off = ms->ctid_offsets[ms->cursor];
+
+			if (min_src < 0 || pg < min_page ||
+				(pg == min_page && off < min_offset))
+			{
+				min_src	   = i;
+				min_page   = pg;
+				min_offset = off;
+			}
+		}
+
+		Assert(min_src >= 0);
+
+		{
+			TpDocmapMergeSource *ms	 = &msources[min_src];
+			uint32				 pos = ms->cursor;
+
+			/* Record old->new mapping */
+			mapping->old_to_new[min_src][pos] = new_doc_id;
+
+			/* Emit to output arrays */
+			out_pages[new_doc_id]	   = ms->ctid_pages[pos];
+			out_offsets[new_doc_id]	   = ms->ctid_offsets[pos];
+			out_fieldnorms[new_doc_id] = ms->fieldnorms[pos];
+
+			ms->cursor++;
+		}
+		new_doc_id++;
+	}
+
+	/* Step 4: Package into a TpDocMapBuilder (finalized, no hash table) */
+	docmap				 = palloc0(sizeof(TpDocMapBuilder));
+	docmap->ctid_to_id	 = NULL; /* No hash table needed */
+	docmap->num_docs	 = total_docs;
+	docmap->capacity	 = total_docs;
+	docmap->finalized	 = true;
+	docmap->ctid_pages	 = out_pages;
+	docmap->ctid_offsets = out_offsets;
+	docmap->fieldnorms	 = out_fieldnorms;
+
+	/* Free per-source arrays we allocated */
 	for (i = 0; i < num_sources; i++)
 	{
-		TpSegmentHeader *header = sources[i].reader->header;
-		uint32			 num_docs;
-		uint32			 j;
-
-		if (header->ctid_pages_offset == 0 || mapping->old_to_new[i] == NULL)
-			continue;
-
-		num_docs = header->num_docs;
-
-		for (j = 0; j < num_docs; j++)
+		if (msources[i].owns_arrays)
 		{
-			ItemPointerData ctid;
-			BlockNumber		page;
-			OffsetNumber	offset;
-
-			/* Reconstruct CTID for lookup */
-			if (sources[i].reader->cached_ctid_pages != NULL)
-			{
-				page   = sources[i].reader->cached_ctid_pages[j];
-				offset = sources[i].reader->cached_ctid_offsets[j];
-			}
-			else
-			{
-				tp_segment_read(
-						sources[i].reader,
-						header->ctid_pages_offset + (j * sizeof(BlockNumber)),
-						&page,
-						sizeof(BlockNumber));
-				tp_segment_read(
-						sources[i].reader,
-						header->ctid_offsets_offset +
-								(j * sizeof(OffsetNumber)),
-						&offset,
-						sizeof(OffsetNumber));
-			}
-			ItemPointerSet(&ctid, page, offset);
-
-			/* Look up the finalized doc_id */
-			mapping->old_to_new[i][j] = tp_docmap_lookup(docmap, &ctid);
+			pfree(msources[i].ctid_pages);
+			pfree(msources[i].ctid_offsets);
 		}
+		if (msources[i].fieldnorms)
+			pfree(msources[i].fieldnorms);
 	}
+	pfree(msources);
 
 	return docmap;
 }
