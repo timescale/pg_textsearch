@@ -187,6 +187,15 @@ module_pathname = '$libdir/pg_textsearch-1.1.0-dev'
 
 Then run `make check-version` to confirm they match.
 
+### Upgrade Scripts and Versioned Binaries
+
+Every upgrade script that changes the library version **must** include
+`CREATE OR REPLACE FUNCTION` statements for all C functions. This updates
+their `probin` to reference the new versioned library. Without this, the
+old functions would still reference the previous version's binary.
+
+See `sql/pg_textsearch--0.5.0--1.0.0-dev.sql` for an example.
+
 ## SQL Upgrade Path Requirements
 
 Every release must have an upgrade path from the previous stable release
