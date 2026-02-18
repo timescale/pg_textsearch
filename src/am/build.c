@@ -785,7 +785,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 #define TP_WARN_FEW_WORKERS_TUPLES 5000000 /* 5M tuples */
 #define TP_WARN_FEW_WORKERS_MIN	   2	   /* suggest more if <= this */
 
-		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES)
+		if (nworkers > 0 && reltuples >= TP_MIN_PARALLEL_TUPLES &&
+			!indexInfo->ii_Concurrent)
 		{
 			IndexBuildResult *par_result;
 

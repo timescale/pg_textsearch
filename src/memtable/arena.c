@@ -82,11 +82,15 @@ tp_arena_alloc(TpArena *arena, Size size)
 {
 	ArenaAddr addr;
 	uint32	  page_idx;
+	Size	  aligned_size;
 
 	Assert(arena != NULL);
 	Assert(size > 0);
 
-	if (size > ARENA_PAGE_SIZE)
+	/* Round up to 4-byte alignment so uint32 stores are safe */
+	aligned_size = TYPEALIGN(4, size);
+
+	if (aligned_size > ARENA_PAGE_SIZE)
 		elog(ERROR,
 			 "arena: allocation of %zu bytes exceeds page size "
 			 "(%d bytes)",
@@ -94,7 +98,7 @@ tp_arena_alloc(TpArena *arena, Size size)
 			 ARENA_PAGE_SIZE);
 
 	/* Check if current page has enough space */
-	if (arena->current_offset + size > ARENA_PAGE_SIZE)
+	if (arena->current_offset + aligned_size > ARENA_PAGE_SIZE)
 	{
 		/* Current page is full, allocate a new one */
 		arena_add_page(arena);
@@ -103,8 +107,8 @@ tp_arena_alloc(TpArena *arena, Size size)
 	page_idx = arena->num_pages - 1;
 	addr	 = arena_addr_make(page_idx, arena->current_offset);
 
-	arena->current_offset += size;
-	arena->total_bytes += size;
+	arena->current_offset += aligned_size;
+	arena->total_bytes += aligned_size;
 
 	return addr;
 }

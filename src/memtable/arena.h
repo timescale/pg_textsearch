@@ -82,8 +82,7 @@ extern TpArena *tp_arena_create(void);
 /*
  * Allocate `size` bytes from the arena.
  * Returns an ArenaAddr referencing the allocated memory.
- * The allocation is NOT aligned; callers needing alignment
- * should round up `size` themselves.
+ * Allocations are rounded up to 4-byte alignment.
  */
 extern ArenaAddr tp_arena_alloc(TpArena *arena, Size size);
 
