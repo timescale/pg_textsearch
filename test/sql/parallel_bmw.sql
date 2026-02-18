@@ -1,0 +1,99 @@
+-- Test case: parallel_bmw
+-- Validates that parallel index build computes correct block_max_norm
+-- (MIN fieldnorm) for BMW skip entries, matching the serial build path.
+--
+-- The bug: build_parallel.c computed MAX fieldnorm instead of MIN,
+-- causing BMW to underestimate block score upper bounds and incorrectly
+-- skip blocks containing high-scoring short documents.
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+SET enable_seqscan = off;
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = '256MB';
+
+--------------------------------------------------------------------------------
+-- Setup: 3-tier document design to expose block_max_norm bug
+--------------------------------------------------------------------------------
+-- The posting list for "target" is ordered by CTID (insertion order):
+--
+--   Rows 1-5000:      MEDIUM docs (50 words with "target") -> set threshold
+--   Rows 5001-7000:   SHORT + LONG docs (alternating, both with "target")
+--   Rows 7001-150000: FILLER docs (no "target", for parallel build sizing)
+--
+-- BMW processes blocks sequentially. Medium-doc blocks are processed first,
+-- establishing a threshold. Then mixed short+long blocks follow:
+--
+--   Correct (MIN fieldnorm): upper bound from short doc -> above threshold
+--   Buggy   (MAX fieldnorm): upper bound from long doc  -> below threshold
+--
+-- With the bug, BMW skips the mixed blocks entirely, missing the short
+-- docs that should rank highest in top-k results.
+
+SET max_parallel_maintenance_workers = 2;
+
+CREATE TABLE parallel_bmw_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+INSERT INTO parallel_bmw_test (content)
+SELECT CASE
+    -- Medium docs: "target" + 49 filler words = 50 total
+    WHEN i <= 5000 THEN
+        'target ' || repeat('alpha ', 49)
+    -- Short docs (odd): just "target" = 1 word
+    WHEN i <= 7000 AND i % 2 = 1 THEN
+        'target'
+    -- Long docs (even): "target" + 199 filler words = 200 total
+    WHEN i <= 7000 THEN
+        'target ' || repeat('beta ', 199)
+    -- Filler: no "target" term
+    ELSE
+        'gamma delta'
+END
+FROM generate_series(1, 150000) AS i;
+
+ANALYZE parallel_bmw_test;
+
+CREATE INDEX parallel_bmw_test_idx ON parallel_bmw_test
+    USING bm25(content) WITH (text_config='english');
+
+--------------------------------------------------------------------------------
+-- Test 1: BMW top-k must find short docs despite them being in later blocks
+--------------------------------------------------------------------------------
+-- Short docs (1 word) score highest due to BM25 length normalization.
+-- With the bug, their blocks are skipped because the upper bound is
+-- computed from the long docs (200 words) sharing those blocks, and that
+-- upper bound falls below the threshold set by medium docs (50 words).
+
+SELECT COUNT(*) AS short_docs_in_top10
+FROM (
+    SELECT content
+    FROM parallel_bmw_test
+    ORDER BY content <@> to_bm25query('target', 'parallel_bmw_test_idx')
+    LIMIT 10
+) sub
+WHERE content = 'target';
+
+--------------------------------------------------------------------------------
+-- Test 2: Baseline without BMW confirms correct results
+--------------------------------------------------------------------------------
+SET pg_textsearch.enable_bmw = false;
+
+SELECT COUNT(*) AS short_docs_in_top10_no_bmw
+FROM (
+    SELECT content
+    FROM parallel_bmw_test
+    ORDER BY content <@> to_bm25query('target', 'parallel_bmw_test_idx')
+    LIMIT 10
+) sub
+WHERE content = 'target';
+
+SET pg_textsearch.enable_bmw = true;
+
+--------------------------------------------------------------------------------
+-- Cleanup
+--------------------------------------------------------------------------------
+DROP TABLE parallel_bmw_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

@@ -863,7 +863,7 @@ write_posting_blocks(
 		uint32		bstart	   = bidx * TP_BLOCK_SIZE;
 		uint32		bend	   = Min(bstart + TP_BLOCK_SIZE, bp_count);
 		uint16		max_tf	   = 0;
-		uint8		max_norm   = 0;
+		uint8		min_norm   = 255;
 		uint32		last_docid = 0;
 		uint32		k;
 
@@ -873,14 +873,14 @@ write_posting_blocks(
 				last_docid = bp_array[k].doc_id;
 			if (bp_array[k].frequency > max_tf)
 				max_tf = bp_array[k].frequency;
-			if (bp_array[k].fieldnorm > max_norm)
-				max_norm = bp_array[k].fieldnorm;
+			if (bp_array[k].fieldnorm < min_norm)
+				min_norm = bp_array[k].fieldnorm;
 		}
 
 		skip.last_doc_id	= last_docid;
 		skip.doc_count		= (uint8)(bend - bstart);
 		skip.block_max_tf	= max_tf;
-		skip.block_max_norm = max_norm;
+		skip.block_max_norm = min_norm;
 		skip.posting_offset = writer->current_offset;
 		memset(skip.reserved, 0, sizeof(skip.reserved));
 

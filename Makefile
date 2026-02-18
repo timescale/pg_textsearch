@@ -55,7 +55,7 @@ PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-va
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended dropped empty explicit_index implicit index inheritance limits lock manyterms memory merge mixed parallel_build partitioned partitioned_many pgstats queries rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings unsupported updates vector unlogged_index wand text_config
+REGRESS = aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended dropped empty explicit_index implicit index inheritance limits lock manyterms memory merge mixed parallel_build parallel_bmw partitioned partitioned_many pgstats queries rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings unsupported updates vector unlogged_index wand text_config
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
