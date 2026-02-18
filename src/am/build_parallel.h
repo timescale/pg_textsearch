@@ -73,6 +73,9 @@ typedef struct TpParallelBuildShared
 	ConditionVariable all_done_cv; /* Workers signal when done */
 	pg_atomic_uint32  workers_done;
 
+	/* Progress reporting (atomic so leader can poll while workers run) */
+	pg_atomic_uint64 tuples_done; /* Total tuples processed by all workers */
+
 	/*
 	 * Per-worker results (variable-length array follows).
 	 * Workers write their own slot; leader reads after completion.

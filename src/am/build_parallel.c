@@ -33,6 +33,7 @@
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
+#include <utils/wait_event.h>
 
 #include "am.h"
 #include "build_context.h"
@@ -101,6 +102,7 @@ tp_init_parallel_shared(
 	/* Coordination */
 	ConditionVariableInit(&shared->all_done_cv);
 	pg_atomic_init_u32(&shared->workers_done, 0);
+	pg_atomic_init_u64(&shared->tuples_done, 0);
 
 	/* Initialize per-worker results */
 	results = TpParallelWorkerResults(shared);
@@ -308,7 +310,11 @@ tp_parallel_build_worker_main(
 		my_result->tuples_scanned++;
 
 		if (my_result->tuples_scanned % TP_PROGRESS_REPORT_INTERVAL == 0)
+		{
+			pg_atomic_add_fetch_u64(
+					&shared->tuples_done, TP_PROGRESS_REPORT_INTERVAL);
 			CHECK_FOR_INTERRUPTS();
+		}
 	}
 
 	/* Flush remaining data */
@@ -463,7 +469,22 @@ tp_build_parallel(
 					launched,
 					nworkers)));
 
-	/* Wait for all workers to finish */
+	/*
+	 * Wait for workers, polling progress periodically.
+	 * Workers atomically increment shared->tuples_done; we
+	 * report it so pg_stat_progress_create_index stays live.
+	 */
+	ConditionVariablePrepareToSleep(&shared->all_done_cv);
+	while (pg_atomic_read_u32(&shared->workers_done) < (uint32)launched)
+	{
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_DONE,
+				(int64)pg_atomic_read_u64(&shared->tuples_done));
+
+		ConditionVariableTimedSleep(
+				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
+	}
+	ConditionVariableCancelSleep();
 	WaitForParallelWorkersToFinish(pcxt);
 
 	/* Collect results from all workers */

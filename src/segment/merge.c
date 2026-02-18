@@ -1437,15 +1437,18 @@ tp_merge_level_segments(Relation index, uint32 level)
 
 		min_term = sources[min_idx].current_term;
 
-		/* Grow merged terms array if needed */
+		/* Grow merged terms array if needed (may exceed 1GB for large
+		 * corpora) */
 		if (num_merged_terms >= merged_capacity)
 		{
 			merged_capacity = merged_capacity == 0 ? 1024
 												   : merged_capacity * 2;
 			if (merged_terms == NULL)
-				merged_terms = palloc(merged_capacity * sizeof(TpMergedTerm));
+				merged_terms = palloc_extended(
+						merged_capacity * sizeof(TpMergedTerm),
+						MCXT_ALLOC_HUGE);
 			else
-				merged_terms = repalloc(
+				merged_terms = repalloc_huge(
 						merged_terms, merged_capacity * sizeof(TpMergedTerm));
 		}
 
