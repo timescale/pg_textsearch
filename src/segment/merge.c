@@ -1286,7 +1286,9 @@ write_merged_segment(
 }
 
 /*
- * Merge all segments at the specified level into a single segment at level+1.
+ * Merge up to segments_per_level segments from the specified level
+ * into a single segment at level+1.  Returns the new segment's
+ * header block, or InvalidBlockNumber on failure.
  */
 BlockNumber
 tp_merge_level_segments(Relation index, uint32 level)
@@ -1295,11 +1297,13 @@ tp_merge_level_segments(Relation index, uint32 level)
 	Buffer			metabuf;
 	Page			metapage;
 	BlockNumber		first_segment;
+	uint32			total_at_level;
 	uint32			segment_count;
 	TpMergeSource  *sources;
 	int				num_sources;
 	int				i;
 	BlockNumber		current;
+	BlockNumber		remainder_head; /* First unmerged segment */
 	TpMergedTerm   *merged_terms	 = NULL;
 	uint32			num_merged_terms = 0;
 	uint32			merged_capacity	 = 0;
@@ -1328,17 +1332,28 @@ tp_merge_level_segments(Relation index, uint32 level)
 	metapage = BufferGetPage(metabuf);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-	first_segment = metap->level_heads[level];
-	segment_count = metap->level_counts[level];
+	first_segment  = metap->level_heads[level];
+	total_at_level = metap->level_counts[level];
 
 	UnlockReleaseBuffer(metabuf);
 
-	if (first_segment == InvalidBlockNumber || segment_count == 0)
+	if (first_segment == InvalidBlockNumber || total_at_level == 0)
 	{
 		return InvalidBlockNumber;
 	}
 
-	elog(DEBUG1, "Merging %u segments at level %u", segment_count, level);
+	/*
+	 * Merge at most segments_per_level segments per batch.
+	 * If the level has more (e.g. 24 after parallel build with
+	 * threshold 8), tp_maybe_compact_level will call us repeatedly.
+	 */
+	segment_count = Min(total_at_level, (uint32)tp_segments_per_level);
+
+	elog(DEBUG1,
+		 "Merging %u of %u segments at level %u",
+		 segment_count,
+		 total_at_level,
+		 level);
 
 	/*
 	 * Allocate page tracking arrays in current context (not merge context)
@@ -1405,6 +1420,9 @@ tp_merge_level_segments(Relation index, uint32 level)
 			break;
 		}
 	}
+
+	/* Remember the first unmerged segment (may be InvalidBlockNumber) */
+	remainder_head = current;
 
 	if (num_sources == 0)
 	{
@@ -1558,9 +1576,12 @@ tp_merge_level_segments(Relation index, uint32 level)
 	metapage = BufferGetPage(metabuf);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-	/* Clear source level */
-	metap->level_heads[level]  = InvalidBlockNumber;
-	metap->level_counts[level] = 0;
+	/*
+	 * Update source level: keep any unmerged remainder segments.
+	 * If we merged all segments, the level is now empty.
+	 */
+	metap->level_heads[level]  = remainder_head;
+	metap->level_counts[level] = total_at_level - segment_count;
 
 	/* Add merged segment to target level */
 	if (metap->level_heads[level + 1] != InvalidBlockNumber)
@@ -1654,10 +1675,26 @@ tp_maybe_compact_level(Relation index, uint32 level)
 	if (level_count < (uint16)tp_segments_per_level)
 		return; /* Level not full */
 
-	/* Merge this level */
-	if (tp_merge_level_segments(index, level) != InvalidBlockNumber)
+	/*
+	 * Merge batches of segments_per_level until the level is
+	 * below threshold.  Each batch produces one segment at
+	 * level+1; after the loop we check if that level also needs
+	 * compaction.
+	 */
+	while (level_count >= (uint16)tp_segments_per_level)
 	{
-		/* Recursively check next level */
-		tp_maybe_compact_level(index, level + 1);
+		if (tp_merge_level_segments(index, level) == InvalidBlockNumber)
+			break;
+
+		/* Re-read the level count after merge */
+		metabuf = ReadBuffer(index, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage	= BufferGetPage(metabuf);
+		metap		= (TpIndexMetaPage)PageGetContents(metapage);
+		level_count = metap->level_counts[level];
+		UnlockReleaseBuffer(metabuf);
 	}
+
+	/* Check if next level now needs compaction */
+	tp_maybe_compact_level(index, level + 1);
 }
