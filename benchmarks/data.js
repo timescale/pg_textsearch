@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771397050507,
+  "lastUpdate": 1771397052384,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -12594,6 +12594,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 38.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b37eaabf08782a40680bdb28ea7549f97608a229",
+          "message": "fix: use min fieldnorm for BMW skip entries in parallel build (#230)\n\n## Summary\n- Fix `write_posting_blocks()` in parallel build to compute MIN\nfieldnorm (shortest doc) instead of MAX (longest doc) per block\n- The `block_max_norm` skip entry field must store the minimum fieldnorm\nso BMW computes valid score upper bounds; using maximum caused BMW to\nincorrectly skip blocks containing high-scoring short documents\n- The serial build (`segment.c`) and merge (`merge.c`) paths already\nused `min_norm` correctly — this aligns the parallel build path\n- Add `parallel_bmw` regression test that deterministically reproduces\nthe bug: medium-length docs set the BMW threshold in early blocks, then\nmixed short+long doc blocks follow where the wrong upper bound causes\nBMW to skip them\n\n## Test plan\n- [x] `parallel_bmw` test fails deterministically without fix (0 short\ndocs in top-10), passes with fix (10 short docs)\n- [x] Verified 5/5 stable passes for `bmw` + `parallel_build` tests\n- [x] Full regression suite passes (only pre-existing `binary_io`\nfailure)\n- [x] `make format-check` passes",
+          "timestamp": "2026-02-18T01:49:18Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b37eaabf08782a40680bdb28ea7549f97608a229"
+        },
+        "date": 1771397051833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 12462.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.14,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.46,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.67,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.34,
             "unit": "ms"
           },
           {
