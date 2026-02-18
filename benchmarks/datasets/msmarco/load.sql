@@ -90,11 +90,15 @@ FROM msmarco_queries
 LIMIT 5;
 
 -- Create BM25 index
+-- Disable parallel build for benchmarking so the resulting segment
+-- layout is deterministic and doesn't depend on worker count.
 \echo ''
 \echo '=== Building BM25 Index ==='
 \echo 'Creating BM25 index on ~8.8M passages (this will take a while)...'
+SET max_parallel_maintenance_workers = 0;
 CREATE INDEX msmarco_bm25_idx ON msmarco_passages
     USING bm25(passage_text) WITH (text_config='english');
+RESET max_parallel_maintenance_workers;
 
 -- Report index and table sizes
 \echo ''
