@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771445675530,
+  "lastUpdate": 1771445677750,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -12996,6 +12996,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 42.14,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7bd2c53318e928db5e7a64ce4fa4db9c3ea77d7a",
+          "message": "bench: disable parallel build in MS MARCO benchmark for deterministic segments\n\nThe benchmark should produce a deterministic segment layout regardless\nof the machine's parallelism settings, so query performance results\nare comparable across runs and branches.",
+          "timestamp": "2026-02-18T19:58:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7bd2c53318e928db5e7a64ce4fa4db9c3ea77d7a"
+        },
+        "date": 1771445676980,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 7696.961,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.12,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.54,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.77,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.36,
             "unit": "ms"
           },
           {
