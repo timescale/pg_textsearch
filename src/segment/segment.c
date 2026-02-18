@@ -738,8 +738,8 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
  * Write page index (chain of BlockNumbers).
  * This function is also used by segment_merge.c for merged segments.
  */
-BlockNumber
-write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
+static BlockNumber
+write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 {
 	BlockNumber index_root = InvalidBlockNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
@@ -811,6 +811,91 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 		prev_block = index_pages[i];
 		if (i == 0)
 			index_root = index_pages[i];
+	}
+
+	pfree(index_pages);
+	return index_root;
+}
+
+BlockNumber
+write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
+{
+	return write_page_index_internal(index, pages, num_pages);
+}
+
+/*
+ * Write page index using a pre-allocated page pool.
+ * For parallel workers that cannot extend the relation.
+ */
+BlockNumber
+write_page_index_from_pool(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		BlockNumber		 *page_pool,
+		uint32			  pool_size,
+		pg_atomic_uint32 *pool_next)
+{
+	BlockNumber index_root		 = InvalidBlockNumber;
+	BlockNumber prev_block		 = InvalidBlockNumber;
+	uint32		entries_per_page = (BLCKSZ - SizeOfPageHeaderData -
+								MAXALIGN(sizeof(TpPageIndexSpecial))) /
+							  sizeof(BlockNumber);
+	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
+							 entries_per_page;
+	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	uint32		 i;
+
+	/* Allocate from pool */
+	for (i = 0; i < num_index_pages; i++)
+	{
+		uint32 idx = pg_atomic_fetch_add_u32(pool_next, 1);
+		if (idx >= pool_size)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("parallel build page pool exhausted "
+							"(needed page index page)")));
+		index_pages[i] = page_pool[idx];
+	}
+
+	/* Write index pages in reverse order */
+	for (int j = num_index_pages - 1; j >= 0; j--)
+	{
+		Buffer				buffer;
+		Page				page;
+		BlockNumber		   *page_data;
+		TpPageIndexSpecial *special;
+		uint32				start_idx;
+		uint32				entries_to_write;
+		uint32				k;
+
+		start_idx		 = j * entries_per_page;
+		entries_to_write = Min(entries_per_page, num_pages - start_idx);
+
+		buffer = ReadBuffer(index, index_pages[j]);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+
+		PageInit(page, BLCKSZ, sizeof(TpPageIndexSpecial));
+
+		special			   = (TpPageIndexSpecial *)PageGetSpecialPointer(page);
+		special->magic	   = TP_PAGE_INDEX_MAGIC;
+		special->version   = TP_PAGE_INDEX_VERSION;
+		special->page_type = TP_PAGE_FILE_INDEX;
+		special->next_page = prev_block;
+		special->num_entries = entries_to_write;
+		special->flags		 = 0;
+
+		page_data = (BlockNumber *)((char *)page + SizeOfPageHeaderData);
+		for (k = 0; k < entries_to_write; k++)
+			page_data[k] = pages[start_idx + k];
+
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+
+		prev_block = index_pages[j];
+		if (j == 0)
+			index_root = index_pages[j];
 	}
 
 	pfree(index_pages);

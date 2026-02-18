@@ -20,9 +20,12 @@ OBJS = \
 	src/source.o \
 	src/am/handler.o \
 	src/am/build.o \
+	src/am/build_context.o \
 	src/am/build_parallel.o \
 	src/am/scan.o \
 	src/am/vacuum.o \
+	src/memtable/arena.o \
+	src/memtable/expull.o \
 	src/memtable/memtable.o \
 	src/memtable/posting.o \
 	src/memtable/stringtable.o \
