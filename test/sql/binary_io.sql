@@ -23,11 +23,12 @@ INSERT INTO query_export (q) VALUES
 SELECT id, q::text AS original_query FROM query_export ORDER BY id;
 
 -- Test COPY TO BINARY (exercises tpquery_send)
-COPY query_export TO '/tmp/query_export.bin' WITH (FORMAT binary);
+-- Use \copy (client-side) to avoid /tmp permission issues
+\copy query_export TO '/tmp/query_export.bin' WITH (FORMAT binary)
 
 -- Test COPY FROM BINARY (exercises tpquery_recv)
 CREATE TABLE query_import (id int, q bm25query);
-COPY query_import FROM '/tmp/query_export.bin' WITH (FORMAT binary);
+\copy query_import FROM '/tmp/query_export.bin' WITH (FORMAT binary)
 
 -- Verify data was imported correctly
 SELECT COUNT(*) AS imported_count FROM query_import;
@@ -53,11 +54,11 @@ INSERT INTO vector_export (v) VALUES
     ('binary_io_idx:{database:3,search:1}'::bm25vector);
 
 -- Export via COPY BINARY (exercises bm25vector_send)
-COPY vector_export TO '/tmp/vector_export.bin' WITH (FORMAT binary);
+\copy vector_export TO '/tmp/vector_export.bin' WITH (FORMAT binary)
 
 -- Import via COPY BINARY (exercises bm25vector_recv)
 CREATE TABLE vector_import (id int, v bm25vector);
-COPY vector_import FROM '/tmp/vector_export.bin' WITH (FORMAT binary);
+\copy vector_import FROM '/tmp/vector_export.bin' WITH (FORMAT binary)
 
 -- Verify round-trip
 SELECT COUNT(*) AS vector_imported_count FROM vector_import;

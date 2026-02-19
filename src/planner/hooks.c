@@ -1018,13 +1018,17 @@ find_tpquery_in_list(List *exprlist, BM25OidCache *oids)
 	return NULL;
 }
 
+/* Forward declaration */
+static Oid get_index_table_oid(Oid index_oid);
+
 /*
- * Check if scan_index is a descendant of specified_index (for partitioned
- * tables). Returns true if specified_index is a partitioned index and
- * scan_index is one of its descendants (child, grandchild, etc.).
+ * Check if scan_index is a descendant of specified_index via partitioned
+ * index inheritance or regular table inheritance.
  *
- * This walks up the inheritance chain from scan_index to see if it eventually
- * reaches specified_index.
+ * For partitioned indexes, walks up the index inheritance chain.
+ * For regular indexes, checks if the scan index's table inherits
+ * from the specified index's table (PG17 planner may choose child
+ * table indexes).
  */
 static bool
 is_child_partition_index(Oid specified_index_oid, Oid scan_index_oid)
@@ -1033,10 +1037,37 @@ is_child_partition_index(Oid specified_index_oid, Oid scan_index_oid)
 	Oid	 current_oid;
 	int	 depth;
 
-	/* Check if specified index is a partitioned index */
+	/*
+	 * Check if specified index is a partitioned index or a regular
+	 * index on an inheritance parent table.  For regular inheritance,
+	 * PG17's planner may choose the child table's index instead of
+	 * the parent's.
+	 */
 	relkind = get_rel_relkind(specified_index_oid);
-	if (relkind != RELKIND_PARTITIONED_INDEX)
+	if (relkind != RELKIND_PARTITIONED_INDEX && relkind != RELKIND_INDEX)
 		return false;
+
+	/*
+	 * For regular (non-partitioned) indexes, check table-level
+	 * inheritance: does the scan index's table inherit from the
+	 * specified index's table?
+	 */
+	if (relkind == RELKIND_INDEX)
+	{
+		Oid specified_table = get_index_table_oid(specified_index_oid);
+		Oid scan_table		= get_index_table_oid(scan_index_oid);
+
+		if (!OidIsValid(specified_table) || !OidIsValid(scan_table))
+			return false;
+
+		/* Must be a different table (child), not the same table */
+		if (specified_table == scan_table)
+			return false;
+
+		return list_member_oid(
+				find_all_inheritors(specified_table, NoLock, NULL),
+				scan_table);
+	}
 
 	/*
 	 * Walk up the inheritance chain from scan_index_oid. At each step, look

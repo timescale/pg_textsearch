@@ -91,14 +91,17 @@ SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
 -- Test 6: Page visualization (exercises dump.c pageviz code)
 -- =============================================================================
 
+-- Create shared temp dir accessible by both server and test runner
+\! mkdir -p -m 777 /tmp/pg_textsearch_test
+
 -- bm25_debug_pageviz writes page layout to file
-SELECT bm25_debug_pageviz('coverage_idx', '/tmp/test_pageviz.txt');
+SELECT bm25_debug_pageviz('coverage_idx', '/tmp/pg_textsearch_test/pageviz.txt');
 
 -- Verify it wrote something
-\! test -s /tmp/test_pageviz.txt && echo 'pageviz file exists'
+\! test -s /tmp/pg_textsearch_test/pageviz.txt && echo 'pageviz file exists'
 
 -- Clean up temp file
-\! rm -f /tmp/test_pageviz.txt
+\! rm -f /tmp/pg_textsearch_test/pageviz.txt
 
 -- =============================================================================
 -- Test 7: Score logging (exercises am/scan.c log_scores path)
@@ -161,11 +164,11 @@ DROP TABLE validate_test;
 -- Test 11: bm25_dump_index to file (exercises file output path)
 -- =============================================================================
 
-SELECT bm25_dump_index('coverage_idx', '/tmp/test_dump.txt') IS NOT NULL
-    AS dump_to_file;
+SELECT bm25_dump_index('coverage_idx', '/tmp/pg_textsearch_test/dump.txt')
+    IS NOT NULL AS dump_to_file;
 
-\! test -s /tmp/test_dump.txt && echo 'dump file exists'
-\! rm -f /tmp/test_dump.txt
+\! test -s /tmp/pg_textsearch_test/dump.txt && echo 'dump file exists'
+\! rm -rf /tmp/pg_textsearch_test
 
 -- =============================================================================
 -- Test 12: Segment BMW seek (exercises segment/scan.c seek path)
@@ -180,16 +183,22 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('coverage_idx');
 
 -- ORDER BY score LIMIT triggers BMW seek path on segments
-SELECT id FROM coverage_docs
-WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
-ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
-LIMIT 5;
+-- Wrap in outer query with id tiebreaker for deterministic ordering
+-- (adding secondary sort key to inner query would prevent index use)
+SELECT id FROM (
+    SELECT id FROM coverage_docs
+    WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
+    ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
+    LIMIT 5
+) sub ORDER BY id;
 
 -- Multi-term BMW seek with segment data
-SELECT id FROM coverage_docs
-WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
-ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
-LIMIT 3;
+SELECT id FROM (
+    SELECT id FROM coverage_docs
+    WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
+    ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
+    LIMIT 3
+) sub ORDER BY id;
 
 -- =============================================================================
 -- Test 13: tpquery_in with index name prefix (exercises query.c parsing)
@@ -230,10 +239,12 @@ SET pg_textsearch.log_bmw_stats = false;
 SET enable_seqscan = off;
 
 -- The implicit text <@> text form in ORDER BY
-SELECT id FROM coverage_docs
-WHERE content <@> 'alpha'::text < 0
-ORDER BY content <@> 'alpha'::text
-LIMIT 3;
+SELECT id FROM (
+    SELECT id FROM coverage_docs
+    WHERE content <@> 'alpha'::text < 0
+    ORDER BY content <@> 'alpha'::text
+    LIMIT 3
+) sub ORDER BY id;
 
 SET enable_seqscan = on;
 
