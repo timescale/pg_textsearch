@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771482780807,
+  "lastUpdate": 1771531979987,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2949,6 +2949,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Index Build Time",
             "value": 298.295,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.37,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "4639bf8baedd19b412fc720d7639d33927d8e726",
+          "message": "feat: workers write index pages directly in two-phase parallel build\n\nEliminate single-threaded leader transcription bottleneck by having\nworkers write their segments directly to pre-allocated index pages.\n\nPhase 1: Workers scan heap, flush/compact in BufFile, report total\npages needed, signal phase1_done.\n\nLeader barrier: Sum page counts, pre-extend relation with batched\nExtendBufferedRelBy (8192 pages/batch), set atomic next_page counter,\nsignal phase2_ready.\n\nPhase 2: Workers reopen BufFile read-only, write segments to index\npages using lock-free atomic page counter, report seg_roots[].\n\nLeader finalization: Read seg_roots[] from shared memory (no BufFile\nI/O), chain segments into level lists, update metapage, compact.",
+          "timestamp": "2026-02-19T19:23:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4639bf8baedd19b412fc720d7639d33927d8e726"
+        },
+        "date": 1771531978440,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 234.996,
             "unit": "ms"
           },
           {
