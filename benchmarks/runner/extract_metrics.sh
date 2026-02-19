@@ -46,6 +46,13 @@ num_or_null() {
 INDEX_BUILD_MS=$(grep -E "CREATE INDEX" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
+# Add post-build VACUUM time if present (ParadeDB segment compaction)
+INDEX_VACUUM_MS=$(grep -E "^INDEX_VACUUM:" "$LOG_FILE" -A 2 2>/dev/null | \
+    grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
+if [ -n "$INDEX_VACUUM_MS" ] && [ -n "$INDEX_BUILD_MS" ]; then
+    INDEX_BUILD_MS=$(echo "$INDEX_BUILD_MS + $INDEX_VACUUM_MS" | bc)
+fi
+
 # Extract data load time (COPY statements)
 LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")

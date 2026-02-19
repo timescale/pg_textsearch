@@ -111,6 +111,10 @@ CREATE INDEX msmarco_systemx_idx ON msmarco_passages_systemx
         }'
     );
 
+-- Compact index segments (ParadeDB merges segments during VACUUM)
+\echo 'INDEX_VACUUM:'
+VACUUM msmarco_passages_systemx;
+
 -- Report index and table sizes
 \echo ''
 \echo '=== Index Size Report ==='
