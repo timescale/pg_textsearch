@@ -9,6 +9,8 @@
 #include <postgres.h>
 
 #include <common/hashfn.h>
+#include <inttypes.h>
+#include <storage/buffile.h>
 #include <storage/bufmgr.h>
 #include <utils/memutils.h>
 
@@ -283,16 +285,8 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	if (num_terms == 0)
 		return InvalidBlockNumber;
 
-	/* Initialize writer (parallel workers use pre-allocated pool) */
-	if (ctx->page_pool != NULL)
-		tp_segment_writer_init_with_pool(
-				&writer,
-				index,
-				ctx->page_pool,
-				ctx->pool_size,
-				ctx->pool_next);
-	else
-		tp_segment_writer_init(&writer, index);
+	/* Initialize writer */
+	tp_segment_writer_init(&writer, index);
 
 	if (writer.pages_allocated == 0)
 		elog(ERROR,
@@ -522,18 +516,9 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	 */
 	writer.buffer_pos = SizeOfPageHeaderData;
 
-	/* Write page index (parallel workers use pool) */
-	if (ctx->page_pool != NULL)
-		page_index_root = write_page_index_from_pool(
-				index,
-				writer.pages,
-				writer.pages_allocated,
-				ctx->page_pool,
-				ctx->pool_size,
-				ctx->pool_next);
-	else
-		page_index_root =
-				write_page_index(index, writer.pages, writer.pages_allocated);
+	/* Write page index */
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
 
 	/* Finalize header */
 	header.page_index = page_index_root;
@@ -679,6 +664,331 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		pfree(writer.pages);
 
 	return header_block;
+}
+
+/*
+ * Write a segment from the build context to a BufFile as a flat
+ * byte stream. No page boundaries, no page index. Used by parallel
+ * build workers to write to SharedFileSet temp files.
+ *
+ * Returns the data_size (total bytes written for this segment).
+ */
+uint64
+tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
+{
+	TpBuildTermInfo *terms;
+	uint32			 num_terms;
+	TpSegmentHeader	 header;
+	TpDictionary	 dict;
+
+	/*
+	 * BufFile position tracking. BufFile uses (fileno, offset)
+	 * pairs where fileno is the 1GB file segment index. We save
+	 * the starting position and end position to handle seek-back
+	 * for header/dict entry updates.
+	 */
+	int	  base_fileno;
+	off_t base_file_offset;
+
+	uint32 *string_offsets;
+	uint32	string_pos;
+	uint32	i;
+
+	/* Current write position in the flat stream */
+	uint64 current_offset;
+
+	/* Per-term block tracking */
+	typedef struct
+	{
+		uint64 posting_offset;
+		uint32 skip_entry_start;
+		uint16 block_count;
+		uint32 doc_freq;
+	} TermBlockInfo;
+
+	TermBlockInfo *term_blocks;
+
+	/* Accumulated skip entries */
+	TpSkipEntry *all_skip_entries;
+	uint32		 skip_entries_count;
+	uint32		 skip_entries_capacity;
+
+	/* Get sorted terms */
+	terms = tp_build_context_get_sorted_terms(ctx, &num_terms);
+	if (num_terms == 0)
+		return 0;
+
+	/* Record starting position for later seek-back */
+	BufFileTell(file, &base_fileno, &base_file_offset);
+
+	current_offset = 0;
+
+	/* Initialize header */
+	memset(&header, 0, sizeof(TpSegmentHeader));
+	header.magic		= TP_SEGMENT_MAGIC;
+	header.version		= TP_SEGMENT_FORMAT_VERSION;
+	header.created_at	= GetCurrentTimestamp();
+	header.num_pages	= 0; /* No pages in flat format */
+	header.num_terms	= num_terms;
+	header.level		= 0;
+	header.next_segment = InvalidBlockNumber;
+	header.num_docs		= ctx->num_docs;
+	header.total_tokens = ctx->total_len;
+	header.page_index	= InvalidBlockNumber;
+
+	/* Dictionary immediately follows header */
+	header.dictionary_offset = sizeof(TpSegmentHeader);
+
+	/* Write placeholder header */
+	BufFileWrite(file, &header, sizeof(TpSegmentHeader));
+	current_offset += sizeof(TpSegmentHeader);
+
+	/* Write dictionary section */
+	dict.num_terms = num_terms;
+	BufFileWrite(file, &dict, offsetof(TpDictionary, string_offsets));
+	current_offset += offsetof(TpDictionary, string_offsets);
+
+	/* Build string offsets */
+	string_offsets = palloc0(num_terms * sizeof(uint32));
+	string_pos	   = 0;
+	for (i = 0; i < num_terms; i++)
+	{
+		string_offsets[i] = string_pos;
+		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+	}
+
+	/* Write string offsets array */
+	BufFileWrite(file, string_offsets, num_terms * sizeof(uint32));
+	current_offset += num_terms * sizeof(uint32);
+
+	/* Write string pool */
+	header.strings_offset = current_offset;
+	for (i = 0; i < num_terms; i++)
+	{
+		uint32 length	   = terms[i].term_len;
+		uint32 dict_offset = i * sizeof(TpDictEntry);
+
+		BufFileWrite(file, &length, sizeof(uint32));
+		BufFileWrite(file, terms[i].term, length);
+		BufFileWrite(file, &dict_offset, sizeof(uint32));
+		current_offset += sizeof(uint32) + length + sizeof(uint32);
+	}
+
+	/* Record entries offset */
+	header.entries_offset = current_offset;
+
+	/* Write placeholder dict entries */
+	{
+		TpDictEntry placeholder;
+
+		memset(&placeholder, 0, sizeof(TpDictEntry));
+		for (i = 0; i < num_terms; i++)
+		{
+			BufFileWrite(file, &placeholder, sizeof(TpDictEntry));
+			current_offset += sizeof(TpDictEntry);
+		}
+	}
+
+	/* Postings start here */
+	header.postings_offset = current_offset;
+
+	/* Initialize per-term tracking and skip entry accumulator */
+	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+
+	skip_entries_capacity = 1024;
+	skip_entries_count	  = 0;
+	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+
+	/* Streaming pass: write posting blocks */
+	for (i = 0; i < num_terms; i++)
+	{
+		TpExpullReader reader;
+		uint32		   doc_count;
+		uint32		   block_idx;
+		uint32		   num_blocks;
+
+		term_blocks[i].posting_offset	= current_offset;
+		term_blocks[i].skip_entry_start = skip_entries_count;
+
+		doc_count				= terms[i].expull->num_entries;
+		term_blocks[i].doc_freq = terms[i].doc_freq;
+
+		if (doc_count == 0)
+		{
+			term_blocks[i].block_count = 0;
+			continue;
+		}
+
+		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		term_blocks[i].block_count = (uint16)num_blocks;
+
+		tp_expull_reader_init(&reader, ctx->arena, terms[i].expull);
+
+		for (block_idx = 0; block_idx < num_blocks; block_idx++)
+		{
+			TpExpullEntry  entries[TP_BLOCK_SIZE];
+			TpBlockPosting block_postings[TP_BLOCK_SIZE];
+			TpSkipEntry	   skip;
+			uint32		   nread;
+			uint32		   j;
+			uint16		   max_tf	  = 0;
+			uint8		   min_norm	  = 255;
+			uint32		   last_docid = 0;
+
+			nread = tp_expull_reader_read(&reader, entries, TP_BLOCK_SIZE);
+			Assert(nread > 0);
+
+			for (j = 0; j < nread; j++)
+			{
+				block_postings[j].doc_id	= entries[j].doc_id;
+				block_postings[j].frequency = entries[j].frequency;
+				block_postings[j].fieldnorm = entries[j].fieldnorm;
+				block_postings[j].reserved	= 0;
+
+				if (entries[j].doc_id > last_docid)
+					last_docid = entries[j].doc_id;
+				if (entries[j].frequency > max_tf)
+					max_tf = entries[j].frequency;
+				if (entries[j].fieldnorm < min_norm)
+					min_norm = entries[j].fieldnorm;
+			}
+
+			skip.last_doc_id	= last_docid;
+			skip.doc_count		= (uint8)nread;
+			skip.block_max_tf	= max_tf;
+			skip.block_max_norm = min_norm;
+			skip.posting_offset = current_offset;
+			memset(skip.reserved, 0, sizeof(skip.reserved));
+
+			if (tp_compress_segments)
+			{
+				uint8  compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
+				uint32 compressed_size;
+
+				compressed_size =
+						tp_compress_block(block_postings, nread, compressed);
+				skip.flags = TP_BLOCK_FLAG_DELTA;
+				BufFileWrite(file, compressed, compressed_size);
+				current_offset += compressed_size;
+			}
+			else
+			{
+				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+				BufFileWrite(
+						file, block_postings, nread * sizeof(TpBlockPosting));
+				current_offset += nread * sizeof(TpBlockPosting);
+			}
+
+			if (skip_entries_count >= skip_entries_capacity)
+			{
+				skip_entries_capacity *= 2;
+				all_skip_entries = repalloc(
+						all_skip_entries,
+						skip_entries_capacity * sizeof(TpSkipEntry));
+			}
+			all_skip_entries[skip_entries_count++] = skip;
+		}
+	}
+
+	/* Write skip index */
+	header.skip_index_offset = current_offset;
+	if (skip_entries_count > 0)
+	{
+		BufFileWrite(
+				file,
+				all_skip_entries,
+				skip_entries_count * sizeof(TpSkipEntry));
+		current_offset += skip_entries_count * sizeof(TpSkipEntry);
+	}
+
+	/* Write fieldnorm table */
+	header.fieldnorm_offset = current_offset;
+	if (ctx->num_docs > 0)
+	{
+		BufFileWrite(file, ctx->fieldnorms, ctx->num_docs * sizeof(uint8));
+		current_offset += ctx->num_docs * sizeof(uint8);
+	}
+
+	/* Write CTID pages array */
+	header.ctid_pages_offset = current_offset;
+	{
+		uint32 *ctid_pages = palloc(ctx->num_docs * sizeof(uint32));
+
+		for (i = 0; i < ctx->num_docs; i++)
+			ctid_pages[i] = ItemPointerGetBlockNumber(&ctx->ctids[i]);
+		BufFileWrite(file, ctid_pages, ctx->num_docs * sizeof(uint32));
+		current_offset += ctx->num_docs * sizeof(uint32);
+		pfree(ctid_pages);
+	}
+
+	/* Write CTID offsets array */
+	header.ctid_offsets_offset = current_offset;
+	{
+		uint16 *ctid_offsets = palloc(ctx->num_docs * sizeof(uint16));
+
+		for (i = 0; i < ctx->num_docs; i++)
+			ctid_offsets[i] = ItemPointerGetOffsetNumber(&ctx->ctids[i]);
+		BufFileWrite(file, ctid_offsets, ctx->num_docs * sizeof(uint16));
+		current_offset += ctx->num_docs * sizeof(uint16);
+		pfree(ctid_offsets);
+	}
+
+	/* Final data_size */
+	header.data_size = current_offset;
+
+	/*
+	 * Seek back to write dict entries and header with real offsets.
+	 *
+	 * Save the end position first (BufFileWrite may have crossed a
+	 * 1GB file segment boundary), then seek back to early positions
+	 * within this segment (guaranteed to be in the same 1GB segment
+	 * since the header/dict entries are near the start), then
+	 * restore the end position.
+	 */
+	{
+		TpDictEntry *dict_entries;
+		int			 end_fileno;
+		off_t		 end_file_offset;
+
+		/* Save end position */
+		BufFileTell(file, &end_fileno, &end_file_offset);
+
+		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
+		for (i = 0; i < num_terms; i++)
+		{
+			dict_entries[i].skip_index_offset =
+					header.skip_index_offset +
+					((uint64)term_blocks[i].skip_entry_start *
+					 sizeof(TpSkipEntry));
+			dict_entries[i].block_count = term_blocks[i].block_count;
+			dict_entries[i].reserved	= 0;
+			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
+		}
+
+		/* Seek back to dict entries position (near start of segment) */
+		BufFileSeek(
+				file,
+				base_fileno,
+				base_file_offset + (off_t)header.entries_offset,
+				SEEK_SET);
+		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
+		pfree(dict_entries);
+
+		/* Seek back to header position */
+		BufFileSeek(file, base_fileno, base_file_offset, SEEK_SET);
+		BufFileWrite(file, &header, sizeof(TpSegmentHeader));
+
+		/* Restore end position for caller's next write */
+		BufFileSeek(file, end_fileno, end_file_offset, SEEK_SET);
+	}
+
+	/* Cleanup */
+	pfree(term_blocks);
+	pfree(all_skip_entries);
+	pfree(string_offsets);
+	pfree(terms);
+
+	return current_offset;
 }
 
 /*

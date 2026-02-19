@@ -65,11 +65,6 @@ typedef struct TpBuildContext
 
 	/* Budget for flush decisions */
 	Size budget; /* Max arena bytes before flush */
-
-	/* Page pool for parallel workers (NULL = use normal allocation) */
-	BlockNumber		 *page_pool;
-	uint32			  pool_size;
-	pg_atomic_uint32 *pool_next;
 } TpBuildContext;
 
 /*
@@ -136,6 +131,13 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms);
  */
 extern BlockNumber
 tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index);
+
+/*
+ * Write a segment from the build context to a BufFile as a flat
+ * byte stream (no page boundaries). Used by parallel build workers.
+ * Returns the data_size (total bytes written for this segment).
+ */
+extern uint64 tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file);
 
 /*
  * Reset the build context for reuse (new spill batch).

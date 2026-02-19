@@ -9,7 +9,7 @@
 #include <postgres.h>
 
 #include <access/htup_details.h>
-#include <port/atomics.h>
+#include <storage/buffile.h>
 
 #include "constants.h"
 #include "storage/bufmgr.h"
@@ -314,6 +314,10 @@ typedef struct TpSegmentReader
 	BlockNumber	 *cached_ctid_pages;   /* Page numbers (4 bytes/doc) */
 	OffsetNumber *cached_ctid_offsets; /* Tuple offsets (2 bytes/doc) */
 	uint32		  cached_num_docs;	   /* Number of docs cached */
+
+	/* BufFile-backed reading (for temp file segments, NULL for normal) */
+	BufFile *buffile;
+	uint64	 buffile_base; /* Base byte offset of segment in BufFile */
 } TpSegmentReader;
 
 /*
@@ -333,11 +337,6 @@ typedef struct TpSegmentWriter
 	/* Reusable buffer for posting list conversion */
 	TpSegmentPosting *posting_buffer;	   /* Reusable posting buffer */
 	uint32			  posting_buffer_size; /* Current size of buffer */
-
-	/* Optional page pool for parallel builds (NULL if not using pool) */
-	BlockNumber		 *page_pool; /* Pre-allocated pages */
-	uint32			  pool_size; /* Total pages in pool */
-	pg_atomic_uint32 *pool_next; /* Atomic index for next page */
 } TpSegmentWriter;
 
 /* Forward declarations for index.c */
@@ -351,12 +350,6 @@ struct TpLocalIndexState;
 extern BlockNumber
 			tp_write_segment(struct TpLocalIndexState *state, Relation index);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
-extern void tp_segment_writer_init_with_pool(
-		TpSegmentWriter	 *writer,
-		Relation		  index,
-		BlockNumber		 *page_pool,
-		uint32			  pool_size,
-		pg_atomic_uint32 *pool_next);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
 extern void tp_segment_writer_flush(TpSegmentWriter *writer);
@@ -366,11 +359,13 @@ extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 extern TpSegmentReader *
 tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
-extern void				tp_segment_read(
-					TpSegmentReader *reader,
-					uint64			 logical_offset,
-					void			*dest,
-					uint32			 len);
+extern TpSegmentReader			   *
+tp_segment_open_from_buffile(BufFile *file, uint64 base_offset);
+extern void tp_segment_read(
+		TpSegmentReader *reader,
+		uint64			 logical_offset,
+		void			*dest,
+		uint32			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
 
 /* Lazy CTID lookup for deferred resolution */
@@ -408,13 +403,6 @@ extern void tp_dump_segment_to_output(
 /* Page index writing (used by segment_merge.c) */
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
-extern BlockNumber write_page_index_from_pool(
-		Relation		  index,
-		BlockNumber		 *pages,
-		uint32			  num_pages,
-		BlockNumber		 *page_pool,
-		uint32			  pool_size,
-		pg_atomic_uint32 *pool_next);
 
 /* Calculate entries per page index page */
 extern uint32 tp_page_index_entries_per_page(void);

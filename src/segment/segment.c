@@ -387,6 +387,61 @@ tp_segment_open(Relation index, BlockNumber root_block)
 }
 
 /*
+ * Open segment from a BufFile temp file.
+ * Used by parallel build leader to read worker segments.
+ *
+ * The BufFile contains a flat byte stream (no page boundaries).
+ * The segment header starts at base_offset in the file.
+ * Caller manages BufFile lifecycle (do not close in reader).
+ */
+TpSegmentReader *
+tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
+{
+	TpSegmentReader *reader;
+	TpSegmentHeader *header;
+
+	reader						 = palloc0(sizeof(TpSegmentReader));
+	reader->index				 = NULL;
+	reader->root_block			 = InvalidBlockNumber;
+	reader->current_buffer		 = InvalidBuffer;
+	reader->current_logical_page = UINT32_MAX;
+	reader->header_buffer		 = InvalidBuffer;
+	reader->page_map			 = NULL;
+	reader->num_pages			 = 0;
+	reader->nblocks				 = 0;
+
+	/* Set BufFile fields */
+	reader->buffile		 = file;
+	reader->buffile_base = base_offset;
+
+	/* Read header from BufFile */
+	header = palloc(sizeof(TpSegmentHeader));
+	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	BufFileReadExact(file, header, sizeof(TpSegmentHeader));
+
+	if (header->magic != TP_SEGMENT_MAGIC)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid segment header in temp file "
+						"at offset %" PRIu64,
+						base_offset),
+				 errdetail(
+						 "magic=0x%08X, expected 0x%08X",
+						 header->magic,
+						 TP_SEGMENT_MAGIC)));
+
+	reader->header			= header;
+	reader->segment_version = header->version;
+
+	/* No CTID caches for temp file segments */
+	reader->cached_ctid_pages	= NULL;
+	reader->cached_ctid_offsets = NULL;
+	reader->cached_num_docs		= 0;
+
+	return reader;
+}
+
+/*
  * Look up a single CTID by doc_id.
  * Used for deferred CTID resolution when CTIDs weren't preloaded.
  */
@@ -435,17 +490,24 @@ tp_segment_close(TpSegmentReader *reader)
 	if (!reader)
 		return;
 
-	if (BufferIsValid(reader->current_buffer))
-		ReleaseBuffer(reader->current_buffer);
+	/*
+	 * BufFile-backed readers don't use buffer manager.
+	 * Do NOT close the BufFile — caller manages its lifecycle.
+	 */
+	if (reader->buffile == NULL)
+	{
+		if (BufferIsValid(reader->current_buffer))
+			ReleaseBuffer(reader->current_buffer);
 
-	if (BufferIsValid(reader->header_buffer))
-		ReleaseBuffer(reader->header_buffer);
+		if (BufferIsValid(reader->header_buffer))
+			ReleaseBuffer(reader->header_buffer);
+
+		if (reader->page_map)
+			pfree(reader->page_map);
+	}
 
 	if (reader->header)
 		pfree(reader->header);
-
-	if (reader->page_map)
-		pfree(reader->page_map);
 
 	/* Free CTID caches (fieldnorm is inline in postings, no cache needed) */
 	if (reader->cached_ctid_pages)
@@ -462,6 +524,21 @@ tp_segment_read(
 {
 	char  *dest_ptr	  = (char *)dest;
 	uint32 bytes_read = 0;
+
+	/*
+	 * BufFile fast path: flat byte stream, no page boundaries.
+	 * logical_offset maps directly to file position.
+	 */
+	if (reader->buffile != NULL)
+	{
+		BufFileSeek(
+				reader->buffile,
+				0,
+				(off_t)(reader->buffile_base + logical_offset),
+				SEEK_SET);
+		BufFileReadExact(reader->buffile, dest, len);
+		return;
+	}
 
 	while (bytes_read < len)
 	{
@@ -702,33 +779,9 @@ static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 {
 	BlockNumber new_page;
-	Buffer		buf;
 
 	tp_segment_writer_grow_pages(writer);
 
-	/* Parallel builds use pre-allocated pool to avoid FSM in workers */
-	if (writer->page_pool != NULL && writer->pool_next != NULL)
-	{
-		uint32 idx = pg_atomic_fetch_add_u32(writer->pool_next, 1);
-		if (idx < writer->pool_size)
-		{
-			new_page								 = writer->page_pool[idx];
-			writer->pages[writer->pages_allocated++] = new_page;
-			return new_page;
-		}
-
-		/* Pool exhausted - extend directly (FSM unsafe in parallel workers) */
-		buf = ReadBufferExtended(
-				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-		new_page = BufferGetBlockNumber(buf);
-		PageInit(BufferGetPage(buf), BLCKSZ, 0);
-		MarkBufferDirty(buf);
-		UnlockReleaseBuffer(buf);
-		writer->pages[writer->pages_allocated++] = new_page;
-		return new_page;
-	}
-
-	/* Non-parallel: use FSM via allocate_segment_page */
 	new_page = allocate_segment_page(writer->index);
 	writer->pages[writer->pages_allocated++] = new_page;
 	return new_page;
@@ -821,85 +874,6 @@ BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
 	return write_page_index_internal(index, pages, num_pages);
-}
-
-/*
- * Write page index using a pre-allocated page pool.
- * For parallel workers that cannot extend the relation.
- */
-BlockNumber
-write_page_index_from_pool(
-		Relation		  index,
-		BlockNumber		 *pages,
-		uint32			  num_pages,
-		BlockNumber		 *page_pool,
-		uint32			  pool_size,
-		pg_atomic_uint32 *pool_next)
-{
-	BlockNumber index_root		 = InvalidBlockNumber;
-	BlockNumber prev_block		 = InvalidBlockNumber;
-	uint32		entries_per_page = (BLCKSZ - SizeOfPageHeaderData -
-								MAXALIGN(sizeof(TpPageIndexSpecial))) /
-							  sizeof(BlockNumber);
-	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
-							 entries_per_page;
-	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
-	uint32		 i;
-
-	/* Allocate from pool */
-	for (i = 0; i < num_index_pages; i++)
-	{
-		uint32 idx = pg_atomic_fetch_add_u32(pool_next, 1);
-		if (idx >= pool_size)
-			ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("parallel build page pool exhausted "
-							"(needed page index page)")));
-		index_pages[i] = page_pool[idx];
-	}
-
-	/* Write index pages in reverse order */
-	for (int j = num_index_pages - 1; j >= 0; j--)
-	{
-		Buffer				buffer;
-		Page				page;
-		BlockNumber		   *page_data;
-		TpPageIndexSpecial *special;
-		uint32				start_idx;
-		uint32				entries_to_write;
-		uint32				k;
-
-		start_idx		 = j * entries_per_page;
-		entries_to_write = Min(entries_per_page, num_pages - start_idx);
-
-		buffer = ReadBuffer(index, index_pages[j]);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		page = BufferGetPage(buffer);
-
-		PageInit(page, BLCKSZ, sizeof(TpPageIndexSpecial));
-
-		special			   = (TpPageIndexSpecial *)PageGetSpecialPointer(page);
-		special->magic	   = TP_PAGE_INDEX_MAGIC;
-		special->version   = TP_PAGE_INDEX_VERSION;
-		special->page_type = TP_PAGE_FILE_INDEX;
-		special->next_page = prev_block;
-		special->num_entries = entries_to_write;
-		special->flags		 = 0;
-
-		page_data = (BlockNumber *)((char *)page + SizeOfPageHeaderData);
-		for (k = 0; k < entries_to_write; k++)
-			page_data[k] = pages[start_idx + k];
-
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
-
-		prev_block = index_pages[j];
-		if (j == 0)
-			index_root = index_pages[j];
-	}
-
-	pfree(index_pages);
-	return index_root;
 }
 
 /*
@@ -1984,50 +1958,7 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->posting_buffer		= NULL;
 	writer->posting_buffer_size = 0;
 
-	/* No page pool for normal builds */
-	writer->page_pool = NULL;
-	writer->pool_size = 0;
-	writer->pool_next = NULL;
-
 	/* Allocate first page */
-	tp_segment_writer_allocate_page(writer);
-
-	/* Initialize first page */
-	PageInit((Page)writer->buffer, BLCKSZ, 0);
-}
-
-/*
- * Initialize segment writer with pre-allocated page pool.
- * Used by parallel builds where pages are pre-allocated to avoid FSM
- * contention.
- */
-void
-tp_segment_writer_init_with_pool(
-		TpSegmentWriter	 *writer,
-		Relation		  index,
-		BlockNumber		 *page_pool,
-		uint32			  pool_size,
-		pg_atomic_uint32 *pool_next)
-{
-	writer->index			= index;
-	writer->pages			= NULL;
-	writer->pages_allocated = 0;
-	writer->pages_capacity	= 0;
-	writer->current_offset	= 0;
-	writer->buffer			= palloc(BLCKSZ);
-	writer->buffer_page		= 0;
-	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
-
-	/* Initialize reusable posting buffer */
-	writer->posting_buffer		= NULL;
-	writer->posting_buffer_size = 0;
-
-	/* Set up page pool */
-	writer->page_pool = page_pool;
-	writer->pool_size = pool_size;
-	writer->pool_next = pool_next;
-
-	/* Allocate first page (from pool) */
 	tp_segment_writer_allocate_page(writer);
 
 	/* Initialize first page */

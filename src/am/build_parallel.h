@@ -6,10 +6,10 @@
  *
  * Architecture:
  * - Workers scan heap and build local TpBuildContext (arena + HTAB)
- * - When budget fills, workers flush segments directly to index pages
- * - Each worker chains its own segments locally
- * - After all workers finish, leader links chains into L0, compacts
- * - No DSA, no dshash, no double-buffering, no leader-side merging
+ * - When budget fills, workers flush segments to BufFile temp files
+ * - After all workers finish, leader reads temp files and writes
+ *   segments contiguously to index pages as separate L0 segments
+ * - No page pool, no compaction during build
  */
 #pragma once
 
@@ -18,6 +18,7 @@
 #include <access/parallel.h>
 #include <storage/block.h>
 #include <storage/condition_variable.h>
+#include <storage/sharedfileset.h>
 #include <utils/relcache.h>
 
 /*
@@ -37,10 +38,7 @@
  */
 typedef struct TpParallelWorkerResult
 {
-	/* Segment chain written by this worker */
-	BlockNumber segment_head;  /* First segment (newest) */
-	BlockNumber segment_tail;  /* Last segment (oldest, for linking) */
-	int32		segment_count; /* Number of segments */
+	uint32 segment_count; /* Segments written to this worker's BufFile */
 
 	/* Corpus statistics */
 	uint64 total_docs; /* Documents indexed */
@@ -64,10 +62,8 @@ typedef struct TpParallelBuildShared
 	double	   b;				/* BM25 b parameter */
 	int32	   nworkers;		/* Number of workers requested */
 
-	/* Pre-allocated page pool for workers */
-	BlockNumber		 pool_start; /* First block of pool */
-	uint32			 pool_size;	 /* Total pages in pool */
-	pg_atomic_uint32 pool_next;	 /* Next page index (atomic) */
+	/* Temp files for worker segments */
+	SharedFileSet fileset;
 
 	/* Coordination */
 	ConditionVariable all_done_cv; /* Workers signal when done */

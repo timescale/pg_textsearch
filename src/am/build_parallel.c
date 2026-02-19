@@ -8,12 +8,10 @@
  * - Each worker scans a partition of the heap and builds a local
  *   TpBuildContext (arena + HTAB) — no shared memory allocations.
  * - When the worker's memory budget fills, it flushes a segment
- *   directly to index pages and chains it locally.
- * - After all workers finish, the leader links worker segment
- *   chains into L0, runs compaction, and truncates dead pages.
- *
- * This eliminates DSA, dshash, double-buffering, and leader-side
- * N-way merging. Workers are fully independent.
+ *   to a BufFile temp file via SharedFileSet.
+ * - After all workers finish, the leader reads temp files and
+ *   writes segments contiguously to index pages as L0 segments.
+ * - No page pool, no compaction during build.
  */
 #include <postgres.h>
 
@@ -23,7 +21,9 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <commands/progress.h>
+#include <inttypes.h>
 #include <miscadmin.h>
+#include <storage/buffile.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
 #include <storage/smgr.h>
@@ -39,7 +39,6 @@
 #include "build_context.h"
 #include "build_parallel.h"
 #include "constants.h"
-#include "segment/merge.h"
 #include "segment/segment.h"
 #include "state/metapage.h"
 
@@ -49,6 +48,9 @@ extern int tp_extract_terms_from_tsvector(
 		char  ***terms_out,
 		int32  **frequencies_out,
 		int		*term_count_out);
+
+/* Chunk size for streaming temp segments to index pages */
+#define TP_COPY_BUF_SIZE (64 * 1024)
 
 /*
  * Estimate shared memory needed for parallel build
@@ -108,8 +110,6 @@ tp_init_parallel_shared(
 	results = TpParallelWorkerResults(shared);
 	for (i = 0; i < nworkers; i++)
 	{
-		results[i].segment_head	  = InvalidBlockNumber;
-		results[i].segment_tail	  = InvalidBlockNumber;
 		results[i].segment_count  = 0;
 		results[i].total_docs	  = 0;
 		results[i].total_len	  = 0;
@@ -118,45 +118,80 @@ tp_init_parallel_shared(
 }
 
 /*
- * Flush build context to a segment and chain it into the
- * worker's local segment list.
+ * Write a temp file segment to contiguous index pages.
  *
- * The newest segment becomes the new head, with its next_segment
- * pointing to the previous head.
+ * Reads data_size bytes from BufFile starting at base_offset,
+ * writes them through a TpSegmentWriter to get proper 8KB pages
+ * with page headers. Then writes the page index and updates the
+ * segment header on the first page.
+ *
+ * Returns the header block number of the written segment.
  */
-static void
-tp_worker_flush_and_chain(
-		TpBuildContext *ctx, Relation index, TpParallelWorkerResult *result)
+static BlockNumber
+write_temp_segment_to_index(
+		Relation index, BufFile *file, uint64 base_offset, uint64 data_size)
 {
-	BlockNumber segment_root;
+	TpSegmentWriter writer;
+	BlockNumber		header_block;
+	BlockNumber		page_index_root;
+	char			buf[TP_COPY_BUF_SIZE];
+	uint64			remaining;
 
-	segment_root = tp_write_segment_from_build_ctx(ctx, index);
-	if (segment_root == InvalidBlockNumber)
-		return;
+	/* Initialize writer — extends relation via P_NEW */
+	tp_segment_writer_init(&writer, index);
+	header_block = writer.pages[0];
 
-	/* Chain: new segment points to old head */
-	if (result->segment_head != InvalidBlockNumber)
+	/* Stream data from BufFile through writer */
+	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	remaining = data_size;
+	while (remaining > 0)
 	{
-		Buffer			 seg_buf;
-		Page			 seg_page;
-		TpSegmentHeader *seg_header;
+		uint32 chunk = (uint32)Min(remaining, TP_COPY_BUF_SIZE);
 
-		seg_buf = ReadBuffer(index, segment_root);
-		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page   = BufferGetPage(seg_buf);
-		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-		seg_header->next_segment = result->segment_head;
-		MarkBufferDirty(seg_buf);
-		UnlockReleaseBuffer(seg_buf);
-	}
-	else
-	{
-		/* First segment — it's also the tail */
-		result->segment_tail = segment_root;
+		BufFileReadExact(file, buf, chunk);
+		tp_segment_writer_write(&writer, buf, chunk);
+		remaining -= chunk;
 	}
 
-	result->segment_head = segment_root;
-	result->segment_count++;
+	/* Flush remaining buffered data */
+	tp_segment_writer_flush(&writer);
+	writer.buffer_pos = SizeOfPageHeaderData;
+
+	/* Write page index */
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
+
+	/*
+	 * Update segment header on the first page.
+	 * The logical offsets from the flat format are valid as-is because
+	 * TpSegmentWriter.current_offset counts data bytes only (excludes
+	 * page headers). We just need to set num_pages and page_index.
+	 */
+	{
+		Buffer			 header_buf;
+		Page			 header_page;
+		TpSegmentHeader *hdr;
+
+		header_buf = ReadBuffer(index, header_block);
+		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+		header_page = BufferGetPage(header_buf);
+		hdr			= (TpSegmentHeader *)PageGetContents(header_page);
+
+		hdr->num_pages	= writer.pages_allocated;
+		hdr->page_index = page_index_root;
+		hdr->data_size	= writer.current_offset;
+
+		MarkBufferDirty(header_buf);
+		UnlockReleaseBuffer(header_buf);
+	}
+
+	tp_segment_writer_finish(&writer);
+
+	/* Free writer pages array */
+	if (writer.pages)
+		pfree(writer.pages);
+
+	return header_block;
 }
 
 /*
@@ -166,12 +201,11 @@ tp_worker_flush_and_chain(
  * 1. Opens heap and index relations
  * 2. Creates a local TpBuildContext with per-worker budget
  * 3. Scans its share of the heap
- * 4. Flushes segments when budget fills
+ * 4. Flushes segments to BufFile when budget fills
  * 5. Reports results via shared memory
  */
 PGDLLEXPORT void
-tp_parallel_build_worker_main(
-		dsm_segment *seg __attribute__((unused)), shm_toc *toc)
+tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 {
 	TpParallelBuildShared  *shared;
 	TpParallelWorkerResult *my_result;
@@ -184,6 +218,8 @@ tp_parallel_build_worker_main(
 	MemoryContext			oldctx;
 	Size					budget;
 	int						worker_id;
+	BufFile				   *buffile;
+	char					file_name[64];
 
 	/* Attach to shared memory */
 	shared = (TpParallelBuildShared *)
@@ -201,6 +237,11 @@ tp_parallel_build_worker_main(
 	heap  = table_open(shared->heaprelid, AccessShareLock);
 	index = index_open(shared->indexrelid, AccessExclusiveLock);
 
+	/* Attach to SharedFileSet and create worker's BufFile */
+	SharedFileSetAttach(&shared->fileset, seg);
+	snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
+	buffile = BufFileCreateFileSet(&shared->fileset.fs, file_name);
+
 	/* Join parallel table scan */
 	scan = table_beginscan_parallel(heap, TpParallelTableScan(shared));
 	slot = table_slot_create(heap, NULL);
@@ -214,24 +255,6 @@ tp_parallel_build_worker_main(
 		budget = 64L * 1024 * 1024;
 
 	build_ctx = tp_build_context_create(budget);
-
-	/*
-	 * Set up page pool for worker.  Workers cannot safely extend the
-	 * relation concurrently, so the leader pre-allocates a pool of
-	 * pages.  Build a BlockNumber array from the contiguous range.
-	 */
-	{
-		BlockNumber *pool;
-		uint32		 i;
-
-		pool = palloc(shared->pool_size * sizeof(BlockNumber));
-		for (i = 0; i < shared->pool_size; i++)
-			pool[i] = shared->pool_start + i;
-
-		build_ctx->page_pool = pool;
-		build_ctx->pool_size = shared->pool_size;
-		build_ctx->pool_next = &shared->pool_next;
-	}
 
 	/*
 	 * Per-document memory context for tokenization temporaries.
@@ -296,13 +319,14 @@ tp_parallel_build_worker_main(
 		/* Reset per-doc context (frees tsvector, terms) */
 		MemoryContextReset(build_tmpctx);
 
-		/* Budget-based flush */
+		/* Budget-based flush to BufFile */
 		if (tp_build_context_should_flush(build_ctx))
 		{
 			my_result->total_docs += build_ctx->num_docs;
 			my_result->total_len += build_ctx->total_len;
 
-			tp_worker_flush_and_chain(build_ctx, index, my_result);
+			tp_write_segment_to_buffile(build_ctx, buffile);
+			my_result->segment_count++;
 			tp_build_context_reset(build_ctx);
 		}
 
@@ -323,8 +347,13 @@ tp_parallel_build_worker_main(
 		my_result->total_docs += build_ctx->num_docs;
 		my_result->total_len += build_ctx->total_len;
 
-		tp_worker_flush_and_chain(build_ctx, index, my_result);
+		tp_write_segment_to_buffile(build_ctx, buffile);
+		my_result->segment_count++;
 	}
+
+	/* Export BufFile so leader can read it */
+	BufFileExportFileSet(buffile);
+	BufFileClose(buffile);
 
 	/* Cleanup worker-local resources */
 	tp_build_context_destroy(build_ctx);
@@ -413,45 +442,8 @@ tp_build_parallel(
 			b,
 			nworkers);
 
-	/*
-	 * Pre-allocate page pool for workers.
-	 *
-	 * Workers cannot safely extend the relation concurrently,
-	 * so the leader pre-extends it.  Estimate: index is ~50%
-	 * of heap size, plus some headroom for page index pages.
-	 * After build, unused pages are truncated.
-	 */
-	{
-		BlockNumber heap_pages;
-		uint32		pool_size;
-		BlockNumber pool_start;
-		uint32		i;
-
-		heap_pages = RelationGetNumberOfBlocks(heap);
-		/*
-		 * Generous pool: index is typically 30-70% of heap.
-		 * Use 1.0x to be safe; unused pages are truncated.
-		 */
-		pool_size = (uint32)(heap_pages * 1.0) + 512;
-
-		/* Block 0 is metapage; pool starts at block 1 */
-		pool_start = RelationGetNumberOfBlocks(index);
-
-		/* Extend relation to create pool pages */
-		for (i = 0; i < pool_size; i++)
-		{
-			Buffer buf = ReadBufferExtended(
-					index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-			Assert(BufferGetBlockNumber(buf) == pool_start + i);
-			PageInit(BufferGetPage(buf), BLCKSZ, 0);
-			MarkBufferDirty(buf);
-			UnlockReleaseBuffer(buf);
-		}
-
-		shared->pool_start = pool_start;
-		shared->pool_size  = pool_size;
-		pg_atomic_init_u32(&shared->pool_next, 0);
-	}
+	/* Initialize SharedFileSet for worker temp files */
+	SharedFileSetInit(&shared->fileset, pcxt->seg);
 
 	/* Initialize parallel table scan */
 	table_parallelscan_initialize(heap, TpParallelTableScan(shared), snapshot);
@@ -505,16 +497,15 @@ tp_build_parallel(
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_TUPLES_DONE, (int64)total_docs);
 
-	/* Report compacting phase */
+	/* Report writing phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 
 	/*
-	 * Link all worker segment chains into L0.
-	 *
-	 * Each worker has a chain: head -> ... -> tail.
-	 * We link them sequentially: worker0 tail -> worker1 head -> ...
-	 * Then set metapage level_heads[0] = first worker's head.
+	 * Read each worker's temp segments and write them contiguously
+	 * to index pages. Since the index only has block 0 (metapage)
+	 * at this point, P_NEW gives sequential blocks 1, 2, 3, ...
+	 * All segments end up perfectly contiguous.
 	 */
 	{
 		Buffer			metabuf;
@@ -528,38 +519,61 @@ tp_build_parallel(
 
 		for (i = 0; i < launched; i++)
 		{
-			if (results[i].segment_head == InvalidBlockNumber)
+			char	 file_name[64];
+			BufFile *file;
+			uint64	 offset;
+			uint32	 s;
+
+			if (results[i].segment_count == 0)
 				continue;
 
-			if (l0_head == InvalidBlockNumber)
-			{
-				/* First non-empty worker */
-				l0_head = results[i].segment_head;
-				l0_tail = results[i].segment_tail;
-			}
-			else
-			{
-				/*
-				 * Link previous tail to this worker's head.
-				 * tail->next_segment = this worker's head.
-				 */
-				Buffer			 tail_buf;
-				Page			 tail_page;
-				TpSegmentHeader *tail_header;
+			snprintf(file_name, sizeof(file_name), "tp_worker_%d", i);
+			file = BufFileOpenFileSet(
+					&shared->fileset.fs, file_name, O_RDONLY, false);
 
-				tail_buf = ReadBuffer(index, l0_tail);
-				LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-				tail_page	= BufferGetPage(tail_buf);
-				tail_header = (TpSegmentHeader *)PageGetContents(tail_page);
-				tail_header->next_segment = results[i].segment_head;
-				MarkBufferDirty(tail_buf);
-				UnlockReleaseBuffer(tail_buf);
+			offset = 0;
+			for (s = 0; s < results[i].segment_count; s++)
+			{
+				TpSegmentHeader hdr;
+				BlockNumber		seg_root;
 
-				l0_tail = results[i].segment_tail;
+				/* Read header to get data_size */
+				BufFileSeek(file, 0, (off_t)offset, SEEK_SET);
+				BufFileReadExact(file, &hdr, sizeof(TpSegmentHeader));
+
+				/* Write temp segment to index pages */
+				seg_root = write_temp_segment_to_index(
+						index, file, offset, hdr.data_size);
+
+				/* Chain into L0 linked list */
+				if (l0_tail != InvalidBlockNumber)
+				{
+					/* Link previous tail to this segment */
+					Buffer			 tail_buf;
+					Page			 tail_page;
+					TpSegmentHeader *tail_hdr;
+
+					tail_buf = ReadBuffer(index, l0_tail);
+					LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
+					tail_page = BufferGetPage(tail_buf);
+					tail_hdr  = (TpSegmentHeader *)PageGetContents(tail_page);
+					tail_hdr->next_segment = seg_root;
+					MarkBufferDirty(tail_buf);
+					UnlockReleaseBuffer(tail_buf);
+				}
+				else
+				{
+					l0_head = seg_root;
+				}
+				l0_tail = seg_root;
+
+				offset += hdr.data_size;
 			}
+
+			BufFileClose(file);
 		}
 
-		/* Update metapage */
+		/* Update metapage with L0 segments */
 		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metapage = BufferGetPage(metabuf);
@@ -572,86 +586,10 @@ tp_build_parallel(
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
-
-		/* Compact all segments into one per level */
-		tp_compact_all(index);
 	}
 
-	/*
-	 * Final truncation: shrink index file to minimum needed size.
-	 * After compaction, some L0 segment pages are freed. We find
-	 * the highest used block across all live segments and truncate.
-	 */
-	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-		BlockNumber		max_used = 1; /* At least metapage */
-		int				level;
-
-		metabuf	 = ReadBuffer(index, TP_METAPAGE_BLKNO);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-		/* Find highest block used by any segment */
-		for (level = 0; level < TP_MAX_LEVELS; level++)
-		{
-			BlockNumber seg = metap->level_heads[level];
-			while (seg != InvalidBlockNumber)
-			{
-				BlockNumber *pages;
-				uint32		 num_pages;
-				uint32		 j;
-				BlockNumber	 next_seg;
-
-				num_pages = tp_segment_collect_pages(index, seg, &pages);
-
-				for (j = 0; j < num_pages; j++)
-				{
-					if (pages[j] + 1 > max_used)
-						max_used = pages[j] + 1;
-				}
-
-				/* Get next before freeing */
-				{
-					TpSegmentReader *reader = tp_segment_open(index, seg);
-					next_seg				= reader->header->next_segment;
-					tp_segment_close(reader);
-				}
-
-				if (pages)
-					pfree(pages);
-
-				seg = next_seg;
-			}
-		}
-		ReleaseBuffer(metabuf);
-
-		/* Truncate if we can save space */
-		{
-			BlockNumber nblocks = RelationGetNumberOfBlocks(index);
-			if (max_used < nblocks)
-			{
-				ForkNumber forknum = MAIN_FORKNUM;
-				elog(DEBUG1,
-					 "Final truncation: max_used=%u, nblocks=%u,"
-					 " saving %u pages",
-					 max_used,
-					 nblocks,
-					 nblocks - max_used);
-#if PG_VERSION_NUM >= 180000
-				smgrtruncate(
-						RelationGetSmgr(index),
-						&forknum,
-						1,
-						&nblocks,
-						&max_used);
-#else
-				smgrtruncate(RelationGetSmgr(index), &forknum, 1, &max_used);
-#endif
-			}
-		}
-	}
+	/* Flush all relation buffers to disk */
+	FlushRelationBuffers(index);
 
 	/* Build result */
 	result				 = palloc0(sizeof(IndexBuildResult));
