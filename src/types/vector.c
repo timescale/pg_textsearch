@@ -301,9 +301,11 @@ tpvector_recv(PG_FUNCTION_ARGS)
 Datum
 tpvector_send(PG_FUNCTION_ARGS)
 {
-	TpVector	  *tpvec = (TpVector *)PG_GETARG_POINTER(0);
+	TpVector	  *tpvec;
 	StringInfoData buf;
 	int			   total_size;
+
+	tpvec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 
 	pq_begintypsend(&buf);
 
@@ -324,8 +326,8 @@ tpvector_send(PG_FUNCTION_ARGS)
 Datum
 tpvector_eq(PG_FUNCTION_ARGS)
 {
-	TpVector *vec1 = (TpVector *)PG_GETARG_POINTER(0);
-	TpVector *vec2 = (TpVector *)PG_GETARG_POINTER(1);
+	TpVector *vec1 = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	TpVector *vec2 = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(1));
 	char	 *index_name1;
 	char	 *index_name2;
 	bool	  result = true;
