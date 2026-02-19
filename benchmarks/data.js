@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771531979987,
+  "lastUpdate": 1771531982201,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -9896,6 +9896,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1227.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "4639bf8baedd19b412fc720d7639d33927d8e726",
+          "message": "feat: workers write index pages directly in two-phase parallel build\n\nEliminate single-threaded leader transcription bottleneck by having\nworkers write their segments directly to pre-allocated index pages.\n\nPhase 1: Workers scan heap, flush/compact in BufFile, report total\npages needed, signal phase1_done.\n\nLeader barrier: Sum page counts, pre-extend relation with batched\nExtendBufferedRelBy (8192 pages/batch), set atomic next_page counter,\nsignal phase2_ready.\n\nPhase 2: Workers reopen BufFile read-only, write segments to index\npages using lock-free atomic page counter, report seg_roots[].\n\nLeader finalization: Read seg_roots[] from shared memory (no BufFile\nI/O), chain segments into level lists, update metapage, compact.",
+          "timestamp": "2026-02-19T19:23:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4639bf8baedd19b412fc720d7639d33927d8e726"
+        },
+        "date": 1771531981459,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 263387.172,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.96,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 14.07,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 20.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 32.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2441.08,
             "unit": "MB"
           }
         ]
