@@ -1072,101 +1072,92 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		result->heap_tuples	 = total_docs;
 		result->index_tuples = total_docs;
 
-	if (build_progress.active)
-	{
-		/* Accumulate stats for aggregated summary */
-		build_progress.total_docs += total_docs;
-		build_progress.total_len += total_len;
-		build_progress.partition_count++;
-	}
-	else
-	{
-		elog(NOTICE,
-			 "BM25 index build completed: " UINT64_FORMAT
-			 " documents, avg_length=%.2f, "
-			 "text_config='%s' (k1=%.2f, b=%.2f)",
-			 total_docs,
-			 total_docs > 0
-					 ? (float4)(total_len / (double)total_docs)
-					 : 0.0,
-			 text_config_name ? text_config_name : "unknown",
-			 k1,
-			 b);
-	}
-
-	/*
-	 * Final spill: Write any remaining memtable data to disk
-	 * segment. This must happen BEFORE destroying the private
-	 * DSA, otherwise all build data would be lost.
-	 */
-	{
-		TpMemtable *memtable = get_memtable(index_state);
-
-		if (memtable && memtable->total_postings > 0)
+		if (build_progress.active)
 		{
-			BlockNumber		segment_root;
-			Buffer			metabuf;
-			Page			metapage;
-			TpIndexMetaPage metap;
+			/* Accumulate stats for aggregated summary */
+			build_progress.total_docs += total_docs;
+			build_progress.total_len += total_len;
+			build_progress.partition_count++;
+		}
+		else
+		{
+			elog(NOTICE,
+				 "BM25 index build completed: " UINT64_FORMAT
+				 " documents, avg_length=%.2f, "
+				 "text_config='%s' (k1=%.2f, b=%.2f)",
+				 total_docs,
+				 total_docs > 0 ? (float4)(total_len / (double)total_docs)
+								: 0.0,
+				 text_config_name ? text_config_name : "unknown",
+				 k1,
+				 b);
+		}
 
-			segment_root =
-					tp_write_segment(index_state, index);
+		/*
+		 * Final spill: Write any remaining memtable data to disk
+		 * segment. This must happen BEFORE destroying the private
+		 * DSA, otherwise all build data would be lost.
+		 */
+		{
+			TpMemtable *memtable = get_memtable(index_state);
 
-			if (segment_root != InvalidBlockNumber)
+			if (memtable && memtable->total_postings > 0)
 			{
-				/* Link new segment as L0 chain head */
-				metabuf = ReadBuffer(index, 0);
-				LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-				metapage = BufferGetPage(metabuf);
-				metap	 = (TpIndexMetaPage)
-						PageGetContents(metapage);
+				BlockNumber		segment_root;
+				Buffer			metabuf;
+				Page			metapage;
+				TpIndexMetaPage metap;
 
-				if (metap->level_heads[0] !=
-					InvalidBlockNumber)
+				segment_root = tp_write_segment(index_state, index);
+
+				if (segment_root != InvalidBlockNumber)
 				{
-					Buffer			 seg_buf;
-					Page			 seg_page;
-					TpSegmentHeader *seg_header;
+					/* Link new segment as L0 chain head */
+					metabuf = ReadBuffer(index, 0);
+					LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+					metapage = BufferGetPage(metabuf);
+					metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-					seg_buf = ReadBuffer(
-							index, segment_root);
-					LockBuffer(seg_buf,
-							   BUFFER_LOCK_EXCLUSIVE);
-					seg_page = BufferGetPage(seg_buf);
-					seg_header =
-							(TpSegmentHeader *)
-									PageGetContents(
-											seg_page);
-					seg_header->next_segment =
-							metap->level_heads[0];
-					MarkBufferDirty(seg_buf);
-					UnlockReleaseBuffer(seg_buf);
+					if (metap->level_heads[0] != InvalidBlockNumber)
+					{
+						Buffer			 seg_buf;
+						Page			 seg_page;
+						TpSegmentHeader *seg_header;
+
+						seg_buf = ReadBuffer(index, segment_root);
+						LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+						seg_page   = BufferGetPage(seg_buf);
+						seg_header = (TpSegmentHeader *)PageGetContents(
+								seg_page);
+						seg_header->next_segment = metap->level_heads[0];
+						MarkBufferDirty(seg_buf);
+						UnlockReleaseBuffer(seg_buf);
+					}
+
+					metap->level_heads[0] = segment_root;
+					metap->level_counts[0]++;
+					MarkBufferDirty(metabuf);
+					UnlockReleaseBuffer(metabuf);
 				}
-
-				metap->level_heads[0] = segment_root;
-				metap->level_counts[0]++;
-				MarkBufferDirty(metabuf);
-				UnlockReleaseBuffer(metabuf);
 			}
 		}
-	}
 
-	/*
-	 * Release the per-index lock before finalizing.
-	 * Critical for partitioned tables to avoid hitting
-	 * MAX_SIMUL_LWLOCKS limit.
-	 */
-	tp_release_index_lock(index_state);
+		/*
+		 * Release the per-index lock before finalizing.
+		 * Critical for partitioned tables to avoid hitting
+		 * MAX_SIMUL_LWLOCKS limit.
+		 */
+		tp_release_index_lock(index_state);
 
-	/*
-	 * Finalize build mode: destroy private DSA and
-	 * transition to global DSA for runtime operation.
-	 */
-	tp_finalize_build_mode(index_state);
+		/*
+		 * Finalize build mode: destroy private DSA and
+		 * transition to global DSA for runtime operation.
+		 */
+		tp_finalize_build_mode(index_state);
 
-	/* Cleanup */
-	tp_build_context_destroy(build_ctx);
-	MemoryContextDelete(build_tmpctx);
+		/* Cleanup */
+		tp_build_context_destroy(build_ctx);
+		MemoryContextDelete(build_tmpctx);
 	}
 
 	return result;

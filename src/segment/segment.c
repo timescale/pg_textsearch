@@ -782,7 +782,12 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 
 	tp_segment_writer_grow_pages(writer);
 
-	new_page = allocate_segment_page(writer->index);
+	if (writer->page_counter != NULL)
+		new_page = (BlockNumber)
+				pg_atomic_fetch_add_u64(writer->page_counter, 1);
+	else
+		new_page = allocate_segment_page(writer->index);
+
 	writer->pages[writer->pages_allocated++] = new_page;
 	return new_page;
 }
@@ -792,7 +797,11 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
  * This function is also used by segment_merge.c for merged segments.
  */
 static BlockNumber
-write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
+write_page_index_internal(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		pg_atomic_uint64 *page_counter)
 {
 	BlockNumber index_root = InvalidBlockNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
@@ -814,7 +823,13 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32		 i;
 
 	for (i = 0; i < num_index_pages; i++)
-		index_pages[i] = allocate_segment_page(index);
+	{
+		if (page_counter != NULL)
+			index_pages[i] = (BlockNumber)
+					pg_atomic_fetch_add_u64(page_counter, 1);
+		else
+			index_pages[i] = allocate_segment_page(index);
+	}
 
 	/*
 	 * Write index pages in reverse order (so we can chain them).
@@ -873,7 +888,17 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
-	return write_page_index_internal(index, pages, num_pages);
+	return write_page_index_internal(index, pages, num_pages, NULL);
+}
+
+BlockNumber
+write_page_index_with_counter(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		pg_atomic_uint64 *page_counter)
+{
+	return write_page_index_internal(index, pages, num_pages, page_counter);
 }
 
 /*
@@ -1953,12 +1978,46 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->buffer			= palloc(BLCKSZ);
 	writer->buffer_page		= 0;
 	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
+	writer->page_counter	= NULL;
 
 	/* Initialize reusable posting buffer */
 	writer->posting_buffer		= NULL;
 	writer->posting_buffer_size = 0;
 
 	/* Allocate first page */
+	tp_segment_writer_allocate_page(writer);
+
+	/* Initialize first page */
+	PageInit((Page)writer->buffer, BLCKSZ, 0);
+}
+
+void
+tp_segment_writer_init_parallel(
+		TpSegmentWriter	 *writer,
+		Relation		  index,
+		pg_atomic_uint64 *page_counter)
+{
+	/*
+	 * Initialize fields manually instead of calling tp_segment_writer_init,
+	 * because we must set page_counter BEFORE the first page allocation.
+	 * tp_segment_writer_init allocates a page internally, which would use
+	 * FSM/P_NEW instead of the atomic counter.
+	 */
+	writer->index			= index;
+	writer->pages			= NULL;
+	writer->pages_allocated = 0;
+	writer->pages_capacity	= 0;
+	writer->current_offset	= 0;
+	writer->buffer			= palloc(BLCKSZ);
+	writer->buffer_page		= 0;
+	writer->buffer_pos		= SizeOfPageHeaderData;
+	writer->page_counter	= page_counter;
+
+	/* Initialize reusable posting buffer */
+	writer->posting_buffer		= NULL;
+	writer->posting_buffer_size = 0;
+
+	/* Allocate first page using atomic counter */
 	tp_segment_writer_allocate_page(writer);
 
 	/* Initialize first page */

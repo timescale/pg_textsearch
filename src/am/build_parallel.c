@@ -2,18 +2,19 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * build_parallel.c - Parallel index build implementation
+ * build_parallel.c - Two-phase parallel index build
  *
  * Architecture:
- * - Each worker scans a partition of the heap and builds a local
- *   TpBuildContext (arena + HTAB) — no shared memory allocations.
- * - When the worker's memory budget fills, it flushes a segment
- *   to a BufFile temp file via SharedFileSet.
- * - Workers perform level-aware compaction within their BufFile,
- *   mirroring tp_maybe_compact_level from serial build.
- * - After all workers finish, the leader reads temp files and
- *   writes segments to index pages, then runs final compaction
- *   on the combined per-level counts.
+ * - Phase 1: Each worker scans a heap partition, builds a local
+ *   TpBuildContext, flushes segments to BufFile, and compacts
+ *   within BufFile. Workers report total_pages_needed.
+ * - Barrier: Leader sums pages, pre-extends relation with
+ *   ExtendBufferedRelBy, sets atomic next_page counter.
+ * - Phase 2: Workers reopen their BufFile read-only and write
+ *   segments directly to pre-allocated index pages using atomic
+ *   page allocation. Workers report seg_roots[] to shared memory.
+ * - Leader reads seg_roots from workers (no BufFile I/O), chains
+ *   segments into level lists, updates metapage, runs compaction.
  */
 #include <postgres.h>
 
@@ -46,6 +47,7 @@
 #include "segment/fieldnorm.h"
 #include "segment/merge.h"
 #include "segment/merge_internal.h"
+#include "segment/pagemapper.h"
 #include "segment/segment.h"
 #include "state/metapage.h"
 
@@ -777,6 +779,12 @@ tp_init_parallel_shared(
 	pg_atomic_init_u32(&shared->workers_done, 0);
 	pg_atomic_init_u64(&shared->tuples_done, 0);
 
+	/* Two-phase coordination */
+	pg_atomic_init_u32(&shared->phase1_done, 0);
+	ConditionVariableInit(&shared->phase2_cv);
+	pg_atomic_init_u32(&shared->phase2_ready, 0);
+	pg_atomic_init_u64(&shared->next_page, 0);
+
 	/* Initialize per-worker results */
 	results = TpParallelWorkerResults(shared);
 	for (i = 0; i < nworkers; i++)
@@ -847,6 +855,103 @@ write_temp_segment_to_index(
 		pfree(writer.pages);
 
 	return header_block;
+}
+
+/* ----------------------------------------------------------------
+ * Write a temp file segment to index pages using atomic counter
+ *
+ * Same as write_temp_segment_to_index but uses pre-allocated pages
+ * via atomic page counter instead of FSM/P_NEW.
+ * ----------------------------------------------------------------
+ */
+static BlockNumber
+write_temp_segment_to_index_parallel(
+		Relation		  index,
+		BufFile			 *file,
+		uint64			  base_offset,
+		uint64			  data_size,
+		pg_atomic_uint64 *page_counter)
+{
+	TpSegmentWriter writer;
+	BlockNumber		header_block;
+	BlockNumber		page_index_root;
+	char			buf[TP_COPY_BUF_SIZE];
+	uint64			remaining;
+
+	/* Initialize writer with atomic page counter */
+	tp_segment_writer_init_parallel(&writer, index, page_counter);
+	header_block = writer.pages[0];
+
+	/* Stream data from BufFile through writer */
+	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	remaining = data_size;
+	while (remaining > 0)
+	{
+		uint32 chunk = (uint32)Min(remaining, TP_COPY_BUF_SIZE);
+
+		BufFileReadExact(file, buf, chunk);
+		tp_segment_writer_write(&writer, buf, chunk);
+		remaining -= chunk;
+	}
+
+	/* Flush remaining buffered data */
+	tp_segment_writer_flush(&writer);
+	writer.buffer_pos = SizeOfPageHeaderData;
+
+	/* Write page index using atomic counter */
+	page_index_root = write_page_index_with_counter(
+			index, writer.pages, writer.pages_allocated, page_counter);
+
+	/* Update segment header on the first page */
+	{
+		Buffer			 header_buf;
+		Page			 header_page;
+		TpSegmentHeader *hdr;
+
+		header_buf = ReadBuffer(index, header_block);
+		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+		header_page = BufferGetPage(header_buf);
+		hdr			= (TpSegmentHeader *)PageGetContents(header_page);
+
+		hdr->num_pages	= writer.pages_allocated;
+		hdr->page_index = page_index_root;
+		hdr->data_size	= writer.current_offset;
+
+		MarkBufferDirty(header_buf);
+		UnlockReleaseBuffer(header_buf);
+	}
+
+	tp_segment_writer_finish(&writer);
+
+	/* Free writer pages array */
+	if (writer.pages)
+		pfree(writer.pages);
+
+	return header_block;
+}
+
+/*
+ * Compute total index pages needed for a worker's segments.
+ * Counts data pages + page index pages for each segment.
+ */
+static uint64
+compute_pages_needed(TpParallelWorkerResult *result)
+{
+	uint64 total = 0;
+	uint32 epp	 = tp_page_index_entries_per_page();
+	uint32 s;
+
+	for (s = 0; s < result->final_segment_count; s++)
+	{
+		uint64 data_size  = result->seg_sizes[s];
+		uint32 data_pages = (uint32)((data_size + SEGMENT_DATA_PER_PAGE - 1) /
+									 SEGMENT_DATA_PER_PAGE);
+		uint32 pi_pages	  = (data_pages + epp - 1) / epp;
+
+		total += data_pages + pi_pages;
+	}
+
+	return total;
 }
 
 /* ----------------------------------------------------------------
@@ -1029,7 +1134,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 
 	/*
-	 * Report non-consumed segments to leader.
+	 * Phase 1 complete: report non-consumed segments to leader.
 	 * These are the final segments after worker-side compaction.
 	 */
 	{
@@ -1061,21 +1166,80 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		my_result->final_segment_count = seg_idx;
 	}
 
-	/* Export BufFile so leader can read it */
+	/* Export BufFile so leader can reopen if needed */
 	BufFileExportFileSet(buffile);
 	BufFileClose(buffile);
 
-	/* Cleanup worker-local resources */
+	/* Compute total pages this worker needs for Phase 2 */
+	my_result->total_pages_needed = compute_pages_needed(my_result);
+
+	/* Cleanup Phase 1 resources (keep heap/index open for Phase 2) */
 	tp_build_context_destroy(build_ctx);
 	tracker_destroy(&tracker);
 	MemoryContextDelete(build_tmpctx);
 
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
+
+	/* Signal Phase 1 done, wait for leader to pre-extend */
+	pg_atomic_fetch_add_u32(&shared->phase1_done, 1);
+	ConditionVariableBroadcast(&shared->all_done_cv);
+
+	ConditionVariablePrepareToSleep(&shared->phase2_cv);
+	while (pg_atomic_read_u32(&shared->phase2_ready) == 0)
+		ConditionVariableSleep(&shared->phase2_cv, PG_WAIT_EXTENSION);
+	ConditionVariableCancelSleep();
+
+	/*
+	 * Phase 2: write segments to pre-allocated index pages.
+	 * Reopen own BufFile read-only and write each segment
+	 * using atomic page counter.
+	 */
+	if (my_result->final_segment_count > 0)
+	{
+		BufFile *rdfile;
+		uint32	 s;
+
+		snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
+		rdfile = BufFileOpenFileSet(
+				&shared->fileset.fs, file_name, O_RDONLY, false);
+
+		for (s = 0; s < my_result->final_segment_count; s++)
+		{
+			BlockNumber seg_root;
+
+			seg_root = write_temp_segment_to_index_parallel(
+					index,
+					rdfile,
+					my_result->seg_offsets[s],
+					my_result->seg_sizes[s],
+					&shared->next_page);
+
+			/* Set level in segment header */
+			{
+				Buffer			 hdr_buf;
+				Page			 hdr_page;
+				TpSegmentHeader *hdr;
+
+				hdr_buf = ReadBuffer(index, seg_root);
+				LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
+				hdr_page   = BufferGetPage(hdr_buf);
+				hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
+				hdr->level = my_result->seg_levels[s];
+				MarkBufferDirty(hdr_buf);
+				UnlockReleaseBuffer(hdr_buf);
+			}
+
+			my_result->seg_roots[s] = seg_root;
+		}
+
+		BufFileClose(rdfile);
+	}
+
 	index_close(index, AccessExclusiveLock);
 	table_close(heap, AccessShareLock);
 
-	/* Signal completion */
+	/* Signal all work complete */
 	pg_atomic_fetch_add_u32(&shared->workers_done, 1);
 	ConditionVariableSignal(&shared->all_done_cv);
 }
@@ -1172,9 +1336,12 @@ tp_build_parallel(
 					launched,
 					nworkers)));
 
-	/* Wait for workers */
+	/*
+	 * Phase 1 wait: wait for all workers to finish BufFile phase.
+	 * Workers signal phase1_done and then block on phase2_cv.
+	 */
 	ConditionVariablePrepareToSleep(&shared->all_done_cv);
-	while (pg_atomic_read_u32(&shared->workers_done) < (uint32)launched)
+	while (pg_atomic_read_u32(&shared->phase1_done) < (uint32)launched)
 	{
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_TUPLES_DONE,
@@ -1184,9 +1351,8 @@ tp_build_parallel(
 				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
 	}
 	ConditionVariableCancelSleep();
-	WaitForParallelWorkersToFinish(pcxt);
 
-	/* Collect results from all workers */
+	/* Collect corpus stats from all workers */
 	{
 		TpParallelWorkerResult *results;
 		int						i;
@@ -1205,11 +1371,86 @@ tp_build_parallel(
 
 	/* Report writing phase */
 	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
+
+	/*
+	 * Pre-extend relation for all worker segments.
+	 * Sum total_pages_needed across workers and extend in batches.
+	 */
+	{
+		TpParallelWorkerResult *results		= TpParallelWorkerResults(shared);
+		uint64					total_pages = 0;
+		BlockNumber				start_blk;
+		int						i;
+
+#define EXTEND_BATCH_SIZE 8192
+
+		for (i = 0; i < launched; i++)
+			total_pages += results[i].total_pages_needed;
+
+		start_blk = RelationGetNumberOfBlocks(index);
+
+		/* Extend relation in batches to limit buffer pin count */
+		{
+			uint64 remaining = total_pages;
+
+			while (remaining > 0)
+			{
+				uint32	batch = (uint32)Min(remaining, EXTEND_BATCH_SIZE);
+				Buffer *bufs  = palloc(batch * sizeof(Buffer));
+				uint32	extended;
+				uint32	j;
+
+				ExtendBufferedRelBy(
+						BMR_REL(index),
+						MAIN_FORKNUM,
+						NULL,
+						0,
+						batch,
+						bufs,
+						&extended);
+
+				for (j = 0; j < extended; j++)
+				{
+					LockBuffer(bufs[j], BUFFER_LOCK_EXCLUSIVE);
+					PageInit(BufferGetPage(bufs[j]), BLCKSZ, 0);
+					MarkBufferDirty(bufs[j]);
+					UnlockReleaseBuffer(bufs[j]);
+				}
+				pfree(bufs);
+				remaining -= extended;
+			}
+		}
+
+		/* Set atomic page counter to the start of pre-allocated region */
+		pg_atomic_write_u64(&shared->next_page, (uint64)start_blk);
+	}
+
+	/* Signal Phase 2: pages are ready */
+	pg_atomic_write_u32(&shared->phase2_ready, 1);
+	ConditionVariableBroadcast(&shared->phase2_cv);
+
+	/*
+	 * Phase 2 wait: workers write segments to index pages.
+	 * Wait for all workers to complete.
+	 */
+	ConditionVariablePrepareToSleep(&shared->all_done_cv);
+	while (pg_atomic_read_u32(&shared->workers_done) < (uint32)launched)
+	{
+		ConditionVariableTimedSleep(
+				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
+	}
+	ConditionVariableCancelSleep();
+	WaitForParallelWorkersToFinish(pcxt);
+
+	/* Report compaction phase */
+	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 
 	/*
-	 * Read each worker's compacted segments and write them to
-	 * index pages, maintaining per-level chains.
+	 * Read seg_roots[] from each worker and chain segments into
+	 * per-level linked lists. No BufFile I/O needed — workers
+	 * already wrote segments to index pages.
 	 */
 	{
 		Buffer			metabuf;
@@ -1231,42 +1472,12 @@ tp_build_parallel(
 
 		for (i = 0; i < launched; i++)
 		{
-			char	 file_name[64];
-			BufFile *file;
-			uint32	 s;
-
-			if (results[i].final_segment_count == 0)
-				continue;
-
-			snprintf(file_name, sizeof(file_name), "tp_worker_%d", i);
-			file = BufFileOpenFileSet(
-					&shared->fileset.fs, file_name, O_RDONLY, false);
+			uint32 s;
 
 			for (s = 0; s < results[i].final_segment_count; s++)
 			{
-				uint64		offset = results[i].seg_offsets[s];
-				uint64		size   = results[i].seg_sizes[s];
-				uint32		level  = results[i].seg_levels[s];
-				BlockNumber seg_root;
-
-				/* Write temp segment to index pages */
-				seg_root =
-						write_temp_segment_to_index(index, file, offset, size);
-
-				/* Update segment header level */
-				{
-					Buffer			 hdr_buf;
-					Page			 hdr_page;
-					TpSegmentHeader *hdr;
-
-					hdr_buf = ReadBuffer(index, seg_root);
-					LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
-					hdr_page   = BufferGetPage(hdr_buf);
-					hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
-					hdr->level = level;
-					MarkBufferDirty(hdr_buf);
-					UnlockReleaseBuffer(hdr_buf);
-				}
+				uint32		level	 = results[i].seg_levels[s];
+				BlockNumber seg_root = results[i].seg_roots[s];
 
 				/* Chain into per-level linked list */
 				if (level_tails[level] != InvalidBlockNumber)
@@ -1290,8 +1501,6 @@ tp_build_parallel(
 				level_tails[level] = seg_root;
 				level_counts[level]++;
 			}
-
-			BufFileClose(file);
 		}
 
 		/* Update metapage with level chains and corpus stats */

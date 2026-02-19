@@ -9,6 +9,7 @@
 #include <postgres.h>
 
 #include <access/htup_details.h>
+#include <port/atomics.h>
 #include <storage/buffile.h>
 
 #include "constants.h"
@@ -334,6 +335,9 @@ typedef struct TpSegmentWriter
 	uint32		 buffer_page;	  /* Which logical page is in buffer */
 	uint32		 buffer_pos;	  /* Position within buffer */
 
+	/* Atomic page counter for parallel builds (NULL = FSM/P_NEW) */
+	pg_atomic_uint64 *page_counter;
+
 	/* Reusable buffer for posting list conversion */
 	TpSegmentPosting *posting_buffer;	   /* Reusable posting buffer */
 	uint32			  posting_buffer_size; /* Current size of buffer */
@@ -350,6 +354,10 @@ struct TpLocalIndexState;
 extern BlockNumber
 			tp_write_segment(struct TpLocalIndexState *state, Relation index);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
+extern void tp_segment_writer_init_parallel(
+		TpSegmentWriter	 *writer,
+		Relation		  index,
+		pg_atomic_uint64 *page_counter);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
 extern void tp_segment_writer_flush(TpSegmentWriter *writer);
@@ -403,6 +411,13 @@ extern void tp_dump_segment_to_output(
 /* Page index writing (used by segment_merge.c) */
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
+
+/* Page index writing with atomic counter (for parallel builds) */
+extern BlockNumber write_page_index_with_counter(
+		Relation		  index,
+		BlockNumber		 *pages,
+		uint32			  num_pages,
+		pg_atomic_uint64 *page_counter);
 
 /* Calculate entries per page index page */
 extern uint32 tp_page_index_entries_per_page(void);
