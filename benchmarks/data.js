@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771474286166,
+  "lastUpdate": 1771474288714,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -13584,6 +13584,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
             "value": 0.54,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.8,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.39,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 42.13,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "8fe9814a5cd20fdf2600b248a21c2ec36d8eb624",
+          "message": "feat: add worker-side compaction to parallel index build\n\nWorkers now perform level-aware compaction within their BufFile during\nparallel index build, mirroring tp_maybe_compact_level from serial\nbuild. This produces a proper LSM level structure instead of dumping\nall segments at L0.\n\n- Extract merge types and helpers into merge_internal.h for reuse\n- Add merge_source_init_from_reader() for BufFile-backed segments\n- Workers track segments per level and compact when threshold reached\n- write_merged_segment_to_buffile() performs N-way merge within BufFile\n- Leader writes compacted segments at correct levels, then runs final\n  compaction on combined per-level counts",
+          "timestamp": "2026-02-19T03:45:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8fe9814a5cd20fdf2600b248a21c2ec36d8eb624"
+        },
+        "date": 1771474288023,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 8989.321,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.16,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.38,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.5,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.57,
             "unit": "ms"
           },
           {
