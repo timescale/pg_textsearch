@@ -18,6 +18,7 @@
 #include "docmap.h"
 #include "fieldnorm.h"
 #include "merge.h"
+#include "merge_internal.h"
 #include "pagemapper.h"
 #include "segment.h"
 #include "state/metapage.h"
@@ -26,76 +27,10 @@
 extern bool tp_compress_segments;
 
 /*
- * Merge source state - tracks current position in each source segment
- * Updated for segment format.
+ * Types TpMergeSource, TpTermSegmentRef, TpMergedTerm,
+ * TpMergePostingInfo, TpPostingMergeSource, TpMergeDocMapping,
+ * and MergeTermBlockInfo are defined in merge_internal.h.
  */
-typedef struct TpMergeSource
-{
-	TpSegmentReader *reader;		 /* Segment reader */
-	uint32			 current_idx;	 /* Current term index in dictionary */
-	uint32			 num_terms;		 /* Total terms in this segment */
-	char			*current_term;	 /* Current term text (palloc'd) */
-	TpDictEntry		 current_entry;	 /* dictionary entry */
-	bool			 exhausted;		 /* True if no more terms */
-	uint32			*string_offsets; /* Cached string offsets array */
-} TpMergeSource;
-
-/*
- * Reference to a segment that contains a particular term.
- * Used to avoid loading all postings into memory during merge.
- */
-typedef struct TpTermSegmentRef
-{
-	int			segment_idx; /* Index into sources array */
-	TpDictEntry entry;		 /* dict entry from that segment */
-} TpTermSegmentRef;
-
-/*
- * Merged term info - tracks which segments have this term.
- * Postings are streamed during write, not buffered in memory.
- */
-typedef struct TpMergedTerm
-{
-	char			 *term;				/* Term text */
-	uint32			  term_len;			/* Term length */
-	TpTermSegmentRef *segment_refs;		/* Which segments have this term */
-	uint32			  num_segment_refs; /* Number of segment refs */
-	uint32			  segment_refs_capacity; /* Allocated capacity */
-	/* Filled during posting write pass: */
-	uint64 posting_offset; /* Absolute offset where postings start */
-	uint32 posting_count;  /* Number of postings written */
-} TpMergedTerm;
-
-/*
- * Current posting info during merge (for N-way merge comparison).
- */
-typedef struct TpMergePostingInfo
-{
-	ItemPointerData ctid;		/* CTID for comparison ordering */
-	uint32			old_doc_id; /* Doc ID in source segment */
-	uint16			frequency;	/* Term frequency */
-	uint8			fieldnorm;	/* Encoded fieldnorm (1 byte) */
-} TpMergePostingInfo;
-
-/*
- * Posting merge source - tracks position in one segment's posting list
- * for streaming N-way merge. Updated for block-based format.
- */
-typedef struct TpPostingMergeSource
-{
-	TpSegmentReader	  *reader;	  /* Segment reader */
-	TpMergePostingInfo current;	  /* Current posting info */
-	bool			   exhausted; /* No more postings */
-
-	/* block iteration state */
-	uint64			skip_index_offset; /* Offset to skip entries */
-	uint16			block_count;	   /* Total blocks */
-	uint32			current_block;	   /* Current block index */
-	uint32			current_in_block;  /* Position within current block */
-	TpSkipEntry		skip_entry;		   /* Current block's skip entry */
-	TpBlockPosting *block_postings;	   /* Cached postings for current block */
-	uint32			block_capacity;	   /* Allocated size of block_postings */
-} TpPostingMergeSource;
 
 /*
  * Read term at index from a segment's dictionary.
@@ -127,7 +62,7 @@ merge_read_term_at_index(TpMergeSource *source, uint32 index)
  * Advance a merge source to its next term.
  * Returns false if source is exhausted.
  */
-static bool
+bool
 merge_source_advance(TpMergeSource *source)
 {
 	TpSegmentHeader *header;
@@ -170,7 +105,7 @@ merge_source_advance(TpMergeSource *source)
  * Initialize a merge source for a segment.
  * Returns false if segment is empty or invalid.
  */
-static bool
+bool
 merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 {
 	TpSegmentHeader *header;
@@ -228,9 +163,66 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 }
 
 /*
+ * Initialize a merge source from a pre-opened reader.
+ * Same as merge_source_init but takes a TpSegmentReader directly.
+ * Does NOT close the reader on failure (caller owns it).
+ */
+bool
+merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
+{
+	TpSegmentHeader *header;
+	TpDictionary	 dict_header;
+
+	memset(source, 0, sizeof(TpMergeSource));
+	source->exhausted = true; /* Assume failure */
+
+	if (!reader)
+		return false;
+
+	source->reader = reader;
+	header		   = reader->header;
+
+	if (header->num_terms == 0)
+		return false;
+
+	source->num_terms = header->num_terms;
+
+	/* Read dictionary header */
+	tp_segment_read(
+			source->reader,
+			header->dictionary_offset,
+			&dict_header,
+			sizeof(dict_header.num_terms));
+
+	/* Cache all string offsets for this segment */
+	source->string_offsets = palloc(sizeof(uint32) * source->num_terms);
+	tp_segment_read(
+			source->reader,
+			header->dictionary_offset + sizeof(dict_header.num_terms),
+			source->string_offsets,
+			sizeof(uint32) * source->num_terms);
+
+	/* Position before first term */
+	source->current_idx	 = UINT32_MAX;
+	source->exhausted	 = false;
+	source->current_term = NULL;
+
+	/* Advance to first term */
+	if (!merge_source_advance(source))
+	{
+		pfree(source->string_offsets);
+		source->string_offsets = NULL;
+		source->reader		   = NULL; /* Don't close, caller owns it */
+		return false;
+	}
+
+	return true;
+}
+
+/*
  * Close and cleanup a merge source.
  */
-static void
+void
 merge_source_close(TpMergeSource *source)
 {
 	if (source->current_term)
@@ -254,7 +246,7 @@ merge_source_close(TpMergeSource *source)
  * Find the source with the lexicographically smallest current term.
  * Returns -1 if all sources are exhausted.
  */
-static int
+int
 merge_find_min_source(TpMergeSource *sources, int num_sources)
 {
 	int			min_idx	 = -1;
@@ -280,7 +272,7 @@ merge_find_min_source(TpMergeSource *sources, int num_sources)
  * Add a segment reference to a merged term.
  * This records which segment has this term, without loading postings.
  */
-static void
+void
 merged_term_add_segment_ref(
 		TpMergedTerm *term, int segment_idx, TpDictEntry *entry)
 {
@@ -418,7 +410,7 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 /*
  * Initialize a posting merge source for streaming.
  */
-static void
+void
 posting_source_init(
 		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry)
 {
@@ -448,7 +440,7 @@ posting_source_init(
 /*
  * Free posting merge source resources.
  */
-static void
+void
 posting_source_free(TpPostingMergeSource *ps)
 {
 	if (ps->block_postings)
@@ -461,7 +453,7 @@ posting_source_free(TpPostingMergeSource *ps)
 /*
  * Advance a posting merge source to the next posting.
  */
-static bool
+bool
 posting_source_advance(TpPostingMergeSource *ps)
 {
 	if (ps->exhausted)
@@ -493,7 +485,7 @@ posting_source_advance(TpPostingMergeSource *ps)
  * Find the posting source with the smallest current CTID.
  * Returns -1 if all sources are exhausted.
  */
-static int
+int
 find_min_posting_source(TpPostingMergeSource *sources, int num_sources)
 {
 	int				min_idx = -1;
@@ -520,15 +512,7 @@ find_min_posting_source(TpPostingMergeSource *sources, int num_sources)
 	return min_idx;
 }
 
-/*
- * Mapping from (source_idx, old_doc_id) → new_doc_id.
- * Avoids hash lookups during posting write phase.
- */
-typedef struct TpMergeDocMapping
-{
-	uint32 **old_to_new; /* old_to_new[src_idx][old_doc_id] = new_doc_id */
-	int		 num_sources;
-} TpMergeDocMapping;
+/* TpMergeDocMapping is defined in merge_internal.h */
 
 /*
  * Per-source state for the streaming N-way merge of docmaps.
@@ -552,7 +536,7 @@ typedef struct TpDocmapMergeSource
  * CTID order without needing a hash table, reducing memory from ~5.5GB
  * to ~2.5GB for 138M documents across 24 segments.
  */
-static TpDocMapBuilder *
+TpDocMapBuilder *
 build_merged_docmap(
 		TpMergeSource *sources, int num_sources, TpMergeDocMapping *mapping)
 {
@@ -722,7 +706,7 @@ build_merged_docmap(
 /*
  * Free merge doc mapping arrays.
  */
-static void
+void
 free_merge_doc_mapping(TpMergeDocMapping *mapping)
 {
 	int i;
@@ -739,7 +723,7 @@ free_merge_doc_mapping(TpMergeDocMapping *mapping)
  * Initialize N-way merge posting sources for a term.
  * Returns the number of sources initialized.
  */
-static TpPostingMergeSource *
+TpPostingMergeSource *
 init_term_posting_sources(
 		TpMergedTerm *term, TpMergeSource *sources, int *num_psources)
 {
@@ -773,17 +757,7 @@ free_term_posting_sources(TpPostingMergeSource *psources, int num_psources)
 	pfree(psources);
 }
 
-/*
- * Per-term block info for merge output.
- * Updated for streaming format: postings written before skip index.
- */
-typedef struct MergeTermBlockInfo
-{
-	uint64 posting_offset;	 /* Absolute offset where postings were written */
-	uint16 block_count;		 /* Number of blocks for this term */
-	uint32 doc_freq;		 /* Document frequency */
-	uint32 skip_entry_start; /* Index into accumulated skip entries array */
-} MergeTermBlockInfo;
+/* MergeTermBlockInfo is defined in merge_internal.h */
 
 /*
  * Write a merged segment in streaming format.

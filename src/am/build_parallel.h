@@ -7,9 +7,9 @@
  * Architecture:
  * - Workers scan heap and build local TpBuildContext (arena + HTAB)
  * - When budget fills, workers flush segments to BufFile temp files
+ * - Workers perform level-aware compaction within their BufFile
  * - After all workers finish, leader reads temp files and writes
- *   segments contiguously to index pages as separate L0 segments
- * - No page pool, no compaction during build
+ *   segments to index pages, then runs final compaction
  */
 #pragma once
 
@@ -28,6 +28,13 @@
 #define TP_MAX_PARALLEL_WORKERS 32
 
 /*
+ * Maximum segments a single worker can produce after compaction.
+ * With segments_per_level=8 and TP_MAX_LEVELS=8, a worker can have
+ * at most 7 segments per level = 7*8 = 56, but typically far fewer.
+ */
+#define TP_MAX_WORKER_SEGMENTS 64
+
+/*
  * Shared memory keys for parallel build TOC
  */
 #define TP_PARALLEL_KEY_SHARED	   UINT64CONST(0xB175DA7A00000001)
@@ -44,6 +51,12 @@ typedef struct TpParallelWorkerResult
 	uint64 total_docs; /* Documents indexed */
 	uint64 total_len;  /* Sum of document lengths */
 	uint64 tuples_scanned;
+
+	/* Per-segment info after compaction (BufFile offsets and levels) */
+	uint32 final_segment_count;
+	uint64 seg_offsets[TP_MAX_WORKER_SEGMENTS];
+	uint64 seg_sizes[TP_MAX_WORKER_SEGMENTS];
+	uint32 seg_levels[TP_MAX_WORKER_SEGMENTS];
 } TpParallelWorkerResult;
 
 /*
