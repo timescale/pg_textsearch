@@ -56,6 +56,8 @@ jobs:
     - name: Setup test database
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        LIB_NAME="pg_textsearch-${EXTVERSION}"
         rm -rf tmp_check_shared
         mkdir -p tmp_check_shared
         initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
@@ -63,6 +65,7 @@ jobs:
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
         pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
@@ -99,12 +102,14 @@ jobs:
       timeout-minutes: 5
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        LIB_NAME="pg_textsearch-${EXTVERSION}"
         rm -rf tmp_hypertable_test
         mkdir -p tmp_hypertable_test
         initdb -D tmp_hypertable_test/data --auth-local=trust --auth-host=trust
         echo "port = 55434" >> tmp_hypertable_test/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_hypertable_test/data/postgresql.conf
-        echo "shared_preload_libraries = 'timescaledb'" >> tmp_hypertable_test/data/postgresql.conf
+        echo "shared_preload_libraries = 'timescaledb,${LIB_NAME}'" >> tmp_hypertable_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_hypertable_test'" >> tmp_hypertable_test/data/postgresql.conf
         pg_ctl start -D tmp_hypertable_test/data -l tmp_hypertable_test/data/logfile -w
         export PGHOST=$PWD/tmp_hypertable_test

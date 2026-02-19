@@ -19,10 +19,9 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 
 ## Important Notes for Development
 
-- **DO NOT add pg_textsearch to shared_preload_libraries** - The extension
-  loads via CREATE EXTENSION without needing shared_preload_libraries. If you
-  get "access method bm25 does not exist", the issue is something else (e.g.,
-  extension not installed, wrong database, etc.)
+- **pg_textsearch requires shared_preload_libraries** - Add the versioned
+  library name (e.g., `pg_textsearch-1.0.0-dev`) to `shared_preload_libraries`
+  in postgresql.conf and restart the server before CREATE EXTENSION
 
 ## Core Architecture
 

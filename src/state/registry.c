@@ -107,8 +107,7 @@ registry_attach(dsa_area *area, dshash_table_handle handle)
 
 /*
  * Request shared memory for the registry
- * Only effective when loaded via shared_preload_libraries
- * Without preloading, registry initializes lazily on first use
+ * Called during shared_preload_libraries processing
  */
 void
 tp_registry_init(void)
@@ -167,13 +166,11 @@ tp_registry_get_dsa(void)
 	if (tapir_dsa != NULL)
 		return tapir_dsa;
 
-	/* Ensure registry is initialized */
+	/* Registry must be initialized via shared_preload_libraries */
 	if (!tapir_registry)
-	{
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-			elog(ERROR, "Failed to initialize Tapir registry");
-	}
+		elog(ERROR,
+			 "Tapir registry not initialized. "
+			 "Is pg_textsearch in shared_preload_libraries?");
 
 	/* Check if DSA exists, create if needed */
 	LWLockAcquire(&tapir_registry->lock, LW_EXCLUSIVE);
@@ -369,16 +366,12 @@ tp_registry_is_registered(Oid index_oid)
 	bool			 result = false;
 
 	/*
-	 * Don't try to initialize if registry doesn't exist yet.
+	 * If registry is not initialized, no indexes can be registered.
 	 * This function is called from object access hook which may fire
 	 * before any index has been created.
 	 */
 	if (!tapir_registry)
-	{
-		tp_registry_shmem_startup();
-		if (!tapir_registry)
-			return false;
-	}
+		return false;
 
 	if (tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 		return false;

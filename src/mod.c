@@ -109,7 +109,15 @@ static void tp_process_utility(
 void
 _PG_init(void)
 {
-	/* Initialize on first use - don't require shared_preload_libraries */
+	if (!process_shared_preload_libraries_in_progress)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("pg_textsearch must be loaded via "
+						"shared_preload_libraries"),
+				 errhint("Add '%s' to shared_preload_libraries "
+						 "in postgresql.conf and restart the "
+						 "server.",
+						 PG_TEXTSEARCH_LIB_NAME)));
 
 	/*
 	 * Define GUC parameters
@@ -326,7 +334,7 @@ tp_shmem_request(void)
 }
 
 /*
- * Shared memory startup hook - no-op since registry initializes lazily
+ * Shared memory startup hook - initialize the registry
  */
 static void
 tp_shmem_startup(void)

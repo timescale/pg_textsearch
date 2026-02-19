@@ -114,6 +114,10 @@ setup_test_db() {
         fi
     fi
 
+    # Get versioned library name from control file
+    local extversion=$(awk -F"'" '/default_version/ {print $2}' "${SCRIPT_DIR}/../../pg_textsearch.control")
+    local lib_name="pg_textsearch-${extversion}"
+
     # Configure for concurrent testing
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
@@ -130,6 +134,7 @@ log_min_messages = info
 log_line_prefix = '[%p] %t %u@%d: '
 
 # Load pg_textsearch extension
+shared_preload_libraries = '${lib_name}'
 EOF
 
     # Start PostgreSQL

@@ -45,6 +45,10 @@ setup_test_db() {
 
     initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
 
+    # Get versioned library name from control file
+    local extversion=$(awk -F"'" '/default_version/ {print $2}' "${SCRIPT_DIR}/../../pg_textsearch.control")
+    local lib_name="pg_textsearch-${extversion}"
+
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
 max_connections = 50
@@ -52,6 +56,7 @@ shared_buffers = 128MB
 unix_socket_directories = '${DATA_DIR}'
 listen_addresses = 'localhost'
 log_min_messages = warning
+shared_preload_libraries = '${lib_name}'
 
 # Lower thresholds to trigger multiple memtable spills during CIC tests
 pg_textsearch.bulk_load_threshold = 10000

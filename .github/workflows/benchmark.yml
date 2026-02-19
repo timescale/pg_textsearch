@@ -116,6 +116,8 @@ jobs:
     - name: Configure PostgreSQL
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        LIB_NAME="pg_textsearch-${EXTVERSION}"
         rm -rf tmp_bench
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
@@ -128,6 +130,7 @@ jobs:
         shared_buffers = 1GB
         maintenance_work_mem = 512MB
         max_parallel_maintenance_workers = $NCPUS
+        shared_preload_libraries = '${LIB_NAME}'
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
@@ -803,6 +806,8 @@ jobs:
     - name: Configure PostgreSQL for benchmarks
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        LIB_NAME="pg_textsearch-${EXTVERSION}"
         rm -rf tmp_bench
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
@@ -825,6 +830,7 @@ jobs:
         max_parallel_workers_per_gather = $NCPUS
         max_parallel_workers = $NCPUS
         pg_textsearch.segments_per_level = 16
+        shared_preload_libraries = '${LIB_NAME}'
         EOF
 
         # Enable compression if requested
@@ -1236,9 +1242,11 @@ jobs:
     - name: Setup database
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        LIB_NAME="pg_textsearch-${EXTVERSION}"
         mkdir -p tmp_validate/data tmp_validate/socket
         initdb -D tmp_validate/data
-        echo "shared_preload_libraries = ''" >> tmp_validate/data/postgresql.conf
+        echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_validate/data/postgresql.conf
         echo "shared_buffers = '1GB'" >> tmp_validate/data/postgresql.conf
         echo "work_mem = '256MB'" >> tmp_validate/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_validate/socket'" >> tmp_validate/data/postgresql.conf
