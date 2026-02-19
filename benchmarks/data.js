@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771451074348,
+  "lastUpdate": 1771466551925,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2843,6 +2843,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.36,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "6ad4ffb8f501035ede8687cafa098f8b04f38008",
+          "message": "fix: detoast bm25vector in send and equality functions\n\ntpvector_send and tpvector_eq used PG_GETARG_POINTER which does not\ndetoast varlena datums. When PostgreSQL stores small bm25vectors with\n1-byte short varlena headers, VARSIZE() reads garbage (interpreting the\n1B header + data bytes as a 4B header), causing out-of-bounds reads.\n\nUnder ASAN sanitizer builds this crashes immediately when the garbage\nsize causes reads past the buffer page boundary into poisoned memory.\nWithout sanitizer, the bug is latent but produces corrupt binary output.\n\nFix by using PG_DETOAST_DATUM which ensures proper 4-byte varlena\nheaders. This matches what tpvector_out already does correctly.",
+          "timestamp": "2026-02-19T01:28:30Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/6ad4ffb8f501035ede8687cafa098f8b04f38008"
+        },
+        "date": 1771466551242,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 242.204,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.33,
             "unit": "ms"
           },
           {
