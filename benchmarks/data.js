@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771568972033,
+  "lastUpdate": 1771605120949,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3028,6 +3028,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.24,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "2b60e589d50a7c1f08ef44604dedb8d1821af874",
+          "message": "fix: fix BufFile cursor handling in worker-side compaction\n\nThree interrelated bugs in worker-side BufFile compaction caused\ncorruption when worker BufFiles exceeded 1GB (the physical segment\nsize for Postgres BufFile):\n\n1. BufFileTell ordering: write_merged_segment_to_buffile() called\n   BufFileTell AFTER build_merged_docmap(), but that function reads\n   from BufFile-backed segment readers which moves the file cursor.\n   Fix: record the base position BEFORE build_merged_docmap and\n   re-seek after.\n\n2. Interleaved reads and writes: merge source reads (via\n   posting_source_advance -> tp_segment_read) share the same BufFile\n   handle as the output writes, moving the cursor between writes.\n   Fix: introduce buffile_write_at() that seeks to the absolute\n   output position before every write.\n\n3. SEEK_END race: BufFileSeek(SEEK_END) calls FileSize() before\n   flushing the dirty write buffer, returning the on-disk size which\n   is less than the logical size. Writing there overwrites unflushed\n   data. Fix: track buffile_end explicitly in WorkerSegmentTracker\n   and use it instead of SEEK_END.\n\nAlso decomposes BufFile composite offsets (fileno, offset) before all\nBufFileSeek calls to handle multi-segment BufFiles correctly.\n\nVerified with 138M row MS MARCO v2 parallel index build (8 workers).",
+          "timestamp": "2026-02-20T08:29:17Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/2b60e589d50a7c1f08ef44604dedb8d1821af874"
+        },
+        "date": 1771605119581,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 266.72,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.37,
             "unit": "ms"
           },
           {
