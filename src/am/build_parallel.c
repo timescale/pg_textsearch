@@ -494,11 +494,18 @@ write_merged_segment_to_buffile(
 			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
 		}
 
-		BufFileSeek(
-				file,
-				base_fileno,
-				base_file_offset + (off_t)header.entries_offset,
-				SEEK_SET);
+		{
+			uint64 base_abs =
+					tp_buffile_composite_offset(base_fileno, base_file_offset);
+			int	  dict_fileno;
+			off_t dict_offset;
+
+			tp_buffile_decompose_offset(
+					base_abs + header.entries_offset,
+					&dict_fileno,
+					&dict_offset);
+			BufFileSeek(file, dict_fileno, dict_offset, SEEK_SET);
+		}
 		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
 		pfree(dict_entries);
 
@@ -660,8 +667,7 @@ worker_maybe_compact_level(
 			/* Seek to end of BufFile for appending */
 			BufFileSeek(file, 0, 0, SEEK_END);
 			BufFileTell(file, &end_fileno, &end_offset);
-			new_offset = (uint64)end_fileno * (uint64)(1024 * 1024 * 1024) +
-						 (uint64)end_offset;
+			new_offset = tp_buffile_composite_offset(end_fileno, end_offset);
 
 			new_data_size = write_merged_segment_to_buffile(
 					file,
@@ -804,13 +810,16 @@ write_temp_segment_to_index(
 	BlockNumber		page_index_root;
 	char			buf[TP_COPY_BUF_SIZE];
 	uint64			remaining;
+	int				seek_fileno;
+	off_t			seek_offset;
 
 	/* Initialize writer — extends relation via P_NEW */
 	tp_segment_writer_init(&writer, index);
 	header_block = writer.pages[0];
 
 	/* Stream data from BufFile through writer */
-	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	tp_buffile_decompose_offset(base_offset, &seek_fileno, &seek_offset);
+	BufFileSeek(file, seek_fileno, seek_offset, SEEK_SET);
 	remaining = data_size;
 	while (remaining > 0)
 	{
@@ -877,13 +886,16 @@ write_temp_segment_to_index_parallel(
 	BlockNumber		page_index_root;
 	char			buf[TP_COPY_BUF_SIZE];
 	uint64			remaining;
+	int				seek_fileno;
+	off_t			seek_offset;
 
 	/* Initialize writer with atomic page counter */
 	tp_segment_writer_init_parallel(&writer, index, page_counter);
 	header_block = writer.pages[0];
 
 	/* Stream data from BufFile through writer */
-	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	tp_buffile_decompose_offset(base_offset, &seek_fileno, &seek_offset);
+	BufFileSeek(file, seek_fileno, seek_offset, SEEK_SET);
 	remaining = data_size;
 	while (remaining > 0)
 	{
@@ -1085,8 +1097,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			/* Track this L0 segment */
 			tracker_add_segment(
 					&tracker,
-					(uint64)fileno * (uint64)(1024 * 1024 * 1024) +
-							(uint64)file_offset,
+					tp_buffile_composite_offset(fileno, file_offset),
 					data_size,
 					0);
 
@@ -1124,8 +1135,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		tracker_add_segment(
 				&tracker,
-				(uint64)fileno * (uint64)(1024 * 1024 * 1024) +
-						(uint64)file_offset,
+				tp_buffile_composite_offset(fileno, file_offset),
 				data_size,
 				0);
 

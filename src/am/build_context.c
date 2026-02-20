@@ -965,12 +965,19 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
 		}
 
-		/* Seek back to dict entries position (near start of segment) */
-		BufFileSeek(
-				file,
-				base_fileno,
-				base_file_offset + (off_t)header.entries_offset,
-				SEEK_SET);
+		/* Seek back to dict entries position */
+		{
+			uint64 base_abs =
+					tp_buffile_composite_offset(base_fileno, base_file_offset);
+			int	  dict_fileno;
+			off_t dict_offset;
+
+			tp_buffile_decompose_offset(
+					base_abs + header.entries_offset,
+					&dict_fileno,
+					&dict_offset);
+			BufFileSeek(file, dict_fileno, dict_offset, SEEK_SET);
+		}
 		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
 		pfree(dict_entries);
 

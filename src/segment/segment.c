@@ -416,7 +416,13 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 
 	/* Read header from BufFile */
 	header = palloc(sizeof(TpSegmentHeader));
-	BufFileSeek(file, 0, (off_t)base_offset, SEEK_SET);
+	{
+		int	  fileno;
+		off_t offset;
+
+		tp_buffile_decompose_offset(base_offset, &fileno, &offset);
+		BufFileSeek(file, fileno, offset, SEEK_SET);
+	}
 	BufFileReadExact(file, header, sizeof(TpSegmentHeader));
 
 	if (header->magic != TP_SEGMENT_MAGIC)
@@ -531,11 +537,12 @@ tp_segment_read(
 	 */
 	if (reader->buffile != NULL)
 	{
-		BufFileSeek(
-				reader->buffile,
-				0,
-				(off_t)(reader->buffile_base + logical_offset),
-				SEEK_SET);
+		int	  fileno;
+		off_t offset;
+
+		tp_buffile_decompose_offset(
+				reader->buffile_base + logical_offset, &fileno, &offset);
+		BufFileSeek(reader->buffile, fileno, offset, SEEK_SET);
 		BufFileReadExact(reader->buffile, dest, len);
 		return;
 	}

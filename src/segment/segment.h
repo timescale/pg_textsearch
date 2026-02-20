@@ -18,6 +18,26 @@
 #include "utils/timestamp.h"
 
 /*
+ * BufFile segment size (1 GB).  BufFile stores data across
+ * multiple 1 GB physical files.  Composite offsets encode both
+ * fileno and position: fileno * TP_BUFFILE_SEG_SIZE + file_offset.
+ */
+#define TP_BUFFILE_SEG_SIZE ((uint64)(1024 * 1024 * 1024))
+
+static inline uint64
+tp_buffile_composite_offset(int fileno, off_t file_offset)
+{
+	return (uint64)fileno * TP_BUFFILE_SEG_SIZE + (uint64)file_offset;
+}
+
+static inline void
+tp_buffile_decompose_offset(uint64 composite, int *fileno, off_t *offset)
+{
+	*fileno = (int)(composite / TP_BUFFILE_SEG_SIZE);
+	*offset = (off_t)(composite % TP_BUFFILE_SEG_SIZE);
+}
+
+/*
  * Page types for segment pages.
  * Magic and version constants are defined in constants.h.
  */
