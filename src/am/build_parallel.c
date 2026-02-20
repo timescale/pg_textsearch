@@ -23,6 +23,7 @@
 #include <access/tableam.h>
 #include <access/xact.h>
 #include <catalog/index.h>
+#include <catalog/storage.h>
 #include <commands/progress.h>
 #include <miscadmin.h>
 #include <storage/buffile.h>
@@ -1312,7 +1313,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 				LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
 				hdr_page   = BufferGetPage(hdr_buf);
 				hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
-				hdr->level = my_result->seg_levels[s];
+				hdr->level = 0;
 				MarkBufferDirty(hdr_buf);
 				UnlockReleaseBuffer(hdr_buf);
 			}
@@ -1530,6 +1531,15 @@ tp_build_parallel(
 	ConditionVariableCancelSleep();
 	WaitForParallelWorkersToFinish(pcxt);
 
+	/* Truncate unused pre-allocated pool pages */
+	{
+		BlockNumber used = (BlockNumber)pg_atomic_read_u64(&shared->next_page);
+		BlockNumber total = RelationGetNumberOfBlocks(index);
+
+		if (used < total)
+			RelationTruncate(index, used);
+	}
+
 	/* Report compaction phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -1563,7 +1573,7 @@ tp_build_parallel(
 
 			for (s = 0; s < results[i].final_segment_count; s++)
 			{
-				uint32		level	 = results[i].seg_levels[s];
+				uint32		level	 = 0;
 				BlockNumber seg_root = results[i].seg_roots[s];
 
 				/* Chain into per-level linked list */
