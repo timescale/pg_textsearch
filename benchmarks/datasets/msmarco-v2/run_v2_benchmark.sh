@@ -99,62 +99,22 @@ load_tapir() {
 \timing on
 
 -- Ensure extension is loaded
-DROP EXTENSION IF EXISTS pg_textsearch CASCADE;
-CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 -- Max out parallelism for this session
 SET max_parallel_maintenance_workers = $workers;
 SET maintenance_work_mem = '8GB';
 
--- Clean up existing tables
-DROP TABLE IF EXISTS msmarco_v2_passages CASCADE;
-DROP TABLE IF EXISTS msmarco_v2_queries CASCADE;
-DROP TABLE IF EXISTS msmarco_v2_qrels CASCADE;
-
--- Create tables
-\echo 'Creating tables...'
-CREATE TABLE msmarco_v2_passages (
-    passage_id TEXT PRIMARY KEY,
-    passage_text TEXT NOT NULL
-);
-CREATE TABLE msmarco_v2_queries (
-    query_id INTEGER PRIMARY KEY,
-    query_text TEXT NOT NULL
-);
-CREATE TABLE msmarco_v2_qrels (
-    query_id INTEGER NOT NULL,
-    passage_id TEXT NOT NULL,
-    relevance INTEGER NOT NULL,
-    PRIMARY KEY (query_id, passage_id)
-);
-
--- Load passages
-\echo 'Loading 138M passages...'
-\copy msmarco_v2_passages(passage_id, passage_text) FROM PROGRAM 'awk -F"\t" "{OFS=\",\"; gsub(/\"/, \"\\\"\\\"\", \$2); print \"\\\"\" \$1 \"\\\"\", \"\\\"\" \$2 \"\\\"\"}" "$DATA_DIR/collection.tsv"' WITH (FORMAT csv);
-
--- Load queries
-\echo 'Loading queries...'
-\copy msmarco_v2_queries(query_id, query_text) FROM PROGRAM 'cat "$DATA_DIR/passv2_dev_queries.tsv"' WITH (FORMAT text, DELIMITER E'\t');
-
--- Load qrels
-\echo 'Loading qrels...'
-CREATE TEMP TABLE qrels_raw (
-    query_id INTEGER, zero INTEGER, passage_id TEXT, relevance INTEGER
-);
-\copy qrels_raw FROM PROGRAM 'cat "$DATA_DIR/passv2_dev_qrels.tsv"' WITH (FORMAT text, DELIMITER E'\t');
-INSERT INTO msmarco_v2_qrels (query_id, passage_id, relevance)
-SELECT query_id, passage_id, relevance FROM qrels_raw;
-DROP TABLE qrels_raw;
-
--- Verify
-\echo ''
+-- Verify data is loaded
 \echo '=== Data Verification ==='
 SELECT 'Passages:' as what, COUNT(*)::text as n FROM msmarco_v2_passages
 UNION ALL SELECT 'Queries:', COUNT(*)::text FROM msmarco_v2_queries
 UNION ALL SELECT 'Qrels:', COUNT(*)::text FROM msmarco_v2_qrels
 ORDER BY what;
 
--- Build BM25 index with max parallelism
+-- Drop existing BM25 index if present, then rebuild
+DROP INDEX IF EXISTS msmarco_v2_bm25_idx;
+
 \echo ''
 \echo '=== Building BM25 Index (parallel workers: $workers) ==='
 CREATE INDEX msmarco_v2_bm25_idx ON msmarco_v2_passages

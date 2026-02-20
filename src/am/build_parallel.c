@@ -24,7 +24,6 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <commands/progress.h>
-#include <inttypes.h>
 #include <miscadmin.h>
 #include <storage/buffile.h>
 #include <storage/bufmgr.h>
@@ -83,14 +82,16 @@ typedef struct WorkerSegmentTracker
 	uint32				count;
 	uint32				capacity;
 	uint32				level_counts[TP_MAX_LEVELS];
+	uint64				buffile_end; /* logical end of BufFile */
 } WorkerSegmentTracker;
 
 static void
 tracker_init(WorkerSegmentTracker *tracker)
 {
-	tracker->capacity = 32;
-	tracker->count	  = 0;
-	tracker->entries  = palloc(tracker->capacity * sizeof(WorkerSegmentEntry));
+	tracker->capacity	 = 32;
+	tracker->count		 = 0;
+	tracker->buffile_end = 0;
+	tracker->entries = palloc(tracker->capacity * sizeof(WorkerSegmentEntry));
 	memset(tracker->level_counts, 0, sizeof(tracker->level_counts));
 }
 
@@ -123,12 +124,30 @@ tracker_destroy(WorkerSegmentTracker *tracker)
 		pfree(tracker->entries);
 }
 
+/*
+ * Seek to an absolute position in a BufFile and write data.
+ * Used to ensure writes go to the correct output position even when
+ * interleaved BufFile reads (from source segments during merge) have
+ * moved the cursor elsewhere.
+ */
+static void
+buffile_write_at(BufFile *file, uint64 abs_pos, const void *data, size_t size)
+{
+	int	  fileno;
+	off_t offset;
+
+	tp_buffile_decompose_offset(abs_pos, &fileno, &offset);
+	BufFileSeek(file, fileno, offset, SEEK_SET);
+	BufFileWrite(file, data, size);
+}
+
 /* ----------------------------------------------------------------
  * BufFile-based merged segment writer
  *
  * Combines N segments from BufFile into a single output segment
- * written back to BufFile. Structurally identical to
- * write_merged_segment() in merge.c but uses BufFile I/O.
+ * written back to BufFile. Uses buffile_write_at() for all writes
+ * because merge source reads (posting_source_advance -> tp_segment_read)
+ * share the same BufFile handle and move the cursor.
  * ----------------------------------------------------------------
  */
 static uint64
@@ -150,8 +169,9 @@ write_merged_segment_to_buffile(
 	uint32				string_pos;
 	uint32				i;
 
-	int	  base_fileno;
-	off_t base_file_offset;
+	int	   base_fileno;
+	off_t  base_file_offset;
+	uint64 base_abs;
 
 	uint64 current_offset;
 
@@ -163,11 +183,19 @@ write_merged_segment_to_buffile(
 	if (num_terms == 0)
 		return 0;
 
-	/* Build docmap and direct mapping arrays */
+	/*
+	 * Record starting position BEFORE build_merged_docmap, because that
+	 * function reads from BufFile-backed segment readers which moves the
+	 * file cursor.
+	 */
+	BufFileTell(file, &base_fileno, &base_file_offset);
+	base_abs = tp_buffile_composite_offset(base_fileno, base_file_offset);
+
+	/* Build docmap and direct mapping arrays (reads from BufFile) */
 	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
 
-	/* Record starting position for later seek-back */
-	BufFileTell(file, &base_fileno, &base_file_offset);
+	/* Re-seek to recorded position after docmap reads moved cursor */
+	BufFileSeek(file, base_fileno, base_file_offset, SEEK_SET);
 
 	current_offset = 0;
 
@@ -188,13 +216,18 @@ write_merged_segment_to_buffile(
 	header.dictionary_offset = sizeof(TpSegmentHeader);
 
 	/* Write placeholder header */
-	BufFileWrite(file, &header, sizeof(TpSegmentHeader));
+	buffile_write_at(
+			file, base_abs + current_offset, &header, sizeof(TpSegmentHeader));
 	current_offset += sizeof(TpSegmentHeader);
 
 	/* Write dictionary header */
 	memset(&dict, 0, sizeof(dict));
 	dict.num_terms = num_terms;
-	BufFileWrite(file, &dict, offsetof(TpDictionary, string_offsets));
+	buffile_write_at(
+			file,
+			base_abs + current_offset,
+			&dict,
+			offsetof(TpDictionary, string_offsets));
 	current_offset += offsetof(TpDictionary, string_offsets);
 
 	/* Calculate and write string offsets */
@@ -205,7 +238,11 @@ write_merged_segment_to_buffile(
 		string_offsets[i] = string_pos;
 		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
 	}
-	BufFileWrite(file, string_offsets, num_terms * sizeof(uint32));
+	buffile_write_at(
+			file,
+			base_abs + current_offset,
+			string_offsets,
+			num_terms * sizeof(uint32));
 	current_offset += num_terms * sizeof(uint32);
 
 	/* Write string pool */
@@ -215,10 +252,15 @@ write_merged_segment_to_buffile(
 		uint32 length	   = terms[i].term_len;
 		uint32 dict_offset = i * sizeof(TpDictEntry);
 
-		BufFileWrite(file, &length, sizeof(uint32));
-		BufFileWrite(file, terms[i].term, length);
-		BufFileWrite(file, &dict_offset, sizeof(uint32));
-		current_offset += sizeof(uint32) + length + sizeof(uint32);
+		buffile_write_at(
+				file, base_abs + current_offset, &length, sizeof(uint32));
+		current_offset += sizeof(uint32);
+		buffile_write_at(
+				file, base_abs + current_offset, terms[i].term, length);
+		current_offset += length;
+		buffile_write_at(
+				file, base_abs + current_offset, &dict_offset, sizeof(uint32));
+		current_offset += sizeof(uint32);
 	}
 
 	/* Record entries offset */
@@ -231,7 +273,11 @@ write_merged_segment_to_buffile(
 		memset(&placeholder, 0, sizeof(TpDictEntry));
 		for (i = 0; i < num_terms; i++)
 		{
-			BufFileWrite(file, &placeholder, sizeof(TpDictEntry));
+			buffile_write_at(
+					file,
+					base_abs + current_offset,
+					&placeholder,
+					sizeof(TpDictEntry));
 			current_offset += sizeof(TpDictEntry);
 		}
 	}
@@ -329,14 +375,16 @@ write_merged_segment_to_buffile(
 
 					csize = tp_compress_block(block_buf, block_count, cbuf);
 					skip.flags = TP_BLOCK_FLAG_DELTA;
-					BufFileWrite(file, cbuf, csize);
+					buffile_write_at(
+							file, base_abs + current_offset, cbuf, csize);
 					current_offset += csize;
 				}
 				else
 				{
 					skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-					BufFileWrite(
+					buffile_write_at(
 							file,
+							base_abs + current_offset,
 							block_buf,
 							block_count * sizeof(TpBlockPosting));
 					current_offset += block_count * sizeof(TpBlockPosting);
@@ -389,14 +437,17 @@ write_merged_segment_to_buffile(
 
 				csize	   = tp_compress_block(block_buf, block_count, cbuf);
 				skip.flags = TP_BLOCK_FLAG_DELTA;
-				BufFileWrite(file, cbuf, csize);
+				buffile_write_at(file, base_abs + current_offset, cbuf, csize);
 				current_offset += csize;
 			}
 			else
 			{
 				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-				BufFileWrite(
-						file, block_buf, block_count * sizeof(TpBlockPosting));
+				buffile_write_at(
+						file,
+						base_abs + current_offset,
+						block_buf,
+						block_count * sizeof(TpBlockPosting));
 				current_offset += block_count * sizeof(TpBlockPosting);
 			}
 
@@ -432,8 +483,9 @@ write_merged_segment_to_buffile(
 	header.skip_index_offset = current_offset;
 	if (skip_entries_count > 0)
 	{
-		BufFileWrite(
+		buffile_write_at(
 				file,
+				base_abs + current_offset,
 				all_skip_entries,
 				skip_entries_count * sizeof(TpSkipEntry));
 		current_offset += skip_entries_count * sizeof(TpSkipEntry);
@@ -444,8 +496,11 @@ write_merged_segment_to_buffile(
 	header.fieldnorm_offset = current_offset;
 	if (docmap->num_docs > 0)
 	{
-		BufFileWrite(
-				file, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+		buffile_write_at(
+				file,
+				base_abs + current_offset,
+				docmap->fieldnorms,
+				docmap->num_docs * sizeof(uint8));
 		current_offset += docmap->num_docs * sizeof(uint8);
 	}
 
@@ -453,8 +508,9 @@ write_merged_segment_to_buffile(
 	header.ctid_pages_offset = current_offset;
 	if (docmap->num_docs > 0)
 	{
-		BufFileWrite(
+		buffile_write_at(
 				file,
+				base_abs + current_offset,
 				docmap->ctid_pages,
 				docmap->num_docs * sizeof(BlockNumber));
 		current_offset += docmap->num_docs * sizeof(BlockNumber);
@@ -464,8 +520,9 @@ write_merged_segment_to_buffile(
 	header.ctid_offsets_offset = current_offset;
 	if (docmap->num_docs > 0)
 	{
-		BufFileWrite(
+		buffile_write_at(
 				file,
+				base_abs + current_offset,
 				docmap->ctid_offsets,
 				docmap->num_docs * sizeof(OffsetNumber));
 		current_offset += docmap->num_docs * sizeof(OffsetNumber);
@@ -480,7 +537,13 @@ write_merged_segment_to_buffile(
 		int			 end_fileno;
 		off_t		 end_file_offset;
 
-		BufFileTell(file, &end_fileno, &end_file_offset);
+		/*
+		 * Compute end position from base + data_size rather than
+		 * BufFileTell, since merge source reads may have moved
+		 * the cursor away from the output position.
+		 */
+		tp_buffile_decompose_offset(
+				base_abs + current_offset, &end_fileno, &end_file_offset);
 
 		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
 		for (i = 0; i < num_terms; i++)
@@ -495,8 +558,6 @@ write_merged_segment_to_buffile(
 		}
 
 		{
-			uint64 base_abs =
-					tp_buffile_composite_offset(base_fileno, base_file_offset);
 			int	  dict_fileno;
 			off_t dict_offset;
 
@@ -664,10 +725,17 @@ worker_maybe_compact_level(
 			off_t  end_offset;
 			uint64 new_offset;
 
-			/* Seek to end of BufFile for appending */
-			BufFileSeek(file, 0, 0, SEEK_END);
-			BufFileTell(file, &end_fileno, &end_offset);
-			new_offset = tp_buffile_composite_offset(end_fileno, end_offset);
+			/*
+			 * Position at logical end of BufFile for appending.
+			 * Do NOT use SEEK_END: BufFileSeek(SEEK_END) calls
+			 * FileSize() before flushing the dirty buffer, so it
+			 * returns the on-disk size which may be less than the
+			 * logical size.  Writing there overwrites unflushed
+			 * data.  Use our tracked buffile_end instead.
+			 */
+			new_offset = tracker->buffile_end;
+			tp_buffile_decompose_offset(new_offset, &end_fileno, &end_offset);
+			BufFileSeek(file, end_fileno, end_offset, SEEK_SET);
 
 			new_data_size = write_merged_segment_to_buffile(
 					file,
@@ -677,6 +745,9 @@ worker_maybe_compact_level(
 					num_sources,
 					level + 1,
 					total_tokens);
+
+			/* Update logical end of BufFile */
+			tracker->buffile_end = new_offset + new_data_size;
 
 			/* Mark source segments consumed */
 			collected = 0;
@@ -1082,24 +1153,27 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		if (tp_build_context_should_flush(build_ctx))
 		{
 			uint64 data_size;
-			int	   fileno;
-			off_t  file_offset;
+			uint64 seg_offset;
 
 			my_result->total_docs += build_ctx->num_docs;
 			my_result->total_len += build_ctx->total_len;
 
-			/* Record offset before writing */
-			BufFileTell(buffile, &fileno, &file_offset);
+			/* L0 segment starts at current end of BufFile */
+			seg_offset = tracker.buffile_end;
+			{
+				int	  fileno;
+				off_t file_offset;
+
+				tp_buffile_decompose_offset(seg_offset, &fileno, &file_offset);
+				BufFileSeek(buffile, fileno, file_offset, SEEK_SET);
+			}
 
 			data_size = tp_write_segment_to_buffile(build_ctx, buffile);
 			my_result->segment_count++;
 
 			/* Track this L0 segment */
-			tracker_add_segment(
-					&tracker,
-					tp_buffile_composite_offset(fileno, file_offset),
-					data_size,
-					0);
+			tracker_add_segment(&tracker, seg_offset, data_size, 0);
+			tracker.buffile_end = seg_offset + data_size;
 
 			tp_build_context_reset(build_ctx);
 
@@ -1122,22 +1196,25 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	if (build_ctx->num_docs > 0)
 	{
 		uint64 data_size;
-		int	   fileno;
-		off_t  file_offset;
+		uint64 seg_offset;
 
 		my_result->total_docs += build_ctx->num_docs;
 		my_result->total_len += build_ctx->total_len;
 
-		BufFileTell(buffile, &fileno, &file_offset);
+		seg_offset = tracker.buffile_end;
+		{
+			int	  fileno;
+			off_t file_offset;
+
+			tp_buffile_decompose_offset(seg_offset, &fileno, &file_offset);
+			BufFileSeek(buffile, fileno, file_offset, SEEK_SET);
+		}
 
 		data_size = tp_write_segment_to_buffile(build_ctx, buffile);
 		my_result->segment_count++;
 
-		tracker_add_segment(
-				&tracker,
-				tp_buffile_composite_offset(fileno, file_offset),
-				data_size,
-				0);
+		tracker_add_segment(&tracker, seg_offset, data_size, 0);
+		tracker.buffile_end = seg_offset + data_size;
 
 		/* Final compaction pass */
 		worker_maybe_compact_level(&tracker, buffile, 0);
