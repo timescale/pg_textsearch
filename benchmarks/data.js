@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771605120949,
+  "lastUpdate": 1771605123342,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10134,6 +10134,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1227.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "2b60e589d50a7c1f08ef44604dedb8d1821af874",
+          "message": "fix: fix BufFile cursor handling in worker-side compaction\n\nThree interrelated bugs in worker-side BufFile compaction caused\ncorruption when worker BufFiles exceeded 1GB (the physical segment\nsize for Postgres BufFile):\n\n1. BufFileTell ordering: write_merged_segment_to_buffile() called\n   BufFileTell AFTER build_merged_docmap(), but that function reads\n   from BufFile-backed segment readers which moves the file cursor.\n   Fix: record the base position BEFORE build_merged_docmap and\n   re-seek after.\n\n2. Interleaved reads and writes: merge source reads (via\n   posting_source_advance -> tp_segment_read) share the same BufFile\n   handle as the output writes, moving the cursor between writes.\n   Fix: introduce buffile_write_at() that seeks to the absolute\n   output position before every write.\n\n3. SEEK_END race: BufFileSeek(SEEK_END) calls FileSize() before\n   flushing the dirty write buffer, returning the on-disk size which\n   is less than the logical size. Writing there overwrites unflushed\n   data. Fix: track buffile_end explicitly in WorkerSegmentTracker\n   and use it instead of SEEK_END.\n\nAlso decomposes BufFile composite offsets (fileno, offset) before all\nBufFileSeek calls to handle multi-segment BufFiles correctly.\n\nVerified with 138M row MS MARCO v2 parallel index build (8 workers).",
+          "timestamp": "2026-02-20T08:29:17Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/2b60e589d50a7c1f08ef44604dedb8d1821af874"
+        },
+        "date": 1771605122633,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 276087.987,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.69,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 20.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 31.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.08,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.57,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2441.01,
             "unit": "MB"
           }
         ]
