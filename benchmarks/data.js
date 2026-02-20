@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771531985195,
+  "lastUpdate": 1771568967244,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -2991,6 +2991,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.37,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fc9553c84450fcfd14fa00623f0a23b778dc87ba",
+          "message": "fix: resolve test failures on PG17 and /tmp environments (#234)\n\n## Summary\n\n- **binary_io**: Switch `COPY` to `\\copy` (client-side) so temp files\nare owned by the test runner user, avoiding `/tmp` sticky-bit permission\nissues\n- **coverage**: Use shared temp dir with 777 permissions for server-side\nfile writes; add `id` tiebreaker to queries with tied BM25 scores for\ndeterministic ordering\n- **inheritance**: Extend `is_child_partition_index()` in `hooks.c` to\nhandle regular table inheritance — PG17's planner may choose a child\ntable's index over the parent's\n\n## Test plan\n\n- [x] All 47 SQL regression tests pass locally on PG17\n- [x] `make format-check` passes\n- [x] CI passes (PG17, PG18, sanitizer builds)\n- [x] Verify inheritance test still passes on PG18 (planner behavior\ndiffers)",
+          "timestamp": "2026-02-19T23:41:12Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fc9553c84450fcfd14fa00623f0a23b778dc87ba"
+        },
+        "date": 1771568965901,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 286.793,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.24,
             "unit": "ms"
           },
           {
