@@ -32,6 +32,121 @@ extern bool tp_compress_segments;
  * and MergeTermBlockInfo are defined in merge_internal.h.
  */
 
+/* ----------------------------------------------------------------
+ * Merge sink: unified I/O abstraction
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * Seek to an absolute position in a BufFile and write data.
+ */
+static void
+buffile_write_at(BufFile *file, uint64 abs_pos, const void *data, size_t size)
+{
+	int	  fileno;
+	off_t offset;
+
+	tp_buffile_decompose_offset(abs_pos, &fileno, &offset);
+	BufFileSeek(file, fileno, offset, SEEK_SET);
+	BufFileWrite(file, data, size);
+}
+
+void
+merge_sink_init_pages(TpMergeSink *sink, Relation index)
+{
+	memset(sink, 0, sizeof(TpMergeSink));
+	sink->is_buffile = false;
+	sink->index		 = index;
+	tp_segment_writer_init(&sink->writer, index);
+	sink->current_offset = sink->writer.current_offset;
+}
+
+void
+merge_sink_init_buffile(TpMergeSink *sink, BufFile *file)
+{
+	int	  fileno;
+	off_t file_offset;
+
+	memset(sink, 0, sizeof(TpMergeSink));
+	sink->is_buffile = true;
+	sink->file		 = file;
+
+	BufFileTell(file, &fileno, &file_offset);
+	sink->base_abs		 = tp_buffile_composite_offset(fileno, file_offset);
+	sink->current_offset = 0;
+}
+
+/*
+ * Sequential append to sink.
+ */
+static void
+merge_sink_write(TpMergeSink *sink, const void *data, uint32 size)
+{
+	if (!sink->is_buffile)
+	{
+		tp_segment_writer_write(&sink->writer, data, size);
+		sink->current_offset = sink->writer.current_offset;
+	}
+	else
+	{
+		buffile_write_at(
+				sink->file, sink->base_abs + sink->current_offset, data, size);
+		sink->current_offset += size;
+	}
+}
+
+/*
+ * Positioned write for backpatching (dict entries, header).
+ * For pages backend, reads/writes through buffer manager.
+ */
+static void
+merge_sink_write_at(
+		TpMergeSink *sink, uint64 offset, const void *data, uint32 size)
+{
+	if (sink->is_buffile)
+	{
+		buffile_write_at(sink->file, sink->base_abs + offset, data, size);
+		return;
+	}
+
+	/* Pages backend: loop over logical pages */
+	{
+		const char *src		  = (const char *)data;
+		uint32		remaining = size;
+		uint64		pos		  = offset;
+
+		while (remaining > 0)
+		{
+			uint32		logical_pg = tp_logical_page(pos);
+			uint32		pg_off	   = tp_page_offset(pos);
+			uint32		avail	   = SEGMENT_DATA_PER_PAGE - pg_off;
+			uint32		chunk	   = Min(remaining, avail);
+			BlockNumber physical_block;
+			Buffer		buf;
+			Page		page;
+
+			Assert(logical_pg < sink->writer.pages_allocated);
+			physical_block = sink->writer.pages[logical_pg];
+
+			buf = ReadBuffer(sink->index, physical_block);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			page = BufferGetPage(buf);
+			memcpy((char *)page + SizeOfPageHeaderData + pg_off, src, chunk);
+			MarkBufferDirty(buf);
+			UnlockReleaseBuffer(buf);
+
+			src += chunk;
+			pos += chunk;
+			remaining -= chunk;
+		}
+	}
+}
+
+/* ----------------------------------------------------------------
+ * Merge source operations
+ * ----------------------------------------------------------------
+ */
+
 /*
  * Read term at index from a segment's dictionary.
  * Returns palloc'd string that must be freed by caller.
@@ -759,20 +874,25 @@ free_term_posting_sources(TpPostingMergeSource *psources, int num_psources)
 
 /* MergeTermBlockInfo is defined in merge_internal.h */
 
-/*
- * Write a merged segment in streaming format.
- *
- * Layout: [header] → [dictionary] → [postings] → [skip index] →
- *         [fieldnorm] → [ctid map]
- *
- * This enables streaming writes: postings are written before skip index,
- * so we can stream per-term without loading all postings into memory.
- * Skip entries are accumulated in memory (small: 16 bytes × total blocks)
- * and written after all postings.
+/* ----------------------------------------------------------------
+ * Unified merged segment writer
+ * ----------------------------------------------------------------
  */
-static BlockNumber
-write_merged_segment(
-		Relation	   index,
+
+/*
+ * Write a merged segment to a sink (pages or BufFile).
+ *
+ * Layout: [header] -> [dictionary] -> [postings] -> [skip index] ->
+ *         [fieldnorm] -> [ctid map]
+ *
+ * For pages sink: also writes page index and backpatches header with
+ * num_pages/page_index. Caller reads sink->writer.pages[0] for root.
+ *
+ * For BufFile sink: caller reads sink->current_offset for data_size.
+ */
+void
+write_merged_segment_to_sink(
+		TpMergeSink	  *sink,
 		TpMergedTerm  *terms,
 		uint32		   num_terms,
 		TpMergeSource *sources,
@@ -780,7 +900,6 @@ write_merged_segment(
 		uint32		   target_level,
 		uint64		   total_tokens)
 {
-	TpSegmentWriter		writer;
 	TpSegmentHeader		header;
 	TpDictionary		dict;
 	TpDocMapBuilder	   *docmap;
@@ -789,11 +908,6 @@ write_merged_segment(
 	uint32			   *string_offsets;
 	uint32				string_pos;
 	uint32				i;
-	BlockNumber			header_block;
-	BlockNumber			page_index_root;
-	Buffer				header_buf;
-	Page				header_page;
-	TpSegmentHeader	   *existing_header;
 
 	/* Accumulated skip entries for all terms */
 	TpSkipEntry *all_skip_entries;
@@ -801,15 +915,24 @@ write_merged_segment(
 	uint32		 skip_entries_capacity;
 
 	if (num_terms == 0)
-		return InvalidBlockNumber;
+		return;
 
 	/* Build docmap and direct mapping arrays from source segments */
 	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
 
-	/* Initialize writer */
-	memset(&writer, 0, sizeof(TpSegmentWriter));
-	tp_segment_writer_init(&writer, index);
-	header_block = writer.pages[0];
+	/*
+	 * For BufFile sink, docmap reads may have moved the cursor.
+	 * Re-seek to our recorded base position.
+	 */
+	if (sink->is_buffile)
+	{
+		int	  fileno;
+		off_t offset;
+
+		tp_buffile_decompose_offset(sink->base_abs, &fileno, &offset);
+		BufFileSeek(sink->file, fileno, offset, SEEK_SET);
+		sink->current_offset = 0;
+	}
 
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
@@ -822,18 +945,18 @@ write_merged_segment(
 	header.next_segment = InvalidBlockNumber;
 	header.num_docs		= docmap->num_docs;
 	header.total_tokens = total_tokens;
+	header.page_index	= InvalidBlockNumber;
 
 	/* Write placeholder header */
-	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
+	merge_sink_write(sink, &header, sizeof(TpSegmentHeader));
 
 	/* Dictionary immediately follows header */
-	header.dictionary_offset = writer.current_offset;
+	header.dictionary_offset = sink->current_offset;
 
 	/* Write dictionary header */
 	memset(&dict, 0, sizeof(dict));
 	dict.num_terms = num_terms;
-	tp_segment_writer_write(
-			&writer, &dict, offsetof(TpDictionary, string_offsets));
+	merge_sink_write(sink, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Calculate string offsets */
 	string_offsets = palloc0(num_terms * sizeof(uint32));
@@ -845,35 +968,33 @@ write_merged_segment(
 	}
 
 	/* Write string offsets array */
-	tp_segment_writer_write(
-			&writer, string_offsets, num_terms * sizeof(uint32));
+	merge_sink_write(sink, string_offsets, num_terms * sizeof(uint32));
 
 	/* Write string pool */
-	header.strings_offset = writer.current_offset;
+	header.strings_offset = sink->current_offset;
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
 		uint32 dict_offset = i * sizeof(TpDictEntry);
 
-		tp_segment_writer_write(&writer, &length, sizeof(uint32));
-		tp_segment_writer_write(&writer, terms[i].term, length);
-		tp_segment_writer_write(&writer, &dict_offset, sizeof(uint32));
+		merge_sink_write(sink, &length, sizeof(uint32));
+		merge_sink_write(sink, terms[i].term, length);
+		merge_sink_write(sink, &dict_offset, sizeof(uint32));
 	}
 
-	/* Record entries offset - dict entries written after postings loop */
-	header.entries_offset = writer.current_offset;
+	/* Record entries offset - dict entries written after postings */
+	header.entries_offset = sink->current_offset;
 
-	/* Write placeholder dict entries - we'll fill them in after streaming */
+	/* Write placeholder dict entries */
 	{
 		TpDictEntry placeholder;
 		memset(&placeholder, 0, sizeof(TpDictEntry));
 		for (i = 0; i < num_terms; i++)
-			tp_segment_writer_write(
-					&writer, &placeholder, sizeof(TpDictEntry));
+			merge_sink_write(sink, &placeholder, sizeof(TpDictEntry));
 	}
 
-	/* Postings start here - streaming format writes postings first */
-	header.postings_offset = writer.current_offset;
+	/* Postings start here */
+	header.postings_offset = sink->current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
 	term_blocks = palloc0(num_terms * sizeof(MergeTermBlockInfo));
@@ -883,10 +1004,8 @@ write_merged_segment(
 	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
 
 	/*
-	 * Streaming pass: for each term, stream postings one block at a time
-	 * from the N-way merge and write immediately. This avoids loading all
-	 * postings for a term into memory at once, which can exceed
-	 * MaxAllocSize for high-frequency terms in large corpora.
+	 * Streaming pass: for each term, stream postings one block at a
+	 * time from the N-way merge and write immediately.
 	 */
 	for (i = 0; i < num_terms; i++)
 	{
@@ -898,7 +1017,7 @@ write_merged_segment(
 		uint32				  num_blocks  = 0;
 
 		/* Record where this term's postings start */
-		term_blocks[i].posting_offset	= writer.current_offset;
+		term_blocks[i].posting_offset	= sink->current_offset;
 		term_blocks[i].skip_entry_start = skip_entries_count;
 
 		if (terms[i].num_segment_refs == 0)
@@ -913,9 +1032,7 @@ write_merged_segment(
 				init_term_posting_sources(&terms[i], sources, &num_psources);
 
 		/*
-		 * Stream through postings one block at a time. We collect
-		 * TP_BLOCK_SIZE postings into block_buf, then write the
-		 * block and its skip entry immediately.
+		 * Stream through postings one block at a time.
 		 */
 		while (true)
 		{
@@ -964,7 +1081,7 @@ write_merged_segment(
 				skip.doc_count		= (uint8)block_count;
 				skip.block_max_tf	= max_tf;
 				skip.block_max_norm = min_norm;
-				skip.posting_offset = writer.current_offset;
+				skip.posting_offset = sink->current_offset;
 				memset(skip.reserved, 0, sizeof(skip.reserved));
 
 				if (tp_compress_segments)
@@ -974,13 +1091,13 @@ write_merged_segment(
 
 					csize = tp_compress_block(block_buf, block_count, cbuf);
 					skip.flags = TP_BLOCK_FLAG_DELTA;
-					tp_segment_writer_write(&writer, cbuf, csize);
+					merge_sink_write(sink, cbuf, csize);
 				}
 				else
 				{
 					skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-					tp_segment_writer_write(
-							&writer,
+					merge_sink_write(
+							sink,
 							block_buf,
 							block_count * sizeof(TpBlockPosting));
 				}
@@ -1022,7 +1139,7 @@ write_merged_segment(
 			skip.doc_count		= (uint8)block_count;
 			skip.block_max_tf	= max_tf;
 			skip.block_max_norm = min_norm;
-			skip.posting_offset = writer.current_offset;
+			skip.posting_offset = sink->current_offset;
 			memset(skip.reserved, 0, sizeof(skip.reserved));
 
 			if (tp_compress_segments)
@@ -1032,15 +1149,13 @@ write_merged_segment(
 
 				csize	   = tp_compress_block(block_buf, block_count, cbuf);
 				skip.flags = TP_BLOCK_FLAG_DELTA;
-				tp_segment_writer_write(&writer, cbuf, csize);
+				merge_sink_write(sink, cbuf, csize);
 			}
 			else
 			{
 				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-				tp_segment_writer_write(
-						&writer,
-						block_buf,
-						block_count * sizeof(TpBlockPosting));
+				merge_sink_write(
+						sink, block_buf, block_count * sizeof(TpBlockPosting));
 			}
 
 			if (skip_entries_count >= skip_entries_capacity)
@@ -1066,13 +1181,13 @@ write_merged_segment(
 	}
 
 	/* Skip index starts here - after all postings */
-	header.skip_index_offset = writer.current_offset;
+	header.skip_index_offset = sink->current_offset;
 
 	/* Write all accumulated skip entries */
 	if (skip_entries_count > 0)
 	{
-		tp_segment_writer_write(
-				&writer,
+		merge_sink_write(
+				sink,
 				all_skip_entries,
 				skip_entries_count * sizeof(TpSkipEntry));
 	}
@@ -1080,187 +1195,105 @@ write_merged_segment(
 	pfree(all_skip_entries);
 
 	/* Write fieldnorm table */
-	header.fieldnorm_offset = writer.current_offset;
+	header.fieldnorm_offset = sink->current_offset;
 	if (docmap->num_docs > 0)
 	{
-		tp_segment_writer_write(
-				&writer, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
+		merge_sink_write(
+				sink, docmap->fieldnorms, docmap->num_docs * sizeof(uint8));
 	}
 
 	/* Write CTID pages array */
-	header.ctid_pages_offset = writer.current_offset;
+	header.ctid_pages_offset = sink->current_offset;
 	if (docmap->num_docs > 0)
 	{
-		tp_segment_writer_write(
-				&writer,
+		merge_sink_write(
+				sink,
 				docmap->ctid_pages,
 				docmap->num_docs * sizeof(BlockNumber));
 	}
 
 	/* Write CTID offsets array */
-	header.ctid_offsets_offset = writer.current_offset;
+	header.ctid_offsets_offset = sink->current_offset;
 	if (docmap->num_docs > 0)
 	{
-		tp_segment_writer_write(
-				&writer,
+		merge_sink_write(
+				sink,
 				docmap->ctid_offsets,
 				docmap->num_docs * sizeof(OffsetNumber));
 	}
 
-	/* Flush and write page index */
-	tp_segment_writer_flush(&writer);
+	/* Finalize data_size */
+	header.data_size = sink->current_offset;
 
-	/*
-	 * Mark buffer as empty to prevent tp_segment_writer_finish from flushing
-	 * again and overwriting our dict entry updates.
-	 */
-	writer.buffer_pos = SizeOfPageHeaderData;
-
-	page_index_root =
-			write_page_index(index, writer.pages, writer.pages_allocated);
-	header.page_index = page_index_root;
-	header.data_size  = writer.current_offset;
-	header.num_pages  = writer.pages_allocated;
-
-	/*
-	 * Now write the dictionary entries with correct skip_index_offset values.
-	 * We need to update each entry on disk. Do this BEFORE
-	 * tp_segment_writer_finish so writer.pages is still valid.
-	 */
+	/* Pages-only: flush writer, write page index */
+	if (!sink->is_buffile)
 	{
-		Buffer dict_buf = InvalidBuffer;
-		uint32 entry_logical_page;
-		uint32 current_page = UINT32_MAX;
+		BlockNumber page_index_root;
 
+		tp_segment_writer_flush(&sink->writer);
+		sink->writer.buffer_pos = SizeOfPageHeaderData;
+
+		page_index_root = write_page_index(
+				sink->index, sink->writer.pages, sink->writer.pages_allocated);
+		header.page_index = page_index_root;
+		header.num_pages  = sink->writer.pages_allocated;
+	}
+
+	/* Backpatch dict entries */
+	{
+		TpDictEntry *dict_entries;
+
+		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
 		for (i = 0; i < num_terms; i++)
 		{
-			TpDictEntry entry;
-			uint64		entry_offset;
-			uint32		page_offset;
-			BlockNumber physical_block;
-
-			/* Build the entry */
-			entry.skip_index_offset =
+			dict_entries[i].skip_index_offset =
 					header.skip_index_offset +
 					((uint64)term_blocks[i].skip_entry_start *
 					 sizeof(TpSkipEntry));
-			entry.block_count = term_blocks[i].block_count;
-			entry.reserved	  = 0;
-			entry.doc_freq	  = term_blocks[i].doc_freq;
-
-			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset +
-						   ((uint64)i * sizeof(TpDictEntry));
-			entry_logical_page = (uint32)(entry_offset /
-										  SEGMENT_DATA_PER_PAGE);
-			page_offset = (uint32)(entry_offset % SEGMENT_DATA_PER_PAGE);
-
-			/* Read page if different from current */
-			if (entry_logical_page != current_page)
-			{
-				if (current_page != UINT32_MAX)
-				{
-					MarkBufferDirty(dict_buf);
-					UnlockReleaseBuffer(dict_buf);
-				}
-
-				physical_block = writer.pages[entry_logical_page];
-				dict_buf	   = ReadBuffer(index, physical_block);
-				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
-				current_page = entry_logical_page;
-			}
-
-			/* Write entry to page - handle page boundary spanning */
-			{
-				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
-											page_offset;
-
-				if (bytes_on_this_page >= sizeof(TpDictEntry))
-				{
-					/* Entry fits entirely on this page */
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
-								 page_offset;
-					memcpy(dest, &entry, sizeof(TpDictEntry));
-				}
-				else
-				{
-					/* Entry spans two pages */
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
-								 page_offset;
-					char *src = (char *)&entry;
-
-					/* Write first part to current page */
-					memcpy(dest, src, bytes_on_this_page);
-
-					/* Move to next page */
-					MarkBufferDirty(dict_buf);
-					UnlockReleaseBuffer(dict_buf);
-
-					entry_logical_page++;
-					if (entry_logical_page >= writer.pages_allocated)
-						ereport(ERROR,
-								(errcode(ERRCODE_INTERNAL_ERROR),
-								 errmsg("dict entry spans beyond allocated")));
-
-					physical_block = writer.pages[entry_logical_page];
-					dict_buf	   = ReadBuffer(index, physical_block);
-					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
-					current_page = entry_logical_page;
-
-					/* Write remaining part to next page */
-					page = BufferGetPage(dict_buf);
-					dest = (char *)page + SizeOfPageHeaderData;
-					memcpy(dest,
-						   src + bytes_on_this_page,
-						   sizeof(TpDictEntry) - bytes_on_this_page);
-				}
-			}
+			dict_entries[i].block_count = term_blocks[i].block_count;
+			dict_entries[i].reserved	= 0;
+			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
 		}
 
-		/* Release last buffer */
-		if (current_page != UINT32_MAX)
-		{
-			MarkBufferDirty(dict_buf);
-			UnlockReleaseBuffer(dict_buf);
-		}
+		merge_sink_write_at(
+				sink,
+				header.entries_offset,
+				dict_entries,
+				num_terms * sizeof(TpDictEntry));
+		pfree(dict_entries);
 	}
 
-	tp_segment_writer_finish(&writer);
+	/* Backpatch header */
+	merge_sink_write_at(sink, 0, &header, sizeof(TpSegmentHeader));
 
-	/* Update header on disk with final offsets */
-	header_buf = ReadBuffer(index, header_block);
-	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-	header_page		= BufferGetPage(header_buf);
-	existing_header = (TpSegmentHeader *)PageGetContents(header_page);
+	/* Pages-only: finish writer */
+	if (!sink->is_buffile)
+		tp_segment_writer_finish(&sink->writer);
 
-	existing_header->dictionary_offset	 = header.dictionary_offset;
-	existing_header->strings_offset		 = header.strings_offset;
-	existing_header->entries_offset		 = header.entries_offset;
-	existing_header->postings_offset	 = header.postings_offset;
-	existing_header->skip_index_offset	 = header.skip_index_offset;
-	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
-	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
-	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-	existing_header->num_docs			 = header.num_docs;
-	existing_header->data_size			 = header.data_size;
-	existing_header->num_pages			 = header.num_pages;
-	existing_header->page_index			 = header.page_index;
+	/* BufFile: seek to end position */
+	if (sink->is_buffile)
+	{
+		int	  end_fileno;
+		off_t end_offset;
 
-	MarkBufferDirty(header_buf);
-	UnlockReleaseBuffer(header_buf);
+		tp_buffile_decompose_offset(
+				sink->base_abs + sink->current_offset,
+				&end_fileno,
+				&end_offset);
+		BufFileSeek(sink->file, end_fileno, end_offset, SEEK_SET);
+	}
 
 	/* Cleanup */
 	pfree(string_offsets);
 	pfree(term_blocks);
 	free_merge_doc_mapping(&doc_mapping);
 	tp_docmap_destroy(docmap);
-	if (writer.pages)
-		pfree(writer.pages);
-
-	return header_block;
 }
+
+/* ----------------------------------------------------------------
+ * Level-based merge (uses pages sink)
+ * ----------------------------------------------------------------
+ */
 
 /*
  * Merge up to max_merge segments from the specified level into a
@@ -1498,18 +1531,26 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	/* Write merged segment at next level (sources must remain open for
-	 * streaming) */
+	/* Write merged segment using pages sink */
 	if (num_merged_terms > 0)
 	{
-		new_segment = write_merged_segment(
-				index,
+		TpMergeSink sink;
+
+		merge_sink_init_pages(&sink, index);
+		new_segment = sink.writer.pages[0];
+
+		write_merged_segment_to_sink(
+				&sink,
 				merged_terms,
 				num_merged_terms,
 				sources,
 				num_sources,
 				level + 1,
 				total_tokens);
+
+		/* Free writer pages array */
+		if (sink.writer.pages)
+			pfree(sink.writer.pages);
 
 		/* Free merged terms data */
 		for (i = 0; i < (int)num_merged_terms; i++)
@@ -1526,7 +1567,7 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		new_segment = InvalidBlockNumber;
 	}
 
-	/* Close all sources (after write_merged_segment is done with them) */
+	/* Close all sources (after write is done with them) */
 	for (i = 0; i < num_sources; i++)
 	{
 		merge_source_close(&sources[i]);

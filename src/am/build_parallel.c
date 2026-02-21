@@ -2,19 +2,16 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * build_parallel.c - Two-phase parallel index build
+ * build_parallel.c - Parallel index build
  *
  * Architecture:
- * - Phase 1: Each worker scans a heap partition, builds a local
- *   TpBuildContext, flushes segments to BufFile, and compacts
- *   within BufFile. Workers report total_pages_needed.
- * - Barrier: Leader sums pages, pre-extends relation with
- *   ExtendBufferedRelBy, sets atomic next_page counter.
- * - Phase 2: Workers reopen their BufFile read-only and write
- *   segments directly to pre-allocated index pages using atomic
- *   page allocation. Workers report seg_roots[] to shared memory.
- * - Leader reads seg_roots from workers (no BufFile I/O), chains
- *   segments into level lists, updates metapage, runs compaction.
+ * - Workers scan heap partitions in parallel, build local memtables,
+ *   flush segments to BufFile, and compact within BufFile.
+ *   Workers report segment offsets/sizes/levels and signal done.
+ * - Leader reopens each worker's BufFile, creates merge sources for
+ *   every segment, performs a single N-way merge into index pages
+ *   via TpMergeSink. This produces one contiguous segment with zero
+ *   fragmentation.
  */
 #include <postgres.h>
 
@@ -60,9 +57,6 @@ extern int tp_extract_terms_from_tsvector(
 
 /* GUC variable for segment compression */
 extern bool tp_compress_segments;
-
-/* Chunk size for streaming temp segments to index pages */
-#define TP_COPY_BUF_SIZE (64 * 1024)
 
 /* ----------------------------------------------------------------
  * Worker-local segment tracking
@@ -125,473 +119,12 @@ tracker_destroy(WorkerSegmentTracker *tracker)
 		pfree(tracker->entries);
 }
 
-/*
- * Seek to an absolute position in a BufFile and write data.
- * Used to ensure writes go to the correct output position even when
- * interleaved BufFile reads (from source segments during merge) have
- * moved the cursor elsewhere.
- */
-static void
-buffile_write_at(BufFile *file, uint64 abs_pos, const void *data, size_t size)
-{
-	int	  fileno;
-	off_t offset;
-
-	tp_buffile_decompose_offset(abs_pos, &fileno, &offset);
-	BufFileSeek(file, fileno, offset, SEEK_SET);
-	BufFileWrite(file, data, size);
-}
-
-/* ----------------------------------------------------------------
- * BufFile-based merged segment writer
- *
- * Combines N segments from BufFile into a single output segment
- * written back to BufFile. Uses buffile_write_at() for all writes
- * because merge source reads (posting_source_advance -> tp_segment_read)
- * share the same BufFile handle and move the cursor.
- * ----------------------------------------------------------------
- */
-static uint64
-write_merged_segment_to_buffile(
-		BufFile		  *file,
-		TpMergedTerm  *terms,
-		uint32		   num_terms,
-		TpMergeSource *sources,
-		int			   num_sources,
-		uint32		   target_level,
-		uint64		   total_tokens)
-{
-	TpSegmentHeader		header;
-	TpDictionary		dict;
-	TpDocMapBuilder	   *docmap;
-	TpMergeDocMapping	doc_mapping;
-	MergeTermBlockInfo *term_blocks;
-	uint32			   *string_offsets;
-	uint32				string_pos;
-	uint32				i;
-
-	int	   base_fileno;
-	off_t  base_file_offset;
-	uint64 base_abs;
-
-	uint64 current_offset;
-
-	/* Accumulated skip entries for all terms */
-	TpSkipEntry *all_skip_entries;
-	uint32		 skip_entries_count;
-	uint32		 skip_entries_capacity;
-
-	if (num_terms == 0)
-		return 0;
-
-	/*
-	 * Record starting position BEFORE build_merged_docmap, because that
-	 * function reads from BufFile-backed segment readers which moves the
-	 * file cursor.
-	 */
-	BufFileTell(file, &base_fileno, &base_file_offset);
-	base_abs = tp_buffile_composite_offset(base_fileno, base_file_offset);
-
-	/* Build docmap and direct mapping arrays (reads from BufFile) */
-	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
-
-	/* Re-seek to recorded position after docmap reads moved cursor */
-	BufFileSeek(file, base_fileno, base_file_offset, SEEK_SET);
-
-	current_offset = 0;
-
-	/* Initialize header */
-	memset(&header, 0, sizeof(TpSegmentHeader));
-	header.magic		= TP_SEGMENT_MAGIC;
-	header.version		= TP_SEGMENT_FORMAT_VERSION;
-	header.created_at	= GetCurrentTimestamp();
-	header.num_pages	= 0;
-	header.num_terms	= num_terms;
-	header.level		= target_level;
-	header.next_segment = InvalidBlockNumber;
-	header.num_docs		= docmap->num_docs;
-	header.total_tokens = total_tokens;
-	header.page_index	= InvalidBlockNumber;
-
-	/* Dictionary immediately follows header */
-	header.dictionary_offset = sizeof(TpSegmentHeader);
-
-	/* Write placeholder header */
-	buffile_write_at(
-			file, base_abs + current_offset, &header, sizeof(TpSegmentHeader));
-	current_offset += sizeof(TpSegmentHeader);
-
-	/* Write dictionary header */
-	memset(&dict, 0, sizeof(dict));
-	dict.num_terms = num_terms;
-	buffile_write_at(
-			file,
-			base_abs + current_offset,
-			&dict,
-			offsetof(TpDictionary, string_offsets));
-	current_offset += offsetof(TpDictionary, string_offsets);
-
-	/* Calculate and write string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
-	for (i = 0; i < num_terms; i++)
-	{
-		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
-	}
-	buffile_write_at(
-			file,
-			base_abs + current_offset,
-			string_offsets,
-			num_terms * sizeof(uint32));
-	current_offset += num_terms * sizeof(uint32);
-
-	/* Write string pool */
-	header.strings_offset = current_offset;
-	for (i = 0; i < num_terms; i++)
-	{
-		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
-
-		buffile_write_at(
-				file, base_abs + current_offset, &length, sizeof(uint32));
-		current_offset += sizeof(uint32);
-		buffile_write_at(
-				file, base_abs + current_offset, terms[i].term, length);
-		current_offset += length;
-		buffile_write_at(
-				file, base_abs + current_offset, &dict_offset, sizeof(uint32));
-		current_offset += sizeof(uint32);
-	}
-
-	/* Record entries offset */
-	header.entries_offset = current_offset;
-
-	/* Write placeholder dict entries */
-	{
-		TpDictEntry placeholder;
-
-		memset(&placeholder, 0, sizeof(TpDictEntry));
-		for (i = 0; i < num_terms; i++)
-		{
-			buffile_write_at(
-					file,
-					base_abs + current_offset,
-					&placeholder,
-					sizeof(TpDictEntry));
-			current_offset += sizeof(TpDictEntry);
-		}
-	}
-
-	/* Postings start here */
-	header.postings_offset = current_offset;
-
-	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(MergeTermBlockInfo));
-
-	skip_entries_capacity = 1024;
-	skip_entries_count	  = 0;
-	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
-
-	/*
-	 * Streaming posting merge: for each term, N-way merge postings
-	 * from source segments and write to BufFile.
-	 */
-	for (i = 0; i < num_terms; i++)
-	{
-		TpPostingMergeSource *psources;
-		int					  num_psources;
-		TpBlockPosting		  block_buf[TP_BLOCK_SIZE];
-		uint32				  block_count = 0;
-		uint32				  doc_count	  = 0;
-		uint32				  num_blocks  = 0;
-
-		term_blocks[i].posting_offset	= current_offset;
-		term_blocks[i].skip_entry_start = skip_entries_count;
-
-		if (terms[i].num_segment_refs == 0)
-		{
-			term_blocks[i].doc_freq	   = 0;
-			term_blocks[i].block_count = 0;
-			continue;
-		}
-
-		psources =
-				init_term_posting_sources(&terms[i], sources, &num_psources);
-
-		while (true)
-		{
-			int min_idx = find_min_posting_source(psources, num_psources);
-			if (min_idx < 0)
-				break;
-
-			{
-				int	   src_idx	  = terms[i].segment_refs[min_idx].segment_idx;
-				uint32 old_doc_id = psources[min_idx].current.old_doc_id;
-				uint32 new_doc_id =
-						doc_mapping.old_to_new[src_idx][old_doc_id];
-
-				block_buf[block_count].doc_id = new_doc_id;
-				block_buf[block_count].frequency =
-						psources[min_idx].current.frequency;
-				block_buf[block_count].fieldnorm =
-						psources[min_idx].current.fieldnorm;
-				block_buf[block_count].reserved = 0;
-			}
-			block_count++;
-			doc_count++;
-
-			posting_source_advance(&psources[min_idx]);
-
-			/* Write block when full */
-			if (block_count == TP_BLOCK_SIZE)
-			{
-				TpSkipEntry skip;
-				uint16		max_tf		= 0;
-				uint8		min_norm	= 255;
-				uint32		last_doc_id = 0;
-				uint32		j;
-
-				for (j = 0; j < block_count; j++)
-				{
-					if (block_buf[j].doc_id > last_doc_id)
-						last_doc_id = block_buf[j].doc_id;
-					if (block_buf[j].frequency > max_tf)
-						max_tf = block_buf[j].frequency;
-					if (block_buf[j].fieldnorm < min_norm)
-						min_norm = block_buf[j].fieldnorm;
-				}
-
-				skip.last_doc_id	= last_doc_id;
-				skip.doc_count		= (uint8)block_count;
-				skip.block_max_tf	= max_tf;
-				skip.block_max_norm = min_norm;
-				skip.posting_offset = current_offset;
-				memset(skip.reserved, 0, sizeof(skip.reserved));
-
-				if (tp_compress_segments)
-				{
-					uint8  cbuf[TP_MAX_COMPRESSED_BLOCK_SIZE];
-					uint32 csize;
-
-					csize = tp_compress_block(block_buf, block_count, cbuf);
-					skip.flags = TP_BLOCK_FLAG_DELTA;
-					buffile_write_at(
-							file, base_abs + current_offset, cbuf, csize);
-					current_offset += csize;
-				}
-				else
-				{
-					skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-					buffile_write_at(
-							file,
-							base_abs + current_offset,
-							block_buf,
-							block_count * sizeof(TpBlockPosting));
-					current_offset += block_count * sizeof(TpBlockPosting);
-				}
-
-				if (skip_entries_count >= skip_entries_capacity)
-				{
-					skip_entries_capacity *= 2;
-					all_skip_entries = repalloc(
-							all_skip_entries,
-							skip_entries_capacity * sizeof(TpSkipEntry));
-				}
-				all_skip_entries[skip_entries_count++] = skip;
-
-				num_blocks++;
-				block_count = 0;
-			}
-		}
-
-		/* Write final partial block if any */
-		if (block_count > 0)
-		{
-			TpSkipEntry skip;
-			uint16		max_tf		= 0;
-			uint8		min_norm	= 255;
-			uint32		last_doc_id = 0;
-			uint32		j;
-
-			for (j = 0; j < block_count; j++)
-			{
-				if (block_buf[j].doc_id > last_doc_id)
-					last_doc_id = block_buf[j].doc_id;
-				if (block_buf[j].frequency > max_tf)
-					max_tf = block_buf[j].frequency;
-				if (block_buf[j].fieldnorm < min_norm)
-					min_norm = block_buf[j].fieldnorm;
-			}
-
-			skip.last_doc_id	= last_doc_id;
-			skip.doc_count		= (uint8)block_count;
-			skip.block_max_tf	= max_tf;
-			skip.block_max_norm = min_norm;
-			skip.posting_offset = current_offset;
-			memset(skip.reserved, 0, sizeof(skip.reserved));
-
-			if (tp_compress_segments)
-			{
-				uint8  cbuf[TP_MAX_COMPRESSED_BLOCK_SIZE];
-				uint32 csize;
-
-				csize	   = tp_compress_block(block_buf, block_count, cbuf);
-				skip.flags = TP_BLOCK_FLAG_DELTA;
-				buffile_write_at(file, base_abs + current_offset, cbuf, csize);
-				current_offset += csize;
-			}
-			else
-			{
-				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-				buffile_write_at(
-						file,
-						base_abs + current_offset,
-						block_buf,
-						block_count * sizeof(TpBlockPosting));
-				current_offset += block_count * sizeof(TpBlockPosting);
-			}
-
-			if (skip_entries_count >= skip_entries_capacity)
-			{
-				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
-						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
-			}
-			all_skip_entries[skip_entries_count++] = skip;
-
-			num_blocks++;
-		}
-
-		term_blocks[i].doc_freq	   = doc_count;
-		term_blocks[i].block_count = (uint16)num_blocks;
-
-		/* Free posting sources */
-		{
-			int j;
-
-			for (j = 0; j < num_psources; j++)
-				posting_source_free(&psources[j]);
-			pfree(psources);
-		}
-
-		if ((i % 1000) == 0)
-			CHECK_FOR_INTERRUPTS();
-	}
-
-	/* Write skip index */
-	header.skip_index_offset = current_offset;
-	if (skip_entries_count > 0)
-	{
-		buffile_write_at(
-				file,
-				base_abs + current_offset,
-				all_skip_entries,
-				skip_entries_count * sizeof(TpSkipEntry));
-		current_offset += skip_entries_count * sizeof(TpSkipEntry);
-	}
-	pfree(all_skip_entries);
-
-	/* Write fieldnorm table */
-	header.fieldnorm_offset = current_offset;
-	if (docmap->num_docs > 0)
-	{
-		buffile_write_at(
-				file,
-				base_abs + current_offset,
-				docmap->fieldnorms,
-				docmap->num_docs * sizeof(uint8));
-		current_offset += docmap->num_docs * sizeof(uint8);
-	}
-
-	/* Write CTID pages array */
-	header.ctid_pages_offset = current_offset;
-	if (docmap->num_docs > 0)
-	{
-		buffile_write_at(
-				file,
-				base_abs + current_offset,
-				docmap->ctid_pages,
-				docmap->num_docs * sizeof(BlockNumber));
-		current_offset += docmap->num_docs * sizeof(BlockNumber);
-	}
-
-	/* Write CTID offsets array */
-	header.ctid_offsets_offset = current_offset;
-	if (docmap->num_docs > 0)
-	{
-		buffile_write_at(
-				file,
-				base_abs + current_offset,
-				docmap->ctid_offsets,
-				docmap->num_docs * sizeof(OffsetNumber));
-		current_offset += docmap->num_docs * sizeof(OffsetNumber);
-	}
-
-	/* Final data_size */
-	header.data_size = current_offset;
-
-	/* Seek back to write dict entries and header */
-	{
-		TpDictEntry *dict_entries;
-		int			 end_fileno;
-		off_t		 end_file_offset;
-
-		/*
-		 * Compute end position from base + data_size rather than
-		 * BufFileTell, since merge source reads may have moved
-		 * the cursor away from the output position.
-		 */
-		tp_buffile_decompose_offset(
-				base_abs + current_offset, &end_fileno, &end_file_offset);
-
-		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
-		for (i = 0; i < num_terms; i++)
-		{
-			dict_entries[i].skip_index_offset =
-					header.skip_index_offset +
-					((uint64)term_blocks[i].skip_entry_start *
-					 sizeof(TpSkipEntry));
-			dict_entries[i].block_count = term_blocks[i].block_count;
-			dict_entries[i].reserved	= 0;
-			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
-		}
-
-		{
-			int	  dict_fileno;
-			off_t dict_offset;
-
-			tp_buffile_decompose_offset(
-					base_abs + header.entries_offset,
-					&dict_fileno,
-					&dict_offset);
-			BufFileSeek(file, dict_fileno, dict_offset, SEEK_SET);
-		}
-		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
-		pfree(dict_entries);
-
-		BufFileSeek(file, base_fileno, base_file_offset, SEEK_SET);
-		BufFileWrite(file, &header, sizeof(TpSegmentHeader));
-
-		BufFileSeek(file, end_fileno, end_file_offset, SEEK_SET);
-	}
-
-	/* Cleanup */
-	pfree(string_offsets);
-	pfree(term_blocks);
-	free_merge_doc_mapping(&doc_mapping);
-	tp_docmap_destroy(docmap);
-
-	return current_offset;
-}
-
 /* ----------------------------------------------------------------
  * Worker-side BufFile compaction
  *
  * Mirrors tp_maybe_compact_level() but operates entirely within
  * BufFile. Opens BufFile readers for source segments, performs
- * N-way merge, writes result back to BufFile.
+ * N-way merge, writes result back to BufFile using TpMergeSink.
  * ----------------------------------------------------------------
  */
 static void
@@ -614,7 +147,6 @@ worker_maybe_compact_level(
 		uint64			  total_tokens	   = 0;
 		uint32			  collected		   = 0;
 		uint32			  i;
-		uint64			  new_data_size;
 		MemoryContext	  merge_ctx;
 		MemoryContext	  old_ctx;
 
@@ -719,33 +251,36 @@ worker_maybe_compact_level(
 
 		MemoryContextSwitchTo(old_ctx);
 
-		/* Write merged segment to BufFile */
+		/* Write merged segment to BufFile via sink */
 		if (num_merged_terms > 0)
 		{
-			int	   end_fileno;
-			off_t  end_offset;
-			uint64 new_offset;
+			TpMergeSink sink;
+			int			end_fileno;
+			off_t		end_offset;
+			uint64		new_offset;
+			uint64		new_data_size;
 
 			/*
 			 * Position at logical end of BufFile for appending.
 			 * Do NOT use SEEK_END: BufFileSeek(SEEK_END) calls
 			 * FileSize() before flushing the dirty buffer, so it
 			 * returns the on-disk size which may be less than the
-			 * logical size.  Writing there overwrites unflushed
-			 * data.  Use our tracked buffile_end instead.
+			 * logical size. Use our tracked buffile_end instead.
 			 */
 			new_offset = tracker->buffile_end;
 			tp_buffile_decompose_offset(new_offset, &end_fileno, &end_offset);
 			BufFileSeek(file, end_fileno, end_offset, SEEK_SET);
 
-			new_data_size = write_merged_segment_to_buffile(
-					file,
+			merge_sink_init_buffile(&sink, file);
+			write_merged_segment_to_sink(
+					&sink,
 					merged_terms,
 					num_merged_terms,
 					sources,
 					num_sources,
 					level + 1,
 					total_tokens);
+			new_data_size = sink.current_offset;
 
 			/* Update logical end of BufFile */
 			tracker->buffile_end = new_offset + new_data_size;
@@ -857,185 +392,10 @@ tp_init_parallel_shared(
 	pg_atomic_init_u32(&shared->workers_done, 0);
 	pg_atomic_init_u64(&shared->tuples_done, 0);
 
-	/* Two-phase coordination */
-	pg_atomic_init_u32(&shared->phase1_done, 0);
-	ConditionVariableInit(&shared->phase2_cv);
-	pg_atomic_init_u32(&shared->phase2_ready, 0);
-	pg_atomic_init_u64(&shared->next_page, 0);
-
 	/* Initialize per-worker results */
 	results = TpParallelWorkerResults(shared);
 	for (i = 0; i < nworkers; i++)
 		memset(&results[i], 0, sizeof(TpParallelWorkerResult));
-}
-
-/* ----------------------------------------------------------------
- * Write a temp file segment to contiguous index pages
- * ----------------------------------------------------------------
- */
-static BlockNumber
-write_temp_segment_to_index(
-		Relation index, BufFile *file, uint64 base_offset, uint64 data_size)
-{
-	TpSegmentWriter writer;
-	BlockNumber		header_block;
-	BlockNumber		page_index_root;
-	char			buf[TP_COPY_BUF_SIZE];
-	uint64			remaining;
-	int				seek_fileno;
-	off_t			seek_offset;
-
-	/* Initialize writer — extends relation via P_NEW */
-	tp_segment_writer_init(&writer, index);
-	header_block = writer.pages[0];
-
-	/* Stream data from BufFile through writer */
-	tp_buffile_decompose_offset(base_offset, &seek_fileno, &seek_offset);
-	BufFileSeek(file, seek_fileno, seek_offset, SEEK_SET);
-	remaining = data_size;
-	while (remaining > 0)
-	{
-		uint32 chunk = (uint32)Min(remaining, TP_COPY_BUF_SIZE);
-
-		BufFileReadExact(file, buf, chunk);
-		tp_segment_writer_write(&writer, buf, chunk);
-		remaining -= chunk;
-	}
-
-	/* Flush remaining buffered data */
-	tp_segment_writer_flush(&writer);
-	writer.buffer_pos = SizeOfPageHeaderData;
-
-	/* Write page index */
-	page_index_root =
-			write_page_index(index, writer.pages, writer.pages_allocated);
-
-	/* Update segment header on the first page */
-	{
-		Buffer			 header_buf;
-		Page			 header_page;
-		TpSegmentHeader *hdr;
-
-		header_buf = ReadBuffer(index, header_block);
-		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-		header_page = BufferGetPage(header_buf);
-		hdr			= (TpSegmentHeader *)PageGetContents(header_page);
-
-		hdr->num_pages	= writer.pages_allocated;
-		hdr->page_index = page_index_root;
-		hdr->data_size	= writer.current_offset;
-
-		MarkBufferDirty(header_buf);
-		UnlockReleaseBuffer(header_buf);
-	}
-
-	tp_segment_writer_finish(&writer);
-
-	/* Free writer pages array */
-	if (writer.pages)
-		pfree(writer.pages);
-
-	return header_block;
-}
-
-/* ----------------------------------------------------------------
- * Write a temp file segment to index pages using atomic counter
- *
- * Same as write_temp_segment_to_index but uses pre-allocated pages
- * via atomic page counter instead of FSM/P_NEW.
- * ----------------------------------------------------------------
- */
-static BlockNumber
-write_temp_segment_to_index_parallel(
-		Relation		  index,
-		BufFile			 *file,
-		uint64			  base_offset,
-		uint64			  data_size,
-		pg_atomic_uint64 *page_counter)
-{
-	TpSegmentWriter writer;
-	BlockNumber		header_block;
-	BlockNumber		page_index_root;
-	char			buf[TP_COPY_BUF_SIZE];
-	uint64			remaining;
-	int				seek_fileno;
-	off_t			seek_offset;
-
-	/* Initialize writer with atomic page counter */
-	tp_segment_writer_init_parallel(&writer, index, page_counter);
-	header_block = writer.pages[0];
-
-	/* Stream data from BufFile through writer */
-	tp_buffile_decompose_offset(base_offset, &seek_fileno, &seek_offset);
-	BufFileSeek(file, seek_fileno, seek_offset, SEEK_SET);
-	remaining = data_size;
-	while (remaining > 0)
-	{
-		uint32 chunk = (uint32)Min(remaining, TP_COPY_BUF_SIZE);
-
-		BufFileReadExact(file, buf, chunk);
-		tp_segment_writer_write(&writer, buf, chunk);
-		remaining -= chunk;
-	}
-
-	/* Flush remaining buffered data */
-	tp_segment_writer_flush(&writer);
-	writer.buffer_pos = SizeOfPageHeaderData;
-
-	/* Write page index using atomic counter */
-	page_index_root = write_page_index_with_counter(
-			index, writer.pages, writer.pages_allocated, page_counter);
-
-	/* Update segment header on the first page */
-	{
-		Buffer			 header_buf;
-		Page			 header_page;
-		TpSegmentHeader *hdr;
-
-		header_buf = ReadBuffer(index, header_block);
-		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-		header_page = BufferGetPage(header_buf);
-		hdr			= (TpSegmentHeader *)PageGetContents(header_page);
-
-		hdr->num_pages	= writer.pages_allocated;
-		hdr->page_index = page_index_root;
-		hdr->data_size	= writer.current_offset;
-
-		MarkBufferDirty(header_buf);
-		UnlockReleaseBuffer(header_buf);
-	}
-
-	tp_segment_writer_finish(&writer);
-
-	/* Free writer pages array */
-	if (writer.pages)
-		pfree(writer.pages);
-
-	return header_block;
-}
-
-/*
- * Compute total index pages needed for a worker's segments.
- * Counts data pages + page index pages for each segment.
- */
-static uint64
-compute_pages_needed(TpParallelWorkerResult *result)
-{
-	uint64 total = 0;
-	uint32 epp	 = tp_page_index_entries_per_page();
-	uint32 s;
-
-	for (s = 0; s < result->final_segment_count; s++)
-	{
-		uint64 data_size  = result->seg_sizes[s];
-		uint32 data_pages = (uint32)((data_size + SEGMENT_DATA_PER_PAGE - 1) /
-									 SEGMENT_DATA_PER_PAGE);
-		uint32 pi_pages	  = (data_pages + epp - 1) / epp;
-
-		total += data_pages + pi_pages;
-	}
-
-	return total;
 }
 
 /* ----------------------------------------------------------------
@@ -1222,7 +582,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 
 	/*
-	 * Phase 1 complete: report non-consumed segments to leader.
+	 * Report non-consumed segments to leader.
 	 * These are the final segments after worker-side compaction.
 	 */
 	{
@@ -1254,14 +614,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		my_result->final_segment_count = seg_idx;
 	}
 
-	/* Export BufFile so leader can reopen if needed */
+	/* Export BufFile so leader can reopen */
 	BufFileExportFileSet(buffile);
 	BufFileClose(buffile);
 
-	/* Compute total pages this worker needs for Phase 2 */
-	my_result->total_pages_needed = compute_pages_needed(my_result);
-
-	/* Cleanup Phase 1 resources (keep heap/index open for Phase 2) */
+	/* Cleanup */
 	tp_build_context_destroy(build_ctx);
 	tracker_destroy(&tracker);
 	MemoryContextDelete(build_tmpctx);
@@ -1269,65 +626,10 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 
-	/* Signal Phase 1 done, wait for leader to pre-extend */
-	pg_atomic_fetch_add_u32(&shared->phase1_done, 1);
-	ConditionVariableBroadcast(&shared->all_done_cv);
-
-	ConditionVariablePrepareToSleep(&shared->phase2_cv);
-	while (pg_atomic_read_u32(&shared->phase2_ready) == 0)
-		ConditionVariableSleep(&shared->phase2_cv, PG_WAIT_EXTENSION);
-	ConditionVariableCancelSleep();
-
-	/*
-	 * Phase 2: write segments to pre-allocated index pages.
-	 * Reopen own BufFile read-only and write each segment
-	 * using atomic page counter.
-	 */
-	if (my_result->final_segment_count > 0)
-	{
-		BufFile *rdfile;
-		uint32	 s;
-
-		snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
-		rdfile = BufFileOpenFileSet(
-				&shared->fileset.fs, file_name, O_RDONLY, false);
-
-		for (s = 0; s < my_result->final_segment_count; s++)
-		{
-			BlockNumber seg_root;
-
-			seg_root = write_temp_segment_to_index_parallel(
-					index,
-					rdfile,
-					my_result->seg_offsets[s],
-					my_result->seg_sizes[s],
-					&shared->next_page);
-
-			/* Set level in segment header */
-			{
-				Buffer			 hdr_buf;
-				Page			 hdr_page;
-				TpSegmentHeader *hdr;
-
-				hdr_buf = ReadBuffer(index, seg_root);
-				LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
-				hdr_page   = BufferGetPage(hdr_buf);
-				hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
-				hdr->level = 0;
-				MarkBufferDirty(hdr_buf);
-				UnlockReleaseBuffer(hdr_buf);
-			}
-
-			my_result->seg_roots[s] = seg_root;
-		}
-
-		BufFileClose(rdfile);
-	}
-
 	index_close(index, AccessExclusiveLock);
 	table_close(heap, AccessShareLock);
 
-	/* Signal all work complete */
+	/* Signal done */
 	pg_atomic_fetch_add_u32(&shared->workers_done, 1);
 	ConditionVariableSignal(&shared->all_done_cv);
 }
@@ -1425,11 +727,10 @@ tp_build_parallel(
 					nworkers)));
 
 	/*
-	 * Phase 1 wait: wait for all workers to finish BufFile phase.
-	 * Workers signal phase1_done and then block on phase2_cv.
+	 * Wait for all workers to finish BufFile phase and exit.
 	 */
 	ConditionVariablePrepareToSleep(&shared->all_done_cv);
-	while (pg_atomic_read_u32(&shared->phase1_done) < (uint32)launched)
+	while (pg_atomic_read_u32(&shared->workers_done) < (uint32)launched)
 	{
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_TUPLES_DONE,
@@ -1439,6 +740,7 @@ tp_build_parallel(
 				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
 	}
 	ConditionVariableCancelSleep();
+	WaitForParallelWorkersToFinish(pcxt);
 
 	/* Collect corpus stats from all workers */
 	{
@@ -1457,115 +759,52 @@ tp_build_parallel(
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_TUPLES_DONE, (int64)total_docs);
 
-	/* Report writing phase */
-	pgstat_progress_update_param(
-			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
-
-	/*
-	 * Pre-extend relation for all worker segments.
-	 * Sum total_pages_needed across workers and extend in batches.
-	 */
-	{
-		TpParallelWorkerResult *results		= TpParallelWorkerResults(shared);
-		uint64					total_pages = 0;
-		BlockNumber				start_blk;
-		int						i;
-
-#define EXTEND_BATCH_SIZE 8192
-
-		for (i = 0; i < launched; i++)
-			total_pages += results[i].total_pages_needed;
-
-		start_blk = RelationGetNumberOfBlocks(index);
-
-		/* Extend relation in batches to limit buffer pin count */
-		{
-			uint64 remaining = total_pages;
-
-			while (remaining > 0)
-			{
-				uint32	batch = (uint32)Min(remaining, EXTEND_BATCH_SIZE);
-				Buffer *bufs  = palloc(batch * sizeof(Buffer));
-				uint32	extended;
-				uint32	j;
-
-				ExtendBufferedRelBy(
-						BMR_REL(index),
-						MAIN_FORKNUM,
-						NULL,
-						0,
-						batch,
-						bufs,
-						&extended);
-
-				for (j = 0; j < extended; j++)
-				{
-					LockBuffer(bufs[j], BUFFER_LOCK_EXCLUSIVE);
-					PageInit(BufferGetPage(bufs[j]), BLCKSZ, 0);
-					MarkBufferDirty(bufs[j]);
-					UnlockReleaseBuffer(bufs[j]);
-				}
-				pfree(bufs);
-				remaining -= extended;
-			}
-		}
-
-		/* Set atomic page counter to the start of pre-allocated region */
-		pg_atomic_write_u64(&shared->next_page, (uint64)start_blk);
-	}
-
-	/* Signal Phase 2: pages are ready */
-	pg_atomic_write_u32(&shared->phase2_ready, 1);
-	ConditionVariableBroadcast(&shared->phase2_cv);
-
-	/*
-	 * Phase 2 wait: workers write segments to index pages.
-	 * Wait for all workers to complete.
-	 */
-	ConditionVariablePrepareToSleep(&shared->all_done_cv);
-	while (pg_atomic_read_u32(&shared->workers_done) < (uint32)launched)
-	{
-		ConditionVariableTimedSleep(
-				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
-	}
-	ConditionVariableCancelSleep();
-	WaitForParallelWorkersToFinish(pcxt);
-
-	/* Truncate unused pre-allocated pool pages */
-	{
-		BlockNumber used = (BlockNumber)pg_atomic_read_u64(&shared->next_page);
-		BlockNumber total = RelationGetNumberOfBlocks(index);
-
-		if (used < total)
-			RelationTruncate(index, used);
-	}
-
 	/* Report compaction phase */
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 
 	/*
-	 * Read seg_roots[] from each worker and chain segments into
-	 * per-level linked lists. No BufFile I/O needed — workers
-	 * already wrote segments to index pages.
+	 * Leader merge: open all worker BufFiles, create merge sources
+	 * for every segment, N-way merge into a single pages-backed
+	 * segment via TpMergeSink.
 	 */
 	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-		BlockNumber		level_heads[TP_MAX_LEVELS];
-		BlockNumber		level_tails[TP_MAX_LEVELS];
-		uint16			level_counts[TP_MAX_LEVELS];
-		int				i;
-
 		TpParallelWorkerResult *results = TpParallelWorkerResults(shared);
+		int						total_segments = 0;
+		int						i;
+		TpSegmentReader		  **all_readers;
+		TpMergeSource		   *sources;
+		int						num_sources;
+		BufFile				  **worker_files;
+		TpMergedTerm		   *merged_terms	   = NULL;
+		uint32					num_merged_terms   = 0;
+		uint32					merged_capacity	   = 0;
+		uint64					merge_total_tokens = 0;
+		MemoryContext			merge_ctx;
+		MemoryContext			old_ctx;
 
-		for (i = 0; i < TP_MAX_LEVELS; i++)
+		/* Count total segments across all workers */
+		for (i = 0; i < launched; i++)
+			total_segments += results[i].final_segment_count;
+
+		if (total_segments == 0)
+			goto done_merge;
+
+		/* Open all worker BufFiles */
+		worker_files = palloc(launched * sizeof(BufFile *));
+		for (i = 0; i < launched; i++)
 		{
-			level_heads[i]	= InvalidBlockNumber;
-			level_tails[i]	= InvalidBlockNumber;
-			level_counts[i] = 0;
+			char name[64];
+
+			snprintf(name, sizeof(name), "tp_worker_%d", i);
+			worker_files[i] = BufFileOpenFileSet(
+					&shared->fileset.fs, name, O_RDONLY, false);
 		}
+
+		/* Create readers and merge sources for all segments */
+		all_readers = palloc0(total_segments * sizeof(TpSegmentReader *));
+		sources		= palloc0(total_segments * sizeof(TpMergeSource));
+		num_sources = 0;
 
 		for (i = 0; i < launched; i++)
 		{
@@ -1573,63 +812,178 @@ tp_build_parallel(
 
 			for (s = 0; s < results[i].final_segment_count; s++)
 			{
-				uint32		level	 = 0;
-				BlockNumber seg_root = results[i].seg_roots[s];
+				TpSegmentReader *reader;
 
-				/* Chain into per-level linked list */
-				if (level_tails[level] != InvalidBlockNumber)
+				reader = tp_segment_open_from_buffile(
+						worker_files[i], results[i].seg_offsets[s]);
+				if (!reader)
+					continue;
+
+				all_readers[num_sources] = reader;
+
+				if (merge_source_init_from_reader(
+							&sources[num_sources], reader))
 				{
-					Buffer			 tail_buf;
-					Page			 tail_page;
-					TpSegmentHeader *tail_hdr;
-
-					tail_buf = ReadBuffer(index, level_tails[level]);
-					LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-					tail_page = BufferGetPage(tail_buf);
-					tail_hdr  = (TpSegmentHeader *)PageGetContents(tail_page);
-					tail_hdr->next_segment = seg_root;
-					MarkBufferDirty(tail_buf);
-					UnlockReleaseBuffer(tail_buf);
+					merge_total_tokens += reader->header->total_tokens;
+					num_sources++;
 				}
 				else
 				{
-					level_heads[level] = seg_root;
+					tp_segment_close(reader);
+					all_readers[num_sources] = NULL;
 				}
-				level_tails[level] = seg_root;
-				level_counts[level]++;
 			}
 		}
 
-		/* Update metapage with level chains and corpus stats */
-		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-		for (i = 0; i < TP_MAX_LEVELS; i++)
+		if (num_sources == 0)
 		{
-			metap->level_heads[i]  = level_heads[i];
-			metap->level_counts[i] = level_counts[i];
+			/* Cleanup and skip merge */
+			pfree(sources);
+			pfree(all_readers);
+			for (i = 0; i < launched; i++)
+				BufFileClose(worker_files[i]);
+			pfree(worker_files);
+			goto done_merge;
 		}
-		metap->total_docs = total_docs;
-		metap->total_len  = total_len;
 
-		MarkBufferDirty(metabuf);
-		UnlockReleaseBuffer(metabuf);
+		/* N-way term merge */
+		merge_ctx = AllocSetContextCreate(
+				CurrentMemoryContext, "Leader Merge", ALLOCSET_DEFAULT_SIZES);
+		old_ctx = MemoryContextSwitchTo(merge_ctx);
 
-		/*
-		 * Run final compaction on combined per-level counts.
-		 * Workers compacted within their own segment sets, but
-		 * combined counts may exceed segments_per_level.
-		 * E.g., 4 workers each with 3 leftover L0s = 12 L0s.
-		 */
-		for (i = 0; i < TP_MAX_LEVELS - 1; i++)
+		while (true)
 		{
-			if (level_counts[i] >= (uint16)tp_segments_per_level)
-				tp_maybe_compact_level(index, (uint32)i);
+			int			  min_idx;
+			const char	 *min_term;
+			TpMergedTerm *current_merged;
+
+			min_idx = merge_find_min_source(sources, num_sources);
+			if (min_idx < 0)
+				break;
+
+			min_term = sources[min_idx].current_term;
+
+			if (num_merged_terms >= merged_capacity)
+			{
+				merged_capacity = merged_capacity == 0 ? 1024
+													   : merged_capacity * 2;
+				if (merged_terms == NULL)
+					merged_terms = palloc_extended(
+							merged_capacity * sizeof(TpMergedTerm),
+							MCXT_ALLOC_HUGE);
+				else
+					merged_terms = repalloc_huge(
+							merged_terms,
+							merged_capacity * sizeof(TpMergedTerm));
+			}
+
+			current_merged					 = &merged_terms[num_merged_terms];
+			current_merged->term_len		 = strlen(min_term);
+			current_merged->term			 = pstrdup(min_term);
+			current_merged->segment_refs	 = NULL;
+			current_merged->num_segment_refs = 0;
+			current_merged->segment_refs_capacity = 0;
+			current_merged->posting_offset		  = 0;
+			current_merged->posting_count		  = 0;
+			num_merged_terms++;
+
+			for (i = 0; i < num_sources; i++)
+			{
+				if (sources[i].exhausted)
+					continue;
+
+				if (strcmp(sources[i].current_term, current_merged->term) == 0)
+				{
+					merged_term_add_segment_ref(
+							current_merged, i, &sources[i].current_entry);
+					merge_source_advance(&sources[i]);
+				}
+			}
+
+			CHECK_FOR_INTERRUPTS();
 		}
+
+		/* Write merged segment to index pages via sink */
+		if (num_merged_terms > 0)
+		{
+			TpMergeSink		sink;
+			BlockNumber		new_segment;
+			Buffer			metabuf;
+			Page			metapage;
+			TpIndexMetaPage metap;
+
+			/* Report writing phase */
+			pgstat_progress_update_param(
+					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
+
+			merge_sink_init_pages(&sink, index);
+			new_segment = sink.writer.pages[0];
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					num_sources,
+					1, /* target level */
+					merge_total_tokens);
+
+			if (sink.writer.pages)
+				pfree(sink.writer.pages);
+
+			/* Update metapage: one L1 segment */
+			metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+			metapage = BufferGetPage(metabuf);
+			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+			metap->level_heads[1]  = new_segment;
+			metap->level_counts[1] = 1;
+			metap->total_docs	   = total_docs;
+			metap->total_len	   = total_len;
+
+			MarkBufferDirty(metabuf);
+			UnlockReleaseBuffer(metabuf);
+		}
+
+		/* Cleanup merge data */
+		for (i = 0; i < (int)num_merged_terms; i++)
+		{
+			if (merged_terms[i].term)
+				pfree(merged_terms[i].term);
+			if (merged_terms[i].segment_refs)
+				pfree(merged_terms[i].segment_refs);
+		}
+		if (merged_terms)
+			pfree(merged_terms);
+
+		/* Close merge sources and readers */
+		for (i = 0; i < num_sources; i++)
+		{
+			if (sources[i].current_term)
+				pfree(sources[i].current_term);
+			if (sources[i].string_offsets)
+				pfree(sources[i].string_offsets);
+			sources[i].reader = NULL;
+		}
+		for (i = 0; i < total_segments; i++)
+		{
+			if (all_readers[i])
+				tp_segment_close(all_readers[i]);
+		}
+		pfree(sources);
+		pfree(all_readers);
+
+		/* Close worker BufFiles */
+		for (i = 0; i < launched; i++)
+			BufFileClose(worker_files[i]);
+		pfree(worker_files);
+
+		MemoryContextSwitchTo(old_ctx);
+		MemoryContextDelete(merge_ctx);
 	}
 
+done_merge:
 	/* Flush all relation buffers to disk */
 	FlushRelationBuffers(index);
 

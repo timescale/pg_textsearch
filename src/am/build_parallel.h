@@ -4,16 +4,13 @@
  *
  * build_parallel.h - Parallel index build structures
  *
- * Architecture (two-phase):
- * - Phase 1: Workers scan heap, flush to BufFile, compact within BufFile.
- *   Each worker reports total_pages_needed and signals phase1_done.
- * - Barrier: Leader sums pages, pre-extends the relation with
- *   ExtendBufferedRelBy, sets atomic next_page counter, signals phase2.
- * - Phase 2: Workers reopen their BufFile read-only and write segments
- *   directly to pre-allocated index pages using atomic page counter.
- *   Workers report seg_roots[]/seg_levels[] to shared memory.
- * - Leader reads seg_roots from workers (no BufFile I/O), chains
- *   segments into level lists, updates metapage, runs final compaction.
+ * Architecture (single-phase workers, leader merge):
+ * - Workers scan heap, flush to BufFile, compact within BufFile.
+ *   Each worker reports segment offsets/sizes and signals done.
+ * - Leader reopens each worker's BufFile, creates merge sources
+ *   for every segment, performs a single N-way merge into index
+ *   pages via TpMergeSink. This produces one contiguous segment
+ *   with no fragmentation.
  */
 #pragma once
 
@@ -61,12 +58,6 @@ typedef struct TpParallelWorkerResult
 	uint64 seg_offsets[TP_MAX_WORKER_SEGMENTS];
 	uint64 seg_sizes[TP_MAX_WORKER_SEGMENTS];
 	uint32 seg_levels[TP_MAX_WORKER_SEGMENTS];
-
-	/* Phase 1 → leader: total index pages this worker needs */
-	uint64 total_pages_needed;
-
-	/* Phase 2 → leader: segment roots written to index pages */
-	BlockNumber seg_roots[TP_MAX_WORKER_SEGMENTS];
 } TpParallelWorkerResult;
 
 /*
@@ -91,12 +82,6 @@ typedef struct TpParallelBuildShared
 	/* Coordination */
 	ConditionVariable all_done_cv; /* Workers signal when done */
 	pg_atomic_uint32  workers_done;
-
-	/* Two-phase coordination */
-	pg_atomic_uint32  phase1_done;	/* Workers done with BufFile phase */
-	ConditionVariable phase2_cv;	/* Leader signals pages ready */
-	pg_atomic_uint32  phase2_ready; /* 1 when pages pre-allocated */
-	pg_atomic_uint64  next_page;	/* Atomic page counter for Phase 2 */
 
 	/* Progress reporting (atomic so leader can poll while workers run) */
 	pg_atomic_uint64 tuples_done; /* Total tuples processed by all workers */
