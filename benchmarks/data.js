@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771635975252,
+  "lastUpdate": 1771635977277,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -14609,6 +14609,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 42.13,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "0541b9a41a685d05a817c764e9a3f7a373b1f001",
+          "message": "fix: import worker segments as L0 and truncate unused pool pages\n\nWorker-side compaction produces segments at various levels (L1, L2, etc.)\nbut these levels are meaningless globally since each worker only sees 1/Nth\nof the data. Importing them at their worker-local levels inflates segment\ncounts (e.g. 7 L1 + 4 L0 = 11 segments vs ~4 L1 for serial build).\n\nImport all worker segments as L0 so leader-side compaction can cascade\nproperly through L0→L1→L2, matching serial build behavior.\n\nAlso truncate pre-allocated pool pages that workers never used, reducing\nindex size bloat from over-estimation.",
+          "timestamp": "2026-02-20T22:38:07Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0541b9a41a685d05a817c764e9a3f7a373b1f001"
+        },
+        "date": 1771635976589,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 8583.281,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.16,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.38,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.44,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.49,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.56,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.82,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.39,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 42.14,
             "unit": "MB"
           }
         ]
