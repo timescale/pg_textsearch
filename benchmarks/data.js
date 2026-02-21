@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771635973067,
+  "lastUpdate": 1771635975252,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10253,6 +10253,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2441.01,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "0541b9a41a685d05a817c764e9a3f7a373b1f001",
+          "message": "fix: import worker segments as L0 and truncate unused pool pages\n\nWorker-side compaction produces segments at various levels (L1, L2, etc.)\nbut these levels are meaningless globally since each worker only sees 1/Nth\nof the data. Importing them at their worker-local levels inflates segment\ncounts (e.g. 7 L1 + 4 L0 = 11 segments vs ~4 L1 for serial build).\n\nImport all worker segments as L0 so leader-side compaction can cascade\nproperly through L0→L1→L2, matching serial build behavior.\n\nAlso truncate pre-allocated pool pages that workers never used, reducing\nindex size bloat from over-estimation.",
+          "timestamp": "2026-02-20T22:38:07Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0541b9a41a685d05a817c764e9a3f7a373b1f001"
+        },
+        "date": 1771635974558,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 269050.469,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.94,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.91,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.97,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 20.6,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 32.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.2,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2441.06,
             "unit": "MB"
           }
         ]
