@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771646868422,
+  "lastUpdate": 1771646870620,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10372,6 +10372,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2441.06,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "4723f0e5956dbae9483260c61abf3c7accd119ca",
+          "message": "feat: unified merge sink eliminates parallel build fragmentation\n\nReplace the two-phase parallel build (workers write to BufFile then\ncopy to pre-allocated pages; leader compacts via FSM/P_NEW) with a\nsingle-phase design: workers scan+flush+compact to BufFile and exit;\nleader reopens all worker BufFiles, performs one N-way merge, and\nwrites a single contiguous segment via TpMergeSink.\n\nKey changes:\n- Add TpMergeSink abstraction (pages or BufFile backend) with\n  merge_sink_write() and merge_sink_write_at() for backpatching\n- Unify write_merged_segment() and write_merged_segment_to_buffile()\n  into write_merged_segment_to_sink() (~430 lines of duplication removed)\n- Remove Phase 2 from workers (no more phase2_cv, page pool,\n  atomic counter, pool truncation, segment linking)\n- Leader does BufFile-through merge directly to index pages,\n  producing one contiguous L1 segment with zero fragmentation\n\nNet: -509 lines. Index size should now match serial build.",
+          "timestamp": "2026-02-21T03:50:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4723f0e5956dbae9483260c61abf3c7accd119ca"
+        },
+        "date": 1771646869887,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 505781.732,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.58,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 10.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 14.33,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 21.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 32.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.19,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.84,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1214.94,
             "unit": "MB"
           }
         ]
