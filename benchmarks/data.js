@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771828455604,
+  "lastUpdate": 1771832281908,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -11012,6 +11012,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1240.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "db39fb20a2b6dca7463bdb80e905398ead69445c",
+          "message": "fix: include root page in segment page estimation\n\ncompute_segment_pages() only counted data pages + page index pages,\nbut tp_segment_writer_init_parallel() also allocates a root/header\npage. This caused the page pool to be too small for large builds\n(138M rows, 4 workers), leading to reads past end of file.\n\nAdd +1 for the root page per segment.",
+          "timestamp": "2026-02-23T07:00:17Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/db39fb20a2b6dca7463bdb80e905398ead69445c"
+        },
+        "date": 1771832280913,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco - Index Build Time",
+            "value": 439369.937,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 1 Token Query (p50)",
+            "value": 0.62,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 2 Token Query (p50)",
+            "value": 1.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 3 Token Query (p50)",
+            "value": 3.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 4 Token Query (p50)",
+            "value": 6.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 5 Token Query (p50)",
+            "value": 10.28,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 6 Token Query (p50)",
+            "value": 14.42,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 7 Token Query (p50)",
+            "value": 21.66,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 8+ Token Query (p50)",
+            "value": 32.91,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Weighted Latency (p50, ms)",
+            "value": 6.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Weighted Throughput (avg ms/query)",
+            "value": 7.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Index Size",
+            "value": 2522.88,
             "unit": "MB"
           }
         ]
