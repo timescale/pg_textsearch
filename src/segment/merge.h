@@ -37,6 +37,8 @@ typedef struct TpMergeSink
 
 /* Sink initialization */
 extern void merge_sink_init_pages(TpMergeSink *sink, Relation index);
+extern void merge_sink_init_pages_parallel(
+		TpMergeSink *sink, Relation index, pg_atomic_uint64 *page_counter);
 extern void merge_sink_init_buffile(TpMergeSink *sink, BufFile *file);
 
 /*

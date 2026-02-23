@@ -62,6 +62,17 @@ merge_sink_init_pages(TpMergeSink *sink, Relation index)
 }
 
 void
+merge_sink_init_pages_parallel(
+		TpMergeSink *sink, Relation index, pg_atomic_uint64 *page_counter)
+{
+	memset(sink, 0, sizeof(TpMergeSink));
+	sink->is_buffile = false;
+	sink->index		 = index;
+	tp_segment_writer_init_parallel(&sink->writer, index, page_counter);
+	sink->current_offset = sink->writer.current_offset;
+}
+
+void
 merge_sink_init_buffile(TpMergeSink *sink, BufFile *file)
 {
 	int	  fileno;
@@ -1233,8 +1244,17 @@ write_merged_segment_to_sink(
 		tp_segment_writer_flush(&sink->writer);
 		sink->writer.buffer_pos = SizeOfPageHeaderData;
 
-		page_index_root = write_page_index(
-				sink->index, sink->writer.pages, sink->writer.pages_allocated);
+		if (sink->writer.page_counter != NULL)
+			page_index_root = write_page_index_with_counter(
+					sink->index,
+					sink->writer.pages,
+					sink->writer.pages_allocated,
+					sink->writer.page_counter);
+		else
+			page_index_root = write_page_index(
+					sink->index,
+					sink->writer.pages,
+					sink->writer.pages_allocated);
 		header.page_index = page_index_root;
 		header.num_pages  = sink->writer.pages_allocated;
 	}

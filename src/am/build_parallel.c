@@ -2,20 +2,21 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * build_parallel.c - Two-phase parallel index build
+ * build_parallel.c - Two-phase parallel index build with
+ * cross-worker compaction
  *
  * Architecture:
  * - Phase 1: Each worker scans a heap partition, builds a local
  *   TpBuildContext, flushes segments to BufFile, and compacts
- *   within BufFile. Workers report total_pages_needed.
- * - Barrier: Leader sums pages, pre-extends relation with
- *   ExtendBufferedRelBy, sets atomic next_page counter.
- * - Phase 2: Workers reopen their BufFile read-only and write
- *   segments directly to pre-allocated index pages using atomic
- *   page allocation. Workers report seg_roots[] to shared memory.
- * - Leader truncates unused pool pages, links worker segments
- *   into L0 chain, updates metapage. No compaction is run during
- *   build — the contiguous pool allocation prevents fragmentation.
+ *   within BufFile. Workers report segment info.
+ * - Barrier: Leader plans cross-worker merge groups, sums pages,
+ *   pre-extends relation with ExtendBufferedRelBy, sets atomic
+ *   next_page counter, signals Phase 2.
+ * - Phase 2: Workers COPY their non-merged segments to pages,
+ *   then work-steal merge groups. Each task bulk-claims a
+ *   contiguous page range from the shared counter.
+ * - Leader truncates unused pool pages, links segments into
+ *   per-level chains, updates metapage.
  */
 #include <postgres.h>
 
@@ -405,6 +406,16 @@ tp_init_parallel_shared(
 	pg_atomic_init_u32(&shared->phase2_ready, 0);
 	pg_atomic_init_u64(&shared->next_page, 0);
 
+	/* Cross-worker merge groups */
+	shared->num_merge_groups = 0;
+	pg_atomic_init_u32(&shared->next_merge_group, 0);
+	{
+		int mg;
+
+		for (mg = 0; mg < TP_MAX_MERGE_GROUPS; mg++)
+			shared->merge_group_results[mg] = InvalidBlockNumber;
+	}
+
 	/* Initialize per-worker results */
 	results = TpParallelWorkerResults(shared);
 	for (i = 0; i < nworkers; i++)
@@ -488,27 +499,465 @@ write_temp_segment_to_index_parallel(
 }
 
 /*
- * Compute total index pages needed for a worker's segments.
- * Counts data pages + page index pages for each segment.
+ * Compute index pages needed for one segment of given data_size.
+ * Counts data pages + page index pages.
  */
 static uint64
-compute_pages_needed(TpParallelWorkerResult *result)
+compute_segment_pages(uint64 data_size)
+{
+	uint32 epp		  = tp_page_index_entries_per_page();
+	uint32 data_pages = (uint32)((data_size + SEGMENT_DATA_PER_PAGE - 1) /
+								 SEGMENT_DATA_PER_PAGE);
+	uint32 pi_pages	  = (data_pages + epp - 1) / epp;
+
+	return (uint64)data_pages + pi_pages;
+}
+
+/*
+ * Plan cross-worker merge groups after Phase 1.
+ *
+ * Collects all worker segments grouped by level, then forms merge
+ * groups of segments_per_level segments at each level (bottom-up).
+ * Remaining segments stay tagged 0 (COPY). Merge group outputs
+ * go to level+1, which may cascade into further groups.
+ *
+ * Each segment's seg_merge_group[s] is set to:
+ *   0    = COPY to pages at original level
+ *   N>0  = member of merge group N (1-indexed)
+ */
+static void
+plan_merge_groups(
+		TpParallelBuildShared  *shared,
+		TpParallelWorkerResult *results,
+		int						nworkers)
+{
+	uint32 spl = (uint32)tp_segments_per_level;
+
+	/*
+	 * Per-level list of (worker_id, seg_idx) pairs.
+	 * Max total segments = nworkers * TP_MAX_WORKER_SEGMENTS.
+	 */
+	uint32 max_total = (uint32)nworkers * TP_MAX_WORKER_SEGMENTS;
+	uint32 level_counts[TP_MAX_LEVELS];
+	uint32 num_groups = 0;
+	int	   level;
+
+	/* (worker_id, seg_idx) pairs per level */
+	typedef struct
+	{
+		uint16 worker_id;
+		uint16 seg_idx;
+	} SegRef;
+
+	SegRef *level_segs[TP_MAX_LEVELS];
+
+	memset(level_counts, 0, sizeof(level_counts));
+
+	/* Allocate per-level arrays */
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+		level_segs[level] = palloc(max_total * sizeof(SegRef));
+
+	/* Initialize all merge_group tags to 0 (COPY) */
+	{
+		int w;
+
+		for (w = 0; w < nworkers; w++)
+		{
+			memset(results[w].seg_merge_group,
+				   0,
+				   sizeof(results[w].seg_merge_group));
+		}
+	}
+
+	/* Collect all segments grouped by level */
+	{
+		int w;
+
+		for (w = 0; w < nworkers; w++)
+		{
+			uint32 s;
+
+			for (s = 0; s < results[w].final_segment_count; s++)
+			{
+				uint32 lv  = results[w].seg_levels[s];
+				uint32 idx = level_counts[lv];
+
+				level_segs[lv][idx].worker_id = (uint16)w;
+				level_segs[lv][idx].seg_idx	  = (uint16)s;
+				level_counts[lv]++;
+			}
+		}
+	}
+
+	/* Bottom-up: form merge groups at each level */
+	for (level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		uint32 count = level_counts[level];
+		uint32 pos	 = 0;
+
+		while (count - pos >= spl)
+		{
+			uint32 g;
+			uint32 k;
+
+			if (num_groups >= TP_MAX_MERGE_GROUPS)
+			{
+				elog(WARNING,
+					 "parallel build: too many merge groups "
+					 "(%u), stopping at level %d",
+					 num_groups,
+					 level);
+				goto done;
+			}
+
+			g							  = num_groups++;
+			shared->merge_group_levels[g] = level + 1;
+
+			/* Tag spl segments as members of this group */
+			for (k = 0; k < spl; k++)
+			{
+				SegRef *ref = &level_segs[level][pos + k];
+				int		w	= ref->worker_id;
+				int		s	= ref->seg_idx;
+
+				results[w].seg_merge_group[s] = g + 1;
+			}
+
+			/*
+			 * The merge output goes to level+1. Add a
+			 * placeholder entry so cascading can pick it up.
+			 * We use worker_id=0xFFFF as sentinel (no real
+			 * segment — the merge result is stored in
+			 * merge_group_results[g]).
+			 */
+			{
+				uint32 next_lv = level + 1;
+				uint32 idx	   = level_counts[next_lv];
+
+				level_segs[next_lv][idx].worker_id = 0xFFFF;
+				level_segs[next_lv][idx].seg_idx   = (uint16)g;
+				level_counts[next_lv]++;
+			}
+
+			pos += spl;
+		}
+	}
+
+done:
+	shared->num_merge_groups = num_groups;
+	pg_atomic_write_u32(&shared->next_merge_group, 0);
+
+	/* Free per-level arrays */
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+		pfree(level_segs[level]);
+}
+
+/*
+ * Compute total pages needed for Phase 2.
+ * Sums exact pages for COPY segments and upper-bound pages
+ * for merge groups (sum of source sizes).
+ */
+static uint64
+compute_total_pages_needed(
+		TpParallelBuildShared  *shared,
+		TpParallelWorkerResult *results,
+		int						nworkers)
 {
 	uint64 total = 0;
-	uint32 epp	 = tp_page_index_entries_per_page();
-	uint32 s;
+	int	   w;
+	uint32 g;
 
-	for (s = 0; s < result->final_segment_count; s++)
+	/* COPY segments: exact page counts */
+	for (w = 0; w < nworkers; w++)
 	{
-		uint64 data_size  = result->seg_sizes[s];
-		uint32 data_pages = (uint32)((data_size + SEGMENT_DATA_PER_PAGE - 1) /
-									 SEGMENT_DATA_PER_PAGE);
-		uint32 pi_pages	  = (data_pages + epp - 1) / epp;
+		uint32 s;
 
-		total += data_pages + pi_pages;
+		for (s = 0; s < results[w].final_segment_count; s++)
+		{
+			if (results[w].seg_merge_group[s] == 0)
+				total += compute_segment_pages(results[w].seg_sizes[s]);
+		}
+	}
+
+	/* Merge groups: upper-bound (sum of source sizes) */
+	for (g = 0; g < shared->num_merge_groups; g++)
+	{
+		uint64 sum_sizes = 0;
+
+		for (w = 0; w < nworkers; w++)
+		{
+			uint32 s;
+
+			for (s = 0; s < results[w].final_segment_count; s++)
+			{
+				if (results[w].seg_merge_group[s] == g + 1)
+					sum_sizes += results[w].seg_sizes[s];
+			}
+		}
+		total += compute_segment_pages(sum_sizes);
 	}
 
 	return total;
+}
+
+/*
+ * Execute one cross-worker merge group.
+ *
+ * Called by workers in Phase 2 via work-stealing. Opens source
+ * segments from multiple workers' BufFiles, performs N-way merge,
+ * writes output directly to pre-allocated index pages.
+ */
+static void
+worker_execute_merge_group(
+		TpParallelBuildShared *shared, Relation index, uint32 group_idx)
+{
+	TpParallelWorkerResult *results	 = TpParallelWorkerResults(shared);
+	int						nworkers = shared->nworkers;
+
+	/* Collect source segments for this group */
+	typedef struct
+	{
+		int	   worker_id;
+		uint32 seg_idx;
+	} MergeRef;
+
+	MergeRef *refs;
+	uint32	  num_refs	   = 0;
+	uint64	  sum_sizes	   = 0;
+	uint64	  total_tokens = 0;
+	uint32	  target_level;
+	int		  w;
+	uint32	  i;
+
+	TpSegmentReader **readers;
+	TpMergeSource	 *sources;
+	int				  num_sources;
+	BufFile			**open_files;
+	bool			 *file_opened;
+
+	TpMergedTerm *merged_terms	   = NULL;
+	uint32		  num_merged_terms = 0;
+	uint32		  merged_capacity  = 0;
+	MemoryContext merge_ctx;
+	MemoryContext old_ctx;
+
+	uint64			 pages_needed;
+	uint64			 pool_start;
+	pg_atomic_uint64 local_counter;
+
+	target_level = shared->merge_group_levels[group_idx];
+
+	/* Count refs and sum sizes */
+	refs = palloc(
+			sizeof(MergeRef) * (uint32)nworkers * TP_MAX_WORKER_SEGMENTS);
+	for (w = 0; w < nworkers; w++)
+	{
+		uint32 s;
+
+		for (s = 0; s < results[w].final_segment_count; s++)
+		{
+			if (results[w].seg_merge_group[s] == group_idx + 1)
+			{
+				refs[num_refs].worker_id = w;
+				refs[num_refs].seg_idx	 = s;
+				num_refs++;
+				sum_sizes += results[w].seg_sizes[s];
+			}
+		}
+	}
+
+	if (num_refs == 0)
+	{
+		pfree(refs);
+		shared->merge_group_results[group_idx] = InvalidBlockNumber;
+		return;
+	}
+
+	/* Bulk-claim contiguous page range */
+	pages_needed = compute_segment_pages(sum_sizes);
+	pool_start	 = pg_atomic_fetch_add_u64(&shared->next_page, pages_needed);
+	pg_atomic_init_u64(&local_counter, pool_start);
+
+	/* Open needed worker BufFiles (one per worker, cached) */
+	open_files	= palloc0(sizeof(BufFile *) * nworkers);
+	file_opened = palloc0(sizeof(bool) * nworkers);
+
+	readers		= palloc0(sizeof(TpSegmentReader *) * num_refs);
+	sources		= palloc0(sizeof(TpMergeSource) * num_refs);
+	num_sources = 0;
+
+	for (i = 0; i < num_refs; i++)
+	{
+		int	   wid = refs[i].worker_id;
+		uint32 s   = refs[i].seg_idx;
+
+		if (!file_opened[wid])
+		{
+			char fname[64];
+
+			snprintf(fname, sizeof(fname), "tp_worker_%d", wid);
+			open_files[wid] = BufFileOpenFileSet(
+					&shared->fileset.fs, fname, O_RDONLY, false);
+			file_opened[wid] = true;
+		}
+
+		readers[i] = tp_segment_open_from_buffile(
+				open_files[wid], results[wid].seg_offsets[s]);
+		if (!readers[i])
+			continue;
+
+		if (merge_source_init_from_reader(&sources[num_sources], readers[i]))
+		{
+			total_tokens += readers[i]->header->total_tokens;
+			num_sources++;
+		}
+	}
+
+	if (num_sources == 0)
+	{
+		/* No valid sources — clean up and mark invalid */
+		for (i = 0; i < num_refs; i++)
+		{
+			if (readers[i])
+				tp_segment_close(readers[i]);
+		}
+		for (w = 0; w < nworkers; w++)
+		{
+			if (file_opened[w])
+				BufFileClose(open_files[w]);
+		}
+		pfree(refs);
+		pfree(readers);
+		pfree(sources);
+		pfree(open_files);
+		pfree(file_opened);
+		shared->merge_group_results[group_idx] = InvalidBlockNumber;
+		return;
+	}
+
+	/* N-way term merge */
+	merge_ctx = AllocSetContextCreate(
+			CurrentMemoryContext,
+			"Cross-worker Merge",
+			ALLOCSET_DEFAULT_SIZES);
+	old_ctx = MemoryContextSwitchTo(merge_ctx);
+
+	while (true)
+	{
+		int			  min_idx;
+		const char	 *min_term;
+		TpMergedTerm *current_merged;
+
+		min_idx = merge_find_min_source(sources, num_sources);
+		if (min_idx < 0)
+			break;
+
+		min_term = sources[min_idx].current_term;
+
+		if (num_merged_terms >= merged_capacity)
+		{
+			merged_capacity = merged_capacity == 0 ? 1024
+												   : merged_capacity * 2;
+			if (merged_terms == NULL)
+				merged_terms = palloc_extended(
+						merged_capacity * sizeof(TpMergedTerm),
+						MCXT_ALLOC_HUGE);
+			else
+				merged_terms = repalloc_huge(
+						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+		}
+
+		current_merged					 = &merged_terms[num_merged_terms];
+		current_merged->term_len		 = strlen(min_term);
+		current_merged->term			 = pstrdup(min_term);
+		current_merged->segment_refs	 = NULL;
+		current_merged->num_segment_refs = 0;
+		current_merged->segment_refs_capacity = 0;
+		current_merged->posting_offset		  = 0;
+		current_merged->posting_count		  = 0;
+		num_merged_terms++;
+
+		for (i = 0; i < (uint32)num_sources; i++)
+		{
+			if (sources[i].exhausted)
+				continue;
+
+			if (strcmp(sources[i].current_term, current_merged->term) == 0)
+			{
+				merged_term_add_segment_ref(
+						current_merged, i, &sources[i].current_entry);
+				merge_source_advance(&sources[i]);
+			}
+		}
+
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	MemoryContextSwitchTo(old_ctx);
+
+	/* Write merged segment to pages */
+	if (num_merged_terms > 0)
+	{
+		TpMergeSink sink;
+
+		merge_sink_init_pages_parallel(&sink, index, &local_counter);
+
+		write_merged_segment_to_sink(
+				&sink,
+				merged_terms,
+				num_merged_terms,
+				sources,
+				num_sources,
+				target_level,
+				total_tokens);
+
+		shared->merge_group_results[group_idx] = sink.writer.pages[0];
+
+		if (sink.writer.pages)
+			pfree(sink.writer.pages);
+	}
+	else
+	{
+		shared->merge_group_results[group_idx] = InvalidBlockNumber;
+	}
+
+	/* Cleanup */
+	for (i = 0; i < num_merged_terms; i++)
+	{
+		if (merged_terms[i].term)
+			pfree(merged_terms[i].term);
+		if (merged_terms[i].segment_refs)
+			pfree(merged_terms[i].segment_refs);
+	}
+	if (merged_terms)
+		pfree(merged_terms);
+
+	/* Close sources (don't close readers, init_from_reader) */
+	for (i = 0; i < (uint32)num_sources; i++)
+	{
+		if (sources[i].current_term)
+			pfree(sources[i].current_term);
+		if (sources[i].string_offsets)
+			pfree(sources[i].string_offsets);
+		sources[i].reader = NULL;
+	}
+	for (i = 0; i < num_refs; i++)
+	{
+		if (readers[i])
+			tp_segment_close(readers[i]);
+	}
+	for (w = 0; w < nworkers; w++)
+	{
+		if (file_opened[w])
+			BufFileClose(open_files[w]);
+	}
+
+	MemoryContextDelete(merge_ctx);
+	pfree(refs);
+	pfree(readers);
+	pfree(sources);
+	pfree(open_files);
+	pfree(file_opened);
 }
 
 /* ----------------------------------------------------------------
@@ -731,9 +1180,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	BufFileExportFileSet(buffile);
 	BufFileClose(buffile);
 
-	/* Compute total pages this worker needs for Phase 2 */
-	my_result->total_pages_needed = compute_pages_needed(my_result);
-
 	/* Cleanup Phase 1 resources (keep heap/index open for Phase 2) */
 	tp_build_context_destroy(build_ctx);
 	tracker_destroy(&tracker);
@@ -752,49 +1198,88 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	ConditionVariableCancelSleep();
 
 	/*
-	 * Phase 2: write segments to pre-allocated index pages.
-	 * Reopen own BufFile read-only and write each segment
-	 * using atomic page counter.
+	 * Phase 2: COPY own segments + work-steal merge groups.
+	 *
+	 * Step 1: Copy own non-merged segments to index pages.
+	 * Each COPY bulk-claims a contiguous page range for the segment.
 	 */
-	if (my_result->final_segment_count > 0)
 	{
-		BufFile *rdfile;
+		bool	 has_copy_segs = false;
+		BufFile *rdfile		   = NULL;
 		uint32	 s;
-
-		snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
-		rdfile = BufFileOpenFileSet(
-				&shared->fileset.fs, file_name, O_RDONLY, false);
 
 		for (s = 0; s < my_result->final_segment_count; s++)
 		{
-			BlockNumber seg_root;
-
-			seg_root = write_temp_segment_to_index_parallel(
-					index,
-					rdfile,
-					my_result->seg_offsets[s],
-					my_result->seg_sizes[s],
-					&shared->next_page);
-
-			/* Set level to L0 in segment header */
+			if (my_result->seg_merge_group[s] == 0)
 			{
-				Buffer			 hdr_buf;
-				Page			 hdr_page;
-				TpSegmentHeader *hdr;
-
-				hdr_buf = ReadBuffer(index, seg_root);
-				LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
-				hdr_page   = BufferGetPage(hdr_buf);
-				hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
-				hdr->level = 0;
-				MarkBufferDirty(hdr_buf);
-				UnlockReleaseBuffer(hdr_buf);
+				has_copy_segs = true;
+				break;
 			}
-
-			my_result->seg_roots[s] = seg_root;
 		}
 
-		BufFileClose(rdfile);
+		if (has_copy_segs)
+		{
+			snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
+			rdfile = BufFileOpenFileSet(
+					&shared->fileset.fs, file_name, O_RDONLY, false);
+
+			for (s = 0; s < my_result->final_segment_count; s++)
+			{
+				uint64			 pages;
+				uint64			 pool_start;
+				pg_atomic_uint64 local_counter;
+				BlockNumber		 seg_root;
+
+				if (my_result->seg_merge_group[s] != 0)
+					continue;
+
+				/* Bulk-claim contiguous pages for this segment */
+				pages = compute_segment_pages(my_result->seg_sizes[s]);
+				pool_start =
+						pg_atomic_fetch_add_u64(&shared->next_page, pages);
+				pg_atomic_init_u64(&local_counter, pool_start);
+
+				seg_root = write_temp_segment_to_index_parallel(
+						index,
+						rdfile,
+						my_result->seg_offsets[s],
+						my_result->seg_sizes[s],
+						&local_counter);
+
+				/* Set level in segment header */
+				{
+					Buffer			 hdr_buf;
+					Page			 hdr_page;
+					TpSegmentHeader *hdr;
+
+					hdr_buf = ReadBuffer(index, seg_root);
+					LockBuffer(hdr_buf, BUFFER_LOCK_EXCLUSIVE);
+					hdr_page   = BufferGetPage(hdr_buf);
+					hdr		   = (TpSegmentHeader *)PageGetContents(hdr_page);
+					hdr->level = my_result->seg_levels[s];
+					MarkBufferDirty(hdr_buf);
+					UnlockReleaseBuffer(hdr_buf);
+				}
+
+				my_result->seg_roots[s] = seg_root;
+			}
+
+			BufFileClose(rdfile);
+		}
+	}
+
+	/*
+	 * Step 2: Work-steal merge groups.
+	 * Each worker claims groups via atomic counter until all done.
+	 */
+	{
+		uint32 g;
+
+		while ((g = pg_atomic_fetch_add_u32(&shared->next_merge_group, 1)) <
+			   shared->num_merge_groups)
+		{
+			worker_execute_merge_group(shared, index, g);
+		}
 	}
 
 	index_close(index, AccessExclusiveLock);
@@ -935,19 +1420,25 @@ tp_build_parallel(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_WRITING);
 
 	/*
-	 * Pre-extend relation for all worker segments.
-	 * Sum total_pages_needed across workers and extend in batches.
+	 * Plan cross-worker merge groups and compute total pages.
+	 */
+	{
+		TpParallelWorkerResult *results = TpParallelWorkerResults(shared);
+
+		plan_merge_groups(shared, results, launched);
+	}
+
+	/*
+	 * Pre-extend relation for all worker segments + merge groups.
 	 */
 	{
 		TpParallelWorkerResult *results		= TpParallelWorkerResults(shared);
 		uint64					total_pages = 0;
 		BlockNumber				start_blk;
-		int						i;
 
 #define EXTEND_BATCH_SIZE 8192
 
-		for (i = 0; i < launched; i++)
-			total_pages += results[i].total_pages_needed;
+		total_pages = compute_total_pages_needed(shared, results, launched);
 
 		start_blk = RelationGetNumberOfBlocks(index);
 
@@ -1014,64 +1505,97 @@ tp_build_parallel(
 	}
 
 	/*
-	 * Link worker segments into L0 chain in metapage.
-	 * No compaction is run — the contiguous pool allocation
-	 * ensures no page fragmentation. Segments will compact
-	 * naturally during subsequent insert operations.
+	 * Link segments into per-level chains in metapage.
+	 * COPY segments go to their original level; merge group
+	 * results go to merge_group_levels[g].
 	 */
 	{
 		Buffer			metabuf;
 		Page			metapage;
 		TpIndexMetaPage metap;
-		BlockNumber		head  = InvalidBlockNumber;
-		BlockNumber		tail  = InvalidBlockNumber;
-		uint16			count = 0;
+		BlockNumber		level_heads[TP_MAX_LEVELS];
+		BlockNumber		level_tails[TP_MAX_LEVELS];
+		uint16			level_counts[TP_MAX_LEVELS];
+		int				lv;
 		int				i;
+		uint32			g;
 
 		TpParallelWorkerResult *results = TpParallelWorkerResults(shared);
 
+		for (lv = 0; lv < TP_MAX_LEVELS; lv++)
+		{
+			level_heads[lv]	 = InvalidBlockNumber;
+			level_tails[lv]	 = InvalidBlockNumber;
+			level_counts[lv] = 0;
+		}
+
+		/* Helper macro: append seg_root to level chain */
+#define APPEND_TO_LEVEL(seg_root, lv)                                  \
+	do                                                                 \
+	{                                                                  \
+		if (level_tails[lv] != InvalidBlockNumber)                     \
+		{                                                              \
+			Buffer			 tb;                                       \
+			Page			 tp;                                       \
+			TpSegmentHeader *th;                                       \
+                                                                       \
+			tb = ReadBuffer(index, level_tails[lv]);                   \
+			LockBuffer(tb, BUFFER_LOCK_EXCLUSIVE);                     \
+			tp				 = BufferGetPage(tb);                      \
+			th				 = (TpSegmentHeader *)PageGetContents(tp); \
+			th->next_segment = (seg_root);                             \
+			MarkBufferDirty(tb);                                       \
+			UnlockReleaseBuffer(tb);                                   \
+		}                                                              \
+		else                                                           \
+		{                                                              \
+			level_heads[lv] = (seg_root);                              \
+		}                                                              \
+		level_tails[lv] = (seg_root);                                  \
+		level_counts[lv]++;                                            \
+	} while (0)
+
+		/* Add COPY segments */
 		for (i = 0; i < launched; i++)
 		{
 			uint32 s;
 
 			for (s = 0; s < results[i].final_segment_count; s++)
 			{
-				BlockNumber seg_root = results[i].seg_roots[s];
+				if (results[i].seg_merge_group[s] != 0)
+					continue;
 
-				/* Chain into L0 linked list */
-				if (tail != InvalidBlockNumber)
-				{
-					Buffer			 tail_buf;
-					Page			 tail_page;
-					TpSegmentHeader *tail_hdr;
-
-					tail_buf = ReadBuffer(index, tail);
-					LockBuffer(tail_buf, BUFFER_LOCK_EXCLUSIVE);
-					tail_page = BufferGetPage(tail_buf);
-					tail_hdr  = (TpSegmentHeader *)PageGetContents(tail_page);
-					tail_hdr->next_segment = seg_root;
-					MarkBufferDirty(tail_buf);
-					UnlockReleaseBuffer(tail_buf);
-				}
-				else
-				{
-					head = seg_root;
-				}
-				tail = seg_root;
-				count++;
+				APPEND_TO_LEVEL(
+						results[i].seg_roots[s], results[i].seg_levels[s]);
 			}
 		}
 
-		/* Update metapage with L0 chain and corpus stats */
+		/* Add merge group results */
+		for (g = 0; g < shared->num_merge_groups; g++)
+		{
+			BlockNumber root = shared->merge_group_results[g];
+
+			if (root == InvalidBlockNumber)
+				continue;
+
+			APPEND_TO_LEVEL(root, shared->merge_group_levels[g]);
+		}
+
+#undef APPEND_TO_LEVEL
+
+		/* Update metapage with per-level chains and corpus stats */
 		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		metapage = BufferGetPage(metabuf);
 		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-		metap->level_heads[0]  = head;
-		metap->level_counts[0] = count;
-		metap->total_docs	   = total_docs;
-		metap->total_len	   = total_len;
+		for (lv = 0; lv < TP_MAX_LEVELS; lv++)
+		{
+			metap->level_heads[lv]	= level_heads[lv];
+			metap->level_counts[lv] = level_counts[lv];
+		}
+		metap->total_docs = total_docs;
+		metap->total_len  = total_len;
 
 		MarkBufferDirty(metabuf);
 		UnlockReleaseBuffer(metabuf);
