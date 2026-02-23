@@ -508,7 +508,8 @@ compute_segment_pages(uint64 data_size)
 	uint32 epp		  = tp_page_index_entries_per_page();
 	uint32 data_pages = (uint32)((data_size + SEGMENT_DATA_PER_PAGE - 1) /
 								 SEGMENT_DATA_PER_PAGE);
-	uint32 pi_pages	  = (data_pages + epp - 1) / epp;
+	/* Page index indexes root + data pages */
+	uint32 pi_pages = (1 + data_pages + epp - 1) / epp;
 
 	return 1 + (uint64)data_pages + pi_pages;
 }
@@ -679,10 +680,11 @@ compute_total_pages_needed(
 		}
 	}
 
-	/* Merge groups: upper-bound (sum of source sizes) */
+	/* Merge groups: upper-bound (sum of source sizes) + margin */
 	for (g = 0; g < shared->num_merge_groups; g++)
 	{
 		uint64 sum_sizes = 0;
+		uint64 group_pages;
 
 		for (w = 0; w < nworkers; w++)
 		{
@@ -694,7 +696,17 @@ compute_total_pages_needed(
 					sum_sizes += results[w].seg_sizes[s];
 			}
 		}
-		total += compute_segment_pages(sum_sizes);
+		group_pages = compute_segment_pages(sum_sizes);
+
+		/*
+		 * Add 5% safety margin for merge groups.
+		 * Cross-worker merge remaps doc IDs into a wider range,
+		 * increasing bitpacked delta widths at worker boundaries.
+		 * This makes the merged output up to ~1-2% larger than
+		 * the sum of source sizes. Unused pages are truncated.
+		 */
+		group_pages += group_pages / 20;
+		total += group_pages;
 	}
 
 	return total;
@@ -773,9 +785,10 @@ worker_execute_merge_group(
 		return;
 	}
 
-	/* Bulk-claim contiguous page range */
+	/* Bulk-claim contiguous page range (with 5% margin) */
 	pages_needed = compute_segment_pages(sum_sizes);
-	pool_start	 = pg_atomic_fetch_add_u64(&shared->next_page, pages_needed);
+	pages_needed += pages_needed / 20;
+	pool_start = pg_atomic_fetch_add_u64(&shared->next_page, pages_needed);
 	pg_atomic_init_u64(&local_counter, pool_start);
 
 	/* Open needed worker BufFiles (one per worker, cached) */
@@ -1439,8 +1452,7 @@ tp_build_parallel(
 #define EXTEND_BATCH_SIZE 8192
 
 		total_pages = compute_total_pages_needed(shared, results, launched);
-
-		start_blk = RelationGetNumberOfBlocks(index);
+		start_blk	= RelationGetNumberOfBlocks(index);
 
 		/* Extend relation in batches to limit buffer pin count */
 		{
