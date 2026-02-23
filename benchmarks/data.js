@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771812140453,
+  "lastUpdate": 1771828086424,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10811,6 +10811,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2560.57,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "3c81cc349ab563fb95f03dbd04c3d3aaae6dbfe7",
+          "message": "feat: cross-worker compaction in parallel build\n\nAfter Phase 1, the leader plans merge groups by collecting all worker\nsegments by level and forming groups of segments_per_level. In Phase 2,\nworkers first COPY their non-merged segments to pages, then work-steal\nmerge groups via atomic counter. Each task (COPY or MERGE) bulk-claims\na contiguous page range from the shared counter. Merge outputs go\ndirectly to pages via merge_sink_init_pages_parallel() -- no\nintermediate BufFile.\n\nExample: 28 L0 segments (4 workers x 7 each, spl=8) -> 3 merge groups\nof 8 + 4 remaining copies. Phase 2 produces 4 L0 + 3 L1 = 7 segments\non contiguous pages, vs 28 L0 segments previously.",
+          "timestamp": "2026-02-23T05:49:31Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3c81cc349ab563fb95f03dbd04c3d3aaae6dbfe7"
+        },
+        "date": 1771828084955,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco - Index Build Time",
+            "value": 439332.356,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 1 Token Query (p50)",
+            "value": 0.6,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 2 Token Query (p50)",
+            "value": 1.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 3 Token Query (p50)",
+            "value": 4.03,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 4 Token Query (p50)",
+            "value": 6.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 5 Token Query (p50)",
+            "value": 9.96,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 6 Token Query (p50)",
+            "value": 14.16,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 7 Token Query (p50)",
+            "value": 21.15,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - 8+ Token Query (p50)",
+            "value": 32.63,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Weighted Latency (p50, ms)",
+            "value": 6.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Weighted Throughput (avg ms/query)",
+            "value": 7.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco - Index Size",
+            "value": 2522.9,
             "unit": "MB"
           }
         ]
