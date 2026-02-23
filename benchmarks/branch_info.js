@@ -90,5 +90,6 @@ window.BRANCH_INFO = {
   "2b60e589d50a7c1f08ef44604dedb8d1821af874": "feat/arena-build-rewrite",
   "0541b9a41a685d05a817c764e9a3f7a373b1f001": "feat/arena-build-rewrite",
   "4723f0e5956dbae9483260c61abf3c7accd119ca": "feat/arena-build-rewrite",
-  "b15d8ad5c1b22366f4e019d4bec1f61937e46cc4": "feat/arena-build-rewrite"
+  "b15d8ad5c1b22366f4e019d4bec1f61937e46cc4": "feat/arena-build-rewrite",
+  "3c81cc349ab563fb95f03dbd04c3d3aaae6dbfe7": "feat/arena-build-rewrite"
 };
