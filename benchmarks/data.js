@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771741571499,
+  "lastUpdate": 1771812137119,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3213,6 +3213,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.3,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "b15d8ad5c1b22366f4e019d4bec1f61937e46cc4",
+          "message": "fix: restore parallel page writes, drop leader compaction\n\nThe previous commit moved ALL page writing to the leader via a\nsingle-threaded N-way merge, which nearly doubled build time\n(4:29 → 8:26 on CI benchmark). The fragmentation was never from\nworkers writing to pre-allocated pages — it was from the leader's\ntp_maybe_compact_level() using FSM/P_NEW which scattered pages.\n\nFix: restore two-phase parallel build where workers write BufFile\nsegments to pre-allocated contiguous pages in parallel, but skip\nthe compaction step entirely. Worker segments stay as L0 in the\ncontiguous pool and compact naturally on subsequent inserts or\nvia bm25_compact_index().\n\nKeep TpMergeSink abstraction in merge.c for worker BufFile\ncompaction and normal compaction paths.",
+          "timestamp": "2026-02-23T01:48:19Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b15d8ad5c1b22366f4e019d4bec1f61937e46cc4"
+        },
+        "date": 1771812136178,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 235.324,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.25,
             "unit": "ms"
           },
           {
