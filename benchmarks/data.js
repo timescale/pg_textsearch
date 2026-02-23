@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771828452211,
+  "lastUpdate": 1771828453904,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10930,6 +10930,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco - Index Size",
             "value": 2522.9,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fc9553c84450fcfd14fa00623f0a23b778dc87ba",
+          "message": "fix: resolve test failures on PG17 and /tmp environments (#234)\n\n## Summary\n\n- **binary_io**: Switch `COPY` to `\\copy` (client-side) so temp files\nare owned by the test runner user, avoiding `/tmp` sticky-bit permission\nissues\n- **coverage**: Use shared temp dir with 777 permissions for server-side\nfile writes; add `id` tiebreaker to queries with tied BM25 scores for\ndeterministic ordering\n- **inheritance**: Extend `is_child_partition_index()` in `hooks.c` to\nhandle regular table inheritance — PG17's planner may choose a child\ntable's index over the parent's\n\n## Test plan\n\n- [x] All 47 SQL regression tests pass locally on PG17\n- [x] `make format-check` passes\n- [x] CI passes (PG17, PG18, sanitizer builds)\n- [x] Verify inheritance test still passes on PG18 (planner behavior\ndiffers)",
+          "timestamp": "2026-02-19T23:41:12Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fc9553c84450fcfd14fa00623f0a23b778dc87ba"
+        },
+        "date": 1771828453401,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 281788.255,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 1.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.87,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.49,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 5.47,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 7.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 10.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 16.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1240.16,
             "unit": "MB"
           }
         ]
