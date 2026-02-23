@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771812137119,
+  "lastUpdate": 1771812138553,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -10729,6 +10729,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1227.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "b15d8ad5c1b22366f4e019d4bec1f61937e46cc4",
+          "message": "fix: restore parallel page writes, drop leader compaction\n\nThe previous commit moved ALL page writing to the leader via a\nsingle-threaded N-way merge, which nearly doubled build time\n(4:29 → 8:26 on CI benchmark). The fragmentation was never from\nworkers writing to pre-allocated pages — it was from the leader's\ntp_maybe_compact_level() using FSM/P_NEW which scattered pages.\n\nFix: restore two-phase parallel build where workers write BufFile\nsegments to pre-allocated contiguous pages in parallel, but skip\nthe compaction step entirely. Worker segments stay as L0 in the\ncontiguous pool and compact naturally on subsequent inserts or\nvia bm25_compact_index().\n\nKeep TpMergeSink abstraction in merge.c for worker BufFile\ncompaction and normal compaction paths.",
+          "timestamp": "2026-02-23T01:48:19Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b15d8ad5c1b22366f4e019d4bec1f61937e46cc4"
+        },
+        "date": 1771812138168,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 175621.967,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 3.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 4.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 6.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 10.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 21.56,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 32.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 8.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2560.57,
             "unit": "MB"
           }
         ]
