@@ -500,7 +500,7 @@ write_temp_segment_to_index_parallel(
 
 /*
  * Compute index pages needed for one segment of given data_size.
- * Counts data pages + page index pages.
+ * Counts root/header page + data pages + page index pages.
  */
 static uint64
 compute_segment_pages(uint64 data_size)
@@ -510,7 +510,7 @@ compute_segment_pages(uint64 data_size)
 								 SEGMENT_DATA_PER_PAGE);
 	uint32 pi_pages	  = (data_pages + epp - 1) / epp;
 
-	return (uint64)data_pages + pi_pages;
+	return 1 + (uint64)data_pages + pi_pages;
 }
 
 /*
