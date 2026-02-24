@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771971522271,
+  "lastUpdate": 1771975252980,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3361,6 +3361,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.26,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "afdca64b8adf628c526b18433f8b07315d180ce8",
+          "message": "fix: register snapshot in worker for PG18 tidrange scan\n\nPG18 added an assertion in heap_prepare_pagescan requiring any snapshot\nused in a heap scan to be registered or active. The leader already\nregistered the snapshot, but the worker passed an unregistered snapshot\nfrom GetTransactionSnapshot() to table_beginscan_tidrange(), tripping\nthe assertion under sanitizer builds.\n\nMirror the leader's pattern: RegisterSnapshot before scan,\nUnregisterSnapshot after table_endscan.",
+          "timestamp": "2026-02-24T22:33:25Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/afdca64b8adf628c526b18433f8b07315d180ce8"
+        },
+        "date": 1771975251673,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 249.496,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.41,
             "unit": "ms"
           },
           {
