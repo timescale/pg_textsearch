@@ -19,9 +19,10 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 
 ## Important Notes for Development
 
-- **pg_textsearch requires shared_preload_libraries** - Add the versioned
-  library name (e.g., `pg_textsearch-1.0.0-dev`) to `shared_preload_libraries`
-  in postgresql.conf and restart the server before CREATE EXTENSION
+- **pg_textsearch requires shared_preload_libraries** - Add `pg_textsearch`
+  to `shared_preload_libraries` in postgresql.conf and restart the server
+  before CREATE EXTENSION. A server restart is also required after updating
+  the binary (e.g., after `make install` during development).
 
 ## Core Architecture
 

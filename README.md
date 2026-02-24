@@ -47,7 +47,14 @@ make install # may need sudo
 
 ## Getting Started
 
-Enable the extension (do this once in each database where you want to use it)
+pg_textsearch must be loaded via `shared_preload_libraries`. Add the following
+to `postgresql.conf` and restart the server:
+
+```
+shared_preload_libraries = 'pg_textsearch'  # add to existing list if needed
+```
+
+Then enable the extension (once per database):
 
 ```sql
 CREATE EXTENSION pg_textsearch;
