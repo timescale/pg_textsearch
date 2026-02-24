@@ -114,9 +114,7 @@ setup_test_db() {
         fi
     fi
 
-    # Get versioned library name from control file
-    local extversion=$(awk -F"'" '/default_version/ {print $2}' "${SCRIPT_DIR}/../../pg_textsearch.control")
-    local lib_name="pg_textsearch-${extversion}"
+    local lib_name="pg_textsearch"
 
     # Configure for concurrent testing
     cat >> "${DATA_DIR}/postgresql.conf" << EOF

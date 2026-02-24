@@ -149,8 +149,7 @@ jobs:
         initdb -D tmp_sanitizer_test/data --auth-local=trust
 
         # Configure PostgreSQL
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_sanitizer_test/data/postgresql.conf

@@ -56,8 +56,7 @@ jobs:
     - name: Setup test database
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         rm -rf tmp_check_shared
         mkdir -p tmp_check_shared
         initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
@@ -102,8 +101,7 @@ jobs:
       timeout-minutes: 5
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         rm -rf tmp_hypertable_test
         mkdir -p tmp_hypertable_test
         initdb -D tmp_hypertable_test/data --auth-local=trust --auth-host=trust

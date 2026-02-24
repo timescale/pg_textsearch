@@ -71,8 +71,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PGDATA=/tmp/upgrade_test_data
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
 
         initdb -D $PGDATA
         echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
@@ -294,8 +293,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PGDATA=/tmp/incompat_test_data
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
 
         initdb -D $PGDATA
         echo "shared_buffers = 256MB" >> $PGDATA/postgresql.conf
@@ -424,8 +422,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PGDATA=/tmp/clean_test_data
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
 
         initdb -D $PGDATA
         echo "port = 5432" >> $PGDATA/postgresql.conf

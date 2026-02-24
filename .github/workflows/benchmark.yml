@@ -116,8 +116,7 @@ jobs:
     - name: Configure PostgreSQL
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         rm -rf tmp_bench
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
@@ -806,8 +805,7 @@ jobs:
     - name: Configure PostgreSQL for benchmarks
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         rm -rf tmp_bench
         mkdir -p tmp_bench/socket
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
@@ -1242,8 +1240,7 @@ jobs:
     - name: Setup database
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         mkdir -p tmp_validate/data tmp_validate/socket
         initdb -D tmp_validate/data
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_validate/data/postgresql.conf

@@ -54,9 +54,7 @@ setup_test_db() {
     # Initialize test cluster
     initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
 
-    # Get versioned library name from control file
-    local extversion=$(awk -F"'" '/default_version/ {print $2}' "${SCRIPT_DIR}/../../pg_textsearch.control")
-    local lib_name="pg_textsearch-${extversion}"
+    local lib_name="pg_textsearch"
 
     # Configure test instance
     cat >> "${DATA_DIR}/postgresql.conf" << EOF

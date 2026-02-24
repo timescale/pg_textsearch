@@ -192,8 +192,7 @@ jobs:
         mkdir -p tmp_nightly_test
         initdb -D tmp_nightly_test/data --auth-local=trust
 
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
-        LIB_NAME="pg_textsearch-${EXTVERSION}"
+        LIB_NAME="pg_textsearch"
         echo "port = 55437" >> tmp_nightly_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_nightly_test'" >> tmp_nightly_test/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_nightly_test/data/postgresql.conf
