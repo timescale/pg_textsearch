@@ -191,7 +191,7 @@ tp_build_parallel(
 	/* Enter parallel mode and create context */
 	EnterParallelMode();
 	pcxt = CreateParallelContext(
-			PG_TEXTSEARCH_LIB_NAME, "tp_parallel_build_worker_main", nworkers);
+			"pg_textsearch", "tp_parallel_build_worker_main", nworkers);
 
 	/* Estimate and allocate shared memory */
 	shm_toc_estimate_chunk(&pcxt->estimator, shmem_size);

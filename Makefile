@@ -11,9 +11,7 @@ DATA = sql/pg_textsearch--1.0.0-dev.sql \
        sql/pg_textsearch--0.4.0--0.4.1.sql \
        sql/pg_textsearch--0.4.1--0.4.2.sql \
        sql/pg_textsearch--0.4.2--0.5.0.sql \
-       sql/pg_textsearch--0.5.0--0.5.1.sql \
-       sql/pg_textsearch--0.5.0--1.0.0-dev.sql \
-       sql/pg_textsearch--0.5.1--1.0.0-dev.sql
+       sql/pg_textsearch--0.5.0--1.0.0-dev.sql
 
 # Source files organized by directory
 OBJS = \
@@ -47,15 +45,11 @@ OBJS = \
 	src/planner/cost.o \
 	src/debug/dump.o
 
-# Extract extension version from the control file (single source of truth)
-EXTVERSION = $(shell awk -F"'" '/default_version/ {print $$2}' \
-    pg_textsearch.control)
-
-# Versioned shared library target (e.g., pg_textsearch-1.0.0-dev.so)
-MODULE_big = pg_textsearch-$(EXTVERSION)
+# Shared library target
+MODULE_big = pg_textsearch
 
 # Include directories, debug flags, and warning flags for unused code
-PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable -DPG_TEXTSEARCH_LIB_NAME=\"$(MODULE_big)\"
+PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable
 
 # Uncomment the following line to enable debug index dumps
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
@@ -67,18 +61,6 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
-
-# Verify that module_pathname in control file matches EXTVERSION
-check-version:
-	@expected="module_pathname = '\$$libdir/pg_textsearch-$(EXTVERSION)'"; \
-	actual=$$(grep '^module_pathname' pg_textsearch.control); \
-	if [ "$$actual" != "$$expected" ]; then \
-		echo "ERROR: module_pathname doesn't match default_version"; \
-		echo "  Expected: $$expected"; \
-		echo "  Actual:   $$actual"; \
-		exit 1; \
-	fi
-	@echo "Version check passed: $(EXTVERSION)"
 
 # SQL regression tests
 test:
@@ -309,4 +291,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report check-version help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

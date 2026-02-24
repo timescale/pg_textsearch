@@ -17,15 +17,11 @@ Change version from `X.Y.Z-dev` to `X.Y.Z` in these files:
 
 | File | What to update |
 |------|----------------|
-| `pg_textsearch.control` | `default_version` AND `module_pathname` |
+| `pg_textsearch.control` | `default_version` |
 | `mod.c` | `.version` in `PG_MODULE_MAGIC_EXT` |
 | `Makefile` | `DATA` list (SQL filenames) |
 | `README.md` | Status line, image reference |
 | `CLAUDE.md` | `Current Version` |
-
-**Important**: `module_pathname` in `pg_textsearch.control` must include the
-version (e.g., `$libdir/pg_textsearch-1.0.0`). Run `make check-version` to
-verify `default_version` and `module_pathname` are consistent.
 
 ### 2. Update SQL Files
 
@@ -158,43 +154,6 @@ Update files with `0.4.0-dev`, create new SQL files, etc.
 **Don't forget**: Add the just-released version to the `old_version` matrix in
 `.github/workflows/upgrade-tests.yml` so future releases are tested for upgrade
 compatibility from this version.
-
-## Versioned Binary
-
-The shared library includes the full semver version in its filename (e.g.,
-`pg_textsearch-1.0.0.so`). This prevents DLL Hell when multiple versions are
-installed or when upgrading without restarting Postgres.
-
-### How It Works
-
-- The Makefile extracts `default_version` from `pg_textsearch.control` and
-  uses it to set `MODULE_big`, which PGXS uses to name the `.so`/`.dylib`
-- The control file's `module_pathname` must match (e.g.,
-  `$libdir/pg_textsearch-1.0.0`)
-- `make check-version` validates that `default_version` and `module_pathname`
-  are consistent
-- Old unversioned binaries (`pg_textsearch.so`) are left in place and can
-  coexist with versioned ones
-
-### When Bumping Versions
-
-Update **both** fields in `pg_textsearch.control`:
-
-```
-default_version = '1.1.0-dev'
-module_pathname = '$libdir/pg_textsearch-1.1.0-dev'
-```
-
-Then run `make check-version` to confirm they match.
-
-### Upgrade Scripts and Versioned Binaries
-
-Every upgrade script that changes the library version **must** include
-`CREATE OR REPLACE FUNCTION` statements for all C functions. This updates
-their `probin` to reference the new versioned library. Without this, the
-old functions would still reference the previous version's binary.
-
-See `sql/pg_textsearch--0.5.0--1.0.0-dev.sql` for an example.
 
 ## SQL Upgrade Path Requirements
 

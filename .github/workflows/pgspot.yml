@@ -30,16 +30,10 @@ jobs:
         # Check extension SQL files
         # Ignore PS017 (unqualified object reference) - false positives for
         # type/operator definitions that reference types being created
-        # Ignore PS002 (CREATE OR REPLACE) in upgrade scripts - required to
-        # update function probin when the versioned library name changes
         has_errors=0
         for sql_file in sql/pg_textsearch--*.sql; do
           echo "Checking $sql_file"
-          ignore_flags="--ignore PS017"
-          if [[ "$sql_file" == *--*--*.sql ]]; then
-            ignore_flags="$ignore_flags --ignore PS002"
-          fi
-          if ! pgspot $ignore_flags "$sql_file"; then
+          if ! pgspot --ignore PS017 "$sql_file"; then
             has_errors=1
           fi
         done

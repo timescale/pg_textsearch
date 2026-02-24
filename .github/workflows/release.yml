@@ -162,13 +162,12 @@ jobs:
         cp pg_textsearch.control dist/pg${{ matrix.pg_version }}/
         cp sql/pg_textsearch--*.sql dist/pg${{ matrix.pg_version }}/
 
-        # Copy built library (versioned binary name)
-        EXTVERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        # Copy built library with version info
         PG_LIB_DIR=$(pg_config --pkglibdir)
-        if [ -f "$PG_LIB_DIR/pg_textsearch-${EXTVERSION}.so" ]; then
-          cp "$PG_LIB_DIR/pg_textsearch-${EXTVERSION}.so" dist/pg${{ matrix.pg_version }}/
-        elif [ -f "pg_textsearch-${EXTVERSION}.dylib" ]; then
-          cp "pg_textsearch-${EXTVERSION}.dylib" dist/pg${{ matrix.pg_version }}/
+        if [ -f "$PG_LIB_DIR/pg_textsearch.so" ]; then
+          cp "$PG_LIB_DIR/pg_textsearch.so" dist/pg${{ matrix.pg_version }}/
+        elif [ -f "pg_textsearch.dylib" ]; then
+          cp pg_textsearch.dylib dist/pg${{ matrix.pg_version }}/
         fi
 
         # Create README for this version
