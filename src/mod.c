@@ -117,7 +117,7 @@ _PG_init(void)
 				 errhint("Add '%s' to shared_preload_libraries "
 						 "in postgresql.conf and restart the "
 						 "server.",
-						 PG_TEXTSEARCH_LIB_NAME)));
+						 "pg_textsearch")));
 
 	/*
 	 * Define GUC parameters
