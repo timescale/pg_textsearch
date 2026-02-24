@@ -48,8 +48,7 @@
 /*
  * Shared memory keys for parallel build TOC
  */
-#define TP_PARALLEL_KEY_SHARED	   UINT64CONST(0xB175DA7A00000001)
-#define TP_PARALLEL_KEY_TABLE_SCAN UINT64CONST(0xB175DA7A00000004)
+#define TP_PARALLEL_KEY_SHARED UINT64CONST(0xB175DA7A00000001)
 
 /*
  * Per-worker result reported back to leader via shared memory.
@@ -88,13 +87,19 @@ typedef struct TpParallelWorkerResult
 typedef struct TpParallelBuildShared
 {
 	/* Immutable configuration (set before workers launch) */
-	Oid		   heaprelid;		/* Heap relation OID */
-	Oid		   indexrelid;		/* Index relation OID */
-	Oid		   text_config_oid; /* Text search configuration OID */
-	AttrNumber attnum;			/* Attribute number of indexed column */
-	double	   k1;				/* BM25 k1 parameter */
-	double	   b;				/* BM25 b parameter */
-	int32	   nworkers;		/* Number of workers requested */
+	Oid		   heaprelid;		  /* Heap relation OID */
+	Oid		   indexrelid;		  /* Index relation OID */
+	Oid		   text_config_oid;	  /* Text search configuration OID */
+	AttrNumber attnum;			  /* Attribute number of indexed column */
+	double	   k1;				  /* BM25 k1 parameter */
+	double	   b;				  /* BM25 b parameter */
+	int32	   nworkers;		  /* Number of workers requested */
+	int32	   nworkers_launched; /* Actual workers launched */
+
+	/* Per-worker heap block ranges for disjoint TID scan */
+	BlockNumber		 worker_start_block[TP_MAX_PARALLEL_WORKERS];
+	BlockNumber		 worker_end_block[TP_MAX_PARALLEL_WORKERS];
+	pg_atomic_uint32 scan_ready; /* 1 when block ranges set */
 
 	/* Temp files for worker segments */
 	SharedFileSet fileset;
@@ -132,17 +137,6 @@ TpParallelWorkerResults(TpParallelBuildShared *shared)
 {
 	return (TpParallelWorkerResult *)((char *)shared +
 									  MAXALIGN(sizeof(TpParallelBuildShared)));
-}
-
-/*
- * Get pointer to parallel table scan descriptor
- */
-static inline ParallelTableScanDesc
-TpParallelTableScan(TpParallelBuildShared *shared)
-{
-	char *base = (char *)TpParallelWorkerResults(shared);
-	base += MAXALIGN(sizeof(TpParallelWorkerResult) * shared->nworkers);
-	return (ParallelTableScanDesc)base;
 }
 
 /*

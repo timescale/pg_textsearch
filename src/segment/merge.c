@@ -564,6 +564,31 @@ posting_source_init(
 }
 
 /*
+ * Initialize a posting merge source for fast streaming (disjoint mode).
+ * Skips posting_source_convert_current since CTID lookups are not needed.
+ */
+void
+posting_source_init_fast(
+		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry)
+{
+	memset(ps, 0, sizeof(TpPostingMergeSource));
+	ps->reader			  = reader;
+	ps->skip_index_offset = entry->skip_index_offset;
+	ps->block_count		  = entry->block_count;
+	ps->current_block	  = 0;
+	ps->current_in_block  = 0;
+	ps->block_postings	  = NULL;
+	ps->block_capacity	  = 0;
+	ps->exhausted		  = (entry->block_count == 0);
+
+	if (!ps->exhausted)
+	{
+		if (!posting_source_load_block(ps))
+			ps->exhausted = true;
+	}
+}
+
+/*
  * Free posting merge source resources.
  */
 void
@@ -604,6 +629,38 @@ posting_source_advance(TpPostingMergeSource *ps)
 	}
 
 	posting_source_convert_current(ps);
+	return true;
+}
+
+/*
+ * Advance a posting merge source without CTID conversion (disjoint mode).
+ * Reads doc_id, frequency, fieldnorm directly from the block posting
+ * array, skipping the expensive CTID lookups in convert_current.
+ */
+bool
+posting_source_advance_fast(TpPostingMergeSource *ps)
+{
+	if (ps->exhausted)
+		return false;
+
+	ps->current_in_block++;
+
+	/* Move to next block if current exhausted */
+	while (ps->current_in_block >= ps->skip_entry.doc_count)
+	{
+		ps->current_block++;
+		if (ps->current_block >= ps->block_count)
+		{
+			ps->exhausted = true;
+			return false;
+		}
+		if (!posting_source_load_block(ps))
+		{
+			ps->exhausted = true;
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -664,7 +721,10 @@ typedef struct TpDocmapMergeSource
  */
 TpDocMapBuilder *
 build_merged_docmap(
-		TpMergeSource *sources, int num_sources, TpMergeDocMapping *mapping)
+		TpMergeSource	  *sources,
+		int				   num_sources,
+		TpMergeDocMapping *mapping,
+		bool			   disjoint_sources)
 {
 	TpDocMapBuilder		*docmap;
 	TpDocmapMergeSource *msources;
@@ -751,56 +811,78 @@ build_merged_docmap(
 	}
 
 	/*
-	 * Step 3: N-way merge.
-	 * Each source's docs are already in CTID order. We find the
-	 * source with the smallest current CTID via linear scan (N is
-	 * small, typically <= 24) and emit docs sequentially.
+	 * Step 3: Merge docmaps.
+	 *
+	 * When disjoint_sources is true, sources have non-overlapping
+	 * CTID ranges in source order, so we concatenate sequentially
+	 * instead of doing an N-way comparison. This eliminates the
+	 * per-doc CTID comparison overhead.
 	 */
-	while (new_doc_id < total_docs)
+	if (disjoint_sources)
 	{
-		int			 min_src = -1;
-		BlockNumber	 min_page;
-		OffsetNumber min_offset;
-
-		/* Find source with smallest current CTID */
 		for (i = 0; i < num_sources; i++)
 		{
 			TpDocmapMergeSource *ms = &msources[i];
-			BlockNumber			 pg;
-			OffsetNumber		 off;
+			uint32				 j;
 
-			if (ms->cursor >= ms->num_docs)
-				continue;
-
-			pg	= ms->ctid_pages[ms->cursor];
-			off = ms->ctid_offsets[ms->cursor];
-
-			if (min_src < 0 || pg < min_page ||
-				(pg == min_page && off < min_offset))
+			for (j = 0; j < ms->num_docs; j++)
 			{
-				min_src	   = i;
-				min_page   = pg;
-				min_offset = off;
+				mapping->old_to_new[i][j]  = new_doc_id;
+				out_pages[new_doc_id]	   = ms->ctid_pages[j];
+				out_offsets[new_doc_id]	   = ms->ctid_offsets[j];
+				out_fieldnorms[new_doc_id] = ms->fieldnorms[j];
+				new_doc_id++;
 			}
 		}
-
-		Assert(min_src >= 0);
-
+	}
+	else
+	{
+		/*
+		 * N-way merge: each source's docs are already in CTID
+		 * order. Find the source with smallest current CTID via
+		 * linear scan (N is small, typically <= 24).
+		 */
+		while (new_doc_id < total_docs)
 		{
-			TpDocmapMergeSource *ms	 = &msources[min_src];
-			uint32				 pos = ms->cursor;
+			int			 min_src = -1;
+			BlockNumber	 min_page;
+			OffsetNumber min_offset;
 
-			/* Record old->new mapping */
-			mapping->old_to_new[min_src][pos] = new_doc_id;
+			for (i = 0; i < num_sources; i++)
+			{
+				TpDocmapMergeSource *ms = &msources[i];
+				BlockNumber			 pg;
+				OffsetNumber		 off;
 
-			/* Emit to output arrays */
-			out_pages[new_doc_id]	   = ms->ctid_pages[pos];
-			out_offsets[new_doc_id]	   = ms->ctid_offsets[pos];
-			out_fieldnorms[new_doc_id] = ms->fieldnorms[pos];
+				if (ms->cursor >= ms->num_docs)
+					continue;
 
-			ms->cursor++;
+				pg	= ms->ctid_pages[ms->cursor];
+				off = ms->ctid_offsets[ms->cursor];
+
+				if (min_src < 0 || pg < min_page ||
+					(pg == min_page && off < min_offset))
+				{
+					min_src	   = i;
+					min_page   = pg;
+					min_offset = off;
+				}
+			}
+
+			Assert(min_src >= 0);
+
+			{
+				TpDocmapMergeSource *ms	 = &msources[min_src];
+				uint32				 pos = ms->cursor;
+
+				mapping->old_to_new[min_src][pos] = new_doc_id;
+				out_pages[new_doc_id]			  = ms->ctid_pages[pos];
+				out_offsets[new_doc_id]			  = ms->ctid_offsets[pos];
+				out_fieldnorms[new_doc_id]		  = ms->fieldnorms[pos];
+				ms->cursor++;
+			}
+			new_doc_id++;
 		}
-		new_doc_id++;
 	}
 
 	/* Step 4: Package into a TpDocMapBuilder (finalized, no hash table) */
@@ -871,6 +953,30 @@ init_term_posting_sources(
 }
 
 /*
+ * Initialize posting sources in fast/disjoint mode (no CTID conversion).
+ */
+TpPostingMergeSource *
+init_term_posting_sources_fast(
+		TpMergedTerm *term, TpMergeSource *sources, int *num_psources)
+{
+	TpPostingMergeSource *psources;
+	uint32				  i;
+
+	*num_psources = term->num_segment_refs;
+	psources = palloc(sizeof(TpPostingMergeSource) * term->num_segment_refs);
+
+	for (i = 0; i < term->num_segment_refs; i++)
+	{
+		TpTermSegmentRef *ref	 = &term->segment_refs[i];
+		TpMergeSource	 *source = &sources[ref->segment_idx];
+
+		posting_source_init_fast(&psources[i], source->reader, &ref->entry);
+	}
+
+	return psources;
+}
+
+/*
  * Free N-way merge posting sources for a term.
  */
 static void
@@ -909,7 +1015,8 @@ write_merged_segment_to_sink(
 		TpMergeSource *sources,
 		int			   num_sources,
 		uint32		   target_level,
-		uint64		   total_tokens)
+		uint64		   total_tokens,
+		bool		   disjoint_sources)
 {
 	TpSegmentHeader		header;
 	TpDictionary		dict;
@@ -929,7 +1036,8 @@ write_merged_segment_to_sink(
 		return;
 
 	/* Build docmap and direct mapping arrays from source segments */
-	docmap = build_merged_docmap(sources, num_sources, &doc_mapping);
+	docmap = build_merged_docmap(
+			sources, num_sources, &doc_mapping, disjoint_sources);
 
 	/*
 	 * For BufFile sink, docmap reads may have moved the cursor.
@@ -1015,8 +1123,72 @@ write_merged_segment_to_sink(
 	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
 
 	/*
+	 * Helper macro: flush a full or partial block_buf to the sink.
+	 * Computes skip entry, optionally compresses, writes data,
+	 * and accumulates the skip entry.
+	 */
+#define FLUSH_BLOCK(block_buf, block_count, num_blocks)                         \
+	do                                                                          \
+	{                                                                           \
+		TpSkipEntry skip_;                                                      \
+		uint16		max_tf_	  = 0;                                              \
+		uint8		min_norm_ = 255;                                            \
+		uint32		last_did_ = 0;                                              \
+		uint32		j_;                                                         \
+                                                                                \
+		for (j_ = 0; j_ < (block_count); j_++)                                  \
+		{                                                                       \
+			if ((block_buf)[j_].doc_id > last_did_)                             \
+				last_did_ = (block_buf)[j_].doc_id;                             \
+			if ((block_buf)[j_].frequency > max_tf_)                            \
+				max_tf_ = (block_buf)[j_].frequency;                            \
+			if ((block_buf)[j_].fieldnorm < min_norm_)                          \
+				min_norm_ = (block_buf)[j_].fieldnorm;                          \
+		}                                                                       \
+                                                                                \
+		skip_.last_doc_id	 = last_did_;                                       \
+		skip_.doc_count		 = (uint8)(block_count);                            \
+		skip_.block_max_tf	 = max_tf_;                                         \
+		skip_.block_max_norm = min_norm_;                                       \
+		skip_.posting_offset = sink->current_offset;                            \
+		memset(skip_.reserved, 0, sizeof(skip_.reserved));                      \
+                                                                                \
+		if (tp_compress_segments)                                               \
+		{                                                                       \
+			uint8  cbuf_[TP_MAX_COMPRESSED_BLOCK_SIZE];                         \
+			uint32 csize_;                                                      \
+                                                                                \
+			csize_		= tp_compress_block((block_buf), (block_count), cbuf_); \
+			skip_.flags = TP_BLOCK_FLAG_DELTA;                                  \
+			merge_sink_write(sink, cbuf_, csize_);                              \
+		}                                                                       \
+		else                                                                    \
+		{                                                                       \
+			skip_.flags = TP_BLOCK_FLAG_UNCOMPRESSED;                           \
+			merge_sink_write(                                                   \
+					sink,                                                       \
+					(block_buf),                                                \
+					(block_count) * sizeof(TpBlockPosting));                    \
+		}                                                                       \
+                                                                                \
+		if (skip_entries_count >= skip_entries_capacity)                        \
+		{                                                                       \
+			skip_entries_capacity *= 2;                                         \
+			all_skip_entries = repalloc_huge(                                   \
+					all_skip_entries,                                           \
+					skip_entries_capacity * sizeof(TpSkipEntry));               \
+		}                                                                       \
+		all_skip_entries[skip_entries_count++] = skip_;                         \
+		(num_blocks)++;                                                         \
+	} while (0)
+
+	/*
 	 * Streaming pass: for each term, stream postings one block at a
-	 * time from the N-way merge and write immediately.
+	 * time and write immediately.
+	 *
+	 * When disjoint_sources is true, drain sources sequentially
+	 * (source 0 fully, then source 1, etc.) without CTID lookups.
+	 * Otherwise, use N-way CTID-comparison merge.
 	 */
 	for (i = 0; i < num_terms; i++)
 	{
@@ -1038,148 +1210,88 @@ write_merged_segment_to_sink(
 			continue;
 		}
 
-		/* Initialize N-way merge sources */
-		psources =
-				init_term_posting_sources(&terms[i], sources, &num_psources);
-
-		/*
-		 * Stream through postings one block at a time.
-		 */
-		while (true)
+		if (disjoint_sources)
 		{
-			int min_idx = find_min_posting_source(psources, num_psources);
-			if (min_idx < 0)
-				break;
+			/*
+			 * Fast path: sequential drain. Sources have disjoint
+			 * CTID ranges, so drain source 0, then 1, etc.
+			 * Reads doc_id/frequency/fieldnorm directly from
+			 * the block posting array, skipping CTID lookups.
+			 */
+			psources = init_term_posting_sources_fast(
+					&terms[i], sources, &num_psources);
 
+			for (int src = 0; src < num_psources; src++)
 			{
-				int	   src_idx	  = terms[i].segment_refs[min_idx].segment_idx;
-				uint32 old_doc_id = psources[min_idx].current.old_doc_id;
-				uint32 new_doc_id =
-						doc_mapping.old_to_new[src_idx][old_doc_id];
+				while (!psources[src].exhausted)
+				{
+					TpBlockPosting *bp =
+							&psources[src].block_postings
+									 [psources[src].current_in_block];
+					int	   seg_idx = terms[i].segment_refs[src].segment_idx;
+					uint32 new_doc_id =
+							doc_mapping.old_to_new[seg_idx][bp->doc_id];
 
-				block_buf[block_count].doc_id = new_doc_id;
-				block_buf[block_count].frequency =
-						psources[min_idx].current.frequency;
-				block_buf[block_count].fieldnorm =
-						psources[min_idx].current.fieldnorm;
-				block_buf[block_count].reserved = 0;
+					block_buf[block_count].doc_id	 = new_doc_id;
+					block_buf[block_count].frequency = bp->frequency;
+					block_buf[block_count].fieldnorm = bp->fieldnorm;
+					block_buf[block_count].reserved	 = 0;
+					block_count++;
+					doc_count++;
+
+					posting_source_advance_fast(&psources[src]);
+
+					if (block_count == TP_BLOCK_SIZE)
+					{
+						FLUSH_BLOCK(block_buf, block_count, num_blocks);
+						block_count = 0;
+					}
+				}
 			}
-			block_count++;
-			doc_count++;
+		}
+		else
+		{
+			/*
+			 * Standard N-way merge: compare CTIDs across sources.
+			 */
+			psources = init_term_posting_sources(
+					&terms[i], sources, &num_psources);
 
-			posting_source_advance(&psources[min_idx]);
-
-			/* Write block when full */
-			if (block_count == TP_BLOCK_SIZE)
+			while (true)
 			{
-				TpSkipEntry skip;
-				uint16		max_tf		= 0;
-				uint8		min_norm	= 255;
-				uint32		last_doc_id = 0;
-				uint32		j;
+				int min_idx = find_min_posting_source(psources, num_psources);
+				if (min_idx < 0)
+					break;
 
-				for (j = 0; j < block_count; j++)
 				{
-					if (block_buf[j].doc_id > last_doc_id)
-						last_doc_id = block_buf[j].doc_id;
-					if (block_buf[j].frequency > max_tf)
-						max_tf = block_buf[j].frequency;
-					if (block_buf[j].fieldnorm < min_norm)
-						min_norm = block_buf[j].fieldnorm;
+					int src_idx = terms[i].segment_refs[min_idx].segment_idx;
+					uint32 old_doc_id = psources[min_idx].current.old_doc_id;
+					uint32 new_doc_id =
+							doc_mapping.old_to_new[src_idx][old_doc_id];
+
+					block_buf[block_count].doc_id = new_doc_id;
+					block_buf[block_count].frequency =
+							psources[min_idx].current.frequency;
+					block_buf[block_count].fieldnorm =
+							psources[min_idx].current.fieldnorm;
+					block_buf[block_count].reserved = 0;
 				}
+				block_count++;
+				doc_count++;
 
-				skip.last_doc_id	= last_doc_id;
-				skip.doc_count		= (uint8)block_count;
-				skip.block_max_tf	= max_tf;
-				skip.block_max_norm = min_norm;
-				skip.posting_offset = sink->current_offset;
-				memset(skip.reserved, 0, sizeof(skip.reserved));
+				posting_source_advance(&psources[min_idx]);
 
-				if (tp_compress_segments)
+				if (block_count == TP_BLOCK_SIZE)
 				{
-					uint8  cbuf[TP_MAX_COMPRESSED_BLOCK_SIZE];
-					uint32 csize;
-
-					csize = tp_compress_block(block_buf, block_count, cbuf);
-					skip.flags = TP_BLOCK_FLAG_DELTA;
-					merge_sink_write(sink, cbuf, csize);
+					FLUSH_BLOCK(block_buf, block_count, num_blocks);
+					block_count = 0;
 				}
-				else
-				{
-					skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-					merge_sink_write(
-							sink,
-							block_buf,
-							block_count * sizeof(TpBlockPosting));
-				}
-
-				if (skip_entries_count >= skip_entries_capacity)
-				{
-					skip_entries_capacity *= 2;
-					all_skip_entries = repalloc_huge(
-							all_skip_entries,
-							skip_entries_capacity * sizeof(TpSkipEntry));
-				}
-				all_skip_entries[skip_entries_count++] = skip;
-
-				num_blocks++;
-				block_count = 0;
 			}
 		}
 
 		/* Write final partial block if any */
 		if (block_count > 0)
-		{
-			TpSkipEntry skip;
-			uint16		max_tf		= 0;
-			uint8		min_norm	= 255;
-			uint32		last_doc_id = 0;
-			uint32		j;
-
-			for (j = 0; j < block_count; j++)
-			{
-				if (block_buf[j].doc_id > last_doc_id)
-					last_doc_id = block_buf[j].doc_id;
-				if (block_buf[j].frequency > max_tf)
-					max_tf = block_buf[j].frequency;
-				if (block_buf[j].fieldnorm < min_norm)
-					min_norm = block_buf[j].fieldnorm;
-			}
-
-			skip.last_doc_id	= last_doc_id;
-			skip.doc_count		= (uint8)block_count;
-			skip.block_max_tf	= max_tf;
-			skip.block_max_norm = min_norm;
-			skip.posting_offset = sink->current_offset;
-			memset(skip.reserved, 0, sizeof(skip.reserved));
-
-			if (tp_compress_segments)
-			{
-				uint8  cbuf[TP_MAX_COMPRESSED_BLOCK_SIZE];
-				uint32 csize;
-
-				csize	   = tp_compress_block(block_buf, block_count, cbuf);
-				skip.flags = TP_BLOCK_FLAG_DELTA;
-				merge_sink_write(sink, cbuf, csize);
-			}
-			else
-			{
-				skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-				merge_sink_write(
-						sink, block_buf, block_count * sizeof(TpBlockPosting));
-			}
-
-			if (skip_entries_count >= skip_entries_capacity)
-			{
-				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc_huge(
-						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
-			}
-			all_skip_entries[skip_entries_count++] = skip;
-
-			num_blocks++;
-		}
+			FLUSH_BLOCK(block_buf, block_count, num_blocks);
 
 		term_blocks[i].doc_freq	   = doc_count;
 		term_blocks[i].block_count = (uint16)num_blocks;
@@ -1190,6 +1302,8 @@ write_merged_segment_to_sink(
 		if ((i % 1000) == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
+
+#undef FLUSH_BLOCK
 
 	/* Skip index starts here - after all postings */
 	header.skip_index_offset = sink->current_offset;
@@ -1566,7 +1680,8 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				sources,
 				num_sources,
 				level + 1,
-				total_tokens);
+				total_tokens,
+				false);
 
 		/* Free writer pages array */
 		if (sink.writer.pages)

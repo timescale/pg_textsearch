@@ -53,7 +53,8 @@ extern void write_merged_segment_to_sink(
 		struct TpMergeSource *sources,
 		int					  num_sources,
 		uint32				  target_level,
-		uint64				  total_tokens);
+		uint64				  total_tokens,
+		bool				  disjoint_sources);
 
 /*
  * Merge all segments at the specified level into a single segment

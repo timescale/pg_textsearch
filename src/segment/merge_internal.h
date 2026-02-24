@@ -128,8 +128,11 @@ extern void merged_term_add_segment_ref(
  */
 extern void posting_source_init(
 		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry);
+extern void posting_source_init_fast(
+		TpPostingMergeSource *ps, TpSegmentReader *reader, TpDictEntry *entry);
 extern void posting_source_free(TpPostingMergeSource *ps);
 extern bool posting_source_advance(TpPostingMergeSource *ps);
+extern bool posting_source_advance_fast(TpPostingMergeSource *ps);
 extern int
 find_min_posting_source(TpPostingMergeSource *sources, int num_sources);
 
@@ -137,11 +140,16 @@ find_min_posting_source(TpPostingMergeSource *sources, int num_sources);
  * Docmap merge operations
  */
 extern struct TpDocMapBuilder *build_merged_docmap(
-		TpMergeSource *sources, int num_sources, TpMergeDocMapping *mapping);
+		TpMergeSource	  *sources,
+		int				   num_sources,
+		TpMergeDocMapping *mapping,
+		bool			   disjoint_sources);
 extern void free_merge_doc_mapping(TpMergeDocMapping *mapping);
 
 /*
  * Posting source initialization for a term
  */
 extern TpPostingMergeSource *init_term_posting_sources(
+		TpMergedTerm *term, TpMergeSource *sources, int *num_psources);
+extern TpPostingMergeSource *init_term_posting_sources_fast(
 		TpMergedTerm *term, TpMergeSource *sources, int *num_psources);
