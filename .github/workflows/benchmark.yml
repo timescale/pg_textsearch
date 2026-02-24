@@ -903,6 +903,26 @@ jobs:
 
         echo "End: $(date)" | tee -a benchmark_results.txt
 
+    - name: Validate MS MARCO results
+      if: |
+        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.msmarco_size == 'full'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== MS MARCO Validation ===" | tee -a benchmark_results.txt
+
+        psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \
+            tee msmarco_validation.log | tee -a benchmark_results.txt
+
+        if grep -q "VALIDATION FAILED" msmarco_validation.log; then
+            echo "ERROR: MS MARCO validation FAILED!" | tee -a benchmark_results.txt
+            exit 1
+        fi
+
+        echo "MS MARCO validation PASSED" | tee -a benchmark_results.txt
+
     - name: Run parallel scaling benchmark
       if: github.event.inputs.parallel_scaling == 'true' && (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all')
       run: |
@@ -941,6 +961,26 @@ jobs:
             tee -a benchmark_results.txt
 
         echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Validate Wikipedia results
+      if: |
+        (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.wiki_size == '100K'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Wikipedia Validation ===" | tee -a benchmark_results.txt
+
+        psql -f benchmarks/datasets/wikipedia/validate_queries.sql 2>&1 | \
+            tee wikipedia_validation.log | tee -a benchmark_results.txt
+
+        if grep -q "VALIDATION FAILED" wikipedia_validation.log; then
+            echo "ERROR: Wikipedia validation FAILED!" | tee -a benchmark_results.txt
+            exit 1
+        fi
+
+        echo "Wikipedia validation PASSED" | tee -a benchmark_results.txt
 
     - name: Generate summary and metrics
       run: |
@@ -1010,6 +1050,7 @@ jobs:
           benchmark_summary.md
           *_metrics.json
           *_action.json
+          *_validation.log
           tmp_bench/postgres.log
         retention-days: 90
 
