@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771915161416,
+  "lastUpdate": 1771971518613,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3324,6 +3324,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.35,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "9ad4271373e91371e28c2afa0e1077972af65291",
+          "message": "feat: disjoint TID range scans + sequential drain merge\n\nReplace shared parallel heap scan with per-worker TID range scans.\nEach worker scans a contiguous, non-overlapping range of heap blocks,\nensuring disjoint CTIDs across workers.\n\nThis enables a sequential drain fast path in cross-worker merge:\ninstead of N-way CTID comparison per posting, drain sources in order\n(source 0 fully, then source 1, etc.). This eliminates:\n- posting_source_convert_current (2 pread calls per posting)\n- find_min_posting_source (CTID comparison per posting)\n\nThese two functions accounted for ~47% of CPU time in Phase 2 of\nthe 138M-row MS-MARCO v2 parallel build.\n\nChanges:\n- Leader divides heap blocks evenly across launched workers, stores\n  ranges in shared memory, signals scan_ready atomic flag\n- Workers spin-wait on scan_ready, then open table_beginscan_tidrange\n  limited to their assigned block range\n- build_merged_docmap: concatenates sources sequentially when disjoint\n  instead of N-way CTID merge\n- write_merged_segment_to_sink: new disjoint_sources parameter enables\n  sequential drain using posting_source_advance_fast (no CTID lookup)\n- Extract FLUSH_BLOCK macro to deduplicate block write logic\n- Remove parallel table scan descriptor (no longer needed)",
+          "timestamp": "2026-02-24T22:03:39Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9ad4271373e91371e28c2afa0e1077972af65291"
+        },
+        "date": 1771971517830,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 233.06,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.26,
             "unit": "ms"
           },
           {
