@@ -1029,6 +1029,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	Relation				heap;
 	Relation				index;
 	TableScanDesc			scan;
+	Snapshot				snap;
 	TupleTableSlot		   *slot;
 	TpBuildContext		   *build_ctx;
 	MemoryContext			build_tmpctx;
@@ -1074,6 +1075,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	 * Each worker scans a contiguous, non-overlapping range of
 	 * heap blocks, ensuring disjoint CTIDs across workers.
 	 */
+	snap = GetTransactionSnapshot();
+#if PG_VERSION_NUM >= 180000
+	snap = RegisterSnapshot(snap);
+#endif
+
 	slot = table_slot_create(heap, NULL);
 	{
 		BlockNumber start_blk = shared->worker_start_block[worker_id];
@@ -1085,8 +1091,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 			ItemPointerSet(&min_tid, start_blk, FirstOffsetNumber);
 			ItemPointerSet(&max_tid, end_blk - 1, MaxOffsetNumber);
-			scan = table_beginscan_tidrange(
-					heap, GetTransactionSnapshot(), &min_tid, &max_tid);
+			scan = table_beginscan_tidrange(heap, snap, &min_tid, &max_tid);
 		}
 		else
 		{
@@ -1304,6 +1309,9 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 	if (scan != NULL)
 		table_endscan(scan);
+#if PG_VERSION_NUM >= 180000
+	UnregisterSnapshot(snap);
+#endif
 	ExecDropSingleTupleTableSlot(slot);
 
 	/* Signal Phase 1 done, wait for leader to pre-extend */
