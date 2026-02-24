@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771975252980,
+  "lastUpdate": 1771975254788,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -11364,6 +11364,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
             "value": 7.61,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2574.94,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "afdca64b8adf628c526b18433f8b07315d180ce8",
+          "message": "fix: register snapshot in worker for PG18 tidrange scan\n\nPG18 added an assertion in heap_prepare_pagescan requiring any snapshot\nused in a heap scan to be registered or active. The leader already\nregistered the snapshot, but the worker passed an unregistered snapshot\nfrom GetTransactionSnapshot() to table_beginscan_tidrange(), tripping\nthe assertion under sanitizer builds.\n\nMirror the leader's pattern: RegisterSnapshot before scan,\nUnregisterSnapshot after table_endscan.",
+          "timestamp": "2026-02-24T22:33:25Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/afdca64b8adf628c526b18433f8b07315d180ce8"
+        },
+        "date": 1771975254251,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 218053.842,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.83,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 20.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 31.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.6,
             "unit": "ms"
           },
           {
