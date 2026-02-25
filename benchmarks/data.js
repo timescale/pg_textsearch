@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772001587600,
+  "lastUpdate": 1772001589918,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -16582,6 +16582,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (100.0K docs) - Index Size",
             "value": 41.76,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a1cfff5b14cf371eae6301cab89d1e871e6fb662",
+          "message": "Revert versioned shared library filename (#238)\n\n## Summary\n\n- Reverts #232 which added version numbers to the shared library\nfilename\n- The versioned binary naming scheme (e.g.,\n`pg_textsearch-1.0.0-dev.so`) caused problems in practice\n- Returns to the standard unversioned `pg_textsearch.so` naming\n\n## Testing\n\n- `make installcheck` passes (all SQL regression + shell tests)\n- `make format-check` passes",
+          "timestamp": "2026-02-24T23:36:50Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a1cfff5b14cf371eae6301cab89d1e871e6fb662"
+        },
+        "date": 1772001589401,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (100.0K docs) - Index Build Time",
+            "value": 11990.714,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 2 Token Query (p50)",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 3 Token Query (p50)",
+            "value": 0.27,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 4 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 5 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 6 Token Query (p50)",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 7 Token Query (p50)",
+            "value": 0.46,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - 8+ Token Query (p50)",
+            "value": 0.64,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Latency (p50, ms)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 38.66,
             "unit": "MB"
           }
         ]
