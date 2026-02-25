@@ -913,6 +913,17 @@ jobs:
 
         echo "=== MS MARCO Validation ===" | tee -a benchmark_results.txt
 
+        # Select version-specific ground truth based on PG major version.
+        # PG17 and PG18 have different Snowball stemmers which affect df values.
+        PG_MAJOR=$(pg_config --version | sed 's/PostgreSQL //' | cut -d. -f1)
+        GT_FILE="benchmarks/datasets/msmarco/ground_truth_pg${PG_MAJOR}.tsv"
+        if [ -f "$GT_FILE" ]; then
+            echo "Using ground truth for PG${PG_MAJOR}" | tee -a benchmark_results.txt
+            cp "$GT_FILE" benchmarks/datasets/msmarco/ground_truth.tsv
+        else
+            echo "No version-specific ground truth for PG${PG_MAJOR}, using default" | tee -a benchmark_results.txt
+        fi
+
         psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \
             tee msmarco_validation.log | tee -a benchmark_results.txt
 

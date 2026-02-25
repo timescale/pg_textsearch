@@ -1,7 +1,9 @@
 -- MS-MARCO Query Validation
 -- Compares Tapir query results against precomputed ground truth
 --
--- Requires: ground_truth.tsv in the same directory
+-- Requires: ground_truth.tsv in the same directory (version-specific;
+--   use ground_truth_pg17.tsv or ground_truth_pg18.tsv based on PG version,
+--   or the generic ground_truth.tsv which should match the target PG version)
 -- Usage: psql -p PORT -f validate_queries.sql
 --
 -- Validates:
