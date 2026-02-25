@@ -227,6 +227,23 @@ tp_build_parallel(
 	LaunchParallelWorkers(pcxt);
 	launched = pcxt->nworkers_launched;
 
+	if (launched == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("parallel index build: could not launch "
+						"any workers"),
+				 errhint("Increase max_worker_processes or reduce "
+						 "max_parallel_maintenance_workers.")));
+
+	/*
+	 * Update nworkers to actual launched count.  The leader loop
+	 * waits for workers_done >= nworkers, so if fewer workers
+	 * launched than requested, the old value would cause a
+	 * deadlock.
+	 */
+	if (launched < nworkers)
+		shared->nworkers = launched;
+
 	ereport(NOTICE,
 			(errmsg("parallel index build: launched %d of %d requested "
 					"workers",
@@ -1632,7 +1649,7 @@ tp_leader_process_buffers(
 	ready_buffers = (TpWorkerMemtableBuffer **)palloc(
 			sizeof(TpWorkerMemtableBuffer *) * max_ready);
 
-	while (!all_done)
+	for (;;)
 	{
 		int	   i;
 		uint64 tuples_scanned = 0;
@@ -1643,6 +1660,25 @@ tp_leader_process_buffers(
 					&worker_states[i].tuples_scanned);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_TUPLES_DONE, tuples_scanned);
+
+		/*
+		 * Check all_done BEFORE collecting buffers to avoid a TOCTOU
+		 * race.  Workers guarantee: buffer marked READY (atomic write)
+		 * then SpinLock acquire/release around workers_done++.  By
+		 * reading workers_done under the same SpinLock first, the
+		 * release/acquire pair ensures that any buffer marked READY
+		 * before the corresponding workers_done increment is visible
+		 * to our subsequent buffer status reads.
+		 *
+		 * Old order (collect, then check) allowed a window where a
+		 * worker marks its final buffer READY and increments
+		 * workers_done between our collection and our check, causing
+		 * the leader to see all_done=true with num_ready=0 and exit
+		 * without processing the final buffer.
+		 */
+		SpinLockAcquire(&shared->mutex);
+		all_done = (shared->workers_done >= shared->nworkers);
+		SpinLockRelease(&shared->mutex);
 
 		/* Collect all currently ready buffers */
 		num_ready = 0;
@@ -1661,20 +1697,20 @@ tp_leader_process_buffers(
 			}
 		}
 
-		/* Check if all workers are done */
-		SpinLockAcquire(&shared->mutex);
-		all_done = (shared->workers_done >= shared->nworkers);
-		SpinLockRelease(&shared->mutex);
+		/* Exit when all workers are done and no buffers remain */
+		if (all_done && num_ready == 0)
+			break;
 
 		/*
 		 * Merge if we have ready buffers and either:
 		 * - All workers are done (final merge)
-		 * - We have at least nworkers buffers ready (one per worker on
-		 * average)
+		 * - We have at least nworkers buffers ready (one per
+		 *   worker on average)
 		 *
-		 * This allows the leader to start merging even if some workers are
-		 * lagging - e.g., if one worker has filled both buffers while another
-		 * is slow, we can still make progress.
+		 * This allows the leader to start merging even if some
+		 * workers are lagging - e.g., if one worker has filled
+		 * both buffers while another is slow, we can still make
+		 * progress.
 		 */
 		if (num_ready > 0 && (all_done || num_ready >= shared->nworkers))
 		{
@@ -1777,7 +1813,7 @@ tp_leader_process_buffers(
 			 */
 			dsa_trim(dsa);
 		}
-		else if (!all_done)
+		else
 		{
 			/* No ready buffers and not done - wait for work */
 			ConditionVariableSleep(
