@@ -727,7 +727,7 @@ worker_execute_merge_group(
 		TpParallelBuildShared *shared, Relation index, uint32 group_idx)
 {
 	TpParallelWorkerResult *results	 = TpParallelWorkerResults(shared);
-	int						nworkers = shared->nworkers;
+	int						nworkers = shared->nworkers_launched;
 
 	/* Collect source segments for this group */
 	typedef struct
@@ -1104,7 +1104,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	 * Per-worker memory budget: split maintenance_work_mem across
 	 * workers. Minimum 64MB per worker to avoid excessive flushing.
 	 */
-	budget = (Size)maintenance_work_mem * 1024L / shared->nworkers;
+	budget = (Size)maintenance_work_mem * 1024L / shared->nworkers_launched;
 	if (budget < 64L * 1024 * 1024)
 		budget = 64L * 1024 * 1024;
 
@@ -1555,6 +1555,15 @@ tp_build_parallel(
 	/* Launch workers */
 	LaunchParallelWorkers(pcxt);
 	launched = pcxt->nworkers_launched;
+
+	if (launched == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("parallel index build: could not launch "
+						"any workers"),
+				 errhint("Increase max_worker_processes or "
+						 "reduce "
+						 "max_parallel_maintenance_workers.")));
 
 	ereport(NOTICE,
 			(errmsg("parallel index build: launched %d of %d "
