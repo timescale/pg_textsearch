@@ -6,7 +6,8 @@
 --
 -- Validates:
 --   1. Same documents appear in top-10 (order may vary for ties)
---   2. BM25 scores match to 4 decimal places
+--   2. BM25 scores match within absolute tolerance (0.001)
+--      This accounts for float4 vs float8 precision in the index
 
 \set ON_ERROR_STOP on
 \timing on
@@ -29,12 +30,15 @@ CREATE TABLE ground_truth (
 SELECT 'Loaded ' || COUNT(DISTINCT query_id) || ' queries, ' || COUNT(*) || ' result rows' as status
 FROM ground_truth;
 
--- Validation function that handles ties properly
--- Compares scores to specified decimal places (default 4)
+-- Validation function that handles ties properly.
+-- Uses absolute tolerance (default 0.001) to account for float4 vs float8
+-- precision differences between index scoring and ground truth.
+-- Rank-boundary ties (missing/extra docs with scores within tolerance of
+-- the rank-10 cutoff) are counted separately from real mismatches.
 CREATE OR REPLACE FUNCTION validate_single_query(
     p_query_id int,
     p_query_text text,
-    p_decimal_places int DEFAULT 4
+    p_tolerance float8 DEFAULT 0.001
 ) RETURNS TABLE(
     query_id int,
     docs_match boolean,
@@ -52,6 +56,10 @@ DECLARE
     v_max_score_diff float8 := 0;
     v_all_scores_match boolean := true;
     v_details text := '';
+    v_gt_min_score float8;
+    v_tapir_min_score float8;
+    v_boundary_tolerance float8;
+    v_real_missing int := 0;
     r record;
 BEGIN
     -- Get Tapir's top-10 results
@@ -83,48 +91,74 @@ BEGIN
 
     SELECT array_agg(d) INTO v_extra
     FROM unnest(v_tapir_docs) d
-    WHERE d NOT IN (SELECT gt2.doc_id FROM ground_truth gt2 WHERE gt2.query_id = p_query_id);
+    WHERE d NOT IN (SELECT gt2.doc_id FROM ground_truth gt2
+                    WHERE gt2.query_id = p_query_id);
 
-    -- Compare scores for matching documents (to N decimal places)
+    -- Compare scores for matching documents using absolute tolerance
     FOR r IN
         SELECT
             gt.doc_id,
             gt.score as gt_score,
             t.score as tapir_score,
-            ABS(gt.score - t.score) as abs_diff,
-            ROUND(gt.score::numeric, p_decimal_places) as gt_rounded,
-            ROUND(t.score::numeric, p_decimal_places) as tapir_rounded
+            ABS(gt.score - t.score) as abs_diff
         FROM ground_truth gt
         JOIN tapir_results t ON gt.doc_id = t.doc_id
         WHERE gt.query_id = p_query_id
     LOOP
-        IF r.gt_rounded != r.tapir_rounded THEN
+        IF r.abs_diff > p_tolerance THEN
             v_all_scores_match := false;
-            v_details := v_details || 'doc ' || r.doc_id::text || ': ' ||
-                'gt=' || r.gt_rounded::text || ', tapir=' || r.tapir_rounded::text || '; ';
+            v_details := v_details || 'doc ' || r.doc_id::text ||
+                ': gt=' || ROUND(r.gt_score::numeric, 4)::text ||
+                ', tapir=' || ROUND(r.tapir_score::numeric, 4)::text ||
+                '; ';
         END IF;
         v_max_score_diff := GREATEST(v_max_score_diff, r.abs_diff);
     END LOOP;
 
+    -- Check if missing/extra docs are rank-boundary ties.
+    -- If the missing doc's gt score is within tolerance of the rank-10
+    -- boundary score, it's a benign tie-break difference.
+    IF v_missing IS NOT NULL AND array_length(v_missing, 1) > 0 THEN
+        -- Get the minimum score at rank-10 boundary
+        SELECT MIN(score) INTO v_gt_min_score FROM ground_truth
+        WHERE query_id = p_query_id;
+        SELECT MIN(score) INTO v_tapir_min_score FROM tapir_results;
+        v_boundary_tolerance := GREATEST(p_tolerance, 0.001);
+
+        FOR r IN
+            SELECT d as doc_id, gt.score as gt_score
+            FROM unnest(v_missing) d
+            JOIN ground_truth gt ON gt.doc_id = d
+                AND gt.query_id = p_query_id
+        LOOP
+            -- Missing doc's score is close to boundary = tie-break
+            IF ABS(r.gt_score - v_tapir_min_score) > v_boundary_tolerance
+            THEN
+                v_real_missing := v_real_missing + 1;
+            END IF;
+        END LOOP;
+    END IF;
+
     -- Build result
     query_id := p_query_id;
-    docs_match := (v_missing IS NULL OR array_length(v_missing, 1) IS NULL) AND
-                  (v_extra IS NULL OR array_length(v_extra, 1) IS NULL);
+    -- docs_match is false only for non-tie missing docs
+    docs_match := (v_real_missing = 0);
     scores_match := v_all_scores_match;
     missing_docs := COALESCE(array_length(v_missing, 1), 0);
     extra_docs := COALESCE(array_length(v_extra, 1), 0);
     max_score_diff := v_max_score_diff;
 
-    IF NOT docs_match THEN
-        IF v_missing IS NOT NULL AND array_length(v_missing, 1) > 0 THEN
-            v_details := v_details || 'Missing: ' || array_to_string(v_missing, ',') || '; ';
-        END IF;
-        IF v_extra IS NOT NULL AND array_length(v_extra, 1) > 0 THEN
-            v_details := v_details || 'Extra: ' || array_to_string(v_extra, ',') || '; ';
-        END IF;
+    IF v_missing IS NOT NULL AND array_length(v_missing, 1) > 0 THEN
+        v_details := v_details || 'Missing: ' ||
+            array_to_string(v_missing, ',') || '; ';
+    END IF;
+    IF v_extra IS NOT NULL AND array_length(v_extra, 1) > 0 THEN
+        v_details := v_details || 'Extra: ' ||
+            array_to_string(v_extra, ',') || '; ';
     END IF;
 
-    details := CASE WHEN v_details = '' THEN 'OK' ELSE trim(trailing '; ' from v_details) END;
+    details := CASE WHEN v_details = '' THEN 'OK'
+               ELSE trim(trailing '; ' from v_details) END;
 
     RETURN NEXT;
 END;
@@ -157,22 +191,24 @@ FROM validation_results;
 DO $$
 DECLARE
     v_total int;
-    v_score_failures int;
-    v_score_match_pct numeric;
+    v_failures int;
+    v_match_pct numeric;
 BEGIN
     SELECT COUNT(*) INTO v_total FROM validation_results;
 
-    SELECT COUNT(*) INTO v_score_failures
+    -- A query fails validation if scores differ beyond tolerance
+    -- OR if docs differ for non-tie-break reasons
+    SELECT COUNT(*) INTO v_failures
     FROM validation_results
-    WHERE NOT scores_match;
+    WHERE NOT scores_match OR NOT docs_match;
 
-    v_score_match_pct := 100.0 * (v_total - v_score_failures) / NULLIF(v_total, 0);
+    v_match_pct := 100.0 * (v_total - v_failures) / NULLIF(v_total, 0);
 
-    IF v_score_match_pct < 100.0 THEN
-        RAISE NOTICE 'VALIDATION FAILED: Score match rate %.1f%% (% of % queries have scores differing beyond 4 decimal places)',
-            v_score_match_pct, v_score_failures, v_total;
+    IF v_match_pct < 100.0 THEN
+        RAISE NOTICE 'VALIDATION FAILED: % of % queries failed (scores differ beyond 0.001 tolerance or non-tie doc mismatches)',
+            v_failures, v_total;
     ELSE
-        RAISE NOTICE 'VALIDATION PASSED: All % queries have scores matching to 4 decimal places', v_total;
+        RAISE NOTICE 'VALIDATION PASSED: All % queries match within tolerance', v_total;
     END IF;
 END;
 $$;
