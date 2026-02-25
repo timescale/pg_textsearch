@@ -3,7 +3,7 @@
 -- Output: ground_truth.tsv with (query_id, query_text, rank, doc_id, score)
 --
 -- Prerequisites:
---   - wikipedia_articles table with BM25 index
+--   - wikipedia_articles table loaded (index NOT required)
 --   - benchmark_queries table (created by queries.sql)
 --
 -- Usage:
@@ -30,32 +30,38 @@ $$;
 
 SELECT 'Found ' || COUNT(*) || ' benchmark queries' as status FROM benchmark_queries;
 
--- Get corpus statistics from the index
+-- Compute corpus statistics from raw data (no index dependency).
+-- This scans the full table to count tokens per document.
+-- Documents with empty tsvectors (no indexable terms) are excluded,
+-- matching the index behavior.
 \echo ''
-\echo 'Getting corpus statistics...'
+\echo 'Computing corpus statistics from raw data...'
+DROP TABLE IF EXISTS corpus_stats;
+CREATE TABLE corpus_stats AS
+SELECT
+    COUNT(*)::bigint as total_docs,
+    SUM(doc_len)::bigint as total_len,
+    (SUM(doc_len)::float8 / COUNT(*)::float8) as avg_doc_len
+FROM (
+    SELECT article_id,
+        (SELECT SUM(array_length(
+            string_to_array(t.positions::text, ','), 1))
+        FROM unnest(to_tsvector('english', content))
+            as t(lexeme, positions, weights)
+        ) as doc_len
+    FROM wikipedia_articles
+) dl
+WHERE doc_len > 0;
+
 DO $$
 DECLARE
-    v_summary text;
-    v_total_docs bigint;
-    v_total_len bigint;
-    v_avg_doc_len float8;
+    r record;
 BEGIN
-    SELECT bm25_summarize_index('wikipedia_bm25_idx') INTO v_summary;
-
-    -- Parse total_docs and total_len from summary
-    -- IMPORTANT: Compute avg_doc_len from total_len/total_docs for full precision.
-    -- Do NOT parse the displayed avg_doc_len which is rounded for display.
-    v_total_docs := (regexp_match(v_summary, 'total_docs: (\d+)'))[1]::bigint;
-    v_total_len := (regexp_match(v_summary, 'total_len: (\d+)'))[1]::bigint;
-    v_avg_doc_len := v_total_len::float8 / v_total_docs::float8;
-
-    -- Store in temp table for use by compute function
-    DROP TABLE IF EXISTS corpus_stats;
-    CREATE TABLE corpus_stats AS
-    SELECT v_total_docs as total_docs, v_avg_doc_len as avg_doc_len;
-
-    RAISE NOTICE 'Corpus stats: total_docs=%, total_len=%, avg_doc_len=%',
-        v_total_docs, v_total_len, v_avg_doc_len;
+    SELECT * INTO r FROM corpus_stats;
+    RAISE NOTICE 'Corpus stats: total_docs=%, total_len=%, '
+        'avg_doc_len=%',
+        r.total_docs, r.total_len,
+        round(r.avg_doc_len::numeric, 4);
 END;
 $$;
 
