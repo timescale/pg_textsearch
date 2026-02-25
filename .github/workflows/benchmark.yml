@@ -907,22 +907,6 @@ jobs:
 
         echo "End: $(date)" | tee -a benchmark_results.txt
 
-    - name: Regenerate MS MARCO ground truth
-      if: |
-        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
-        steps.datasets.outputs.msmarco_size == 'full'
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        export PGDATABASE=bench_test
-
-        echo "=== Regenerating MS MARCO Ground Truth ===" | tee -a benchmark_results.txt
-
-        # Regenerate ground truth from the fresh build so corpus stats
-        # match. This validates C scoring against the SQL reference
-        # implementation without relying on a stale committed file.
-        time psql -f benchmarks/datasets/msmarco/precompute_ground_truth.sql 2>&1 | \
-            tee -a benchmark_results.txt
-
     - name: Validate MS MARCO results
       if: |
         (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
@@ -993,19 +977,6 @@ jobs:
             tee -a benchmark_results.txt
 
         echo "End: $(date)" | tee -a benchmark_results.txt
-
-    - name: Regenerate Wikipedia ground truth
-      if: |
-        (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
-        steps.datasets.outputs.wiki_size == '100K'
-      run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        export PGDATABASE=bench_test
-
-        echo "=== Regenerating Wikipedia Ground Truth ===" | tee -a benchmark_results.txt
-
-        time psql -f benchmarks/datasets/wikipedia/precompute_ground_truth.sql 2>&1 | \
-            tee -a benchmark_results.txt
 
     - name: Validate Wikipedia results
       if: |
