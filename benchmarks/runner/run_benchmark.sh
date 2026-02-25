@@ -21,8 +21,9 @@
 #   --port PORT    - Postgres port (default: 5433 for release build)
 #
 # Validation:
-#   Validation runs automatically after queries if ground_truth.tsv exists.
-#   A benchmark FAILS if scores don't match to 4 decimal places.
+#   Validation runs automatically after queries if ground truth exists.
+#   Uses version-specific ground truth (ground_truth_pg17.tsv, etc.)
+#   falling back to ground_truth.tsv if no versioned file is found.
 #   Generate ground truth with: psql -f <dataset>/precompute_ground_truth.sql
 
 set -e
@@ -200,7 +201,17 @@ run_benchmark() {
         local ground_truth_file="$dataset_dir/ground_truth.tsv"
         local validate_script="$dataset_dir/validate_queries.sql"
 
+        # Select version-specific ground truth if available
         if [ -f "$validate_script" ]; then
+            local pg_major
+            pg_major=$(pg_config --version | sed 's/PostgreSQL //' \
+                | cut -d. -f1)
+            local versioned_gt="$dataset_dir/ground_truth_pg${pg_major}.tsv"
+            if [ -f "$versioned_gt" ]; then
+                echo "Using ground truth for PG${pg_major}"
+                cp "$versioned_gt" "$ground_truth_file"
+            fi
+
             if [ -f "$ground_truth_file" ]; then
                 echo ""
                 echo "--- Validating $dataset query results ---"

@@ -921,7 +921,8 @@ jobs:
             echo "Using ground truth for PG${PG_MAJOR}" | tee -a benchmark_results.txt
             cp "$GT_FILE" benchmarks/datasets/msmarco/ground_truth.tsv
         else
-            echo "No version-specific ground truth for PG${PG_MAJOR}, using default" | tee -a benchmark_results.txt
+            echo "ERROR: No ground truth file for PG${PG_MAJOR} ($GT_FILE not found)" | tee -a benchmark_results.txt
+            exit 1
         fi
 
         psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \

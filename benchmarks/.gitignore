@@ -4,5 +4,8 @@ results/
 # Downloaded datasets
 datasets/*/data/
 
+# Generated ground truth (CI creates from versioned files)
+datasets/*/ground_truth.tsv
+
 # macOS
 .DS_Store

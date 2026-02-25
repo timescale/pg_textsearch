@@ -2,6 +2,10 @@
 -- Computes BM25 scores using the exact formula for validation purposes
 -- Output: ground_truth.tsv with (query_id, query_text, rank, doc_id, score)
 --
+-- IMPORTANT: Different Postgres versions may produce different ground truth
+-- due to Snowball stemmer changes (e.g., PG17 vs PG18). After generating,
+-- rename the output to ground_truth_pgNN.tsv for the target version.
+--
 -- Prerequisites:
 --   - msmarco_passages table loaded (index NOT required)
 --   - benchmark_queries table will be loaded
