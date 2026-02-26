@@ -3,6 +3,8 @@
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+-- Verify library version GUC is set
+SELECT current_setting('pg_textsearch.library_version') IS NOT NULL AS has_version;
 
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;

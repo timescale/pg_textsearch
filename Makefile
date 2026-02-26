@@ -1,4 +1,5 @@
 EXTENSION = pg_textsearch
+EXTVERSION = $(shell awk -F"'" '/default_version/ {print $$2}' pg_textsearch.control)
 DATA = sql/pg_textsearch--1.0.0-dev.sql \
        sql/pg_textsearch--0.0.1--0.0.2.sql \
        sql/pg_textsearch--0.0.2--0.0.3.sql \
@@ -49,7 +50,7 @@ OBJS = \
 MODULE_big = pg_textsearch
 
 # Include directories, debug flags, and warning flags for unused code
-PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable
+PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable -DPG_TEXTSEARCH_VERSION=\"$(EXTVERSION)\"
 
 # Uncomment the following line to enable debug index dumps
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX

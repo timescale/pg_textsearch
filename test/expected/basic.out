@@ -2,6 +2,13 @@
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+-- Verify library version GUC is set
+SELECT current_setting('pg_textsearch.library_version') IS NOT NULL AS has_version;
+ has_version 
+-------------
+ t
+(1 row)
+
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 -- Test bm25vector type exists

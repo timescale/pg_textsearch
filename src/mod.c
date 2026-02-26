@@ -43,6 +43,9 @@ relopt_kind tp_relopt_kind;
 /* External variable from limits module */
 extern int tp_default_limit;
 
+/* Library version string for stale binary detection */
+static char *tp_library_version = NULL;
+
 /* Global variable for score logging */
 bool tp_log_scores = false;
 
@@ -122,6 +125,18 @@ _PG_init(void)
 	/*
 	 * Define GUC parameters
 	 */
+	DefineCustomStringVariable(
+			"pg_textsearch.library_version",
+			"Version of the loaded pg_textsearch shared library",
+			NULL,
+			&tp_library_version,
+			PG_TEXTSEARCH_VERSION,
+			PGC_INTERNAL,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
 	DefineCustomIntVariable(
 			"pg_textsearch.default_limit",
 			"Default limit for BM25 queries when no LIMIT is detected",
