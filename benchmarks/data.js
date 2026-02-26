@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772071957181,
+  "lastUpdate": 1772072884463,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3509,6 +3509,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.24,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "3dc4a8fc8f6a0c63fa0b1cee190ca80207d0e27f",
+          "message": "fix: compact remaining segments after parallel build for query perf\n\nWithout cascading merge groups, the parallel build can leave\na few segments at each level (e.g., 3 L1 segments from 2 full\nmerge groups + 1 remainder). This hurts query performance since\nBMW must merge across all segments.\n\nAdd tp_compact_all() after linking chains to merge remaining\nsegments into one, followed by tp_truncate_dead_pages() to\nreclaim any dead pages left by the compaction.",
+          "timestamp": "2026-02-26T02:14:50Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3dc4a8fc8f6a0c63fa0b1cee190ca80207d0e27f"
+        },
+        "date": 1772072883662,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 238.737,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.23,
             "unit": "ms"
           },
           {
