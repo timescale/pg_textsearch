@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772052962518,
+  "lastUpdate": 1772070499783,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3435,6 +3435,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.31,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "e0e10f33e0630e639749510d0003333d41bbfecf",
+          "message": "fix: merge remainder segments during parallel build to eliminate fragmentation\n\nThe parallel build's plan_merge_groups() only formed merge groups of\nexactly segments_per_level (8) segments. With typical 2-4 workers\nproducing 1 segment each, all segments became COPY-only at L0, leaving\nmultiple uncompacted segments. When bm25_compact_index() later merged\nthem, the new segment was written via P_NEW while freed pages sat in\nthe middle of the file — dead space that truncation couldn't reclaim.\nThis caused a 2x index size regression vs main.\n\nFix:\n- Merge leftover segments (count >= 2) at each level during\n  plan_merge_groups, producing a fully compacted index so\n  bm25_compact_index() becomes a no-op\n- Move truncation after link_chains and walk actual segment pages\n  via tp_segment_collect_pages() instead of using the atomic page\n  counter (which over-estimates due to 5% merge margin)\n- Add post-compaction truncation to bm25_compact_index() for cases\n  where compaction does real work (non-parallel builds, etc.)",
+          "timestamp": "2026-02-26T01:37:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e0e10f33e0630e639749510d0003333d41bbfecf"
+        },
+        "date": 1772070498003,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 238.655,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.36,
             "unit": "ms"
           },
           {
