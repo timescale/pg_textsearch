@@ -57,6 +57,24 @@ jq --arg dataset "$DATASET_LABEL" '[
         }
     else empty end),
 
+    # Insert time (for insert-based benchmarks)
+    (if .metrics.insert_time_ms != null then
+        {
+            name: "\($dataset) - Insert Time",
+            unit: "ms",
+            value: .metrics.insert_time_ms
+        }
+    else empty end),
+
+    # Concurrent insert time (for pgbench benchmarks)
+    (if .metrics.concurrent_insert_time_ms != null then
+        {
+            name: "\($dataset) - Concurrent Insert Time",
+            unit: "ms",
+            value: .metrics.concurrent_insert_time_ms
+        }
+    else empty end),
+
     # Latency by token count (p50 values)
     (if .metrics.latency_by_tokens.bucket_1.p50 != null then
         {

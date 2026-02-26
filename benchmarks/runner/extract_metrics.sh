@@ -57,6 +57,18 @@ fi
 LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | grep -oE "[0-9]+\.[0-9]+" || echo "")
 
+# Extract insert time (for insert-based benchmarks)
+# INSERT_TIME: marker appears before the COPY/INSERT block
+INSERT_TIME_MS=$(grep -E "INSERT_TIME:" "$LOG_FILE" -A 5 2>/dev/null | \
+    grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | \
+    grep -oE "[0-9]+\.[0-9]+" || echo "")
+
+# Extract concurrent insert time (wall-clock from pgbench)
+# Format: CONCURRENT_INSERT_TIME: XXXms
+CONCURRENT_INSERT_TIME_MS=$(grep -E "CONCURRENT_INSERT_TIME:" \
+    "$LOG_FILE" 2>/dev/null | \
+    grep -oE "[0-9]+\.[0-9]+" | head -1 || echo "")
+
 # Extract document count
 # Try pg_textsearch format first
 NUM_DOCUMENTS=$(grep -E "BM25 index build completed:" "$LOG_FILE" 2>/dev/null | \
@@ -146,6 +158,8 @@ cat > "$OUTPUT_FILE" << EOJSON
   "metrics": {
     "load_time_ms": $(num_or_null "$LOAD_TIME_MS"),
     "index_build_time_ms": $(num_or_null "$INDEX_BUILD_MS"),
+    "insert_time_ms": $(num_or_null "$INSERT_TIME_MS"),
+    "concurrent_insert_time_ms": $(num_or_null "$CONCURRENT_INSERT_TIME_MS"),
     "num_documents": $(num_or_null "$NUM_DOCUMENTS"),
     "index_size": "${INDEX_SIZE:-unknown}",
     "index_size_bytes": $(num_or_null "$INDEX_SIZE_BYTES"),
