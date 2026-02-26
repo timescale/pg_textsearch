@@ -85,5 +85,59 @@ WHERE content <@> to_bm25query('bulk', 'vacuum_bulk_idx') < 0;
 
 DROP TABLE vacuum_bulk_test;
 
+-- =============================================================================
+-- Test 5: REINDEX with unflushed memtable data
+--
+-- Verifies that REINDEX correctly rebuilds from the heap even when
+-- the memtable has unflushed entries from recent INSERTs.
+-- =============================================================================
+
+CREATE TABLE reindex_memtable_test (
+    id serial PRIMARY KEY,
+    content text
+);
+CREATE INDEX reindex_memtable_idx
+    ON reindex_memtable_test USING bm25(content)
+    WITH (text_config='english');
+
+-- Phase 1: Initial data via CREATE INDEX (already built above)
+INSERT INTO reindex_memtable_test (content)
+SELECT 'original document about databases number ' || i
+FROM generate_series(1, 50) AS i;
+
+-- Force a spill so we have segments on disk
+SELECT bm25_spill_index('reindex_memtable_idx');
+
+-- Verify baseline: all 50 docs are searchable
+SELECT count(*) AS pre_reindex_count FROM reindex_memtable_test
+WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+
+-- Phase 2: Insert more rows that stay in memtable (unflushed)
+INSERT INTO reindex_memtable_test (content)
+SELECT 'additional document about databases number ' || i
+FROM generate_series(51, 75) AS i;
+
+-- Verify memtable scan finds all 75 docs
+SELECT count(*) AS with_memtable_count FROM reindex_memtable_test
+WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+
+-- Phase 3: REINDEX discards memtable, rebuilds from heap
+\set VERBOSITY terse
+REINDEX INDEX reindex_memtable_idx;
+\set VERBOSITY default
+
+-- All 75 docs must still be found (rebuilt from heap, not memtable)
+SELECT count(*) AS post_reindex_count FROM reindex_memtable_test
+WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+
+-- Phase 4: Verify INSERTs still work after REINDEX
+INSERT INTO reindex_memtable_test (content)
+VALUES ('final document about databases after reindex');
+
+SELECT count(*) AS final_count FROM reindex_memtable_test
+WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+
+DROP TABLE reindex_memtable_test;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
