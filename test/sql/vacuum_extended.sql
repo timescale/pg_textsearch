@@ -139,5 +139,56 @@ WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
 
 DROP TABLE reindex_memtable_test;
 
+-- =============================================================================
+-- Test 6: Bulk load with unflushed memtable data
+--
+-- Verifies that a large INSERT into an already-indexed table correctly
+-- triggers auto-spills from the memtable while preserving earlier
+-- unflushed memtable entries.  Uses a low spill threshold so the test
+-- triggers multiple spills without needing millions of rows.
+-- =============================================================================
+
+-- Lower spill threshold BEFORE creating the table so it applies to inserts
+SET pg_textsearch.memtable_spill_threshold = 500;
+
+CREATE TABLE bulk_memtable_test (
+    id serial PRIMARY KEY,
+    content text
+);
+CREATE INDEX bulk_memtable_idx
+    ON bulk_memtable_test USING bm25(content)
+    WITH (text_config='english');
+
+-- Phase 1: Small insert that stays in memtable
+INSERT INTO bulk_memtable_test (content)
+SELECT 'initial document about networking topic ' || i
+FROM generate_series(1, 10) AS i;
+
+SELECT count(*) AS initial_count FROM bulk_memtable_test
+WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+
+-- Phase 2: Bulk insert triggers multiple auto-spills
+INSERT INTO bulk_memtable_test (content)
+SELECT 'bulk loaded document about networking and databases number ' || i
+FROM generate_series(11, 5000) AS i;
+
+-- All 5000 docs must be found (initial memtable + spilled segments + tail)
+SELECT count(*) AS after_bulk_count FROM bulk_memtable_test
+WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+
+-- Verify segments were created by the auto-spill
+SELECT bm25_summarize_index('bulk_memtable_idx') ~ 'Total:.*segments'
+    AS has_segments;
+
+-- Phase 3: More inserts after bulk load still work
+INSERT INTO bulk_memtable_test (content)
+VALUES ('final document about networking after bulk load');
+
+SELECT count(*) AS final_count FROM bulk_memtable_test
+WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+
+RESET pg_textsearch.memtable_spill_threshold;
+DROP TABLE bulk_memtable_test;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
