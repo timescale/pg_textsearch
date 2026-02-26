@@ -677,6 +677,149 @@ jobs:
         time psql -f benchmarks/datasets/wikipedia/systemx/queries.sql 2>&1 | tee -a benchmark_results.txt
         echo "End: $(date)" | tee -a benchmark_results.txt
 
+    - name: Run System X Cranfield insert benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== System X Cranfield Insert Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        cd benchmarks/sql/cranfield
+        time psql -f systemx/insert-load.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        time psql -f systemx/02-queries.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Run System X MS MARCO insert benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== System X MS MARCO Insert Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemx/insert-load.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/msmarco/systemx/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run System X Wikipedia insert benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== System X Wikipedia Insert Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/wikipedia/systemx/insert-load.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        time psql -f benchmarks/datasets/wikipedia/systemx/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run System X Cranfield concurrent insert
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== System X Cranfield Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        cd benchmarks/sql/cranfield
+        psql -f systemx/concurrent-setup.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        ROWS=$(psql -tA -c "SELECT count(*) FROM cranfield_systemx_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f systemx/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Run System X Cranfield concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        cd benchmarks/sql/cranfield
+        time psql -f systemx/02-queries.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/benchmark_results.txt"
+
+    - name: Run System X MS MARCO concurrent insert
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== System X MS MARCO Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        psql -f benchmarks/datasets/msmarco/systemx/concurrent-setup.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM msmarco_systemx_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/msmarco/systemx/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a benchmark_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run System X MS MARCO concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        time psql -f benchmarks/datasets/msmarco/systemx/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+
+    - name: Run System X Wikipedia concurrent insert
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== System X Wikipedia Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+        psql -f benchmarks/datasets/wikipedia/systemx/concurrent-setup.sql 2>&1 | \
+            tee -a benchmark_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM wikipedia_systemx_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/wikipedia/systemx/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a benchmark_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a benchmark_results.txt
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
+    - name: Run System X Wikipedia concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        time psql -f benchmarks/datasets/wikipedia/systemx/queries.sql 2>&1 | \
+            tee -a benchmark_results.txt
+
     - name: Extract metrics
       run: |
         chmod +x benchmarks/runner/extract_metrics.sh
@@ -690,9 +833,25 @@ jobs:
               systemx_msmarco_metrics.json "systemx_msmarco" "System X MS MARCO" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               systemx_wikipedia_metrics.json "systemx_wikipedia" "System X Wikipedia" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_cranfield_insert_metrics.json "systemx_cranfield_insert" "System X Cranfield Insert" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_msmarco_insert_metrics.json "systemx_msmarco_insert" "System X MS MARCO Insert" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_wikipedia_insert_metrics.json "systemx_wikipedia_insert" "System X Wikipedia Insert" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_cranfield_concurrent_metrics.json "systemx_cranfield_concurrent" "System X Cranfield Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_msmarco_concurrent_metrics.json "systemx_msmarco_concurrent" "System X MS MARCO Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_wikipedia_concurrent_metrics.json "systemx_wikipedia_concurrent" "System X Wikipedia Concurrent" || true
         else
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               systemx_metrics.json "systemx_${DATASET}" "System X" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_${DATASET}_insert_metrics.json "systemx_${DATASET}_insert" "System X ${DATASET} Insert" || true
+          ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
+              systemx_${DATASET}_concurrent_metrics.json "systemx_${DATASET}_concurrent" "System X ${DATASET} Concurrent" || true
         fi
 
     - name: Upload results
@@ -703,6 +862,7 @@ jobs:
           benchmark_results.txt
           systemx_*_metrics.json
           systemx_metrics.json
+          *_action.json
           tmp_bench/postgres.log
         retention-days: 90
 
@@ -744,6 +904,156 @@ jobs:
         elif [ -f systemx_metrics.json ]; then
           output_systemx_table "systemx_metrics.json" "$DATASET"
         fi
+
+    - name: Format System X metrics for benchmark tracking
+      if: always()
+      run: |
+        chmod +x benchmarks/runner/format_for_action.sh
+        for f in systemx_*_metrics.json; do
+          if [ -f "$f" ]; then
+            base="${f%_metrics.json}"
+            ./benchmarks/runner/format_for_action.sh "$f" "${base}_action.json"
+          fi
+        done
+        if [ -f systemx_metrics.json ]; then
+          ./benchmarks/runner/format_for_action.sh \
+              systemx_metrics.json systemx_action.json
+        fi
+
+    - name: Publish System X Cranfield benchmark
+      if: always() && hashFiles('systemx_cranfield_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_cranfield Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_cranfield_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X MS MARCO benchmark
+      if: always() && hashFiles('systemx_msmarco_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_msmarco Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_msmarco_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X Wikipedia benchmark
+      if: always() && hashFiles('systemx_wikipedia_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_wikipedia Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_wikipedia_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X Cranfield insert benchmark
+      if: always() && hashFiles('systemx_cranfield_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_cranfield_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_cranfield_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X MS MARCO insert benchmark
+      if: always() && hashFiles('systemx_msmarco_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_msmarco_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_msmarco_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X Wikipedia insert benchmark
+      if: always() && hashFiles('systemx_wikipedia_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_wikipedia_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_wikipedia_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X Cranfield concurrent benchmark
+      if: always() && hashFiles('systemx_cranfield_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_cranfield_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_cranfield_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X MS MARCO concurrent benchmark
+      if: always() && hashFiles('systemx_msmarco_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_msmarco_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_msmarco_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish System X Wikipedia concurrent benchmark
+      if: always() && hashFiles('systemx_wikipedia_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'systemx_wikipedia_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: systemx_wikipedia_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
 
     - name: Cleanup
       if: always()
@@ -1253,6 +1563,958 @@ jobs:
         fi
         # Return to original branch
         git checkout -
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
+  # Insert benchmark (single-txn + concurrent pgbench inserts)
+  insert-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        echo "Initial disk space:"
+        df -h /
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/share/swift
+        sudo rm -rf /usr/local/share/powershell
+        sudo rm -rf /usr/local/.ghcup
+        echo "After cleanup:"
+        df -h /
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+        pip install wikiextractor
+
+        # PostgreSQL
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Build extension (release mode)
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make clean
+        CFLAGS="-O3 -DNDEBUG" make
+        sudo make install
+
+    - name: Configure PostgreSQL for benchmarks
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        LIB_NAME="pg_textsearch"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        NCPUS=$(nproc)
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 1GB
+        effective_cache_size = 4GB
+        maintenance_work_mem = 512MB
+        work_mem = 64MB
+        max_connections = 20
+        checkpoint_completion_target = 0.9
+        wal_buffers = 16MB
+        random_page_cost = 1.1
+        effective_io_concurrency = 200
+        max_parallel_maintenance_workers = $NCPUS
+        max_parallel_workers_per_gather = $NCPUS
+        max_parallel_workers = $NCPUS
+        pg_textsearch.segments_per_level = 16
+        shared_preload_libraries = '${LIB_NAME}'
+        EOF
+
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        psql -d bench_test -c "CREATE EXTENSION pg_textsearch"
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Determine datasets to run
+      id: datasets
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
+          echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
+          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
+        else
+          echo "dataset=all" >> $GITHUB_OUTPUT
+          echo "wiki_size=100K" >> $GITHUB_OUTPUT
+          echo "msmarco_size=full" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download MS MARCO dataset
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+
+    - name: Download Wikipedia dataset
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/wikipedia
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.wiki_size }}
+
+    # Phase 1: Single-transaction inserts
+    - name: Run Cranfield insert benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield Insert Benchmark ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        cd benchmarks/sql/cranfield
+        time psql -f insert/load.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+        time psql -f 02-queries.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+
+    - name: Run MS MARCO insert benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== MS MARCO Insert Benchmark ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        time psql -f benchmarks/datasets/msmarco/insert/load.sql 2>&1 | \
+            tee -a insert_results.txt
+        time psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+
+        echo "End: $(date)" | tee -a insert_results.txt
+
+    - name: Validate MS MARCO insert results
+      if: |
+        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.msmarco_size == 'full'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== MS MARCO Insert Validation ===" | tee -a insert_results.txt
+
+        PG_MAJOR=$(pg_config --version | sed 's/PostgreSQL //' | cut -d. -f1)
+        GT_FILE="benchmarks/datasets/msmarco/ground_truth_pg${PG_MAJOR}.tsv"
+        if [ -f "$GT_FILE" ]; then
+            echo "Using ground truth for PG${PG_MAJOR}" | tee -a insert_results.txt
+            cp "$GT_FILE" benchmarks/datasets/msmarco/ground_truth.tsv
+        else
+            echo "ERROR: No ground truth file for PG${PG_MAJOR} ($GT_FILE not found)" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \
+            tee msmarco_insert_validation.log | tee -a insert_results.txt
+
+        if grep -q "VALIDATION FAILED" msmarco_insert_validation.log; then
+            echo "ERROR: MS MARCO insert validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        echo "MS MARCO insert validation PASSED" | tee -a insert_results.txt
+
+    - name: Run Wikipedia insert benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== Wikipedia Insert Benchmark ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        time psql -f benchmarks/datasets/wikipedia/insert/load.sql 2>&1 | \
+            tee -a insert_results.txt
+        time psql -f benchmarks/datasets/wikipedia/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+
+        echo "End: $(date)" | tee -a insert_results.txt
+
+    - name: Validate Wikipedia insert results
+      if: |
+        (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.wiki_size == '100K'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Wikipedia Insert Validation ===" | tee -a insert_results.txt
+
+        psql -f benchmarks/datasets/wikipedia/validate_queries.sql 2>&1 | \
+            tee wikipedia_insert_validation.log | tee -a insert_results.txt
+
+        if grep -q "VALIDATION FAILED" wikipedia_insert_validation.log; then
+            echo "ERROR: Wikipedia insert validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        echo "Wikipedia insert validation PASSED" | tee -a insert_results.txt
+
+    # Phase 2: Concurrent inserts (pgbench)
+    - name: Run Cranfield concurrent insert
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield Concurrent Insert ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        cd benchmarks/sql/cranfield
+        psql -f insert/concurrent-setup.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+        ROWS=$(psql -tA -c "SELECT count(*) FROM cranfield_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f insert/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+
+    - name: Run Cranfield concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        cd benchmarks/sql/cranfield
+        time psql -f 02-queries.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+
+    - name: Run MS MARCO concurrent insert
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== MS MARCO Concurrent Insert ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        psql -f benchmarks/datasets/msmarco/insert/concurrent-setup.sql 2>&1 | \
+            tee -a insert_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM msmarco_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/msmarco/insert/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a insert_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a insert_results.txt
+        echo "End: $(date)" | tee -a insert_results.txt
+
+    - name: Run MS MARCO concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        time psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+
+    - name: Validate MS MARCO concurrent results
+      if: |
+        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.msmarco_size == 'full'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \
+            tee msmarco_concurrent_validation.log | tee -a insert_results.txt
+
+        if grep -q "VALIDATION FAILED" msmarco_concurrent_validation.log; then
+            echo "ERROR: MS MARCO concurrent validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+    - name: Run Wikipedia concurrent insert
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== Wikipedia Concurrent Insert ===" | tee -a insert_results.txt
+        echo "Start: $(date)" | tee -a insert_results.txt
+
+        psql -f benchmarks/datasets/wikipedia/insert/concurrent-setup.sql 2>&1 | \
+            tee -a insert_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM wikipedia_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/wikipedia/insert/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a insert_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a insert_results.txt
+        echo "End: $(date)" | tee -a insert_results.txt
+
+    - name: Run Wikipedia concurrent insert queries
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        time psql -f benchmarks/datasets/wikipedia/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+
+    - name: Validate Wikipedia concurrent results
+      if: |
+        (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
+        steps.datasets.outputs.wiki_size == '100K'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        psql -f benchmarks/datasets/wikipedia/validate_queries.sql 2>&1 | \
+            tee wikipedia_concurrent_validation.log | tee -a insert_results.txt
+
+        if grep -q "VALIDATION FAILED" wikipedia_concurrent_validation.log; then
+            echo "ERROR: Wikipedia concurrent validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+    - name: Extract insert metrics
+      if: always()
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+
+        if [ "$DATASET" = "all" ]; then
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              cranfield_insert_metrics.json "cranfield_insert" "Cranfield Insert" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              msmarco_insert_metrics.json "msmarco_insert" "MS MARCO Insert" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              wikipedia_insert_metrics.json "wikipedia_insert" "Wikipedia Insert" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              cranfield_concurrent_metrics.json "cranfield_concurrent" "Cranfield Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              msmarco_concurrent_metrics.json "msmarco_concurrent" "MS MARCO Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              wikipedia_concurrent_metrics.json "wikipedia_concurrent" "Wikipedia Concurrent" || true
+        else
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              ${DATASET}_insert_metrics.json "${DATASET}_insert" "${DATASET} Insert" || true
+          ./benchmarks/runner/extract_metrics.sh insert_results.txt \
+              ${DATASET}_concurrent_metrics.json "${DATASET}_concurrent" "${DATASET} Concurrent" || true
+        fi
+
+    - name: Upload insert benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: insert-benchmark-results-${{ github.run_id }}
+        path: |
+          insert_results.txt
+          *_insert_metrics.json
+          *_concurrent_metrics.json
+          *_action.json
+          *_validation.log
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Format insert metrics
+      if: always()
+      run: |
+        chmod +x benchmarks/runner/format_for_action.sh
+        for f in *_insert_metrics.json *_concurrent_metrics.json; do
+          if [ -f "$f" ]; then
+            base="${f%_metrics.json}"
+            ./benchmarks/runner/format_for_action.sh "$f" "${base}_action.json"
+          fi
+        done
+
+    - name: Publish Cranfield insert benchmark
+      if: always() && hashFiles('cranfield_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO insert benchmark
+      if: always() && hashFiles('msmarco_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia insert benchmark
+      if: always() && hashFiles('wikipedia_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Cranfield concurrent benchmark
+      if: always() && hashFiles('cranfield_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO concurrent benchmark
+      if: always() && hashFiles('msmarco_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia concurrent benchmark
+      if: always() && hashFiles('wikipedia_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Cleanup
+      if: always()
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        pg_ctl stop -D tmp_bench/data || true
+        rm -rf tmp_bench
+
+  # GIN+tsvector baseline benchmark (built-in Postgres, no extensions)
+  baseline-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        echo "Initial disk space:"
+        df -h /
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/share/swift
+        sudo rm -rf /usr/local/share/powershell
+        sudo rm -rf /usr/local/.ghcup
+        echo "After cleanup:"
+        df -h /
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates build-essential bc
+        pip install wikiextractor
+
+        # PostgreSQL
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Configure PostgreSQL for benchmarks
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        rm -rf tmp_bench
+        mkdir -p tmp_bench/socket
+        initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
+
+        NCPUS=$(nproc)
+        cat >> tmp_bench/data/postgresql.conf << EOF
+        unix_socket_directories = '$PWD/tmp_bench/socket'
+        shared_buffers = 1GB
+        effective_cache_size = 4GB
+        maintenance_work_mem = 512MB
+        work_mem = 64MB
+        max_connections = 20
+        checkpoint_completion_target = 0.9
+        wal_buffers = 16MB
+        random_page_cost = 1.1
+        effective_io_concurrency = 200
+        max_parallel_maintenance_workers = $NCPUS
+        max_parallel_workers_per_gather = $NCPUS
+        max_parallel_workers = $NCPUS
+        EOF
+
+        if ! pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w; then
+          echo "PostgreSQL failed to start. Log:"
+          cat tmp_bench/postgres.log
+          exit 1
+        fi
+        export PGHOST="$PWD/tmp_bench/socket"
+        createdb bench_test
+        echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
+
+    - name: Determine datasets to run
+      id: datasets
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
+          echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
+          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
+        else
+          echo "dataset=all" >> $GITHUB_OUTPUT
+          echo "wiki_size=100K" >> $GITHUB_OUTPUT
+          echo "msmarco_size=full" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download MS MARCO dataset
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/msmarco
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+
+    - name: Download Wikipedia dataset
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        cd benchmarks/datasets/wikipedia
+        chmod +x download.sh
+        ./download.sh ${{ steps.datasets.outputs.wiki_size }}
+
+    # Phase 1: GIN CREATE INDEX on populated table
+    - name: Run Cranfield GIN benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield GIN Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        cd benchmarks/sql/cranfield
+        time psql -f gin/load.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+
+    - name: Run MS MARCO GIN benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== MS MARCO GIN Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        time psql -f benchmarks/datasets/msmarco/gin/load.sql 2>&1 | \
+            tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    - name: Run Wikipedia GIN benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== Wikipedia GIN Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        time psql -f benchmarks/datasets/wikipedia/gin/load.sql 2>&1 | \
+            tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    # Phase 2: GIN single-txn insert
+    - name: Run Cranfield GIN insert benchmark
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield GIN Insert Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        cd benchmarks/sql/cranfield
+        time psql -f gin/insert-load.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+
+    - name: Run MS MARCO GIN insert benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== MS MARCO GIN Insert Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        time psql -f benchmarks/datasets/msmarco/gin/insert-load.sql 2>&1 | \
+            tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    - name: Run Wikipedia GIN insert benchmark
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== Wikipedia GIN Insert Benchmark ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        time psql -f benchmarks/datasets/wikipedia/gin/insert-load.sql 2>&1 | \
+            tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    # Phase 3: GIN concurrent insert
+    - name: Run Cranfield GIN concurrent insert
+      if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== Cranfield GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        cd benchmarks/sql/cranfield
+        psql -f gin/concurrent-setup.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+        ROWS=$(psql -tA -c "SELECT count(*) FROM cranfield_gin_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f gin/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | \
+            tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+        echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/gin_results.txt"
+
+    - name: Run MS MARCO GIN concurrent insert
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
+
+        echo "=== MS MARCO GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        psql -f benchmarks/datasets/msmarco/gin/concurrent-setup.sql 2>&1 | \
+            tee -a gin_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM msmarco_gin_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/msmarco/gin/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a gin_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    - name: Run Wikipedia GIN concurrent insert
+      if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
+
+        echo "=== Wikipedia GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "Start: $(date)" | tee -a gin_results.txt
+        psql -f benchmarks/datasets/wikipedia/gin/concurrent-setup.sql 2>&1 | \
+            tee -a gin_results.txt
+        ROWS=$(psql -tA -c "SELECT count(*) FROM wikipedia_gin_staging")
+        CLIENTS=$(nproc)
+        TXN=$((ROWS / CLIENTS))
+        echo "Inserting $ROWS rows with $CLIENTS clients ($TXN txns each)"
+        START=$(date +%s.%N)
+        pgbench -f benchmarks/datasets/wikipedia/gin/pgbench-insert.sql \
+            -c $CLIENTS -j $CLIENTS -t $TXN -n bench_test 2>&1 | \
+            tee -a gin_results.txt
+        END=$(date +%s.%N)
+        MS=$(echo "($END - $START) * 1000" | bc)
+        echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a gin_results.txt
+        echo "End: $(date)" | tee -a gin_results.txt
+
+    - name: Extract GIN metrics
+      if: always()
+      run: |
+        chmod +x benchmarks/runner/extract_metrics.sh
+        DATASET="${{ steps.datasets.outputs.dataset }}"
+
+        if [ "$DATASET" = "all" ]; then
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              cranfield_gin_metrics.json "cranfield_gin" "Cranfield GIN" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              msmarco_gin_metrics.json "msmarco_gin" "MS MARCO GIN" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              wikipedia_gin_metrics.json "wikipedia_gin" "Wikipedia GIN" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              cranfield_gin_insert_metrics.json "cranfield_gin_insert" "Cranfield GIN Insert" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              msmarco_gin_insert_metrics.json "msmarco_gin_insert" "MS MARCO GIN Insert" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              wikipedia_gin_insert_metrics.json "wikipedia_gin_insert" "Wikipedia GIN Insert" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              cranfield_gin_concurrent_metrics.json "cranfield_gin_concurrent" "Cranfield GIN Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              msmarco_gin_concurrent_metrics.json "msmarco_gin_concurrent" "MS MARCO GIN Concurrent" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              wikipedia_gin_concurrent_metrics.json "wikipedia_gin_concurrent" "Wikipedia GIN Concurrent" || true
+        else
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              ${DATASET}_gin_metrics.json "${DATASET}_gin" "${DATASET} GIN" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              ${DATASET}_gin_insert_metrics.json "${DATASET}_gin_insert" "${DATASET} GIN Insert" || true
+          ./benchmarks/runner/extract_metrics.sh gin_results.txt \
+              ${DATASET}_gin_concurrent_metrics.json "${DATASET}_gin_concurrent" "${DATASET} GIN Concurrent" || true
+        fi
+
+    - name: Upload GIN benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: baseline-benchmark-results-${{ github.run_id }}
+        path: |
+          gin_results.txt
+          *_gin_metrics.json
+          *_gin_insert_metrics.json
+          *_gin_concurrent_metrics.json
+          *_action.json
+          tmp_bench/postgres.log
+        retention-days: 90
+
+    - name: Format GIN metrics for benchmark tracking
+      if: always()
+      run: |
+        chmod +x benchmarks/runner/format_for_action.sh
+        for f in *_gin_metrics.json *_gin_insert_metrics.json *_gin_concurrent_metrics.json; do
+          if [ -f "$f" ]; then
+            base="${f%_metrics.json}"
+            ./benchmarks/runner/format_for_action.sh "$f" "${base}_action.json"
+          fi
+        done
+
+    - name: Publish Cranfield GIN benchmark
+      if: always() && hashFiles('cranfield_gin_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield_gin Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_gin_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO GIN benchmark
+      if: always() && hashFiles('msmarco_gin_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_gin Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_gin_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia GIN benchmark
+      if: always() && hashFiles('wikipedia_gin_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia_gin Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_gin_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Cranfield GIN insert benchmark
+      if: always() && hashFiles('cranfield_gin_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield_gin_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_gin_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO GIN insert benchmark
+      if: always() && hashFiles('msmarco_gin_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_gin_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_gin_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia GIN insert benchmark
+      if: always() && hashFiles('wikipedia_gin_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia_gin_insert Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_gin_insert_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Cranfield GIN concurrent benchmark
+      if: always() && hashFiles('cranfield_gin_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'cranfield_gin_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: cranfield_gin_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO GIN concurrent benchmark
+      if: always() && hashFiles('msmarco_gin_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_gin_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_gin_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish Wikipedia GIN concurrent benchmark
+      if: always() && hashFiles('wikipedia_gin_concurrent_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'wikipedia_gin_concurrent Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: wikipedia_gin_concurrent_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
 
     - name: Cleanup
       if: always()
