@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772075834112,
+  "lastUpdate": 1772075835907,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -12165,6 +12165,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 2601.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "44deea684c705c68e2832796e146ccf1d8b3784b",
+          "message": "fix: prevent cascading merge group segfault + dedup build helpers\n\nThree changes:\n\n1. Fix segfault in parallel build: remainder merge groups no longer\n   cascade to higher levels. worker_execute_merge_group() only\n   searches worker result arrays for source segments, not outputs\n   of earlier merge groups. When cascading groups were planned,\n   they found no sources and accessed invalid block numbers,\n   causing SIGSEGV on large tables (8.8M+ rows, 4+ workers).\n\n2. Extract tp_truncate_dead_pages() shared helper from duplicated\n   code in build.c (bm25_compact_index) and build_parallel.c\n   (post-build truncation). Walks all segment chains to find the\n   highest used block and truncates everything beyond it.\n\n3. Extract tp_link_l0_chain_head() helper from 4x duplicated\n   pattern in build.c (auto-spill, flush-and-link, spill-memtable,\n   final-spill). Also removes dead final memtable spill block\n   from serial build path (arena build never populates memtable).",
+          "timestamp": "2026-02-26T01:59:16Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/44deea684c705c68e2832796e146ccf1d8b3784b"
+        },
+        "date": 1772075835376,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 228064.568,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.75,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.8,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.84,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 20.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 31.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.08,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.55,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1359.97,
             "unit": "MB"
           }
         ]
