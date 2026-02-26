@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772072884463,
+  "lastUpdate": 1772072885894,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -11922,6 +11922,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
             "value": 7.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1359.97,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "3dc4a8fc8f6a0c63fa0b1cee190ca80207d0e27f",
+          "message": "fix: compact remaining segments after parallel build for query perf\n\nWithout cascading merge groups, the parallel build can leave\na few segments at each level (e.g., 3 L1 segments from 2 full\nmerge groups + 1 remainder). This hurts query performance since\nBMW must merge across all segments.\n\nAdd tp_compact_all() after linking chains to merge remaining\nsegments into one, followed by tp_truncate_dead_pages() to\nreclaim any dead pages left by the compaction.",
+          "timestamp": "2026-02-26T02:14:50Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3dc4a8fc8f6a0c63fa0b1cee190ca80207d0e27f"
+        },
+        "date": 1772072885573,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 222022.731,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.37,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.47,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 19.83,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 31.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 5.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.44,
             "unit": "ms"
           },
           {
