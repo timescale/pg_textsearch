@@ -105,17 +105,12 @@ WHERE content <@> to_bm25query('distributed', 'parallel_test_2workers_idx') < 0;
 SELECT COUNT(*) AS network_count FROM parallel_test_2workers
 WHERE content <@> to_bm25query('network', 'parallel_test_2workers_idx') < 0;
 
--- Verify top-k ordering returns correct count and valid scores
--- (exact scores may vary with parallel worker partitioning)
-SELECT COUNT(*) AS top5_count,
-       bool_and(score < 0) AS all_negative
-FROM (
-  SELECT content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx') AS score
-  FROM parallel_test_2workers
-  WHERE id <= 100
-  ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx')
-  LIMIT 5
-) t;
+-- Verify top-k ordering (limit to deterministic results)
+SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx'))::numeric, 4) AS score
+FROM parallel_test_2workers
+WHERE id <= 100
+ORDER BY content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx'), id
+LIMIT 5;
 
 --------------------------------------------------------------------------------
 -- Test 4: Four workers (higher parallelism)

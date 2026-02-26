@@ -61,7 +61,7 @@ CREATE TABLE partition_2025 PARTITION OF partitioned_docs
 NOTICE:  BM25 index build started for relation partition_2025_content_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Insert data into new partition
 INSERT INTO partition_2025 (content, created_at) VALUES
     ('Data in the 2025 partition', '2025-06-15');

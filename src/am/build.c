@@ -1106,14 +1106,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		{
 			elog(NOTICE,
 				 "BM25 index build completed: " UINT64_FORMAT
-				 " documents, avg_length=%.2f, "
-				 "text_config='%s' (k1=%.2f, b=%.2f)",
+				 " documents, avg_length=%.2f",
 				 total_docs,
 				 total_docs > 0 ? (float4)(total_len / (double)total_docs)
-								: 0.0,
-				 text_config_name ? text_config_name : "unknown",
-				 k1,
-				 b);
+								: 0.0);
 		}
 
 		/*

@@ -42,7 +42,7 @@ VACUUM FULL vacuum_seg_test;
 NOTICE:  BM25 index build started for relation vacuum_seg_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 100 documents, avg_length=6.00, text_config='english' (k1=1.20, b=0.75)
+NOTICE:  BM25 index build completed: 100 documents, avg_length=6.00
 \set VERBOSITY default
 -- Verify search works after VACUUM FULL rebuild
 SELECT count(*) FROM vacuum_seg_test
