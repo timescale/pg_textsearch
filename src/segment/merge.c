@@ -1867,12 +1867,12 @@ tp_maybe_compact_level(Relation index, uint32 level)
 }
 
 /*
- * Compact all segments across all levels into one segment per level.
- * Merges ALL segments at each level in a single batch, ignoring the
- * segments_per_level threshold.  Used after parallel index build.
+ * Force-merge all segments into a single segment, à la Lucene's
+ * forceMerge(1).  Merges ALL segments at each level in a single
+ * batch, ignoring the segments_per_level threshold.
  */
 void
-tp_compact_all(Relation index)
+tp_force_merge_all(Relation index)
 {
 	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
 	{

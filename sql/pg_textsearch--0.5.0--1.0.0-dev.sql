@@ -19,10 +19,10 @@ BEGIN
     END IF;
 END $$;
 
--- New function: force-compact all segments
-CREATE FUNCTION bm25_compact_index(index_name text)
+-- New function: force-merge all segments into one
+CREATE FUNCTION bm25_force_merge(index_name text)
 RETURNS void
-AS 'MODULE_PATHNAME', 'tp_compact_index'
+AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
 DO $$

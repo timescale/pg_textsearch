@@ -210,10 +210,10 @@ RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
 LANGUAGE C VOLATILE STRICT;
 
--- Force-compact all segments regardless of segments_per_level threshold
-CREATE FUNCTION bm25_compact_index(index_name text)
+-- Force-merge all segments into one, à la Lucene's forceMerge(1)
+CREATE FUNCTION bm25_force_merge(index_name text)
 RETURNS void
-AS 'MODULE_PATHNAME', 'tp_compact_index'
+AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
 -- Fast summary function showing only statistics (no content dump)

@@ -105,4 +105,4 @@ extern void tp_maybe_compact_level(Relation index, uint32 level);
  * Parameters:
  *   index - The index relation (must be opened with appropriate lock)
  */
-extern void tp_compact_all(Relation index);
+extern void tp_force_merge_all(Relation index);

@@ -365,17 +365,17 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 }
 
-PG_FUNCTION_INFO_V1(tp_compact_index);
+PG_FUNCTION_INFO_V1(tp_force_merge);
 
 /*
- * SQL-callable: bm25_compact_index(index_name text) → void
+ * SQL-callable: bm25_force_merge(index_name text) → void
  *
- * Force-compact all segments, merging every level fully regardless
- * of the segments_per_level threshold.  Useful after parallel index
- * build or when benchmarking with a single-segment layout.
+ * Force-merge all segments into a single segment, à la Lucene's
+ * forceMerge(1).  Useful after parallel index build or when
+ * benchmarking with a single-segment layout.
  */
 Datum
-tp_compact_index(PG_FUNCTION_ARGS)
+tp_force_merge(PG_FUNCTION_ARGS)
 {
 	text	 *index_name_text = PG_GETARG_TEXT_PP(0);
 	char	 *index_name	  = text_to_cstring(index_name_text);
@@ -392,7 +392,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("index \"%s\" does not exist", index_name)));
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
-	tp_compact_all(index_rel);
+	tp_force_merge_all(index_rel);
 	tp_truncate_dead_pages(index_rel);
 
 	index_close(index_rel, RowExclusiveLock);
