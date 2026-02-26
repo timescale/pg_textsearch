@@ -160,32 +160,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		 */
 		tp_clear_docid_pages(index_rel);
 
-		/* Link new segment as L0 chain head */
-		metabuf = ReadBuffer(index_rel, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-		if (metap->level_heads[0] != InvalidBlockNumber)
-		{
-			/* Point new segment to old chain head */
-			Buffer			 seg_buf;
-			Page			 seg_page;
-			TpSegmentHeader *seg_header;
-
-			seg_buf = ReadBuffer(index_rel, segment_root);
-			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page   = BufferGetPage(seg_buf);
-			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-			seg_header->next_segment = metap->level_heads[0];
-			MarkBufferDirty(seg_buf);
-			UnlockReleaseBuffer(seg_buf);
-		}
-
-		metap->level_heads[0] = segment_root;
-		metap->level_counts[0]++;
-		MarkBufferDirty(metabuf);
-		UnlockReleaseBuffer(metabuf);
+		tp_link_l0_chain_head(index_rel, segment_root);
 
 		/* Check if L0 needs compaction */
 		pgstat_progress_update_param(
@@ -203,16 +178,28 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 static void
 tp_build_flush_and_link(TpBuildContext *ctx, Relation index)
 {
-	BlockNumber		segment_root;
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	BlockNumber segment_root;
 
 	segment_root = tp_write_segment_from_build_ctx(ctx, index);
 	if (segment_root == InvalidBlockNumber)
 		return;
 
-	/* Link new segment as L0 chain head */
+	tp_link_l0_chain_head(index, segment_root);
+}
+
+/*
+ * Link a newly-written segment as the L0 chain head.
+ *
+ * Reads the metapage, points the new segment's next_segment at the
+ * current L0 head, then updates the metapage head and count.
+ */
+void
+tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
+{
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
+
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
@@ -237,6 +224,69 @@ tp_build_flush_and_link(TpBuildContext *ctx, Relation index)
 	metap->level_counts[0]++;
 	MarkBufferDirty(metabuf);
 	UnlockReleaseBuffer(metabuf);
+}
+
+/*
+ * Truncate dead pages from an index relation.
+ *
+ * Walks all segment chains via the metapage to find the highest
+ * block still in use, then truncates everything beyond it.
+ * This reclaims pages freed by compaction (which sit below the
+ * high-water mark) and unused pool margin from parallel builds.
+ */
+void
+tp_truncate_dead_pages(Relation index)
+{
+	Buffer			metabuf;
+	Page			metapage;
+	TpIndexMetaPage metap;
+	BlockNumber		max_used = 1; /* at least metapage */
+	BlockNumber		nblocks;
+	int				level;
+
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	for (level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber seg = metap->level_heads[level];
+
+		while (seg != InvalidBlockNumber)
+		{
+			TpSegmentReader *reader;
+			BlockNumber		*pages;
+			uint32			 num_pages;
+			uint32			 i;
+
+			num_pages = tp_segment_collect_pages(index, seg, &pages);
+			for (i = 0; i < num_pages; i++)
+			{
+				if (pages[i] + 1 > max_used)
+					max_used = pages[i] + 1;
+			}
+			if (pages)
+				pfree(pages);
+
+			reader = tp_segment_open(index, seg);
+			seg	   = reader->header->next_segment;
+			tp_segment_close(reader);
+		}
+	}
+
+	UnlockReleaseBuffer(metabuf);
+
+	nblocks = RelationGetNumberOfBlocks(index);
+	if (max_used < nblocks)
+	{
+		elog(LOG,
+			 "bm25 truncate: %u → %u pages (freed %u)",
+			 nblocks,
+			 max_used,
+			 nblocks - max_used);
+		RelationTruncate(index, max_used);
+	}
 }
 
 /*
@@ -290,39 +340,9 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Clear the memtable after successful spilling */
 	if (segment_root != InvalidBlockNumber)
 	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-
 		tp_clear_memtable(index_state);
 
-		/* Link new segment as L0 chain head */
-		metabuf = ReadBuffer(index_rel, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-		if (metap->level_heads[0] != InvalidBlockNumber)
-		{
-			/* Point new segment to old chain head */
-			Buffer			 seg_buf;
-			Page			 seg_page;
-			TpSegmentHeader *seg_header;
-
-			seg_buf = ReadBuffer(index_rel, segment_root);
-			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page   = BufferGetPage(seg_buf);
-			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-			seg_header->next_segment = metap->level_heads[0];
-			MarkBufferDirty(seg_buf);
-			UnlockReleaseBuffer(seg_buf);
-		}
-
-		metap->level_heads[0] = segment_root;
-		metap->level_counts[0]++;
-		MarkBufferDirty(metabuf);
-
-		UnlockReleaseBuffer(metabuf);
+		tp_link_l0_chain_head(index_rel, segment_root);
 
 		/* Check if L0 needs compaction */
 		tp_maybe_compact_level(index_rel, 0);
@@ -373,67 +393,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
 	tp_compact_all(index_rel);
-
-	/*
-	 * Truncate dead pages left by compaction. When segments are merged,
-	 * old pages are freed via FSM but the relation file isn't shrunk.
-	 * Find the highest block still in use and truncate everything after.
-	 */
-	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-		BlockNumber		max_used = 1; /* At least metapage */
-		int				level;
-
-		metabuf = ReadBuffer(index_rel, TP_METAPAGE_BLKNO);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-		for (level = 0; level < TP_MAX_LEVELS; level++)
-		{
-			BlockNumber seg = metap->level_heads[level];
-
-			while (seg != InvalidBlockNumber)
-			{
-				TpSegmentReader *reader;
-				BlockNumber		*pages;
-				uint32			 num_pages;
-				uint32			 i;
-
-				num_pages = tp_segment_collect_pages(index_rel, seg, &pages);
-				for (i = 0; i < num_pages; i++)
-				{
-					if (pages[i] + 1 > max_used)
-						max_used = pages[i] + 1;
-				}
-				if (pages)
-					pfree(pages);
-
-				reader = tp_segment_open(index_rel, seg);
-				seg	   = reader->header->next_segment;
-				tp_segment_close(reader);
-			}
-		}
-
-		UnlockReleaseBuffer(metabuf);
-
-		{
-			BlockNumber nblocks = RelationGetNumberOfBlocks(index_rel);
-
-			if (max_used < nblocks)
-			{
-				elog(LOG,
-					 "bm25_compact_index: truncating %u → %u "
-					 "pages (freed %u)",
-					 nblocks,
-					 max_used,
-					 nblocks - max_used);
-				RelationTruncate(index_rel, max_used);
-			}
-		}
-	}
+	tp_truncate_dead_pages(index_rel);
 
 	index_close(index_rel, RowExclusiveLock);
 
@@ -1154,55 +1114,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 text_config_name ? text_config_name : "unknown",
 				 k1,
 				 b);
-		}
-
-		/*
-		 * Final spill: Write any remaining memtable data to disk
-		 * segment. This must happen BEFORE destroying the private
-		 * DSA, otherwise all build data would be lost.
-		 */
-		{
-			TpMemtable *memtable = get_memtable(index_state);
-
-			if (memtable && memtable->total_postings > 0)
-			{
-				BlockNumber		segment_root;
-				Buffer			metabuf;
-				Page			metapage;
-				TpIndexMetaPage metap;
-
-				segment_root = tp_write_segment(index_state, index);
-
-				if (segment_root != InvalidBlockNumber)
-				{
-					/* Link new segment as L0 chain head */
-					metabuf = ReadBuffer(index, 0);
-					LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-					metapage = BufferGetPage(metabuf);
-					metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-					if (metap->level_heads[0] != InvalidBlockNumber)
-					{
-						Buffer			 seg_buf;
-						Page			 seg_page;
-						TpSegmentHeader *seg_header;
-
-						seg_buf = ReadBuffer(index, segment_root);
-						LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-						seg_page   = BufferGetPage(seg_buf);
-						seg_header = (TpSegmentHeader *)PageGetContents(
-								seg_page);
-						seg_header->next_segment = metap->level_heads[0];
-						MarkBufferDirty(seg_buf);
-						UnlockReleaseBuffer(seg_buf);
-					}
-
-					metap->level_heads[0] = segment_root;
-					metap->level_counts[0]++;
-					MarkBufferDirty(metabuf);
-					UnlockReleaseBuffer(metabuf);
-				}
-			}
 		}
 
 		/*

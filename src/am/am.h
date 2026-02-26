@@ -86,6 +86,16 @@ float8 tp_get_cached_score(void);
 Datum tp_handler(PG_FUNCTION_ARGS);
 
 /*
+ * Build utilities (am/build.c)
+ */
+
+/* Link a segment as the new L0 chain head in the metapage */
+void tp_link_l0_chain_head(Relation index, BlockNumber segment_root);
+
+/* Truncate dead pages by walking segment chains for max used block */
+void tp_truncate_dead_pages(Relation index);
+
+/*
  * Build functions (am/build.c)
  */
 struct IndexBuildResult		 *
