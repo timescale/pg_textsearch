@@ -8,6 +8,7 @@
 
 #include <access/tableam.h>
 #include <catalog/namespace.h>
+#include <catalog/storage.h>
 #include <commands/progress.h>
 #include <executor/spi.h>
 #include <math.h>
@@ -372,6 +373,68 @@ tp_compact_index(PG_FUNCTION_ARGS)
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
 	tp_compact_all(index_rel);
+
+	/*
+	 * Truncate dead pages left by compaction. When segments are merged,
+	 * old pages are freed via FSM but the relation file isn't shrunk.
+	 * Find the highest block still in use and truncate everything after.
+	 */
+	{
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage metap;
+		BlockNumber		max_used = 1; /* At least metapage */
+		int				level;
+
+		metabuf = ReadBuffer(index_rel, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		for (level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			BlockNumber seg = metap->level_heads[level];
+
+			while (seg != InvalidBlockNumber)
+			{
+				TpSegmentReader *reader;
+				BlockNumber		*pages;
+				uint32			 num_pages;
+				uint32			 i;
+
+				num_pages = tp_segment_collect_pages(index_rel, seg, &pages);
+				for (i = 0; i < num_pages; i++)
+				{
+					if (pages[i] + 1 > max_used)
+						max_used = pages[i] + 1;
+				}
+				if (pages)
+					pfree(pages);
+
+				reader = tp_segment_open(index_rel, seg);
+				seg	   = reader->header->next_segment;
+				tp_segment_close(reader);
+			}
+		}
+
+		UnlockReleaseBuffer(metabuf);
+
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(index_rel);
+
+			if (max_used < nblocks)
+			{
+				elog(LOG,
+					 "bm25_compact_index: truncating %u → %u "
+					 "pages (freed %u)",
+					 nblocks,
+					 max_used,
+					 nblocks - max_used);
+				RelationTruncate(index_rel, max_used);
+			}
+		}
+	}
+
 	index_close(index_rel, RowExclusiveLock);
 
 	PG_RETURN_VOID();

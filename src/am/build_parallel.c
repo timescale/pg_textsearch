@@ -535,12 +535,7 @@ plan_merge_groups(
 		TpParallelWorkerResult *results,
 		int						nworkers)
 {
-	uint32 spl = (uint32)tp_segments_per_level;
-
-	/*
-	 * Per-level list of (worker_id, seg_idx) pairs.
-	 * Max total segments = nworkers * TP_MAX_WORKER_SEGMENTS.
-	 */
+	uint32 spl		 = (uint32)tp_segments_per_level;
 	uint32 max_total = (uint32)nworkers * TP_MAX_WORKER_SEGMENTS;
 	uint32 level_counts[TP_MAX_LEVELS];
 	uint32 num_groups = 0;
@@ -644,6 +639,55 @@ plan_merge_groups(
 			}
 
 			pos += spl;
+		}
+
+		/*
+		 * Merge leftover segments at this level (fewer than spl).
+		 * During initial build we want a fully compacted index so
+		 * bm25_compact_index() is a no-op. Without this, remainder
+		 * segments become COPY-only L0/L1 entries that later need
+		 * post-build compaction, which leaves dead pages in the
+		 * relation because freed pages sit below the high-water
+		 * mark and cannot be reclaimed by truncation.
+		 */
+		if (count - pos >= 2)
+		{
+			uint32 remainder = count - pos;
+			uint32 g;
+			uint32 k;
+
+			if (num_groups >= TP_MAX_MERGE_GROUPS)
+				goto done;
+
+			g							  = num_groups++;
+			shared->merge_group_levels[g] = level + 1;
+
+			elog(LOG,
+				 "parallel build: remainder merge group %u "
+				 "at L%d with %u segments",
+				 g,
+				 level,
+				 remainder);
+
+			for (k = 0; k < remainder; k++)
+			{
+				SegRef *ref = &level_segs[level][pos + k];
+				int		w	= ref->worker_id;
+				int		s	= ref->seg_idx;
+
+				results[w].seg_merge_group[s] = g + 1;
+			}
+
+			{
+				uint32 next_lv = level + 1;
+				uint32 idx	   = level_counts[next_lv];
+
+				level_segs[next_lv][idx].worker_id = 0xFFFF;
+				level_segs[next_lv][idx].seg_idx   = (uint16)g;
+				level_counts[next_lv]++;
+			}
+
+			pos += remainder;
 		}
 	}
 
@@ -1748,28 +1792,6 @@ tp_build_parallel(
 			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
 	}
 
-	/* Truncate unused pre-allocated pool pages */
-	{
-		BlockNumber used = (BlockNumber)pg_atomic_read_u64(&shared->next_page);
-		BlockNumber total = RelationGetNumberOfBlocks(index);
-
-		if (used < total)
-			RelationTruncate(index, used);
-
-		INSTR_TIME_SET_CURRENT(trunc_end);
-		{
-			instr_time el = trunc_end;
-
-			INSTR_TIME_SUBTRACT(el, phase2_end);
-			elog(LOG,
-				 "parallel build: truncate %.1f s, "
-				 "%u used / %u allocated pages",
-				 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
-				 used,
-				 total);
-		}
-	}
-
 	/*
 	 * Link segments into per-level chains in metapage.
 	 * COPY segments go to their original level; merge group
@@ -1871,10 +1893,74 @@ tp_build_parallel(
 	{
 		instr_time el = link_end;
 
-		INSTR_TIME_SUBTRACT(el, trunc_end);
+		INSTR_TIME_SUBTRACT(el, phase2_end);
 		elog(LOG,
 			 "parallel build: link chains %.1f s",
 			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
+	}
+
+	/*
+	 * Truncate unused pages. Walk all segment chains to find
+	 * the actual highest used page, then truncate.  The atomic
+	 * page counter over-estimates when merge groups don't use
+	 * their full pre-allocated margin.
+	 */
+	{
+		Buffer			metabuf;
+		Page			metapage;
+		TpIndexMetaPage metap;
+		BlockNumber		max_used = 1; /* metapage */
+		BlockNumber		nblocks;
+		int				level;
+
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+		for (level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			BlockNumber seg = metap->level_heads[level];
+
+			while (seg != InvalidBlockNumber)
+			{
+				TpSegmentReader *reader;
+				BlockNumber		*pages;
+				uint32			 num_pages;
+				uint32			 j;
+
+				num_pages = tp_segment_collect_pages(index, seg, &pages);
+				for (j = 0; j < num_pages; j++)
+				{
+					if (pages[j] + 1 > max_used)
+						max_used = pages[j] + 1;
+				}
+				if (pages)
+					pfree(pages);
+
+				reader = tp_segment_open(index, seg);
+				seg	   = reader->header->next_segment;
+				tp_segment_close(reader);
+			}
+		}
+		UnlockReleaseBuffer(metabuf);
+
+		nblocks = RelationGetNumberOfBlocks(index);
+		if (max_used < nblocks)
+			RelationTruncate(index, max_used);
+
+		INSTR_TIME_SET_CURRENT(trunc_end);
+		{
+			instr_time el = trunc_end;
+
+			INSTR_TIME_SUBTRACT(el, link_end);
+			elog(LOG,
+				 "parallel build: truncate %.1f s, "
+				 "%u used / %u allocated pages",
+				 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
+				 max_used,
+				 nblocks);
+		}
 	}
 
 	/* Flush all relation buffers to disk */
@@ -1884,7 +1970,7 @@ tp_build_parallel(
 	{
 		instr_time el = flush_end;
 
-		INSTR_TIME_SUBTRACT(el, link_end);
+		INSTR_TIME_SUBTRACT(el, trunc_end);
 		elog(LOG,
 			 "parallel build: flush %.1f s",
 			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
