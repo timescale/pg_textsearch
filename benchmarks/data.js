@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772087741652,
+  "lastUpdate": 1772087744399,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -17787,6 +17787,88 @@ window.BENCHMARK_DATA = {
           },
           {
             "name": "wikipedia (100.0K docs) - Index Size",
+            "value": 38.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4a9aaf2a430249d4b20d0c4045b4ddf6c5a8bebb",
+          "message": "feat: require shared_preload_libraries for pg_textsearch (#235)\n\n## Summary\n\n- Enforce loading via `shared_preload_libraries` to prevent fatal\n`ShmemIndex entry size is wrong` errors when the .so is replaced during\ndeployment without a server restart\n- Remove lazy init fallbacks in registry.c that were the previous\nworkaround for not requiring preloading\n- Update all test infrastructure (Makefile, shell scripts, CI workflows)\nto configure `shared_preload_libraries` with the versioned library name\n\n## Context\n\npg_textsearch uses Postgres shared memory (`ShmemInitStruct`) for its\nindex registry. Without `shared_preload_libraries`, each backend loads\nthe .so independently via `dlopen`. If the .so file is replaced on disk\n(e.g., during a deployment) without restarting Postgres, different\nbackends get different code, causing a fatal `ShmemIndex entry size is\nwrong` error. Requiring `shared_preload_libraries` ensures all backends\nuse the same .so (inherited from the postmaster via fork), eliminating\nthis class of bugs.\n\n## Testing\n\n- All 47 SQL regression tests pass\n- `make format-check` passes\n- Error message verified when extension not in shared_preload_libraries",
+          "timestamp": "2026-02-25T23:21:16Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4a9aaf2a430249d4b20d0c4045b4ddf6c5a8bebb"
+        },
+        "date": 1772087743706,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 14461.655,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.66,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
             "value": 38.66,
             "unit": "MB"
           }
