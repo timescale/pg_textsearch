@@ -36,7 +36,6 @@ typedef struct TpMemtable
 {
 	/* String interning hash table in DSA */
 	dshash_table_handle string_hash_handle; /* Handle to dshash string table */
-	int32				total_terms;		/* Total unique terms interned */
 	int64				total_postings;		/* Total posting entries for spill
 											 * threshold */
 
@@ -63,8 +62,6 @@ typedef struct TpSharedIndexState
 	/* Corpus statistics for BM25 scoring */
 	int32  total_docs; /* Total number of documents */
 	int64  total_len;  /* Total length of all documents */
-	float8 idf_sum;	   /* Sum of all IDF values for average IDF calculation */
-	/* Note: num_unique_terms is available as memtable->total_terms */
 
 	/*
 	 * Per-index LWLock for transaction-level serialization.

@@ -231,7 +231,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
-	shared_state->idf_sum	 = 0.0;
 
 	/*
 	 * Initialize the per-index LWLock using a fixed tranche ID.
@@ -247,7 +246,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_terms		 = 0;
 	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -341,7 +339,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
-	shared_state->idf_sum	 = 0.0;
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 
@@ -387,7 +384,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_terms		 = 0;
 	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -464,7 +460,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
 	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	new_memtable->total_terms		 = 0;
 	new_memtable->total_postings	 = 0;
 	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -530,7 +525,6 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_terms		 = 0;
 	memtable->total_postings	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
@@ -814,9 +808,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		 */
 		local_state->shared->total_docs = metap->total_docs;
 		local_state->shared->total_len	= metap->total_len;
-
-		/* Recalculate IDF sum after recovery */
-		tp_calculate_idf_sum(local_state);
 	}
 
 	/* Clean up */
@@ -1193,7 +1184,6 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 				dshash_destroy(string_table);
 			}
 			memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-			memtable->total_terms		 = 0;
 		}
 
 		/* Destroy the document lengths hash table */

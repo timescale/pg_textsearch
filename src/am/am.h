@@ -120,9 +120,6 @@ bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
-/* IDF sum calculation for average IDF */
-void tp_calculate_idf_sum(TpLocalIndexState *index_state);
-
 /* Build progress tracking for partitioned tables */
 void tp_build_progress_begin(void);
 void tp_build_progress_end(void);
