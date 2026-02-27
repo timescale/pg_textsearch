@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772087744399,
+  "lastUpdate": 1772173770459,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3657,6 +3657,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.41,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f1384f93b557bdea96e1de131c56195afb2508f3",
+          "message": "feat: detect stale binary after upgrade via library version check (#241)\n\n## Summary\n\n- Add `pg_textsearch.library_version` read-only GUC set at library load\ntime from a compile-time version define\n- Check the GUC in `CREATE EXTENSION` and `ALTER EXTENSION UPDATE` SQL\nscripts, failing with a clear error if the loaded library is missing or\ndoesn't match the expected version\n- Catches the case where a user runs `make install` but forgets to\nrestart the server\n\n## Changes\n\n- **Makefile**: Extract `EXTVERSION` from `pg_textsearch.control`, pass\nas `-DPG_TEXTSEARCH_VERSION`\n- **src/mod.c**: Register `PGC_INTERNAL` string GUC in `_PG_init`\n- **sql/pg_textsearch--1.0.0-dev.sql**: Version check DO block before\nany CREATE statements\n- **sql/pg_textsearch--0.5.0--1.0.0-dev.sql**: Same version check in\nupgrade script\n- **test/sql/basic.sql**: Regression test for the GUC\n\n## Testing\n\n- `SHOW pg_textsearch.library_version` returns `1.0.0-dev` after restart\n- All 47 regression tests pass",
+          "timestamp": "2026-02-26T19:19:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f1384f93b557bdea96e1de131c56195afb2508f3"
+        },
+        "date": 1772173769603,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 295.629,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.39,
             "unit": "ms"
           },
           {
