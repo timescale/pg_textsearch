@@ -483,7 +483,6 @@ tp_build_init_metapage(
 	UnlockReleaseBuffer(metabuf);
 }
 
-
 /*
  * Extract terms and frequencies from a TSVector
  * Returns the document length (sum of all term frequencies)

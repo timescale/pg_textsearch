@@ -60,8 +60,8 @@ typedef struct TpSharedIndexState
 	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
 	/* Corpus statistics for BM25 scoring */
-	int32  total_docs; /* Total number of documents */
-	int64  total_len;  /* Total length of all documents */
+	int32 total_docs; /* Total number of documents */
+	int64 total_len;  /* Total length of all documents */
 
 	/*
 	 * Per-index LWLock for transaction-level serialization.
