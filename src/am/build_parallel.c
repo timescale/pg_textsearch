@@ -28,7 +28,6 @@
 #include <catalog/storage.h>
 #include <commands/progress.h>
 #include <miscadmin.h>
-#include <portability/instr_time.h>
 #include <storage/buffile.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
@@ -662,13 +661,6 @@ plan_merge_groups(
 			g							  = num_groups++;
 			shared->merge_group_levels[g] = level + 1;
 
-			elog(LOG,
-				 "parallel build: remainder merge group %u "
-				 "at L%d with %u segments",
-				 g,
-				 level,
-				 remainder);
-
 			for (k = 0; k < remainder; k++)
 			{
 				SegRef *ref = &level_segs[level][pos + k];
@@ -794,9 +786,6 @@ worker_execute_merge_group(
 	uint64			 pages_needed;
 	uint64			 pool_start;
 	pg_atomic_uint64 local_counter;
-	instr_time		 mg_start, open_end, merge_end, write_end;
-
-	INSTR_TIME_SET_CURRENT(mg_start);
 	target_level = shared->merge_group_levels[group_idx];
 
 	/* Count refs and sum sizes */
@@ -865,8 +854,6 @@ worker_execute_merge_group(
 			num_sources++;
 		}
 	}
-
-	INSTR_TIME_SET_CURRENT(open_end);
 
 	if (num_sources == 0)
 	{
@@ -950,8 +937,6 @@ worker_execute_merge_group(
 
 	MemoryContextSwitchTo(old_ctx);
 
-	INSTR_TIME_SET_CURRENT(merge_end);
-
 	/* Write merged segment to pages */
 	if (num_merged_terms > 0)
 	{
@@ -977,40 +962,6 @@ worker_execute_merge_group(
 	else
 	{
 		shared->merge_group_results[group_idx] = InvalidBlockNumber;
-	}
-
-	INSTR_TIME_SET_CURRENT(write_end);
-	{
-		instr_time el;
-		double	   t_open, t_merge, t_write, t_total;
-
-		el = open_end;
-		INSTR_TIME_SUBTRACT(el, mg_start);
-		t_open = INSTR_TIME_GET_MILLISEC(el) / 1000.0;
-
-		el = merge_end;
-		INSTR_TIME_SUBTRACT(el, open_end);
-		t_merge = INSTR_TIME_GET_MILLISEC(el) / 1000.0;
-
-		el = write_end;
-		INSTR_TIME_SUBTRACT(el, merge_end);
-		t_write = INSTR_TIME_GET_MILLISEC(el) / 1000.0;
-
-		t_total = t_open + t_merge + t_write;
-
-		elog(LOG,
-			 "worker %d merge group %u: %.1f s "
-			 "(open %.1f + dict %.1f + "
-			 "merge+write %.1f), "
-			 "%u sources, %.1f MB",
-			 ParallelWorkerNumber,
-			 group_idx,
-			 t_total,
-			 t_open,
-			 t_merge,
-			 t_write,
-			 num_refs,
-			 (double)sum_sizes / (1024.0 * 1024.0));
 	}
 
 	/* Cleanup */
@@ -1074,12 +1025,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	BufFile				   *buffile;
 	char					file_name[64];
 	WorkerSegmentTracker	tracker;
-
-	/* Timing instrumentation */
-	instr_time phase1_start, phase2_start;
-	instr_time copy_end_ts, phase2_end;
-	double	   merge_sec	   = 0.0;
-	uint32	   merge_group_cnt = 0;
 
 	/* Attach to shared memory */
 	shared = (TpParallelBuildShared *)
@@ -1150,8 +1095,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			CurrentMemoryContext,
 			"parallel build per-doc temp",
 			ALLOCSET_DEFAULT_SIZES);
-
-	INSTR_TIME_SET_CURRENT(phase1_start);
 
 	/* Process tuples from this worker's block range */
 	while (scan != NULL &&
@@ -1316,27 +1259,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	BufFileExportFileSet(buffile);
 	BufFileClose(buffile);
 
-	/* Log Phase 1 timing */
-	{
-		instr_time el;
-
-		INSTR_TIME_SET_CURRENT(el);
-		INSTR_TIME_SUBTRACT(el, phase1_start);
-		elog(LOG,
-			 "worker %d phase1: %.1f s, "
-			 "%lu tuples, %u segments "
-			 "(%u after compact), "
-			 "buffile %.1f MB, blocks [%u,%u)",
-			 worker_id,
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
-			 (unsigned long)my_result->tuples_scanned,
-			 my_result->segment_count,
-			 my_result->final_segment_count,
-			 (double)tracker.buffile_end / (1024.0 * 1024.0),
-			 shared->worker_start_block[worker_id],
-			 shared->worker_end_block[worker_id]);
-	}
-
 	/* Cleanup Phase 1 resources (keep heap/index open for Phase 2) */
 	tp_build_context_destroy(build_ctx);
 	tracker_destroy(&tracker);
@@ -1357,8 +1279,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	while (pg_atomic_read_u32(&shared->phase2_ready) == 0)
 		ConditionVariableSleep(&shared->phase2_cv, PG_WAIT_EXTENSION);
 	ConditionVariableCancelSleep();
-
-	INSTR_TIME_SET_CURRENT(phase2_start);
 
 	/*
 	 * Phase 2: COPY own segments + work-steal merge groups.
@@ -1431,26 +1351,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		}
 	}
 
-	INSTR_TIME_SET_CURRENT(copy_end_ts);
-	{
-		instr_time el		 = copy_end_ts;
-		uint32	   copy_segs = 0;
-		uint32	   s;
-
-		INSTR_TIME_SUBTRACT(el, phase2_start);
-		for (s = 0; s < my_result->final_segment_count; s++)
-		{
-			if (my_result->seg_merge_group[s] == 0)
-				copy_segs++;
-		}
-		elog(LOG,
-			 "worker %d phase2 copy: %.1f s, "
-			 "%u segments",
-			 worker_id,
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
-			 copy_segs);
-	}
-
 	/*
 	 * Step 2: Work-steal merge groups.
 	 * Each worker claims groups via atomic counter until all done.
@@ -1460,40 +1360,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		while ((g = pg_atomic_fetch_add_u32(&shared->next_merge_group, 1)) <
 			   shared->num_merge_groups)
-		{
-			instr_time mg_s, mg_e;
-
-			INSTR_TIME_SET_CURRENT(mg_s);
 			worker_execute_merge_group(shared, index, g);
-			INSTR_TIME_SET_CURRENT(mg_e);
-			INSTR_TIME_SUBTRACT(mg_e, mg_s);
-			merge_sec += INSTR_TIME_GET_MILLISEC(mg_e) / 1000.0;
-			merge_group_cnt++;
-		}
-	}
-
-	INSTR_TIME_SET_CURRENT(phase2_end);
-	{
-		instr_time el;
-		double	   t_phase2, t_copy;
-
-		el = phase2_end;
-		INSTR_TIME_SUBTRACT(el, phase2_start);
-		t_phase2 = INSTR_TIME_GET_MILLISEC(el) / 1000.0;
-
-		el = copy_end_ts;
-		INSTR_TIME_SUBTRACT(el, phase2_start);
-		t_copy = INSTR_TIME_GET_MILLISEC(el) / 1000.0;
-
-		elog(LOG,
-			 "worker %d phase2: %.1f s "
-			 "(copy %.1f + merge %.1f, "
-			 "%u groups)",
-			 worker_id,
-			 t_phase2,
-			 t_copy,
-			 merge_sec,
-			 merge_group_cnt);
 	}
 
 	index_close(index, AccessExclusiveLock);
@@ -1526,10 +1393,6 @@ tp_build_parallel(
 	int					   launched;
 	uint64				   total_docs = 0;
 	uint64				   total_len  = 0;
-
-	/* Timing instrumentation */
-	instr_time build_start, phase1_end, barrier_end;
-	instr_time phase2_end, trunc_end, link_end, flush_end;
 
 	/* Ensure reasonable number of workers */
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
@@ -1631,8 +1494,6 @@ tp_build_parallel(
 		pg_atomic_write_u32(&shared->scan_ready, 1);
 	}
 
-	INSTR_TIME_SET_CURRENT(build_start);
-
 	/*
 	 * Phase 1 wait: wait for all workers to finish BufFile phase.
 	 * Workers signal phase1_done and then block on phase2_cv.
@@ -1648,8 +1509,6 @@ tp_build_parallel(
 				&shared->all_done_cv, 1000 /* ms */, PG_WAIT_EXTENSION);
 	}
 	ConditionVariableCancelSleep();
-	INSTR_TIME_SET_CURRENT(phase1_end);
-
 	/* Collect corpus stats from all workers */
 	{
 		TpParallelWorkerResult *results;
@@ -1661,18 +1520,6 @@ tp_build_parallel(
 			total_docs += results[i].total_docs;
 			total_len += results[i].total_len;
 		}
-	}
-
-	{
-		instr_time el = phase1_end;
-
-		INSTR_TIME_SUBTRACT(el, build_start);
-		elog(LOG,
-			 "parallel build: phase1 wait %.1f s, "
-			 "%d workers, %lu total docs",
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
-			 launched,
-			 (unsigned long)total_docs);
 	}
 
 	/* Report final tuple count */
@@ -1739,21 +1586,6 @@ tp_build_parallel(
 
 		/* Set atomic page counter to the start of pre-allocated region */
 		pg_atomic_write_u64(&shared->next_page, (uint64)start_blk);
-
-		INSTR_TIME_SET_CURRENT(barrier_end);
-		{
-			instr_time el = barrier_end;
-
-			INSTR_TIME_SUBTRACT(el, phase1_end);
-			elog(LOG,
-				 "parallel build: "
-				 "plan+extend %.1f s, "
-				 "%u merge groups, "
-				 "%lu total pages",
-				 INSTR_TIME_GET_MILLISEC(el) / 1000.0,
-				 shared->num_merge_groups,
-				 (unsigned long)total_pages);
-		}
 	}
 
 	/* Signal Phase 2: pages are ready */
@@ -1772,16 +1604,6 @@ tp_build_parallel(
 	}
 	ConditionVariableCancelSleep();
 	WaitForParallelWorkersToFinish(pcxt);
-
-	INSTR_TIME_SET_CURRENT(phase2_end);
-	{
-		instr_time el = phase2_end;
-
-		INSTR_TIME_SUBTRACT(el, barrier_end);
-		elog(LOG,
-			 "parallel build: phase2 wait %.1f s",
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
-	}
 
 	/*
 	 * Link segments into per-level chains in metapage.
@@ -1880,77 +1702,10 @@ tp_build_parallel(
 		UnlockReleaseBuffer(metabuf);
 	}
 
-	INSTR_TIME_SET_CURRENT(link_end);
-	{
-		instr_time el = link_end;
-
-		INSTR_TIME_SUBTRACT(el, phase2_end);
-		elog(LOG,
-			 "parallel build: link chains %.1f s",
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
-	}
-
 	tp_truncate_dead_pages(index);
-
-	INSTR_TIME_SET_CURRENT(trunc_end);
-	{
-		instr_time el = trunc_end;
-
-		INSTR_TIME_SUBTRACT(el, link_end);
-		elog(LOG,
-			 "parallel build: truncate %.1f s",
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
-	}
 
 	/* Flush all relation buffers to disk */
 	FlushRelationBuffers(index);
-
-	INSTR_TIME_SET_CURRENT(flush_end);
-	{
-		instr_time el = flush_end;
-
-		INSTR_TIME_SUBTRACT(el, trunc_end);
-		elog(LOG,
-			 "parallel build: flush %.1f s",
-			 INSTR_TIME_GET_MILLISEC(el) / 1000.0);
-	}
-
-	/* Total summary */
-	{
-		instr_time tmp;
-		double	   t_total, t_phase1, t_barrier;
-		double	   t_phase2, t_finalize;
-
-		tmp = flush_end;
-		INSTR_TIME_SUBTRACT(tmp, build_start);
-		t_total = INSTR_TIME_GET_MILLISEC(tmp) / 1000.0;
-
-		tmp = phase1_end;
-		INSTR_TIME_SUBTRACT(tmp, build_start);
-		t_phase1 = INSTR_TIME_GET_MILLISEC(tmp) / 1000.0;
-
-		tmp = barrier_end;
-		INSTR_TIME_SUBTRACT(tmp, phase1_end);
-		t_barrier = INSTR_TIME_GET_MILLISEC(tmp) / 1000.0;
-
-		tmp = phase2_end;
-		INSTR_TIME_SUBTRACT(tmp, barrier_end);
-		t_phase2 = INSTR_TIME_GET_MILLISEC(tmp) / 1000.0;
-
-		tmp = flush_end;
-		INSTR_TIME_SUBTRACT(tmp, phase2_end);
-		t_finalize = INSTR_TIME_GET_MILLISEC(tmp) / 1000.0;
-
-		elog(LOG,
-			 "parallel build: total %.1f s "
-			 "(phase1 %.1f + barrier %.1f + "
-			 "phase2 %.1f + finalize %.1f)",
-			 t_total,
-			 t_phase1,
-			 t_barrier,
-			 t_phase2,
-			 t_finalize);
-	}
 
 	/* Build result */
 	result				 = palloc0(sizeof(IndexBuildResult));

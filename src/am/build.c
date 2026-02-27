@@ -280,14 +280,7 @@ tp_truncate_dead_pages(Relation index)
 
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (max_used < nblocks)
-	{
-		elog(LOG,
-			 "bm25 truncate: %u → %u pages (freed %u)",
-			 nblocks,
-			 max_used,
-			 nblocks - max_used);
 		RelationTruncate(index, max_used);
-	}
 }
 
 /*
