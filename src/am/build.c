@@ -33,6 +33,7 @@
 #include "memtable/stringtable.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
+#include "segment/segment_io.h"
 #include "state/metapage.h"
 #include "state/state.h"
 #include "types/vector.h"

@@ -15,6 +15,7 @@
 #include "query/bmw.h"
 #include "query/score.h"
 #include "segment/fieldnorm.h"
+#include "segment/segment_io.h"
 #include "source.h"
 #include "state/metapage.h"
 

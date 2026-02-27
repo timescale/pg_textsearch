@@ -21,6 +21,7 @@
 #include "merge_internal.h"
 #include "pagemapper.h"
 #include "segment.h"
+#include "segment_io.h"
 #include "state/metapage.h"
 
 /* GUC variable for segment compression */

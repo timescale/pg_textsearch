@@ -34,6 +34,7 @@
 #include "memtable/stringtable.h"
 #include "pagemapper.h"
 #include "segment.h"
+#include "segment_io.h"
 #include "state/metapage.h"
 #include "state/state.h"
 

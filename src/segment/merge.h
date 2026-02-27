@@ -8,6 +8,7 @@
 
 #include "postgres.h"
 #include "segment.h"
+#include "segment_io.h"
 #include "storage/block.h"
 #include "storage/buffile.h"
 #include "utils/rel.h"

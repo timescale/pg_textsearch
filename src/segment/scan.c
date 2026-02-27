@@ -12,6 +12,7 @@
 #include "segment/dictionary.h"
 #include "segment/fieldnorm.h"
 #include "segment/segment.h"
+#include "segment/segment_io.h"
 #include "state/state.h"
 
 /*

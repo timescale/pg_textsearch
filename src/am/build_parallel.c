@@ -52,6 +52,7 @@
 #include "segment/merge_internal.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
+#include "segment/segment_io.h"
 #include "state/metapage.h"
 
 /* Defined in build.c, extracts terms from TSVector */

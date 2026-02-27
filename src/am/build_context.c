@@ -22,6 +22,7 @@
 #include "segment/fieldnorm.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
+#include "segment/segment_io.h"
 
 /* Forward declarations for hash table support */
 static uint32 build_term_hash(const void *key, Size keysize);

@@ -40,6 +40,7 @@
 #include "query/score.h"
 #include "segment/fieldnorm.h"
 #include "segment/segment.h"
+#include "segment/segment_io.h"
 #include "state/metapage.h"
 #include "state/state.h"
 #include "types/query.h"

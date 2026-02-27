@@ -14,6 +14,7 @@
 #include <storage/buffile.h>
 
 #include "segment.h"
+#include "segment_io.h"
 
 /*
  * Merge source state - tracks current position in each source segment
