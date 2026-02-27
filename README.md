@@ -257,6 +257,75 @@ For partitioned tables, each partition builds its index independently with paral
 workers if the partition is large enough. This allows efficient indexing of very
 large partitioned datasets.
 
+### Performance Tuning
+
+#### Force-merging segments
+
+The index stores data in multiple segments across levels (similar to an LSM
+tree). After bulk loads or parallel builds, consolidating segments into one
+improves query speed by reducing the number of segments scanned:
+
+```sql
+SELECT bm25_force_merge('docs_idx');
+```
+
+This is analogous to Lucene's `forceMerge(1)`. It rewrites all segments into
+a single segment and reclaims the freed pages. Best used after the initial
+data load or after large batch inserts, not during ongoing write traffic.
+
+#### Use LIMIT with ORDER BY
+
+Top-k queries (`ORDER BY ... LIMIT n`) enable Block-Max WAND optimization,
+which skips blocks of postings that cannot contribute to the top results.
+Without a LIMIT clause, the index falls back to scoring all matching
+documents up to `pg_textsearch.default_limit`.
+
+```sql
+-- Fast: BMW skips non-competitive blocks
+SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
+
+-- Slower: scores up to default_limit documents
+SELECT * FROM documents ORDER BY content <@> 'search terms';
+```
+
+#### Segment compression
+
+Compression is on by default and generally improves both index size and query
+performance (fewer pages to read). Disable only if you observe that
+decompression overhead is a bottleneck for your workload:
+
+```sql
+SET pg_textsearch.compress_segments = off;
+```
+
+#### Postgres settings that affect index builds
+
+Setting | Effect
+--- | ---
+`max_parallel_maintenance_workers` | Number of parallel workers for CREATE INDEX (default 2)
+`maintenance_work_mem` | Memory per worker; must be >= 64MB for parallel builds
+
+#### pg_textsearch GUCs
+
+Setting | Default | Description
+--- | --- | ---
+`pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
+`pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
+`pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
+`pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
+`pg_textsearch.memtable_spill_threshold` | 32000000 | Posting entries before auto-spill (0 = disable)
+
+#### Spill thresholds
+
+The `memtable_spill_threshold` controls when the in-memory index flushes to
+a disk segment. When the memtable reaches this many posting entries, it
+automatically spills at transaction commit. The `bulk_load_threshold` triggers
+a spill based on term count within a single transaction. Both keep memory
+usage bounded while maintaining good query performance.
+
+**Crash recovery**: The memtable is rebuilt from the heap on startup, so no
+data is lost if Postgres crashes before spilling to disk.
+
 ## Monitoring
 
 ```sql
@@ -265,33 +334,6 @@ SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
 FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 ```
-
-### Configuration
-
-Optional settings in `postgresql.conf`:
-
-```bash
-# Query limit when no LIMIT clause detected
-pg_textsearch.default_limit = 1000           # default 1000
-
-# Auto-spill thresholds (set to 0 to disable)
-pg_textsearch.bulk_load_threshold = 100000    # terms per transaction
-pg_textsearch.memtable_spill_threshold = 32000000  # posting entries (~1M docs/segment)
-
-# Compression (v0.4.0+)
-pg_textsearch.compress_segments = on          # default on
-
-# Query optimization
-pg_textsearch.enable_bmw = on                 # Block-Max WAND for top-k queries
-```
-
-The `memtable_spill_threshold` controls when the in-memory index spills to
-disk segments. When the memtable reaches this many posting entries, it
-automatically flushes to a segment at transaction commit. This keeps memory
-usage bounded while maintaining good query performance.
-
-**Crash recovery**: The memtable is rebuilt from the heap on startup, so no
-data is lost if Postgres crashes before spilling to disk.
 
 ## Examples
 
@@ -484,13 +526,20 @@ superuser privileges.
 
 Function | Description
 --- | ---
+bm25_force_merge(index_name) → void | Merge all segments into one (improves query speed)
+bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
 bm25_dump_index(index_name, file_path) † → text | Dump full index structure to file
 bm25_summarize_index(index_name) † → text | Show index statistics without content
-bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
 bm25_debug_pageviz(index_name, file_path) † → text | Generate page layout visualization
 
 ```sql
+-- Merge all segments into one (best after bulk loads)
+SELECT bm25_force_merge('docs_idx');
+
+-- Force spill to disk (returns number of entries spilled)
+SELECT bm25_spill_index('docs_idx');
+
 -- Quick overview of index statistics
 SELECT bm25_summarize_index('docs_idx');
 
@@ -499,9 +548,6 @@ SELECT bm25_dump_index('docs_idx');
 
 -- Full dump to file (includes hex data)
 SELECT bm25_dump_index('docs_idx', '/tmp/docs_idx_dump.txt');
-
--- Force spill to disk (returns number of entries spilled)
-SELECT bm25_spill_index('docs_idx');
 
 -- Generate page layout visualization (view with: less -R /tmp/pageviz.txt)
 SELECT bm25_debug_pageviz('docs_idx', '/tmp/pageviz.txt');
