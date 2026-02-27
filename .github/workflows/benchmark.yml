@@ -728,7 +728,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
 
-        echo "=== System X Cranfield Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "=== System X Cranfield Concurrent Insert Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
         cd benchmarks/sql/cranfield
         psql -f systemx/concurrent-setup.sql 2>&1 | \
@@ -763,7 +763,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        echo "=== System X MS MARCO Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "=== System X MS MARCO Concurrent Insert Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
         psql -f benchmarks/datasets/msmarco/systemx/concurrent-setup.sql 2>&1 | \
             tee -a benchmark_results.txt
@@ -795,7 +795,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
 
-        echo "=== System X Wikipedia Concurrent Insert ===" | tee -a benchmark_results.txt
+        echo "=== System X Wikipedia Concurrent Insert Benchmark ===" | tee -a benchmark_results.txt
         echo "Start: $(date)" | tee -a benchmark_results.txt
         psql -f benchmarks/datasets/wikipedia/systemx/concurrent-setup.sql 2>&1 | \
             tee -a benchmark_results.txt
@@ -846,12 +846,19 @@ jobs:
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               systemx_wikipedia_concurrent_metrics.json "systemx_wikipedia_concurrent" "System X Wikipedia Concurrent" || true
         else
+          # Map dataset slug to display name for section matching
+          case "$DATASET" in
+            cranfield) DD="Cranfield" ;;
+            msmarco) DD="MS MARCO" ;;
+            wikipedia) DD="Wikipedia" ;;
+            *) DD="$DATASET" ;;
+          esac
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
-              systemx_metrics.json "systemx_${DATASET}" "System X" || true
+              systemx_metrics.json "systemx_${DATASET}" "System X ${DD}" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
-              systemx_${DATASET}_insert_metrics.json "systemx_${DATASET}_insert" "System X ${DATASET} Insert" || true
+              systemx_${DATASET}_insert_metrics.json "systemx_${DATASET}_insert" "System X ${DD} Insert" || true
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
-              systemx_${DATASET}_concurrent_metrics.json "systemx_${DATASET}_concurrent" "System X ${DATASET} Concurrent" || true
+              systemx_${DATASET}_concurrent_metrics.json "systemx_${DATASET}_concurrent" "System X ${DD} Concurrent" || true
         fi
 
     - name: Upload results
@@ -1793,7 +1800,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
 
-        echo "=== Cranfield Concurrent Insert ===" | tee -a insert_results.txt
+        echo "=== Cranfield Concurrent Insert Benchmark ===" | tee -a insert_results.txt
         echo "Start: $(date)" | tee -a insert_results.txt
 
         cd benchmarks/sql/cranfield
@@ -1829,7 +1836,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        echo "=== MS MARCO Concurrent Insert ===" | tee -a insert_results.txt
+        echo "=== MS MARCO Concurrent Insert Benchmark ===" | tee -a insert_results.txt
         echo "Start: $(date)" | tee -a insert_results.txt
 
         psql -f benchmarks/datasets/msmarco/insert/concurrent-setup.sql 2>&1 | \
@@ -1878,7 +1885,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
 
-        echo "=== Wikipedia Concurrent Insert ===" | tee -a insert_results.txt
+        echo "=== Wikipedia Concurrent Insert Benchmark ===" | tee -a insert_results.txt
         echo "Start: $(date)" | tee -a insert_results.txt
 
         psql -f benchmarks/datasets/wikipedia/insert/concurrent-setup.sql 2>&1 | \
@@ -1940,10 +1947,17 @@ jobs:
           ./benchmarks/runner/extract_metrics.sh insert_results.txt \
               wikipedia_concurrent_metrics.json "wikipedia_concurrent" "Wikipedia Concurrent" || true
         else
+          # Map dataset slug to display name for section matching
+          case "$DATASET" in
+            cranfield) DD="Cranfield" ;;
+            msmarco) DD="MS MARCO" ;;
+            wikipedia) DD="Wikipedia" ;;
+            *) DD="$DATASET" ;;
+          esac
           ./benchmarks/runner/extract_metrics.sh insert_results.txt \
-              ${DATASET}_insert_metrics.json "${DATASET}_insert" "${DATASET} Insert" || true
+              ${DATASET}_insert_metrics.json "${DATASET}_insert" "${DD} Insert" || true
           ./benchmarks/runner/extract_metrics.sh insert_results.txt \
-              ${DATASET}_concurrent_metrics.json "${DATASET}_concurrent" "${DATASET} Concurrent" || true
+              ${DATASET}_concurrent_metrics.json "${DATASET}_concurrent" "${DD} Concurrent" || true
         fi
 
     - name: Upload insert benchmark results
@@ -2256,7 +2270,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
 
-        echo "=== Cranfield GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "=== Cranfield GIN Concurrent Insert Benchmark ===" | tee -a gin_results.txt
         echo "Start: $(date)" | tee -a gin_results.txt
         cd benchmarks/sql/cranfield
         psql -f gin/concurrent-setup.sql 2>&1 | \
@@ -2282,7 +2296,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/msmarco/data"
 
-        echo "=== MS MARCO GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "=== MS MARCO GIN Concurrent Insert Benchmark ===" | tee -a gin_results.txt
         echo "Start: $(date)" | tee -a gin_results.txt
         psql -f benchmarks/datasets/msmarco/gin/concurrent-setup.sql 2>&1 | \
             tee -a gin_results.txt
@@ -2306,7 +2320,7 @@ jobs:
         export PGDATABASE=bench_test
         export DATA_DIR="$PWD/benchmarks/datasets/wikipedia/data"
 
-        echo "=== Wikipedia GIN Concurrent Insert ===" | tee -a gin_results.txt
+        echo "=== Wikipedia GIN Concurrent Insert Benchmark ===" | tee -a gin_results.txt
         echo "Start: $(date)" | tee -a gin_results.txt
         psql -f benchmarks/datasets/wikipedia/gin/concurrent-setup.sql 2>&1 | \
             tee -a gin_results.txt
@@ -2349,12 +2363,19 @@ jobs:
           ./benchmarks/runner/extract_metrics.sh gin_results.txt \
               wikipedia_gin_concurrent_metrics.json "wikipedia_gin_concurrent" "Wikipedia GIN Concurrent" || true
         else
+          # Map dataset slug to display name for section matching
+          case "$DATASET" in
+            cranfield) DD="Cranfield" ;;
+            msmarco) DD="MS MARCO" ;;
+            wikipedia) DD="Wikipedia" ;;
+            *) DD="$DATASET" ;;
+          esac
           ./benchmarks/runner/extract_metrics.sh gin_results.txt \
-              ${DATASET}_gin_metrics.json "${DATASET}_gin" "${DATASET} GIN" || true
+              ${DATASET}_gin_metrics.json "${DATASET}_gin" "${DD} GIN" || true
           ./benchmarks/runner/extract_metrics.sh gin_results.txt \
-              ${DATASET}_gin_insert_metrics.json "${DATASET}_gin_insert" "${DATASET} GIN Insert" || true
+              ${DATASET}_gin_insert_metrics.json "${DATASET}_gin_insert" "${DD} GIN Insert" || true
           ./benchmarks/runner/extract_metrics.sh gin_results.txt \
-              ${DATASET}_gin_concurrent_metrics.json "${DATASET}_gin_concurrent" "${DATASET} GIN Concurrent" || true
+              ${DATASET}_gin_concurrent_metrics.json "${DATASET}_gin_concurrent" "${DD} GIN Concurrent" || true
         fi
 
     - name: Upload GIN benchmark results

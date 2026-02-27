@@ -49,9 +49,17 @@ CREATE INDEX cranfield_full_tapir_idx
     WITH (text_config='english', k1=1.2, b=0.75);
 
 -- Load the complete Cranfield dataset (inserts into indexed table)
-\echo 'INSERT_TIME:'
+-- Turn off per-statement timing during 1400 individual INSERTs;
+-- measure total insert time via clock_timestamp() bookends.
+\timing off
+SELECT clock_timestamp()::text AS t \gset _start_
 \echo 'Loading Cranfield collection into indexed table...'
 \i dataset.sql
+\echo 'INSERT_TIME:'
+SELECT 'Time: ' || round(extract(epoch from (
+    clock_timestamp() - :'_start_t'::timestamptz
+)) * 1000, 2)::text || ' ms' AS timing;
+\timing on
 
 -- Verify data loading
 \echo 'Data loading verification:'
@@ -70,6 +78,9 @@ SELECT
     COUNT(*) as count
 FROM cranfield_full_expected_rankings
 ORDER BY metric;
+
+-- Spill memtable to disk so pg_relation_size reflects actual index data
+SELECT bm25_spill_index('cranfield_full_tapir_idx');
 
 -- Report index and table sizes
 \echo ''

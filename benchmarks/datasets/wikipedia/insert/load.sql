@@ -56,6 +56,9 @@ SELECT
     ROUND(SUM(LENGTH(content)) / 1024.0 / 1024.0, 1)::text
 FROM wikipedia_articles;
 
+-- Spill memtable to disk so pg_relation_size reflects actual index data
+SELECT bm25_spill_index('wikipedia_bm25_idx');
+
 -- Report index and table sizes
 \echo ''
 \echo '=== Index Size Report ==='

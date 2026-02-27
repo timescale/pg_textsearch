@@ -87,6 +87,9 @@ SELECT 'Relevance judgments:', COUNT(*)::text
     FROM msmarco_qrels
 ORDER BY metric;
 
+-- Spill memtable to disk so pg_relation_size reflects actual index data
+SELECT bm25_spill_index('msmarco_bm25_idx');
+
 -- Report index and table sizes
 \echo ''
 \echo '=== Index Size Report ==='
