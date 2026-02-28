@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772246390668,
+  "lastUpdate": 1772246392742,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18745,6 +18745,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_wikipedia (100.0K docs) - Index Size",
             "value": 59.5,
+            "unit": "MB"
+          }
+        ]
+      }
+    ],
+    "systemx_cranfield_insert Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7d0b7056e70944c45d2e374121b02421cf5afe3d",
+          "message": "style: fix clang-format issues in build.c and state.h",
+          "timestamp": "2026-02-27T22:45:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7d0b7056e70944c45d2e374121b02421cf5afe3d"
+        },
+        "date": 1772246392059,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_cranfield_insert - Index Build Time",
+            "value": 8.985,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Insert Time",
+            "value": 65.778,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Throughput (avg ms/query)",
+            "value": 95.27,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Index Size",
+            "value": 3.05,
             "unit": "MB"
           }
         ]
