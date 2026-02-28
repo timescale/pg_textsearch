@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772245817920,
+  "lastUpdate": 1772245819412,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18492,6 +18492,40 @@ window.BENCHMARK_DATA = {
             "name": "wikipedia_gin_insert - Index Size",
             "value": 42.09,
             "unit": "MB"
+          }
+        ]
+      }
+    ],
+    "cranfield_gin_concurrent Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7d0b7056e70944c45d2e374121b02421cf5afe3d",
+          "message": "style: fix clang-format issues in build.c and state.h",
+          "timestamp": "2026-02-27T22:45:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7d0b7056e70944c45d2e374121b02421cf5afe3d"
+        },
+        "date": 1772245819018,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin_concurrent - Index Build Time",
+            "value": 0.391,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_concurrent - Concurrent Insert Time",
+            "value": 247.108994,
+            "unit": "ms"
           }
         ]
       }
