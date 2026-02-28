@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772246388554,
+  "lastUpdate": 1772246390668,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18711,6 +18711,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco (8.8M docs) - Index Size",
             "value": 1499.17,
+            "unit": "MB"
+          }
+        ]
+      }
+    ],
+    "systemx_wikipedia Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7d0b7056e70944c45d2e374121b02421cf5afe3d",
+          "message": "style: fix clang-format issues in build.c and state.h",
+          "timestamp": "2026-02-27T22:45:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7d0b7056e70944c45d2e374121b02421cf5afe3d"
+        },
+        "date": 1772246389980,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_wikipedia (100.0K docs) - Index Build Time",
+            "value": 4539.405,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_wikipedia (100.0K docs) - Index Size",
+            "value": 59.5,
             "unit": "MB"
           }
         ]
