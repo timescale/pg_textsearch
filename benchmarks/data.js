@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772246392742,
+  "lastUpdate": 1772246394813,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18789,6 +18789,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_cranfield_insert - Index Size",
             "value": 3.05,
+            "unit": "MB"
+          }
+        ]
+      }
+    ],
+    "systemx_msmarco_insert Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7d0b7056e70944c45d2e374121b02421cf5afe3d",
+          "message": "style: fix clang-format issues in build.c and state.h",
+          "timestamp": "2026-02-27T22:45:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7d0b7056e70944c45d2e374121b02421cf5afe3d"
+        },
+        "date": 1772246394131,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 4262.689,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 276779.438,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 117.46,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 116.53,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 122.2,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 121.3,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 104.29,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 111.28,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 111.79,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 117.24,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 103.17,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1032.78,
             "unit": "MB"
           }
         ]
