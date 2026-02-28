@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772243897225,
+  "lastUpdate": 1772243898563,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18185,6 +18185,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.33,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 38.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "7d0b7056e70944c45d2e374121b02421cf5afe3d",
+          "message": "style: fix clang-format issues in build.c and state.h",
+          "timestamp": "2026-02-27T22:45:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7d0b7056e70944c45d2e374121b02421cf5afe3d"
+        },
+        "date": 1772243898266,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 12324.783,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.27,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.65,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.29,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.32,
             "unit": "ms"
           },
           {
