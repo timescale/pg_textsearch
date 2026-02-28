@@ -106,5 +106,6 @@ window.BRANCH_INFO = {
   "3dc4a8fc8f6a0c63fa0b1cee190ca80207d0e27f": "feat/arena-build-rewrite",
   "04f4387e2ca42e382e29105d101b8b6909cab8fe": "feat/arena-build-rewrite",
   "4a9aaf2a430249d4b20d0c4045b4ddf6c5a8bebb": "main",
-  "f1384f93b557bdea96e1de131c56195afb2508f3": "main"
+  "f1384f93b557bdea96e1de131c56195afb2508f3": "main",
+  "7d0b7056e70944c45d2e374121b02421cf5afe3d": "insert-benchmarks"
 };
