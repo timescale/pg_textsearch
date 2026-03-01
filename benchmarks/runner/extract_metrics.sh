@@ -59,7 +59,7 @@ LOAD_TIME_MS=$(grep -E "^COPY [0-9]+" "$LOG_FILE" -A 1 2>/dev/null | \
 
 # Extract insert time (for insert-based benchmarks)
 # INSERT_TIME: marker appears before the COPY/INSERT block
-INSERT_TIME_MS=$(grep -E "INSERT_TIME:" "$LOG_FILE" -A 5 2>/dev/null | \
+INSERT_TIME_MS=$(grep -E "INSERT_TIME:" "$LOG_FILE" -A 10 2>/dev/null | \
     grep -oE "Time: [0-9]+\.[0-9]+ ms" | head -1 | \
     grep -oE "[0-9]+\.[0-9]+" || echo "")
 
