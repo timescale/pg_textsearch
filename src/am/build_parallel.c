@@ -343,7 +343,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			}
 
 			data_size = tp_write_segment_to_buffile(build_ctx, buffile);
-			my_result->segment_count++;
 
 			/* Track this L0 segment */
 			tracker_add_segment(&tracker, seg_offset, data_size);
@@ -382,7 +381,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		}
 
 		data_size = tp_write_segment_to_buffile(build_ctx, buffile);
-		my_result->segment_count++;
 
 		tracker_add_segment(&tracker, seg_offset, data_size);
 		tracker.buffile_end = seg_offset + data_size;
@@ -675,6 +673,11 @@ tp_build_parallel(
 					{
 						total_tokens +=
 								readers[reader_idx]->header->total_tokens;
+						/*
+						 * Source now owns this reader; clear
+						 * slot so cleanup won't double-close.
+						 */
+						readers[reader_idx] = NULL;
 						num_sources++;
 					}
 					reader_idx++;
@@ -764,6 +767,12 @@ tp_build_parallel(
 					total_tokens,
 					true /* disjoint_sources */);
 
+			/*
+			 * Flush dirty buffers before updating the metapage,
+			 * ensuring merged segment data is durable first.
+			 */
+			FlushRelationBuffers(index);
+
 			/* Link as L0 head in metapage */
 			{
 				Buffer			metabuf;
@@ -819,15 +828,15 @@ tp_build_parallel(
 			UnlockReleaseBuffer(metabuf);
 		}
 
-		/* Close merge source state */
+		/*
+		 * Close merge sources.  merge_source_close() frees term
+		 * data and closes the underlying reader, so we only need
+		 * to close readers that were not successfully wrapped in
+		 * a source (e.g. empty segments that were skipped).
+		 */
 		for (i = 0; i < num_sources; i++)
-		{
-			if (sources[i].current_term)
-				pfree(sources[i].current_term);
-			if (sources[i].string_offsets)
-				pfree(sources[i].string_offsets);
-			sources[i].reader = NULL;
-		}
+			merge_source_close(&sources[i]);
+
 		for (i = 0; i < total_segments; i++)
 		{
 			if (readers[i])
@@ -858,9 +867,6 @@ tp_build_parallel(
 	}
 	ConditionVariableCancelSleep();
 	WaitForParallelWorkersToFinish(pcxt);
-
-	/* Flush all relation buffers to disk */
-	FlushRelationBuffers(index);
 
 	/* Build result */
 	result				 = palloc0(sizeof(IndexBuildResult));

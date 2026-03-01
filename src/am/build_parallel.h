@@ -44,8 +44,6 @@
  */
 typedef struct TpParallelWorkerResult
 {
-	uint32 segment_count; /* Segments written to BufFile */
-
 	/* Corpus statistics */
 	uint64 total_docs; /* Documents indexed */
 	uint64 total_len;  /* Sum of document lengths */
