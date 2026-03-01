@@ -53,6 +53,7 @@ NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  parallel index build: merging 1 segments from 1 workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
 SELECT COUNT(*) AS database_count FROM parallel_test_1worker
 WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
@@ -93,6 +94,7 @@ NOTICE:  BM25 index build started for relation parallel_test_2workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  parallel index build: merging 2 segments from 2 workers
 NOTICE:  BM25 index build completed: 150000 documents, avg_length=16.00
 -- Verify all document groups are searchable
 SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
@@ -174,6 +176,7 @@ NOTICE:  BM25 index build started for relation parallel_test_4workers_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 4 of 4 requested workers
+NOTICE:  parallel index build: merging 4 segments from 4 workers
 NOTICE:  BM25 index build completed: 200000 documents, avg_length=9.00
 SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
 WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
@@ -218,6 +221,7 @@ NOTICE:  BM25 index build started for relation parallel_test_short_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  parallel index build: merging 2 segments from 2 workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=1.00
 -- Each term should appear in 10% of documents
 SELECT COUNT(*) AS alpha_count FROM parallel_test_short
@@ -251,6 +255,7 @@ NOTICE:  BM25 index build started for relation parallel_test_dupes_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  parallel index build: merging 2 segments from 2 workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=26.50
 -- "repeat" appears in all documents with varying term frequency
 SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
@@ -285,6 +290,7 @@ NOTICE:  BM25 index build started for relation parallel_test_nulls_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  parallel index build: merging 2 segments from 2 workers
 NOTICE:  BM25 index build completed: 90000 documents, avg_length=3.00
 -- Only non-NULL documents should be indexed (90%)
 SELECT COUNT(*) AS document_count FROM parallel_test_nulls
@@ -344,6 +350,7 @@ NOTICE:  BM25 index build started for relation parallel_test_custom_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.50
 NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  parallel index build: merging 2 segments from 2 workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
 SELECT COUNT(*) AS custom_count FROM parallel_test_custom
 WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
