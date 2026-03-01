@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772394617302,
+  "lastUpdate": 1772394618718,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18989,6 +18989,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 38.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "a72f481e17e0c684b7bd37be3da4067674ddec35",
+          "message": "fix: address code review issues in leader-only merge\n\n- Move FlushRelationBuffers before metapage update for consistency\n  with merge.c pattern (segment data durable before metadata)\n- Use merge_source_close() instead of manual pfree for cleanup\n- NULL readers[] slot when source takes ownership to prevent\n  double-close\n- Remove dead segment_count field from TpParallelWorkerResult",
+          "timestamp": "2026-03-01T18:44:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a72f481e17e0c684b7bd37be3da4067674ddec35"
+        },
+        "date": 1772394618412,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 12433.032,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.44,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.46,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.69,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.33,
             "unit": "ms"
           },
           {
