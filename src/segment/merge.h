@@ -10,7 +10,6 @@
 #include "segment.h"
 #include "segment_io.h"
 #include "storage/block.h"
-#include "storage/buffile.h"
 #include "utils/rel.h"
 
 /* Forward declarations */
@@ -19,28 +18,17 @@ struct TpMergeSource;
 struct TpMergedTerm;
 
 /*
- * Merge sink abstraction: unified I/O target for segment writes.
- * Can write to either index pages (via TpSegmentWriter) or BufFile.
+ * Merge sink: writes merged segment data to index pages.
  */
 typedef struct TpMergeSink
 {
-	bool   is_buffile;
-	uint64 current_offset;
-
-	/* Pages backend (active when !is_buffile) */
+	uint64			current_offset;
 	TpSegmentWriter writer;
 	Relation		index;
-
-	/* BufFile backend (active when is_buffile) */
-	BufFile *file;
-	uint64	 base_abs; /* absolute file offset of segment start */
 } TpMergeSink;
 
 /* Sink initialization */
 extern void merge_sink_init_pages(TpMergeSink *sink, Relation index);
-extern void merge_sink_init_pages_parallel(
-		TpMergeSink *sink, Relation index, pg_atomic_uint64 *page_counter);
-extern void merge_sink_init_buffile(TpMergeSink *sink, BufFile *file);
 
 /*
  * Write a merged segment to sink (pages or BufFile).

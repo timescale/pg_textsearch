@@ -20,17 +20,14 @@
 #include <access/tableam.h>
 #include <access/xact.h>
 #include <catalog/index.h>
-#include <catalog/storage.h>
 #include <commands/progress.h>
 #include <miscadmin.h>
 #include <storage/buffile.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
-#include <storage/smgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
-#include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/wait_event.h>
@@ -39,9 +36,6 @@
 #include "build_context.h"
 #include "build_parallel.h"
 #include "constants.h"
-#include "segment/compression.h"
-#include "segment/docmap.h"
-#include "segment/fieldnorm.h"
 #include "segment/merge.h"
 #include "segment/merge_internal.h"
 #include "segment/pagemapper.h"
@@ -55,9 +49,6 @@ extern int tp_extract_terms_from_tsvector(
 		char  ***terms_out,
 		int32  **frequencies_out,
 		int		*term_count_out);
-
-/* GUC variable for segment compression */
-extern bool tp_compress_segments;
 
 /* ----------------------------------------------------------------
  * Worker-local segment tracking
