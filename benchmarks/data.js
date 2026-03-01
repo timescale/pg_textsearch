@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772388125567,
+  "lastUpdate": 1772394615917,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3842,6 +3842,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.14,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "a72f481e17e0c684b7bd37be3da4067674ddec35",
+          "message": "fix: address code review issues in leader-only merge\n\n- Move FlushRelationBuffers before metapage update for consistency\n  with merge.c pattern (segment data durable before metadata)\n- Use merge_source_close() instead of manual pfree for cleanup\n- NULL readers[] slot when source takes ownership to prevent\n  double-close\n- Remove dead segment_count field from TpParallelWorkerResult",
+          "timestamp": "2026-03-01T18:44:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a72f481e17e0c684b7bd37be3da4067674ddec35"
+        },
+        "date": 1772394615059,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 278.348,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.33,
             "unit": "ms"
           },
           {
