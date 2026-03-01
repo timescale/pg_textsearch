@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772346300824,
+  "lastUpdate": 1772388121124,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -3805,6 +3805,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.36,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "93170a2d07de18d890efa12b0c79489e0e6669dc",
+          "message": "feat: leader-only merge for parallel index build\n\nReplace the two-phase parallel build (worker compaction + work-stealing\nmerge groups) with a simpler architecture: workers flush L0 segments to\nBufFiles without compaction, then the leader performs a single N-way\nmerge of all segments directly to paged storage.\n\nThis produces a single segment per index build, which is optimal for\nquery performance (no multi-segment scanning needed).\n\nRemoves ~800 lines of complexity: worker_maybe_compact_level,\nplan_merge_groups, compute_total_pages_needed,\nworker_execute_merge_group, write_temp_segment_to_index_parallel,\nand all Phase 2 worker code (COPY + work-steal).",
+          "timestamp": "2026-03-01T17:46:57Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/93170a2d07de18d890efa12b0c79489e0e6669dc"
+        },
+        "date": 1772388119498,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 236.78,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.14,
             "unit": "ms"
           },
           {
