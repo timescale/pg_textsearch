@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772346299199,
+  "lastUpdate": 1772346300824,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18587,6 +18587,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 38.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "86ec2fd148ae2d2bc22a6be526183bb45476ea92",
+          "message": "feat: rewrite index build with arena allocator and parallel page pool (#231)\n\n## Summary\n\n- **Arena allocator + EXPULL posting lists**: Replace DSA/dshash shared\nmemory with process-local arena (1MB slab bump allocator, 32-bit\naddresses) and exponential unrolled linked lists. Eliminates DSA\nfragmentation, dshash lock overhead, and posting list reallocation\ncopies.\n- **TpBuildContext**: New per-build context with arena, HTAB term\ndictionary, and flat doc arrays. Budget-controlled flushing using\n`maintenance_work_mem`. Used by both serial and parallel CREATE INDEX.\n- **Two-phase parallel build**: Workers scan disjoint TID ranges, flush\nto BufFile temp segments, compact within BufFile. Leader plans\ncross-worker merge groups. Workers then COPY non-merged segments to\npre-allocated index pages and work-steal merge groups via atomic\ncounter.\n- **Unified merge sink**: `TpMergeSink` abstraction writes merged\nsegments to either index pages or BufFile, eliminating separate code\npaths. Disjoint source fast path enables sequential drain merge without\nCTID comparison.\n- **bm25_force_merge()**: New SQL function to force-merge all segments\ninto one (à la Lucene's `forceMerge(1)`).\n- **TOAST fix**: `tpvector_send()` and `tpvector_eq()` now properly\ndetoast values.\n\n## Motivation\n\nThe previous parallel build used DSA shared memory with dshash for term\ndictionaries and double-buffered memtable swapping. This caused:\n- DSA fragmentation under large workloads (100GB+ OOM on MS MARCO v2)\n- dshash lock contention between workers\n- Complex N-way merge in the leader\n- ~2200 lines of intricate coordination code\n\nThe new approach is simpler and more memory-efficient: each worker gets\na local arena with a budget, flushes segments to BufFile temp files, and\nthe leader coordinates a two-phase write to pre-allocated index pages.\nCross-worker compaction merges segments that span worker boundaries.\n\n## Benchmark results (MS MARCO, 8.8M passages)\n\n| Metric | main | System X | This PR | vs main |\n|--------|------|----------|---------|---------|\n| Build Time | 278.5s | 146.2s | 228.1s | **19% faster** |\n| Index Size | 1240 MB | 1497 MB | 1360 MB | +10% (9% smaller than\nSystem X) |\n| Query P50 | 3.74ms | — | 6.08ms | +63% |\n| Query Avg | 4.49ms | — | 7.55ms | +68% |\n\n**Note on query latency**: The parallel build produces 2-3 L1 segments\ninstead of a single fully-compacted segment (as on main). The BMW query\noptimizer must scan multiple segments, which increases latency. A\nfollow-up will add post-build `bm25_force_merge()` that merges into\npre-allocated pages (using the existing BufFile→index-page COPY path) to\neliminate this regression.\n\n## Key changes\n\n### New files\n- `src/memtable/arena.c/h` — 1MB page-based bump allocator with 32-bit\naddresses (12-bit page + 20-bit offset), max 4GB\n- `src/memtable/expull.c/h` — Exponential unrolled linked list for\nposting lists (blocks grow 32B→32KB, 7-byte packed entries)\n- `src/am/build_context.c/h` — Arena-based build context replacing DSA\nmemtable during builds\n- `src/segment/merge_internal.h` — Exposes merge internals for\nbuild_parallel.c\n\n### Major modifications\n- `src/am/build.c` — Serial build uses TpBuildContext; added\n`bm25_force_merge()` SQL function; extracted `tp_link_l0_chain_head()`\nand `tp_truncate_dead_pages()` shared helpers\n- `src/am/build_parallel.c` — Two-phase parallel build with disjoint TID\nranges, BufFile worker segments, cross-worker merge groups, and atomic\npage pool\n- `src/segment/merge.c` — Unified TpMergeSink abstraction; disjoint\nsource fast path; streaming docmap merge\n- `src/segment/segment.c` — Added parallel writer init and atomic page\nallocation\n\n### Bug fixes\n- `src/types/vector.c` — Use `PG_DETOAST_DATUM` for TOAST safety in\nsend/eq functions\n- `src/am/scan.c` — Removed `TP_MAX_BLOCK_NUMBER` guard (large\nparallel-built indexes can exceed 1M blocks)\n- `sql/pg_textsearch--0.5.0--1.0.0-dev.sql` — Added `bm25_force_merge`\nto upgrade path\n\n## Test plan\n\n- [x] All 47 regression tests pass (PG17 + PG18)\n- [x] `parallel_build` test validates serial, 1-worker, 2-worker,\n4-worker builds with query correctness\n- [x] `parallel_bmw` test validates Block-Max WAND with parallel-built\nindexes\n- [x] `make format-check` passes\n- [x] CI green: gcc/clang × PG17/PG18, sanitizers\n- [x] MS MARCO benchmark passes (8.8M passages, build + query\nvalidation)\n- [x] Rebased onto current main (shared_preload_libraries, TOCTOU fix,\nvalidation)",
+          "timestamp": "2026-02-27T21:46:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/86ec2fd148ae2d2bc22a6be526183bb45476ea92"
+        },
+        "date": 1772346300400,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 12429.588,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.41,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.47,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.66,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.33,
             "unit": "ms"
           },
           {
