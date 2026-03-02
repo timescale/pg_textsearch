@@ -74,14 +74,15 @@ tp_segment_posting_iterator_init(
 
 	header = reader->header;
 
-	iter->reader			  = reader;
-	iter->term				  = term;
-	iter->current_block		  = 0;
-	iter->current_in_block	  = 0;
-	iter->initialized		  = false;
-	iter->finished			  = true;
-	iter->block_postings	  = NULL;
-	iter->has_block_access	  = false;
+	iter->reader		   = reader;
+	iter->term			   = term;
+	iter->current_block	   = 0;
+	iter->current_in_block = 0;
+	iter->initialized	   = false;
+	iter->finished		   = true;
+	iter->block_postings   = NULL;
+	iter->has_block_access = false;
+	memset(&iter->block_access, 0, sizeof(iter->block_access));
 	iter->fallback_block	  = NULL;
 	iter->fallback_block_size = 0;
 

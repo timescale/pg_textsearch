@@ -736,6 +736,8 @@ tp_build_parallel(
 
 			/* Write single merged segment to index pages */
 			merge_sink_init_pages(&sink, index);
+			if (sink.writer.pages_allocated == 0)
+				elog(ERROR, "merge: failed to allocate segment pages");
 			segment_root = sink.writer.pages[0];
 
 			write_merged_segment_to_sink(

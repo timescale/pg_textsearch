@@ -224,10 +224,9 @@ tp_score_documents(
 	}
 
 	/*
-	 * BMW fast path for multi-term queries.
+	 * BMW fast path for multi-term queries (query_term_count >= 2).
 	 * Uses block-level upper bounds to skip non-contributing blocks.
 	 */
-	if (query_term_count >= 2)
 	{
 		uint32	  *doc_freqs;
 		float4	  *idfs;
@@ -299,8 +298,4 @@ tp_score_documents(
 		*result_scores = scores;
 		return result_count;
 	}
-
-	/* Not reachable: query_term_count is >= 1 (checked above) so one
-	 * of the single-term or multi-term BMW paths always handles it. */
-	return 0;
 }

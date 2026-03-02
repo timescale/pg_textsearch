@@ -738,19 +738,10 @@ build_merged_docmap(
 				ms->num_docs * sizeof(uint8));
 	}
 
-	/* Step 2: Allocate output arrays */
-	if (total_docs > 0)
-	{
-		out_pages	   = palloc(total_docs * sizeof(BlockNumber));
-		out_offsets	   = palloc(total_docs * sizeof(OffsetNumber));
-		out_fieldnorms = palloc(total_docs * sizeof(uint8));
-	}
-	else
-	{
-		out_pages	   = NULL;
-		out_offsets	   = NULL;
-		out_fieldnorms = NULL;
-	}
+	/* Step 2: Allocate output arrays (palloc(0) is valid in PG) */
+	out_pages	   = palloc(total_docs * sizeof(BlockNumber));
+	out_offsets	   = palloc(total_docs * sizeof(OffsetNumber));
+	out_fieldnorms = palloc(total_docs * sizeof(uint8));
 
 	/*
 	 * Step 3: Merge docmaps.
@@ -1573,6 +1564,8 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		TpMergeSink sink;
 
 		merge_sink_init_pages(&sink, index);
+		if (sink.writer.pages_allocated == 0)
+			elog(ERROR, "merge: failed to allocate segment pages");
 		new_segment = sink.writer.pages[0];
 
 		write_merged_segment_to_sink(
