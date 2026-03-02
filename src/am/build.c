@@ -676,6 +676,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	double			   k1, b;
 	TableScanDesc	   scan;
 	TupleTableSlot	  *slot;
+	Snapshot		   snapshot	  = NULL;
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
@@ -887,7 +888,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		}
 
 		/* Prepare to scan table */
-		(void)tp_setup_table_scan(heap, &scan, &slot);
+		snapshot = tp_setup_table_scan(heap, &scan, &slot);
+		(void)snapshot; /* used only on PG18+ for UnregisterSnapshot */
 
 		/* Process each document */
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
