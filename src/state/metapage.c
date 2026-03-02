@@ -76,14 +76,14 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	PageInit(page, BLCKSZ, 0);
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
-	metap->magic			= TP_METAPAGE_MAGIC;
-	metap->version			= TP_METAPAGE_VERSION;
-	metap->text_config_oid	= text_config_oid;
-	metap->total_docs		= 0;
-	metap->total_terms		= 0;
-	metap->total_len		= 0;
-	metap->root_blkno		= InvalidBlockNumber;
-	metap->first_docid_page = InvalidBlockNumber;
+	metap->magic			   = TP_METAPAGE_MAGIC;
+	metap->version			   = TP_METAPAGE_VERSION;
+	metap->text_config_oid	   = text_config_oid;
+	metap->total_docs		   = 0;
+	metap->_unused_total_terms = 0;
+	metap->total_len		   = 0;
+	metap->root_blkno		   = InvalidBlockNumber;
+	metap->first_docid_page	   = InvalidBlockNumber;
 
 	/* Initialize hierarchical segment levels */
 	for (i = 0; i < TP_MAX_LEVELS; i++)
