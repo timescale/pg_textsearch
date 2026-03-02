@@ -34,58 +34,17 @@ extern bool tp_compress_segments;
  */
 
 /* ----------------------------------------------------------------
- * Merge sink: unified I/O abstraction
+ * Merge sink: paged I/O abstraction
  * ----------------------------------------------------------------
  */
-
-/*
- * Seek to an absolute position in a BufFile and write data.
- */
-static void
-buffile_write_at(BufFile *file, uint64 abs_pos, const void *data, size_t size)
-{
-	int	  fileno;
-	off_t offset;
-
-	tp_buffile_decompose_offset(abs_pos, &fileno, &offset);
-	BufFileSeek(file, fileno, offset, SEEK_SET);
-	BufFileWrite(file, data, size);
-}
 
 void
 merge_sink_init_pages(TpMergeSink *sink, Relation index)
 {
 	memset(sink, 0, sizeof(TpMergeSink));
-	sink->is_buffile = false;
-	sink->index		 = index;
+	sink->index = index;
 	tp_segment_writer_init(&sink->writer, index);
 	sink->current_offset = sink->writer.current_offset;
-}
-
-void
-merge_sink_init_pages_parallel(
-		TpMergeSink *sink, Relation index, pg_atomic_uint64 *page_counter)
-{
-	memset(sink, 0, sizeof(TpMergeSink));
-	sink->is_buffile = false;
-	sink->index		 = index;
-	tp_segment_writer_init_parallel(&sink->writer, index, page_counter);
-	sink->current_offset = sink->writer.current_offset;
-}
-
-void
-merge_sink_init_buffile(TpMergeSink *sink, BufFile *file)
-{
-	int	  fileno;
-	off_t file_offset;
-
-	memset(sink, 0, sizeof(TpMergeSink));
-	sink->is_buffile = true;
-	sink->file		 = file;
-
-	BufFileTell(file, &fileno, &file_offset);
-	sink->base_abs		 = tp_buffile_composite_offset(fileno, file_offset);
-	sink->current_offset = 0;
 }
 
 /*
@@ -94,17 +53,8 @@ merge_sink_init_buffile(TpMergeSink *sink, BufFile *file)
 static void
 merge_sink_write(TpMergeSink *sink, const void *data, uint32 size)
 {
-	if (!sink->is_buffile)
-	{
-		tp_segment_writer_write(&sink->writer, data, size);
-		sink->current_offset = sink->writer.current_offset;
-	}
-	else
-	{
-		buffile_write_at(
-				sink->file, sink->base_abs + sink->current_offset, data, size);
-		sink->current_offset += size;
-	}
+	tp_segment_writer_write(&sink->writer, data, size);
+	sink->current_offset = sink->writer.current_offset;
 }
 
 /*
@@ -115,42 +65,33 @@ static void
 merge_sink_write_at(
 		TpMergeSink *sink, uint64 offset, const void *data, uint32 size)
 {
-	if (sink->is_buffile)
+	const char *src		  = (const char *)data;
+	uint32		remaining = size;
+	uint64		pos		  = offset;
+
+	while (remaining > 0)
 	{
-		buffile_write_at(sink->file, sink->base_abs + offset, data, size);
-		return;
-	}
+		uint32		logical_pg = tp_logical_page(pos);
+		uint32		pg_off	   = tp_page_offset(pos);
+		uint32		avail	   = SEGMENT_DATA_PER_PAGE - pg_off;
+		uint32		chunk	   = Min(remaining, avail);
+		BlockNumber physical_block;
+		Buffer		buf;
+		Page		page;
 
-	/* Pages backend: loop over logical pages */
-	{
-		const char *src		  = (const char *)data;
-		uint32		remaining = size;
-		uint64		pos		  = offset;
+		Assert(logical_pg < sink->writer.pages_allocated);
+		physical_block = sink->writer.pages[logical_pg];
 
-		while (remaining > 0)
-		{
-			uint32		logical_pg = tp_logical_page(pos);
-			uint32		pg_off	   = tp_page_offset(pos);
-			uint32		avail	   = SEGMENT_DATA_PER_PAGE - pg_off;
-			uint32		chunk	   = Min(remaining, avail);
-			BlockNumber physical_block;
-			Buffer		buf;
-			Page		page;
+		buf = ReadBuffer(sink->index, physical_block);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+		memcpy((char *)page + SizeOfPageHeaderData + pg_off, src, chunk);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
 
-			Assert(logical_pg < sink->writer.pages_allocated);
-			physical_block = sink->writer.pages[logical_pg];
-
-			buf = ReadBuffer(sink->index, physical_block);
-			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-			page = BufferGetPage(buf);
-			memcpy((char *)page + SizeOfPageHeaderData + pg_off, src, chunk);
-			MarkBufferDirty(buf);
-			UnlockReleaseBuffer(buf);
-
-			src += chunk;
-			pos += chunk;
-			remaining -= chunk;
-		}
+		src += chunk;
+		pos += chunk;
+		remaining -= chunk;
 	}
 }
 
@@ -998,15 +939,13 @@ free_term_posting_sources(TpPostingMergeSource *psources, int num_psources)
  */
 
 /*
- * Write a merged segment to a sink (pages or BufFile).
+ * Write a merged segment to pages via sink.
  *
  * Layout: [header] -> [dictionary] -> [postings] -> [skip index] ->
  *         [fieldnorm] -> [ctid map]
  *
- * For pages sink: also writes page index and backpatches header with
+ * Also writes page index and backpatches header with
  * num_pages/page_index. Caller reads sink->writer.pages[0] for root.
- *
- * For BufFile sink: caller reads sink->current_offset for data_size.
  */
 void
 write_merged_segment_to_sink(
@@ -1039,20 +978,6 @@ write_merged_segment_to_sink(
 	/* Build docmap and direct mapping arrays from source segments */
 	docmap = build_merged_docmap(
 			sources, num_sources, &doc_mapping, disjoint_sources);
-
-	/*
-	 * For BufFile sink, docmap reads may have moved the cursor.
-	 * Re-seek to our recorded base position.
-	 */
-	if (sink->is_buffile)
-	{
-		int	  fileno;
-		off_t offset;
-
-		tp_buffile_decompose_offset(sink->base_abs, &fileno, &offset);
-		BufFileSeek(sink->file, fileno, offset, SEEK_SET);
-		sink->current_offset = 0;
-	}
 
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
@@ -1351,25 +1276,15 @@ write_merged_segment_to_sink(
 	/* Finalize data_size */
 	header.data_size = sink->current_offset;
 
-	/* Pages-only: flush writer, write page index */
-	if (!sink->is_buffile)
+	/* Flush writer and write page index */
 	{
 		BlockNumber page_index_root;
 
 		tp_segment_writer_flush(&sink->writer);
 		sink->writer.buffer_pos = SizeOfPageHeaderData;
 
-		if (sink->writer.page_counter != NULL)
-			page_index_root = write_page_index_with_counter(
-					sink->index,
-					sink->writer.pages,
-					sink->writer.pages_allocated,
-					sink->writer.page_counter);
-		else
-			page_index_root = write_page_index(
-					sink->index,
-					sink->writer.pages,
-					sink->writer.pages_allocated);
+		page_index_root = write_page_index(
+				sink->index, sink->writer.pages, sink->writer.pages_allocated);
 		header.page_index = page_index_root;
 		header.num_pages  = sink->writer.pages_allocated;
 	}
@@ -1401,22 +1316,8 @@ write_merged_segment_to_sink(
 	/* Backpatch header */
 	merge_sink_write_at(sink, 0, &header, sizeof(TpSegmentHeader));
 
-	/* Pages-only: finish writer */
-	if (!sink->is_buffile)
-		tp_segment_writer_finish(&sink->writer);
-
-	/* BufFile: seek to end position */
-	if (sink->is_buffile)
-	{
-		int	  end_fileno;
-		off_t end_offset;
-
-		tp_buffile_decompose_offset(
-				sink->base_abs + sink->current_offset,
-				&end_fileno,
-				&end_offset);
-		BufFileSeek(sink->file, end_fileno, end_offset, SEEK_SET);
-	}
+	/* Finish writer */
+	tp_segment_writer_finish(&sink->writer);
 
 	/* Cleanup */
 	pfree(string_offsets);

@@ -594,6 +594,63 @@ jobs:
         # Show summary
         lcov --list coverage.info
 
+    - name: Restore coverage baseline
+      if: github.event_name == 'pull_request'
+      uses: actions/cache/restore@v4
+      with:
+        path: coverage-baseline.txt
+        key: coverage-baseline-never-matches
+        restore-keys: |
+          coverage-baseline-
+
+    - name: Coverage gate
+      id: coverage-gate
+      run: |
+        # Read old baseline if available (before we overwrite it)
+        BASELINE=""
+        if [ -f coverage-baseline.txt ]; then
+          BASELINE=$(cat coverage-baseline.txt)
+        fi
+
+        # Extract current line coverage percentage
+        CURRENT=$(lcov --summary coverage.info 2>&1 \
+          | grep "lines" | sed 's/.*: \([0-9.]*\)%.*/\1/')
+        echo "Current line coverage: ${CURRENT}%"
+        echo "line_coverage=$CURRENT" >> "$GITHUB_OUTPUT"
+
+        # Save current value as baseline for future runs
+        echo "$CURRENT" > coverage-baseline.txt
+
+        # Enforce minimum coverage threshold
+        MIN_COVERAGE=85
+        if (( $(echo "$CURRENT < $MIN_COVERAGE" | bc -l) )); then
+          echo "::error::Line coverage ${CURRENT}% is below" \
+               "minimum ${MIN_COVERAGE}%"
+          exit 1
+        fi
+        echo "Coverage ${CURRENT}% meets minimum ${MIN_COVERAGE}%"
+
+        # Check for coverage reduction on PRs
+        if [ -n "$BASELINE" ]; then
+          DIFF=$(echo "$CURRENT - $BASELINE" | bc -l)
+          echo "Baseline: ${BASELINE}%, Change: ${DIFF}%"
+          if (( $(echo "$DIFF < -1.0" | bc -l) )); then
+            echo "::error::Coverage decreased by more than 1%:" \
+                 "${BASELINE}% -> ${CURRENT}% (change: ${DIFF}%)"
+            exit 1
+          fi
+          echo "Coverage change (${DIFF}%) within threshold"
+        else
+          echo "No baseline found, skipping reduction check"
+        fi
+
+    - name: Save coverage baseline
+      if: github.ref == 'refs/heads/main'
+      uses: actions/cache/save@v4
+      with:
+        path: coverage-baseline.txt
+        key: coverage-baseline-${{ github.sha }}
+
     - name: Generate HTML report
       run: |
         genhtml coverage.info \
@@ -607,7 +664,7 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage.info
-        fail_ci_if_error: false
+        fail_ci_if_error: true
         verbose: true
 
     - name: Upload HTML coverage report

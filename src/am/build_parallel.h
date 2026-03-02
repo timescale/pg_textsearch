@@ -4,17 +4,12 @@
  *
  * build_parallel.h - Parallel index build structures
  *
- * Architecture (two-phase with cross-worker compaction):
- * - Phase 1: Workers scan heap, flush to BufFile, compact within
- *   BufFile. Workers report segment info and signal phase1_done.
- * - Barrier: Leader plans cross-worker merge groups, sums pages,
- *   pre-extends the relation, sets atomic next_page, signals
- *   phase2.
- * - Phase 2: Workers COPY their non-merged segments to pages,
- *   then work-steal merge groups. Each task bulk-claims a
- *   contiguous page range from the shared counter.
- * - Leader truncates unused pool pages, links segments into
- *   per-level chains, updates metapage.
+ * Architecture (leader-only merge):
+ * - Phase 1: Workers scan heap, flush L0 segments to BufFile.
+ *   Workers report segment offsets/sizes and signal phase1_done.
+ * - Leader: Opens all worker BufFiles, performs single N-way merge
+ *   directly to paged storage. Updates metapage.
+ * - Leader signals phase2_ready; workers wake and exit.
  */
 #pragma once
 
@@ -33,17 +28,11 @@
 #define TP_MAX_PARALLEL_WORKERS 32
 
 /*
- * Maximum segments a single worker can produce after compaction.
- * With segments_per_level=8 and TP_MAX_LEVELS=8, a worker can have
- * at most 7 segments per level = 7*8 = 56, but typically far fewer.
+ * Maximum L0 segments a single worker can produce.
+ * Without worker-side compaction, this is bounded by
+ * (table_size / maintenance_work_mem_per_worker).
  */
 #define TP_MAX_WORKER_SEGMENTS 64
-
-/*
- * Maximum cross-worker merge groups planned by leader.
- * Each group merges segments_per_level segments into one.
- */
-#define TP_MAX_MERGE_GROUPS 256
 
 /*
  * Shared memory keys for parallel build TOC
@@ -55,28 +44,15 @@
  */
 typedef struct TpParallelWorkerResult
 {
-	uint32 segment_count; /* Segments written to this worker's BufFile */
-
 	/* Corpus statistics */
 	uint64 total_docs; /* Documents indexed */
 	uint64 total_len;  /* Sum of document lengths */
 	uint64 tuples_scanned;
 
-	/* Per-segment info after compaction (BufFile offsets and levels) */
+	/* Per-segment info (all L0, BufFile offsets) */
 	uint32 final_segment_count;
 	uint64 seg_offsets[TP_MAX_WORKER_SEGMENTS];
 	uint64 seg_sizes[TP_MAX_WORKER_SEGMENTS];
-	uint32 seg_levels[TP_MAX_WORKER_SEGMENTS];
-
-	/*
-	 * Set by leader between Phase 1 and Phase 2.
-	 * 0 = COPY to pages at original level.
-	 * N>0 = member of merge group N (1-indexed).
-	 */
-	uint32 seg_merge_group[TP_MAX_WORKER_SEGMENTS];
-
-	/* Phase 2 → leader: segment roots written to index pages */
-	BlockNumber seg_roots[TP_MAX_WORKER_SEGMENTS];
 } TpParallelWorkerResult;
 
 /*
@@ -89,11 +65,11 @@ typedef struct TpParallelBuildShared
 	/* Immutable configuration (set before workers launch) */
 	Oid		   heaprelid;		  /* Heap relation OID */
 	Oid		   indexrelid;		  /* Index relation OID */
-	Oid		   text_config_oid;	  /* Text search configuration OID */
-	AttrNumber attnum;			  /* Attribute number of indexed column */
+	Oid		   text_config_oid;	  /* Text search config OID */
+	AttrNumber attnum;			  /* Attribute number */
 	double	   k1;				  /* BM25 k1 parameter */
 	double	   b;				  /* BM25 b parameter */
-	int32	   nworkers;		  /* Number of workers requested */
+	int32	   nworkers;		  /* Workers requested */
 	int32	   nworkers_launched; /* Actual workers launched */
 
 	/* Per-worker heap block ranges for disjoint TID scan */
@@ -108,24 +84,17 @@ typedef struct TpParallelBuildShared
 	ConditionVariable all_done_cv; /* Workers signal when done */
 	pg_atomic_uint32  workers_done;
 
-	/* Two-phase coordination */
-	pg_atomic_uint32  phase1_done;	/* Workers done with BufFile phase */
-	ConditionVariable phase2_cv;	/* Leader signals pages ready */
-	pg_atomic_uint32  phase2_ready; /* 1 when pages pre-allocated */
-	pg_atomic_uint64  next_page;	/* Atomic page counter for Phase 2 */
+	/* Phase coordination */
+	pg_atomic_uint32  phase1_done;	/* Workers done with BufFile */
+	ConditionVariable phase2_cv;	/* Leader signals merge done */
+	pg_atomic_uint32  phase2_ready; /* 1 when leader merge done */
 
-	/* Progress reporting (atomic so leader can poll while workers run) */
-	pg_atomic_uint64 tuples_done; /* Total tuples processed by all workers */
-
-	/* Cross-worker merge groups (planned by leader after Phase 1) */
-	uint32			 num_merge_groups;
-	uint32			 merge_group_levels[TP_MAX_MERGE_GROUPS];
-	BlockNumber		 merge_group_results[TP_MAX_MERGE_GROUPS];
-	pg_atomic_uint32 next_merge_group;
+	/* Progress reporting */
+	pg_atomic_uint64 tuples_done;
 
 	/*
 	 * Per-worker results (variable-length array follows).
-	 * Workers write their own slot; leader reads after completion.
+	 * Workers write their own slot; leader reads after Phase 1.
 	 */
 } TpParallelBuildShared;
 
