@@ -129,12 +129,15 @@ bytea *
 tp_options(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] =
-			{{"text_config",
-			  RELOPT_TYPE_STRING,
-			  offsetof(TpOptions, text_config_offset),
-			  0},
-			 {"k1", RELOPT_TYPE_REAL, offsetof(TpOptions, k1), 0},
-			 {"b", RELOPT_TYPE_REAL, offsetof(TpOptions, b), 0}};
+			{{.optname = "text_config",
+			  .opttype = RELOPT_TYPE_STRING,
+			  .offset  = offsetof(TpOptions, text_config_offset)},
+			 {.optname = "k1",
+			  .opttype = RELOPT_TYPE_REAL,
+			  .offset  = offsetof(TpOptions, k1)},
+			 {.optname = "b",
+			  .opttype = RELOPT_TYPE_REAL,
+			  .offset  = offsetof(TpOptions, b)}};
 
 	return (bytea *)build_reloptions(
 			reloptions,

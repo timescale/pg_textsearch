@@ -48,6 +48,7 @@ tp_string_hash_function(const void *key, size_t keysize, void *arg)
 	dshash_hash		   hash_result;
 
 	Assert(keysize == sizeof(TpStringKey));
+	(void)keysize;
 
 	str = tp_get_key_str(area, string_key);
 	len = tp_get_key_len(area, string_key);
@@ -86,6 +87,7 @@ tp_string_compare_function(
 	int				   result;
 
 	Assert(keysize == sizeof(TpStringKey));
+	(void)keysize;
 
 	/* Compare by length first for efficiency */
 	if (len_a != len_b)
@@ -109,6 +111,7 @@ tp_string_copy_function(
 		void	   *arg __attribute__((unused)))
 {
 	Assert(keysize == sizeof(TpStringKey));
+	(void)keysize;
 	*((TpStringKey *)dest) = *((TpStringKey *)src);
 }
 
@@ -191,6 +194,7 @@ tp_string_table_lookup(
 	TpStringHashEntry *entry;
 
 	Assert(area != NULL);
+	(void)area;
 	Assert(ht != NULL);
 	Assert(str != NULL);
 

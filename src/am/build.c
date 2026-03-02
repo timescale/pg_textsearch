@@ -124,12 +124,9 @@ tp_buildphasename(int64 phase)
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
-	BlockNumber		segment_root;
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
-	TpMemtable	   *memtable;
-	int64			total_postings;
+	BlockNumber segment_root;
+	TpMemtable *memtable;
+	int64		total_postings;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -892,6 +889,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Prepare to scan table */
 		snapshot = tp_setup_table_scan(heap, &scan, &slot);
+		(void)snapshot; /* used only on PG18+ for UnregisterSnapshot */
 
 		/* Process each document */
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
