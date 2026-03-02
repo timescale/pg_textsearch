@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772432873074,
+  "lastUpdate": 1772432876955,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -13117,6 +13117,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1214.94,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e8601e2c78ac4f757e3255744f2a83360ed6b20b",
+          "message": "fix: add coverage gate to block PRs on coverage reduction (#245)\n\n## Summary\n- The coverage job collected data and uploaded to Codecov but never\nenforced\n  thresholds — it always succeeded regardless of coverage values\n- Codecov status checks (`codecov/project`, `codecov/patch`) weren't\nappearing\n  on PRs, likely due to a missing/invalid `CODECOV_TOKEN`, and\n  `fail_ci_if_error` was `false` so the upload failure was silent\n- Branch protection had an empty required checks list\n(`all-tests-passed` was\n  not listed), so CI failures couldn't block merges — now fixed\n\n### Changes\n- Add in-workflow coverage gate to both `ci.yml` and `coverage.yml`\nthat:\n  - Enforces a minimum 85% line coverage threshold\n  - Caches the main branch baseline via `actions/cache`\n- Compares PR coverage against baseline, fails if it drops by more than\n1%\n- Change `fail_ci_if_error` from `false` to `true` on Codecov upload\n- Added `all-tests-passed` to branch protection required status checks\n\n### How the baseline works\n- On pushes to `main`, the coverage percentage is saved to GitHub\nActions\n  cache with key `coverage-baseline-<sha>`\n- On PRs, the most recent main branch cache is restored and compared\nagainst\n  the PR's coverage\n- First run after this merges will skip the reduction check (no baseline\nyet)\n  and establish the initial baseline\n\n## Testing\n- CI on this PR validates the gate runs (no baseline exists yet, so the\nreduction check was skipped, but the minimum threshold check ran and\npassed)\n- After merging, the next PR that reduces coverage by >1% will fail",
+          "timestamp": "2026-03-02T04:13:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e8601e2c78ac4f757e3255744f2a83360ed6b20b"
+        },
+        "date": 1772432876272,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 220663.278,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 3.84,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 5.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 9.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 13.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 19.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 31.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 6.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1359.97,
             "unit": "MB"
           }
         ]
