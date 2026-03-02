@@ -669,10 +669,6 @@ calculate_term_score(
  * to cache IDF values across rows. Without caching, each row would require
  * opening all segments for each query term - catastrophic for large indexes.
  */
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wclobbered"
-#endif
 Datum
 bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 {
@@ -1007,9 +1003,6 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	/* Return negative score for PostgreSQL ASC ordering compatibility */
 	PG_RETURN_FLOAT8((result > 0) ? -result : result);
 }
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 /*
  * tpquery equality function

@@ -199,10 +199,6 @@ typedef struct TpDictEntry
  * When CTIDs are pre-loaded, ctid is set immediately. When lazy loading,
  * ctid is invalid and doc_id is used to look up CTID at result extraction.
  */
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpacked-not-aligned"
-#endif
 typedef struct TpSegmentPosting
 {
 	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID (may be invalid) */
@@ -210,9 +206,6 @@ typedef struct TpSegmentPosting
 	uint16			frequency; /* 2 bytes - term frequency */
 	uint16 doc_length;		   /* 2 bytes - document length (from fieldnorm) */
 } __attribute__((packed)) TpSegmentPosting;
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 /*
  * Block storage constants
@@ -297,17 +290,10 @@ typedef struct TpBlockPosting
  * compact 4-byte doc IDs in posting lists while still being able
  * to look up the actual heap tuple.
  */
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpacked-not-aligned"
-#endif
 typedef struct TpCtidMapEntry
 {
 	ItemPointerData ctid; /* 6 bytes - heap tuple location */
 } __attribute__((packed)) TpCtidMapEntry;
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 /*
  * Document length - 12 bytes (padded to 16)

@@ -55,6 +55,12 @@ MODULE_big = pg_textsearch
 # Include directories, debug flags, and warning flags for unused code
 PG_CPPFLAGS = -I$(srcdir)/src -g -O2 -Wall -Wextra -Wunused-function -Wunused-variable -Wunused-parameter -Wunused-but-set-variable -DPG_TEXTSEARCH_VERSION=\"$(EXTVERSION)\"
 
+# Suppress GCC-only false positives (clang silently ignores unknown -Wno-*
+# flags thanks to -Wno-unknown-warning-option):
+#  -Wclobbered: PG_TRY uses setjmp/longjmp; GCC warns about locals across it
+#  -Wpacked-not-aligned: intentionally packed on-disk structs
+PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligned
+
 # Uncomment the following line to enable debug index dumps
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
