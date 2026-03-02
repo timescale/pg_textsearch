@@ -621,12 +621,6 @@ tp_build_parallel(
 		for (w = 0; w < launched; w++)
 			total_segments += results[w].final_segment_count;
 
-		ereport(NOTICE,
-				(errmsg("parallel index build: merging %u "
-						"segments from %d workers",
-						total_segments,
-						launched)));
-
 		/* Open worker BufFiles and create segment readers */
 		open_files	= palloc0(sizeof(BufFile *) * launched);
 		file_opened = palloc0(sizeof(bool) * launched);
