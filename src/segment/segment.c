@@ -1287,7 +1287,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	 * Do this BEFORE tp_segment_writer_finish so writer.pages is still valid.
 	 */
 	{
-		Buffer dict_buf;
+		Buffer dict_buf = InvalidBuffer;
 		uint32 entry_logical_page;
 		uint32 current_page = UINT32_MAX;
 
