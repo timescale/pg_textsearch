@@ -1215,6 +1215,10 @@ tp_clear_memtable(TpLocalIndexState *local_state)
  *
  * This is called at PRE_COMMIT via the transaction callback in mod.c.
  */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
 void
 tp_bulk_load_spill_check(void)
 {
@@ -1318,6 +1322,9 @@ tp_bulk_load_spill_check(void)
 		index_close(index_rel, RowExclusiveLock);
 	}
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Reset bulk load counters for all cached indexes.

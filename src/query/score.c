@@ -233,7 +233,6 @@ tp_score_documents(
 		float4	  *idfs;
 		float4	  *scores;
 		int		   result_count;
-		int		   i;
 		TpBMWStats stats;
 
 		/* Batch lookup doc_freqs for all terms (opens each segment once) */

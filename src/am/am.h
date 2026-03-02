@@ -12,6 +12,7 @@
 #include <access/reloptions.h>
 #include <storage/block.h>
 #include <storage/bufpage.h>
+#include <tsearch/ts_type.h>
 
 #include "state/state.h"
 #include "types/vector.h"
@@ -119,6 +120,13 @@ bool tp_process_document_text(
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
 		int32			  *doc_length_out);
+
+/* Extract terms and frequencies from a TSVector */
+int tp_extract_terms_from_tsvector(
+		TSVector tsvector,
+		char  ***terms_out,
+		int32  **frequencies_out,
+		int		*term_count_out);
 
 /* Build progress tracking for partitioned tables */
 void tp_build_progress_begin(void);

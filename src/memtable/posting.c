@@ -191,6 +191,7 @@ tp_doclength_hash_function(const void *key, size_t keysize, void *arg)
 	const ItemPointer ctid = (const ItemPointer)key;
 
 	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
 	(void)arg;
 
 	/* Hash both block number and offset */
@@ -208,6 +209,7 @@ tp_doclength_compare_function(
 	const ItemPointer ctid_b = (const ItemPointer)b;
 
 	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
 	(void)arg;
 
 	return ItemPointerCompare(ctid_a, ctid_b);
@@ -221,6 +223,7 @@ tp_doclength_copy_function(
 		void *dest, const void *src, size_t keysize, void *arg)
 {
 	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
 	(void)arg;
 
 	*((ItemPointer)dest) = *((const ItemPointer)src);

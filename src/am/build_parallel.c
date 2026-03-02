@@ -43,13 +43,6 @@
 #include "segment/segment_io.h"
 #include "state/metapage.h"
 
-/* Defined in build.c, extracts terms from TSVector */
-extern int tp_extract_terms_from_tsvector(
-		TSVector tsvector,
-		char  ***terms_out,
-		int32  **frequencies_out,
-		int		*term_count_out);
-
 /* ----------------------------------------------------------------
  * Worker-local segment tracking
  * ----------------------------------------------------------------
@@ -111,6 +104,9 @@ tp_parallel_build_estimate_shmem(
 		Relation heap, Snapshot snapshot, int nworkers)
 {
 	Size size;
+
+	(void)heap;
+	(void)snapshot;
 
 	/* Base shared structure (includes per-worker block ranges) */
 	size = MAXALIGN(sizeof(TpParallelBuildShared));

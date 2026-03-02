@@ -786,9 +786,9 @@ build_merged_docmap(
 		 */
 		while (new_doc_id < total_docs)
 		{
-			int			 min_src = -1;
-			BlockNumber	 min_page;
-			OffsetNumber min_offset;
+			int			 min_src	= -1;
+			BlockNumber	 min_page	= 0;
+			OffsetNumber min_offset = 0;
 
 			for (i = 0; i < num_sources; i++)
 			{

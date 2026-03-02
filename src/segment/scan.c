@@ -350,16 +350,20 @@ tp_segment_posting_iterator_next(
 	 */
 	if (iter->reader->cached_ctid_pages != NULL)
 	{
+		ItemPointerData tmp;
 		Assert(doc_id < iter->reader->cached_num_docs);
 		ItemPointerSet(
-				&iter->output_posting.ctid,
+				&tmp,
 				iter->reader->cached_ctid_pages[doc_id],
 				iter->reader->cached_ctid_offsets[doc_id]);
+		memcpy(&iter->output_posting.ctid, &tmp, sizeof(ItemPointerData));
 	}
 	else
 	{
 		/* Mark CTID invalid - will be resolved later */
-		ItemPointerSetInvalid(&iter->output_posting.ctid);
+		ItemPointerData tmp;
+		ItemPointerSetInvalid(&tmp);
+		memcpy(&iter->output_posting.ctid, &tmp, sizeof(ItemPointerData));
 	}
 
 	/* Build output posting (fieldnorm is inline in bp) */
@@ -495,15 +499,23 @@ tp_segment_posting_iterator_seek(
 			/* Resolve CTID if cached, otherwise leave invalid for later */
 			if (iter->reader->cached_ctid_pages != NULL)
 			{
+				ItemPointerData tmp;
 				Assert(bp->doc_id < iter->reader->cached_num_docs);
 				ItemPointerSet(
-						&iter->output_posting.ctid,
+						&tmp,
 						iter->reader->cached_ctid_pages[bp->doc_id],
 						iter->reader->cached_ctid_offsets[bp->doc_id]);
+				memcpy(&iter->output_posting.ctid,
+					   &tmp,
+					   sizeof(ItemPointerData));
 			}
 			else
 			{
-				ItemPointerSetInvalid(&iter->output_posting.ctid);
+				ItemPointerData tmp;
+				ItemPointerSetInvalid(&tmp);
+				memcpy(&iter->output_posting.ctid,
+					   &tmp,
+					   sizeof(ItemPointerData));
 			}
 
 			iter->output_posting.frequency	= bp->frequency;
