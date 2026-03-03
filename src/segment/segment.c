@@ -69,6 +69,13 @@ read_term_at_index(
 	tp_segment_read(
 			reader, string_offset, &string_entry.length, sizeof(uint32));
 
+	if (string_entry.length > TP_MAX_TERM_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupt segment: term length %u exceeds "
+						"maximum",
+						string_entry.length)));
+
 	/* Allocate buffer and read term text */
 	term_text = palloc(string_entry.length + 1);
 	tp_segment_read(
@@ -461,7 +468,12 @@ tp_segment_lookup_ctid(
 
 	Assert(reader != NULL);
 	Assert(ctid_out != NULL);
-	Assert(doc_id < reader->header->num_docs);
+
+	if (doc_id >= reader->header->num_docs)
+	{
+		ItemPointerSetInvalid(ctid_out);
+		return;
+	}
 
 	/* If CTIDs were preloaded, use the cache */
 	if (reader->cached_ctid_pages != NULL)

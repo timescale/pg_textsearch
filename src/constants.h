@@ -54,6 +54,7 @@
 
 /* Query processing timeouts and limits */
 #define TP_MAX_INDEX_NAME_LENGTH 1024
+#define TP_MAX_TERM_LENGTH		 (1024 * 1024) /* 1MB sanity limit */
 
 /* Cost estimation constants */
 #define TP_DEFAULT_TUPLE_ESTIMATE	 1000.0

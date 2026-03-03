@@ -758,17 +758,16 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
 
-	/* Additional validation - check for obviously invalid block numbers */
+	/* Skip results with invalid block numbers */
 	blknum = BlockIdGetBlockNumber(
 			&(so->result_ctids[so->current_pos].ip_blkid));
-	if (blknum == InvalidBlockNumber)
+	while (blknum == InvalidBlockNumber)
 	{
-		/* Skip this result and try the next one */
 		so->current_pos++;
 		if (so->current_pos >= so->result_count)
 			return false;
-		/* Recursive call to try the next result */
-		return tp_gettuple(scan, dir);
+		blknum = BlockIdGetBlockNumber(
+				&(so->result_ctids[so->current_pos].ip_blkid));
 	}
 
 	scan->xs_heaptid		= so->result_ctids[so->current_pos];

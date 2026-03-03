@@ -68,11 +68,12 @@ typedef struct TermIdfEntry
 
 typedef struct QueryScoreCache
 {
-	Oid			 index_oid;		/* index this cache is for */
-	BlockNumber	 first_segment; /* segment chain head at cache time */
-	int32		 total_docs;	/* total docs at cache time */
-	float4		 avg_doc_len;	/* avg doc length at cache time */
-	int			 num_terms;		/* number of cached terms */
+	Oid			 index_oid;			/* index this cache is for */
+	BlockNumber	 first_segment;		/* segment chain head at cache time */
+	int32		 total_docs;		/* total docs at cache time */
+	float4		 avg_doc_len;		/* avg doc length at cache time */
+	int			 num_terms;			/* number of cached terms */
+	bool		 cache_full_warned; /* true after limit-exceeded warning */
 	TermIdfEntry terms[MAX_CACHED_TERMS];
 } QueryScoreCache;
 
@@ -115,13 +116,13 @@ cache_term_idf(
 	if (cache->num_terms >= MAX_CACHED_TERMS)
 	{
 		/* Warn once when limit is first exceeded */
-		if (cache->num_terms == MAX_CACHED_TERMS)
+		if (!cache->cache_full_warned)
 		{
 			ereport(WARNING,
 					(errmsg("BM25 IDF cache limit exceeded (%d terms), "
 							"additional terms will not be cached",
 							MAX_CACHED_TERMS)));
-			cache->num_terms++; /* Prevent repeated warnings */
+			cache->cache_full_warned = true;
 		}
 		return;
 	}

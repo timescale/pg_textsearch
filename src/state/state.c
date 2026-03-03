@@ -683,16 +683,18 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
 		if (found && entry != NULL && entry->local_state != NULL)
 		{
+			TpLocalIndexState *ls = entry->local_state;
+
 			/* Remove from cache first, before detaching DSA */
 			hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
 
 			/* Don't detach DSA - it's shared and still in use by registry */
 			/* Just nullify the reference */
-			entry->local_state->dsa	   = NULL;
-			entry->local_state->shared = NULL;
+			ls->dsa	   = NULL;
+			ls->shared = NULL;
 
 			/* Free the local state */
-			pfree(entry->local_state);
+			pfree(ls);
 		}
 	}
 
@@ -733,14 +735,16 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	/* Validate that this is actually our metapage and not stale data */
 	if (metap->magic != TP_METAPAGE_MAGIC)
 	{
+		uint32 found_magic = metap->magic;
+
 		index_close(index_rel, AccessShareLock);
 		pfree(metap);
 		elog(WARNING,
-			 "Invalid magic number in metapage for index %u: expected 0x%08X, "
-			 "found 0x%08X",
+			 "Invalid magic number in metapage for index %u: "
+			 "expected 0x%08X, found 0x%08X",
 			 index_oid,
 			 TP_METAPAGE_MAGIC,
-			 metap->magic);
+			 found_magic);
 		return NULL;
 	}
 
@@ -761,18 +765,19 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	if (heap_blocks == 0 && metap->total_docs > 0)
 	{
+		Oid heap_oid = index_rel->rd_index->indrelid;
+
 		/* Heap is empty but metapage shows documents - stale data */
 		elog(WARNING,
-			 "Index %u metapage shows %lu documents but heap is empty - "
-			 "ignoring stale data",
+			 "Index %u metapage shows %lu documents but heap is "
+			 "empty - ignoring stale data",
 			 index_oid,
 			 (unsigned long)metap->total_docs);
 		index_close(index_rel, AccessShareLock);
 		pfree(metap);
 
 		/* Create fresh shared state for the index */
-		return tp_create_shared_index_state(
-				index_oid, index_rel->rd_index->indrelid);
+		return tp_create_shared_index_state(index_oid, heap_oid);
 	}
 
 	/* Check if there's actually anything to recover */

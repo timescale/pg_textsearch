@@ -161,13 +161,13 @@ tpvector_in(PG_FUNCTION_ARGS)
 				char saved = *comma_pos;
 
 				*comma_pos	   = '\0';
-				frequencies[i] = atoi(freq_str);
+				frequencies[i] = pg_strtoint32(freq_str);
 				*comma_pos	   = saved;
 				ptr			   = comma_pos + 1;
 			}
 			else
 			{
-				frequencies[i] = atoi(freq_str);
+				frequencies[i] = pg_strtoint32(freq_str);
 			}
 		}
 	}
@@ -238,6 +238,24 @@ tpvector_out(PG_FUNCTION_ARGS)
 		char *lexeme;
 		bool  use_heap = false;
 
+		/* Validate entry stays within the varlena bounds */
+		if ((char *)entry + sizeof(TpVectorEntry) >
+			(char *)tpvec + VARSIZE(tpvec))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("bm25vector entry %d extends beyond "
+							"allocated bounds",
+							i)));
+
+		/* Validate lexeme_len is non-negative */
+		if (entry->lexeme_len < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid lexeme length %d in bm25vector "
+							"entry %d",
+							entry->lexeme_len,
+							i)));
+
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
@@ -284,6 +302,12 @@ tpvector_recv(PG_FUNCTION_ARGS)
 	/* Read total size */
 	total_size = pq_getmsgint(buf, 4);
 
+	/* Validate total_size to prevent undersized or huge allocations */
+	if (total_size < (int)sizeof(TpVector) || (Size)total_size > MaxAllocSize)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid bm25vector binary size: %d", total_size)));
+
 	/* Allocate and read the entire structure */
 	result = (TpVector *)palloc(total_size);
 	SET_VARSIZE(result, total_size);
@@ -291,6 +315,20 @@ tpvector_recv(PG_FUNCTION_ARGS)
 	/* Read the rest of the structure after varlena header */
 	pq_copymsgbytes(
 			buf, (char *)result + sizeof(int32), total_size - sizeof(int32));
+
+	/* Validate deserialized fields */
+	if (result->index_name_len < 0 ||
+		result->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid index name length in bm25vector: %d",
+						result->index_name_len)));
+
+	if (result->entry_count < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid entry count in bm25vector: %d",
+						result->entry_count)));
 
 	PG_RETURN_POINTER(result);
 }
