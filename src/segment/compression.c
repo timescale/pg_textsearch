@@ -276,8 +276,8 @@ tp_decompress_block(
 		TpBlockPosting *out_postings)
 {
 	const TpCompressedBlockHeader *header;
-	uint32						  *doc_deltas;
-	uint32						  *frequencies;
+	uint32						   doc_deltas[TP_BLOCK_SIZE];
+	uint32						   frequencies[TP_BLOCK_SIZE];
 	uint32						   doc_id_bytes;
 	uint32						   freq_bytes;
 	uint32						   pos;
@@ -296,10 +296,6 @@ tp_decompress_block(
 	Assert(header->freq_bits >= 1 && header->freq_bits <= 16);
 
 	pos = sizeof(TpCompressedBlockHeader);
-
-	/* Allocate temporary arrays */
-	doc_deltas	= palloc(count * sizeof(uint32));
-	frequencies = palloc(count * sizeof(uint32));
 
 	/* Calculate sizes for seeking */
 	doc_id_bytes = (count * header->doc_id_bits + 7) / 8;
@@ -326,9 +322,6 @@ tp_decompress_block(
 
 		prev_doc = doc_id;
 	}
-
-	pfree(doc_deltas);
-	pfree(frequencies);
 }
 
 /*
