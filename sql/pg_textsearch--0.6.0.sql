@@ -1,4 +1,4 @@
--- pg_textsearch extension version 1.0.0-dev
+-- pg_textsearch extension version 0.6.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -14,11 +14,11 @@ BEGIN
             'pg_textsearch library not loaded. '
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
-    IF lib_ver OPERATOR(pg_catalog.<>) '1.0.0-dev' THEN
+    IF lib_ver OPERATOR(pg_catalog.<>) '0.6.0' THEN
         RAISE EXCEPTION
             'pg_textsearch library version mismatch: loaded=%, expected=%. '
             'Restart the server after installing the new binary.',
-            lib_ver, '1.0.0-dev';
+            lib_ver, '0.6.0';
     END IF;
 END $$;
 
@@ -197,10 +197,10 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
--- Display version info (with prerelease warning)
+-- Display version info
 DO $$
 BEGIN
-    RAISE WARNING 'pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.';
+    RAISE INFO 'pg_textsearch v0.6.0';
 END
 $$;
 
