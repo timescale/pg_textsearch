@@ -7,7 +7,7 @@
 -- 3. Queries return correct results after merge
 -- 4. Inserts work normally after force merge
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.6.0 is a prerelease. Do not use in production.
 \set ECHO none
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;

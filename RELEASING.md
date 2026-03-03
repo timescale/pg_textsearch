@@ -182,6 +182,7 @@ changes that require index recreation or server restart:
 
 | From Version | To Version | Compatible? | Notes |
 |--------------|------------|-------------|-------|
+| 0.5.x | 0.6.0 | ⚠️ REINDEX | Segment format v3→v4 (uint32→uint64 offsets) |
 | 0.3.0 | 0.4.0 | ❌ No | Segment format v2→v3 for compression |
 | 0.2.0 | 0.4.0 | ❌ No | Segment format v2→v3 |
 | 0.2.0 | 0.3.0 | ✅ Yes | Direct upgrade works |
