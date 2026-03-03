@@ -1,7 +1,7 @@
 -- Basic functionality tests for pg_textsearch extension
 -- Test extension creation
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v0.6.0
+WARNING:  pg_textsearch v0.6.0 is a prerelease. Do not use in production.
 -- Verify library version GUC is set
 SELECT current_setting('pg_textsearch.library_version') IS NOT NULL AS has_version;
  has_version 

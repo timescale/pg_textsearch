@@ -197,10 +197,10 @@ CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
--- Display version info
+-- Display version info (with prerelease warning)
 DO $$
 BEGIN
-    RAISE INFO 'pg_textsearch v0.6.0';
+    RAISE WARNING 'pg_textsearch v0.6.0 is a prerelease. Do not use in production.';
 END
 $$;
 
