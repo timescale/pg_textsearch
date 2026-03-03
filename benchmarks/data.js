@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772522818029,
+  "lastUpdate": 1772522819613,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -21624,6 +21624,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 13.62,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4f2d2717a3f8da4f87ab14513cc65e7d243e5a2b",
+          "message": "fix: resolve all compiler warnings in extension source (#246)\n\n## Summary\n\n- Remove unused variables in `build.c` (`metabuf`, `metapage`, `metap`,\n`snapshot`)\n- Add missing prototype for `tp_extract_terms_from_tsvector` to `am.h`\n(removes `-Wmissing-prototypes` and the `extern` in `build_parallel.c`)\n- Silence unused parameter warnings with `(void)` casts in dshash\ncallbacks (`posting.c`, `stringtable.c`) and parallel build estimation\n(`build_parallel.c`)\n- Remove excess initializer elements in `relopt_parse_elt` (`handler.c`)\n— PG17 struct has 3 fields, not 4\n- Fix shadow variable in `score.c` (inner `int i` shadowed\nfunction-scope `i`)\n- Initialize `min_page`/`min_offset` to suppress `-Wmaybe-uninitialized`\n(`merge.c`)\n- Suppress `-Wpacked-not-aligned` for intentionally packed on-disk\nstructs (`segment.h`) with GCC-only diagnostic pragmas\n- Fix `-Waddress-of-packed-member` in `scan.c` by using local\n`ItemPointerData` + `memcpy` instead of taking address of packed member\ndirectly\n- Suppress `-Wclobbered` false positives from GCC inlining functions\ninto PG_TRY callers (`query.c`, `state.c`)\n\nAfter this change, `make -j` produces zero source-level warnings (only\nthe expected pgxs Makefile recipe override notice).\n\n## Test plan\n\n- [x] `make format-check` passes\n- [x] `make clean && make -j$(nproc)` produces no source warnings\n- [x] All 48 SQL regression tests pass",
+          "timestamp": "2026-03-02T23:53:21Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4f2d2717a3f8da4f87ab14513cc65e7d243e5a2b"
+        },
+        "date": 1772522819191,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.367,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 3.003,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 2333941.609438,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 1.04,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 3.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 7.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 9.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 16.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 21.75,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 31.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 45.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 10.33,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 12.89,
             "unit": "ms"
           }
         ]
