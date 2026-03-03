@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772572917089,
+  "lastUpdate": 1772572918872,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -13350,6 +13350,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
             "value": 7.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1214.94,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b09cc9525fe0d98b2d133e66d00f4815c36f174",
+          "message": "perf: stack-allocate decode buffers in tp_decompress_block (#253)\n\n## Summary\n- Replace `palloc`/`pfree` of two temporary `uint32` arrays\n(`doc_deltas`, `frequencies`) in `tp_decompress_block` with fixed-size\nstack arrays of `TP_BLOCK_SIZE` (128) elements\n- These 512-byte arrays (1 KiB total on stack) were being heap-allocated\non every block decompression — a hot path at 6.5% of CPU in profiling\n- `TP_BLOCK_SIZE` is a `#define` constant, so these are NOT VLAs\n\n## Test plan\n- [x] `make clean && make` compiles with zero new warnings\n- [x] All 49 SQL regression tests pass (`make installcheck`)\n- [x] `make format-check` passes\n- [x] MS-MARCO v2 benchmark to measure latency improvement",
+          "timestamp": "2026-03-03T20:54:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b09cc9525fe0d98b2d133e66d00f4815c36f174"
+        },
+        "date": 1772572918382,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 234377.345,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.69,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.49,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 4.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 7.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 10.63,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 16.29,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 25.48,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 4.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 6.01,
             "unit": "ms"
           },
           {
