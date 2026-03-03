@@ -45,6 +45,7 @@ jobs:
         initdb -D tmp_bench/data --auth-local=trust --auth-host=trust
         echo "shared_buffers = 256MB" >> tmp_bench/data/postgresql.conf
         echo "max_connections = 20" >> tmp_bench/data/postgresql.conf
+        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_bench/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_bench/socket'" >> tmp_bench/data/postgresql.conf
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
         export PGHOST="$PWD/tmp_bench/socket"
@@ -127,6 +128,7 @@ jobs:
         echo "port = 55433" >> tmp_release_check/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_release_check/data/postgresql.conf
         echo "max_connections = 20" >> tmp_release_check/data/postgresql.conf
+        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_release_check/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_release_check'" >> tmp_release_check/data/postgresql.conf
         pg_ctl start -D tmp_release_check/data -l tmp_release_check/data/logfile -w
         createdb -h $PWD/tmp_release_check -p 55433 contrib_regression
