@@ -127,7 +127,7 @@ tp_memtable_source_create(TpLocalIndexState *local_state)
 	Assert(local_state != NULL);
 
 	memtable = get_memtable(local_state);
-	if (!memtable)
+	if (!memtable || memtable->total_postings == 0)
 		return NULL;
 
 	ms			 = (TpMemtableSource *)palloc0(sizeof(TpMemtableSource));
