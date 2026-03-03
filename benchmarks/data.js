@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772575220117,
+  "lastUpdate": 1772575222622,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -20270,6 +20270,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin_insert - Insert Time",
             "value": 24187.436,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_insert - Index Size",
+            "value": 42.08,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b09cc9525fe0d98b2d133e66d00f4815c36f174",
+          "message": "perf: stack-allocate decode buffers in tp_decompress_block (#253)\n\n## Summary\n- Replace `palloc`/`pfree` of two temporary `uint32` arrays\n(`doc_deltas`, `frequencies`) in `tp_decompress_block` with fixed-size\nstack arrays of `TP_BLOCK_SIZE` (128) elements\n- These 512-byte arrays (1 KiB total on stack) were being heap-allocated\non every block decompression — a hot path at 6.5% of CPU in profiling\n- `TP_BLOCK_SIZE` is a `#define` constant, so these are NOT VLAs\n\n## Test plan\n- [x] `make clean && make` compiles with zero new warnings\n- [x] All 49 SQL regression tests pass (`make installcheck`)\n- [x] `make format-check` passes\n- [x] MS-MARCO v2 benchmark to measure latency improvement",
+          "timestamp": "2026-03-03T20:54:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b09cc9525fe0d98b2d133e66d00f4815c36f174"
+        },
+        "date": 1772575222123,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin_insert - Index Build Time",
+            "value": 0.534,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_insert - Insert Time",
+            "value": 23880.499,
             "unit": "ms"
           },
           {
