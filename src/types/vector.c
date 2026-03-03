@@ -303,7 +303,7 @@ tpvector_recv(PG_FUNCTION_ARGS)
 	total_size = pq_getmsgint(buf, 4);
 
 	/* Validate total_size to prevent undersized or huge allocations */
-	if (total_size < (int)sizeof(TpVector) || total_size > MaxAllocSize)
+	if (total_size < (int)sizeof(TpVector) || (Size)total_size > MaxAllocSize)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("invalid bm25vector binary size: %d", total_size)));
