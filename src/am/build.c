@@ -474,8 +474,14 @@ tp_build_init_metapage(
 
 	MarkBufferDirty(metabuf);
 
-	/* Flush metapage to disk immediately to ensure crash recovery works */
-	FlushOneBuffer(metabuf);
+	/*
+	 * Flush metapage to disk immediately to ensure crash recovery
+	 * works.  Skip for temp relations: local buffers cannot be
+	 * flushed via FlushOneBuffer, and temp data doesn't need
+	 * crash recovery anyway.
+	 */
+	if (!BufferIsLocal(metabuf))
+		FlushOneBuffer(metabuf);
 
 	UnlockReleaseBuffer(metabuf);
 }
@@ -1012,7 +1018,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			metap->total_len  = total_len;
 
 			MarkBufferDirty(metabuf);
-			FlushOneBuffer(metabuf);
+			if (!BufferIsLocal(metabuf))
+				FlushOneBuffer(metabuf);
 			UnlockReleaseBuffer(metabuf);
 		}
 
@@ -1129,8 +1136,9 @@ tp_buildempty(Relation index)
 
 	MarkBufferDirty(metabuf);
 
-	/* Flush metapage to disk immediately to ensure crash recovery works */
-	FlushOneBuffer(metabuf);
+	/* Flush metapage to disk -- skip for temp relations */
+	if (!BufferIsLocal(metabuf))
+		FlushOneBuffer(metabuf);
 
 	UnlockReleaseBuffer(metabuf);
 }
