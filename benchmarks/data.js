@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772575630010,
+  "lastUpdate": 1772575631720,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -21882,6 +21882,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_wikipedia_concurrent - Concurrent Insert Time",
             "value": 13505.940156,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1b09cc9525fe0d98b2d133e66d00f4815c36f174",
+          "message": "perf: stack-allocate decode buffers in tp_decompress_block (#253)\n\n## Summary\n- Replace `palloc`/`pfree` of two temporary `uint32` arrays\n(`doc_deltas`, `frequencies`) in `tp_decompress_block` with fixed-size\nstack arrays of `TP_BLOCK_SIZE` (128) elements\n- These 512-byte arrays (1 KiB total on stack) were being heap-allocated\non every block decompression — a hot path at 6.5% of CPU in profiling\n- `TP_BLOCK_SIZE` is a `#define` constant, so these are NOT VLAs\n\n## Test plan\n- [x] `make clean && make` compiles with zero new warnings\n- [x] All 49 SQL regression tests pass (`make installcheck`)\n- [x] `make format-check` passes\n- [x] MS-MARCO v2 benchmark to measure latency improvement",
+          "timestamp": "2026-03-03T20:54:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/1b09cc9525fe0d98b2d133e66d00f4815c36f174"
+        },
+        "date": 1772575631277,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_wikipedia_concurrent - Index Build Time",
+            "value": 6.707,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_wikipedia_concurrent - Insert Time",
+            "value": 31.955,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_wikipedia_concurrent - Concurrent Insert Time",
+            "value": 14752.25562,
             "unit": "ms"
           }
         ]
