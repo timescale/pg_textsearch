@@ -666,7 +666,7 @@ static void
 score_memtable_multi_term(
 		TpTopKHeap		  *heap,
 		TpLocalIndexState *local_state,
-		TpTermState		  *terms,
+		TpTermState		 **terms,
 		int				   term_count,
 		float4			   k1,
 		float4			   b,
@@ -694,7 +694,7 @@ score_memtable_multi_term(
 	/* Process each term */
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState	  *ts = &terms[term_idx];
+		TpTermState	  *ts = terms[term_idx];
 		TpPostingData *postings;
 		int			   i;
 
@@ -902,7 +902,7 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
  */
 static int
 init_segment_term_states(
-		TpTermState		*terms,
+		TpTermState	   **terms,
 		int				 term_count,
 		TpSegmentReader *reader,
 		float4			 k1,
@@ -914,7 +914,7 @@ init_segment_term_states(
 
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		TpTermState *ts = &terms[term_idx];
+		TpTermState *ts = terms[term_idx];
 
 		ts->found			   = false;
 		ts->max_score		   = 0.0f;
@@ -965,18 +965,18 @@ init_segment_term_states(
  * Free term state resources for a segment.
  */
 static void
-cleanup_segment_term_states(TpTermState *terms, int term_count)
+cleanup_segment_term_states(TpTermState **terms, int term_count)
 {
 	int term_idx;
 
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		if (terms[term_idx].found)
-			tp_segment_posting_iterator_free(&terms[term_idx].iter);
-		if (terms[term_idx].block_max_scores)
-			pfree(terms[term_idx].block_max_scores);
-		if (terms[term_idx].block_last_doc_ids)
-			pfree(terms[term_idx].block_last_doc_ids);
+		if (terms[term_idx]->found)
+			tp_segment_posting_iterator_free(&terms[term_idx]->iter);
+		if (terms[term_idx]->block_max_scores)
+			pfree(terms[term_idx]->block_max_scores);
+		if (terms[term_idx]->block_last_doc_ids)
+			pfree(terms[term_idx]->block_last_doc_ids);
 	}
 }
 
@@ -987,10 +987,10 @@ cleanup_segment_term_states(TpTermState *terms, int term_count)
 static int
 compare_term_doc_id(const void *a, const void *b)
 {
-	const TpTermState *ta = (const TpTermState *)a;
-	const TpTermState *tb = (const TpTermState *)b;
-	uint32			   da = term_current_doc_id((TpTermState *)ta);
-	uint32			   db = term_current_doc_id((TpTermState *)tb);
+	TpTermState *const *pa = (TpTermState *const *)a;
+	TpTermState *const *pb = (TpTermState *const *)b;
+	uint32				da = term_current_doc_id(*pa);
+	uint32				db = term_current_doc_id(*pb);
 
 	if (da < db)
 		return -1;
@@ -1004,9 +1004,9 @@ compare_term_doc_id(const void *a, const void *b)
  * Used once after init_segment_term_states.
  */
 static void
-sort_terms_by_doc_id(TpTermState *terms, int term_count)
+sort_terms_by_doc_id(TpTermState **terms, int term_count)
 {
-	qsort(terms, term_count, sizeof(TpTermState), compare_term_doc_id);
+	qsort(terms, term_count, sizeof(TpTermState *), compare_term_doc_id);
 }
 
 /*
@@ -1015,15 +1015,15 @@ sort_terms_by_doc_id(TpTermState *terms, int term_count)
  * Uses linear insertion -- O(1) typical, O(T) worst case.
  */
 static void
-restore_ordering(TpTermState *terms, int term_count, int ord)
+restore_ordering(TpTermState **terms, int term_count, int ord)
 {
-	TpTermState tmp;
-	uint32		doc_id = term_current_doc_id(&terms[ord]);
-	int			i;
+	TpTermState *tmp;
+	uint32		 doc_id = term_current_doc_id(terms[ord]);
+	int			 i;
 
 	for (i = ord + 1; i < term_count; i++)
 	{
-		if (term_current_doc_id(&terms[i]) >= doc_id)
+		if (term_current_doc_id(terms[i]) >= doc_id)
 			break;
 	}
 
@@ -1033,7 +1033,7 @@ restore_ordering(TpTermState *terms, int term_count, int ord)
 		tmp = terms[ord];
 		memmove(&terms[ord],
 				&terms[ord + 1],
-				(i - ord - 1) * sizeof(TpTermState));
+				(i - ord - 1) * sizeof(TpTermState *));
 		terms[i - 1] = tmp;
 	}
 }
@@ -1052,22 +1052,22 @@ restore_ordering(TpTermState *terms, int term_count, int ord)
  */
 static bool
 find_wand_pivot(
-		TpTermState *terms,
-		int			 term_count,
-		float4		 threshold,
-		int			*pivot_len_out,
-		uint32		*pivot_doc_id_out)
+		TpTermState **terms,
+		int			  term_count,
+		float4		  threshold,
+		int			 *pivot_len_out,
+		uint32		 *pivot_doc_id_out)
 {
 	float4 accumulated = 0.0f;
 	int	   i;
 
 	for (i = 0; i < term_count; i++)
 	{
-		uint32 doc_id = term_current_doc_id(&terms[i]);
+		uint32 doc_id = term_current_doc_id(terms[i]);
 		if (doc_id == UINT32_MAX)
 			break; /* No more active terms */
 
-		accumulated += terms[i].max_score;
+		accumulated += terms[i]->max_score;
 		if (accumulated > threshold)
 		{
 			/*
@@ -1078,7 +1078,7 @@ find_wand_pivot(
 			int	   pivot_len = i + 1;
 
 			while (pivot_len < term_count &&
-				   term_current_doc_id(&terms[pivot_len]) == pivot_doc)
+				   term_current_doc_id(terms[pivot_len]) == pivot_doc)
 				pivot_len++;
 
 			*pivot_len_out	  = pivot_len;
@@ -1099,14 +1099,14 @@ find_wand_pivot(
  * the pivot.
  */
 static float4
-compute_block_max_at_pivot(TpTermState *terms, int pivot_len)
+compute_block_max_at_pivot(TpTermState **terms, int pivot_len)
 {
 	float4 upper_bound = 0.0f;
 	int	   i;
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		TpTermState *ts = &terms[i];
+		TpTermState *ts = terms[i];
 		uint16		 block;
 
 		if (!ts->found || ts->iter.finished)
@@ -1134,11 +1134,11 @@ compute_block_max_at_pivot(TpTermState *terms, int pivot_len)
  */
 static void
 block_max_skip_advance(
-		TpTermState *terms,
-		int			 term_count,
-		int			 pivot_len,
-		int			*active_count,
-		TpBMWStats	*stats)
+		TpTermState **terms,
+		int			  term_count,
+		int			  pivot_len,
+		int			 *active_count,
+		TpBMWStats	 *stats)
 {
 	int	   best_scorer	  = -1;
 	float4 best_max_score = -1.0f;
@@ -1149,7 +1149,7 @@ block_max_skip_advance(
 	/* Find scorer with highest max_score and minimum block end */
 	for (i = 0; i < pivot_len; i++)
 	{
-		TpTermState *ts = &terms[i];
+		TpTermState *ts = terms[i];
 		uint32		 doc_id;
 		uint16		 block;
 		uint32		 block_last;
@@ -1158,9 +1158,9 @@ block_max_skip_advance(
 		if (doc_id == UINT32_MAX)
 			continue;
 
-		if (terms[i].max_score > best_max_score)
+		if (terms[i]->max_score > best_max_score)
 		{
-			best_max_score = terms[i].max_score;
+			best_max_score = terms[i]->max_score;
 			best_scorer	   = i;
 		}
 
@@ -1179,20 +1179,20 @@ block_max_skip_advance(
 
 	/* Seek target: past current blocks, capped by non-pivot */
 	if (min_block_end == UINT32_MAX)
-		seek_target = term_current_doc_id(&terms[best_scorer]) + 1;
+		seek_target = term_current_doc_id(terms[best_scorer]) + 1;
 	else
 		seek_target = min_block_end + 1;
 
 	/* Don't skip past the first non-pivot term */
 	if (pivot_len < term_count)
 	{
-		uint32 next_doc = term_current_doc_id(&terms[pivot_len]);
+		uint32 next_doc = term_current_doc_id(terms[pivot_len]);
 		if (next_doc < seek_target)
 			seek_target = next_doc;
 	}
 
 	/* Seek the best scorer */
-	if (!seek_term_to_doc(&terms[best_scorer], seek_target))
+	if (!seek_term_to_doc(terms[best_scorer], seek_target))
 		(*active_count)--;
 
 	restore_ordering(terms, term_count, best_scorer);
@@ -1211,17 +1211,17 @@ block_max_skip_advance(
  */
 static bool
 seek_to_pivot(
-		TpTermState *terms,
-		int			 term_count,
-		int			 pivot_len,
-		uint32		 pivot_doc_id,
-		int			*active_count)
+		TpTermState **terms,
+		int			  term_count,
+		int			  pivot_len,
+		uint32		  pivot_doc_id,
+		int			 *active_count)
 {
 	int i;
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		uint32 doc_id = term_current_doc_id(&terms[i]);
+		uint32 doc_id = term_current_doc_id(terms[i]);
 
 		if (doc_id == UINT32_MAX)
 		{
@@ -1231,7 +1231,7 @@ seek_to_pivot(
 
 		if (doc_id < pivot_doc_id)
 		{
-			if (!seek_term_to_doc(&terms[i], pivot_doc_id))
+			if (!seek_term_to_doc(terms[i], pivot_doc_id))
 			{
 				(*active_count)--;
 				restore_ordering(terms, term_count, i);
@@ -1252,13 +1252,13 @@ seek_to_pivot(
  * so the caller can re-pivot.
  */
 static bool
-verify_pivot_alignment(TpTermState *terms, int pivot_len, uint32 pivot_doc_id)
+verify_pivot_alignment(TpTermState **terms, int pivot_len, uint32 pivot_doc_id)
 {
 	int i;
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		if (term_current_doc_id(&terms[i]) != pivot_doc_id)
+		if (term_current_doc_id(terms[i]) != pivot_doc_id)
 			return false;
 	}
 	return true;
@@ -1274,18 +1274,18 @@ verify_pivot_alignment(TpTermState *terms, int pivot_len, uint32 pivot_doc_id)
  */
 static float4
 score_pivot_document(
-		TpTermState *terms,
-		int			 pivot_len,
-		float4		 k1,
-		float4		 b,
-		float4		 avg_doc_len)
+		TpTermState **terms,
+		int			  pivot_len,
+		float4		  k1,
+		float4		  b,
+		float4		  avg_doc_len)
 {
 	float4 doc_score = 0.0f;
 	int	   i;
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		TpTermState	   *ts = &terms[i];
+		TpTermState	   *ts = terms[i];
 		TpBlockPosting *bp;
 		float4			term_score;
 
@@ -1323,7 +1323,7 @@ static void
 score_segment_multi_term_bmw(
 		TpTopKHeap		*heap,
 		TpSegmentReader *reader,
-		TpTermState		*terms,
+		TpTermState	   **terms,
 		int				 term_count,
 		float4			 k1,
 		float4			 b,
@@ -1403,9 +1403,9 @@ score_segment_multi_term_bmw(
 		 */
 		for (i = pivot_len - 1; i >= 0; i--)
 		{
-			if (term_current_doc_id(&terms[i]) == pivot_doc_id)
+			if (term_current_doc_id(terms[i]) == pivot_doc_id)
 			{
-				if (!advance_term_iterator(&terms[i]))
+				if (!advance_term_iterator(terms[i]))
 					active_count--;
 				restore_ordering(terms, term_count, i);
 			}
@@ -1437,7 +1437,7 @@ tp_score_multi_term_bmw(
 	TpTopKHeap		heap;
 	TpIndexMetaPage metap;
 	BlockNumber		level_heads[TP_MAX_LEVELS];
-	TpTermState	   *terms;
+	TpTermState	  **terms;
 	int				level;
 	int				result_count;
 	int				i;
@@ -1450,12 +1450,13 @@ tp_score_multi_term_bmw(
 	tp_topk_init(&heap, max_results, CurrentMemoryContext);
 
 	/* Initialize term states */
-	terms = palloc(term_count * sizeof(TpTermState));
+	terms = palloc(term_count * sizeof(TpTermState *));
 	for (i = 0; i < term_count; i++)
 	{
-		terms[i].term		= query_terms[i];
-		terms[i].idf		= idfs[i];
-		terms[i].query_freq = query_freqs[i];
+		terms[i]			 = palloc(sizeof(TpTermState));
+		terms[i]->term		 = query_terms[i];
+		terms[i]->idf		 = idfs[i];
+		terms[i]->query_freq = query_freqs[i];
 	}
 
 	/* Score memtable (exhaustive - no skip index) */
@@ -1492,6 +1493,8 @@ tp_score_multi_term_bmw(
 		}
 	}
 
+	for (i = 0; i < term_count; i++)
+		pfree(terms[i]);
 	pfree(terms);
 
 	/* Resolve CTIDs for segment results before extraction */
