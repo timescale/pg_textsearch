@@ -5,9 +5,20 @@
  * compression.c - Block compression for posting lists
  *
  * Implements delta encoding + bitpacking for posting list compression.
- * This is a scalar implementation; SIMD optimization can be added later.
+ * Decoding uses branchless direct-indexed loads with optional SIMD
+ * (SSE2 on x86-64, NEON on ARM64) for vectorized mask+store.
  */
 #include <postgres.h>
+
+#include <string.h>
+
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#define TP_SIMD_SSE2 1
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+#define TP_SIMD_NEON 1
+#endif
 
 #include "compression.h"
 
@@ -66,30 +77,113 @@ bitpack_encode(uint32 *values, uint32 count, uint8 bits, uint8 *out)
 
 /*
  * Unpack a bit stream into an array of values.
+ *
+ * Uses branchless direct-indexed uint64 loads instead of a
+ * byte-at-a-time accumulator. Each value is extracted by computing
+ * its bit offset, loading 8 bytes from the corresponding position,
+ * shifting, and masking. This eliminates the branch-heavy inner
+ * loop that dominated CPU time in the scalar version.
+ *
+ * Safety: the caller passes compressed block data from segment
+ * pages (8 kB). After the bitpacked section there is always at
+ * least the fieldnorm array (count bytes), so reading up to 7
+ * bytes past the end of the bitpacked region is safe.
+ *
+ * SIMD (SSE2 / NEON) is used where available to perform the
+ * mask+store for groups of 4 values in a single wide write.
  */
 static void
 bitpack_decode(const uint8 *in, uint32 count, uint8 bits, uint32 *out)
 {
-	uint64 buffer	= 0; /* Accumulator for bits */
-	int	   buf_bits = 0; /* Bits currently in buffer */
-	uint32 in_pos	= 0;
-	uint32 i;
 	uint32 mask = (bits == 32) ? UINT32_MAX : ((1U << bits) - 1);
+	uint32 i;
 
-	for (i = 0; i < count; i++)
+#if defined(TP_SIMD_SSE2)
 	{
-		/* Load more bytes if needed */
-		while (buf_bits < bits)
+		__m128i vmask	 = _mm_set1_epi32((int)mask);
+		uint32	simd_end = count & ~3U;
+
+		for (i = 0; i < simd_end; i += 4)
 		{
-			buffer |= ((uint64)in[in_pos++]) << buf_bits;
-			buf_bits += 8;
+			uint32 v0, v1, v2, v3;
+			uint32 bit_off;
+			uint64 raw;
+
+			bit_off = i * (uint32)bits;
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			v0 = (uint32)(raw >> (bit_off & 7)) & mask;
+
+			bit_off += bits;
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			v1 = (uint32)(raw >> (bit_off & 7)) & mask;
+
+			bit_off += bits;
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			v2 = (uint32)(raw >> (bit_off & 7)) & mask;
+
+			bit_off += bits;
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			v3 = (uint32)(raw >> (bit_off & 7)) & mask;
+
+			_mm_storeu_si128(
+					(__m128i *)(out + i),
+					_mm_and_si128(
+							_mm_setr_epi32((int)v0, (int)v1, (int)v2, (int)v3),
+							vmask));
 		}
 
-		/* Extract value */
-		out[i] = (uint32)(buffer & mask);
-		buffer >>= bits;
-		buf_bits -= bits;
+		for (; i < count; i++)
+		{
+			uint32 bit_off = i * (uint32)bits;
+			uint64 raw;
+
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
+		}
 	}
+#elif defined(TP_SIMD_NEON)
+	{
+		uint32x4_t vmask	= vdupq_n_u32(mask);
+		uint32	   simd_end = count & ~3U;
+
+		for (i = 0; i < simd_end; i += 4)
+		{
+			uint32 vals[4];
+			uint32 bit_off = i * (uint32)bits;
+			int	   v;
+
+			for (v = 0; v < 4; v++)
+			{
+				uint64 raw;
+
+				memcpy(&raw, in + (bit_off >> 3), 8);
+				vals[v] = (uint32)(raw >> (bit_off & 7)) & mask;
+				bit_off += bits;
+			}
+
+			vst1q_u32(out + i, vandq_u32(vld1q_u32(vals), vmask));
+		}
+
+		for (; i < count; i++)
+		{
+			uint32 bit_off = i * (uint32)bits;
+			uint64 raw;
+
+			memcpy(&raw, in + (bit_off >> 3), 8);
+			out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
+		}
+	}
+#else
+	/* Scalar fallback: branchless direct-indexed loads */
+	for (i = 0; i < count; i++)
+	{
+		uint32 bit_off = i * (uint32)bits;
+		uint64 raw;
+
+		memcpy(&raw, in + (bit_off >> 3), 8);
+		out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
+	}
+#endif
 }
 
 /*
