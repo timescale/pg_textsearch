@@ -257,7 +257,8 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 			metap->first_docid_page = target_page;
 
 			MarkBufferDirty(metabuf);
-			FlushOneBuffer(metabuf);
+			if (!BufferIsLocal(metabuf))
+				FlushOneBuffer(metabuf);
 		}
 		else
 		{
@@ -323,7 +324,8 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		/* Link old page to new page */
 		docid_header->next_page = BufferGetBlockNumber(new_buf);
 		MarkBufferDirty(docid_buf);
-		FlushOneBuffer(docid_buf);
+		if (!BufferIsLocal(docid_buf))
+			FlushOneBuffer(docid_buf);
 
 		UnlockReleaseBuffer(docid_buf);
 
@@ -347,7 +349,7 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	 * Only flush when page is full. Individual docids are protected by the
 	 * dirty page - they'll be written during checkpoint or when full.
 	 */
-	if (docid_header->num_docids >= page_capacity)
+	if (docid_header->num_docids >= page_capacity && !BufferIsLocal(docid_buf))
 		FlushOneBuffer(docid_buf);
 
 	/* Update cache for next call */
@@ -385,7 +387,8 @@ tp_clear_docid_pages(Relation index)
 	metap->first_docid_page = InvalidBlockNumber;
 
 	MarkBufferDirty(metabuf);
-	FlushOneBuffer(metabuf);
+	if (!BufferIsLocal(metabuf))
+		FlushOneBuffer(metabuf);
 	UnlockReleaseBuffer(metabuf);
 
 	/* Invalidate the docid writer cache since pages are cleared */

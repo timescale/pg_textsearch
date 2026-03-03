@@ -1,0 +1,100 @@
+--
+-- Tests for BM25 indexes on temporary tables.
+-- Regression test for GitHub issue #247: crash on rollback after
+-- scanning a BM25 index on a temp table.
+--
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+-- Basic: create, populate, query, drop
+CREATE TEMP TABLE t_basic (id serial, body text);
+INSERT INTO t_basic VALUES (DEFAULT, 'hello world'), (DEFAULT, 'foo bar baz');
+CREATE INDEX t_basic_idx ON t_basic USING bm25(body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation t_basic_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50
+SELECT id, body <@> 'hello' AS score FROM t_basic ORDER BY score LIMIT 5;
+ id |       score        
+----+--------------------
+  1 | -0.754912793636322
+  2 |                  0
+(2 rows)
+
+DROP TABLE t_basic;
+-- Rollback to savepoint after scan (original crash from #247)
+BEGIN;
+CREATE TEMP TABLE t_sp (id serial, body text);
+INSERT INTO t_sp VALUES (DEFAULT, 'hello world'), (DEFAULT, 'foo bar baz');
+CREATE INDEX t_sp_idx ON t_sp USING bm25(body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation t_sp_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.50
+SAVEPOINT sp1;
+SELECT body <@> 'hello' FROM t_sp LIMIT 1;
+      ?column?      
+--------------------
+ -0.754912793636322
+(1 row)
+
+ROLLBACK TO SAVEPOINT sp1;
+-- Table and index should still be usable after savepoint rollback
+SELECT body <@> 'hello' FROM t_sp LIMIT 1;
+      ?column?      
+--------------------
+ -0.754912793636322
+(1 row)
+
+COMMIT;
+DROP TABLE t_sp;
+-- Full rollback after scan (second crash case from #247)
+BEGIN;
+CREATE TEMP TABLE t_rb (id serial, body text);
+INSERT INTO t_rb VALUES (DEFAULT, 'hello world');
+CREATE INDEX t_rb_idx ON t_rb USING bm25(body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation t_rb_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00
+SELECT body <@> 'hello' FROM t_rb LIMIT 1;
+       ?column?       
+----------------------
+ -0.28768208622932434
+(1 row)
+
+ROLLBACK;
+-- Rollback of CREATE INDEX itself
+BEGIN;
+CREATE TEMP TABLE t_rb2 (id serial, body text);
+INSERT INTO t_rb2 VALUES (DEFAULT, 'hello world');
+SAVEPOINT before_idx;
+CREATE INDEX t_rb2_idx ON t_rb2 USING bm25(body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation t_rb2_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00
+ROLLBACK TO SAVEPOINT before_idx;
+COMMIT;
+DROP TABLE t_rb2;
+-- ON COMMIT DROP temp table with index
+BEGIN;
+CREATE TEMP TABLE t_ocd (id serial, body text) ON COMMIT DROP;
+INSERT INTO t_ocd VALUES (DEFAULT, 'on commit drop test');
+CREATE INDEX t_ocd_idx ON t_ocd USING bm25(body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation t_ocd_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=3.00
+SELECT body <@> 'test' FROM t_ocd LIMIT 1;
+       ?column?       
+----------------------
+ -0.28768208622932434
+(1 row)
+
+COMMIT;
+-- Table should be gone now
+SELECT * FROM t_ocd; -- expect error
+ERROR:  relation "t_ocd" does not exist
+LINE 1: SELECT * FROM t_ocd;
+                      ^
+DROP EXTENSION pg_textsearch CASCADE;
