@@ -133,11 +133,24 @@ tp_add_document_to_posting_list(
 	/* Expand array if needed */
 	if (posting_list->doc_count >= posting_list->capacity)
 	{
-		int32 new_capacity = posting_list->capacity == 0
-								   ? TP_INITIAL_POSTING_LIST_CAPACITY
-								   : posting_list->capacity *
-											 tp_posting_list_growth_factor;
-		Size  new_size	   = new_capacity * sizeof(TpPostingEntry);
+		int32 new_capacity;
+		Size  new_size;
+
+		if (posting_list->capacity == 0)
+			new_capacity = TP_INITIAL_POSTING_LIST_CAPACITY;
+		else
+		{
+			/* Check for int32 overflow before multiplying */
+			if (posting_list->capacity >
+				INT32_MAX / tp_posting_list_growth_factor)
+				elog(ERROR,
+					 "posting list capacity overflow: %d * %d",
+					 posting_list->capacity,
+					 tp_posting_list_growth_factor);
+			new_capacity = posting_list->capacity *
+						   tp_posting_list_growth_factor;
+		}
+		new_size = (Size)new_capacity * sizeof(TpPostingEntry);
 
 		new_entries_dp = dsa_allocate(local_state->dsa, new_size);
 		if (!DsaPointerIsValid(new_entries_dp))

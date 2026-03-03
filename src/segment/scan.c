@@ -123,6 +123,13 @@ tp_segment_posting_iterator_init(
 		tp_segment_read(
 				reader, string_offset, &string_entry.length, sizeof(uint32));
 
+		if (string_entry.length > TP_MAX_TERM_LENGTH)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("corrupt segment: term length %u exceeds "
+							"maximum",
+							string_entry.length)));
+
 		/* Reallocate buffer if needed */
 		if (string_entry.length + 1 > buffer_size)
 		{
@@ -349,10 +356,10 @@ tp_segment_posting_iterator_next(
 	 * By default, CTIDs are not pre-loaded and will be resolved later
 	 * via tp_segment_lookup_ctid.
 	 */
-	if (iter->reader->cached_ctid_pages != NULL)
+	if (iter->reader->cached_ctid_pages != NULL &&
+		doc_id < iter->reader->cached_num_docs)
 	{
 		ItemPointerData tmp;
-		Assert(doc_id < iter->reader->cached_num_docs);
 		ItemPointerSet(
 				&tmp,
 				iter->reader->cached_ctid_pages[doc_id],
@@ -498,10 +505,10 @@ tp_segment_posting_iterator_seek(
 			iter->output_posting.doc_id = bp->doc_id;
 
 			/* Resolve CTID if cached, otherwise leave invalid for later */
-			if (iter->reader->cached_ctid_pages != NULL)
+			if (iter->reader->cached_ctid_pages != NULL &&
+				bp->doc_id < iter->reader->cached_num_docs)
 			{
 				ItemPointerData tmp;
-				Assert(bp->doc_id < iter->reader->cached_num_docs);
 				ItemPointerSet(
 						&tmp,
 						iter->reader->cached_ctid_pages[bp->doc_id],
@@ -609,6 +616,13 @@ tp_segment_get_doc_freq(
 					string_offset,
 					&string_entry.length,
 					sizeof(uint32));
+
+			if (string_entry.length > TP_MAX_TERM_LENGTH)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("corrupt segment: term length %u "
+								"exceeds maximum",
+								string_entry.length)));
 
 			if (string_entry.length + 1 > buffer_size)
 			{
@@ -730,6 +744,13 @@ tp_batch_get_segment_doc_freq(
 
 				tp_segment_read(
 						reader, string_offset, &string_length, sizeof(uint32));
+
+				if (string_length > TP_MAX_TERM_LENGTH)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("corrupt segment: term length %u "
+									"exceeds maximum",
+									string_length)));
 
 				if (string_length + 1 > buffer_size)
 				{

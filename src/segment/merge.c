@@ -117,6 +117,13 @@ merge_read_term_at_index(TpMergeSource *source, uint32 index)
 	/* Read string length */
 	tp_segment_read(source->reader, string_offset, &length, sizeof(uint32));
 
+	if (length > TP_MAX_TERM_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupt segment: term length %u exceeds "
+						"maximum",
+						length)));
+
 	/* Allocate and read string */
 	term = palloc(length + 1);
 	tp_segment_read(
@@ -446,7 +453,8 @@ posting_source_convert_current(TpPostingMergeSource *ps)
 	 * Look up CTID from split arrays (needed for N-way merge ordering).
 	 * Use cached arrays if available, otherwise read from segment.
 	 */
-	if (ps->reader->cached_ctid_pages != NULL)
+	if (ps->reader->cached_ctid_pages != NULL &&
+		bp->doc_id < ps->reader->cached_num_docs)
 	{
 		page   = ps->reader->cached_ctid_pages[bp->doc_id];
 		offset = ps->reader->cached_ctid_offsets[bp->doc_id];
