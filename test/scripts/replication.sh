@@ -60,6 +60,7 @@ cleanup() {
         fi
     done
     rm -rf "${PRIMARY_DIR}" "${STANDBY_DIR}"
+    exit $exit_code
 }
 
 trap cleanup EXIT INT TERM
@@ -390,8 +391,8 @@ test_standby_promotion() {
 ${post_insert_count}"
 
     if [ "$post_insert_count" -le "$promoted_count" ]; then
-        warn "Insert on promoted standby not reflected in search"
-        warn "  Before: ${promoted_count}, After: ${post_insert_count}"
+        error "Insert on promoted standby not reflected in search \
+(before: ${promoted_count}, after: ${post_insert_count})"
     fi
 
     log "Test 4 PASSED: Standby promotion works"

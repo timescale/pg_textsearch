@@ -60,6 +60,7 @@ cleanup() {
         fi
     done
     rm -rf "${PUB_DIR}" "${SUB_DIR}"
+    exit $exit_code
 }
 
 trap cleanup EXIT INT TERM
@@ -322,8 +323,8 @@ sub=${sub_count}"
 
     # Verify the count decreased
     if [ "$sub_count" -ge "$pre_count" ]; then
-        warn "Delete may not have reduced search results"
-        warn "  Before: ${pre_count}, After: ${sub_count}"
+        error "DELETE not reflected in search results \
+(before: ${pre_count}, after: ${sub_count})"
     fi
 
     log "Test 3 PASSED: DELETE replication works"

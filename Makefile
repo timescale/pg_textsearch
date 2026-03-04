@@ -125,6 +125,7 @@ test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."
 	@cd test/scripts && ./cic.sh
 
+# Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
 	@echo "Running physical replication tests..."
 	@cd test/scripts && ./replication.sh
@@ -312,4 +313,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-logical-replication test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
