@@ -125,6 +125,14 @@ test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."
 	@cd test/scripts && ./cic.sh
 
+test-replication:
+	@echo "Running physical replication tests..."
+	@cd test/scripts && ./replication.sh
+
+test-logical-replication:
+	@echo "Running logical replication tests..."
+	@cd test/scripts && ./logical_replication.sh
+
 test-shell: test-concurrency test-recovery test-segment test-cic
 	@echo "All shell-based tests completed"
 
