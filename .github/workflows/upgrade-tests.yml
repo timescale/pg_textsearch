@@ -52,7 +52,7 @@ jobs:
           exit 1
         fi
 
-    - name: Build old version v${{ matrix.old_version }}
+    - name: Build and install old version v${{ matrix.old_version }}
       run: |
         cd pg_textsearch-${{ matrix.old_version }}
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
@@ -60,14 +60,7 @@ jobs:
         make
         sudo make install
 
-    - name: Build and install current version
-      run: |
-        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
-        make clean
-        make
-        sudo make install
-
-    - name: Start PostgreSQL and create test database
+    - name: Start PostgreSQL with old binary and create test data
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PGDATA=/tmp/upgrade_test_data
@@ -119,6 +112,24 @@ jobs:
 
         SELECT * FROM pre_upgrade_results;
         SQL
+
+    - name: Stop PostgreSQL, install current version, restart
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        export PGDATA=/tmp/upgrade_test_data
+
+        # Stop Postgres (still running old binary)
+        pg_ctl -D $PGDATA stop -w
+
+        # Build and install current version (overwrites old binary)
+        cd $GITHUB_WORKSPACE
+        make clean
+        make
+        sudo make install
+
+        # Restart with new binary
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
 
     - name: Upgrade extension to current version
       run: |
