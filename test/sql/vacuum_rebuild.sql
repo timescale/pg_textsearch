@@ -1,7 +1,14 @@
 -- Test: VACUUM correctly removes dead index entries so CTID reuse
 -- does not produce false positives.
+--
+-- The bug only manifests via ORDER BY <@> LIMIT queries, which use
+-- the index scan path. Seq scans re-evaluate the <@> operator on
+-- the heap tuple and catch stale results. We use enable_seqscan=off
+-- to ensure the index scan is used even for small tables.
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+SET enable_seqscan = off;
 
 -- ================================================================
 -- Test 1: Basic CTID reuse after VACUUM
@@ -24,28 +31,42 @@ INSERT INTO vacuum_rebuild_test (content) VALUES
 -- Force to segments so VACUUM has something to rebuild
 SELECT bm25_spill_index('vacuum_rebuild_idx');
 
--- Verify baseline search works
+-- Verify baseline: index scan for 'alpha' returns the right row
 SELECT id, content FROM vacuum_rebuild_test
-WHERE content <@> to_bm25query('alpha', 'vacuum_rebuild_idx') < 0
-ORDER BY content <@> to_bm25query('alpha', 'vacuum_rebuild_idx');
+ORDER BY content <@> to_bm25query('alpha', 'vacuum_rebuild_idx')
+LIMIT 1;
 
--- Delete and VACUUM to free CTIDs
+-- Delete rows containing 'alpha' and 'delta', then VACUUM to free
+-- their CTIDs for reuse.
 DELETE FROM vacuum_rebuild_test WHERE id <= 2;
 VACUUM vacuum_rebuild_test;
 
--- Insert new rows (may reuse CTIDs from deleted rows)
+-- Insert new rows. Postgres will reuse the freed CTIDs (0,1) and
+-- (0,2) for these new rows.
 INSERT INTO vacuum_rebuild_test (content) VALUES
     ('juliet kilo lima'),
     ('mike november oscar');
 
--- Critical: search for 'alpha' must NOT return new rows
--- (old index entry for 'alpha' pointed to a CTID now reused)
-SELECT count(*) AS alpha_matches FROM vacuum_rebuild_test
-WHERE content <@> to_bm25query('alpha', 'vacuum_rebuild_idx') < 0;
+-- Critical test: ORDER BY <@> LIMIT uses the index scan path.
+-- Without the fix, the stale 'alpha' index entry still points to
+-- CTID (0,1), which is now 'juliet kilo lima'. The index scan
+-- returns this wrong row. With the fix, VACUUM rebuilt the segment
+-- without the dead entries, so 'alpha' returns no results.
+SELECT count(*) AS alpha_false_positives
+FROM (
+    SELECT id FROM vacuum_rebuild_test
+    ORDER BY content <@> to_bm25query('alpha', 'vacuum_rebuild_idx')
+    LIMIT 10
+) sub
+WHERE id NOT IN (
+    SELECT id FROM vacuum_rebuild_test
+    WHERE content LIKE '%alpha%'
+);
 
--- Search for new terms must work
-SELECT count(*) AS juliet_matches FROM vacuum_rebuild_test
-WHERE content <@> to_bm25query('juliet', 'vacuum_rebuild_idx') < 0;
+-- Search for new terms must work via index scan
+SELECT id, content FROM vacuum_rebuild_test
+ORDER BY content <@> to_bm25query('juliet', 'vacuum_rebuild_idx')
+LIMIT 1;
 
 DROP TABLE vacuum_rebuild_test;
 
@@ -75,12 +96,23 @@ VACUUM vacuum_allgone;
 INSERT INTO vacuum_allgone (content) VALUES
     ('strawberry banana');
 
--- Must find only the new row, not phantom results
-SELECT count(*) AS papaya_gone FROM vacuum_allgone
-WHERE content <@> to_bm25query('papaya', 'vacuum_allgone_idx') < 0;
+-- Must NOT find phantom 'papaya' results via index scan
+SELECT count(*) AS papaya_false_positives
+FROM (
+    SELECT id FROM vacuum_allgone
+    ORDER BY content <@> to_bm25query('papaya', 'vacuum_allgone_idx')
+    LIMIT 10
+) sub
+WHERE id NOT IN (
+    SELECT id FROM vacuum_allgone
+    WHERE content LIKE '%papaya%'
+);
 
-SELECT count(*) AS strawberry_found FROM vacuum_allgone
-WHERE content <@> to_bm25query('strawberry', 'vacuum_allgone_idx') < 0;
+-- Must find the new row
+SELECT id, content FROM vacuum_allgone
+ORDER BY content <@> to_bm25query('strawberry',
+    'vacuum_allgone_idx')
+LIMIT 1;
 
 DROP TABLE vacuum_allgone;
 
@@ -112,10 +144,14 @@ SELECT bm25_summarize_index('vacuum_multilevel_idx') ~ 'L1'
 DELETE FROM vacuum_multilevel WHERE id <= 1000;
 VACUUM vacuum_multilevel;
 
--- Verify remaining docs are searchable
-SELECT count(*) AS remaining FROM vacuum_multilevel
-WHERE content <@> to_bm25query('searchterm',
-    'vacuum_multilevel_idx') < 0;
+-- Verify remaining docs are searchable via index scan
+SELECT count(*) AS remaining
+FROM (
+    SELECT id FROM vacuum_multilevel
+    ORDER BY content <@> to_bm25query('searchterm',
+        'vacuum_multilevel_idx')
+    LIMIT 2000
+) sub;
 
 RESET pg_textsearch.memtable_spill_threshold;
 DROP TABLE vacuum_multilevel;
@@ -138,9 +174,12 @@ INSERT INTO vacuum_noop (content) VALUES
 SELECT bm25_spill_index('vacuum_noop_idx');
 VACUUM vacuum_noop;
 
-SELECT count(*) AS still_here FROM vacuum_noop
-WHERE content <@> to_bm25query('deleted', 'vacuum_noop_idx') < 0;
+SELECT id, content FROM vacuum_noop
+ORDER BY content <@> to_bm25query('deleted', 'vacuum_noop_idx')
+LIMIT 1;
 
 DROP TABLE vacuum_noop;
+
+RESET enable_seqscan;
 
 DROP EXTENSION pg_textsearch CASCADE;
