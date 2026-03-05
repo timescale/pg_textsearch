@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772694466487,
+  "lastUpdate": 1772694468894,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -22111,6 +22111,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco (8.8M docs) - Index Size",
             "value": 1502.39,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fa87b2ac81f6b0763c5d84fc4db4c0b3407aa7e9",
+          "message": "Add v0.5.1 and v0.6.0 to upgrade paths and test matrix (#262)\n\n## Summary\nPost-release housekeeping for v0.6.0:\n- Add `0.5.1→1.0.0-dev` and `0.6.0→1.0.0-dev` upgrade SQL scripts\n- Add `0.5.1` and `0.6.0` to upgrade test matrix\n- Add `0.5.x→0.6.0` entry to compatibility matrix in RELEASING.md\n\n## Testing\n- `make test` — 49/49 pass",
+          "timestamp": "2026-03-04T02:11:47Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fa87b2ac81f6b0763c5d84fc4db4c0b3407aa7e9"
+        },
+        "date": 1772694468138,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco (8.8M docs) - Index Build Time",
+            "value": 141652.111,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 18.44,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 18.23,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 24.45,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 26.47,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 29.34,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 37.44,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 36.78,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 44.68,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - Throughput (avg ms/query)",
+            "value": 31.35,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco (8.8M docs) - Index Size",
+            "value": 1505.72,
             "unit": "MB"
           }
         ]
