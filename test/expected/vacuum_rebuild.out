@@ -52,25 +52,15 @@ VACUUM vacuum_rebuild_test;
 INSERT INTO vacuum_rebuild_test (content) VALUES
     ('juliet kilo lima'),
     ('mike november oscar');
--- Critical test: ORDER BY <@> LIMIT uses the index scan path.
--- Without the fix, the stale 'alpha' index entry still points to
--- CTID (0,1), which is now 'juliet kilo lima'. The index scan
--- returns this wrong row. With the fix, VACUUM rebuilt the segment
--- without the dead entries, so 'alpha' returns no results.
-SELECT count(*) AS alpha_false_positives
-FROM (
-    SELECT id FROM vacuum_rebuild_test
-    ORDER BY content <@> to_bm25query('alpha', 'vacuum_rebuild_idx')
-    LIMIT 10
-) sub
-WHERE id NOT IN (
-    SELECT id FROM vacuum_rebuild_test
-    WHERE content LIKE '%alpha%'
-);
- alpha_false_positives 
------------------------
-                     0
-(1 row)
+-- Index scan for 'alpha' must return no rows. Without the fix,
+-- the stale segment entry for 'alpha' points to reused CTID (0,1)
+-- and the index scan returns 'juliet kilo lima' as a false match.
+SELECT id, content FROM vacuum_rebuild_test
+ORDER BY content <@> to_bm25query('alpha', 'vacuum_rebuild_idx')
+LIMIT 10;
+ id | content 
+----+---------
+(0 rows)
 
 -- Search for new terms must work via index scan
 SELECT id, content FROM vacuum_rebuild_test
@@ -112,20 +102,12 @@ VACUUM vacuum_allgone;
 INSERT INTO vacuum_allgone (content) VALUES
     ('strawberry banana');
 -- Must NOT find phantom 'papaya' results via index scan
-SELECT count(*) AS papaya_false_positives
-FROM (
-    SELECT id FROM vacuum_allgone
-    ORDER BY content <@> to_bm25query('papaya', 'vacuum_allgone_idx')
-    LIMIT 10
-) sub
-WHERE id NOT IN (
-    SELECT id FROM vacuum_allgone
-    WHERE content LIKE '%papaya%'
-);
- papaya_false_positives 
-------------------------
-                      0
-(1 row)
+SELECT id, content FROM vacuum_allgone
+ORDER BY content <@> to_bm25query('papaya', 'vacuum_allgone_idx')
+LIMIT 10;
+ id | content 
+----+---------
+(0 rows)
 
 -- Must find the new row
 SELECT id, content FROM vacuum_allgone
