@@ -267,10 +267,10 @@ tp_vacuum_rebuild_segment(
 			continue;
 		}
 
-		document_text = DatumGetTextPP(text_datum);
-
-		/* Tokenize in per-doc context */
+		/* Tokenize in per-doc context (includes detoasting) */
 		old_ctx = MemoryContextSwitchTo(per_doc_ctx);
+
+		document_text = DatumGetTextPP(text_datum);
 
 		tsvector_datum = DirectFunctionCall2Coll(
 				to_tsvector_byid,
