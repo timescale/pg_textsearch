@@ -23,7 +23,7 @@ void
 tp_segment_read_skip_entry(
 		TpSegmentReader *reader,
 		uint64			 skip_index_offset,
-		uint16			 block_idx,
+		uint32			 block_idx,
 		TpSkipEntry		*skip)
 {
 	uint64 skip_offset;
@@ -436,9 +436,9 @@ tp_segment_posting_iterator_seek(
 		uint32					  target_doc_id,
 		TpSegmentPosting		**posting)
 {
-	uint16		block_count;
+	uint32		block_count;
 	int			left, right, mid;
-	uint16		target_block;
+	uint32		target_block;
 	TpSkipEntry skip;
 
 	if (!iter->initialized || iter->finished)
