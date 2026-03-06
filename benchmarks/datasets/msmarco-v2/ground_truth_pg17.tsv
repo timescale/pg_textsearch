@@ -1,0 +1,201 @@
+query_id	query_text	rank	doc_id	score
+46081	average time for an appraisal	1	msmarco_passage_31_57209940	21.920369739071308
+46081	average time for an appraisal	2	msmarco_passage_58_839601830	21.222921315858468
+46081	average time for an appraisal	3	msmarco_passage_09_159248063	21.222921315858468
+46081	average time for an appraisal	4	msmarco_passage_03_747631350	20.54081110025436
+46081	average time for an appraisal	5	msmarco_passage_53_390589389	20.41654708823699
+46081	average time for an appraisal	6	msmarco_passage_39_34702489	20.133655492396112
+46081	average time for an appraisal	7	msmarco_passage_06_381616357	20.060440342263178
+46081	average time for an appraisal	8	msmarco_passage_46_415180656	20.060440342263178
+46081	average time for an appraisal	9	msmarco_passage_00_195906103	19.772030550911744
+46081	average time for an appraisal	10	msmarco_passage_30_687901298	19.761367141562793
+46095	average time for hair to grow	1	msmarco_passage_00_351917831	22.904466817207595
+46095	average time for hair to grow	2	msmarco_passage_40_406374986	22.765726861142237
+46095	average time for hair to grow	3	msmarco_passage_11_350462917	22.47104573549827
+46095	average time for hair to grow	4	msmarco_passage_40_385979612	22.103222599647427
+46095	average time for hair to grow	5	msmarco_passage_06_690539878	21.952589707655015
+46095	average time for hair to grow	6	msmarco_passage_36_215663844	21.932006234319747
+46095	average time for hair to grow	7	msmarco_passage_40_477787932	21.71071888735461
+46095	average time for hair to grow	8	msmarco_passage_23_447690279	21.700037752969962
+46095	average time for hair to grow	9	msmarco_passage_23_794392599	21.493293300274182
+46095	average time for hair to grow	10	msmarco_passage_58_151188876	21.480702012017375
+80590	can you use denture tablets to clean a brace	1	msmarco_passage_61_546890403	34.11670997715102
+80590	can you use denture tablets to clean a brace	2	msmarco_passage_61_546888801	32.080507865346185
+80590	can you use denture tablets to clean a brace	3	msmarco_passage_57_572682410	31.84455980442201
+80590	can you use denture tablets to clean a brace	4	msmarco_passage_12_643016719	31.7653793196168
+80590	can you use denture tablets to clean a brace	5	msmarco_passage_03_380638174	31.717536685567968
+80590	can you use denture tablets to clean a brace	6	msmarco_passage_34_675194564	31.717536685567968
+80590	can you use denture tablets to clean a brace	7	msmarco_passage_56_276585437	31.580799682228513
+80590	can you use denture tablets to clean a brace	8	msmarco_passage_12_547872881	31.447149163794087
+80590	can you use denture tablets to clean a brace	9	msmarco_passage_00_240128140	31.447149163794087
+80590	can you use denture tablets to clean a brace	10	msmarco_passage_58_751061261	31.348522332031543
+102695	cost of bamboo hr	1	msmarco_passage_11_743003806	24.612657762780472
+102695	cost of bamboo hr	2	msmarco_passage_61_108563933	23.474671780943417
+102695	cost of bamboo hr	3	msmarco_passage_35_542169726	22.321626861010085
+102695	cost of bamboo hr	4	msmarco_passage_61_107844180	21.717828230151817
+102695	cost of bamboo hr	5	msmarco_passage_26_268230465	21.569803803357622
+102695	cost of bamboo hr	6	msmarco_passage_26_268399133	21.569803803357622
+102695	cost of bamboo hr	7	msmarco_passage_11_743003377	21.53900394659228
+102695	cost of bamboo hr	8	msmarco_passage_22_543730846	21.370686938203185
+102695	cost of bamboo hr	9	msmarco_passage_31_530618296	19.805552607769027
+102695	cost of bamboo hr	10	msmarco_passage_49_446974816	19.393878077539295
+107077	cost of slate	1	msmarco_passage_50_433820316	21.139729641068335
+107077	cost of slate	2	msmarco_passage_49_297054490	20.543121838953745
+107077	cost of slate	3	msmarco_passage_46_418226165	20.06523673153704
+107077	cost of slate	4	msmarco_passage_64_271514276	19.440853320215716
+107077	cost of slate	5	msmarco_passage_39_853671202	19.26057766222507
+107077	cost of slate	6	msmarco_passage_31_864396431	19.20930326963827
+107077	cost of slate	7	msmarco_passage_31_864385340	19.20930326963827
+107077	cost of slate	8	msmarco_passage_09_191099228	19.19999713272163
+107077	cost of slate	9	msmarco_passage_39_853636878	19.19958016429033
+107077	cost of slate	10	msmarco_passage_46_417717889	19.075024784972634
+108037	cost of wooden shutters	1	msmarco_passage_57_133213246	25.219011815330894
+108037	cost of wooden shutters	2	msmarco_passage_25_116092911	25.04440709208247
+108037	cost of wooden shutters	3	msmarco_passage_11_801948180	24.304547949597826
+108037	cost of wooden shutters	4	msmarco_passage_07_17728573	24.271443494846228
+108037	cost of wooden shutters	5	msmarco_passage_49_293444730	24.271443494846228
+108037	cost of wooden shutters	6	msmarco_passage_35_856425078	23.782248011857323
+108037	cost of wooden shutters	7	msmarco_passage_01_615116094	23.630939310807847
+108037	cost of wooden shutters	8	msmarco_passage_69_103132820	23.53733592051777
+108037	cost of wooden shutters	9	msmarco_passage_03_637038443	23.33119821940135
+108037	cost of wooden shutters	10	msmarco_passage_58_393033578	23.305871322424032
+109276	cost to dig a pond	1	msmarco_passage_46_413129339	30.20481017614391
+109276	cost to dig a pond	2	msmarco_passage_02_602403940	29.467644151668306
+109276	cost to dig a pond	3	msmarco_passage_49_606039662	27.687752108555614
+109276	cost to dig a pond	4	msmarco_passage_49_298337294	26.428542881605168
+109276	cost to dig a pond	5	msmarco_passage_07_18949637	26.428542881605168
+109276	cost to dig a pond	6	msmarco_passage_06_81542713	25.856340011880135
+109276	cost to dig a pond	7	msmarco_passage_09_4767290	25.62777749048214
+109276	cost to dig a pond	8	msmarco_passage_22_518073078	25.42353149494891
+109276	cost to dig a pond	9	msmarco_passage_30_195021926	25.324551339352865
+109276	cost to dig a pond	10	msmarco_passage_28_121949606	25.016213370118173
+166043	does estrogen make me start my period	1	msmarco_passage_48_774535297	22.356744692082344
+166043	does estrogen make me start my period	2	msmarco_passage_65_794389790	22.319878368695896
+166043	does estrogen make me start my period	3	msmarco_passage_66_10442931	22.319878368695896
+166043	does estrogen make me start my period	4	msmarco_passage_10_648542370	22.171635033976234
+166043	does estrogen make me start my period	5	msmarco_passage_66_658433762	22.171635033976234
+166043	does estrogen make me start my period	6	msmarco_passage_66_662345165	22.171635033976234
+166043	does estrogen make me start my period	7	msmarco_passage_66_661436390	22.171635033976234
+166043	does estrogen make me start my period	8	msmarco_passage_65_768311466	21.97716620246175
+166043	does estrogen make me start my period	9	msmarco_passage_00_467236850	21.742219171889893
+166043	does estrogen make me start my period	10	msmarco_passage_03_463122084	21.742219171889893
+167156	does highster mobile really work	1	msmarco_passage_57_60621354	30.851005948891785
+167156	does highster mobile really work	2	msmarco_passage_57_60620880	30.743209600558394
+167156	does highster mobile really work	3	msmarco_passage_42_21440090	30.007552506910315
+167156	does highster mobile really work	4	msmarco_passage_34_786643728	29.956723263770705
+167156	does highster mobile really work	5	msmarco_passage_42_21757368	29.94068554870834
+167156	does highster mobile really work	6	msmarco_passage_32_679211878	29.62703245099802
+167156	does highster mobile really work	7	msmarco_passage_31_460387754	29.289017044374663
+167156	does highster mobile really work	8	msmarco_passage_57_60618667	29.195532228461417
+167156	does highster mobile really work	9	msmarco_passage_49_163104947	28.401940394670667
+167156	does highster mobile really work	10	msmarco_passage_57_60614638	28.358762033335815
+195693	golf cost	1	msmarco_passage_34_236210807	17.932517560863303
+195693	golf cost	2	msmarco_passage_52_674559282	17.85459689507011
+195693	golf cost	3	msmarco_passage_52_674561538	17.85459689507011
+195693	golf cost	4	msmarco_passage_49_608407127	17.757779203330735
+195693	golf cost	5	msmarco_passage_23_496404370	17.64665141402129
+195693	golf cost	6	msmarco_passage_52_674566720	17.605483734405784
+195693	golf cost	7	msmarco_passage_49_612598465	17.399074803250823
+195693	golf cost	8	msmarco_passage_49_607750118	17.399074803250823
+195693	golf cost	9	msmarco_passage_07_74878246	17.399074803250823
+195693	golf cost	10	msmarco_passage_23_502109682	17.23489132120219
+49802	belizean cuisine	1	msmarco_passage_17_848762665	27.208914487964392
+49802	belizean cuisine	2	msmarco_passage_04_475620085	24.564040563833593
+49802	belizean cuisine	3	msmarco_passage_59_695961757	23.75443276221856
+49802	belizean cuisine	4	msmarco_passage_39_111262643	22.998141920187415
+49802	belizean cuisine	5	msmarco_passage_39_111235667	22.28991007334067
+49802	belizean cuisine	6	msmarco_passage_19_712672997	22.025759161408818
+49802	belizean cuisine	7	msmarco_passage_18_121282839	21.72762494249121
+49802	belizean cuisine	8	msmarco_passage_66_332263067	21.509748688353334
+49802	belizean cuisine	9	msmarco_passage_56_432624143	20.745560081433002
+49802	belizean cuisine	10	msmarco_passage_33_845631664	20.55570881111817
+61531	campagnolo bikes	1	msmarco_passage_42_854609499	28.821600239400432
+61531	campagnolo bikes	2	msmarco_passage_29_586567673	26.982223381266863
+61531	campagnolo bikes	3	msmarco_passage_18_270269495	26.712315118703437
+61531	campagnolo bikes	4	msmarco_passage_50_122510673	26.18838051303773
+61531	campagnolo bikes	5	msmarco_passage_50_122510219	25.684603416118055
+61531	campagnolo bikes	6	msmarco_passage_18_270280973	25.139965562928005
+61531	campagnolo bikes	7	msmarco_passage_39_447761715	24.964259771268182
+61531	campagnolo bikes	8	msmarco_passage_07_675967606	24.410703002711884
+61531	campagnolo bikes	9	msmarco_passage_18_270285307	24.301669241626843
+61531	campagnolo bikes	10	msmarco_passage_18_270274208	24.301669241626843
+558263	what are endotoxins?	1	msmarco_passage_05_664331342	19.377984133567544
+558263	what are endotoxins?	2	msmarco_passage_43_535316037	19.377984133567544
+558263	what are endotoxins?	3	msmarco_passage_11_305101811	19.06427123280652
+558263	what are endotoxins?	4	msmarco_passage_30_723066375	19.011529451999134
+558263	what are endotoxins?	5	msmarco_passage_00_46759260	19.011529451999134
+558263	what are endotoxins?	6	msmarco_passage_13_712636577	18.917297577370125
+558263	what are endotoxins?	7	msmarco_passage_60_135902089	18.917297577370125
+558263	what are endotoxins?	8	msmarco_passage_07_754671945	18.823995228243323
+558263	what are endotoxins?	9	msmarco_passage_04_28773913	18.71373443355519
+558263	what are endotoxins?	10	msmarco_passage_43_535319423	18.640124629513572
+561448	what are mandrakes	1	msmarco_passage_56_235252031	21.780124614079735
+561448	what are mandrakes	2	msmarco_passage_47_324118054	20.806007023961254
+561448	what are mandrakes	3	msmarco_passage_63_292491206	20.65587197352055
+561448	what are mandrakes	4	msmarco_passage_01_490005434	20.03053451688995
+561448	what are mandrakes	5	msmarco_passage_16_764692463	20.03053451688995
+561448	what are mandrakes	6	msmarco_passage_23_849867399	20.03053451688995
+561448	what are mandrakes	7	msmarco_passage_23_849868269	19.909983244114898
+561448	what are mandrakes	8	msmarco_passage_01_490006306	19.909983244114898
+561448	what are mandrakes	9	msmarco_passage_36_369987356	19.760200020703643
+561448	what are mandrakes	10	msmarco_passage_16_765428496	19.60407061806408
+563347	what are plastids	1	msmarco_passage_29_597519642	20.155761384009995
+563347	what are plastids	2	msmarco_passage_30_26505321	19.893926345887873
+563347	what are plastids	3	msmarco_passage_29_597520476	19.77668896855651
+563347	what are plastids	4	msmarco_passage_00_465819116	19.745992825623663
+563347	what are plastids	5	msmarco_passage_14_370537022	19.745992825623663
+563347	what are plastids	6	msmarco_passage_14_155010413	19.745992825623663
+563347	what are plastids	7	msmarco_passage_53_775938156	19.547293650069385
+563347	what are plastids	8	msmarco_passage_05_698122277	19.449436151526967
+563347	what are plastids	9	msmarco_passage_27_736922313	19.406241409014548
+563347	what are plastids	10	msmarco_passage_27_725748663	19.166891329457332
+687375	what is a hydromyelia	1	msmarco_passage_11_52130936	22.911243561400152
+687375	what is a hydromyelia	2	msmarco_passage_56_557787178	22.90152831837151
+687375	what is a hydromyelia	3	msmarco_passage_56_557789191	22.641516805356023
+687375	what is a hydromyelia	4	msmarco_passage_56_557787660	22.641516805356023
+687375	what is a hydromyelia	5	msmarco_passage_25_117973289	22.396626870933357
+687375	what is a hydromyelia	6	msmarco_passage_56_557788684	22.387343072332087
+687375	what is a hydromyelia	7	msmarco_passage_56_557788164	22.262384277247676
+687375	what is a hydromyelia	8	msmarco_passage_18_320948663	22.230187115547135
+687375	what is a hydromyelia	9	msmarco_passage_21_642487793	22.230187115547135
+687375	what is a hydromyelia	10	msmarco_passage_21_642492803	22.230187115547135
+699510	what is a serigraph	1	msmarco_passage_38_254645853	23.82512915117656
+699510	what is a serigraph	2	msmarco_passage_36_582586783	23.16657168789242
+699510	what is a serigraph	3	msmarco_passage_14_701494160	22.621981397920194
+699510	what is a serigraph	4	msmarco_passage_04_809772457	22.621981397920194
+699510	what is a serigraph	5	msmarco_passage_29_303457539	21.94371332745477
+699510	what is a serigraph	6	msmarco_passage_56_513240006	20.98660775340644
+699510	what is a serigraph	7	msmarco_passage_05_513788015	20.92739502112417
+699510	what is a serigraph	8	msmarco_passage_56_513058800	20.835148755315405
+699510	what is a serigraph	9	msmarco_passage_53_280568515	20.538695861749318
+699510	what is a serigraph	10	msmarco_passage_45_36772422	20.48198026693673
+703383	what is a thoracentesis	1	msmarco_passage_07_53470346	22.351189774765487
+703383	what is a thoracentesis	2	msmarco_passage_51_675207037	21.352484913245664
+703383	what is a thoracentesis	3	msmarco_passage_11_678622999	20.412847000103127
+703383	what is a thoracentesis	4	msmarco_passage_68_82940685	19.70200389012523
+703383	what is a thoracentesis	5	msmarco_passage_24_209699359	19.684482818443676
+703383	what is a thoracentesis	6	msmarco_passage_24_196515002	19.684482818443676
+703383	what is a thoracentesis	7	msmarco_passage_40_586558557	19.675733963578825
+703383	what is a thoracentesis	8	msmarco_passage_27_434743668	19.558026421818997
+703383	what is a thoracentesis	9	msmarco_passage_39_314033604	19.558026421818997
+703383	what is a thoracentesis	10	msmarco_passage_39_314039432	19.558026421818997
+724121	what is bioflavonoids	1	msmarco_passage_11_73789641	19.6531541035536
+724121	what is bioflavonoids	2	msmarco_passage_34_745057267	19.177313665641147
+724121	what is bioflavonoids	3	msmarco_passage_45_175121009	19.16609120443793
+724121	what is bioflavonoids	4	msmarco_passage_61_844773521	19.077980028056746
+724121	what is bioflavonoids	5	msmarco_passage_59_530276275	19.032035556194085
+724121	what is bioflavonoids	6	msmarco_passage_09_274392210	19.032035556194085
+724121	what is bioflavonoids	7	msmarco_passage_45_604032386	19.029510970460763
+724121	what is bioflavonoids	8	msmarco_passage_64_313152983	19.029510970460763
+724121	what is bioflavonoids	9	msmarco_passage_67_81731973	18.943668801640232
+724121	what is bioflavonoids	10	msmarco_passage_45_180975850	18.89984216495411
+724571	what is blackleg	1	msmarco_passage_56_804873174	20.038159072455645
+724571	what is blackleg	2	msmarco_passage_40_574792872	19.831980340526368
+724571	what is blackleg	3	msmarco_passage_04_751952034	19.486390769109228
+724571	what is blackleg	4	msmarco_passage_47_314751209	19.270783761555794
+724571	what is blackleg	5	msmarco_passage_04_751950813	19.12430801242421
+724571	what is blackleg	6	msmarco_passage_48_547081835	18.980042167843976
+724571	what is blackleg	7	msmarco_passage_28_680794567	18.69794311838971
+724571	what is blackleg	8	msmarco_passage_64_277493831	18.69794311838971
+724571	what is blackleg	9	msmarco_passage_26_105373574	18.621087549423386
+724571	what is blackleg	10	msmarco_passage_30_350357070	18.621087549423386
