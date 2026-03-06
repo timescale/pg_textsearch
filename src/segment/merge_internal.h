@@ -76,7 +76,7 @@ typedef struct TpPostingMergeSource
 
 	/* block iteration state */
 	uint64			skip_index_offset; /* Offset to skip entries */
-	uint16			block_count;	   /* Total blocks */
+	uint32			block_count;	   /* Total blocks */
 	uint32			current_block;	   /* Current block index */
 	uint32			current_in_block;  /* Position within current block */
 	TpSkipEntry		skip_entry;		   /* Current block's skip entry */
@@ -99,7 +99,7 @@ typedef struct TpMergeDocMapping
 typedef struct MergeTermBlockInfo
 {
 	uint64 posting_offset;	 /* Offset where postings were written */
-	uint16 block_count;		 /* Number of blocks for this term */
+	uint32 block_count;		 /* Number of blocks for this term */
 	uint32 doc_freq;		 /* Document frequency */
 	uint32 skip_entry_start; /* Index into skip entries array */
 } MergeTermBlockInfo;
