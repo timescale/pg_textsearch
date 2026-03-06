@@ -15,10 +15,11 @@
 --
 -- This is a ONE-TIME computation. Results are saved and reused for
 -- validation. At 138M rows, full validation of all 3,903 dev queries
--- is infeasible (~13 min/query = 34 days). Instead we validate ~20
--- curated queries: ~10 with high-frequency terms (to detect the
--- block_count overflow bug fixed by PR #266) and ~10 with
--- lower-frequency terms (baseline correctness).
+-- is infeasible (~1.5 min/query = ~4 days). Instead we validate 400
+-- queries: 10 curated high-frequency term queries (to detect the
+-- block_count overflow bug fixed by PR #266), 10 curated
+-- low-frequency term queries (baseline correctness), and 380
+-- randomly sampled queries from the full dev set.
 --
 -- Note: Uses single-pass doc_freq computation (~13 min total) instead
 -- of one COUNT(*) per term (~13 min each) as in v1.
@@ -35,24 +36,20 @@
 ALTER FUNCTION fieldnorm_quantize(int) PARALLEL SAFE;
 
 -- ============================================================
--- Step 0: Select validation queries
+-- Step 0: Select validation queries (400 total)
 -- ============================================================
--- Hand-picked from msmarco_v2_queries for high/low-frequency mix.
---
--- High-frequency queries (~10): contain terms with doc_freq > 8.4M
--- (the uint16 block_count overflow threshold at 128 postings/block).
--- Common verbs/nouns like "use", "make", "cost", "time", "work",
--- "number", "home", "new" appear in 10-40M docs at 138M corpus scale.
---
--- Low-frequency queries (~10): contain rare/specific terms unlikely
--- to hit the overflow. Medical, culinary, and niche topic terms.
+-- 10 hand-picked high-frequency term queries (terms with
+-- doc_freq > 8.4M, the uint16 block_count overflow threshold).
+-- 10 hand-picked low-frequency term queries (rare/specific).
+-- 380 randomly sampled from the remaining dev queries.
+-- Random seed is fixed (0.42) for reproducibility.
 
 \echo 'Creating validation queries...'
 DROP TABLE IF EXISTS validation_queries;
 CREATE TABLE validation_queries (
     query_id INTEGER,
     query_text TEXT,
-    category TEXT  -- 'high_freq' or 'low_freq'
+    category TEXT  -- 'high_freq', 'low_freq', or 'random'
 );
 
 -- High-frequency term queries (terms likely > 8.4M postings)
@@ -89,24 +86,39 @@ WHERE q.query_id IN (
     724571   -- 'what is blackleg'
 );
 
+-- Random sample of 380 queries (fixed seed for reproducibility)
+INSERT INTO validation_queries
+SELECT q.query_id, q.query_text, 'random'
+FROM msmarco_v2_queries q
+WHERE q.query_id NOT IN (
+    SELECT vq.query_id FROM validation_queries vq
+)
+ORDER BY hashint4(q.query_id + 42)
+LIMIT 380;
+
 DO $$
 DECLARE
     v_high int;
     v_low int;
+    v_random int;
 BEGIN
     SELECT COUNT(*) INTO v_high FROM validation_queries
     WHERE category = 'high_freq';
     SELECT COUNT(*) INTO v_low FROM validation_queries
     WHERE category = 'low_freq';
-    RAISE NOTICE 'Selected % high-freq + % low-freq = % queries',
-        v_high, v_low, v_high + v_low;
+    SELECT COUNT(*) INTO v_random FROM validation_queries
+    WHERE category = 'random';
+    RAISE NOTICE 'Selected % high-freq + % low-freq + % random'
+        ' = % queries',
+        v_high, v_low, v_random,
+        v_high + v_low + v_random;
 END;
 $$;
 
 \echo ''
-\echo 'Validation queries:'
-SELECT query_id, category, query_text FROM validation_queries
-ORDER BY category, query_id;
+\echo 'Validation queries by category:'
+SELECT category, COUNT(*) as count
+FROM validation_queries GROUP BY category ORDER BY category;
 
 -- ============================================================
 -- Step 1: Compute corpus statistics
@@ -289,7 +301,7 @@ RESET min_parallel_table_scan_size;
 -- No correlated subqueries. For each query, join doc_term_data
 -- and doc_lengths to compute BM25 scores with SUM/GROUP BY.
 \echo ''
-\echo 'Step 4: Computing ground truth (20 queries, flat joins)...'
+\echo 'Step 4: Computing ground truth (400 queries, flat joins)...'
 
 DROP TABLE IF EXISTS ground_truth;
 CREATE TABLE ground_truth (
