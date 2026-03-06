@@ -476,9 +476,9 @@ score_segment_single_term_bmw(
 	TpSegmentPostingIterator iter;
 	TpSegmentPosting		*posting;
 	TpDictEntry				*dict_entry;
-	uint16					 block_count;
+	uint32					 block_count;
 	float4					*block_max_scores;
-	uint16					 i;
+	uint32					 i;
 
 	/* Initialize iterator for this term */
 	if (!tp_segment_posting_iterator_init(&iter, reader, term))
@@ -800,9 +800,9 @@ advance_term_iterator(TpTermState *ts)
 static bool
 seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 {
-	uint16 block_count;
+	uint32 block_count;
 	int	   left, right, mid;
-	uint16 target_block;
+	uint32 target_block;
 
 	if (!ts->found || ts->iter.finished)
 		return false;
@@ -929,8 +929,8 @@ init_segment_term_states(
 		/* Pre-load skip entries for BMW threshold checks and fast seeking */
 		if (ts->iter.dict_entry.block_count > 0)
 		{
-			uint16 block_idx;
-			uint16 block_count = ts->iter.dict_entry.block_count;
+			uint32 block_idx;
+			uint32 block_count = ts->iter.dict_entry.block_count;
 
 			ts->block_max_scores   = palloc(block_count * sizeof(float4));
 			ts->block_last_doc_ids = palloc(block_count * sizeof(uint32));
@@ -1107,7 +1107,7 @@ compute_block_max_at_pivot(TpTermState **terms, int pivot_len)
 	for (i = 0; i < pivot_len; i++)
 	{
 		TpTermState *ts = terms[i];
-		uint16		 block;
+		uint32		 block;
 
 		if (!ts->found || ts->iter.finished)
 			continue;
@@ -1151,7 +1151,7 @@ block_max_skip_advance(
 	{
 		TpTermState *ts = terms[i];
 		uint32		 doc_id;
-		uint16		 block;
+		uint32		 block;
 		uint32		 block_last;
 
 		doc_id = term_current_doc_id(ts);

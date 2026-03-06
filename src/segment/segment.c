@@ -112,7 +112,6 @@ tp_segment_read_dict_entry(
 		/* Widen V3 fields to V4 */
 		entry->skip_index_offset = (uint64)v3.skip_index_offset;
 		entry->block_count		 = v3.block_count;
-		entry->reserved			 = v3.reserved;
 		entry->doc_freq			 = v3.doc_freq;
 	}
 	else
@@ -962,7 +961,7 @@ build_docmap_from_memtable(TpLocalIndexState *state)
 typedef struct TermBlockInfo
 {
 	uint64 posting_offset;	 /* Absolute offset where postings were written */
-	uint16 block_count;		 /* Number of blocks for this term */
+	uint32 block_count;		 /* Number of blocks for this term */
 	uint32 doc_freq;		 /* Document frequency */
 	uint32 skip_entry_start; /* Index into accumulated skip entries array */
 } TermBlockInfo;
@@ -1138,7 +1137,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 		/* Calculate number of blocks (always >= 1 since doc_count > 0 here) */
 		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		term_blocks[i].block_count = (uint16)num_blocks;
+		term_blocks[i].block_count = num_blocks;
 
 		/* Convert postings to block format */
 		block_postings = palloc(doc_count * sizeof(TpBlockPosting));
@@ -1316,7 +1315,6 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					((uint64)term_blocks[i].skip_entry_start *
 					 sizeof(TpSkipEntry));
 			entry.block_count = term_blocks[i].block_count;
-			entry.reserved	  = 0;
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */

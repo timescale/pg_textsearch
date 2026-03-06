@@ -1219,7 +1219,7 @@ write_merged_segment_to_sink(
 			FLUSH_BLOCK(block_buf, block_count, num_blocks);
 
 		term_blocks[i].doc_freq	   = doc_count;
-		term_blocks[i].block_count = (uint16)num_blocks;
+		term_blocks[i].block_count = num_blocks;
 
 		free_term_posting_sources(psources, num_psources);
 
@@ -1300,7 +1300,6 @@ write_merged_segment_to_sink(
 					((uint64)term_blocks[i].skip_entry_start *
 					 sizeof(TpSkipEntry));
 			dict_entries[i].block_count = term_blocks[i].block_count;
-			dict_entries[i].reserved	= 0;
 			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
 		}
 
