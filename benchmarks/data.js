@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772780527979,
+  "lastUpdate": 1772780530163,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -21046,6 +21046,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin_insert - Insert Time",
             "value": 300.719,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Index Size",
+            "value": 2.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fa87b2ac81f6b0763c5d84fc4db4c0b3407aa7e9",
+          "message": "Add v0.5.1 and v0.6.0 to upgrade paths and test matrix (#262)\n\n## Summary\nPost-release housekeeping for v0.6.0:\n- Add `0.5.1→1.0.0-dev` and `0.6.0→1.0.0-dev` upgrade SQL scripts\n- Add `0.5.1` and `0.6.0` to upgrade test matrix\n- Add `0.5.x→0.6.0` entry to compatibility matrix in RELEASING.md\n\n## Testing\n- `make test` — 49/49 pass",
+          "timestamp": "2026-03-04T02:11:47Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/fa87b2ac81f6b0763c5d84fc4db4c0b3407aa7e9"
+        },
+        "date": 1772780529464,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin_insert - Index Build Time",
+            "value": 0.501,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Insert Time",
+            "value": 297.644,
             "unit": "ms"
           },
           {
