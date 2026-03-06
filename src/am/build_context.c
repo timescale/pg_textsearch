@@ -270,7 +270,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	{
 		uint64 posting_offset;
 		uint32 skip_entry_start;
-		uint16 block_count;
+		uint32 block_count;
 		uint32 doc_freq;
 	} TermBlockInfo;
 
@@ -392,7 +392,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		}
 
 		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		term_blocks[i].block_count = (uint16)num_blocks;
+		term_blocks[i].block_count = num_blocks;
 
 		/* Initialize EXPULL reader for this term */
 		tp_expull_reader_init(&reader, ctx->arena, terms[i].expull);
@@ -548,7 +548,6 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 					((uint64)term_blocks[i].skip_entry_start *
 					 sizeof(TpSkipEntry));
 			entry.block_count = term_blocks[i].block_count;
-			entry.reserved	  = 0;
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Locate this entry in the segment */
@@ -703,7 +702,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	{
 		uint64 posting_offset;
 		uint32 skip_entry_start;
-		uint16 block_count;
+		uint32 block_count;
 		uint32 doc_freq;
 	} TermBlockInfo;
 
@@ -821,7 +820,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		}
 
 		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
-		term_blocks[i].block_count = (uint16)num_blocks;
+		term_blocks[i].block_count = num_blocks;
 
 		tp_expull_reader_init(&reader, ctx->arena, terms[i].expull);
 
@@ -962,7 +961,6 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 					((uint64)term_blocks[i].skip_entry_start *
 					 sizeof(TpSkipEntry));
 			dict_entries[i].block_count = term_blocks[i].block_count;
-			dict_entries[i].reserved	= 0;
 			dict_entries[i].doc_freq	= term_blocks[i].doc_freq;
 		}
 

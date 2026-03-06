@@ -182,12 +182,17 @@ typedef struct TpDictEntryV3
  * Points to skip index instead of raw postings. The skip index
  * contains block_count TpSkipEntry structures, each pointing to
  * a block of up to TP_BLOCK_SIZE postings.
+ *
+ * block_count was widened from uint16 to uint32 without a format
+ * version bump.  The old layout had uint16 block_count + uint16
+ * reserved (always 0) at bytes 8-11.  On little-endian platforms
+ * (x86-64, ARM64) these four bytes read identically as a uint32,
+ * so existing V4 segments are binary-compatible.
  */
 typedef struct TpDictEntry
 {
 	uint64 skip_index_offset; /* Offset to TpSkipEntry array for this term */
-	uint16 block_count;		  /* Number of blocks (and skip entries) */
-	uint16 reserved;		  /* Padding */
+	uint32 block_count;		  /* Number of blocks (and skip entries) */
 	uint32 doc_freq;		  /* Document frequency for IDF */
 } __attribute__((aligned(8))) TpDictEntry;
 

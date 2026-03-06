@@ -189,7 +189,7 @@ extern void tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter);
 extern void tp_segment_read_skip_entry(
 		TpSegmentReader *reader,
 		uint64			 skip_index_offset,
-		uint16			 block_idx,
+		uint32			 block_idx,
 		TpSkipEntry		*skip);
 
 /* Seek iterator to target doc ID (for WAND algorithm) */
