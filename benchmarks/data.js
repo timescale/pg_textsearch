@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772867741173,
+  "lastUpdate": 1772867742673,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -26453,6 +26453,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 17.45,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 1491.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3d6522b0fe7fe86a8712bfc51a8c58938cd3578",
+          "message": "fix: VACUUM correctly removes dead index entries (#267)\n\n## Summary\n\n- Fixes correctness bug where plain VACUUM did not remove dead index\n  entries, leading to false positives when Postgres reuses CTIDs\n- Implements four-phase approach in `tp_bulkdelete`:\n  1. Spill memtable to segments\n  2. Identify segments containing dead CTIDs (O(segments) memory)\n  3. Rebuild affected segments from heap via TpBuildContext\n  4. Update metapage statistics\n- Adds comment documenting `disjoint_sources=false` invariant in\n  merge path\n\n## Limitations\n\n- Rebuilds entire affected segments (expensive for large segments\n  with few deletes). #264 tracks the efficient bitmap approach.\n- BM25 statistics in non-rebuilt segments may be slightly stale.\n\n## Testing\n\n- New `vacuum_rebuild` regression test covering:\n  - CTID reuse after DELETE + VACUUM + INSERT\n  - All-docs-deleted segment removal\n  - Multi-level segments with deletions\n  - No-op VACUUM path\n- All 50 regression tests pass",
+          "timestamp": "2026-03-07T01:11:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3d6522b0fe7fe86a8712bfc51a8c58938cd3578"
+        },
+        "date": 1772867742335,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.422,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 590034.159,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 6.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 9.29,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 15.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 17.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 15.84,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 23.48,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 30.41,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 35.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 15.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 17.1,
             "unit": "ms"
           },
           {
