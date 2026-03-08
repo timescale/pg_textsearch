@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772953504695,
+  "lastUpdate": 1772953506111,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -25214,6 +25214,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
             "value": 1029.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3d6522b0fe7fe86a8712bfc51a8c58938cd3578",
+          "message": "fix: VACUUM correctly removes dead index entries (#267)\n\n## Summary\n\n- Fixes correctness bug where plain VACUUM did not remove dead index\n  entries, leading to false positives when Postgres reuses CTIDs\n- Implements four-phase approach in `tp_bulkdelete`:\n  1. Spill memtable to segments\n  2. Identify segments containing dead CTIDs (O(segments) memory)\n  3. Rebuild affected segments from heap via TpBuildContext\n  4. Update metapage statistics\n- Adds comment documenting `disjoint_sources=false` invariant in\n  merge path\n\n## Limitations\n\n- Rebuilds entire affected segments (expensive for large segments\n  with few deletes). #264 tracks the efficient bitmap approach.\n- BM25 statistics in non-rebuilt segments may be slightly stale.\n\n## Testing\n\n- New `vacuum_rebuild` regression test covering:\n  - CTID reuse after DELETE + VACUUM + INSERT\n  - All-docs-deleted segment removal\n  - Multi-level segments with deletions\n  - No-op VACUUM path\n- All 50 regression tests pass",
+          "timestamp": "2026-03-07T01:11:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3d6522b0fe7fe86a8712bfc51a8c58938cd3578"
+        },
+        "date": 1772953505792,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3763.699,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 263944.135,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 113.96,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 114.05,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 121.64,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 118.41,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 99.98,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 107.08,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 107.34,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 114.38,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 99.89,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1006.43,
             "unit": "MB"
           }
         ]
