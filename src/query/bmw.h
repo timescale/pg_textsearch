@@ -113,6 +113,7 @@ typedef struct TpBMWStats
 	uint64 docs_in_results;		/* Documents in final results */
 
 	uint64 seeks_performed; /* Binary search seeks executed */
+	uint64 precheck_skips;	/* Pivots skipped by block-max pre-check */
 } TpBMWStats;
 
 /*

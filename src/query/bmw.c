@@ -1123,6 +1123,149 @@ compute_block_max_at_pivot(TpTermState **terms, int pivot_len)
 }
 
 /*
+ * Pre-check block-max upper bound at a pivot WITHOUT modifying
+ * iterator state or loading blocks.
+ *
+ * For each pivot term, looks up the block containing pivot_doc_id
+ * using the pre-cached block_last_doc_ids[] array (binary search)
+ * and sums the corresponding block_max_scores[]. This avoids the
+ * seek_to_pivot() block loads when the upper bound can't beat the
+ * threshold.
+ *
+ * Also computes the minimum block_end across pivot terms (used by
+ * precheck_skip_advance to determine the skip target).
+ *
+ * Returns the block-max upper bound. Sets *min_block_end_out to
+ * the minimum last_doc_id of the blocks containing pivot_doc_id.
+ */
+static float4
+compute_block_max_precheck(
+		TpTermState **terms,
+		int			  pivot_len,
+		uint32		  pivot_doc_id,
+		uint32		 *min_block_end_out)
+{
+	float4 upper_bound	 = 0.0f;
+	uint32 min_block_end = UINT32_MAX;
+	int	   i;
+
+	for (i = 0; i < pivot_len; i++)
+	{
+		TpTermState *ts = terms[i];
+		uint32		 block;
+		uint32		 block_last;
+
+		if (!ts->found || ts->iter.finished)
+			continue;
+		if (ts->block_max_scores == NULL)
+			continue;
+
+		/*
+		 * If the term is already at or past pivot_doc_id, its
+		 * current block is the right one. Otherwise, binary
+		 * search block_last_doc_ids[] to find the block that
+		 * contains pivot_doc_id.
+		 */
+		if (term_current_doc_id(ts) >= pivot_doc_id)
+		{
+			block = ts->iter.current_block;
+		}
+		else
+		{
+			uint32 block_count = ts->iter.dict_entry.block_count;
+			int	   lo		   = ts->iter.current_block;
+			int	   hi		   = block_count - 1;
+
+			while (lo < hi)
+			{
+				int mid = lo + (hi - lo) / 2;
+				if (ts->block_last_doc_ids[mid] < pivot_doc_id)
+					lo = mid + 1;
+				else
+					hi = mid;
+			}
+
+			block = lo;
+			if (block >= block_count)
+				continue; /* pivot_doc_id past all blocks */
+		}
+
+		upper_bound += ts->block_max_scores[block] * ts->query_freq;
+
+		block_last = ts->block_last_doc_ids[block];
+		if (block_last < min_block_end)
+			min_block_end = block_last;
+	}
+
+	*min_block_end_out = min_block_end;
+	return upper_bound;
+}
+
+/*
+ * Advance one scorer when block-max pre-check fails.
+ *
+ * Similar to block_max_skip_advance but uses the min_block_end
+ * from the pre-check (avoiding redundant computation). Only
+ * seeks one scorer — the one with the highest max_score — past
+ * the failing block region.
+ */
+static void
+precheck_skip_advance(
+		TpTermState **terms,
+		int			  term_count,
+		int			  pivot_len,
+		uint32		  precheck_min_block_end,
+		int			 *active_count,
+		TpBMWStats	 *stats)
+{
+	int	   best_scorer	  = -1;
+	float4 best_max_score = -1.0f;
+	uint32 seek_target;
+	int	   i;
+
+	/* Find scorer with highest max_score among pivot terms */
+	for (i = 0; i < pivot_len; i++)
+	{
+		if (term_current_doc_id(terms[i]) == UINT32_MAX)
+			continue;
+		if (terms[i]->max_score > best_max_score)
+		{
+			best_max_score = terms[i]->max_score;
+			best_scorer	   = i;
+		}
+	}
+
+	if (best_scorer < 0)
+		return;
+
+	/* Seek target: past the pre-check block region */
+	if (precheck_min_block_end == UINT32_MAX)
+		seek_target = term_current_doc_id(terms[best_scorer]) + 1;
+	else
+		seek_target = precheck_min_block_end + 1;
+
+	/* Don't skip past the first non-pivot term */
+	if (pivot_len < term_count)
+	{
+		uint32 next_doc = term_current_doc_id(terms[pivot_len]);
+		if (next_doc < seek_target)
+			seek_target = next_doc;
+	}
+
+	/* Seek the best scorer */
+	if (!seek_term_to_doc(terms[best_scorer], seek_target))
+		(*active_count)--;
+
+	restore_ordering(terms, term_count, best_scorer);
+
+	if (stats)
+	{
+		stats->precheck_skips++;
+		stats->seeks_performed++;
+	}
+}
+
+/*
  * When block-max upper bound < threshold, advance one scorer.
  *
  * Strategy (following Tantivy):
@@ -1352,6 +1495,7 @@ score_segment_multi_term_bmw(
 		float4 threshold;
 		float4 block_upper;
 		float4 doc_score;
+		uint32 precheck_min_block_end;
 		int	   i;
 
 		threshold = tp_topk_threshold(heap);
@@ -1361,14 +1505,38 @@ score_segment_multi_term_bmw(
 					terms, term_count, threshold, &pivot_len, &pivot_doc_id))
 			break; /* No term combination can beat threshold */
 
-		/* Step 2: Seek pre-pivot terms to pivot_doc_id */
+		/*
+		 * Step 2: Block-max pre-check (no block loads).
+		 * Computes what the block-max upper bound WOULD be at
+		 * the pivot using only pre-cached skip data. When this
+		 * fails, we skip the pivot region without loading any
+		 * posting blocks — avoiding the main cost of
+		 * seek_to_pivot().
+		 */
+		block_upper = compute_block_max_precheck(
+				terms, pivot_len, pivot_doc_id, &precheck_min_block_end);
+
+		if (block_upper <= threshold)
+		{
+			precheck_skip_advance(
+					terms,
+					term_count,
+					pivot_len,
+					precheck_min_block_end,
+					&active_count,
+					stats);
+			continue;
+		}
+
+		/* Step 3: Seek pre-pivot terms to pivot_doc_id */
 		if (!seek_to_pivot(
 					terms, term_count, pivot_len, pivot_doc_id, &active_count))
 			continue; /* Re-pivot with updated positions */
 
 		/*
-		 * Step 3: Block-max refinement.
-		 * Check if block-level upper bound still beats threshold.
+		 * Step 4: Block-max refinement at actual position.
+		 * After loading blocks, the actual block positions may
+		 * differ from the pre-check estimate — recheck.
 		 */
 		block_upper = compute_block_max_at_pivot(terms, pivot_len);
 
@@ -1382,11 +1550,11 @@ score_segment_multi_term_bmw(
 		if (stats)
 			stats->blocks_scanned++;
 
-		/* Step 4: Verify all pivot terms are at pivot_doc_id */
+		/* Step 5: Verify all pivot terms are at pivot_doc_id */
 		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
 			continue; /* Re-pivot with new positions */
 
-		/* Step 5: Score the pivot document */
+		/* Step 6: Score the pivot document */
 		doc_score = score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
 
 		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
@@ -1397,7 +1565,7 @@ score_segment_multi_term_bmw(
 			stats->segment_docs_scored++;
 
 		/*
-		 * Step 6: Advance all pivot terms past pivot_doc_id.
+		 * Step 7: Advance all pivot terms past pivot_doc_id.
 		 * Iterate backward so restore_ordering shifts don't
 		 * skip any terms.
 		 */
