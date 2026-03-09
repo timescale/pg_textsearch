@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773040354483,
+  "lastUpdate": 1773040355938,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -30564,6 +30564,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 0.99,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3d6522b0fe7fe86a8712bfc51a8c58938cd3578",
+          "message": "fix: VACUUM correctly removes dead index entries (#267)\n\n## Summary\n\n- Fixes correctness bug where plain VACUUM did not remove dead index\n  entries, leading to false positives when Postgres reuses CTIDs\n- Implements four-phase approach in `tp_bulkdelete`:\n  1. Spill memtable to segments\n  2. Identify segments containing dead CTIDs (O(segments) memory)\n  3. Rebuild affected segments from heap via TpBuildContext\n  4. Update metapage statistics\n- Adds comment documenting `disjoint_sources=false` invariant in\n  merge path\n\n## Limitations\n\n- Rebuilds entire affected segments (expensive for large segments\n  with few deletes). #264 tracks the efficient bitmap approach.\n- BM25 statistics in non-rebuilt segments may be slightly stale.\n\n## Testing\n\n- New `vacuum_rebuild` regression test covering:\n  - CTID reuse after DELETE + VACUUM + INSERT\n  - All-docs-deleted segment removal\n  - Multi-level segments with deletions\n  - No-op VACUUM path\n- All 50 regression tests pass",
+          "timestamp": "2026-03-07T01:11:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3d6522b0fe7fe86a8712bfc51a8c58938cd3578"
+        },
+        "date": 1773040355595,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_concurrent (0 docs) - Index Build Time",
+            "value": 1.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Insert Time",
+            "value": 21.97,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 35692.435542,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 0.14,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 0.52,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 0.7,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 0.86,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 0.92,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 1.04,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 1.16,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 1.91,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.77,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.98,
             "unit": "ms"
           }
         ]
