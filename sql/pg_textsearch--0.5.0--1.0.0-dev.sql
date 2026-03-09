@@ -34,7 +34,7 @@ REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'bm25_debug_pageviz') THEN
+    IF EXISTS (SELECT 1 FROM pg_proc WHERE proname OPERATOR(pg_catalog.=) 'bm25_debug_pageviz') THEN
         EXECUTE 'REVOKE EXECUTE ON FUNCTION bm25_debug_pageviz(text, text) FROM PUBLIC';
     END IF;
 END $$;
