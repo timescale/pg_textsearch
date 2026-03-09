@@ -21,29 +21,26 @@ CREATE ROLE test_nonsuperuser LOGIN;
 GRANT ALL ON TABLE security_test TO test_nonsuperuser;
 GRANT USAGE ON SCHEMA public TO test_nonsuperuser;
 
--- Test as superuser (should all work)
+-- Test as superuser / index owner (should all work)
 SELECT bm25_dump_index('security_test_idx') IS NOT NULL AS dump_works;
 SELECT bm25_summarize_index('security_test_idx') IS NOT NULL AS summarize_works;
 SELECT bm25_spill_index('security_test_idx') IS NULL AS spill_works;
 SELECT bm25_force_merge('security_test_idx');
 
--- Switch to non-superuser
+-- Switch to non-superuser (not the index owner)
 SET ROLE test_nonsuperuser;
 
--- Debug functions should fail with "must be superuser"
+-- Debug functions should fail (REVOKE blocks execution)
 SELECT bm25_dump_index('security_test_idx');
 SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
 SELECT bm25_summarize_index('security_test_idx');
 SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
 
--- Admin functions should fail with "must be superuser"
+-- Admin functions should fail with "must be owner"
 SELECT bm25_spill_index('security_test_idx');
 SELECT bm25_force_merge('security_test_idx');
 
--- REVOKE should also block non-superusers even without explicit GRANT
--- (test that REVOKE FROM PUBLIC is in effect)
-SELECT has_function_privilege('test_nonsuperuser', 'bm25_spill_index(text)', 'EXECUTE') AS spill_priv;
-SELECT has_function_privilege('test_nonsuperuser', 'bm25_force_merge(text)', 'EXECUTE') AS merge_priv;
+-- REVOKE should block non-superusers on debug functions
 SELECT has_function_privilege('test_nonsuperuser', 'bm25_dump_index(text)', 'EXECUTE') AS dump_priv;
 SELECT has_function_privilege('test_nonsuperuser', 'bm25_summarize_index(text)', 'EXECUTE') AS summarize_priv;
 

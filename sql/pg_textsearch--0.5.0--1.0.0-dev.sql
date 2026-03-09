@@ -25,9 +25,7 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
--- Revoke public execute on administrative and debug functions
-REVOKE EXECUTE ON FUNCTION bm25_spill_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_force_merge(text) FROM PUBLIC;
+-- Revoke public execute on debug functions (superuser-only)
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
