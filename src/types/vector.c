@@ -330,6 +330,19 @@ tpvector_recv(PG_FUNCTION_ARGS)
 				 errmsg("invalid entry count in bm25vector: %d",
 						result->entry_count)));
 
+	/* Cross-field validation: ensure total_size is consistent */
+	{
+		int min_payload = (int)sizeof(TpVector) +
+						  MAXALIGN(result->index_name_len + 1) +
+						  result->entry_count * (int)sizeof(TpVectorEntry);
+		if (min_payload > total_size)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("bm25vector binary data too small "
+							"for %d entries",
+							result->entry_count)));
+	}
+
 	PG_RETURN_POINTER(result);
 }
 

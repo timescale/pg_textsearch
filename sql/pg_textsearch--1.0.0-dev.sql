@@ -227,3 +227,13 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
 CREATE FUNCTION bm25_debug_pageviz(index_name text, filepath text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_debug_pageviz'
     LANGUAGE C STRICT STABLE;
+
+-- Revoke public execute on administrative and debug functions.
+-- These require superuser (enforced in C) but REVOKE provides
+-- defense-in-depth at the SQL layer.
+REVOKE EXECUTE ON FUNCTION bm25_spill_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_force_merge(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_debug_pageviz(text, text) FROM PUBLIC;

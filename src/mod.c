@@ -187,7 +187,7 @@ _PG_init(void)
 			TP_DEFAULT_BULK_LOAD_THRESHOLD, /* default 100K */
 			0,								/* min 0 (disabled) */
 			INT_MAX,						/* max INT_MAX */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,
@@ -202,7 +202,7 @@ _PG_init(void)
 			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 32M */
 			0,									 /* min 0 (disabled) */
 			INT_MAX,							 /* max INT_MAX */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,
@@ -217,7 +217,7 @@ _PG_init(void)
 			TP_DEFAULT_SEGMENTS_PER_LEVEL, /* default 8 */
 			2,							   /* min 2 */
 			64,							   /* max 64 */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

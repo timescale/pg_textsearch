@@ -300,6 +300,11 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	BlockNumber		   segment_root;
 	RangeVar		  *rv;
 
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to spill index")));
+
 	/* Parse index name (supports schema.index notation) */
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
@@ -373,6 +378,11 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	Oid		  index_oid;
 	Relation  index_rel;
 	RangeVar *rv;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to force merge")));
 
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
