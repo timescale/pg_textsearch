@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773037857094,
+  "lastUpdate": 1773037859625,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -20798,6 +20798,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.3,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 38.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3d6522b0fe7fe86a8712bfc51a8c58938cd3578",
+          "message": "fix: VACUUM correctly removes dead index entries (#267)\n\n## Summary\n\n- Fixes correctness bug where plain VACUUM did not remove dead index\n  entries, leading to false positives when Postgres reuses CTIDs\n- Implements four-phase approach in `tp_bulkdelete`:\n  1. Spill memtable to segments\n  2. Identify segments containing dead CTIDs (O(segments) memory)\n  3. Rebuild affected segments from heap via TpBuildContext\n  4. Update metapage statistics\n- Adds comment documenting `disjoint_sources=false` invariant in\n  merge path\n\n## Limitations\n\n- Rebuilds entire affected segments (expensive for large segments\n  with few deletes). #264 tracks the efficient bitmap approach.\n- BM25 statistics in non-rebuilt segments may be slightly stale.\n\n## Testing\n\n- New `vacuum_rebuild` regression test covering:\n  - CTID reuse after DELETE + VACUUM + INSERT\n  - All-docs-deleted segment removal\n  - Multi-level segments with deletions\n  - No-op VACUUM path\n- All 50 regression tests pass",
+          "timestamp": "2026-03-07T01:11:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3d6522b0fe7fe86a8712bfc51a8c58938cd3578"
+        },
+        "date": 1773037858909,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 12018.007,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.12,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.19,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.27,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.31,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.36,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.59,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.29,
             "unit": "ms"
           },
           {
