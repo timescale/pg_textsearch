@@ -125,7 +125,7 @@
     <div class="content">
         <div class="snapshot-notice">
             <strong>Snapshot in time:</strong> This comparison reflects pg_textsearch as of
-            March 3, 2026. The project is under active development with performance improvements
+            March 10, 2026. The project is under active development with performance improvements
             shipping regularly. Check the <a href="./">benchmark dashboard</a> for the latest numbers.
         </div>
 
@@ -162,6 +162,9 @@
         <div class="roadmap">
             <h3>Recent Improvements</h3>
             <ul>
+                <li><strong>BMW cache optimizations</strong> - Cached skip entries and reusable
+                    decompression buffers reduce per-block overhead by 20–25%
+                    (<a href="https://github.com/timescale/pg_textsearch/pull/274">PR #274</a>)</li>
                 <li><strong>SIMD-accelerated decoding</strong> - Bitpack decoding with SIMD intrinsics
                     (<a href="https://github.com/timescale/pg_textsearch/pull/250">PR #250</a>)</li>
                 <li><strong>Stack-allocated decode buffers</strong> - Reduced allocation overhead
@@ -171,7 +174,7 @@
                 <li><strong>Arena allocator</strong> - Rewritten index build with parallel page pool
                     (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>)</li>
                 <li><strong>Overall throughput</strong> - pg_textsearch now 3.2x faster than System X
-                    (up from 2.8x in February)</li>
+                    on 8.8M dataset (up from 2.8x in February)</li>
             </ul>
         </div>
 
@@ -428,8 +431,8 @@
 
         <p class="meta">
             <strong>Dataset:</strong> MS MARCO v2 — 138,364,158 passages |
-            <strong>Date:</strong> 2026-03-03 |
-            <strong>pg_textsearch:</strong> v1.0.0-dev (main @ <code>1b09cc9</code>) |
+            <strong>Date:</strong> 2026-03-10 |
+            <strong>pg_textsearch:</strong> v1.0.0-dev (main @ <code>fb3b3b1</code>) |
             <strong>System X:</strong> v0.21.6
         </p>
 
@@ -468,19 +471,18 @@
             <div class="summary-card">
                 <h4>pg_textsearch</h4>
                 <ul>
-                    <li><strong>1.9x faster</strong> weighted-average query latency</li>
+                    <li><strong>2.3x faster</strong> weighted p50 query latency</li>
                     <li><strong>4.7x higher</strong> concurrent throughput (16 clients)</li>
+                    <li><strong>Faster on all 8 token buckets</strong> at p50</li>
                     <li><strong>26% smaller</strong> index on disk</li>
-                    <li>15 parallel workers for index build</li>
+                    <li>Block-Max WAND with cached skip entries</li>
                     <li>SIMD-accelerated bitpack decoding</li>
-                    <li>Block-Max WAND with skip lists</li>
                 </ul>
             </div>
             <div class="summary-card systemx">
                 <h4>System X v0.21.6</h4>
                 <ul>
                     <li><strong>1.9x faster</strong> index build</li>
-                    <li>Competitive on 7-8+ token queries</li>
                     <li>Phrase queries supported</li>
                     <li>Larger feature set (facets, etc.)</li>
                 </ul>
@@ -549,51 +551,51 @@
             </tr>
             <tr>
                 <td>1 token</td>
-                <td class="winner">5.68 ms</td>
+                <td class="winner">5.11 ms</td>
                 <td>59.83 ms</td>
-                <td><span class="better">10.5x</span></td>
+                <td><span class="better">11.7x</span></td>
             </tr>
             <tr>
                 <td>2 tokens</td>
-                <td class="winner">10.91 ms</td>
+                <td class="winner">9.14 ms</td>
                 <td>59.65 ms</td>
-                <td><span class="better">5.5x</span></td>
+                <td><span class="better">6.5x</span></td>
             </tr>
             <tr>
                 <td>3 tokens</td>
-                <td class="winner">24.49 ms</td>
+                <td class="winner">20.04 ms</td>
                 <td>77.62 ms</td>
-                <td><span class="better">3.2x</span></td>
+                <td><span class="better">3.9x</span></td>
             </tr>
             <tr>
                 <td>4 tokens</td>
-                <td class="winner">51.01 ms</td>
+                <td class="winner">41.92 ms</td>
                 <td>98.89 ms</td>
-                <td><span class="better">1.9x</span></td>
+                <td><span class="better">2.4x</span></td>
             </tr>
             <tr>
                 <td>5 tokens</td>
-                <td class="winner">84.94 ms</td>
+                <td class="winner">67.76 ms</td>
                 <td>125.38 ms</td>
-                <td><span class="better">1.5x</span></td>
+                <td><span class="better">1.9x</span></td>
             </tr>
             <tr>
                 <td>6 tokens</td>
-                <td class="winner">101.70 ms</td>
+                <td class="winner">102.82 ms</td>
                 <td>148.78 ms</td>
-                <td><span class="better">1.5x</span></td>
+                <td><span class="better">1.4x</span></td>
             </tr>
             <tr>
                 <td>7 tokens</td>
-                <td class="winner">163.02 ms</td>
+                <td class="winner">159.37 ms</td>
                 <td>169.65 ms</td>
-                <td><span class="better">1.0x</span></td>
+                <td><span class="better">1.1x</span></td>
             </tr>
             <tr>
                 <td>8+ tokens</td>
-                <td>212.42 ms</td>
-                <td class="winner">190.47 ms</td>
-                <td><span class="worse">0.9x</span></td>
+                <td class="winner">177.95 ms</td>
+                <td>190.47 ms</td>
+                <td><span class="better">1.1x</span></td>
             </tr>
         </table>
 
@@ -608,51 +610,51 @@
             </tr>
             <tr>
                 <td>1 token</td>
-                <td class="winner">7.13 ms</td>
+                <td class="winner">6.43 ms</td>
                 <td>68.34 ms</td>
-                <td><span class="better">9.6x</span></td>
+                <td><span class="better">10.6x</span></td>
             </tr>
             <tr>
                 <td>2 tokens</td>
-                <td class="winner">42.04 ms</td>
+                <td class="winner">32.63 ms</td>
                 <td>103.17 ms</td>
-                <td><span class="better">2.5x</span></td>
+                <td><span class="better">3.2x</span></td>
             </tr>
             <tr>
                 <td>3 tokens</td>
-                <td class="winner">64.52 ms</td>
+                <td class="winner">51.51 ms</td>
                 <td>114.79 ms</td>
-                <td><span class="better">1.8x</span></td>
+                <td><span class="better">2.2x</span></td>
             </tr>
             <tr>
                 <td>4 tokens</td>
-                <td class="winner">112.05 ms</td>
+                <td class="winner">124.17 ms</td>
                 <td>147.32 ms</td>
-                <td><span class="better">1.3x</span></td>
+                <td><span class="better">1.2x</span></td>
             </tr>
             <tr>
                 <td>5 tokens</td>
-                <td>199.76 ms</td>
-                <td class="winner">190.07 ms</td>
-                <td><span class="worse">0.95x</span></td>
+                <td class="winner">167.05 ms</td>
+                <td>190.07 ms</td>
+                <td><span class="better">1.1x</span></td>
             </tr>
             <tr>
                 <td>6 tokens</td>
-                <td>257.75 ms</td>
+                <td>262.07 ms</td>
                 <td class="winner">201.76 ms</td>
-                <td><span class="worse">0.78x</span></td>
+                <td><span class="worse">0.77x</span></td>
             </tr>
             <tr>
                 <td>7 tokens</td>
-                <td>341.33 ms</td>
+                <td>311.58 ms</td>
                 <td class="winner">291.09 ms</td>
-                <td><span class="worse">0.85x</span></td>
+                <td><span class="worse">0.94x</span></td>
             </tr>
             <tr>
                 <td>8+ tokens</td>
-                <td>461.99 ms</td>
+                <td>404.95 ms</td>
                 <td class="winner">310.68 ms</td>
-                <td><span class="worse">0.67x</span></td>
+                <td><span class="worse">0.77x</span></td>
             </tr>
         </table>
 
@@ -711,15 +713,15 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             </tr>
             <tr>
                 <td>Weighted p50</td>
-                <td class="winner">47.62 ms</td>
+                <td class="winner">40.61 ms</td>
                 <td>94.36 ms</td>
-                <td><span class="better">2.0x</span></td>
+                <td><span class="better">2.3x</span></td>
             </tr>
             <tr>
                 <td>Weighted avg</td>
-                <td class="winner">53.65 ms</td>
+                <td class="winner">46.69 ms</td>
                 <td>101.66 ms</td>
-                <td><span class="better">1.9x</span></td>
+                <td><span class="better">2.2x</span></td>
             </tr>
         </table>
 
@@ -737,15 +739,15 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             </tr>
             <tr>
                 <td>Avg ms/query</td>
-                <td class="winner">69.96 ms</td>
+                <td class="winner">62.92 ms</td>
                 <td>106.53 ms</td>
-                <td><span class="better">1.5x</span></td>
+                <td><span class="better">1.7x</span></td>
             </tr>
             <tr>
                 <td>Total (691 queries)</td>
-                <td class="winner">48.3 s</td>
+                <td class="winner">43.5 s</td>
                 <td>73.6 s</td>
-                <td><span class="better">1.5x</span></td>
+                <td><span class="better">1.7x</span></td>
             </tr>
         </table>
 
@@ -780,22 +782,25 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
 
         <h2>Analysis (138M)</h2>
 
-        <h3>Query latency: pg_textsearch 2x faster overall</h3>
+        <h3>Query latency: pg_textsearch faster across all token counts</h3>
         <p>
-            pg_textsearch is faster on 1–6 token queries at p50, with the biggest
-            advantage on short queries (10.5x on single-token). On 7-token queries
-            the two are roughly equal, and System X is slightly faster on 8+ token
-            queries. Since most real-world search queries are 1–4 tokens, the
-            weighted-average advantage is <strong>1.9x</strong>.
+            pg_textsearch is faster on <strong>all 8 token buckets</strong> at p50,
+            ranging from 11.7x faster on single-token queries to 1.1x on 8+ token
+            queries. Cached skip entries and reusable decompression buffers
+            (<a href="https://github.com/timescale/pg_textsearch/pull/274">PR #274</a>)
+            reduced per-block overhead in the WAND inner loop by 20–25%, closing
+            the gap on high-token queries. The weighted p50 advantage is
+            <strong>2.3x</strong>.
         </p>
 
-        <h3>Tail latency: mixed picture at p95</h3>
+        <h3>Tail latency: improved but mixed at p95</h3>
         <p>
-            pg_textsearch has tighter tail latency on 1–4 token queries but wider
-            tails on 5–8+ token queries. This pattern suggests that a small number
-            of high-frequency terms cause longer scans in pg_textsearch's posting
-            lists at higher token counts. Improving tail latency on long queries is
-            an active area of optimization.
+            pg_textsearch has tighter tail latency on 1–5 token queries at p95.
+            On 6–8+ token queries, System X still has tighter tails. The p95
+            gap narrowed significantly with the cache optimizations (e.g., 5-token
+            p95 went from 200ms to 167ms, now faster than System X's 190ms).
+            Further tail latency optimization on long queries remains an active
+            area of work.
         </p>
 
         <h3>Concurrent throughput: pg_textsearch 4.7x higher TPS</h3>
