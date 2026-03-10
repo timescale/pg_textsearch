@@ -1409,11 +1409,14 @@ score_segment_multi_term_bmw(
 		float4			 avg_doc_len,
 		TpBMWStats		*stats)
 {
-	int	   active_count;
-	uint32 doc_ids[64]; /* Shadow array - avoids pointer chasing */
-	int	   i;
+	int		active_count;
+	uint32	doc_ids_stack[64]; /* Shadow array - avoids pointer chasing */
+	uint32 *doc_ids;
+	int		i;
 
-	Assert(term_count <= 64);
+	/* Use stack array for typical queries, heap for exotic ones */
+	doc_ids = (term_count <= 64) ? doc_ids_stack
+								 : palloc(term_count * sizeof(uint32));
 
 	active_count = init_segment_term_states(
 			terms, term_count, reader, k1, b, avg_doc_len);
@@ -1421,6 +1424,8 @@ score_segment_multi_term_bmw(
 	if (active_count == 0)
 	{
 		cleanup_segment_term_states(terms, term_count);
+		if (doc_ids != doc_ids_stack)
+			pfree(doc_ids);
 		return;
 	}
 
@@ -1514,6 +1519,9 @@ score_segment_multi_term_bmw(
 	}
 
 	cleanup_segment_term_states(terms, term_count);
+
+	if (doc_ids != doc_ids_stack)
+		pfree(doc_ids);
 }
 
 /*
