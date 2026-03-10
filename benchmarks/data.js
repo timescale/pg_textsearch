@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773126671950,
+  "lastUpdate": 1773126673609,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -25975,6 +25975,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_cranfield_insert - Throughput (avg ms/query)",
             "value": 92.27,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Index Size",
+            "value": 3.05,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f31d1af2de3475f397fd5f8dd4b9e5866d69550b",
+          "message": "docs: clarify pre-existing test failures in CLAUDE.md (#273)\n\n## Summary\n\n- Add note that apparent \"pre-existing\" test failures should not be\nignored — CI is kept green on main so they are almost never actually\npre-existing",
+          "timestamp": "2026-03-09T19:59:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f31d1af2de3475f397fd5f8dd4b9e5866d69550b"
+        },
+        "date": 1773126673171,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_cranfield_insert - Index Build Time",
+            "value": 7.057,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Insert Time",
+            "value": 64.572,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_cranfield_insert - Throughput (avg ms/query)",
+            "value": 93.43,
             "unit": "ms"
           },
           {
