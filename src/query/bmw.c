@@ -1011,12 +1011,23 @@ cleanup_segment_term_states(TpTermState **terms, int term_count)
 
 	for (term_idx = 0; term_idx < term_count; term_idx++)
 	{
-		if (terms[term_idx]->found)
-			tp_segment_posting_iterator_free(&terms[term_idx]->iter);
-		if (terms[term_idx]->block_max_scores)
-			pfree(terms[term_idx]->block_max_scores);
-		if (terms[term_idx]->block_last_doc_ids)
-			pfree(terms[term_idx]->block_last_doc_ids);
+		TpTermState *ts = terms[term_idx];
+
+		/*
+		 * Free BMW-owned caches before iterator_free (which NULLs
+		 * the borrowed pointers but doesn't free them).
+		 */
+		if (ts->iter.cached_skip_entries)
+			pfree(ts->iter.cached_skip_entries);
+		if (ts->iter.compressed_buf_cache)
+			pfree(ts->iter.compressed_buf_cache);
+
+		if (ts->found)
+			tp_segment_posting_iterator_free(&ts->iter);
+		if (ts->block_max_scores)
+			pfree(ts->block_max_scores);
+		if (ts->block_last_doc_ids)
+			pfree(ts->block_last_doc_ids);
 	}
 }
 

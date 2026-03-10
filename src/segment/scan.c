@@ -417,14 +417,13 @@ tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter)
 		iter->fallback_block = NULL;
 	}
 
-	/* Free BMW caches if allocated (owned by BMW, freed here) */
-	if (iter->compressed_buf_cache)
-	{
-		pfree(iter->compressed_buf_cache);
-		iter->compressed_buf_cache = NULL;
-	}
-
-	iter->block_postings = NULL;
+	/*
+	 * Note: cached_skip_entries and compressed_buf_cache are borrowed
+	 * pointers owned by the BMW caller.  Do NOT free them here.
+	 */
+	iter->cached_skip_entries  = NULL;
+	iter->compressed_buf_cache = NULL;
+	iter->block_postings	   = NULL;
 }
 
 /*
