@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773126678798,
+  "lastUpdate": 1773126680516,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -28204,6 +28204,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 101.1,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f31d1af2de3475f397fd5f8dd4b9e5866d69550b",
+          "message": "docs: clarify pre-existing test failures in CLAUDE.md (#273)\n\n## Summary\n\n- Add note that apparent \"pre-existing\" test failures should not be\nignored — CI is kept green on main so they are almost never actually\npre-existing",
+          "timestamp": "2026-03-09T19:59:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f31d1af2de3475f397fd5f8dd4b9e5866d69550b"
+        },
+        "date": 1773126680066,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_concurrent - Index Build Time",
+            "value": 6.149,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Insert Time",
+            "value": 0.663,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1228570.99885,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 80.05,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 79.58,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 88.57,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 92.7,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 94.65,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 105.24,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 105.16,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 116.25,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 97.95,
             "unit": "ms"
           }
         ]
