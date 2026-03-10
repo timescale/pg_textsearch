@@ -797,7 +797,12 @@ advance_term_iterator(TpTermState *ts)
 			return false;
 		}
 		ts->iter.current_in_block = 0;
-		tp_segment_posting_iterator_load_block(&ts->iter);
+		if (!tp_segment_posting_iterator_load_block(&ts->iter))
+		{
+			ts->iter.finished = true;
+			ts->cur_doc_id	  = UINT32_MAX;
+			return false;
+		}
 	}
 	ts->cur_doc_id = ts->iter.block_postings[ts->iter.current_in_block].doc_id;
 	return true;
