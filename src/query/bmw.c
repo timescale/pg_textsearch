@@ -662,16 +662,6 @@ refresh_cur_doc_id(TpTermState *ts)
 }
 
 /*
- * Get current doc ID for a term, or UINT32_MAX if exhausted.
- * Uses cached value maintained by advance/seek/init functions.
- */
-static inline uint32
-term_current_doc_id(TpTermState *ts)
-{
-	return ts->cur_doc_id;
-}
-
-/*
  * Score memtable postings for multiple terms.
  * Memtable has no skip index, so we score all postings exhaustively.
  */
@@ -809,13 +799,39 @@ advance_term_iterator(TpTermState *ts)
 }
 
 /*
+ * Binary search within a block for first doc_id >= target.
+ * Block postings are sorted by doc_id. TpBlockPosting is 8 bytes
+ * with doc_id at offset 0, so stride-8 access is cache-friendly.
+ * Returns index of first posting with doc_id >= target, or count
+ * if all postings are < target.
+ */
+static inline uint32
+block_lower_bound(
+		TpBlockPosting *postings, uint32 start, uint32 count, uint32 target)
+{
+	uint32 lo = start;
+	uint32 hi = count;
+
+	while (lo < hi)
+	{
+		uint32 mid = lo + (hi - lo) / 2;
+		if (postings[mid].doc_id < target)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/*
  * Seek a term iterator to target doc ID using binary search on cached skip
  * data. Returns true if iterator is still active (positioned at doc >=
  * target), false if exhausted.
  *
  * Uses pre-loaded block_last_doc_ids for O(log blocks) in-memory binary
  * search, avoiding I/O during the search. Only loads the target block from
- * disk.
+ * disk. Within-block search uses binary search on the sorted postings
+ * (up to 128 entries per block).
  */
 static bool
 seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
@@ -823,28 +839,29 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 	uint32 block_count;
 	int	   left, right, mid;
 	uint32 target_block;
+	uint32 pos;
 
 	if (!ts->found || ts->iter.finished)
 		return false;
 
 	/*
-	 * Check if target is in current block - if so, linear scan is faster
-	 * than the seek overhead.
+	 * Check if target is in current block - binary search within block.
 	 */
 	if (target_doc_id <= ts->iter.skip_entry.last_doc_id)
 	{
-		/* Target is in current block, linear scan within block */
-		while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
+		pos = block_lower_bound(
+				ts->iter.block_postings,
+				ts->iter.current_in_block,
+				ts->iter.skip_entry.doc_count,
+				target_doc_id);
+
+		if (pos < ts->iter.skip_entry.doc_count)
 		{
-			uint32 doc_id =
-					ts->iter.block_postings[ts->iter.current_in_block].doc_id;
-			if (doc_id >= target_doc_id)
-			{
-				ts->cur_doc_id = doc_id;
-				return true;
-			}
-			ts->iter.current_in_block++;
+			ts->iter.current_in_block = pos;
+			ts->cur_doc_id			  = ts->iter.block_postings[pos].doc_id;
+			return true;
 		}
+
 		/* Exhausted current block, fall through to load next */
 		ts->iter.current_block++;
 		if (ts->iter.current_block >= ts->iter.dict_entry.block_count)
@@ -900,17 +917,18 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 		return false;
 	}
 
-	/* Linear scan within block to find target or first doc >= target */
-	while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
+	/* Binary search within block for target */
+	pos = block_lower_bound(
+			ts->iter.block_postings,
+			0,
+			ts->iter.skip_entry.doc_count,
+			target_doc_id);
+
+	if (pos < ts->iter.skip_entry.doc_count)
 	{
-		uint32 doc_id =
-				ts->iter.block_postings[ts->iter.current_in_block].doc_id;
-		if (doc_id >= target_doc_id)
-		{
-			ts->cur_doc_id = doc_id;
-			return true;
-		}
-		ts->iter.current_in_block++;
+		ts->iter.current_in_block = pos;
+		ts->cur_doc_id			  = ts->iter.block_postings[pos].doc_id;
+		return true;
 	}
 
 	/* Target not in this block, try next */
@@ -1037,60 +1055,65 @@ cleanup_segment_term_states(TpTermState **terms, int term_count)
 }
 
 /*
- * Compare terms by current doc_id for initial sort.
- * Exhausted terms (UINT32_MAX) sort to the end.
- */
-static int
-compare_term_doc_id(const void *a, const void *b)
-{
-	TpTermState *const *pa = (TpTermState *const *)a;
-	TpTermState *const *pb = (TpTermState *const *)b;
-	uint32				da = term_current_doc_id(*pa);
-	uint32				db = term_current_doc_id(*pb);
-
-	if (da < db)
-		return -1;
-	if (da > db)
-		return 1;
-	return 0;
-}
-
-/*
- * Sort term states by current doc_id.
- * Used once after init_segment_term_states.
+ * Sort term states and shadow doc_id array by current doc_id.
+ * Uses insertion sort since term_count is small (typically <=10).
+ * Keeps both arrays in sync.
  */
 static void
-sort_terms_by_doc_id(TpTermState **terms, int term_count)
+sort_terms_by_doc_id(TpTermState **terms, uint32 *doc_ids, int term_count)
 {
-	qsort(terms, term_count, sizeof(TpTermState *), compare_term_doc_id);
+	int i, j;
+
+	for (i = 1; i < term_count; i++)
+	{
+		TpTermState *tmp_term = terms[i];
+		uint32		 tmp_id	  = doc_ids[i];
+
+		j = i;
+		while (j > 0 && doc_ids[j - 1] > tmp_id)
+		{
+			terms[j]   = terms[j - 1];
+			doc_ids[j] = doc_ids[j - 1];
+			j--;
+		}
+		terms[j]   = tmp_term;
+		doc_ids[j] = tmp_id;
+	}
 }
 
 /*
  * Restore sorted order after term at position 'ord' advanced.
  * The term's doc_id increased, so it may need to move right.
- * Uses linear insertion -- O(1) typical, O(T) worst case.
+ * Scans the shadow doc_id array (contiguous, cache-friendly)
+ * instead of chasing pointers through TpTermState structs.
  */
 static void
-restore_ordering(TpTermState **terms, int term_count, int ord)
+restore_ordering(TpTermState **terms, uint32 *doc_ids, int term_count, int ord)
 {
-	TpTermState *tmp;
-	uint32		 doc_id = term_current_doc_id(terms[ord]);
-	int			 i;
+	uint32 doc_id = terms[ord]->cur_doc_id;
+	int	   i;
 
+	/* Update shadow array for the moved term */
+	doc_ids[ord] = doc_id;
+
+	/* Find insertion point scanning contiguous doc_ids array */
 	for (i = ord + 1; i < term_count; i++)
 	{
-		if (term_current_doc_id(terms[i]) >= doc_id)
+		if (doc_ids[i] >= doc_id)
 			break;
 	}
 
 	/* Term needs to move from ord to i-1 */
 	if (i > ord + 1)
 	{
-		tmp = terms[ord];
-		memmove(&terms[ord],
-				&terms[ord + 1],
-				(i - ord - 1) * sizeof(TpTermState *));
-		terms[i - 1] = tmp;
+		TpTermState *tmp_term = terms[ord];
+		uint32		 tmp_id	  = doc_ids[ord];
+		int			 n		  = i - ord - 1;
+
+		memmove(&terms[ord], &terms[ord + 1], n * sizeof(TpTermState *));
+		memmove(&doc_ids[ord], &doc_ids[ord + 1], n * sizeof(uint32));
+		terms[i - 1]   = tmp_term;
+		doc_ids[i - 1] = tmp_id;
 	}
 }
 
@@ -1109,6 +1132,7 @@ restore_ordering(TpTermState **terms, int term_count, int ord)
 static bool
 find_wand_pivot(
 		TpTermState **terms,
+		uint32		 *doc_ids,
 		int			  term_count,
 		float4		  threshold,
 		int			 *pivot_len_out,
@@ -1119,7 +1143,7 @@ find_wand_pivot(
 
 	for (i = 0; i < term_count; i++)
 	{
-		uint32 doc_id = term_current_doc_id(terms[i]);
+		uint32 doc_id = doc_ids[i];
 		if (doc_id == UINT32_MAX)
 			break; /* No more active terms */
 
@@ -1133,8 +1157,7 @@ find_wand_pivot(
 			uint32 pivot_doc = doc_id;
 			int	   pivot_len = i + 1;
 
-			while (pivot_len < term_count &&
-				   term_current_doc_id(terms[pivot_len]) == pivot_doc)
+			while (pivot_len < term_count && doc_ids[pivot_len] == pivot_doc)
 				pivot_len++;
 
 			*pivot_len_out	  = pivot_len;
@@ -1191,6 +1214,7 @@ compute_block_max_at_pivot(TpTermState **terms, int pivot_len)
 static void
 block_max_skip_advance(
 		TpTermState **terms,
+		uint32		 *doc_ids,
 		int			  term_count,
 		int			  pivot_len,
 		int			 *active_count,
@@ -1206,12 +1230,10 @@ block_max_skip_advance(
 	for (i = 0; i < pivot_len; i++)
 	{
 		TpTermState *ts = terms[i];
-		uint32		 doc_id;
 		uint32		 block;
 		uint32		 block_last;
 
-		doc_id = term_current_doc_id(ts);
-		if (doc_id == UINT32_MAX)
+		if (doc_ids[i] == UINT32_MAX)
 			continue;
 
 		if (terms[i]->max_score > best_max_score)
@@ -1235,14 +1257,14 @@ block_max_skip_advance(
 
 	/* Seek target: past current blocks, capped by non-pivot */
 	if (min_block_end == UINT32_MAX)
-		seek_target = term_current_doc_id(terms[best_scorer]) + 1;
+		seek_target = doc_ids[best_scorer] + 1;
 	else
 		seek_target = min_block_end + 1;
 
 	/* Don't skip past the first non-pivot term */
 	if (pivot_len < term_count)
 	{
-		uint32 next_doc = term_current_doc_id(terms[pivot_len]);
+		uint32 next_doc = doc_ids[pivot_len];
 		if (next_doc < seek_target)
 			seek_target = next_doc;
 	}
@@ -1251,7 +1273,7 @@ block_max_skip_advance(
 	if (!seek_term_to_doc(terms[best_scorer], seek_target))
 		(*active_count)--;
 
-	restore_ordering(terms, term_count, best_scorer);
+	restore_ordering(terms, doc_ids, term_count, best_scorer);
 
 	if (stats)
 	{
@@ -1268,6 +1290,7 @@ block_max_skip_advance(
 static bool
 seek_to_pivot(
 		TpTermState **terms,
+		uint32		 *doc_ids,
 		int			  term_count,
 		int			  pivot_len,
 		uint32		  pivot_doc_id,
@@ -1277,7 +1300,7 @@ seek_to_pivot(
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		uint32 doc_id = term_current_doc_id(terms[i]);
+		uint32 doc_id = doc_ids[i];
 
 		if (doc_id == UINT32_MAX)
 		{
@@ -1290,10 +1313,10 @@ seek_to_pivot(
 			if (!seek_term_to_doc(terms[i], pivot_doc_id))
 			{
 				(*active_count)--;
-				restore_ordering(terms, term_count, i);
+				restore_ordering(terms, doc_ids, term_count, i);
 				return false;
 			}
-			restore_ordering(terms, term_count, i);
+			restore_ordering(terms, doc_ids, term_count, i);
 			i--; /* Re-check: a new term slid into position i */
 			continue;
 		}
@@ -1308,13 +1331,13 @@ seek_to_pivot(
  * so the caller can re-pivot.
  */
 static bool
-verify_pivot_alignment(TpTermState **terms, int pivot_len, uint32 pivot_doc_id)
+verify_pivot_alignment(uint32 *doc_ids, int pivot_len, uint32 pivot_doc_id)
 {
 	int i;
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		if (term_current_doc_id(terms[i]) != pivot_doc_id)
+		if (doc_ids[i] != pivot_doc_id)
 			return false;
 	}
 	return true;
@@ -1386,7 +1409,11 @@ score_segment_multi_term_bmw(
 		float4			 avg_doc_len,
 		TpBMWStats		*stats)
 {
-	int active_count;
+	int	   active_count;
+	uint32 doc_ids[64]; /* Shadow array - avoids pointer chasing */
+	int	   i;
+
+	Assert(term_count <= 64);
 
 	active_count = init_segment_term_states(
 			terms, term_count, reader, k1, b, avg_doc_len);
@@ -1397,8 +1424,12 @@ score_segment_multi_term_bmw(
 		return;
 	}
 
+	/* Initialize shadow doc_id array */
+	for (i = 0; i < term_count; i++)
+		doc_ids[i] = terms[i]->cur_doc_id;
+
 	/* Sort terms by current doc_id for WAND traversal */
-	sort_terms_by_doc_id(terms, term_count);
+	sort_terms_by_doc_id(terms, doc_ids, term_count);
 
 	/* WAND main loop */
 	while (active_count > 0)
@@ -1408,18 +1439,27 @@ score_segment_multi_term_bmw(
 		float4 threshold;
 		float4 block_upper;
 		float4 doc_score;
-		int	   i;
 
 		threshold = tp_topk_threshold(heap);
 
 		/* Step 1: Find WAND pivot */
 		if (!find_wand_pivot(
-					terms, term_count, threshold, &pivot_len, &pivot_doc_id))
+					terms,
+					doc_ids,
+					term_count,
+					threshold,
+					&pivot_len,
+					&pivot_doc_id))
 			break; /* No term combination can beat threshold */
 
 		/* Step 2: Seek pre-pivot terms to pivot_doc_id */
 		if (!seek_to_pivot(
-					terms, term_count, pivot_len, pivot_doc_id, &active_count))
+					terms,
+					doc_ids,
+					term_count,
+					pivot_len,
+					pivot_doc_id,
+					&active_count))
 			continue; /* Re-pivot with updated positions */
 
 		/*
@@ -1431,7 +1471,12 @@ score_segment_multi_term_bmw(
 		if (block_upper <= threshold)
 		{
 			block_max_skip_advance(
-					terms, term_count, pivot_len, &active_count, stats);
+					terms,
+					doc_ids,
+					term_count,
+					pivot_len,
+					&active_count,
+					stats);
 			continue;
 		}
 
@@ -1439,7 +1484,7 @@ score_segment_multi_term_bmw(
 			stats->blocks_scanned++;
 
 		/* Step 4: Verify all pivot terms are at pivot_doc_id */
-		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
+		if (!verify_pivot_alignment(doc_ids, pivot_len, pivot_doc_id))
 			continue; /* Re-pivot with new positions */
 
 		/* Step 5: Score the pivot document */
@@ -1459,11 +1504,11 @@ score_segment_multi_term_bmw(
 		 */
 		for (i = pivot_len - 1; i >= 0; i--)
 		{
-			if (term_current_doc_id(terms[i]) == pivot_doc_id)
+			if (doc_ids[i] == pivot_doc_id)
 			{
 				if (!advance_term_iterator(terms[i]))
 					active_count--;
-				restore_ordering(terms, term_count, i);
+				restore_ordering(terms, doc_ids, term_count, i);
 			}
 		}
 	}
