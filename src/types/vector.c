@@ -247,8 +247,10 @@ tpvector_out(PG_FUNCTION_ARGS)
 							"allocated bounds",
 							i)));
 
-		/* Validate lexeme_len is non-negative */
-		if (entry->lexeme_len < 0)
+		/* Validate lexeme_len and lexeme data within bounds */
+		if (entry->lexeme_len < 0 ||
+			(char *)entry->lexeme + entry->lexeme_len >
+					(char *)tpvec + VARSIZE(tpvec))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("invalid lexeme length %d in bm25vector "
@@ -332,15 +334,38 @@ tpvector_recv(PG_FUNCTION_ARGS)
 
 	/* Cross-field validation: ensure total_size is consistent */
 	{
-		int min_payload = (int)sizeof(TpVector) +
-						  MAXALIGN(result->index_name_len + 1) +
-						  result->entry_count * (int)sizeof(TpVectorEntry);
-		if (min_payload > total_size)
+		Size min_payload = sizeof(TpVector) +
+						   MAXALIGN(result->index_name_len + 1) +
+						   (Size)result->entry_count * sizeof(TpVectorEntry);
+		if (min_payload > (Size)total_size)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 					 errmsg("bm25vector binary data too small "
 							"for %d entries",
 							result->entry_count)));
+	}
+
+	/* Validate each entry's lexeme data fits within the buffer */
+	{
+		TpVectorEntry *entry   = TPVECTOR_ENTRIES_PTR(result);
+		char		  *buf_end = (char *)result + total_size;
+		for (int i = 0; i < result->entry_count; i++)
+		{
+			if ((char *)entry + sizeof(TpVectorEntry) > buf_end)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+						 errmsg("bm25vector entry %d header "
+								"extends beyond buffer",
+								i)));
+			if (entry->lexeme_len < 0 ||
+				(char *)entry->lexeme + entry->lexeme_len > buf_end)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+						 errmsg("bm25vector entry %d lexeme "
+								"extends beyond buffer",
+								i)));
+			entry = get_tpvector_next_entry(entry);
+		}
 	}
 
 	PG_RETURN_POINTER(result);
