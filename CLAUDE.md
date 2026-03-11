@@ -24,6 +24,8 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   before CREATE EXTENSION. A server restart is also required after updating
   the binary (e.g., after `make install` during development).
 
+- Do not ignore "pre-existing test failures".  They are almost never "pre-existing" as we keep CI green on main.
+
 ## Core Architecture
 
 ### Storage Architecture

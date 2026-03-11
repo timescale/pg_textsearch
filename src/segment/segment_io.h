@@ -170,6 +170,14 @@ typedef struct TpSegmentPostingIterator
 	TpBlockPosting *fallback_block;
 	uint32			fallback_block_size;
 
+	/*
+	 * BMW optimization: cached skip entries and reusable compressed buffer.
+	 * When non-NULL, load_block uses these instead of reading skip entries
+	 * from disk or palloc/pfree-ing per block.  Set by BMW init code.
+	 */
+	TpSkipEntry *cached_skip_entries;  /* Pre-loaded skip entries array */
+	uint8		*compressed_buf_cache; /* Reusable decompression buffer */
+
 	/* Output posting (converted for scoring compatibility) */
 	TpSegmentPosting output_posting;
 } TpSegmentPostingIterator;

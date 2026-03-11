@@ -83,8 +83,10 @@ tp_segment_posting_iterator_init(
 	iter->block_postings   = NULL;
 	iter->has_block_access = false;
 	memset(&iter->block_access, 0, sizeof(iter->block_access));
-	iter->fallback_block	  = NULL;
-	iter->fallback_block_size = 0;
+	iter->fallback_block	   = NULL;
+	iter->fallback_block_size  = 0;
+	iter->cached_skip_entries  = NULL;
+	iter->compressed_buf_cache = NULL;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -200,12 +202,15 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 		iter->block_postings   = NULL;
 	}
 
-	/* Read skip entry for current block (version-aware) */
-	tp_segment_read_skip_entry(
-			iter->reader,
-			iter->dict_entry.skip_index_offset,
-			iter->current_block,
-			&iter->skip_entry);
+	/* Read skip entry: use cache if available, else read from disk */
+	if (iter->cached_skip_entries)
+		iter->skip_entry = iter->cached_skip_entries[iter->current_block];
+	else
+		tp_segment_read_skip_entry(
+				iter->reader,
+				iter->dict_entry.skip_index_offset,
+				iter->current_block,
+				&iter->skip_entry);
 
 	block_size	= iter->skip_entry.doc_count;
 	block_bytes = block_size * sizeof(TpBlockPosting);
@@ -214,9 +219,17 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 	if (iter->skip_entry.flags == TP_BLOCK_FLAG_DELTA)
 	{
 		uint8 *compressed_buf;
+		bool   free_compressed = false;
 
-		/* Read compressed data into temporary buffer (max possible size) */
-		compressed_buf = palloc(TP_MAX_COMPRESSED_BLOCK_SIZE);
+		/* Use cached buffer if available, else palloc */
+		if (iter->compressed_buf_cache)
+			compressed_buf = iter->compressed_buf_cache;
+		else
+		{
+			compressed_buf	= palloc(TP_MAX_COMPRESSED_BLOCK_SIZE);
+			free_compressed = true;
+		}
+
 		tp_segment_read(
 				iter->reader,
 				iter->skip_entry.posting_offset,
@@ -236,7 +249,8 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 		tp_decompress_block(
 				compressed_buf, block_size, 0, iter->fallback_block);
 
-		pfree(compressed_buf);
+		if (free_compressed)
+			pfree(compressed_buf);
 		iter->block_postings = iter->fallback_block;
 	}
 	else
@@ -403,7 +417,13 @@ tp_segment_posting_iterator_free(TpSegmentPostingIterator *iter)
 		iter->fallback_block = NULL;
 	}
 
-	iter->block_postings = NULL;
+	/*
+	 * Note: cached_skip_entries and compressed_buf_cache are borrowed
+	 * pointers owned by the BMW caller.  Do NOT free them here.
+	 */
+	iter->cached_skip_entries  = NULL;
+	iter->compressed_buf_cache = NULL;
+	iter->block_postings	   = NULL;
 }
 
 /*
