@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773126682219,
+  "lastUpdate": 1773190834529,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -21403,6 +21403,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin - Index Build Time",
             "value": 37.974,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin - Index Size",
+            "value": 0.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f0802400392762dd1350b41b2ec626c1925fa7cc",
+          "message": "docs: update MS-MARCO v2 comparison with PR #274 numbers (#275)\n\n## Summary\n\n- Update comparison page and summary.md with post-PR #274 benchmark\nnumbers\n- pg_textsearch now **faster across all 8 token buckets** at p50 (was\nlosing on bucket 8+)\n- Weighted p50 improved from 2.0x to **2.3x** vs System X\n\n## Key number changes\n\n| Metric | Before | After |\n|--------|--------|-------|\n| Weighted p50 | 47.62ms (2.0x) | 40.61ms (2.3x) |\n| 7-token p50 | 163ms (1.0x) | 159ms (1.1x) |\n| 8+ token p50 | 212ms (0.9x) | 178ms (1.1x) |\n| Throughput | 70ms/q (1.5x) | 63ms/q (1.7x) |\n\n## Test plan\n\n- [x] Benchmark run twice for consistency on same hardware/config as\noriginal\n- [x] System X numbers unchanged (same hardware, not re-run)",
+          "timestamp": "2026-03-10T19:29:39Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f0802400392762dd1350b41b2ec626c1925fa7cc"
+        },
+        "date": 1773190832696,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin - Index Build Time",
+            "value": 36.242,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin - Insert Time",
+            "value": 304.385,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin - Concurrent Insert Time",
+            "value": 324.098458,
             "unit": "ms"
           },
           {
