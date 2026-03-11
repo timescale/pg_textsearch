@@ -128,7 +128,13 @@ tp_build_context_add_document(
 	Assert(ctx != NULL);
 	Assert(ctid != NULL);
 
-	/* Assign sequential doc_id */
+	/* Assign sequential doc_id (UINT32_MAX reserved as sentinel) */
+	if (ctx->num_docs >= UINT32_MAX - 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("too many documents in segment (max %u)",
+						UINT32_MAX - 1)));
+
 	if (ctx->num_docs >= ctx->docs_capacity)
 		build_context_grow_docs(ctx);
 
