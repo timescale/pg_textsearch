@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773299643385,
+  "lastUpdate": 1773299644906,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -27016,6 +27016,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_wikipedia (100.0K docs) - Index Size",
             "value": 58.25,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9935328ddce10e626d527ba3773376649cce4734",
+          "message": "docs: update MS-MARCO v1 comparison with March 11 numbers (#277)\n\n## Summary\n- Update comparison page with results from the March 11 nightly\nbenchmark run\n- pg_textsearch throughput advantage grew from 3.2x to 3.9x (800 queries\nin 6.5s vs 25.2s)\n- Query latency improved across all 8 token buckets at both p50 and p95\n\n## Testing\n- Visual review of comparison.html",
+          "timestamp": "2026-03-11T22:09:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9935328ddce10e626d527ba3773376649cce4734"
+        },
+        "date": 1773299644574,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_wikipedia (100.0K docs) - Index Build Time",
+            "value": 4577.823,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_wikipedia (100.0K docs) - Index Size",
+            "value": 58.23,
             "unit": "MB"
           }
         ]
