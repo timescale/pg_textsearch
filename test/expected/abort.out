@@ -1,0 +1,136 @@
+--
+-- Test transaction abort scenarios
+--
+-- Verify that pg_textsearch hooks handle aborted transactions gracefully.
+-- The post_parse_analyze_hook fires on every SQL statement including
+-- ROLLBACK. When a transaction is in an aborted state, catalog lookups
+-- are forbidden, so the hook must skip its work.
+--
+CREATE EXTENSION pg_textsearch;
+WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+-- Scenario 1: Basic abort with no pg_textsearch objects
+-- This is the original bug report (#247): ROLLBACK after an error in a
+-- transaction that has nothing to do with BM25 should not crash.
+BEGIN;
+CREATE TABLE abort_test1 (id serial PRIMARY KEY);
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+-- Scenario 2: Abort with a BM25 index present (created before the xact)
+CREATE TABLE abort_test2 (id serial PRIMARY KEY, body text);
+CREATE INDEX abort_test2_idx ON abort_test2
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_test2_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+BEGIN;
+INSERT INTO abort_test2 (body) VALUES ('hello world');
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+-- Verify the index is still usable after the abort
+INSERT INTO abort_test2 (body) VALUES ('hello world');
+SELECT id, ROUND((body <@> to_bm25query('hello', 'abort_test2_idx'))::numeric, 4) AS score
+    FROM abort_test2
+    ORDER BY body <@> to_bm25query('hello', 'abort_test2_idx')
+    LIMIT 5;
+ id |  score  
+----+---------
+  2 | -0.1823
+(1 row)
+
+-- Scenario 3: Abort during CREATE INDEX
+BEGIN;
+CREATE TABLE abort_test3 (id serial PRIMARY KEY, body text);
+INSERT INTO abort_test3 (body) VALUES ('test document');
+CREATE INDEX ON abort_test3
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_test3_body_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+-- Table and index should not exist after rollback
+SELECT count(*) FROM pg_class WHERE relname = 'abort_test3';
+ count 
+-------
+     0
+(1 row)
+
+-- Scenario 4: Abort with DDL (DROP TABLE that has a BM25 index)
+CREATE TABLE abort_test4 (id serial PRIMARY KEY, body text);
+CREATE INDEX abort_test4_idx ON abort_test4
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_test4_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO abort_test4 (body) VALUES ('still here');
+BEGIN;
+DROP TABLE abort_test4;
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+-- Table should still exist after the aborted DROP
+SET client_min_messages = warning;
+SELECT count(*) FROM abort_test4;
+ count 
+-------
+     1
+(1 row)
+
+RESET client_min_messages;
+-- Scenario 5: Multiple errors in sequence
+BEGIN;
+SELECT 1/0;
+ERROR:  division by zero
+SELECT 2/0;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- Scenario 6: SAVEPOINT and error within subtransaction
+BEGIN;
+INSERT INTO abort_test2 (body) VALUES ('before savepoint');
+SAVEPOINT sp1;
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK TO sp1;
+INSERT INTO abort_test2 (body)
+    VALUES ('after rollback to savepoint');
+COMMIT;
+SELECT id, body FROM abort_test2
+    WHERE body <@> to_bm25query('savepoint', 'abort_test2_idx') < 0
+    ORDER BY body <@> to_bm25query('savepoint', 'abort_test2_idx');
+ id |            body             
+----+-----------------------------
+  3 | before savepoint
+  4 | after rollback to savepoint
+(2 rows)
+
+-- Scenario 7: Error in a BM25 query
+BEGIN;
+INSERT INTO abort_test2 (body) VALUES ('scenario seven');
+-- Force an error via division by zero in the same statement
+SELECT (body <@> to_bm25query('scenario', 'abort_test2_idx'))::int / 0
+    FROM abort_test2;
+ERROR:  division by zero
+ROLLBACK;
+-- Scenario 8: Abort after BM25 query succeeds, then later stmt fails
+BEGIN;
+SELECT id FROM abort_test2
+    ORDER BY body <@> to_bm25query('hello', 'abort_test2_idx')
+    LIMIT 3;
+ id 
+----
+  2
+(1 row)
+
+SELECT 1/0;
+ERROR:  division by zero
+ROLLBACK;
+-- Cleanup
+DROP TABLE abort_test2;
+DROP TABLE abort_test4;
+DROP EXTENSION pg_textsearch CASCADE;
