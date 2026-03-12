@@ -4,7 +4,7 @@
 -- scanning a BM25 index on a temp table.
 --
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+WARNING:  pg_textsearch v0.6.1 is a prerelease. Do not use in production.
 -- Basic: create, populate, query, drop
 CREATE TEMP TABLE t_basic (id serial, body text);
 INSERT INTO t_basic VALUES (DEFAULT, 'hello world'), (DEFAULT, 'foo bar baz');
