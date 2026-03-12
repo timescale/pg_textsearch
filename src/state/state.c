@@ -558,7 +558,19 @@ tp_cleanup_build_mode_on_abort(void)
 	if (local_state_cache == NULL)
 		return;
 
-	global_dsa = tp_registry_get_dsa();
+	/*
+	 * Use the already-attached DSA if available, but do NOT lazily
+	 * initialize it. During transaction abort, calling tp_registry_get_dsa()
+	 * may trigger dsa_attach() which calls ResourceOwnerEnlarge — this will
+	 * fail with "ResourceOwnerEnlarge called after release started" on
+	 * PostgreSQL 17+ where the ResourceOwner releasing guard is enforced.
+	 *
+	 * If the DSA was never attached in this backend, there can be no
+	 * build-mode indexes to clean up.
+	 *
+	 * See: https://github.com/timescale/pg_textsearch/issues/247
+	 */
+	global_dsa = tp_registry_get_dsa_if_attached();
 
 	hash_seq_init(&status, local_state_cache);
 	while ((entry = hash_seq_search(&status)) != NULL)
@@ -638,8 +650,20 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		return; /* Nothing to clean up */
 	}
 
-	/* Get the shared DSA area */
-	dsa = tp_registry_get_dsa();
+	/*
+	 * Get the shared DSA area. Use the non-lazy version since this may be
+	 * called during transaction abort via the object_access_hook.
+	 * If tp_registry_lookup_dsa returned a valid pointer above, DSA must
+	 * already be attached, so this is just a safety check.
+	 *
+	 * See: https://github.com/timescale/pg_textsearch/issues/247
+	 */
+	dsa = tp_registry_get_dsa_if_attached();
+	if (dsa == NULL)
+	{
+		tp_registry_unregister(index_oid);
+		return;
+	}
 
 	/* Get shared state to access memtable */
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);

@@ -154,6 +154,22 @@ tp_registry_shmem_startup(void)
 }
 
 /*
+ * Return the DSA area only if already attached in this backend.
+ * Unlike tp_registry_get_dsa(), this will NOT lazily create or attach
+ * to the DSA. This is safe to call during transaction abort cleanup
+ * where ResourceOwnerEnlarge would fail.
+ *
+ * Returns NULL if this backend has not yet attached to the DSA.
+ *
+ * See: https://github.com/timescale/pg_textsearch/issues/247
+ */
+dsa_area *
+tp_registry_get_dsa_if_attached(void)
+{
+	return tapir_dsa;
+}
+
+/*
  * Get or create the shared DSA area
  *
  * This function is called by any backend that needs access to the DSA.
@@ -328,8 +344,13 @@ tp_registry_lookup_dsa(Oid index_oid)
 	TpRegistryEntry *entry;
 	dsa_pointer		 result = InvalidDsaPointer;
 
-	/* Ensure DSA is initialized */
-	tp_registry_get_dsa();
+	/*
+	 * Do not lazily initialize DSA here — this function may be called
+	 * during transaction abort via tp_cleanup_build_mode_on_abort().
+	 * See: https://github.com/timescale/pg_textsearch/issues/247
+	 */
+	if (!tapir_dsa)
+		return InvalidDsaPointer;
 
 	if (!tapir_registry ||
 		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
@@ -376,8 +397,19 @@ tp_registry_is_registered(Oid index_oid)
 	if (tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 		return false;
 
-	/* Ensure DSA is attached */
-	tp_registry_get_dsa();
+	/*
+	 * If DSA is not yet attached for this backend, return false instead of
+	 * lazily initializing. Lazy DSA initialization (via dsa_attach /
+	 * dsa_create) calls ResourceOwnerEnlarge, which will fail with
+	 * "ResourceOwnerEnlarge called after release started" if called during
+	 * transaction abort cleanup (e.g., from object_access_hook processing
+	 * OAT_DROP events for objects created in the aborting transaction).
+	 *
+	 * If this backend has never attached to the DSA, it has never
+	 * interacted with any BM25 indexes, so no cleanup is needed.
+	 *
+	 * See: https://github.com/timescale/pg_textsearch/issues/247
+	 */
 	if (!tapir_dsa)
 		return false;
 
@@ -414,8 +446,14 @@ tp_registry_unregister(Oid index_oid)
 		return;
 	}
 
-	/* Ensure DSA is attached */
-	tp_registry_get_dsa();
+	/*
+	 * Do not lazily initialize DSA here — this function may be called
+	 * during transaction abort (from tp_cleanup_build_mode_on_abort via
+	 * object_access_hook). Lazy initialization would call
+	 * ResourceOwnerEnlarge which fails during abort on PG17+.
+	 *
+	 * See: https://github.com/timescale/pg_textsearch/issues/247
+	 */
 	if (!tapir_dsa)
 		return;
 

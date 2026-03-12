@@ -54,6 +54,7 @@ extern void tp_registry_shmem_startup(void);
 
 /* DSA management */
 extern dsa_area *tp_registry_get_dsa(void);
+extern dsa_area *tp_registry_get_dsa_if_attached(void);
 
 /* Registry operations */
 extern bool tp_registry_register(
