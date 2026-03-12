@@ -187,13 +187,7 @@ DEFAULT FOR TYPE text USING bm25 AS
     FUNCTION    8   (text, bm25query)   bm25_text_bm25query_score(text, bm25query);
 
 -- Debug function to dump index contents (memtable and segments)
--- Single argument version returns truncated output as text
 CREATE FUNCTION bm25_dump_index(text) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_dump_index'
-    LANGUAGE C STRICT STABLE;
-
--- Two argument version writes full dump (with hex) to file
-CREATE FUNCTION bm25_dump_index(text, text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
@@ -221,15 +215,6 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
--- Page visualization - dumps ANSI-colored page layout to file
--- Shows page types: M=meta R=recovery H=header d=dict p=post s=skip m=docmap i=idx .=empty
--- Colors indicate segment level (cyan=L0, yellow=L1, green=L2, magenta=L3+)
-CREATE FUNCTION bm25_debug_pageviz(index_name text, filepath text) RETURNS text
-    AS 'MODULE_PATHNAME', 'tp_debug_pageviz'
-    LANGUAGE C STRICT STABLE;
-
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_debug_pageviz(text, text) FROM PUBLIC;

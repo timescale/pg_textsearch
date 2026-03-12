@@ -26,18 +26,12 @@ AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
 -- Revoke public execute on debug functions (superuser-only).
--- bm25_debug_pageviz may not exist when upgrading from pre-0.5.0
--- (it was added in the 0.5.0 base install but not in upgrade scripts),
--- so revoke it conditionally.
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_proc WHERE proname OPERATOR(pg_catalog.=) 'bm25_debug_pageviz') THEN
-        EXECUTE 'REVOKE EXECUTE ON FUNCTION bm25_debug_pageviz(text, text) FROM PUBLIC';
-    END IF;
-END $$;
+
+-- Drop file-writing debug functions (moved behind compile-time flag).
+DROP FUNCTION IF EXISTS bm25_dump_index(text, text);
+DROP FUNCTION IF EXISTS bm25_debug_pageviz(text, text);
 
 DO $$
 BEGIN

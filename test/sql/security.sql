@@ -32,9 +32,7 @@ SET ROLE test_nonsuperuser;
 
 -- Debug functions should fail (REVOKE blocks execution)
 SELECT bm25_dump_index('security_test_idx');
-SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
 SELECT bm25_summarize_index('security_test_idx');
-SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
 
 -- Admin functions should fail with "must be owner"
 SELECT bm25_spill_index('security_test_idx');
@@ -49,9 +47,15 @@ SET pg_textsearch.bulk_load_threshold = 1;
 SET pg_textsearch.memtable_spill_threshold = 0;
 SET pg_textsearch.segments_per_level = 2;
 
+-- Logging GUCs should require superuser (info disclosure in pooled envs)
+SET pg_textsearch.log_scores = on;
+SET pg_textsearch.log_bmw_stats = on;
+
 -- User-facing GUCs should still be settable
 SET pg_textsearch.default_limit = 500;
 SHOW pg_textsearch.default_limit;
+SET pg_textsearch.compress_segments = off;
+SHOW pg_textsearch.compress_segments;
 
 -- Reset to superuser
 RESET ROLE;

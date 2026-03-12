@@ -25,11 +25,13 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
--- Revoke public execute on debug functions (superuser-only)
+-- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_dump_index(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION bm25_debug_pageviz(text, text) FROM PUBLIC;
+
+-- Drop file-writing debug functions (moved behind compile-time flag).
+DROP FUNCTION IF EXISTS bm25_dump_index(text, text);
+DROP FUNCTION IF EXISTS bm25_debug_pageviz(text, text);
 
 DO $$
 BEGIN

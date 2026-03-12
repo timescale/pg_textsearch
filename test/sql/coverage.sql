@@ -88,20 +88,8 @@ SELECT bm25_spill_index('coverage_idx');
 SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
 
 -- =============================================================================
--- Test 6: Page visualization (exercises dump.c pageviz code)
+-- Test 6: Page visualization - moved behind DEBUG_DUMP_INDEX compile flag
 -- =============================================================================
-
--- Create shared temp dir accessible by both server and test runner
-\! mkdir -p -m 777 /tmp/pg_textsearch_test
-
--- bm25_debug_pageviz writes page layout to file
-SELECT bm25_debug_pageviz('coverage_idx', '/tmp/pg_textsearch_test/pageviz.txt');
-
--- Verify it wrote something
-\! test -s /tmp/pg_textsearch_test/pageviz.txt && echo 'pageviz file exists'
-
--- Clean up temp file
-\! rm -f /tmp/pg_textsearch_test/pageviz.txt
 
 -- =============================================================================
 -- Test 7: Score logging (exercises am/scan.c log_scores path)
@@ -161,14 +149,8 @@ CREATE INDEX validate_test_idx ON validate_test USING bm25(num)
 DROP TABLE validate_test;
 
 -- =============================================================================
--- Test 11: bm25_dump_index to file (exercises file output path)
+-- Test 11: File-writing dump - moved behind DEBUG_DUMP_INDEX compile flag
 -- =============================================================================
-
-SELECT bm25_dump_index('coverage_idx', '/tmp/pg_textsearch_test/dump.txt')
-    IS NOT NULL AS dump_to_file;
-
-\! test -s /tmp/pg_textsearch_test/dump.txt && echo 'dump file exists'
-\! rm -rf /tmp/pg_textsearch_test
 
 -- =============================================================================
 -- Test 12: Segment BMW seek (exercises segment/scan.c seek path)

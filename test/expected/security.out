@@ -51,12 +51,8 @@ SET ROLE test_nonsuperuser;
 -- Debug functions should fail (REVOKE blocks execution)
 SELECT bm25_dump_index('security_test_idx');
 ERROR:  permission denied for function bm25_dump_index
-SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
-ERROR:  permission denied for function bm25_dump_index
 SELECT bm25_summarize_index('security_test_idx');
 ERROR:  permission denied for function bm25_summarize_index
-SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
-ERROR:  permission denied for function bm25_debug_pageviz
 -- Admin functions should fail with "must be owner"
 SELECT bm25_spill_index('security_test_idx');
 ERROR:  must be owner of index security_test_idx
@@ -82,12 +78,24 @@ SET pg_textsearch.memtable_spill_threshold = 0;
 ERROR:  permission denied to set parameter "pg_textsearch.memtable_spill_threshold"
 SET pg_textsearch.segments_per_level = 2;
 ERROR:  permission denied to set parameter "pg_textsearch.segments_per_level"
+-- Logging GUCs should require superuser (info disclosure in pooled envs)
+SET pg_textsearch.log_scores = on;
+ERROR:  permission denied to set parameter "pg_textsearch.log_scores"
+SET pg_textsearch.log_bmw_stats = on;
+ERROR:  permission denied to set parameter "pg_textsearch.log_bmw_stats"
 -- User-facing GUCs should still be settable
 SET pg_textsearch.default_limit = 500;
 SHOW pg_textsearch.default_limit;
  pg_textsearch.default_limit 
 -----------------------------
  500
+(1 row)
+
+SET pg_textsearch.compress_segments = off;
+SHOW pg_textsearch.compress_segments;
+ pg_textsearch.compress_segments 
+---------------------------------
+ off
 (1 row)
 
 -- Reset to superuser
