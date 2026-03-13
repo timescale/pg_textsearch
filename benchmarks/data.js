@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773299654846,
+  "lastUpdate": 1773383206496,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -4360,6 +4360,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.32,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "82d4793596f2f2b6e238b22f1a57e3f9b1f1823b",
+          "message": "Add missing upgrade paths: 0.5.1→0.6.0 and 0.6.1→1.0.0-dev (#282)\n\n## Summary\n\n- Add `0.5.1→0.6.0` upgrade script (adds `bm25_force_merge` function)\n- Add `0.6.1→1.0.0-dev` upgrade script (version check only, no schema\nchanges)\n\nThe 0.5.1→0.6.0 path was missing — users on 0.5.1 had no way to upgrade\nto 0.6.0. The 0.6.1→1.0.0-dev path is needed so users on the upcoming\n0.6.1 bugfix release can upgrade to the next dev version.",
+          "timestamp": "2026-03-13T02:47:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/82d4793596f2f2b6e238b22f1a57e3f9b1f1823b"
+        },
+        "date": 1773383205098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 244.265,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.29,
             "unit": "ms"
           },
           {
