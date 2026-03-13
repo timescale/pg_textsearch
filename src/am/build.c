@@ -18,6 +18,7 @@
 #include <optimizer/optimizer.h>
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
+#include <utils/acl.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
@@ -309,6 +310,10 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("index \"%s\" does not exist", index_name)));
 
+	/* Check that caller owns the index */
+	if (!object_ownercheck(RelationRelationId, index_oid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, index_name);
+
 	/* Open the index */
 	index_rel = index_open(index_oid, RowExclusiveLock);
 
@@ -381,6 +386,10 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("index \"%s\" does not exist", index_name)));
+
+	/* Check that caller owns the index */
+	if (!object_ownercheck(RelationRelationId, index_oid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, index_name);
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
 	tp_force_merge_all(index_rel);

@@ -101,7 +101,7 @@ BEGIN
                 lexeme,
                 array_length(string_to_array(positions::text, ','), 1) as term_count
             FROM numbered,
-                 LATERAL unnest(to_tsvector('%s', content)) as t(lexeme, positions, weights)
+                 LATERAL unnest(to_tsvector(%L, content)) as t(lexeme, positions, weights)
         )
         SELECT
             doc_id,
@@ -132,7 +132,7 @@ BEGIN
             array_length(string_to_array(t.positions::text, ','), 1) as term_freq,
             (SELECT doc_length FROM temp_docs td WHERE td.doc_id = n.doc_id) as doc_length
         FROM numbered n,
-             LATERAL unnest(to_tsvector('%s', n.content)) as t(lexeme, positions, weights)
+             LATERAL unnest(to_tsvector(%L, n.content)) as t(lexeme, positions, weights)
     $sql$, p_text_column, p_table_name, p_text_column, p_text_config);
 
     -- Step 4: Build document frequency table
@@ -147,7 +147,7 @@ BEGIN
     EXECUTE format($sql$
         CREATE TEMP TABLE temp_query ON COMMIT DROP AS
         SELECT DISTINCT lexeme as term
-        FROM unnest(to_tsvector('%s', %L))
+        FROM unnest(to_tsvector(%L, %L))
     $sql$, p_text_config, p_query);
 
     -- Step 6: Get Tapir scores
@@ -234,7 +234,7 @@ BEGIN
                 doc_id, content, lexeme,
                 array_length(string_to_array(positions::text, ','), 1) as term_count
             FROM numbered,
-                 LATERAL unnest(to_tsvector('%s', content)) as t(lexeme, positions, weights)
+                 LATERAL unnest(to_tsvector(%L, content)) as t(lexeme, positions, weights)
         )
         SELECT doc_id, content,
                array_agg(DISTINCT lexeme) as unique_tokens,
@@ -261,7 +261,7 @@ BEGIN
             array_length(string_to_array(t.positions::text, ','), 1) as tf,
             (SELECT doc_length::int FROM debug_docs d WHERE d.doc_id = n.doc_id) as doc_len
         FROM numbered n,
-             LATERAL unnest(to_tsvector('%s', n.content)) as t(lexeme, positions, weights)
+             LATERAL unnest(to_tsvector(%L, n.content)) as t(lexeme, positions, weights)
     $sql$, p_text_column, p_table_name, p_text_column, p_text_config);
 
     CREATE TEMP TABLE debug_df ON COMMIT DROP AS
@@ -272,7 +272,7 @@ BEGIN
     EXECUTE format($sql$
         CREATE TEMP TABLE debug_query ON COMMIT DROP AS
         SELECT DISTINCT lexeme as term
-        FROM unnest(to_tsvector('%s', %L))
+        FROM unnest(to_tsvector(%L, %L))
     $sql$, p_text_config, p_query);
 
     -- Get Tapir scores
@@ -429,7 +429,7 @@ BEGIN
             SELECT doc_id, content, lexeme,
                    array_length(string_to_array(positions::text, ','), 1) as term_count
             FROM numbered,
-                 LATERAL unnest(to_tsvector('%s', content)) as t(lexeme, positions, weights)
+                 LATERAL unnest(to_tsvector(%L, content)) as t(lexeme, positions, weights)
         )
         SELECT doc_id, content,
                fieldnorm_quantize(SUM(term_count)::integer) as doc_length
@@ -455,7 +455,7 @@ BEGIN
             array_length(string_to_array(t.positions::text, ','), 1) as tf,
             (SELECT doc_length::int FROM comp_docs c WHERE c.doc_id = n.doc_id) as doc_len
         FROM numbered n,
-             LATERAL unnest(to_tsvector('%s', n.content)) as t(lexeme, positions, weights)
+             LATERAL unnest(to_tsvector(%L, n.content)) as t(lexeme, positions, weights)
     $sql$, p_text_column, p_table_name, p_text_column, p_text_config);
 
     -- Document frequencies
@@ -467,7 +467,7 @@ BEGIN
     EXECUTE format($sql$
         CREATE TEMP TABLE comp_query ON COMMIT DROP AS
         SELECT DISTINCT lexeme as term
-        FROM unnest(to_tsvector('%s', %L))
+        FROM unnest(to_tsvector(%L, %L))
     $sql$, p_text_config, p_query);
 
     -- Tapir scores

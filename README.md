@@ -529,9 +529,11 @@ Function | Description
 bm25_force_merge(index_name) → void | Merge all segments into one (improves query speed)
 bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
-bm25_dump_index(index_name, file_path) † → text | Dump full index structure to file
 bm25_summarize_index(index_name) † → text | Show index statistics without content
-bm25_debug_pageviz(index_name, file_path) † → text | Generate page layout visualization
+
+Additional file-writing debug functions (`bm25_dump_index(text, text)` and
+`bm25_debug_pageviz`) are available in debug builds only (compile with
+`-DDEBUG_DUMP_INDEX`).
 
 ```sql
 -- Merge all segments into one (best after bulk loads)
@@ -545,21 +547,16 @@ SELECT bm25_summarize_index('docs_idx');
 
 -- Detailed dump for debugging (truncated output)
 SELECT bm25_dump_index('docs_idx');
-
--- Full dump to file (includes hex data)
-SELECT bm25_dump_index('docs_idx', '/tmp/docs_idx_dump.txt');
-
--- Generate page layout visualization (view with: less -R /tmp/pageviz.txt)
-SELECT bm25_debug_pageviz('docs_idx', '/tmp/pageviz.txt');
 ```
 
-#### Page Visualization
+## Extension Compatibility
 
-The `bm25_debug_pageviz` function outputs an ANSI-colored map of index pages.
-Background colors indicate segments; letters indicate page types (`H`=header,
-`d`=dictionary, `s`=skip, `m`=docmap, `i`=index, blank=postings, `.`=empty).
-
-<img src="images/pageviz.jpg" width="600" alt="Page visualization example">
+pg_textsearch uses fixed LWLock tranche IDs 1001-1008 to support large numbers
+of indexes (e.g., partitioned tables with hundreds of partitions). If you use
+another Postgres extension that also registers fixed tranche IDs in this range,
+wait event names in `pg_stat_activity` may be incorrect. Core Postgres tranches
+use IDs below 100. If you encounter a conflict, please
+[open an issue](https://github.com/timescale/pg_textsearch/issues).
 
 ## Contributing
 

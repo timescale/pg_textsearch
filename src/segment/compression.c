@@ -84,10 +84,11 @@ bitpack_encode(uint32 *values, uint32 count, uint8 bits, uint8 *out)
  * shifting, and masking. This eliminates the branch-heavy inner
  * loop that dominated CPU time in the scalar version.
  *
- * Safety: the caller passes compressed block data from segment
- * pages (8 kB). After the bitpacked section there is always at
- * least the fieldnorm array (count bytes), so reading up to 7
- * bytes past the end of the bitpacked region is safe.
+ * Safety: callers allocate TP_MAX_COMPRESSED_BLOCK_SIZE (898 bytes).
+ * After the bitpacked section there is always at least the
+ * fieldnorm array (count bytes), so reading up to 7 bytes past
+ * the end of the bitpacked region is safe. The caller validates
+ * count <= TP_BLOCK_SIZE and bit widths before calling.
  *
  * SIMD (SSE2 / NEON) is used where available to perform the
  * mask+store for groups of 4 values in a single wide write.
@@ -284,7 +285,13 @@ tp_decompress_block(
 	uint32						   prev_doc;
 	uint32						   i;
 
-	Assert(count <= TP_BLOCK_SIZE);
+	if (count > TP_BLOCK_SIZE)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted segment: block count %u exceeds "
+						"maximum %u",
+						count,
+						(uint32)TP_BLOCK_SIZE)));
 
 	if (count == 0)
 		return;
@@ -292,8 +299,19 @@ tp_decompress_block(
 	header = (const TpCompressedBlockHeader *)compressed;
 
 	/* Validate header values to prevent buffer overruns */
-	Assert(header->doc_id_bits >= 1 && header->doc_id_bits <= 32);
-	Assert(header->freq_bits >= 1 && header->freq_bits <= 16);
+	if (header->doc_id_bits < 1 || header->doc_id_bits > 32)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted segment: invalid doc_id bit "
+						"width %u",
+						header->doc_id_bits)));
+
+	if (header->freq_bits < 1 || header->freq_bits > 16)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted segment: invalid frequency bit "
+						"width %u",
+						header->freq_bits)));
 
 	pos = sizeof(TpCompressedBlockHeader);
 

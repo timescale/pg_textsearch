@@ -2,4 +2,4 @@
 comment = 'Full-text search with BM25 ranking'
 default_version = '1.0.0-dev'
 module_pathname = '$libdir/pg_textsearch'
-relocatable = true
+relocatable = false

@@ -1,6 +1,6 @@
--- Test security restrictions on debug functions
+-- Test security restrictions on debug and admin functions
 
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE EXTENSION pg_textsearch;
 
 -- Create test data
 CREATE TABLE security_test (id serial, content text);
@@ -20,20 +20,42 @@ END $$;
 CREATE ROLE test_nonsuperuser LOGIN;
 GRANT ALL ON TABLE security_test TO test_nonsuperuser;
 GRANT USAGE ON SCHEMA public TO test_nonsuperuser;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO test_nonsuperuser;
 
--- Test as superuser (should all work)
+-- Test as superuser / index owner (should all work)
 SELECT bm25_dump_index('security_test_idx') IS NOT NULL AS dump_works;
 SELECT bm25_summarize_index('security_test_idx') IS NOT NULL AS summarize_works;
+SELECT bm25_spill_index('security_test_idx') IS NULL AS spill_works;
+SELECT bm25_force_merge('security_test_idx');
 
--- Switch to non-superuser
+-- Switch to non-superuser (not the index owner)
 SET ROLE test_nonsuperuser;
 
--- These should all fail with "must be superuser"
+-- Debug functions should fail (REVOKE blocks execution)
 SELECT bm25_dump_index('security_test_idx');
-SELECT bm25_dump_index('security_test_idx', '/tmp/should_not_exist.txt');
 SELECT bm25_summarize_index('security_test_idx');
-SELECT bm25_debug_pageviz('security_test_idx', '/tmp/should_not_exist.txt');
+
+-- Admin functions should fail with "must be owner"
+SELECT bm25_spill_index('security_test_idx');
+SELECT bm25_force_merge('security_test_idx');
+
+-- REVOKE should block non-superusers on debug functions
+SELECT has_function_privilege('test_nonsuperuser', 'bm25_dump_index(text)', 'EXECUTE') AS dump_priv;
+SELECT has_function_privilege('test_nonsuperuser', 'bm25_summarize_index(text)', 'EXECUTE') AS summarize_priv;
+
+-- Resource-control GUCs should require superuser
+SET pg_textsearch.bulk_load_threshold = 1;
+SET pg_textsearch.memtable_spill_threshold = 0;
+SET pg_textsearch.segments_per_level = 2;
+
+-- Logging GUCs should require superuser (info disclosure in pooled envs)
+SET pg_textsearch.log_scores = on;
+SET pg_textsearch.log_bmw_stats = on;
+
+-- User-facing GUCs should still be settable
+SET pg_textsearch.default_limit = 500;
+SHOW pg_textsearch.default_limit;
+SET pg_textsearch.compress_segments = off;
+SHOW pg_textsearch.compress_segments;
 
 -- Reset to superuser
 RESET ROLE;

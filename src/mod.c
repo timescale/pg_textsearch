@@ -158,8 +158,9 @@ _PG_init(void)
 			"When enabled, logs the BM25 score for each document returned "
 			"during index scans. Useful for debugging score calculation.",
 			&tp_log_scores,
-			false,		 /* default off */
-			PGC_USERSET, /* Can be changed per session */
+			false,	   /* default off */
+			PGC_SUSET, /* superuser-only: prevents GUC persistence
+						* in connection-pooled environments */
 			0,
 			NULL,
 			NULL,
@@ -171,8 +172,9 @@ _PG_init(void)
 			"When enabled, logs blocks scanned/skipped and documents scored "
 			"for each query. Useful for understanding BMW optimization.",
 			&tp_log_bmw_stats,
-			false,		 /* default off */
-			PGC_USERSET, /* Can be changed per session */
+			false,	   /* default off */
+			PGC_SUSET, /* superuser-only: prevents GUC persistence
+						* in connection-pooled environments */
 			0,
 			NULL,
 			NULL,
@@ -187,7 +189,7 @@ _PG_init(void)
 			TP_DEFAULT_BULK_LOAD_THRESHOLD, /* default 100K */
 			0,								/* min 0 (disabled) */
 			INT_MAX,						/* max INT_MAX */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,
@@ -202,7 +204,7 @@ _PG_init(void)
 			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 32M */
 			0,									 /* min 0 (disabled) */
 			INT_MAX,							 /* max INT_MAX */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,
@@ -217,7 +219,7 @@ _PG_init(void)
 			TP_DEFAULT_SEGMENTS_PER_LEVEL, /* default 8 */
 			2,							   /* min 2 */
 			64,							   /* max 64 */
-			PGC_USERSET,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

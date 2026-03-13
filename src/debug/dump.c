@@ -746,6 +746,7 @@ tp_dump_index(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser to dump index")));
 
 	/* Check for optional filename parameter */
+#ifdef DEBUG_DUMP_INDEX
 	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
 	{
 		/* File mode - full dump with hex */
@@ -773,6 +774,7 @@ tp_dump_index(PG_FUNCTION_ARGS)
 		PG_RETURN_TEXT_P(cstring_to_text_with_len(filename, strlen(filename)));
 	}
 	else
+#endif
 	{
 		/* String mode - truncated output for SQL return */
 		StringInfoData result;
@@ -814,6 +816,13 @@ tp_summarize_index(PG_FUNCTION_ARGS)
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
+
+/*
+ * Page visualization support - only available in debug builds.
+ * These functions write to arbitrary file paths, so they are gated
+ * behind DEBUG_DUMP_INDEX to reduce attack surface in release builds.
+ */
+#ifdef DEBUG_DUMP_INDEX
 
 /*
  * Page map entry - tracks what each page is used for
@@ -1512,6 +1521,9 @@ cleanup:
  * Outputs ANSI-colored page layout (128 chars per line):
  *   H=header d=dictionary (blank)=postings s=skip m=docmap i=idx .=empty
  * Background colors distinguish segments (16-color palette)
+ *
+ * Only available in debug builds (compile with -DDEBUG_DUMP_INDEX)
+ * because it writes to arbitrary file paths.
  */
 PG_FUNCTION_INFO_V1(tp_debug_pageviz);
 
@@ -1534,3 +1546,5 @@ tp_debug_pageviz(PG_FUNCTION_ARGS)
 	elog(INFO, "Page visualization written to %s", filename);
 	PG_RETURN_TEXT_P(cstring_to_text_with_len(filename, strlen(filename)));
 }
+
+#endif /* DEBUG_DUMP_INDEX */

@@ -25,6 +25,14 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
+-- Revoke public execute on debug functions (superuser-only).
+REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;
+
+-- Drop file-writing debug functions (moved behind compile-time flag).
+DROP FUNCTION IF EXISTS bm25_dump_index(text, text);
+DROP FUNCTION IF EXISTS bm25_debug_pageviz(text, text);
+
 DO $$
 BEGIN
     RAISE WARNING 'pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.';
