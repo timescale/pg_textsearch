@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773385677177,
+  "lastUpdate": 1773385679301,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -29274,6 +29274,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
             "value": 1011.37,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "82d4793596f2f2b6e238b22f1a57e3f9b1f1823b",
+          "message": "Add missing upgrade paths: 0.5.1→0.6.0 and 0.6.1→1.0.0-dev (#282)\n\n## Summary\n\n- Add `0.5.1→0.6.0` upgrade script (adds `bm25_force_merge` function)\n- Add `0.6.1→1.0.0-dev` upgrade script (version check only, no schema\nchanges)\n\nThe 0.5.1→0.6.0 path was missing — users on 0.5.1 had no way to upgrade\nto 0.6.0. The 0.6.1→1.0.0-dev path is needed so users on the upcoming\n0.6.1 bugfix release can upgrade to the next dev version.",
+          "timestamp": "2026-03-13T02:47:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/82d4793596f2f2b6e238b22f1a57e3f9b1f1823b"
+        },
+        "date": 1773385678624,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3534.812,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 267329.162,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 114.2,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 115.49,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 121.04,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 120.92,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 101.2,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 108.44,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 110.61,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 116.1,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 101.69,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1029.78,
             "unit": "MB"
           }
         ]
