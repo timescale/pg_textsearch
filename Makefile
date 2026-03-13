@@ -13,8 +13,10 @@ DATA = sql/pg_textsearch--1.0.0-dev.sql \
        sql/pg_textsearch--0.4.1--0.4.2.sql \
        sql/pg_textsearch--0.4.2--0.5.0.sql \
        sql/pg_textsearch--0.5.0--1.0.0-dev.sql \
+       sql/pg_textsearch--0.5.1--0.6.0.sql \
        sql/pg_textsearch--0.5.1--1.0.0-dev.sql \
-       sql/pg_textsearch--0.6.0--1.0.0-dev.sql
+       sql/pg_textsearch--0.6.0--1.0.0-dev.sql \
+       sql/pg_textsearch--0.6.1--1.0.0-dev.sql
 
 # Source files organized by directory
 OBJS = \
@@ -67,7 +69,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended vacuum_rebuild dropped empty explicit_index force_merge implicit index inheritance limits lock manyterms memory merge mixed parallel_build parallel_bmw partitioned partitioned_many pgstats queries rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table unsupported updates vector unlogged_index wand text_config
+REGRESS = abort aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended vacuum_rebuild dropped empty explicit_index force_merge implicit index inheritance limits lock manyterms memory merge mixed parallel_build parallel_bmw partitioned partitioned_many pgstats queries rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table unsupported updates vector unlogged_index wand text_config
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

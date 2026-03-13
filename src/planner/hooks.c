@@ -13,6 +13,7 @@
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <access/table.h>
+#include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
 #include <catalog/pg_am.h>
@@ -717,7 +718,14 @@ tp_post_parse_analyze_hook(
 	/* Reset flag for this query - will be set if BM25 operators found */
 	query_has_bm25_operators = false;
 
-	resolve_indexes_in_query(query);
+	/*
+	 * Skip index resolution if we're not in a valid transaction state.
+	 * This happens when a statement is parsed after an error in a
+	 * transaction block (e.g., ROLLBACK after a failed query). In that
+	 * state, catalog lookups are forbidden.
+	 */
+	if (IsTransactionState())
+		resolve_indexes_in_query(query);
 
 	if (prev_post_parse_analyze_hook)
 		prev_post_parse_analyze_hook(pstate, query, jstate);
