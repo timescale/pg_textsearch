@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773385683764,
+  "lastUpdate": 1773385688143,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -31201,6 +31201,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 104.67,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "82d4793596f2f2b6e238b22f1a57e3f9b1f1823b",
+          "message": "Add missing upgrade paths: 0.5.1→0.6.0 and 0.6.1→1.0.0-dev (#282)\n\n## Summary\n\n- Add `0.5.1→0.6.0` upgrade script (adds `bm25_force_merge` function)\n- Add `0.6.1→1.0.0-dev` upgrade script (version check only, no schema\nchanges)\n\nThe 0.5.1→0.6.0 path was missing — users on 0.5.1 had no way to upgrade\nto 0.6.0. The 0.6.1→1.0.0-dev path is needed so users on the upcoming\n0.6.1 bugfix release can upgrade to the next dev version.",
+          "timestamp": "2026-03-13T02:47:13Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/82d4793596f2f2b6e238b22f1a57e3f9b1f1823b"
+        },
+        "date": 1773385685280,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_concurrent - Index Build Time",
+            "value": 6.378,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Insert Time",
+            "value": 0.528,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1241602.282457,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 80.47,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 81.01,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 89.44,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 92.11,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 95.47,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 104.54,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 106.45,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 117.31,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 98.07,
             "unit": "ms"
           }
         ]
