@@ -1208,6 +1208,7 @@ tp_insert(
 				CStringGetTextDatum(index_name));
 
 		pfree(index_name);
+		pfree(schema_name);
 	}
 	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 

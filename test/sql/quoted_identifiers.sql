@@ -57,6 +57,16 @@ INSERT INTO "MySchema".docs2 (content) VALUES ('alpha beta gamma');
 INSERT INTO "MySchema".docs2 (content) VALUES ('delta epsilon');
 SELECT id, content FROM "MySchema".docs2 ORDER BY id;
 
+-- Query using both-uppercase schema-qualified index
+SELECT id, content,
+       ROUND((content <@> to_bm25query('alpha',
+         '"MySchema"."IX_MyDocs"'))::numeric, 4) AS score
+FROM "MySchema".docs2
+WHERE content <@> to_bm25query('alpha',
+  '"MySchema"."IX_MyDocs"') < 0
+ORDER BY content <@> to_bm25query('alpha',
+  '"MySchema"."IX_MyDocs"'), id;
+
 -- Test 5: UPDATE with uppercase index name
 UPDATE qi_test1 SET content = 'updated lorem ipsum' WHERE id = 1;
 SELECT id, content FROM qi_test1 ORDER BY id;
