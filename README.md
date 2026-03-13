@@ -369,6 +369,72 @@ CREATE INDEX custom_idx ON documents USING bm25(content)
 
 ## Limitations
 
+### No Phrase Queries
+
+The BM25 index stores term frequencies but not term positions, so it cannot
+natively evaluate phrase queries like `"database system"`. You can emulate
+phrase matching by combining BM25 ranking with a post-filter:
+
+```sql
+-- BM25 ranks candidates; subquery over-fetches to account for
+-- post-filter eliminating non-phrase matches
+SELECT * FROM (
+    SELECT * FROM documents
+    ORDER BY content <@> 'database system'
+    LIMIT 100  -- over-fetch
+) sub
+WHERE content ILIKE '%database system%'
+LIMIT 10;
+```
+
+Because the post-filter eliminates some results, the inner LIMIT should
+be larger than the desired result count.
+
+### No Expression Indexing
+
+Each BM25 index covers a single text column. You cannot create an index on
+an expression like `lower(title) || ' ' || content`. As a workaround, use
+a generated column:
+
+```sql
+ALTER TABLE documents ADD COLUMN search_text text
+    GENERATED ALWAYS AS (title || ' ' || content) STORED;
+CREATE INDEX ON documents USING bm25(search_text)
+    WITH (text_config = 'english');
+```
+
+### No Built-in Faceted Search
+
+pg_textsearch does not provide dedicated faceting operators, but standard
+Postgres query machinery handles common faceting patterns:
+
+```sql
+-- Filter by category (pre-filtering via B-tree index)
+SELECT * FROM documents
+WHERE category = 'engineering'
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+
+-- Compute facet counts over BM25-matched results
+SELECT category, count(*)
+FROM documents
+WHERE content <@> to_bm25query('search terms', 'docs_idx') < -1.0
+GROUP BY category;
+```
+
+### Insert/Update Performance
+
+The memtable architecture is designed to support efficient writes, but
+sustained write-heavy workloads are not yet fully optimized. For initial
+data loading, creating the index after loading data is faster than
+incremental inserts. This is an active area of development.
+
+### No Background Compaction
+
+Segment compaction currently runs synchronously during memtable spill
+operations. Write-heavy workloads may observe compaction latency during
+spills. Background compaction is planned for a future release.
+
 ### Partitioned Tables
 
 BM25 indexes on partitioned tables use **partition-local statistics**. Each

@@ -4,8 +4,8 @@
 
 ### New Features
 
-- **Segment block compression**: LZ4 compression for posting list blocks,
-  reducing index size
+- **Segment block compression**: Delta encoding with variable-width
+  bitpacking for posting list blocks, reducing index size by 41%
 
 ### Improvements
 
