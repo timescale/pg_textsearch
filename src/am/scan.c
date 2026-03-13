@@ -67,7 +67,7 @@ tp_get_qualified_index_name(Relation indexRelation)
 	{
 		char *namespace_name = get_namespace_name(index_namespace);
 		char *relation_name	 = RelationGetRelationName(indexRelation);
-		return psprintf("%s.%s", namespace_name, relation_name);
+		return quote_qualified_identifier(namespace_name, relation_name);
 	}
 	else
 	{
