@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773558727465,
+  "lastUpdate": 1773558729085,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -30822,6 +30822,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
             "value": 1027.38,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d67a7bd4d7f4e6a72a7d8317cb327e3db1cfd90e",
+          "message": "fix: address security review findings for 1.0 GA (#270)\n\n## Summary\n\nAddresses findings 1-5 from the [pre-GA security code\nreview](https://docs.google.com/document/d/1bzlc9MXS-B2PiqyP4p4lXpE8xdYUkqorKs2a4CBG61M/edit):\n\n- **(High) Missing authorization on spill/merge**: Add `superuser()`\nchecks to `tp_spill_memtable` and `tp_force_merge` so unprivileged users\ncannot trigger segment writes or full compaction\n- **(High) OOB read via crafted bm25vector**: Add cross-field validation\nin `tpvector_recv` ensuring `total_size` is consistent with\n`index_name_len` and `entry_count`\n- **(High) No REVOKE on public functions**: Add `REVOKE EXECUTE FROM\nPUBLIC` on all admin/debug functions in install SQL and all upgrade\nmigration scripts\n- **(Medium) Assert-only decompression bounds checks**: Replace\n`Assert()` with runtime `ereport(ERROR)` for `count`, `doc_id_bits`, and\n`freq_bits` in `tp_decompress_block` — prevents stack buffer overflows\nfrom corrupted segments in release builds\n- **(Medium) Resource GUCs are PGC_USERSET**: Change\n`bulk_load_threshold`, `memtable_spill_threshold`, and\n`segments_per_level` to `PGC_SUSET`\n\nLower-severity findings (6-11: logging GUCs, debug file paths, tranche\nIDs, prerelease warning, relocatable flag, test identifier quoting) are\nnot addressed in this PR.\n\n## Testing\n\n- Security test expanded to cover spill/merge authorization, REVOKE\nprivilege checks, and GUC permission enforcement\n- All 50 regression tests pass",
+          "timestamp": "2026-03-13T20:01:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d67a7bd4d7f4e6a72a7d8317cb327e3db1cfd90e"
+        },
+        "date": 1773558728668,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3604.905,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 265272.034,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 114.24,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 116.92,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 120.12,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 117.14,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 100.04,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 108.1,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 107.9,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 114.66,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 100.9,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1007.42,
             "unit": "MB"
           }
         ]
