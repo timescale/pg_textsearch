@@ -262,16 +262,18 @@ large partitioned datasets.
 #### Force-merging segments
 
 The index stores data in multiple segments across levels (similar to an LSM
-tree). After bulk loads or parallel builds, consolidating segments into one
-improves query speed by reducing the number of segments scanned:
+tree). CREATE INDEX always produces a single segment, so force-merging is
+not needed after initial index builds. After sustained incremental inserts,
+repeated memtable spills create multiple segments; consolidating them into
+one improves query speed by reducing the number of segments scanned:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
 ```
 
 This is analogous to Lucene's `forceMerge(1)`. It rewrites all segments into
-a single segment and reclaims the freed pages. Best used after the initial
-data load or after large batch inserts, not during ongoing write traffic.
+a single segment and reclaims the freed pages. Best used after large batch
+inserts, not during ongoing write traffic.
 
 #### Use LIMIT with ORDER BY
 
