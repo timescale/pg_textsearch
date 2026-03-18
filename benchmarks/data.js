@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773818272712,
+  "lastUpdate": 1773818274180,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -35523,6 +35523,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 94.65,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "81b891ee291f81965d412348d8be272074674b18",
+          "message": "fix: attnum drift causes index mismatch with inheritance/hypertables (#288) (#289)\n\n## Summary\n\nFixes #288.\n\nWhen a parent table has dropped columns, child tables created afterward\ndon't inherit the dropped-column slot. This causes the same logical\ncolumn\nto have different physical `attnum` values in parent vs child. Two code\npaths compared raw attnums and rejected valid parent/child BM25 index\npairs:\n\n- `indexes_match_by_attribute()` in `src/am/scan.c` — the index scan\n  validation path. Failed with `ERROR: tpquery index mismatch`.\n- `find_first_child_bm25_index()` in `src/types/query.c` — the scoring\n  fallback path. Silently returned no matching child index.\n\nBoth now resolve attnums to column names via `get_attname()` and compare\nthose instead. This handles TimescaleDB hypertables, plain `INHERITS`\ntables, and any other case where dropped columns cause attnum\ndivergence.\n\nReproduces without TimescaleDB using plain inheritance:\n\n```sql\nCREATE TABLE parent (id serial, extra text, content text);\nINSERT INTO parent (extra, content) VALUES ('x', 'some document');\nALTER TABLE parent DROP COLUMN extra;\nCREATE TABLE child () INHERITS (parent);\nINSERT INTO child (content) VALUES ('another document');\nCREATE INDEX p_bm25 ON parent USING bm25 (content) WITH (text_config='english');\nCREATE INDEX c_bm25 ON child USING bm25 (content) WITH (text_config='english');\n-- Before fix: ERROR: tpquery index mismatch\n-- After fix: works\nSET enable_seqscan = off;\nSELECT content <@> 'document' FROM parent ORDER BY content <@> 'document' LIMIT 5;\n```\n\n## Testing\n\n- Added regression tests to `test/sql/inheritance.sql` (Test 4a and 4b)\n  covering both the index scan path and the scoring fallback path\n- All 52 regression tests pass",
+          "timestamp": "2026-03-18T05:09:04Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/81b891ee291f81965d412348d8be272074674b18"
+        },
+        "date": 1773818273863,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_concurrent - Index Build Time",
+            "value": 6.335,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Insert Time",
+            "value": 0.529,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1415471.961988,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 82.28,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 80.92,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 89.27,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 92.01,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 95.89,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 104.35,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 105.09,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 116.36,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 97.78,
             "unit": "ms"
           }
         ]
