@@ -790,9 +790,7 @@ tp_segment_writer_grow_pages(TpSegmentWriter *writer)
 }
 
 /*
- * Allocate a new page for the writer.
- * Uses pre-allocated pool if available (parallel builds), otherwise
- * FSM/extend.
+ * Allocate a new page for the writer via FSM/extend.
  */
 static BlockNumber
 tp_segment_writer_allocate_page(TpSegmentWriter *writer)

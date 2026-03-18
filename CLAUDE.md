@@ -245,7 +245,7 @@ tables.
 3. Workers write intermediate segment data to temporary BufFiles
 4. Leader performs an N-way merge of all worker BufFiles, writing the
    final merged segment directly to index pages
-5. If multiple levels accumulate, the leader compacts them
+5. Result is a single merged segment
 
 ### Configuration
 

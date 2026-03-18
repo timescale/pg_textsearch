@@ -262,10 +262,9 @@ large partitioned datasets.
 #### Force-merging segments
 
 The index stores data in multiple segments across levels (similar to an LSM
-tree). CREATE INDEX always produces a single segment, so force-merging is
-not needed after initial index builds. After sustained incremental inserts,
-repeated memtable spills create multiple segments; consolidating them into
-one improves query speed by reducing the number of segments scanned:
+tree). After bulk loads or sustained incremental inserts, multiple segments
+may accumulate; consolidating them into one improves query speed by reducing
+the number of segments scanned:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
@@ -381,11 +380,13 @@ phrase matching by combining BM25 ranking with a post-filter:
 -- BM25 ranks candidates; subquery over-fetches to account for
 -- post-filter eliminating non-phrase matches
 SELECT * FROM (
-    SELECT * FROM documents
-    ORDER BY content <@> 'database system'
+    SELECT *, content <@> 'database system' AS score
+    FROM documents
+    ORDER BY score
     LIMIT 100  -- over-fetch
 ) sub
 WHERE content ILIKE '%database system%'
+ORDER BY score
 LIMIT 10;
 ```
 
@@ -400,7 +401,9 @@ a generated column:
 
 ```sql
 ALTER TABLE documents ADD COLUMN search_text text
-    GENERATED ALWAYS AS (title || ' ' || content) STORED;
+    GENERATED ALWAYS AS (
+        COALESCE(title, '') || ' ' || COALESCE(content, '')
+    ) STORED;
 CREATE INDEX ON documents USING bm25(search_text)
     WITH (text_config = 'english');
 ```
@@ -411,7 +414,7 @@ pg_textsearch does not provide dedicated faceting operators, but standard
 Postgres query machinery handles common faceting patterns:
 
 ```sql
--- Filter by category (pre-filtering via B-tree index)
+-- Filter by category (assumes a B-tree index on category)
 SELECT * FROM documents
 WHERE category = 'engineering'
 ORDER BY content <@> 'search terms'

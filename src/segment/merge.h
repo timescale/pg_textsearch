@@ -89,7 +89,7 @@ extern void tp_maybe_compact_level(Relation index, uint32 level);
  *
  * Unlike tp_maybe_compact_level, this ignores the segments_per_level
  * threshold and merges ALL segments at each level in one batch.
- * Used after parallel index build to produce a fully compacted index.
+ * Used by bm25_force_merge to produce a fully compacted index.
  *
  * Parameters:
  *   index - The index relation (must be opened with appropriate lock)
