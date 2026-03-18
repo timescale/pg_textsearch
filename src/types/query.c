@@ -750,7 +750,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			{
 				AttrNumber attnum = idx_form->indkey.values[0];
 				indexed_colname =
-						get_attname(idx_form->indrelid, attnum, false);
+						get_attname(idx_form->indrelid, attnum, true);
 			}
 			ReleaseSysCache(idx_tuple);
 		}

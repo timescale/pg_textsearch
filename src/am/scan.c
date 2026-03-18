@@ -312,10 +312,9 @@ indexes_match_by_attribute(Oid scan_index_oid, Oid query_index_oid)
 			 * logical column (e.g., TimescaleDB hypertables or
 			 * inheritance after ALTER TABLE DROP COLUMN).
 			 */
-			char *scan_colname =
-					get_attname(scan_heap_oid, scan_attnum, false);
+			char *scan_colname = get_attname(scan_heap_oid, scan_attnum, true);
 			char *query_colname =
-					get_attname(query_heap_oid, query_attnum, false);
+					get_attname(query_heap_oid, query_attnum, true);
 
 			if (scan_colname && query_colname &&
 				strcmp(scan_colname, query_colname) == 0)
