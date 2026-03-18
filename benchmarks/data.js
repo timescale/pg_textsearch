@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773818268462,
+  "lastUpdate": 1773818269877,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -32841,6 +32841,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
             "value": 1030.28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "81b891ee291f81965d412348d8be272074674b18",
+          "message": "fix: attnum drift causes index mismatch with inheritance/hypertables (#288) (#289)\n\n## Summary\n\nFixes #288.\n\nWhen a parent table has dropped columns, child tables created afterward\ndon't inherit the dropped-column slot. This causes the same logical\ncolumn\nto have different physical `attnum` values in parent vs child. Two code\npaths compared raw attnums and rejected valid parent/child BM25 index\npairs:\n\n- `indexes_match_by_attribute()` in `src/am/scan.c` — the index scan\n  validation path. Failed with `ERROR: tpquery index mismatch`.\n- `find_first_child_bm25_index()` in `src/types/query.c` — the scoring\n  fallback path. Silently returned no matching child index.\n\nBoth now resolve attnums to column names via `get_attname()` and compare\nthose instead. This handles TimescaleDB hypertables, plain `INHERITS`\ntables, and any other case where dropped columns cause attnum\ndivergence.\n\nReproduces without TimescaleDB using plain inheritance:\n\n```sql\nCREATE TABLE parent (id serial, extra text, content text);\nINSERT INTO parent (extra, content) VALUES ('x', 'some document');\nALTER TABLE parent DROP COLUMN extra;\nCREATE TABLE child () INHERITS (parent);\nINSERT INTO child (content) VALUES ('another document');\nCREATE INDEX p_bm25 ON parent USING bm25 (content) WITH (text_config='english');\nCREATE INDEX c_bm25 ON child USING bm25 (content) WITH (text_config='english');\n-- Before fix: ERROR: tpquery index mismatch\n-- After fix: works\nSET enable_seqscan = off;\nSELECT content <@> 'document' FROM parent ORDER BY content <@> 'document' LIMIT 5;\n```\n\n## Testing\n\n- Added regression tests to `test/sql/inheritance.sql` (Test 4a and 4b)\n  covering both the index scan path and the scoring fallback path\n- All 52 regression tests pass",
+          "timestamp": "2026-03-18T05:09:04Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/81b891ee291f81965d412348d8be272074674b18"
+        },
+        "date": 1773818269572,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3768.812,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 263990.523,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 115.15,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 114.31,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 121.28,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 112.35,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 100.31,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 107.13,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 108.76,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 115.39,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 101.18,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1010.87,
             "unit": "MB"
           }
         ]
