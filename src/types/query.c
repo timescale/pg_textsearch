@@ -408,7 +408,7 @@ find_first_child_index(Oid parent_index_oid)
  * Returns InvalidOid if no matching child index found.
  */
 static Oid
-find_first_child_bm25_index(Oid parent_index_oid, AttrNumber indexed_attnum)
+find_first_child_bm25_index(Oid parent_index_oid, const char *indexed_colname)
 {
 	Relation	  inhrel;
 	SysScanDesc	  scan;
@@ -419,6 +419,9 @@ find_first_child_bm25_index(Oid parent_index_oid, AttrNumber indexed_attnum)
 	Oid			  parent_table_oid;
 	Oid			  bm25_am_oid;
 	Oid			  result = InvalidOid;
+
+	if (!indexed_colname)
+		return InvalidOid;
 
 	/* Look up BM25 access method OID */
 	bm25_am_oid = get_am_oid("bm25", true);
@@ -465,6 +468,8 @@ find_first_child_bm25_index(Oid parent_index_oid, AttrNumber indexed_attnum)
 			HeapTuple	  child_class_tuple;
 			Form_pg_index child_idx_form;
 			Form_pg_class child_class_form;
+			AttrNumber	  child_attnum;
+			char		 *child_colname;
 
 			child_idx_tuple = SearchSysCache1(
 					INDEXRELID, ObjectIdGetDatum(child_idx_oid));
@@ -473,9 +478,21 @@ find_first_child_bm25_index(Oid parent_index_oid, AttrNumber indexed_attnum)
 
 			child_idx_form = (Form_pg_index)GETSTRUCT(child_idx_tuple);
 
-			/* Check it's on the same column */
-			if (child_idx_form->indnatts < 1 ||
-				child_idx_form->indkey.values[0] != indexed_attnum)
+			/*
+			 * Match by column name instead of raw attnum.
+			 * Dropped columns can cause attnum drift between
+			 * parent and child tables.
+			 */
+			if (child_idx_form->indnatts < 1)
+			{
+				ReleaseSysCache(child_idx_tuple);
+				continue;
+			}
+
+			child_attnum  = child_idx_form->indkey.values[0];
+			child_colname = get_attname(child_table_oid, child_attnum, true);
+
+			if (!child_colname || strcmp(child_colname, indexed_colname) != 0)
 			{
 				ReleaseSysCache(child_idx_tuple);
 				continue;
@@ -699,7 +716,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	BlockNumber		   first_segment;
 	BlockNumber		   level_heads[TP_MAX_LEVELS];
 	bool			   is_partitioned;
-	AttrNumber		   indexed_attnum = InvalidAttrNumber;
+	char			  *indexed_colname = NULL;
 
 	/* Get index OID from query */
 	index_oid = get_tpquery_index_oid(query);
@@ -714,25 +731,27 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	is_partitioned = (get_rel_relkind(index_oid) == RELKIND_PARTITIONED_INDEX);
 
 	/*
-	 * Get the indexed attribute number for child index matching.
-	 * This is needed for both partitioned indexes and inheritance tables.
+	 * Get the indexed column name for child index matching.
+	 * We use the column name rather than the raw attnum because
+	 * dropped columns can cause attnum drift between parent and
+	 * child tables (e.g., TimescaleDB hypertables).
 	 */
 	{
 		HeapTuple	  idx_tuple;
 		Form_pg_index idx_form;
 		Oid			  lookup_oid;
 
-		/*
-		 * For partitioned indexes, use the parent. For regular indexes,
-		 * use the index itself.
-		 */
 		lookup_oid = index_oid;
 		idx_tuple  = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(lookup_oid));
 		if (HeapTupleIsValid(idx_tuple))
 		{
 			idx_form = (Form_pg_index)GETSTRUCT(idx_tuple);
 			if (idx_form->indnatts >= 1)
-				indexed_attnum = idx_form->indkey.values[0];
+			{
+				AttrNumber attnum = idx_form->indkey.values[0];
+				indexed_colname =
+						get_attname(idx_form->indrelid, attnum, false);
+			}
 			ReleaseSysCache(idx_tuple);
 		}
 	}
@@ -795,10 +814,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			 * inheritance parent (e.g., hypertable) and use the first
 			 * child's stats and segments for scoring.
 			 */
-			if (total_docs == 0 && indexed_attnum != InvalidAttrNumber)
+			if (total_docs == 0 && indexed_colname != NULL)
 			{
-				Oid first_child_idx =
-						find_first_child_bm25_index(index_oid, indexed_attnum);
+				Oid first_child_idx = find_first_child_bm25_index(
+						index_oid, indexed_colname);
 
 				if (OidIsValid(first_child_idx))
 				{
