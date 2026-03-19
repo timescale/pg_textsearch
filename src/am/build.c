@@ -367,8 +367,8 @@ PG_FUNCTION_INFO_V1(tp_force_merge);
  * SQL-callable: bm25_force_merge(index_name text) → void
  *
  * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Useful after parallel index build or when
- * benchmarking with a single-segment layout.
+ * forceMerge(1).  Useful after bulk loads or when benchmarking
+ * with a single-segment layout.
  */
 Datum
 tp_force_merge(PG_FUNCTION_ARGS)

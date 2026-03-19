@@ -239,12 +239,13 @@ tables.
 
 ### How It Works
 
-1. Leader pre-allocates a page pool for all workers to share
-2. Workers scan table in parallel, each building local memtables
-3. When memtables fill, workers spill to disk segments using pool pages
-4. Page index pages also come from the pool (prevents smgr cache issues)
-5. After all workers finish, unused pool pages are truncated
-6. Worker segment chains are linked into L0 and compacted if needed
+1. Leader launches parallel workers and assigns heap block ranges
+2. Workers scan their assigned blocks, tokenize documents, and build
+   local in-memory indexes
+3. Workers write intermediate segment data to temporary BufFiles
+4. Leader performs an N-way merge of all worker BufFiles, writing the
+   final merged segment directly to index pages
+5. Result is a single merged segment
 
 ### Configuration
 
@@ -255,9 +256,6 @@ tables.
 ### Limitations
 
 - Postgres may launch fewer workers than requested for smaller tables
-- Currently uses expansion factor 0.5 (index size ~50% of heap estimate)
-- If pool is exhausted, build fails with an error suggesting to increase
-  expansion factor
 
 ## Important Notes
 
