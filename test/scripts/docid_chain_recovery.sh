@@ -54,20 +54,21 @@ max_connections = 20
 logging_collector = on
 log_filename = 'postgres.log'
 shared_preload_libraries = 'pg_textsearch'
+unix_socket_directories = '${DATA_DIR}'
 EOF
 
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
-    createdb -p "${TEST_PORT}" "${TEST_DB}"
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" \
+    createdb "${TEST_DB}"
+    psql -d "${TEST_DB}" \
         -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 sql() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -tA -c "$1" 2>/dev/null
+    psql -d "${TEST_DB}" -tA -c "$1" 2>/dev/null
 }
 
 sql_verbose() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "$1" 2>&1
+    psql -d "${TEST_DB}" -c "$1" 2>&1
 }
 
 simulate_crash() {
@@ -86,8 +87,7 @@ simulate_crash() {
 restart() {
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w -t 30
     sleep 1
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" \
-        -c "SELECT 1;" >/dev/null
+    psql -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
     log "Postgres restarted"
 }
 
@@ -96,6 +96,11 @@ main() {
 
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found"
     command -v psql >/dev/null 2>&1 || error "psql not found"
+
+    # Override inherited PGHOST/PGPORT so we connect to our own
+    # instance, not the caller's (e.g., CI sanitizer instance).
+    export PGHOST="${DATA_DIR}"
+    export PGPORT="${TEST_PORT}"
 
     setup
 
@@ -122,7 +127,7 @@ CREATE INDEX docs_bm25 ON docs USING bm25(content)
     local pre_count
     pre_count=$(sql "SELECT count(*) FROM docs
         WHERE content <@> to_bm25query('document',
-            'docs_bm25') < 0;")
+            'docs_bm25') < 0")
     log "Pre-crash: ${pre_count} search results"
     if [ -z "$pre_count" ] || [ "$pre_count" -lt 1000 ]; then
         error "Pre-crash search returned too few results: ${pre_count}"
@@ -142,7 +147,7 @@ CREATE INDEX docs_bm25 ON docs USING bm25(content)
     # Run the query and capture both stdout and stderr.
     # Recovery INFO/WARNING messages go to stderr.
     local post_result post_err post_exit
-    post_result=$(psql -p "${TEST_PORT}" -d "${TEST_DB}" -tA \
+    post_result=$(psql -d "${TEST_DB}" -tA \
         -c "SET statement_timeout = '30s'" \
         -c "SELECT count(*) FROM docs
             WHERE content <@> to_bm25query('document',
