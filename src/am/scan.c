@@ -303,10 +303,24 @@ indexes_match_by_attribute(Oid scan_index_oid, Oid query_index_oid)
 		Oid query_am = ((Form_pg_class)GETSTRUCT(query_class_tuple))->relam;
 
 		if (scan_am == bm25_am_oid && query_am == bm25_am_oid &&
-			scan_attnum == query_attnum &&
 			oid_inherits_from(scan_heap_oid, query_heap_oid))
 		{
-			result = true;
+			/*
+			 * Compare by column name rather than raw attnum.
+			 * Dropped columns can cause parent and child tables
+			 * to have different physical attnums for the same
+			 * logical column (e.g., TimescaleDB hypertables or
+			 * inheritance after ALTER TABLE DROP COLUMN).
+			 */
+			char *scan_colname = get_attname(scan_heap_oid, scan_attnum, true);
+			char *query_colname =
+					get_attname(query_heap_oid, query_attnum, true);
+
+			if (scan_colname && query_colname &&
+				strcmp(scan_colname, query_colname) == 0)
+			{
+				result = true;
+			}
 		}
 	}
 

@@ -122,4 +122,112 @@ LIMIT 3;
 -- Cleanup
 DROP TABLE inh_child CASCADE;
 DROP TABLE inh_parent CASCADE;
+
+-- =============================================================================
+-- Test 4: Inheritance with dropped columns (attnum drift)
+-- When a parent table has dropped columns, child tables created after
+-- the drop get different physical attnum values for the same logical
+-- column. BM25 index matching must handle this by comparing column
+-- names rather than raw attnums. (GitHub issue #288)
+-- =============================================================================
+
+-- 4a: Index scan path (tests indexes_match_by_attribute in scan.c)
+CREATE TABLE drift_parent (
+    id SERIAL PRIMARY KEY,
+    extra_col TEXT,
+    content TEXT
+);
+
+-- Insert data into parent before dropping column
+INSERT INTO drift_parent (extra_col, content) VALUES
+    ('filler', 'the quick brown fox jumps over the lazy dog'),
+    ('filler', 'postgresql full text search engine');
+
+-- Drop a column to create an attnum gap in the parent
+ALTER TABLE drift_parent DROP COLUMN extra_col;
+
+-- Create child AFTER the column drop.  The child will NOT inherit the
+-- dropped-column slot, so "content" gets a different attnum than in
+-- the parent.
+CREATE TABLE drift_child () INHERITS (drift_parent);
+
+INSERT INTO drift_child (content) VALUES
+    ('memory store retrieval and caching layer'),
+    ('database query optimization techniques');
+
+-- Create BM25 indexes on both parent and child
+\set VERBOSITY terse
+CREATE INDEX drift_parent_bm25 ON drift_parent USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+CREATE INDEX drift_child_bm25 ON drift_child USING bm25(content)
+    WITH (text_config='english');
+
+-- Verify attnum drift exists: parent content attnum != child content attnum
+SELECT
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift_parent_bm25'::regclass) AS parent_attnum,
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift_child_bm25'::regclass) AS child_attnum,
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift_parent_bm25'::regclass) <>
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift_child_bm25'::regclass) AS attnums_differ;
+
+-- Index scan through parent should work despite attnum mismatch.
+-- Before the fix, this failed with "tpquery index mismatch".
+SET enable_seqscan = off;
+SELECT id, content <@> 'fox' AS score
+FROM drift_parent
+ORDER BY content <@> 'fox'
+LIMIT 3;
+RESET enable_seqscan;
+
+-- Cleanup
+DROP TABLE drift_child CASCADE;
+DROP TABLE drift_parent CASCADE;
+
+-- 4b: Scoring fallback path (tests find_first_child_bm25_index in
+-- query.c).  Parent index has 0 docs so the scorer falls back to
+-- the first child index.  With attnum drift that lookup used to fail.
+CREATE TABLE drift2_parent (
+    id SERIAL PRIMARY KEY,
+    extra_col TEXT,
+    content TEXT
+);
+
+ALTER TABLE drift2_parent DROP COLUMN extra_col;
+
+CREATE TABLE drift2_child () INHERITS (drift2_parent);
+INSERT INTO drift2_child (content) VALUES
+    ('the quick brown fox jumps over the lazy dog'),
+    ('postgresql full text search engine'),
+    ('database query optimization techniques'),
+    ('information retrieval and ranking');
+
+\set VERBOSITY terse
+CREATE INDEX drift2_parent_bm25 ON drift2_parent USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+CREATE INDEX drift2_child_bm25 ON drift2_child USING bm25(content)
+    WITH (text_config='english');
+
+-- Verify attnum drift
+SELECT
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift2_parent_bm25'::regclass) <>
+    (SELECT indkey[0] FROM pg_index
+     WHERE indexrelid = 'drift2_child_bm25'::regclass) AS attnums_differ;
+
+-- Query via parent index — should fall back to child index for scoring
+SELECT content,
+       content <@> to_bm25query('fox', 'drift2_parent_bm25') AS score
+FROM drift2_parent
+WHERE content <@> to_bm25query('fox', 'drift2_parent_bm25') < 0
+ORDER BY content <@> to_bm25query('fox', 'drift2_parent_bm25')
+LIMIT 3;
+
+-- Cleanup
+DROP TABLE drift2_child CASCADE;
+DROP TABLE drift2_parent CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
