@@ -871,13 +871,38 @@ tp_rebuild_posting_lists_from_docids(
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
 			UnlockReleaseBuffer(docid_buf);
-			elog(ERROR,
-				 "Invalid docid page magic at block %u: expected 0x%08X, "
-				 "found 0x%08X - stopping recovery",
-				 current_page,
-				 TP_DOCID_PAGE_MAGIC,
-				 docid_header->magic);
-			break; /* Stop recovery - we've hit invalid/stale data */
+
+			if (docid_header->magic == 0)
+			{
+				/*
+				 * All-zero page: a crash occurred after the chain
+				 * pointer was flushed but before this page reached
+				 * disk. Treat as end-of-chain and recover what we
+				 * have.
+				 */
+				elog(WARNING,
+					 "Unflushed docid page at block %u "
+					 "(all zeros) - truncating recovery "
+					 "chain",
+					 current_page);
+			}
+			else
+			{
+				/*
+				 * Non-zero but wrong magic: possible on-disk
+				 * corruption or a page reused by a different
+				 * subsystem. Still truncate to avoid worse
+				 * failures, but use a louder message.
+				 */
+				elog(WARNING,
+					 "Corrupted docid page at block %u: "
+					 "expected magic 0x%08X, found "
+					 "0x%08X - truncating recovery chain",
+					 current_page,
+					 TP_DOCID_PAGE_MAGIC,
+					 docid_header->magic);
+			}
+			break;
 		}
 
 		/* Get docids array with proper alignment */
