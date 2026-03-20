@@ -36,6 +36,7 @@
 #include "segment/segment.h"
 #include "segment/segment_io.h"
 #include "state/metapage.h"
+#include "state/registry.h"
 #include "state/state.h"
 #include "types/vector.h"
 
@@ -132,41 +133,57 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
 
-	/* Check if posting count threshold is exceeded */
-	if (tp_memtable_spill_threshold <= 0)
-		return;
-
 	memtable = get_memtable(index_state);
 	if (!memtable)
 		return;
 
 	total_postings = memtable->total_postings;
-	if (total_postings < tp_memtable_spill_threshold)
-		return;
 
-	/* Write the segment */
-	segment_root = tp_write_segment(index_state, index_rel);
-
-	/* Clear memtable and update metapage if spill succeeded */
-	if (segment_root != InvalidBlockNumber)
+	/* Check per-index posting count threshold */
+	if (tp_memtable_spill_threshold > 0 &&
+		total_postings >= tp_memtable_spill_threshold)
 	{
-		tp_clear_memtable(index_state);
+		segment_root = tp_write_segment(index_state, index_rel);
 
-		/*
-		 * Clear docid pages since data is now in segment. This prevents
-		 * recovery from re-indexing documents already persisted in segments,
-		 * which would cause duplicate entries and slow recovery.
-		 */
-		tp_clear_docid_pages(index_rel);
+		if (segment_root != InvalidBlockNumber)
+		{
+			tp_clear_memtable(index_state);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
 
-		tp_link_l0_chain_head(index_rel, segment_root);
+			pgstat_progress_update_param(
+					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
+			tp_maybe_compact_level(index_rel, 0);
+			pgstat_progress_update_param(
+					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+		}
+		return;
+	}
 
-		/* Check if L0 needs compaction */
-		pgstat_progress_update_param(
-				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		tp_maybe_compact_level(index_rel, 0);
-		pgstat_progress_update_param(
-				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+	/*
+	 * Global memory limit check (amortized at document boundaries).
+	 * Every 1000 postings, check if global DSA exceeds max_memory.
+	 */
+	if (tp_max_memory > 0 && total_postings % 1000 == 0)
+	{
+		uint64 limit_bytes = (uint64)tp_max_memory * 1024ULL;
+		uint64 current_bytes;
+
+		tp_registry_update_dsa_counter();
+		current_bytes = tp_registry_get_total_dsa_bytes();
+
+		if (current_bytes > limit_bytes)
+		{
+			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+			{
+				elog(WARNING,
+					 "pg_textsearch: memory usage "
+					 "(%lu MB / %d MB) but no "
+					 "memtable could be spilled",
+					 (unsigned long)(current_bytes / (1024 * 1024)),
+					 tp_max_memory / 1024);
+			}
+		}
 	}
 }
 
@@ -851,6 +868,40 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 "maintenance_work_mem >= 64MB for faster builds.",
 				 reltuples);
 		}
+	}
+
+	/*
+	 * Check global memory limit before starting build.
+	 * The post-build transition allocates a runtime memtable
+	 * in the global DSA, so don't start if already at limit.
+	 */
+	if (tp_max_memory > 0)
+	{
+		uint64 limit_bytes = (uint64)tp_max_memory * 1024ULL;
+		uint64 current_bytes;
+		int	   attempts = 0;
+
+		tp_registry_update_dsa_counter();
+		current_bytes = tp_registry_get_total_dsa_bytes();
+
+		while (current_bytes > limit_bytes && attempts < 10)
+		{
+			if (!tp_evict_largest_memtable(InvalidOid))
+				break;
+			tp_registry_update_dsa_counter();
+			current_bytes = tp_registry_get_total_dsa_bytes();
+			attempts++;
+		}
+
+		if (current_bytes > limit_bytes)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch shared memory "
+							"usage (%lu kB) exceeds "
+							"max_memory (%d kB), "
+							"cannot start index build",
+							(unsigned long)(current_bytes / 1024),
+							tp_max_memory)));
 	}
 
 	/*

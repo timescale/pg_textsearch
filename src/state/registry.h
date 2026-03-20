@@ -13,6 +13,7 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <port/atomics.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
@@ -46,6 +47,7 @@ typedef struct TpGlobalRegistry
 	LWLock				lock;			 /* Protects initialization */
 	dsa_handle			dsa_handle;		 /* Handle for shared DSA area */
 	dshash_table_handle registry_handle; /* Handle for the registry dshash */
+	pg_atomic_uint64	total_dsa_bytes; /* Tracked global DSA size */
 } TpGlobalRegistry;
 
 /* Registry management functions */
@@ -64,3 +66,13 @@ extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
 extern dsa_pointer		   tp_registry_lookup_dsa(Oid index_oid);
 extern bool				   tp_registry_is_registered(Oid index_oid);
 extern void				   tp_registry_unregister(Oid index_oid);
+
+/* DSA memory tracking */
+extern uint64 tp_registry_get_total_dsa_bytes(void);
+extern void	  tp_registry_update_dsa_counter(void);
+
+/* Memory limit eviction */
+extern bool tp_evict_largest_memtable(Oid caller_oid);
+
+/* GUC variable declared in mod.c */
+extern int tp_max_memory;

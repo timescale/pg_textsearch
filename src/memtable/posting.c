@@ -19,6 +19,7 @@
 #include "memtable.h"
 #include "posting.h"
 #include "state/metapage.h"
+#include "state/registry.h"
 #include "state/state.h"
 #include "stringtable.h"
 

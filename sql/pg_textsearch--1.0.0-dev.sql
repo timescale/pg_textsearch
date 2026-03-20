@@ -215,6 +215,17 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
+-- Memory usage visibility function
+CREATE FUNCTION bm25_memory_usage(
+    OUT total_dsa_bytes int8,
+    OUT total_dsa_mb float4,
+    OUT max_memory_bytes int8,
+    OUT max_memory_mb float4,
+    OUT usage_pct float4
+)
+AS 'MODULE_PATHNAME', 'tp_memory_usage'
+LANGUAGE C STRICT STABLE;
+
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_summarize_index(text) FROM PUBLIC;

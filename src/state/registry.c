@@ -10,6 +10,7 @@
 #include <postgres.h>
 
 #include <access/hash.h>
+#include <access/relation.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
@@ -18,6 +19,11 @@
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
+#include "am/am.h"
+#include "segment/merge.h"
+#include "segment/segment.h"
+#include "segment/segment_io.h"
+#include "state/metapage.h"
 #include "state/registry.h"
 
 /* Backend-local pointer to the registry in shared memory */
@@ -145,6 +151,7 @@ tp_registry_shmem_startup(void)
 		/* Initialize handles as invalid - DSA/dshash created on first use */
 		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
 		tapir_registry->registry_handle = DSHASH_HANDLE_INVALID;
+		pg_atomic_init_u64(&tapir_registry->total_dsa_bytes, 0);
 	}
 
 	LWLockRelease(AddinShmemInitLock);
@@ -199,6 +206,11 @@ tp_registry_get_dsa(void)
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
+
+		/* Initialize DSA byte counter */
+		pg_atomic_write_u64(
+				&tapir_registry->total_dsa_bytes,
+				dsa_get_total_size(tapir_dsa));
 
 		/* Pin the mapping for this backend */
 		dsa_pin_mapping(tapir_dsa);
@@ -428,4 +440,229 @@ tp_registry_unregister(Oid index_oid)
 	(void)deleted; /* Ignore if not found */
 
 	dshash_detach(registry_hash);
+}
+
+/*
+ * Read the current global DSA byte counter.
+ * Returns 0 if registry is not initialized.
+ */
+uint64
+tp_registry_get_total_dsa_bytes(void)
+{
+	if (!tapir_registry)
+		return 0;
+	return pg_atomic_read_u64(&tapir_registry->total_dsa_bytes);
+}
+
+/*
+ * Re-sync the global DSA byte counter from dsa_get_total_size().
+ * Called after operations that may change DSA size.
+ */
+void
+tp_registry_update_dsa_counter(void)
+{
+	if (!tapir_registry || !tapir_dsa)
+		return;
+	pg_atomic_write_u64(
+			&tapir_registry->total_dsa_bytes, dsa_get_total_size(tapir_dsa));
+}
+
+/* --------------------------------------------------------
+ * Eviction: spill largest memtable to free DSA memory
+ * --------------------------------------------------------
+ */
+
+#define TP_MAX_EVICTION_CANDIDATES 8
+
+typedef struct TpEvictionCandidate
+{
+	Oid	  index_oid;
+	int64 total_postings;
+} TpEvictionCandidate;
+
+/*
+ * Collect eviction candidates sorted by total_postings descending.
+ */
+static int
+find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
+{
+	dshash_table	 *registry_hash;
+	dshash_seq_status seq;
+	TpRegistryEntry	 *entry;
+	int				  count = 0;
+
+	if (!tapir_registry || !tapir_dsa ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+		return 0;
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+
+	dshash_seq_init(&seq, registry_hash, false);
+
+	while ((entry = dshash_seq_next(&seq)) != NULL)
+	{
+		TpSharedIndexState *shared;
+		TpMemtable		   *memtable;
+		int64				postings;
+
+		if (!DsaPointerIsValid(entry->shared_state_dp))
+			continue;
+
+		shared = (TpSharedIndexState *)
+				dsa_get_address(tapir_dsa, entry->shared_state_dp);
+
+		if (!DsaPointerIsValid(shared->memtable_dp))
+			continue;
+
+		memtable = (TpMemtable *)
+				dsa_get_address(tapir_dsa, shared->memtable_dp);
+
+		postings = memtable->total_postings;
+		if (postings <= 0)
+			continue;
+
+		/* Insertion sort into candidates (small N) */
+		if (count < max_candidates ||
+			postings > candidates[count - 1].total_postings)
+		{
+			int pos = (count < max_candidates) ? count : count - 1;
+			int i;
+
+			candidates[pos].index_oid	   = entry->index_oid;
+			candidates[pos].total_postings = postings;
+
+			/* Bubble up to maintain descending order */
+			for (i = pos; i > 0; i--)
+			{
+				if (candidates[i].total_postings >
+					candidates[i - 1].total_postings)
+				{
+					TpEvictionCandidate tmp = candidates[i];
+					candidates[i]			= candidates[i - 1];
+					candidates[i - 1]		= tmp;
+				}
+				else
+					break;
+			}
+
+			if (count < max_candidates)
+				count++;
+		}
+	}
+
+	dshash_seq_term(&seq);
+	dshash_detach(registry_hash);
+
+	return count;
+}
+
+/*
+ * Attempt to spill the largest memtable to free DSA memory.
+ *
+ * caller_oid: the calling backend's own index OID (lock already
+ * held) or InvalidOid if no lock is held.
+ *
+ * Uses LWLockConditionalAcquire to avoid deadlocks when the
+ * caller already holds a per-index lock.
+ *
+ * Returns true if a memtable was successfully spilled.
+ */
+bool
+tp_evict_largest_memtable(Oid caller_oid)
+{
+	TpEvictionCandidate candidates[TP_MAX_EVICTION_CANDIDATES];
+	int					num_candidates;
+	int					i;
+
+	num_candidates =
+			find_eviction_candidates(candidates, TP_MAX_EVICTION_CANDIDATES);
+
+	if (num_candidates == 0)
+		return false;
+
+	for (i = 0; i < num_candidates; i++)
+	{
+		Oid				   target_oid	   = candidates[i].index_oid;
+		int64			   target_postings = candidates[i].total_postings;
+		TpLocalIndexState *target_state;
+		Relation		   index_rel;
+		BlockNumber		   segment_root;
+		bool			   index_open_failed = false;
+		bool			   lock_was_ours	 = false;
+
+		target_state = tp_get_local_index_state(target_oid);
+		if (!target_state)
+			continue;
+
+		/*
+		 * If this is the caller's own index, the lock is already
+		 * held. Otherwise, use conditional acquire to avoid
+		 * deadlocks.
+		 */
+		if (target_oid == caller_oid && target_state->lock_held)
+		{
+			lock_was_ours = true;
+		}
+		else
+		{
+			if (!LWLockConditionalAcquire(
+						&target_state->shared->lock, LW_EXCLUSIVE))
+				continue;
+
+			target_state->lock_held = true;
+			target_state->lock_mode = LW_EXCLUSIVE;
+		}
+
+		/*
+		 * Open the index with PG_TRY protection -- it could
+		 * have been dropped between our registry scan and now.
+		 */
+		PG_TRY();
+		{
+			index_rel = index_open(target_oid, RowExclusiveLock);
+		}
+		PG_CATCH();
+		{
+			FlushErrorState();
+			index_open_failed = true;
+		}
+		PG_END_TRY();
+
+		if (index_open_failed)
+		{
+			if (!lock_was_ours)
+				tp_release_index_lock(target_state);
+			continue;
+		}
+
+		/* Write segment from memtable */
+		segment_root = tp_write_segment(target_state, index_rel);
+
+		if (segment_root != InvalidBlockNumber)
+		{
+			tp_clear_memtable(target_state);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
+			tp_maybe_compact_level(index_rel, 0);
+
+			elog(WARNING,
+				 "pg_textsearch: memory limit exceeded, "
+				 "spilled memtable for index %u "
+				 "(%ld postings)",
+				 target_oid,
+				 (long)target_postings);
+		}
+
+		if (!lock_was_ours)
+			tp_release_index_lock(target_state);
+		index_close(index_rel, RowExclusiveLock);
+
+		/* Update the counter after spill */
+		tp_registry_update_dsa_counter();
+
+		return (segment_root != InvalidBlockNumber);
+	}
+
+	return false;
 }
