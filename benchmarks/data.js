@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773990700902,
+  "lastUpdate": 1773990959287,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -39206,6 +39206,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
             "value": 2.35,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Index Size",
+            "value": 0.9,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4b3d725b0ba272f05035627e969ead4b209bdbcb",
+          "message": "docs: expand README limitations and fix stale docs (#287)\n\n## Summary\n\n- Add missing limitation sections to README for GA: no phrase queries,\nno expression indexing, no built-in faceted search, insert/update\nperformance, no background compaction\n- Each limitation includes SQL examples showing workarounds\n- Fix incorrect \"LZ4 compression\" in CHANGELOG (actual: delta encoding +\nbitpacking)\n- Update stale parallel build description in CLAUDE.md (old page pool →\nBufFile architecture)\n\n## Testing\n\nDocumentation-only changes. Verified SQL examples match existing\npatterns in the README.",
+          "timestamp": "2026-03-19T00:08:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4b3d725b0ba272f05035627e969ead4b209bdbcb"
+        },
+        "date": 1773990956750,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_insert (0 docs) - Index Build Time",
+            "value": 1.876,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Insert Time",
+            "value": 344.82,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
+            "value": 2.47,
             "unit": "ms"
           },
           {
