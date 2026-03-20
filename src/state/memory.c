@@ -43,8 +43,8 @@ tp_memory_usage(PG_FUNCTION_ARGS)
 	values[0] = Int64GetDatum((int64)total_bytes);
 	values[1] = Float4GetDatum((float4)total_bytes / (1024.0f * 1024.0f));
 
-	/* Read max_memory GUC */
-	max_kb = (int64)tp_max_memory;
+	/* Read max_shared_memory GUC */
+	max_kb = (int64)tp_max_shared_memory;
 
 	if (max_kb > 0)
 	{

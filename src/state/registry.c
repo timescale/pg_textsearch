@@ -482,6 +482,12 @@ typedef struct TpEvictionCandidate
 
 /*
  * Collect eviction candidates sorted by total_postings descending.
+ *
+ * Note: We read memtable->total_postings without holding the per-index
+ * lock. This is safe because DSA memory is never unmapped (only returned
+ * to the DSA freelist), so the dereference cannot fault. The value may
+ * be stale if another backend is concurrently spilling, but the actual
+ * eviction is protected by LWLockConditionalAcquire and re-validates.
  */
 static int
 find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
@@ -588,8 +594,7 @@ tp_evict_largest_memtable(Oid caller_oid)
 		TpLocalIndexState *target_state;
 		Relation		   index_rel;
 		BlockNumber		   segment_root;
-		bool			   index_open_failed = false;
-		bool			   lock_was_ours	 = false;
+		bool			   lock_was_ours = false;
 
 		target_state = tp_get_local_index_state(target_oid);
 		if (!target_state)
@@ -615,48 +620,43 @@ tp_evict_largest_memtable(Oid caller_oid)
 		}
 
 		/*
-		 * Open the index with PG_TRY protection -- it could
-		 * have been dropped between our registry scan and now.
+		 * Open the index, spill, and clean up. The entire
+		 * operation is wrapped in PG_TRY to ensure we release
+		 * the lock and close the relation on any error.
 		 */
 		PG_TRY();
 		{
 			index_rel = index_open(target_oid, RowExclusiveLock);
+
+			segment_root = tp_write_segment(target_state, index_rel);
+
+			if (segment_root != InvalidBlockNumber)
+			{
+				tp_clear_memtable(target_state);
+				tp_clear_docid_pages(index_rel);
+				tp_link_l0_chain_head(index_rel, segment_root);
+				tp_maybe_compact_level(index_rel, 0);
+
+				elog(WARNING,
+					 "pg_textsearch: max_shared_memory "
+					 "exceeded, spilled memtable for "
+					 "index %u (" INT64_FORMAT " postings)",
+					 target_oid,
+					 target_postings);
+			}
+
+			if (!lock_was_ours)
+				tp_release_index_lock(target_state);
+			index_close(index_rel, RowExclusiveLock);
 		}
 		PG_CATCH();
 		{
-			FlushErrorState();
-			index_open_failed = true;
-		}
-		PG_END_TRY();
-
-		if (index_open_failed)
-		{
 			if (!lock_was_ours)
 				tp_release_index_lock(target_state);
+			FlushErrorState();
 			continue;
 		}
-
-		/* Write segment from memtable */
-		segment_root = tp_write_segment(target_state, index_rel);
-
-		if (segment_root != InvalidBlockNumber)
-		{
-			tp_clear_memtable(target_state);
-			tp_clear_docid_pages(index_rel);
-			tp_link_l0_chain_head(index_rel, segment_root);
-			tp_maybe_compact_level(index_rel, 0);
-
-			elog(WARNING,
-				 "pg_textsearch: memory limit exceeded, "
-				 "spilled memtable for index %u "
-				 "(%ld postings)",
-				 target_oid,
-				 (long)target_postings);
-		}
-
-		if (!lock_was_ours)
-			tp_release_index_lock(target_state);
-		index_close(index_rel, RowExclusiveLock);
+		PG_END_TRY();
 
 		/* Update the counter after spill */
 		tp_registry_update_dsa_counter();

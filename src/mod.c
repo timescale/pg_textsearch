@@ -67,7 +67,7 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 bool tp_compress_segments = true;
 
 /* Global variable for memory limit (in KB, 0 = disabled) */
-int tp_max_memory = 0;
+int tp_max_shared_memory = 0;
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -243,12 +243,12 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"pg_textsearch.max_memory",
+			"pg_textsearch.max_shared_memory",
 			"Maximum shared memory for pg_textsearch memtables",
 			"Limits the total DSA memory used by all "
 			"pg_textsearch indexes. When exceeded, the largest "
 			"memtable is spilled to disk. 0 disables the limit.",
-			&tp_max_memory,
+			&tp_max_shared_memory,
 			0,			   /* default: disabled */
 			0,			   /* min: 0 (disabled) */
 			MAX_KILOBYTES, /* max */

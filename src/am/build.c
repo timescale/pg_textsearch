@@ -162,11 +162,13 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 	/*
 	 * Global memory limit check (amortized at document boundaries).
-	 * Every 1000 postings, check if global DSA exceeds max_memory.
+	 * Every 1000 postings, check if global DSA exceeds
+	 * max_shared_memory.
 	 */
-	if (tp_max_memory > 0 && total_postings % 1000 == 0)
+	if (tp_max_shared_memory > 0 && total_postings > 0 &&
+		total_postings % 1000 == 0)
 	{
-		uint64 limit_bytes = (uint64)tp_max_memory * 1024ULL;
+		uint64 limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
 		uint64 current_bytes;
 
 		tp_registry_update_dsa_counter();
@@ -177,11 +179,12 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
 			{
 				elog(WARNING,
-					 "pg_textsearch: memory usage "
-					 "(%lu MB / %d MB) but no "
-					 "memtable could be spilled",
-					 (unsigned long)(current_bytes / (1024 * 1024)),
-					 tp_max_memory / 1024);
+					 "pg_textsearch: "
+					 "pg_textsearch.max_shared_memory "
+					 "exceeded (" UINT64_FORMAT " kB / %d kB) but no memtable "
+					 "could be spilled",
+					 (uint64)(current_bytes / 1024),
+					 tp_max_shared_memory);
 			}
 		}
 	}
@@ -762,6 +765,47 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/*
+	 * Check global memory limit before starting build.
+	 * The post-build transition allocates a runtime memtable
+	 * in the global DSA, so don't start if already at limit.
+	 * This check runs before both serial and parallel paths.
+	 */
+	if (tp_max_shared_memory > 0)
+	{
+		uint64 limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+		uint64 current_bytes;
+		int	   attempts = 0;
+
+		tp_registry_update_dsa_counter();
+		current_bytes = tp_registry_get_total_dsa_bytes();
+
+		while (current_bytes > limit_bytes && attempts < 10)
+		{
+			if (!tp_evict_largest_memtable(InvalidOid))
+				break;
+			tp_registry_update_dsa_counter();
+			current_bytes = tp_registry_get_total_dsa_bytes();
+			attempts++;
+		}
+
+		if (current_bytes > limit_bytes)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch shared memory "
+							"usage (" UINT64_FORMAT " kB) exceeds "
+							"pg_textsearch.max_shared_memory"
+							" (%d kB), cannot start "
+							"index build",
+							(uint64)(current_bytes / 1024),
+							tp_max_shared_memory),
+					 errhint("Increase "
+							 "pg_textsearch.max_shared_"
+							 "memory or spill existing "
+							 "indexes with "
+							 "bm25_spill_index().")));
+	}
+
+	/*
 	 * Check if parallel build is possible and beneficial.
 	 *
 	 * Postgres has already called plan_create_index_workers() and stored
@@ -868,40 +912,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 "maintenance_work_mem >= 64MB for faster builds.",
 				 reltuples);
 		}
-	}
-
-	/*
-	 * Check global memory limit before starting build.
-	 * The post-build transition allocates a runtime memtable
-	 * in the global DSA, so don't start if already at limit.
-	 */
-	if (tp_max_memory > 0)
-	{
-		uint64 limit_bytes = (uint64)tp_max_memory * 1024ULL;
-		uint64 current_bytes;
-		int	   attempts = 0;
-
-		tp_registry_update_dsa_counter();
-		current_bytes = tp_registry_get_total_dsa_bytes();
-
-		while (current_bytes > limit_bytes && attempts < 10)
-		{
-			if (!tp_evict_largest_memtable(InvalidOid))
-				break;
-			tp_registry_update_dsa_counter();
-			current_bytes = tp_registry_get_total_dsa_bytes();
-			attempts++;
-		}
-
-		if (current_bytes > limit_bytes)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("pg_textsearch shared memory "
-							"usage (%lu kB) exceeds "
-							"max_memory (%d kB), "
-							"cannot start index build",
-							(unsigned long)(current_bytes / 1024),
-							tp_max_memory)));
 	}
 
 	/*

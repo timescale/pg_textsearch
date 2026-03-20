@@ -224,7 +224,7 @@ CREATE FUNCTION bm25_memory_usage(
     OUT usage_pct float4
 )
 AS 'MODULE_PATHNAME', 'tp_memory_usage'
-LANGUAGE C STRICT STABLE;
+LANGUAGE C VOLATILE;
 
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
