@@ -840,6 +840,7 @@ tp_rebuild_posting_lists_from_docids(
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
 	Relation		   heap_rel;
+	bool			   chain_truncated = false;
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
 	{
@@ -902,6 +903,7 @@ tp_rebuild_posting_lists_from_docids(
 					 TP_DOCID_PAGE_MAGIC,
 					 docid_header->magic);
 			}
+			chain_truncated = true;
 			break;
 		}
 
@@ -1008,6 +1010,14 @@ tp_rebuild_posting_lists_from_docids(
 	}
 
 	relation_close(heap_rel, AccessShareLock);
+
+	/*
+	 * If we truncated the chain due to an invalid page, clear the
+	 * metapage's first_docid_page pointer so subsequent inserts
+	 * don't walk into the corrupted chain.
+	 */
+	if (chain_truncated)
+		tp_clear_docid_pages(index_rel);
 
 	/* Log recovery completion */
 	if (local_state && local_state->shared)
