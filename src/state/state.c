@@ -890,15 +890,13 @@ tp_rebuild_posting_lists_from_docids(
 			else
 			{
 				/*
-				 * Non-zero but wrong magic: possible on-disk
-				 * corruption or a page reused by a different
-				 * subsystem. Still truncate to avoid worse
-				 * failures, but use a louder message.
+				 * Non-zero but wrong magic: actual on-disk
+				 * corruption. Don't silently continue.
 				 */
-				elog(WARNING,
+				elog(ERROR,
 					 "Corrupted docid page at block %u: "
 					 "expected magic 0x%08X, found "
-					 "0x%08X - truncating recovery chain",
+					 "0x%08X",
 					 current_page,
 					 TP_DOCID_PAGE_MAGIC,
 					 docid_header->magic);

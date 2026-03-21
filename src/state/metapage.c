@@ -253,12 +253,10 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 			MarkBufferDirty(docid_buf);
 
 			/*
-			 * Flush the new docid page BEFORE updating the
-			 * metapage pointer. This ensures that if we crash
-			 * after the metapage flush, the docid page is
-			 * already on disk. Without this ordering, a crash
-			 * could leave first_docid_page pointing to an
-			 * uninitialized (all-zero) block.
+			 * Flush this page before updating the metapage
+			 * pointer that references it. Without this
+			 * ordering, a crash could leave first_docid_page
+			 * pointing to an uninitialized (all-zero) block.
 			 */
 			if (!BufferIsLocal(docid_buf))
 				FlushOneBuffer(docid_buf);
@@ -333,10 +331,10 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		MarkBufferDirty(new_buf);
 
 		/*
-		 * Flush the new page BEFORE updating the chain pointer.
-		 * This ensures crash safety: if we crash after flushing
-		 * the old page's next_page pointer, the target page is
-		 * already on disk with valid magic.
+		 * Flush the new page before updating the chain
+		 * pointer that references it. Without this ordering,
+		 * a crash could leave next_page pointing to an
+		 * uninitialized (all-zero) block.
 		 */
 		if (!BufferIsLocal(new_buf))
 			FlushOneBuffer(new_buf);
