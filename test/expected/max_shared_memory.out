@@ -96,14 +96,34 @@ SELECT count(*) > 100 AS inserts_ok FROM max_mem_test;
  t
 (1 row)
 
--- Test 8: Low memory limit triggers spill during inserts
--- Spill first so we start from a clean memtable
-SELECT bm25_spill_index('idx_max_mem') IS NOT NULL AS spilled;
- spilled 
----------
+-- Test 8: Cross-index eviction with low memory limit.
+-- Create a second index and fill both, then set a low limit.
+-- Inserting into the smaller index should evict the larger one.
+CREATE TABLE max_mem_test2 (id serial, body text);
+CREATE INDEX idx_max_mem2 ON max_mem_test2
+    USING bm25(body) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation idx_max_mem2
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Spill both indexes to start clean
+SELECT bm25_spill_index('idx_max_mem') IS NOT NULL AS spilled1;
+ spilled1 
+----------
  t
 (1 row)
 
+SELECT bm25_spill_index('idx_max_mem2') IS NOT NULL AS spilled2;
+ spilled2 
+----------
+ f
+(1 row)
+
+-- Fill the first index with more data (making it the eviction target)
+INSERT INTO max_mem_test (body)
+SELECT 'big_' || i || '_' || j
+FROM generate_series(1, 200) i,
+     generate_series(1, 3) j;
 ALTER SYSTEM SET pg_textsearch.max_shared_memory = '100kB';
 SELECT pg_reload_conf();
  pg_reload_conf 
@@ -119,13 +139,22 @@ SELECT pg_sleep(0.1);
 
 -- Suppress spill WARNINGs (they contain non-deterministic OIDs)
 SET client_min_messages = error;
-INSERT INTO max_mem_test (body)
-SELECT 'fill_' || i
+-- Insert into the SECOND (smaller) index. The memory check should
+-- find idx_max_mem as the largest memtable and evict it, exercising
+-- the cross-index LWLockConditionalAcquire path.
+INSERT INTO max_mem_test2 (body)
+SELECT 'cross_evict_' || i
 FROM generate_series(1, 500) i;
--- Verify data was inserted (writes are never rejected)
-SELECT count(*) > 1000 AS all_inserts_ok FROM max_mem_test;
- all_inserts_ok 
-----------------
+-- Verify data was inserted in both tables (writes never rejected)
+SELECT count(*) > 1000 AS t1_ok FROM max_mem_test;
+ t1_ok 
+-------
+ t
+(1 row)
+
+SELECT count(*) > 0 AS t2_ok FROM max_mem_test2;
+ t2_ok 
+-------
  t
 (1 row)
 
@@ -160,5 +189,6 @@ SELECT pg_reload_conf();
 (1 row)
 
 DROP TABLE IF EXISTS max_mem_test CASCADE;
+DROP TABLE IF EXISTS max_mem_test2 CASCADE;
 DROP TABLE IF EXISTS max_mem_build_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

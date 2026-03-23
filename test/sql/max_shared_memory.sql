@@ -54,9 +54,22 @@ FROM generate_series(1, 200) i,
 
 SELECT count(*) > 100 AS inserts_ok FROM max_mem_test;
 
--- Test 8: Low memory limit triggers spill during inserts
--- Spill first so we start from a clean memtable
-SELECT bm25_spill_index('idx_max_mem') IS NOT NULL AS spilled;
+-- Test 8: Cross-index eviction with low memory limit.
+-- Create a second index and fill both, then set a low limit.
+-- Inserting into the smaller index should evict the larger one.
+CREATE TABLE max_mem_test2 (id serial, body text);
+CREATE INDEX idx_max_mem2 ON max_mem_test2
+    USING bm25(body) WITH (text_config='english');
+
+-- Spill both indexes to start clean
+SELECT bm25_spill_index('idx_max_mem') IS NOT NULL AS spilled1;
+SELECT bm25_spill_index('idx_max_mem2') IS NOT NULL AS spilled2;
+
+-- Fill the first index with more data (making it the eviction target)
+INSERT INTO max_mem_test (body)
+SELECT 'big_' || i || '_' || j
+FROM generate_series(1, 200) i,
+     generate_series(1, 3) j;
 
 ALTER SYSTEM SET pg_textsearch.max_shared_memory = '100kB';
 SELECT pg_reload_conf();
@@ -65,12 +78,16 @@ SELECT pg_sleep(0.1);
 -- Suppress spill WARNINGs (they contain non-deterministic OIDs)
 SET client_min_messages = error;
 
-INSERT INTO max_mem_test (body)
-SELECT 'fill_' || i
+-- Insert into the SECOND (smaller) index. The memory check should
+-- find idx_max_mem as the largest memtable and evict it, exercising
+-- the cross-index LWLockConditionalAcquire path.
+INSERT INTO max_mem_test2 (body)
+SELECT 'cross_evict_' || i
 FROM generate_series(1, 500) i;
 
--- Verify data was inserted (writes are never rejected)
-SELECT count(*) > 1000 AS all_inserts_ok FROM max_mem_test;
+-- Verify data was inserted in both tables (writes never rejected)
+SELECT count(*) > 1000 AS t1_ok FROM max_mem_test;
+SELECT count(*) > 0 AS t2_ok FROM max_mem_test2;
 
 RESET client_min_messages;
 
@@ -98,5 +115,6 @@ ALTER SYSTEM RESET pg_textsearch.max_shared_memory;
 SELECT pg_reload_conf();
 
 DROP TABLE IF EXISTS max_mem_test CASCADE;
+DROP TABLE IF EXISTS max_mem_test2 CASCADE;
 DROP TABLE IF EXISTS max_mem_build_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
