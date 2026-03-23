@@ -457,14 +457,33 @@ tp_registry_get_total_dsa_bytes(void)
 /*
  * Re-sync the global DSA byte counter from dsa_get_total_size().
  * Called after operations that may change DSA size.
+ *
+ * Uses a CAS loop that only updates when the new value exceeds
+ * the stored value. Since dsa_get_total_size() is monotonically
+ * non-decreasing (DSA never returns segments to the OS), this
+ * prevents a racing backend with a stale read from overwriting
+ * a newer, higher value.
  */
 void
 tp_registry_update_dsa_counter(void)
 {
+	uint64 new_size;
+	uint64 old_size;
+
 	if (!tapir_registry || !tapir_dsa)
 		return;
-	pg_atomic_write_u64(
-			&tapir_registry->total_dsa_bytes, dsa_get_total_size(tapir_dsa));
+
+	new_size = dsa_get_total_size(tapir_dsa);
+
+	for (;;)
+	{
+		old_size = pg_atomic_read_u64(&tapir_registry->total_dsa_bytes);
+		if (new_size <= old_size)
+			break;
+		if (pg_atomic_compare_exchange_u64(
+					&tapir_registry->total_dsa_bytes, &old_size, new_size))
+			break;
+	}
 }
 
 /* --------------------------------------------------------
@@ -651,9 +670,17 @@ tp_evict_largest_memtable(Oid caller_oid)
 		}
 		PG_CATCH();
 		{
+			ErrorData *edata = CopyErrorData();
+
 			if (!lock_was_ours)
 				tp_release_index_lock(target_state);
 			FlushErrorState();
+			elog(WARNING,
+				 "pg_textsearch: eviction of index %u "
+				 "failed: %s",
+				 target_oid,
+				 edata->message);
+			FreeErrorData(edata);
 			continue;
 		}
 		PG_END_TRY();

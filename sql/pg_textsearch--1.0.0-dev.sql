@@ -215,7 +215,10 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
--- Memory usage visibility function
+-- Memory usage visibility function.
+-- Intentionally accessible to all users (monitoring/ops use case).
+-- Only exposes aggregate DSA byte counts and configured limits,
+-- not per-index or per-user data.
 CREATE FUNCTION bm25_memory_usage(
     OUT total_dsa_bytes int8,
     OUT total_dsa_mb float4,

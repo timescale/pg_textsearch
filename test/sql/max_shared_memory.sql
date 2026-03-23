@@ -79,9 +79,19 @@ CREATE TABLE max_mem_build_test (id serial, body text);
 INSERT INTO max_mem_build_test (body)
 SELECT 'build_test_' || i FROM generate_series(1, 10) i;
 
--- This should ERROR because DSA > 100kB
-CREATE INDEX idx_max_mem_build ON max_mem_build_test
-    USING bm25(body) WITH (text_config='english');
+-- This should ERROR because DSA > 100kB.
+-- The exact kB values in the error vary by platform, so we
+-- verify the error code rather than the exact message.
+DO $$
+BEGIN
+    EXECUTE 'CREATE INDEX idx_max_mem_build ON max_mem_build_test '
+            'USING bm25(body) WITH (text_config=''english'')';
+    RAISE NOTICE 'ERROR: expected build to fail but it succeeded';
+EXCEPTION
+    WHEN program_limit_exceeded THEN
+        RAISE NOTICE 'build correctly blocked by max_shared_memory';
+END;
+$$;
 
 -- Clean up
 ALTER SYSTEM RESET pg_textsearch.max_shared_memory;

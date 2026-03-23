@@ -162,29 +162,41 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 	/*
 	 * Global memory limit check (amortized at document boundaries).
-	 * Every 1000 postings, check if global DSA exceeds
-	 * max_shared_memory.
+	 * This function is called once per document insert. We use a
+	 * backend-local counter (not per-index) to check every ~100
+	 * documents regardless of per-document term count. This avoids
+	 * the exact-modulo problem where documents with term counts
+	 * that don't divide the interval (e.g., 11-term docs) would
+	 * never hit an exact multiple.
 	 */
-	if (tp_max_shared_memory > 0 && total_postings > 0 &&
-		total_postings % 1000 == 0)
+	if (tp_max_shared_memory > 0)
 	{
-		uint64 limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
-		uint64 current_bytes;
+		static int docs_since_check = 0;
 
-		tp_registry_update_dsa_counter();
-		current_bytes = tp_registry_get_total_dsa_bytes();
-
-		if (current_bytes > limit_bytes)
+		if (++docs_since_check >= 100)
 		{
-			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+			uint64 limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+			uint64 current_bytes;
+
+			docs_since_check = 0;
+
+			tp_registry_update_dsa_counter();
+			current_bytes = tp_registry_get_total_dsa_bytes();
+
+			if (current_bytes > limit_bytes)
 			{
-				elog(WARNING,
-					 "pg_textsearch: "
-					 "pg_textsearch.max_shared_memory "
-					 "exceeded (" UINT64_FORMAT " kB / %d kB) but no memtable "
-					 "could be spilled",
-					 (uint64)(current_bytes / 1024),
-					 tp_max_shared_memory);
+				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+				{
+					elog(WARNING,
+						 "pg_textsearch: "
+						 "pg_textsearch.max_shared_"
+						 "memory exceeded "
+						 "(" UINT64_FORMAT " kB / %d kB) but no "
+						 "memtable could be "
+						 "spilled",
+						 (uint64)(current_bytes / 1024),
+						 tp_max_shared_memory);
+				}
 			}
 		}
 	}
