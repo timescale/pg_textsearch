@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774249897652,
+  "lastUpdate": 1774249899390,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -40148,6 +40148,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 98.24,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4b3d725b0ba272f05035627e969ead4b209bdbcb",
+          "message": "docs: expand README limitations and fix stale docs (#287)\n\n## Summary\n\n- Add missing limitation sections to README for GA: no phrase queries,\nno expression indexing, no built-in faceted search, insert/update\nperformance, no background compaction\n- Each limitation includes SQL examples showing workarounds\n- Fix incorrect \"LZ4 compression\" in CHANGELOG (actual: delta encoding +\nbitpacking)\n- Update stale parallel build description in CLAUDE.md (old page pool →\nBufFile architecture)\n\n## Testing\n\nDocumentation-only changes. Verified SQL examples match existing\npatterns in the README.",
+          "timestamp": "2026-03-19T00:08:06Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4b3d725b0ba272f05035627e969ead4b209bdbcb"
+        },
+        "date": 1774249898950,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "systemx_msmarco_concurrent - Index Build Time",
+            "value": 5.175,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Insert Time",
+            "value": 0.75,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Concurrent Insert Time",
+            "value": 990393.465881,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 81.91,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 81.75,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 87.35,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 90.79,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 92.52,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 100.06,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 101.98,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 109.04,
+            "unit": "ms"
+          },
+          {
+            "name": "systemx_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 95.21,
             "unit": "ms"
           }
         ]
