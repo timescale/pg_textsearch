@@ -12,7 +12,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_PORT=55435
+TEST_PORT=55437
 TEST_DB=docid_chain_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_docid_chain_test"
 LOGFILE="${DATA_DIR}/postgres.log"

@@ -839,6 +839,7 @@ tp_rebuild_posting_lists_from_docids(
 	TpDocidPageHeader *docid_header;
 	ItemPointer		   docids;
 	BlockNumber		   current_page;
+	BlockNumber		   last_valid_page = InvalidBlockNumber;
 	Relation		   heap_rel;
 	bool			   chain_truncated = false;
 
@@ -871,9 +872,11 @@ tp_rebuild_posting_lists_from_docids(
 		 */
 		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
 		{
+			uint32 found_magic = docid_header->magic;
+
 			UnlockReleaseBuffer(docid_buf);
 
-			if (docid_header->magic == 0)
+			if (found_magic == 0)
 			{
 				/*
 				 * All-zero page: a crash occurred after the chain
@@ -899,11 +902,13 @@ tp_rebuild_posting_lists_from_docids(
 					 "0x%08X",
 					 current_page,
 					 TP_DOCID_PAGE_MAGIC,
-					 docid_header->magic);
+					 found_magic);
 			}
 			chain_truncated = true;
 			break;
 		}
+
+		last_valid_page = current_page;
 
 		/* Get docids array with proper alignment */
 		docids = (ItemPointer)((char *)docid_header +
@@ -1010,12 +1015,36 @@ tp_rebuild_posting_lists_from_docids(
 	relation_close(heap_rel, AccessShareLock);
 
 	/*
-	 * If we truncated the chain due to an invalid page, clear the
-	 * metapage's first_docid_page pointer so subsequent inserts
-	 * don't walk into the corrupted chain.
+	 * If we truncated the chain due to an invalid page, fix the
+	 * chain so the corrupted tail is unreachable. We overwrite
+	 * next_page on the last valid page rather than clearing the
+	 * entire chain, so that a second crash before the memtable
+	 * is spilled doesn't lose the valid docid pages.
 	 */
-	if (chain_truncated)
+	if (chain_truncated && last_valid_page != InvalidBlockNumber)
+	{
+		Buffer			   trunc_buf;
+		Page			   trunc_page;
+		TpDocidPageHeader *trunc_hdr;
+
+		trunc_buf = ReadBuffer(index_rel, last_valid_page);
+		LockBuffer(trunc_buf, BUFFER_LOCK_EXCLUSIVE);
+		trunc_page = BufferGetPage(trunc_buf);
+		trunc_hdr  = (TpDocidPageHeader *)PageGetContents(trunc_page);
+		trunc_hdr->next_page = InvalidBlockNumber;
+		MarkBufferDirty(trunc_buf);
+		if (!BufferIsLocal(trunc_buf))
+			FlushOneBuffer(trunc_buf);
+		UnlockReleaseBuffer(trunc_buf);
+	}
+	else if (chain_truncated)
+	{
+		/*
+		 * The very first page was invalid — no valid pages
+		 * at all. Clear the metapage pointer.
+		 */
 		tp_clear_docid_pages(index_rel);
+	}
 
 	/* Log recovery completion */
 	if (local_state && local_state->shared)
