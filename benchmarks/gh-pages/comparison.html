@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>pg_textsearch vs System X - Development Progress</title>
+    <title>pg_textsearch vs ParadeDB - Development Progress</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -64,7 +64,7 @@
             padding: 20px;
             border-left: 4px solid #0066cc;
         }
-        .summary-card.systemx {
+        .summary-card.paradedb {
             border-left-color: #6c757d;
         }
         .summary-card h4 {
@@ -119,7 +119,7 @@
         <a href="profiles/">CPU Profiles</a>
     </div>
 
-    <h1>pg_textsearch vs System X</h1>
+    <h1>pg_textsearch vs ParadeDB</h1>
     <p style="color: #666; margin-top: 0;">Development Progress Report</p>
 
     <div class="content">
@@ -133,7 +133,7 @@
             <strong>Dataset:</strong> MS MARCO 8.8M passages |
             <strong>Date:</strong> 2026-03-11 |
             <strong>Commit:</strong> <a href="https://github.com/timescale/pg_textsearch/commit/39c60d4">39c60d4</a> |
-            <strong>System X:</strong> v0.21.6
+            <strong>ParadeDB:</strong> v0.21.6
         </p>
 
         <h2>Current Status</h2>
@@ -149,8 +149,8 @@
                     <li>Native Postgres integration</li>
                 </ul>
             </div>
-            <div class="summary-card systemx">
-                <h4>System X v0.21.6</h4>
+            <div class="summary-card paradedb">
+                <h4>ParadeDB v0.21.6</h4>
                 <ul>
                     <li>Faster index build (1.6x)</li>
                     <li>Phrase queries supported</li>
@@ -173,7 +173,7 @@
                     (<a href="https://github.com/timescale/pg_textsearch/pull/249">PR #249</a>)</li>
                 <li><strong>Arena allocator</strong> - Rewritten index build with parallel page pool
                     (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>)</li>
-                <li><strong>Overall throughput</strong> - pg_textsearch now 3.9x faster than System X
+                <li><strong>Overall throughput</strong> - pg_textsearch now 3.9x faster than ParadeDB
                     on 8.8M dataset (up from 3.2x on March 3)</li>
             </ul>
         </div>
@@ -184,7 +184,7 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -208,7 +208,7 @@
 
         <div class="note">
             <strong>Index size caveat:</strong> pg_textsearch does not store term positions, so it
-            cannot support phrase queries like <code>"quick brown fox"</code>. System X stores
+            cannot support phrase queries like <code>"quick brown fox"</code>. ParadeDB stores
             positions by default, which adds significant overhead but enables phrase search.
             This accounts for most of the index size difference—it's a feature tradeoff, not
             a compression advantage.
@@ -219,7 +219,7 @@
             (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>) and
             leader-only merge
             (<a href="https://github.com/timescale/pg_textsearch/pull/244">PR #244</a>),
-            build time dropped from 270s to 234s. System X is 1.6x faster
+            build time dropped from 270s to 234s. ParadeDB is 1.6x faster
             at index build.
         </div>
 
@@ -230,7 +230,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -290,7 +290,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -350,7 +350,7 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -384,14 +384,14 @@
 
         <h3>Overall throughput: pg_textsearch 3.9x faster</h3>
         <p>
-            pg_textsearch completes 800 queries in 6.5s vs 25.2s for System X, a
+            pg_textsearch completes 800 queries in 6.5s vs 25.2s for ParadeDB, a
             <strong>3.9x throughput advantage</strong>. This is up from 3.2x on
             March 3, driven by continued scoring path optimizations.
         </p>
 
-        <h3>Index build: System X 1.6x faster</h3>
+        <h3>Index build: ParadeDB 1.6x faster</h3>
         <p>
-            System X builds its index in 143s vs 234s for pg_textsearch (1.6x faster).
+            ParadeDB builds its index in 143s vs 234s for pg_textsearch (1.6x faster).
             The arena allocator rewrite
             (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>)
             and leader-only merge
@@ -432,7 +432,7 @@
             <strong>Dataset:</strong> MS MARCO v2 — 138,364,158 passages |
             <strong>Date:</strong> 2026-03-10 |
             <strong>pg_textsearch:</strong> v1.0.0-dev (main @ <code>fb3b3b1</code>) |
-            <strong>System X:</strong> v0.21.6
+            <strong>ParadeDB:</strong> v0.21.6
         </p>
 
         <h2>Environment</h2>
@@ -478,8 +478,8 @@
                     <li>SIMD-accelerated bitpack decoding</li>
                 </ul>
             </div>
-            <div class="summary-card systemx">
-                <h4>System X v0.21.6</h4>
+            <div class="summary-card paradedb">
+                <h4>ParadeDB v0.21.6</h4>
                 <ul>
                     <li><strong>1.9x faster</strong> index build</li>
                     <li>Phrase queries supported</li>
@@ -494,7 +494,7 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -531,7 +531,7 @@
         <div class="note">
             <strong>Build time note:</strong> pg_textsearch's parallel build has two
             phases: scan/tokenize (parallel) and merge (single-threaded I/O-bound).
-            The merge phase dominates at this scale. System X uses a Tantivy-based
+            The merge phase dominates at this scale. ParadeDB uses a Tantivy-based
             backend with a different merge strategy.
         </div>
 
@@ -545,7 +545,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -604,7 +604,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -707,7 +707,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -733,7 +733,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -756,7 +756,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Ratio</th>
             </tr>
             <tr>
@@ -795,9 +795,9 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
         <h3>Tail latency: improved but mixed at p95</h3>
         <p>
             pg_textsearch has tighter tail latency on 1–5 token queries at p95.
-            On 6–8+ token queries, System X still has tighter tails. The p95
+            On 6–8+ token queries, ParadeDB still has tighter tails. The p95
             gap narrowed significantly with the cache optimizations (e.g., 5-token
-            p95 went from 200ms to 167ms, now faster than System X's 190ms).
+            p95 went from 200ms to 167ms, now faster than ParadeDB's 190ms).
             Further tail latency optimization on long queries remains an active
             area of work.
         </p>
@@ -805,16 +805,16 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
         <h3>Concurrent throughput: pg_textsearch 4.7x higher TPS</h3>
         <p>
             Under 16-client concurrent load, pg_textsearch achieves 91.4 TPS vs
-            19.4 TPS for System X — a <strong>4.7x advantage</strong>. This is
+            19.4 TPS for ParadeDB — a <strong>4.7x advantage</strong>. This is
             significantly wider than the 1.5x single-client gap, indicating that
             pg_textsearch scales much better under concurrency. pg_textsearch uses
             native Postgres buffer management and shared memory, avoiding the
-            external process coordination overhead present in System X's architecture.
+            external process coordination overhead present in ParadeDB's architecture.
         </p>
 
-        <h3>Index build: System X 1.9x faster</h3>
+        <h3>Index build: ParadeDB 1.9x faster</h3>
         <p>
-            System X builds its index in 8 min 55 s vs 17 min 37 s for
+            ParadeDB builds its index in 8 min 55 s vs 17 min 37 s for
             pg_textsearch (1.9x faster). pg_textsearch's parallel build uses 15
             workers for the scan phase, but the subsequent merge phase is
             single-threaded and I/O-bound, accounting for the majority of the
