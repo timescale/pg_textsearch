@@ -1,5 +1,4 @@
--- Upgrade from 0.6.0 to 1.0.0-dev
--- No schema changes (bm25_force_merge already exists in 0.6.0)
+-- Upgrade from 0.5.0 to 1.0.0
 
 -- Verify loaded library matches this SQL script version
 DO $$
@@ -12,13 +11,19 @@ BEGIN
             'pg_textsearch library not loaded. '
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
-    IF lib_ver OPERATOR(pg_catalog.<>) '1.0.0-dev' THEN
+    IF lib_ver OPERATOR(pg_catalog.<>) '1.0.0' THEN
         RAISE EXCEPTION
             'pg_textsearch library version mismatch: loaded=%, expected=%. '
             'Restart the server after installing the new binary.',
-            lib_ver, '1.0.0-dev';
+            lib_ver, '1.0.0';
     END IF;
 END $$;
+
+-- New function: force-merge all segments into one
+CREATE FUNCTION bm25_force_merge(index_name text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'tp_force_merge'
+LANGUAGE C VOLATILE STRICT;
 
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION bm25_dump_index(text) FROM PUBLIC;
@@ -30,6 +35,6 @@ DROP FUNCTION IF EXISTS bm25_debug_pageviz(text, text);
 
 DO $$
 BEGIN
-    RAISE WARNING 'pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.';
+    RAISE INFO 'pg_textsearch v1.0.0';
 END
 $$;

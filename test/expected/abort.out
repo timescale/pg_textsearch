@@ -7,7 +7,7 @@
 -- are forbidden, so the hook must skip its work.
 --
 CREATE EXTENSION pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
+INFO:  pg_textsearch v1.0.0
 -- Scenario 1: Basic abort with no pg_textsearch objects
 -- This is the original bug report (#247): ROLLBACK after an error in a
 -- transaction that has nothing to do with BM25 should not crash.

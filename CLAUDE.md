@@ -10,7 +10,7 @@ ranking. (Internal name: Tapir) It implements a memtable-based architecture
 similar to LSM trees, with in-memory structures that spill to disk segments
 for scalability.
 
-**Current Version**: 1.0.0-dev
+**Current Version**: 1.0.0
 
 **Postgres Version Support**: 17, 18 (tested in CI)
 
@@ -54,9 +54,13 @@ src/
 ├── am/                # Access method implementation
 │   ├── handler.c      # Index handler (amhandler)
 │   ├── build.c        # Index build and insert
+│   ├── build_context.c # Build context management
+│   ├── build_parallel.c # Parallel index build
 │   ├── scan.c         # Index scan operations
 │   └── vacuum.c       # Vacuum support
 ├── memtable/          # In-memory index structures
+│   ├── arena.c        # Memory arena allocator
+│   ├── expull.c       # Expandable pull buffer
 │   ├── memtable.c     # Memtable management
 │   ├── posting.c      # Posting list data structures
 │   ├── stringtable.c  # String interning hash table
@@ -66,6 +70,7 @@ src/
 │   ├── segment.c      # Segment read/write operations
 │   ├── dictionary.c   # Term dictionary encoding
 │   ├── docmap.c       # Document ID mapping
+│   ├── compression.c  # Posting list compression
 │   ├── scan.c         # Segment scan operations
 │   ├── merge.c        # Segment compaction/merge
 │   └── source.c       # Data source interface for segments
@@ -139,7 +144,6 @@ make format-single FILE=path/to/file.c  # format specific file
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `pg_textsearch.default_limit` | Default limit for queries without LIMIT | 1000 |
-| `pg_textsearch.enable_bmw` | Enable Block-Max WAND optimization | true |
 | `pg_textsearch.log_scores` | Log BM25 scores during scans | false |
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill | 100000 |

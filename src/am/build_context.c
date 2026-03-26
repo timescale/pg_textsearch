@@ -55,10 +55,10 @@ tp_build_context_create(Size budget)
 	info.hash	   = build_term_hash;
 	info.match	   = build_term_match;
 	ctx->terms_ht  = hash_create(
-			 "build_terms",
-			 16384, /* initial size */
-			 &info,
-			 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+			"build_terms",
+			16384, /* initial size */
+			&info,
+			HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 
 	/* Allocate flat arrays for documents */
 	ctx->docs_capacity = TP_BUILD_INITIAL_DOCS;
@@ -600,7 +600,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 					Page  page = BufferGetPage(dict_buf);
 					char *dest = (char *)page + SizeOfPageHeaderData +
 								 page_offset;
-					char *src = (char *)&entry;
+					char *src  = (char *)&entry;
 
 					memcpy(dest, src, bytes_remaining);
 					MarkBufferDirty(dict_buf);
@@ -1026,10 +1026,10 @@ tp_build_context_reset(TpBuildContext *ctx)
 		info.hash	   = build_term_hash;
 		info.match	   = build_term_match;
 		ctx->terms_ht  = hash_create(
-				 "build_terms",
-				 16384,
-				 &info,
-				 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+				"build_terms",
+				16384,
+				&info,
+				HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 	}
 
 	/* Reset document arrays (keep allocated memory) */
