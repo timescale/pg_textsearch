@@ -105,7 +105,7 @@ typedef struct TpLocalIndexState
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 extern TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
-extern TpLocalIndexState *
+extern TpLocalIndexState			 *
 tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
 extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
@@ -113,9 +113,9 @@ extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
 extern void tp_cleanup_build_mode_on_abort(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 extern void				  tp_rebuild_posting_lists_from_docids(
-		Relation		   index_rel,
-		TpLocalIndexState *local_state,
-		TpIndexMetaPage	   metap);
+					  Relation			 index_rel,
+					  TpLocalIndexState *local_state,
+					  TpIndexMetaPage	 metap);
 
 /* Helper function for accessing memtable from local state */
 extern TpMemtable *get_memtable(TpLocalIndexState *local_state);

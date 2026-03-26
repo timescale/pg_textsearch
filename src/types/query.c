@@ -910,9 +910,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		/* Calculate BM25 score for each query term */
 		for (q_i = 0; q_i < query_term_count; q_i++)
 		{
-			char		  *query_lexeme_raw = query_lexemes_start +
-											  query_entries[q_i].pos;
-			int			   lexeme_len		= query_entries[q_i].len;
+			char *query_lexeme_raw = query_lexemes_start +
+									 query_entries[q_i].pos;
+			int			   lexeme_len = query_entries[q_i].len;
 			char		  *query_lexeme;
 			TpPostingList *posting_list;
 			float4		   idf;

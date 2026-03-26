@@ -544,8 +544,8 @@ tp_build_parallel(
 
 		for (i = 0; i < launched; i++)
 		{
-			BlockNumber count			  = blocks_per_worker +
-											(i < (int)remainder ? 1 : 0);
+			BlockNumber count = blocks_per_worker +
+								(i < (int)remainder ? 1 : 0);
 			shared->worker_start_block[i] = cursor;
 			shared->worker_end_block[i]	  = cursor + count;
 			cursor += count;
