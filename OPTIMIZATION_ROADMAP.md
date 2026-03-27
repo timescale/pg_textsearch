@@ -1,14 +1,14 @@
 # pg_textsearch: Storage and Query Optimization Design
 
-**Status**: Mostly implemented (v0.5.0)
+**Status**: Production-ready (v1.0.0, March 2026)
 **Author**: Todd J. Green @ Tiger Data
-**Last updated**: 2026-01-30
+**Last updated**: 2026-03-27
 
 ---
 
 ## Implementation Status
 
-Most high-impact query and indexing optimizations are now implemented:
+All high-impact query and indexing optimizations shipped in v1.0.0:
 
 | Optimization | Status | Impact |
 |--------------|--------|--------|
@@ -27,12 +27,13 @@ Most high-impact query and indexing optimizations are now implemented:
 **Current performance**: Query performance is competitive with other leading
 Postgres-based solutions. See [benchmarks](https://timescale.github.io/pg_textsearch/benchmarks/comparison.html).
 
-**Main remaining work**: Write concurrency is currently limited—inserts are
-essentially serialized through a single memtable lock. Relaxing this would
-improve concurrent insert throughput. Many-token queries (8+ terms) are slower
-than they could be—our current BMW implementation evaluates all terms at each
-candidate document; a buffered union approach could reduce overhead. Further
-gains would come from SIMD decoding (minor) or dictionary compression (size).
+**Post-1.0 optimization priorities**: Write concurrency is currently
+limited — inserts are essentially serialized through a single memtable lock.
+Relaxing this would improve concurrent insert throughput. Many-token queries
+(8+ terms) are slower than they could be — our current BMW implementation
+evaluates all terms at each candidate document; a buffered union approach
+could reduce overhead. Further gains would come from SIMD decoding (minor) or
+dictionary compression (size).
 
 ---
 
@@ -107,9 +108,9 @@ on complex queries. From [Elastic's analysis][7]: "WAND typically evaluates
 fewer hits than MAXSCORE but with a higher per-hit overhead." For queries with
 8+ terms, exhaustive evaluation can outperform both.
 
-**Our approach**: Implement block storage first (Phase 1), then choose between
-WAND and MAXSCORE based on our workload characteristics (Phase 2). The storage
-format supports either algorithm.
+**Our approach**: We implemented block storage (Phase 1) and chose WAND for our
+query executor (Phase 2). The storage format supports either algorithm, so
+switching to MAXSCORE remains an option if workload characteristics change.
 
 ### Algorithm Overview
 
@@ -704,10 +705,13 @@ implement. The block storage format we need anyway.
 
 ## Migration and Compatibility
 
-Format changes require `REINDEX`. At this stage of development, we don't
-support reading old segment formats—users must rebuild indexes after upgrades
-that change the on-disk format. This keeps the implementation simple and avoids
-carrying compatibility code for formats that may never see production use.
+Starting with v1.0.0, backwards compatibility commitments are in effect.
+On-disk format changes that break existing indexes will be documented in
+release notes and require `REINDEX`. The segment format version
+(`TP_SEGMENT_FORMAT_VERSION`) and metapage version (`TP_METAPAGE_VERSION`)
+are checked at load time to detect incompatible indexes.
+
+See [RELEASING.md](RELEASING.md) for the full compatibility matrix.
 
 ---
 
@@ -836,21 +840,32 @@ Goal: Close the remaining gap to ParadeDB.
 - TermInfoStore with 256-term blocks and bitpacking
 - Achieves ~2-4 bytes per term (vs our current ~20 bytes)
 
-### v1.0.0: Production Ready (Target: Feb 2026)
-- [ ] Performance tuning based on benchmarks
-- [ ] Multi-level skip list (optional, for very long lists)
-- [ ] Roaring bitmaps for deleted docs (optional)
+### v1.0.0: Production Ready (released Mar 2026)
+- [x] Performance tuning based on benchmarks
+- [x] Security hardening (superuser-only debug functions)
+- [x] Crash recovery validation
+- [x] Concurrent stress testing
+- [x] Replication support (physical and logical)
+
+### Post-1.0: Future Optimizations
+- [ ] Multi-level skip list (for very long posting lists)
+- [ ] Roaring bitmaps for deleted docs
+- [ ] Dictionary compression (front-coding, bitpacked entries)
+- [ ] SIMD-accelerated decoding
+- [ ] Many-token query optimization (buffered union)
+- [ ] Write concurrency (relaxed memtable locking)
+- [ ] Background compaction
 
 ---
 
 ## Success Metrics
 
-| Metric | Current | Target | How to Measure |
-|--------|---------|--------|----------------|
-| Top-10 latency ($10^5$ matches) | ~50ms | <5ms | Cranfield benchmark |
-| Top-10 latency ($10^6$ matches) | ~500ms | <20ms | Synthetic benchmark |
-| Storage per posting | 10 bytes | 3-4 bytes | Index size / posting count |
-| Index build time | baseline | <2x baseline | Cranfield benchmark |
+| Metric | Pre-optimization | v1.0.0 | Target | Status |
+|--------|-----------------|--------|--------|--------|
+| Top-10 latency ($10^5$ matches) | ~50ms | <5ms | <5ms | ✅ Met |
+| Top-10 latency ($10^6$ matches) | ~500ms | <20ms | <20ms | ✅ Met |
+| Storage per posting | 10 bytes | ~5 bytes | 3-4 bytes | Partial (dictionary compression pending) |
+| Index build time | baseline | <2x baseline | <2x baseline | ✅ Met (parallel builds) |
 
 ---
 
@@ -929,20 +944,14 @@ Currently, we punt on explicit DELETE tracking in the index:
 
 ---
 
-## Open Questions for Discussion
+## Open Questions
 
-1. **Block size**: 128 (Tantivy) vs 256 (Lucene)? Should it be configurable?
+1. **Block size**: Currently 128 (matching Tantivy). Lucene uses 256. Not
+   configurable. Revisit if benchmarks show a different size is better for
+   our workloads.
 
-2. **Compression library**: Implement FOR/PFOR ourselves, or use existing
-   library (e.g., simdcomp, TurboPFor)?
-
-3. **Memtable block structure**: The memtable stays linear (no blocks) since
-   it's small and write-optimized. BMW only applies to segments.
-
-4. **Roaring scope**: Just deleted docs, or also filter caching?
-
-5. **Benchmark suite**: What queries/datasets best represent our target
-   workload?
+2. **Roaring scope**: Just deleted docs, or also filter caching? Deleted
+   doc tracking is the higher priority for correctness of result counts.
 
 ---
 
