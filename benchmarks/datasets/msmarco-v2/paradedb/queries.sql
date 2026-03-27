@@ -1,26 +1,26 @@
--- MS MARCO v2 Passage Ranking - Query Benchmarks (System X)
--- Runs various query workloads against the indexed MS MARCO v2 collection using System X
+-- MS MARCO v2 Passage Ranking - Query Benchmarks (ParadeDB)
+-- Runs various query workloads against the indexed MS MARCO v2 collection using ParadeDB
 -- Outputs structured timing data for historical tracking
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== MS MARCO v2 Query Benchmarks (System X) ==='
+\echo '=== MS MARCO v2 Query Benchmarks (ParadeDB) ==='
 \echo ''
 
 -- Load benchmark queries (pre-sampled by token count)
 \echo 'Loading benchmark queries...'
-DROP TABLE IF EXISTS benchmark_queries_systemx;
-CREATE TABLE benchmark_queries_systemx (
+DROP TABLE IF EXISTS benchmark_queries_paradedb;
+CREATE TABLE benchmark_queries_paradedb (
     query_id INTEGER,
     query_text TEXT,
     token_bucket INTEGER
 );
-\copy benchmark_queries_systemx FROM 'benchmarks/datasets/msmarco-v2/benchmark_queries.tsv' WITH (FORMAT text, DELIMITER E'\t')
+\copy benchmark_queries_paradedb FROM 'benchmarks/datasets/msmarco-v2/benchmark_queries.tsv' WITH (FORMAT text, DELIMITER E'\t')
 
 -- Verify load
-SELECT 'Loaded ' || COUNT(*) || ' benchmark queries' as status FROM benchmark_queries_systemx;
-SELECT token_bucket, COUNT(*) as count FROM benchmark_queries_systemx GROUP BY token_bucket ORDER BY token_bucket;
+SELECT 'Loaded ' || COUNT(*) || ' benchmark queries' as status FROM benchmark_queries_paradedb;
+SELECT token_bucket, COUNT(*) as count FROM benchmark_queries_paradedb GROUP BY token_bucket ORDER BY token_bucket;
 
 -- Warm up: run queries from each bucket to ensure index is cached
 \echo ''
@@ -29,8 +29,8 @@ DO $$
 DECLARE
     q record;
 BEGIN
-    FOR q IN SELECT query_text FROM benchmark_queries_systemx ORDER BY random() LIMIT 50 LOOP
-        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_systemx
+    FOR q IN SELECT query_text FROM benchmark_queries_paradedb ORDER BY random() LIMIT 50 LOOP
+        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_paradedb
                  WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY paradedb.score(passage_id) DESC
                  LIMIT 10' USING q.query_text;
@@ -54,8 +54,8 @@ CREATE TEMP TABLE bucket_results (
 );
 
 -- Function to benchmark a bucket and return percentiles
--- Uses System X match() to handle arbitrary query strings
-CREATE OR REPLACE FUNCTION benchmark_bucket_systemx(bucket int)
+-- Uses ParadeDB match() to handle arbitrary query strings
+CREATE OR REPLACE FUNCTION benchmark_bucket_paradedb(bucket int)
 RETURNS TABLE(p50_ms numeric, p95_ms numeric, p99_ms numeric, avg_ms numeric, num_queries int, total_results bigint) AS $$
 DECLARE
     q record;
@@ -69,9 +69,9 @@ DECLARE
 BEGIN
     times := ARRAY[]::numeric[];
 
-    FOR q IN SELECT query_text FROM benchmark_queries_systemx WHERE token_bucket = bucket ORDER BY query_id LOOP
+    FOR q IN SELECT query_text FROM benchmark_queries_paradedb WHERE token_bucket = bucket ORDER BY query_id LOOP
         start_ts := clock_timestamp();
-        EXECUTE 'SELECT COUNT(*) FROM (SELECT passage_id FROM msmarco_v2_passages_systemx
+        EXECUTE 'SELECT COUNT(*) FROM (SELECT passage_id FROM msmarco_v2_passages_paradedb
                  WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY paradedb.score(passage_id) DESC
                  LIMIT 10) t' INTO result_count USING q.query_text;
@@ -95,53 +95,53 @@ $$ LANGUAGE plpgsql;
 
 -- Run benchmarks for each token bucket (results saved for weighted avg)
 \echo 'Token bucket 1 (1 search token):'
-INSERT INTO bucket_results SELECT 1, * FROM benchmark_bucket_systemx(1);
+INSERT INTO bucket_results SELECT 1, * FROM benchmark_bucket_paradedb(1);
 SELECT 'LATENCY_BUCKET_1: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 1;
 
 \echo ''
 \echo 'Token bucket 2 (2 search tokens):'
-INSERT INTO bucket_results SELECT 2, * FROM benchmark_bucket_systemx(2);
+INSERT INTO bucket_results SELECT 2, * FROM benchmark_bucket_paradedb(2);
 SELECT 'LATENCY_BUCKET_2: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 2;
 
 \echo ''
 \echo 'Token bucket 3 (3 search tokens):'
-INSERT INTO bucket_results SELECT 3, * FROM benchmark_bucket_systemx(3);
+INSERT INTO bucket_results SELECT 3, * FROM benchmark_bucket_paradedb(3);
 SELECT 'LATENCY_BUCKET_3: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 3;
 
 \echo ''
 \echo 'Token bucket 4 (4 search tokens):'
-INSERT INTO bucket_results SELECT 4, * FROM benchmark_bucket_systemx(4);
+INSERT INTO bucket_results SELECT 4, * FROM benchmark_bucket_paradedb(4);
 SELECT 'LATENCY_BUCKET_4: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 4;
 
 \echo ''
 \echo 'Token bucket 5 (5 search tokens):'
-INSERT INTO bucket_results SELECT 5, * FROM benchmark_bucket_systemx(5);
+INSERT INTO bucket_results SELECT 5, * FROM benchmark_bucket_paradedb(5);
 SELECT 'LATENCY_BUCKET_5: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 5;
 
 \echo ''
 \echo 'Token bucket 6 (6 search tokens):'
-INSERT INTO bucket_results SELECT 6, * FROM benchmark_bucket_systemx(6);
+INSERT INTO bucket_results SELECT 6, * FROM benchmark_bucket_paradedb(6);
 SELECT 'LATENCY_BUCKET_6: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 6;
 
 \echo ''
 \echo 'Token bucket 7 (7 search tokens):'
-INSERT INTO bucket_results SELECT 7, * FROM benchmark_bucket_systemx(7);
+INSERT INTO bucket_results SELECT 7, * FROM benchmark_bucket_paradedb(7);
 SELECT 'LATENCY_BUCKET_7: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 7;
 
 \echo ''
 \echo 'Token bucket 8 (8+ search tokens):'
-INSERT INTO bucket_results SELECT 8, * FROM benchmark_bucket_systemx(8);
+INSERT INTO bucket_results SELECT 8, * FROM benchmark_bucket_paradedb(8);
 SELECT 'LATENCY_BUCKET_8: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
 FROM bucket_results WHERE bucket = 8;
 
-DROP FUNCTION benchmark_bucket_systemx;
+DROP FUNCTION benchmark_bucket_paradedb;
 
 -- ============================================================
 -- Weighted-Average Query Latency (MS-MARCO v1 distribution)
@@ -180,8 +180,8 @@ DROP TABLE bucket_results;
 \echo '=== Benchmark 2: Query Throughput (3 iterations) ==='
 
 -- Helper function for throughput benchmark
--- Uses System X match() to handle special characters in query strings
-CREATE OR REPLACE FUNCTION benchmark_throughput_systemx(iterations int DEFAULT 3)
+-- Uses ParadeDB match() to handle special characters in query strings
+CREATE OR REPLACE FUNCTION benchmark_throughput_paradedb(iterations int DEFAULT 3)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric, queries_run int) AS $$
 DECLARE
     q record;
@@ -192,11 +192,11 @@ DECLARE
     sorted_times numeric[];
     query_count int;
 BEGIN
-    SELECT COUNT(*) INTO query_count FROM benchmark_queries_systemx;
+    SELECT COUNT(*) INTO query_count FROM benchmark_queries_paradedb;
 
     -- Warmup: run all queries once
-    FOR q IN SELECT query_text FROM benchmark_queries_systemx ORDER BY query_id LOOP
-        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_systemx
+    FOR q IN SELECT query_text FROM benchmark_queries_paradedb ORDER BY query_id LOOP
+        EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_paradedb
                  WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                  ORDER BY paradedb.score(passage_id) DESC
                  LIMIT 10' USING q.query_text;
@@ -206,8 +206,8 @@ BEGIN
     times := ARRAY[]::numeric[];
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
-        FOR q IN SELECT query_text FROM benchmark_queries_systemx ORDER BY query_id LOOP
-            EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_systemx
+        FOR q IN SELECT query_text FROM benchmark_queries_paradedb ORDER BY query_id LOOP
+            EXECUTE 'SELECT passage_id FROM msmarco_v2_passages_paradedb
                      WHERE passage_text @@@ paradedb.match(''passage_text'', $1)
                      ORDER BY paradedb.score(passage_id) DESC
                      LIMIT 10' USING q.query_text;
@@ -227,9 +227,54 @@ $$ LANGUAGE plpgsql;
 
 SELECT 'Execution Time: ' || round(median_ms / queries_run, 3) || ' ms (min=' || round(min_ms / queries_run, 3) || ', max=' || round(max_ms / queries_run, 3) || ')' as result,
        'THROUGHPUT_RESULT: ' || queries_run || ' queries in ' || round(median_ms, 2) || ' ms (avg ' || round(median_ms / queries_run, 2) || ' ms/query)' as summary
-FROM benchmark_throughput_systemx();
+FROM benchmark_throughput_paradedb();
 
-DROP FUNCTION benchmark_throughput_systemx;
+DROP FUNCTION benchmark_throughput_paradedb;
+
+-- ============================================================
+-- Benchmark 3: Concurrent Throughput (pgbench, weighted)
+-- ============================================================
+-- Uses a weighted query pool matching MS-MARCO v1 lexeme distribution
+-- so that query mix reflects real-world traffic (72.6% have 2-4 lexemes).
+-- Run separately via pgbench:
+--   pgbench -n -c 16 -j 16 -T 60 \
+--     -f benchmarks/datasets/msmarco-v2/pgbench-throughput-paradedb.sql
+--
+-- Setup: create weighted_query_pool table first:
+\echo ''
+\echo '=== Benchmark 3: Concurrent Throughput Setup ==='
+\echo 'Creating weighted query pool (MS-MARCO v1 distribution)...'
+
+DROP TABLE IF EXISTS weighted_query_pool;
+CREATE TABLE weighted_query_pool AS
+WITH numbered AS (
+    SELECT query_text, token_bucket,
+           ROW_NUMBER() OVER (PARTITION BY token_bucket ORDER BY query_id) as rn,
+           COUNT(*) OVER (PARTITION BY token_bucket) as bucket_size
+    FROM benchmark_queries_paradedb
+)
+SELECT n.query_text, n.token_bucket, gs.i as pool_idx
+FROM (VALUES (1, 35), (2, 163), (3, 302), (4, 261),
+             (5, 142), (6, 59), (7, 22), (8, 16)) AS w(bucket, target),
+     LATERAL generate_series(1, w.target) AS gs(i),
+     LATERAL (
+         SELECT query_text, token_bucket
+         FROM numbered
+         WHERE token_bucket = w.bucket
+           AND rn = ((gs.i - 1) % bucket_size) + 1
+     ) n;
+ALTER TABLE weighted_query_pool ADD COLUMN id SERIAL;
+CREATE INDEX ON weighted_query_pool(id);
+
+SELECT 'WEIGHTED_POOL: ' || COUNT(*) || ' queries ('
+    || string_agg(bucket || '=' || cnt, ', ' ORDER BY bucket) || ')'
+    as pool_summary
+FROM (SELECT token_bucket::text as bucket, COUNT(*)::text as cnt
+      FROM weighted_query_pool GROUP BY token_bucket) t;
+
+\echo ''
+\echo 'Weighted query pool created. Run concurrent benchmark with:'
+\echo '  pgbench -n -c 16 -j 16 -T 60 -f benchmarks/datasets/msmarco-v2/pgbench-throughput-paradedb.sql'
 
 -- ============================================================
 -- Index Statistics
@@ -238,13 +283,13 @@ DROP FUNCTION benchmark_throughput_systemx;
 \echo '=== Index Statistics ==='
 
 SELECT
-    'msmarco_v2_systemx_idx' as index_name,
-    pg_size_pretty(pg_relation_size('msmarco_v2_systemx_idx')) as index_size,
-    pg_size_pretty(pg_relation_size('msmarco_v2_passages_systemx')) as table_size,
-    (SELECT COUNT(*) FROM msmarco_v2_passages_systemx) as num_documents;
+    'msmarco_v2_paradedb_idx' as index_name,
+    pg_size_pretty(pg_relation_size('msmarco_v2_paradedb_idx')) as index_size,
+    pg_size_pretty(pg_relation_size('msmarco_v2_passages_paradedb')) as table_size,
+    (SELECT COUNT(*) FROM msmarco_v2_passages_paradedb) as num_documents;
 
--- Cleanup
-DROP TABLE benchmark_queries_systemx;
+-- Cleanup (keep weighted_query_pool for pgbench)
+DROP TABLE benchmark_queries_paradedb;
 
 \echo ''
-\echo '=== MS MARCO v2 Query Benchmarks Complete (System X) ==='
+\echo '=== MS MARCO v2 Query Benchmarks Complete (ParadeDB) ==='
