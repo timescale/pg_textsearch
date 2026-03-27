@@ -180,7 +180,7 @@ make format-single FILE=path/to/file.c  # format specific file
 
 ### Block-Max WAND Optimization
 
-When `pg_textsearch.enable_bmw` is enabled (default), top-k queries use:
+Top-k queries use Block-Max WAND optimization:
 - Block-level upper bounds computed during index build
 - Early termination when blocks cannot contribute to results
 - Skip lists for fast block seeking in segments
