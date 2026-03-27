@@ -238,7 +238,7 @@ DROP FUNCTION benchmark_throughput_paradedb;
 -- so that query mix reflects real-world traffic (72.6% have 2-4 lexemes).
 -- Run separately via pgbench:
 --   pgbench -n -c 16 -j 16 -T 60 \
---     -f benchmarks/datasets/msmarco-v2/pgbench-throughput-systemx.sql
+--     -f benchmarks/datasets/msmarco-v2/pgbench-throughput-paradedb.sql
 --
 -- Setup: create weighted_query_pool table first:
 \echo ''
@@ -251,7 +251,7 @@ WITH numbered AS (
     SELECT query_text, token_bucket,
            ROW_NUMBER() OVER (PARTITION BY token_bucket ORDER BY query_id) as rn,
            COUNT(*) OVER (PARTITION BY token_bucket) as bucket_size
-    FROM benchmark_queries_systemx
+    FROM benchmark_queries_paradedb
 )
 SELECT n.query_text, n.token_bucket, gs.i as pool_idx
 FROM (VALUES (1, 35), (2, 163), (3, 302), (4, 261),
@@ -274,7 +274,7 @@ FROM (SELECT token_bucket::text as bucket, COUNT(*)::text as cnt
 
 \echo ''
 \echo 'Weighted query pool created. Run concurrent benchmark with:'
-\echo '  pgbench -n -c 16 -j 16 -T 60 -f benchmarks/datasets/msmarco-v2/pgbench-throughput-systemx.sql'
+\echo '  pgbench -n -c 16 -j 16 -T 60 -f benchmarks/datasets/msmarco-v2/pgbench-throughput-paradedb.sql'
 
 -- ============================================================
 -- Index Statistics
