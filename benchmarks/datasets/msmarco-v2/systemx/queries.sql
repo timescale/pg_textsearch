@@ -232,6 +232,51 @@ FROM benchmark_throughput_systemx();
 DROP FUNCTION benchmark_throughput_systemx;
 
 -- ============================================================
+-- Benchmark 3: Concurrent Throughput (pgbench, weighted)
+-- ============================================================
+-- Uses a weighted query pool matching MS-MARCO v1 lexeme distribution
+-- so that query mix reflects real-world traffic (72.6% have 2-4 lexemes).
+-- Run separately via pgbench:
+--   pgbench -n -c 16 -j 16 -T 60 \
+--     -f benchmarks/datasets/msmarco-v2/pgbench-throughput-systemx.sql
+--
+-- Setup: create weighted_query_pool table first:
+\echo ''
+\echo '=== Benchmark 3: Concurrent Throughput Setup ==='
+\echo 'Creating weighted query pool (MS-MARCO v1 distribution)...'
+
+DROP TABLE IF EXISTS weighted_query_pool;
+CREATE TABLE weighted_query_pool AS
+WITH numbered AS (
+    SELECT query_text, token_bucket,
+           ROW_NUMBER() OVER (PARTITION BY token_bucket ORDER BY query_id) as rn,
+           COUNT(*) OVER (PARTITION BY token_bucket) as bucket_size
+    FROM benchmark_queries_systemx
+)
+SELECT n.query_text, n.token_bucket, gs.i as pool_idx
+FROM (VALUES (1, 35), (2, 163), (3, 302), (4, 261),
+             (5, 142), (6, 59), (7, 22), (8, 16)) AS w(bucket, target),
+     LATERAL generate_series(1, w.target) AS gs(i),
+     LATERAL (
+         SELECT query_text, token_bucket
+         FROM numbered
+         WHERE token_bucket = w.bucket
+           AND rn = ((gs.i - 1) % bucket_size) + 1
+     ) n;
+ALTER TABLE weighted_query_pool ADD COLUMN id SERIAL;
+CREATE INDEX ON weighted_query_pool(id);
+
+SELECT 'WEIGHTED_POOL: ' || COUNT(*) || ' queries ('
+    || string_agg(bucket || '=' || cnt, ', ' ORDER BY bucket) || ')'
+    as pool_summary
+FROM (SELECT token_bucket::text as bucket, COUNT(*)::text as cnt
+      FROM weighted_query_pool GROUP BY token_bucket) t;
+
+\echo ''
+\echo 'Weighted query pool created. Run concurrent benchmark with:'
+\echo '  pgbench -n -c 16 -j 16 -T 60 -f benchmarks/datasets/msmarco-v2/pgbench-throughput-systemx.sql'
+
+-- ============================================================
 -- Index Statistics
 -- ============================================================
 \echo ''
@@ -243,7 +288,7 @@ SELECT
     pg_size_pretty(pg_relation_size('msmarco_v2_passages_systemx')) as table_size,
     (SELECT COUNT(*) FROM msmarco_v2_passages_systemx) as num_documents;
 
--- Cleanup
+-- Cleanup (keep weighted_query_pool for pgbench)
 DROP TABLE benchmark_queries_systemx;
 
 \echo ''
