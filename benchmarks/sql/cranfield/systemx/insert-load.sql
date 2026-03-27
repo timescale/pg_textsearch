@@ -1,21 +1,21 @@
--- Cranfield Collection - ParadeDB Insert Loading
--- Creates ParadeDB BM25 index on EMPTY table, then loads data
+-- Cranfield Collection - System X Insert Loading
+-- Creates System X BM25 index on EMPTY table, then loads data
 -- via inserts to measure insert-path indexing performance
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo 'Cranfield ParadeDB - Insert Load Phase'
+\echo 'Cranfield System X - Insert Load Phase'
 \echo '======================================='
 
--- Ensure ParadeDB extension is installed
+-- Ensure System X extension is installed
 CREATE EXTENSION IF NOT EXISTS pg_search;
 
 -- Clean up any existing tables
 \echo 'Cleaning up existing tables...'
-DROP TABLE IF EXISTS cranfield_paradedb_documents CASCADE;
-DROP TABLE IF EXISTS cranfield_paradedb_queries CASCADE;
-DROP TABLE IF EXISTS cranfield_paradedb_expected_rankings CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_documents CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_queries CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_expected_rankings CASCADE;
 DROP TABLE IF EXISTS cranfield_full_documents CASCADE;
 DROP TABLE IF EXISTS cranfield_full_queries CASCADE;
 DROP TABLE IF EXISTS cranfield_full_expected_rankings CASCADE;
@@ -48,9 +48,9 @@ CREATE TABLE cranfield_full_expected_rankings (
     PRIMARY KEY (query_id, doc_id)
 );
 
--- Create the ParadeDB target tables
-\echo 'Creating ParadeDB documents table...'
-CREATE TABLE cranfield_paradedb_documents (
+-- Create the System X target tables
+\echo 'Creating System X documents table...'
+CREATE TABLE cranfield_systemx_documents (
     doc_id INTEGER PRIMARY KEY,
     title TEXT,
     author TEXT,
@@ -63,12 +63,12 @@ CREATE TABLE cranfield_paradedb_documents (
     ) STORED
 );
 
-CREATE TABLE cranfield_paradedb_queries (
+CREATE TABLE cranfield_systemx_queries (
     query_id INTEGER PRIMARY KEY,
     query_text TEXT NOT NULL
 );
 
-CREATE TABLE cranfield_paradedb_expected_rankings (
+CREATE TABLE cranfield_systemx_expected_rankings (
     query_id INTEGER NOT NULL,
     doc_id INTEGER NOT NULL,
     rank INTEGER NOT NULL,
@@ -76,10 +76,10 @@ CREATE TABLE cranfield_paradedb_expected_rankings (
     PRIMARY KEY (query_id, doc_id)
 );
 
--- Create ParadeDB BM25 index on the EMPTY table
-\echo 'Creating ParadeDB BM25 index on empty table...'
-CREATE INDEX cranfield_paradedb_idx
-    ON cranfield_paradedb_documents
+-- Create System X BM25 index on the EMPTY table
+\echo 'Creating System X BM25 index on empty table...'
+CREATE INDEX cranfield_systemx_idx
+    ON cranfield_systemx_documents
     USING bm25 (doc_id, full_text)
     WITH (
         key_field = 'doc_id',
@@ -98,17 +98,17 @@ CREATE INDEX cranfield_paradedb_idx
 \echo 'Loading Cranfield collection...'
 \i dataset.sql
 
--- Insert data into indexed ParadeDB table
+-- Insert data into indexed System X table
 \echo 'INSERT_TIME:'
-\echo 'Inserting data into indexed ParadeDB table...'
-INSERT INTO cranfield_paradedb_documents
+\echo 'Inserting data into indexed System X table...'
+INSERT INTO cranfield_systemx_documents
     (doc_id, title, author, bibliography, content)
 SELECT doc_id, title, author, bibliography, content
 FROM cranfield_full_documents;
 
-INSERT INTO cranfield_paradedb_queries
+INSERT INTO cranfield_systemx_queries
     SELECT * FROM cranfield_full_queries;
-INSERT INTO cranfield_paradedb_expected_rankings
+INSERT INTO cranfield_systemx_expected_rankings
     SELECT * FROM cranfield_full_expected_rankings;
 
 -- Drop temp tables
@@ -116,9 +116,9 @@ DROP TABLE cranfield_full_documents CASCADE;
 DROP TABLE cranfield_full_queries CASCADE;
 DROP TABLE cranfield_full_expected_rankings CASCADE;
 
--- Compact index segments (ParadeDB merges during VACUUM)
+-- Compact index segments (System X merges during VACUUM)
 \echo 'INDEX_VACUUM:'
-VACUUM cranfield_paradedb_documents;
+VACUUM cranfield_systemx_documents;
 
 -- Report index and table sizes
 \echo ''
@@ -126,18 +126,18 @@ VACUUM cranfield_paradedb_documents;
 SELECT
     'INDEX_SIZE:' as label,
     pg_size_pretty(
-        pg_relation_size('cranfield_paradedb_idx')
+        pg_relation_size('cranfield_systemx_idx')
     ) as index_size,
     pg_relation_size(
-        'cranfield_paradedb_idx'
+        'cranfield_systemx_idx'
     ) as index_bytes;
 SELECT
     'TABLE_SIZE:' as label,
     pg_size_pretty(
         pg_total_relation_size(
-            'cranfield_paradedb_documents')
+            'cranfield_systemx_documents')
     ) as table_size,
     pg_total_relation_size(
-        'cranfield_paradedb_documents') as table_bytes;
+        'cranfield_systemx_documents') as table_bytes;
 
-\echo 'ParadeDB insert load phase completed.'
+\echo 'System X insert load phase completed.'

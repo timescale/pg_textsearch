@@ -1,18 +1,18 @@
--- Wikipedia Dataset - Query Benchmarks (ParadeDB)
+-- Wikipedia Dataset - Query Benchmarks (System X)
 -- Runs various query workloads against the indexed Wikipedia collection
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== Wikipedia Query Benchmarks (ParadeDB) ==='
+\echo '=== Wikipedia Query Benchmarks (System X) ==='
 \echo ''
 
 -- Get dataset size
-SELECT 'Dataset size: ' || COUNT(*) || ' articles' as info FROM wikipedia_articles_paradedb;
+SELECT 'Dataset size: ' || COUNT(*) || ' articles' as info FROM wikipedia_articles_systemx;
 
 -- Warm up
 \echo 'Warming up index...'
-SELECT article_id FROM wikipedia_articles_paradedb
+SELECT article_id FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'test')
 ORDER BY paradedb.score(article_id) DESC
 LIMIT 10;
@@ -25,7 +25,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'algorithm')
 ORDER BY score DESC
 LIMIT 10;
@@ -35,7 +35,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'history')
 ORDER BY score DESC
 LIMIT 10;
@@ -45,7 +45,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'science')
 ORDER BY score DESC
 LIMIT 10;
@@ -58,7 +58,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'machine learning')
 ORDER BY score DESC
 LIMIT 10;
@@ -68,7 +68,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'world war history')
 ORDER BY score DESC
 LIMIT 10;
@@ -78,7 +78,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'climate change effects environment')
 ORDER BY score DESC
 LIMIT 10;
@@ -91,7 +91,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'how does photosynthesis work')
 ORDER BY score DESC
 LIMIT 10;
@@ -101,7 +101,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'what causes earthquakes')
 ORDER BY score DESC
 LIMIT 10;
@@ -114,7 +114,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'mitochondria')
 ORDER BY score DESC
 LIMIT 10;
@@ -124,7 +124,7 @@ LIMIT 10;
 EXPLAIN ANALYZE
 SELECT article_id, title,
        paradedb.score(article_id) as score
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'Constantinople Byzantine Empire')
 ORDER BY score DESC
 LIMIT 10;
@@ -153,7 +153,7 @@ BEGIN
     FOREACH q IN ARRAY queries LOOP
         EXECUTE format(
             'SELECT COUNT(*) FROM (
-                SELECT article_id FROM wikipedia_articles_paradedb
+                SELECT article_id FROM wikipedia_articles_systemx
                 WHERE content @@@ paradedb.match(''content'', %L)
                 ORDER BY paradedb.score(article_id) DESC
                 LIMIT 10
@@ -175,7 +175,7 @@ END $$;
 \echo 'Query: "history" LIMIT 100'
 EXPLAIN ANALYZE
 SELECT article_id, title
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'history')
 ORDER BY paradedb.score(article_id) DESC
 LIMIT 100;
@@ -184,10 +184,10 @@ LIMIT 100;
 \echo 'Query: "science technology" LIMIT 100'
 EXPLAIN ANALYZE
 SELECT article_id, title
-FROM wikipedia_articles_paradedb
+FROM wikipedia_articles_systemx
 WHERE content @@@ paradedb.match('content', 'science technology')
 ORDER BY paradedb.score(article_id) DESC
 LIMIT 100;
 
 \echo ''
-\echo '=== Wikipedia Query Benchmarks Complete (ParadeDB) ==='
+\echo '=== Wikipedia Query Benchmarks Complete (System X) ==='

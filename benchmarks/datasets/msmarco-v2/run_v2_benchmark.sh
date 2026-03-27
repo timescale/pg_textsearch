@@ -13,8 +13,8 @@
 #     all          - Run everything (default)
 #     load-tapir   - Load data + build pg_textsearch index
 #     query-tapir  - Run pg_textsearch query benchmarks
-#     load-paradedb - Load data + build ParadeDB index
-#     query-paradedb - Run ParadeDB query benchmarks
+#     load-systemx - Load data + build ParadeDB index
+#     query-systemx - Run ParadeDB query benchmarks
 
 set -e
 
@@ -204,28 +204,28 @@ query_tapir() {
     grep -E "LATENCY_BUCKET|THROUGHPUT_RESULT|INDEX_SIZE" "$log" || true
 }
 
-load_paradedb() {
-    echo "=== Loading ParadeDB (ParadeDB) ==="
-    local log="$LOG_DIR/paradedb_load_${TIMESTAMP}.log"
+load_systemx() {
+    echo "=== Loading ParadeDB (System X) ==="
+    local log="$LOG_DIR/systemx_load_${TIMESTAMP}.log"
     echo "Log: $log"
 
     # Drop pg_textsearch first to avoid conflicts
     psql -c "DROP EXTENSION IF EXISTS pg_textsearch CASCADE;" 2>/dev/null || true
 
     cd "$REPO_DIR"
-    psql -f benchmarks/datasets/msmarco-v2/paradedb/load.sql 2>&1 | tee "$log"
+    psql -f benchmarks/datasets/msmarco-v2/systemx/load.sql 2>&1 | tee "$log"
 
     echo ""
     echo "Load log: $log"
 }
 
-query_paradedb() {
+query_systemx() {
     echo "=== Running ParadeDB Query Benchmarks ==="
-    local log="$LOG_DIR/paradedb_queries_${TIMESTAMP}.log"
+    local log="$LOG_DIR/systemx_queries_${TIMESTAMP}.log"
     echo "Log: $log"
 
     cd "$REPO_DIR"
-    psql -f benchmarks/datasets/msmarco-v2/paradedb/queries.sql 2>&1 | tee "$log"
+    psql -f benchmarks/datasets/msmarco-v2/systemx/queries.sql 2>&1 | tee "$log"
 
     echo ""
     echo "Query log: $log"
@@ -243,11 +243,11 @@ cleanup_tapir() {
     echo "Cleanup complete"
 }
 
-cleanup_paradedb() {
+cleanup_systemx() {
     echo "=== Cleaning up ParadeDB data ==="
-    psql -c "DROP TABLE IF EXISTS msmarco_v2_passages_paradedb CASCADE;"
-    psql -c "DROP TABLE IF EXISTS msmarco_v2_queries_paradedb CASCADE;"
-    psql -c "DROP TABLE IF EXISTS msmarco_v2_qrels_paradedb CASCADE;"
+    psql -c "DROP TABLE IF EXISTS msmarco_v2_passages_systemx CASCADE;"
+    psql -c "DROP TABLE IF EXISTS msmarco_v2_queries_systemx CASCADE;"
+    psql -c "DROP TABLE IF EXISTS msmarco_v2_qrels_systemx CASCADE;"
     psql -c "DROP EXTENSION IF EXISTS pg_search CASCADE;"
     echo "Cleanup complete"
 }
@@ -261,9 +261,9 @@ case "$STEP" in
         load_tapir
         query_tapir
         cleanup_tapir
-        load_paradedb
-        query_paradedb
-        cleanup_paradedb
+        load_systemx
+        query_systemx
+        cleanup_systemx
         ;;
     load-tapir)
         load_tapir
@@ -274,21 +274,21 @@ case "$STEP" in
     query-tapir)
         query_tapir
         ;;
-    load-paradedb)
-        load_paradedb
+    load-systemx)
+        load_systemx
         ;;
-    query-paradedb)
-        query_paradedb
+    query-systemx)
+        query_systemx
         ;;
     cleanup-tapir)
         cleanup_tapir
         ;;
-    cleanup-paradedb)
-        cleanup_paradedb
+    cleanup-systemx)
+        cleanup_systemx
         ;;
     *)
         echo "Unknown step: $STEP"
-        echo "Valid steps: all, load-tapir, index-tapir, query-tapir, load-paradedb, query-paradedb, cleanup-tapir, cleanup-paradedb"
+        echo "Valid steps: all, load-tapir, index-tapir, query-tapir, load-systemx, query-systemx, cleanup-tapir, cleanup-systemx"
         exit 1
         ;;
 esac

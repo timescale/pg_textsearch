@@ -1,21 +1,21 @@
--- Cranfield Collection BM25 Benchmark - Query Performance (ParadeDB)
+-- Cranfield Collection BM25 Benchmark - Query Performance (System X)
 -- Tests BM25 index scan performance using the standard Cranfield IR collection
 -- Outputs structured timing data for regression detection
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo '=== Cranfield BM25 Benchmark - Query Phase (ParadeDB) ==='
+\echo '=== Cranfield BM25 Benchmark - Query Phase (System X) ==='
 \echo ''
 
 -- Warm up: run a few queries to ensure index is cached
 \echo 'Warming up index...'
-SELECT doc_id FROM cranfield_paradedb_documents
+SELECT doc_id FROM cranfield_systemx_documents
 WHERE full_text @@@ paradedb.match('full_text', 'boundary layer')
 ORDER BY paradedb.score(doc_id) DESC
 LIMIT 10;
 
-SELECT doc_id FROM cranfield_paradedb_documents
+SELECT doc_id FROM cranfield_systemx_documents
 WHERE full_text @@@ paradedb.match('full_text', 'heat transfer')
 ORDER BY paradedb.score(doc_id) DESC
 LIMIT 10;
@@ -29,7 +29,7 @@ LIMIT 10;
 \echo ''
 
 -- Helper function to run a query multiple times and return median execution time
-CREATE OR REPLACE FUNCTION benchmark_query_paradedb(query_text text, iterations int DEFAULT 10)
+CREATE OR REPLACE FUNCTION benchmark_query_systemx(query_text text, iterations int DEFAULT 10)
 RETURNS TABLE(median_ms numeric, min_ms numeric, max_ms numeric) AS $$
 DECLARE
     i int;
@@ -41,7 +41,7 @@ BEGIN
     times := ARRAY[]::numeric[];
     FOR i IN 1..iterations LOOP
         start_ts := clock_timestamp();
-        EXECUTE 'SELECT doc_id FROM cranfield_paradedb_documents
+        EXECUTE 'SELECT doc_id FROM cranfield_systemx_documents
                  WHERE full_text @@@ paradedb.match(''full_text'', $1)
                  ORDER BY paradedb.score(doc_id) DESC
                  LIMIT 10' USING query_text;
@@ -59,29 +59,29 @@ $$ LANGUAGE plpgsql;
 -- Short query (2 words)
 \echo 'Query 1: Short query (2 words) - "boundary layer"'
 SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_paradedb('boundary layer');
+FROM benchmark_query_systemx('boundary layer');
 
 \echo ''
 \echo 'Query 2: Medium query (4 words) - "supersonic flow heat transfer"'
 SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_paradedb('supersonic flow heat transfer');
+FROM benchmark_query_systemx('supersonic flow heat transfer');
 
 \echo ''
 \echo 'Query 3: Long query (from Cranfield query 1)'
 SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_paradedb('what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft');
+FROM benchmark_query_systemx('what similarity laws must be obeyed when constructing aeroelastic models of heated high speed aircraft');
 
 \echo ''
 \echo 'Query 4: Common terms - "flow pressure"'
 SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_paradedb('flow pressure');
+FROM benchmark_query_systemx('flow pressure');
 
 \echo ''
 \echo 'Query 5: Specific terms - "magnetohydrodynamic viscosity"'
 SELECT 'Execution Time: ' || round(median_ms, 3) || ' ms (min=' || round(min_ms, 3) || ', max=' || round(max_ms, 3) || ')' as result
-FROM benchmark_query_paradedb('magnetohydrodynamic viscosity');
+FROM benchmark_query_systemx('magnetohydrodynamic viscosity');
 
-DROP FUNCTION benchmark_query_paradedb;
+DROP FUNCTION benchmark_query_systemx;
 
 -- ============================================================
 -- Benchmark 2: Query Throughput (all 225 Cranfield queries)
@@ -99,8 +99,8 @@ DECLARE
     query_count int := 0;
 BEGIN
     start_time := clock_timestamp();
-    FOR q IN SELECT query_id, query_text FROM cranfield_paradedb_queries ORDER BY query_id LOOP
-        PERFORM doc_id FROM cranfield_paradedb_documents
+    FOR q IN SELECT query_id, query_text FROM cranfield_systemx_queries ORDER BY query_id LOOP
+        PERFORM doc_id FROM cranfield_systemx_documents
         WHERE full_text @@@ paradedb.match('full_text', q.query_text)
         ORDER BY paradedb.score(doc_id) DESC
         LIMIT 10;
@@ -119,10 +119,10 @@ END $$;
 \echo '=== Benchmark 3: Index Statistics ==='
 
 SELECT
-    'cranfield_paradedb_idx' as index_name,
-    pg_size_pretty(pg_relation_size('cranfield_paradedb_idx')) as index_size,
-    pg_size_pretty(pg_relation_size('cranfield_paradedb_documents')) as table_size,
-    (SELECT COUNT(*) FROM cranfield_paradedb_documents) as num_documents;
+    'cranfield_systemx_idx' as index_name,
+    pg_size_pretty(pg_relation_size('cranfield_systemx_idx')) as index_size,
+    pg_size_pretty(pg_relation_size('cranfield_systemx_documents')) as table_size,
+    (SELECT COUNT(*) FROM cranfield_systemx_documents) as num_documents;
 
 \echo ''
-\echo '=== Cranfield BM25 Benchmark Complete (ParadeDB) ==='
+\echo '=== Cranfield BM25 Benchmark Complete (System X) ==='

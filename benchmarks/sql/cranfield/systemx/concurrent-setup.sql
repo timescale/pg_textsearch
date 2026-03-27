@@ -1,24 +1,24 @@
--- Cranfield Collection - ParadeDB Concurrent Insert Setup
+-- Cranfield Collection - System X Concurrent Insert Setup
 -- Prepares staging table for pgbench concurrent inserts
--- After this script: cranfield_paradedb_documents exists with
--- ParadeDB BM25 index, cranfield_paradedb_staging holds rows
+-- After this script: cranfield_systemx_documents exists with
+-- System X BM25 index, cranfield_systemx_staging holds rows
 -- to be inserted via pgbench
 
 \set ON_ERROR_STOP on
 \timing on
 
-\echo 'Cranfield ParadeDB - Concurrent Insert Setup'
+\echo 'Cranfield System X - Concurrent Insert Setup'
 \echo '============================================='
 
--- Ensure ParadeDB extension is installed
+-- Ensure System X extension is installed
 CREATE EXTENSION IF NOT EXISTS pg_search;
 
 -- Clean up any existing tables
 \echo 'Cleaning up existing tables...'
-DROP TABLE IF EXISTS cranfield_paradedb_documents CASCADE;
-DROP TABLE IF EXISTS cranfield_paradedb_queries CASCADE;
-DROP TABLE IF EXISTS cranfield_paradedb_expected_rankings CASCADE;
-DROP TABLE IF EXISTS cranfield_paradedb_staging CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_documents CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_queries CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_expected_rankings CASCADE;
+DROP TABLE IF EXISTS cranfield_systemx_staging CASCADE;
 DROP TABLE IF EXISTS cranfield_full_documents CASCADE;
 DROP TABLE IF EXISTS cranfield_full_queries CASCADE;
 DROP TABLE IF EXISTS cranfield_full_expected_rankings CASCADE;
@@ -58,7 +58,7 @@ CREATE TABLE cranfield_full_expected_rankings (
 
 -- Create staging table with document data
 \echo 'Creating staging table...'
-CREATE TABLE cranfield_paradedb_staging (
+CREATE TABLE cranfield_systemx_staging (
     staging_id SERIAL PRIMARY KEY,
     doc_id INTEGER,
     title TEXT,
@@ -67,7 +67,7 @@ CREATE TABLE cranfield_paradedb_staging (
     content TEXT
 );
 
-INSERT INTO cranfield_paradedb_staging
+INSERT INTO cranfield_systemx_staging
     (doc_id, title, author, bibliography, content)
 SELECT doc_id, title, author, bibliography, content
 FROM cranfield_full_documents
@@ -78,9 +78,9 @@ DROP TABLE cranfield_full_documents CASCADE;
 DROP TABLE cranfield_full_queries CASCADE;
 DROP TABLE cranfield_full_expected_rankings CASCADE;
 
--- Create target ParadeDB table with BM25 index (empty)
-\echo 'Creating target ParadeDB table with BM25 index...'
-CREATE TABLE cranfield_paradedb_documents (
+-- Create target System X table with BM25 index (empty)
+\echo 'Creating target System X table with BM25 index...'
+CREATE TABLE cranfield_systemx_documents (
     doc_id INTEGER PRIMARY KEY,
     title TEXT,
     author TEXT,
@@ -93,8 +93,8 @@ CREATE TABLE cranfield_paradedb_documents (
     ) STORED
 );
 
-CREATE INDEX cranfield_paradedb_idx
-    ON cranfield_paradedb_documents
+CREATE INDEX cranfield_systemx_idx
+    ON cranfield_systemx_documents
     USING bm25 (doc_id, full_text)
     WITH (
         key_field = 'doc_id',
@@ -114,7 +114,7 @@ CREATE SEQUENCE insert_seq;
 
 -- Report staging row count
 SELECT 'STAGING_ROW_COUNT: ' || count(*)
-FROM cranfield_paradedb_staging;
+FROM cranfield_systemx_staging;
 
 \echo 'Concurrent insert setup complete.'
-\echo 'Run pgbench with paradedb/pgbench-insert.sql next.'
+\echo 'Run pgbench with systemx/pgbench-insert.sql next.'
