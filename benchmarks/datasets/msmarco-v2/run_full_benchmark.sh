@@ -1,5 +1,5 @@
 #!/bin/bash
-# MS MARCO v2 Full Benchmark — pg_textsearch vs ParadeDB (System X)
+# MS MARCO v2 Full Benchmark — pg_textsearch vs ParadeDB (ParadeDB)
 #
 # Reproducible benchmark for blog-post results on 138M passages.
 #
@@ -15,11 +15,11 @@
 #   Steps:
 #     env            - capture machine specs, PG config, extensions
 #     build-tapir    - build pg_textsearch BM25 index
-#     build-systemx  - copy data + build ParadeDB BM25 index
+#     build-paradedb  - copy data + build ParadeDB BM25 index
 #     query-tapir    - single-client latency benchmarks
-#     query-systemx  - single-client latency benchmarks
+#     query-paradedb  - single-client latency benchmarks
 #     power-tapir    - concurrent throughput (pgbench)
-#     power-systemx  - concurrent throughput (pgbench)
+#     power-paradedb  - concurrent throughput (pgbench)
 #     summary        - side-by-side comparison table
 #     all            - run everything in sequence
 
@@ -166,9 +166,9 @@ EOSQL
     log "build-tapir done"
 }
 
-# ── step: build-systemx ─────────────────────────────────────────
-step_build_systemx() {
-    local out="$RESULTS_DIR/build_systemx.log"
+# ── step: build-paradedb ─────────────────────────────────────────
+step_build_paradedb() {
+    local out="$RESULTS_DIR/build_paradedb.log"
     log "Building ParadeDB index → $out"
 
     # Free disk: drop tapir index before copying data
@@ -197,12 +197,12 @@ SET max_parallel_maintenance_workers = $PARALLEL_WORKERS;
 SET maintenance_work_mem = '$MAINT_WORK_MEM';
 SET min_parallel_table_scan_size = '$MIN_PARALLEL_SCAN';
 
-DROP INDEX IF EXISTS msmarco_v2_systemx_idx;
+DROP INDEX IF EXISTS msmarco_v2_paradedb_idx;
 
 \echo ''
 \echo '=== Building ParadeDB BM25 Index ==='
 \echo 'parallel_workers=$PARALLEL_WORKERS  maint_work_mem=$MAINT_WORK_MEM  min_parallel_scan=$MIN_PARALLEL_SCAN'
-CREATE INDEX msmarco_v2_systemx_idx ON msmarco_v2_passages
+CREATE INDEX msmarco_v2_paradedb_idx ON msmarco_v2_passages
     USING bm25 (passage_id, passage_text)
     WITH (
         key_field = 'passage_id',
@@ -223,16 +223,16 @@ VACUUM msmarco_v2_passages;
 \echo ''
 \echo '=== Sizes ==='
 SELECT 'INDEX_SIZE_SYSTEMX: '
-    || pg_size_pretty(pg_relation_size('msmarco_v2_systemx_idx'))
-    || ' (' || pg_relation_size('msmarco_v2_systemx_idx') || ' bytes)'
+    || pg_size_pretty(pg_relation_size('msmarco_v2_paradedb_idx'))
+    || ' (' || pg_relation_size('msmarco_v2_paradedb_idx') || ' bytes)'
     as result;
 SELECT 'TABLE_SIZE_SYSTEMX: '
     || pg_size_pretty(pg_total_relation_size('msmarco_v2_passages'))
     as result;
 
-\echo '=== build-systemx complete ==='
+\echo '=== build-paradedb complete ==='
 EOSQL
-    log "build-systemx done"
+    log "build-paradedb done"
 }
 
 # ── step: query-tapir ────────────────────────────────────────────
@@ -249,18 +249,18 @@ step_query_tapir() {
     grep -E "LATENCY_BUCKET|WEIGHTED_|THROUGHPUT_RESULT" "$out" || true
 }
 
-# ── step: query-systemx ─────────────────────────────────────────
-step_query_systemx() {
-    local out="$RESULTS_DIR/query_systemx.log"
+# ── step: query-paradedb ─────────────────────────────────────────
+step_query_paradedb() {
+    local out="$RESULTS_DIR/query_paradedb.log"
     log "Running ParadeDB query benchmarks → $out"
 
     cd "$REPO_DIR"
-    # Rewrite systemx queries to use msmarco_v2_passages (same table)
-    sed 's/msmarco_v2_passages_systemx/msmarco_v2_passages/g' \
-        benchmarks/datasets/msmarco-v2/systemx/queries.sql \
+    # Rewrite paradedb queries to use msmarco_v2_passages (same table)
+    sed 's/msmarco_v2_passages_paradedb/msmarco_v2_passages/g' \
+        benchmarks/datasets/msmarco-v2/paradedb/queries.sql \
         | psql 2>&1 | tee "$out"
 
-    log "query-systemx done"
+    log "query-paradedb done"
     echo ""
     echo "=== Key Results ==="
     grep -E "LATENCY_BUCKET|WEIGHTED_|THROUGHPUT_RESULT" "$out" || true
@@ -292,9 +292,9 @@ step_power_tapir() {
     log "power-tapir done"
 }
 
-# ── step: power-systemx ─────────────────────────────────────────
-step_power_systemx() {
-    local out="$RESULTS_DIR/power_systemx.log"
+# ── step: power-paradedb ─────────────────────────────────────────
+step_power_paradedb() {
+    local out="$RESULTS_DIR/power_paradedb.log"
     log "Running ParadeDB power test → $out"
     log "  clients=$POWER_CLIENTS  duration=${POWER_DURATION}s"
 
@@ -308,14 +308,14 @@ step_power_systemx() {
         -j "$POWER_CLIENTS" \
         -T "$POWER_DURATION" \
         -M prepared \
-        -f "$SCRIPT_DIR/power_systemx.sql" \
+        -f "$SCRIPT_DIR/power_paradedb.sql" \
         2>&1 | tee "$out"
 
     local tps
     tps=$(grep -oP 'tps = \K[0-9.]+' "$out" | tail -1)
     echo "POWER_TPS_SYSTEMX: $tps" | tee -a "$out"
 
-    log "power-systemx done"
+    log "power-paradedb done"
 }
 
 # ── step: summary ────────────────────────────────────────────────
@@ -346,20 +346,20 @@ step_summary() {
 
         # --- Build Times ---
         echo "=== Index Build Time ==="
-        local bt_tapir bt_systemx
+        local bt_tapir bt_paradedb
         bt_tapir=$(grep -oP 'CREATE INDEX.*Time: \K[0-9.]+' \
             "$rdir/build_tapir.log" 2>/dev/null || echo "N/A")
-        bt_systemx=$(grep -oP 'CREATE INDEX.*Time: \K[0-9.]+' \
-            "$rdir/build_systemx.log" 2>/dev/null || echo "N/A")
+        bt_paradedb=$(grep -oP 'CREATE INDEX.*Time: \K[0-9.]+' \
+            "$rdir/build_paradedb.log" 2>/dev/null || echo "N/A")
         printf "  %-20s %s\n" "pg_textsearch:" "${bt_tapir} ms"
-        printf "  %-20s %s\n" "ParadeDB:" "${bt_systemx} ms"
+        printf "  %-20s %s\n" "ParadeDB:" "${bt_paradedb} ms"
         echo ""
 
         # --- Index Sizes ---
         echo "=== Index Size ==="
         grep "INDEX_SIZE_TAPIR:" "$rdir/build_tapir.log" 2>/dev/null \
             | sed 's/^/  /' || true
-        grep "INDEX_SIZE_SYSTEMX:" "$rdir/build_systemx.log" 2>/dev/null \
+        grep "INDEX_SIZE_SYSTEMX:" "$rdir/build_paradedb.log" 2>/dev/null \
             | sed 's/^/  /' || true
         echo ""
 
@@ -373,10 +373,10 @@ step_summary() {
             | sed 's/^/  /' || true
         echo ""
         echo "  --- ParadeDB ---"
-        grep -E "LATENCY_BUCKET" "$rdir/query_systemx.log" 2>/dev/null \
+        grep -E "LATENCY_BUCKET" "$rdir/query_paradedb.log" 2>/dev/null \
             | sed 's/^/  /' || echo "  (not available)"
         echo ""
-        grep -E "WEIGHTED_LATENCY" "$rdir/query_systemx.log" 2>/dev/null \
+        grep -E "WEIGHTED_LATENCY" "$rdir/query_paradedb.log" 2>/dev/null \
             | sed 's/^/  /' || true
         echo ""
 
@@ -384,7 +384,7 @@ step_summary() {
         echo "=== Sequential Throughput ==="
         grep "THROUGHPUT_RESULT:" "$rdir/query_tapir.log" 2>/dev/null \
             | sed 's/^/  pg_textsearch  /' || true
-        grep "THROUGHPUT_RESULT:" "$rdir/query_systemx.log" 2>/dev/null \
+        grep "THROUGHPUT_RESULT:" "$rdir/query_paradedb.log" 2>/dev/null \
             | sed 's/^/  ParadeDB       /' || true
         echo ""
 
@@ -392,7 +392,7 @@ step_summary() {
         echo "=== Concurrent Throughput (pgbench, ${POWER_CLIENTS} clients) ==="
         grep "POWER_TPS_TAPIR:" "$rdir/power_tapir.log" 2>/dev/null \
             | sed 's/^/  /' || echo "  (not available)"
-        grep "POWER_TPS_SYSTEMX:" "$rdir/power_systemx.log" 2>/dev/null \
+        grep "POWER_TPS_SYSTEMX:" "$rdir/power_paradedb.log" 2>/dev/null \
             | sed 's/^/  /' || echo "  (not available)"
         echo ""
 
@@ -412,26 +412,26 @@ check_prereqs
 case "$STEP" in
     env)            step_env ;;
     build-tapir)    step_env; step_build_tapir ;;
-    build-systemx)  step_env; step_build_systemx ;;
+    build-paradedb)  step_env; step_build_paradedb ;;
     query-tapir)    step_query_tapir ;;
-    query-systemx)  step_query_systemx ;;
+    query-paradedb)  step_query_paradedb ;;
     power-tapir)    step_power_tapir ;;
-    power-systemx)  step_power_systemx ;;
+    power-paradedb)  step_power_paradedb ;;
     summary)        step_summary ;;
     all)
         step_env
         step_build_tapir
         step_query_tapir
         step_power_tapir
-        step_build_systemx
-        step_query_systemx
-        step_power_systemx
+        step_build_paradedb
+        step_query_paradedb
+        step_power_paradedb
         step_summary
         ;;
     *)
         echo "Unknown step: $STEP"
-        echo "Steps: env build-tapir build-systemx query-tapir" \
-             "query-systemx power-tapir power-systemx summary all"
+        echo "Steps: env build-tapir build-paradedb query-tapir" \
+             "query-paradedb power-tapir power-paradedb summary all"
         exit 1
         ;;
 esac
