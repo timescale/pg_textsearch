@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774595811845,
+  "lastUpdate": 1774595813759,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -47260,6 +47260,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 12.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 1491.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "76ea737a5e9a3ae79f4ea8b2028163f8e80e9406",
+          "message": "fix: crash recovery fails with \"Invalid docid page magic\" (#291) (#292)\n\n## Summary\n\n- Fix write-ordering bug in docid page chain that caused `ERROR: Invalid\ndocid page magic` after a crash\n- Flush new docid pages to disk before flushing the pointers that\nreference them\n- Downgrade zero-magic page (unflushed crash artifact) to WARNING with\ngraceful chain truncation; keep ERROR for non-zero corruption\n- On truncation, overwrite `next_page` on the last valid page instead of\nclearing the entire chain, preserving valid docid pages for a potential\nsecond crash\n\n## Root cause\n\nWhen the docid page chain extended to a new page, the code flushed the\nchain pointer (on the old page or metapage) *before* flushing the new\npage's content. After a crash in that window, the pointer was on disk\nbut the target page contained all zeros. Recovery walked the chain, hit\nthe zero-magic page, and threw ERROR.\n\nThe fix ensures `FlushOneBuffer` is called on new pages before flushing\nany pointer that references them, in both code paths (first docid page\ncreation and chain extension).\n\n## Testing\n\n- New shell test `test/scripts/docid_chain_recovery.sh` — inserts 2000\nrows (fills >1 docid page), crashes postgres, verifies recovery succeeds\n- Test fails without the fix (reproduces the exact error from #291) and\npasses with it\n- Runs in all 4 CI jobs (test PG17, test PG18, PG17 sanitizer, PG18\nsanitizer)\n\nCloses #291",
+          "timestamp": "2026-03-23T23:43:38Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/76ea737a5e9a3ae79f4ea8b2028163f8e80e9406"
+        },
+        "date": 1774595813288,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.559,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 571339.121,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 5.01,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 5.13,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 11.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 13.63,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 18.07,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 22.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 28.91,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 10.75,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 11.38,
             "unit": "ms"
           },
           {
