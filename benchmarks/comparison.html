@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>pg_textsearch vs System X - Development Progress</title>
+    <title>pg_textsearch vs ParadeDB - Development Progress</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -64,7 +64,7 @@
             padding: 20px;
             border-left: 4px solid #0066cc;
         }
-        .summary-card.systemx {
+        .summary-card.paradedb {
             border-left-color: #6c757d;
         }
         .summary-card h4 {
@@ -119,21 +119,21 @@
         <a href="profiles/">CPU Profiles</a>
     </div>
 
-    <h1>pg_textsearch vs System X</h1>
+    <h1>pg_textsearch vs ParadeDB</h1>
     <p style="color: #666; margin-top: 0;">Development Progress Report</p>
 
     <div class="content">
         <div class="snapshot-notice">
             <strong>Snapshot in time:</strong> This comparison reflects pg_textsearch as of
-            March 11, 2026. The project is under active development with performance improvements
+            March 10, 2026. The project is under active development with performance improvements
             shipping regularly. Check the <a href="./">benchmark dashboard</a> for the latest numbers.
         </div>
 
         <p class="meta">
             <strong>Dataset:</strong> MS MARCO 8.8M passages |
-            <strong>Date:</strong> 2026-03-11 |
-            <strong>Commit:</strong> <a href="https://github.com/timescale/pg_textsearch/commit/39c60d4">39c60d4</a> |
-            <strong>System X:</strong> v0.21.6
+            <strong>Date:</strong> 2026-03-10 |
+            <strong>Commit:</strong> <a href="https://github.com/timescale/pg_textsearch/commit/f31d1af">f31d1af</a> |
+            <strong>ParadeDB:</strong> v0.21.6
         </p>
 
         <h2>Current Status</h2>
@@ -142,17 +142,17 @@
             <div class="summary-card">
                 <h4>pg_textsearch today</h4>
                 <ul>
-                    <li><strong>3.9x faster</strong> overall query throughput</li>
+                    <li><strong>3.1x faster</strong> overall query throughput</li>
                     <li>Faster on all query lengths (1-8+ tokens)</li>
                     <li>Smaller index (no positions stored)*</li>
                     <li>Parallel index build (4 workers)</li>
                     <li>Native Postgres integration</li>
                 </ul>
             </div>
-            <div class="summary-card systemx">
-                <h4>System X v0.21.6</h4>
+            <div class="summary-card paradedb">
+                <h4>ParadeDB v0.21.6</h4>
                 <ul>
-                    <li>Faster index build (1.6x)</li>
+                    <li>Faster index build (1.7x)</li>
                     <li>Phrase queries supported</li>
                     <li>Larger feature set (facets, etc.)</li>
                 </ul>
@@ -173,8 +173,8 @@
                     (<a href="https://github.com/timescale/pg_textsearch/pull/249">PR #249</a>)</li>
                 <li><strong>Arena allocator</strong> - Rewritten index build with parallel page pool
                     (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>)</li>
-                <li><strong>Overall throughput</strong> - pg_textsearch now 3.9x faster than System X
-                    on 8.8M dataset (up from 3.2x on March 3)</li>
+                <li><strong>Overall throughput</strong> - pg_textsearch now 3.1x faster than ParadeDB
+                    on 8.8M dataset (up from 2.8x in February)</li>
             </ul>
         </div>
 
@@ -184,7 +184,7 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -196,8 +196,8 @@
             <tr>
                 <td>Build Time</td>
                 <td>233.5 sec</td>
-                <td class="winner">142.5 sec</td>
-                <td><span class="worse">+64%</span></td>
+                <td class="winner">140.1 sec</td>
+                <td><span class="worse">+67%</span></td>
             </tr>
             <tr>
                 <td>Documents</td>
@@ -208,7 +208,7 @@
 
         <div class="note">
             <strong>Index size caveat:</strong> pg_textsearch does not store term positions, so it
-            cannot support phrase queries like <code>"quick brown fox"</code>. System X stores
+            cannot support phrase queries like <code>"quick brown fox"</code>. ParadeDB stores
             positions by default, which adds significant overhead but enables phrase search.
             This accounts for most of the index size difference—it's a feature tradeoff, not
             a compression advantage.
@@ -219,8 +219,8 @@
             (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>) and
             leader-only merge
             (<a href="https://github.com/timescale/pg_textsearch/pull/244">PR #244</a>),
-            build time dropped from 270s to 234s. System X is 1.6x faster
-            at index build.
+            build time dropped from 270s to 234s. ParadeDB also improved
+            its build time from 151s to 140s in this run.
         </div>
 
         <h2>Query Latency (p50)</h2>
@@ -230,56 +230,56 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
                 <td>1 token</td>
                 <td class="winner">0.70 ms</td>
-                <td>18.05 ms</td>
+                <td>18.84 ms</td>
                 <td><span class="better">-96%</span></td>
             </tr>
             <tr>
                 <td>2 tokens</td>
-                <td class="winner">1.31 ms</td>
-                <td>18.51 ms</td>
-                <td><span class="better">-93%</span></td>
+                <td class="winner">1.53 ms</td>
+                <td>18.40 ms</td>
+                <td><span class="better">-92%</span></td>
             </tr>
             <tr>
                 <td>3 tokens</td>
-                <td class="winner">2.44 ms</td>
-                <td>24.69 ms</td>
-                <td><span class="better">-90%</span></td>
+                <td class="winner">3.00 ms</td>
+                <td>24.74 ms</td>
+                <td><span class="better">-88%</span></td>
             </tr>
             <tr>
                 <td>4 tokens</td>
-                <td class="winner">3.73 ms</td>
-                <td>27.35 ms</td>
-                <td><span class="better">-86%</span></td>
+                <td class="winner">4.52 ms</td>
+                <td>26.71 ms</td>
+                <td><span class="better">-83%</span></td>
             </tr>
             <tr>
                 <td>5 tokens</td>
-                <td class="winner">6.07 ms</td>
-                <td>28.94 ms</td>
-                <td><span class="better">-79%</span></td>
+                <td class="winner">7.63 ms</td>
+                <td>29.16 ms</td>
+                <td><span class="better">-74%</span></td>
             </tr>
             <tr>
                 <td>6 tokens</td>
-                <td class="winner">8.76 ms</td>
-                <td>35.34 ms</td>
-                <td><span class="better">-75%</span></td>
+                <td class="winner">11.17 ms</td>
+                <td>35.57 ms</td>
+                <td><span class="better">-69%</span></td>
             </tr>
             <tr>
                 <td>7 tokens</td>
-                <td class="winner">13.05 ms</td>
-                <td>37.29 ms</td>
-                <td><span class="better">-65%</span></td>
+                <td class="winner">16.74 ms</td>
+                <td>36.68 ms</td>
+                <td><span class="better">-54%</span></td>
             </tr>
             <tr>
                 <td>8+ tokens</td>
-                <td class="winner">19.86 ms</td>
-                <td>44.98 ms</td>
-                <td><span class="better">-56%</span></td>
+                <td class="winner">26.32 ms</td>
+                <td>44.87 ms</td>
+                <td><span class="better">-41%</span></td>
             </tr>
         </table>
 
@@ -290,56 +290,56 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
                 <td>1 token</td>
-                <td class="winner">1.62 ms</td>
-                <td>24.20 ms</td>
-                <td><span class="better">-93%</span></td>
+                <td class="winner">1.56 ms</td>
+                <td>27.41 ms</td>
+                <td><span class="better">-94%</span></td>
             </tr>
             <tr>
                 <td>2 tokens</td>
-                <td class="winner">3.62 ms</td>
-                <td>32.18 ms</td>
-                <td><span class="better">-89%</span></td>
+                <td class="winner">4.63 ms</td>
+                <td>30.99 ms</td>
+                <td><span class="better">-85%</span></td>
             </tr>
             <tr>
                 <td>3 tokens</td>
-                <td class="winner">6.97 ms</td>
-                <td>37.57 ms</td>
-                <td><span class="better">-81%</span></td>
+                <td class="winner">9.22 ms</td>
+                <td>37.48 ms</td>
+                <td><span class="better">-75%</span></td>
             </tr>
             <tr>
                 <td>4 tokens</td>
-                <td class="winner">10.86 ms</td>
-                <td>36.17 ms</td>
-                <td><span class="better">-70%</span></td>
+                <td class="winner">14.85 ms</td>
+                <td>36.61 ms</td>
+                <td><span class="better">-59%</span></td>
             </tr>
             <tr>
                 <td>5 tokens</td>
-                <td class="winner">17.76 ms</td>
-                <td>39.34 ms</td>
-                <td><span class="better">-55%</span></td>
+                <td class="winner">22.78 ms</td>
+                <td>39.81 ms</td>
+                <td><span class="better">-43%</span></td>
             </tr>
             <tr>
                 <td>6 tokens</td>
-                <td class="winner">21.24 ms</td>
-                <td>59.09 ms</td>
-                <td><span class="better">-64%</span></td>
+                <td class="winner">27.15 ms</td>
+                <td>58.66 ms</td>
+                <td><span class="better">-54%</span></td>
             </tr>
             <tr>
                 <td>7 tokens</td>
-                <td class="winner">32.55 ms</td>
-                <td>67.40 ms</td>
-                <td><span class="better">-52%</span></td>
+                <td class="winner">42.51 ms</td>
+                <td>67.78 ms</td>
+                <td><span class="better">-37%</span></td>
             </tr>
             <tr>
                 <td>8+ tokens</td>
-                <td class="winner">43.94 ms</td>
-                <td>70.92 ms</td>
-                <td><span class="better">-38%</span></td>
+                <td class="winner">57.00 ms</td>
+                <td>70.37 ms</td>
+                <td><span class="better">-19%</span></td>
             </tr>
         </table>
 
@@ -350,20 +350,20 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
                 <td>Total time</td>
-                <td class="winner">6.46 sec</td>
-                <td>25.20 sec</td>
-                <td><span class="better">-74%</span></td>
+                <td class="winner">8.03 sec</td>
+                <td>25.07 sec</td>
+                <td><span class="better">-68%</span></td>
             </tr>
             <tr>
                 <td>Avg ms/query</td>
-                <td class="winner">8.08 ms</td>
-                <td>31.50 ms</td>
-                <td><span class="better">-74%</span></td>
+                <td class="winner">10.04 ms</td>
+                <td>31.33 ms</td>
+                <td><span class="better">-68%</span></td>
             </tr>
         </table>
 
@@ -371,32 +371,33 @@
 
         <h3>Query latency: pg_textsearch faster across all token counts</h3>
         <p>
-            pg_textsearch is faster on all 8 token buckets at both p50 and p95,
-            ranging from 26x faster on single-token queries to 2.3x faster on
-            8+ token queries at p50. SIMD-accelerated bitpack decoding
-            (<a href="https://github.com/timescale/pg_textsearch/pull/250">PR #250</a>),
-            stack-allocated decode buffers
-            (<a href="https://github.com/timescale/pg_textsearch/pull/253">PR #253</a>),
-            and BMW cache optimizations
-            (<a href="https://github.com/timescale/pg_textsearch/pull/274">PR #274</a>)
-            drove improvements across the board.
+            pg_textsearch is faster on all 8 token buckets at p50, ranging from 27x faster
+            on single-token queries to 1.7x faster on 8+ token queries. SIMD-accelerated
+            bitpack decoding
+            (<a href="https://github.com/timescale/pg_textsearch/pull/250">PR #250</a>)
+            and stack-allocated decode buffers
+            (<a href="https://github.com/timescale/pg_textsearch/pull/253">PR #253</a>)
+            improved segment read performance, while BMW term state pointer indirection
+            (<a href="https://github.com/timescale/pg_textsearch/pull/249">PR #249</a>)
+            reduced overhead in the query scoring path.
         </p>
 
-        <h3>Overall throughput: pg_textsearch 3.9x faster</h3>
+        <h3>Overall throughput: pg_textsearch 3.1x faster</h3>
         <p>
-            pg_textsearch completes 800 queries in 6.5s vs 25.2s for System X, a
-            <strong>3.9x throughput advantage</strong>. This is up from 3.2x on
-            March 3, driven by continued scoring path optimizations.
+            pg_textsearch completes 800 queries in 8.0s vs 25.1s for ParadeDB, a
+            <strong>3.1x throughput advantage</strong>. This is up from 2.8x in the
+            February 9 comparison, driven by segment decoding and scoring path
+            optimizations.
         </p>
 
-        <h3>Index build: System X 1.6x faster</h3>
+        <h3>Index build: gap narrowing</h3>
         <p>
-            System X builds its index in 143s vs 234s for pg_textsearch (1.6x faster).
+            ParadeDB builds its index in 140s vs 234s for pg_textsearch (1.7x faster).
             The arena allocator rewrite
             (<a href="https://github.com/timescale/pg_textsearch/pull/231">PR #231</a>)
             and leader-only merge
             (<a href="https://github.com/timescale/pg_textsearch/pull/244">PR #244</a>)
-            previously cut build time from 270s to 234s.
+            cut build time from 270s to 234s, narrowing the gap from 2.0x to 1.7x.
         </p>
 
         <h2>Methodology</h2>
@@ -432,7 +433,7 @@
             <strong>Dataset:</strong> MS MARCO v2 — 138,364,158 passages |
             <strong>Date:</strong> 2026-03-10 |
             <strong>pg_textsearch:</strong> v1.0.0-dev (main @ <code>fb3b3b1</code>) |
-            <strong>System X:</strong> v0.21.6
+            <strong>ParadeDB:</strong> v0.21.6
         </p>
 
         <h2>Environment</h2>
@@ -478,8 +479,8 @@
                     <li>SIMD-accelerated bitpack decoding</li>
                 </ul>
             </div>
-            <div class="summary-card systemx">
-                <h4>System X v0.21.6</h4>
+            <div class="summary-card paradedb">
+                <h4>ParadeDB v0.21.6</h4>
                 <ul>
                     <li><strong>1.9x faster</strong> index build</li>
                     <li>Phrase queries supported</li>
@@ -494,7 +495,7 @@
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Difference</th>
             </tr>
             <tr>
@@ -531,7 +532,7 @@
         <div class="note">
             <strong>Build time note:</strong> pg_textsearch's parallel build has two
             phases: scan/tokenize (parallel) and merge (single-threaded I/O-bound).
-            The merge phase dominates at this scale. System X uses a Tantivy-based
+            The merge phase dominates at this scale. ParadeDB uses a Tantivy-based
             backend with a different merge strategy.
         </div>
 
@@ -545,7 +546,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -604,7 +605,7 @@
             <tr>
                 <th>Query Tokens</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -707,7 +708,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -733,7 +734,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Speedup</th>
             </tr>
             <tr>
@@ -756,7 +757,7 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
             <tr>
                 <th>Metric</th>
                 <th>pg_textsearch</th>
-                <th>System X</th>
+                <th>ParadeDB</th>
                 <th>Ratio</th>
             </tr>
             <tr>
@@ -795,9 +796,9 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
         <h3>Tail latency: improved but mixed at p95</h3>
         <p>
             pg_textsearch has tighter tail latency on 1–5 token queries at p95.
-            On 6–8+ token queries, System X still has tighter tails. The p95
+            On 6–8+ token queries, ParadeDB still has tighter tails. The p95
             gap narrowed significantly with the cache optimizations (e.g., 5-token
-            p95 went from 200ms to 167ms, now faster than System X's 190ms).
+            p95 went from 200ms to 167ms, now faster than ParadeDB's 190ms).
             Further tail latency optimization on long queries remains an active
             area of work.
         </p>
@@ -805,16 +806,16 @@ MS-MARCO Query Lexeme Count Distribution (1,010,916 queries)
         <h3>Concurrent throughput: pg_textsearch 4.7x higher TPS</h3>
         <p>
             Under 16-client concurrent load, pg_textsearch achieves 91.4 TPS vs
-            19.4 TPS for System X — a <strong>4.7x advantage</strong>. This is
+            19.4 TPS for ParadeDB — a <strong>4.7x advantage</strong>. This is
             significantly wider than the 1.5x single-client gap, indicating that
             pg_textsearch scales much better under concurrency. pg_textsearch uses
             native Postgres buffer management and shared memory, avoiding the
-            external process coordination overhead present in System X's architecture.
+            external process coordination overhead present in ParadeDB's architecture.
         </p>
 
-        <h3>Index build: System X 1.9x faster</h3>
+        <h3>Index build: ParadeDB 1.9x faster</h3>
         <p>
-            System X builds its index in 8 min 55 s vs 17 min 37 s for
+            ParadeDB builds its index in 8 min 55 s vs 17 min 37 s for
             pg_textsearch (1.9x faster). pg_textsearch's parallel build uses 15
             workers for the scan phase, but the subsequent merge phase is
             single-threaded and I/O-bound, accounting for the majority of the
