@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774681879888,
+  "lastUpdate": 1774681881499,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -55561,6 +55561,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield_concurrent - Concurrent Insert Time",
             "value": 231.707636,
+            "unit": "ms"
+          }
+        ]
+      }
+    ],
+    "paradedb_msmarco_concurrent Benchmarks": [
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b3192d6d3688362d889778350d468abb6fe104a7",
+          "message": "Release v1.0.0 (#296)\n\n## Summary\n- Bump version from 1.0.0-dev to 1.0.0 across all version references\n- Rename SQL files and upgrade scripts to drop `-dev` suffix\n- Replace prerelease `RAISE WARNING` with `RAISE INFO` in all SQL\nscripts\n- Update README status to production ready, swap banner image to v1.0.0\n- Move v1.0.0 to Released section in ROADMAP.md (Mar 2026)\n- Remove 6 old versioned banner images\n- Fix CLAUDE.md: remove stale `enable_bmw` GUC, add missing source files\n- Apply `make format` to fix pre-existing formatting drift\n\n## Testing\n- `make test` — 52/52 passed\n- `make format-check` — passed",
+          "timestamp": "2026-03-27T19:03:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b3192d6d3688362d889778350d468abb6fe104a7"
+        },
+        "date": 1774681881095,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 5.378,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.75,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1310607.621336,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 80.02,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 82.26,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 87.67,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 91.49,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 94.93,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 102.27,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 105.18,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 115.54,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 97.66,
             "unit": "ms"
           }
         ]
