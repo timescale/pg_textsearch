@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774942202336,
+  "lastUpdate": 1774942204254,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -59009,6 +59009,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 1016.73,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b3192d6d3688362d889778350d468abb6fe104a7",
+          "message": "Release v1.0.0 (#296)\n\n## Summary\n- Bump version from 1.0.0-dev to 1.0.0 across all version references\n- Rename SQL files and upgrade scripts to drop `-dev` suffix\n- Replace prerelease `RAISE WARNING` with `RAISE INFO` in all SQL\nscripts\n- Update README status to production ready, swap banner image to v1.0.0\n- Move v1.0.0 to Released section in ROADMAP.md (Mar 2026)\n- Remove 6 old versioned banner images\n- Fix CLAUDE.md: remove stale `enable_bmw` GUC, add missing source files\n- Apply `make format` to fix pre-existing formatting drift\n\n## Testing\n- `make test` — 52/52 passed\n- `make format-check` — passed",
+          "timestamp": "2026-03-27T19:03:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b3192d6d3688362d889778350d468abb6fe104a7"
+        },
+        "date": 1774942203884,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3526.757,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 271459.272,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 111.33,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 111.25,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 114.97,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 114.48,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 95.64,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 103.91,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 104.47,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 109.66,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 97.18,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1032.28,
             "unit": "MB"
           }
         ]
