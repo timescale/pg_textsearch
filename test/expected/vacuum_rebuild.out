@@ -6,7 +6,7 @@
 -- the heap tuple and catch stale results. We use enable_seqscan=off
 -- to ensure the index scan is used even for small tables.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0
+INFO:  pg_textsearch v1.0.0-dev
 SET enable_seqscan = off;
 -- ================================================================
 -- Test 1: Basic CTID reuse after VACUUM

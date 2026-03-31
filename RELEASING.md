@@ -157,15 +157,17 @@ compatibility from this version.
 
 ## SQL Upgrade Path Requirements
 
+**Upgrade scripts must form a single linear chain.** Every version connects
+to exactly one next version — no shortcuts that skip intermediate steps.
+This keeps the number of upgrade scripts minimal and the path predictable.
+
+```
+... → 0.5.0 → 0.5.1 → 0.6.0 → 0.6.1 → 1.0.0 → 1.0.0-dev
+```
+
 Every release must have an upgrade path from the previous stable release
 (e.g., `0.2.0--0.3.0.sql`). Dev versions are not supported for direct upgrades;
 users on dev versions should reinstall the extension.
-
-**Bugfix release upgrade paths**: When releasing a bugfix version (e.g., 0.4.2),
-ensure that all later versions (including dev versions like 0.5.0-dev) have an
-upgrade path from it. For example, after releasing 0.4.2, main branch needs
-`sql/pg_textsearch--0.4.2--0.5.0-dev.sql` so users can upgrade from the bugfix
-release to the next version.
 
 ## Upgrade Compatibility
 

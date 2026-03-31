@@ -1,4 +1,5 @@
--- Upgrade from 0.5.1 to 0.6.0
+-- Upgrade from 0.6.0 to 0.6.1
+-- No schema changes
 
 -- Verify pg_textsearch library is loaded
 DO $$
@@ -12,14 +13,8 @@ BEGIN
     END IF;
 END $$;
 
--- New function: force-merge all segments into one
-CREATE FUNCTION bm25_force_merge(index_name text)
-RETURNS void
-AS 'MODULE_PATHNAME', 'tp_force_merge'
-LANGUAGE C VOLATILE STRICT;
-
 DO $$
 BEGIN
-    RAISE INFO 'pg_textsearch: upgraded to v0.6.0';
+    RAISE INFO 'pg_textsearch: upgraded to v0.6.1';
 END
 $$;

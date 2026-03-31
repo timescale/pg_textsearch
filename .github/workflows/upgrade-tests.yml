@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1']
+        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0']
 
     steps:
     - name: Checkout current code
@@ -121,6 +121,13 @@ jobs:
 
         # Stop Postgres (still running old binary)
         pg_ctl -D $PGDATA stop -w
+
+        # Remove old extension SQL files before installing current version,
+        # otherwise stale shortcut upgrade scripts (e.g., 0.5.0--1.0.0.sql)
+        # from the old release remain and Postgres may pick them over the
+        # linear chain, causing version-check failures.
+        SHAREDIR=$($PG_CONFIG --sharedir)
+        sudo rm -f "$SHAREDIR/extension/pg_textsearch--"*.sql
 
         # Build and install current version (overwrites old binary)
         cd $GITHUB_WORKSPACE

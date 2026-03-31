@@ -1,7 +1,7 @@
 -- Extended vacuum tests for BM25 indexes
 -- Exercises vacuum paths with segments, bulk deletes, and empty indexes
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0
+INFO:  pg_textsearch v1.0.0-dev
 -- =============================================================================
 -- Test 1: Vacuum with segments present
 -- =============================================================================

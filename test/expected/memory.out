@@ -1,7 +1,7 @@
 -- Test bulk insert with auto-spill for pg_textsearch indexes
 -- Create extension if not exists
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0
+INFO:  pg_textsearch v1.0.0-dev
 -- Create test table
 DROP TABLE IF EXISTS memory_test CASCADE;
 NOTICE:  table "memory_test" does not exist, skipping

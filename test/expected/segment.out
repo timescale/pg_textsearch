@@ -2,7 +2,7 @@
 -- Tests segment query functionality with multiple spill cycles and
 -- post-spill inserts
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0
+INFO:  pg_textsearch v1.0.0-dev
 \set ECHO none
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;
