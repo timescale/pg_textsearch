@@ -146,7 +146,8 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 		else
 		{
 			elog(WARNING,
-				 "No scan context available for cleanup - memory leak!");
+				 "No scan context available for cleanup - freeing directly");
+			pfree(so->result_ctids);
 			so->result_ctids = NULL;
 		}
 	}
@@ -164,7 +165,8 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 		else
 		{
 			elog(WARNING,
-				 "No scan context available for cleanup - memory leak!");
+				 "No scan context available for cleanup - freeing directly");
+			pfree(so->result_scores);
 			so->result_scores = NULL;
 		}
 	}
