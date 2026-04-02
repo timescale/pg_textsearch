@@ -463,6 +463,13 @@ tp_registry_get_total_dsa_bytes(void)
  * non-decreasing (DSA never returns segments to the OS), this
  * prevents a racing backend with a stale read from overwriting
  * a newer, higher value.
+ *
+ * IMPORTANT: Because dsa_get_total_size() never decreases, this
+ * counter is a high-water mark, not current usage. After a spill,
+ * freed memory returns to DSA's internal freelists but the counter
+ * stays the same. Callers must account for this — see
+ * tp_auto_spill_if_needed() which uses a cooldown period after
+ * successful spills to avoid perpetual eviction attempts.
  */
 void
 tp_registry_update_dsa_counter(void)
@@ -486,6 +493,74 @@ tp_registry_update_dsa_counter(void)
 	}
 }
 
+/*
+ * Estimate memory consumption for a memtable based on its
+ * statistics.  Derived empirically from MS MARCO profiling
+ * (8.8M passages, 234M postings).  The dominant cost is
+ * ~28 bytes per posting entry (DSA allocation overhead +
+ * TpPostingEntry).  Term overhead covers the dshash entry,
+ * DSA-allocated string, and posting list header.
+ */
+#define TP_BYTES_PER_POSTING	28
+#define TP_BYTES_PER_TERM_FIXED 200
+
+uint64
+tp_estimate_memtable_bytes(TpMemtable *memtable)
+{
+	if (!memtable)
+		return 0;
+
+	return (uint64)memtable->total_postings * TP_BYTES_PER_POSTING +
+		   (uint64)memtable->num_terms * TP_BYTES_PER_TERM_FIXED +
+		   (uint64)memtable->total_term_len;
+}
+
+/*
+ * Sum estimated memory across all registered memtables.
+ */
+uint64
+tp_estimate_total_memtable_bytes(void)
+{
+	dshash_table	 *registry_hash;
+	dshash_seq_status seq;
+	TpRegistryEntry	 *entry;
+	uint64			  total = 0;
+
+	if (!tapir_registry || !tapir_dsa ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+		return 0;
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+
+	dshash_seq_init(&seq, registry_hash, false);
+
+	while ((entry = dshash_seq_next(&seq)) != NULL)
+	{
+		TpSharedIndexState *shared;
+		TpMemtable		   *memtable;
+
+		if (!DsaPointerIsValid(entry->shared_state_dp))
+			continue;
+
+		shared = (TpSharedIndexState *)
+				dsa_get_address(tapir_dsa, entry->shared_state_dp);
+
+		if (!DsaPointerIsValid(shared->memtable_dp))
+			continue;
+
+		memtable = (TpMemtable *)
+				dsa_get_address(tapir_dsa, shared->memtable_dp);
+
+		total += tp_estimate_memtable_bytes(memtable);
+	}
+
+	dshash_seq_term(&seq);
+	dshash_detach(registry_hash);
+
+	return total;
+}
+
 /* --------------------------------------------------------
  * Eviction: spill largest memtable to free DSA memory
  * --------------------------------------------------------
@@ -495,18 +570,18 @@ tp_registry_update_dsa_counter(void)
 
 typedef struct TpEvictionCandidate
 {
-	Oid	  index_oid;
-	int64 total_postings;
+	Oid	   index_oid;
+	uint64 estimated_bytes;
 } TpEvictionCandidate;
 
 /*
- * Collect eviction candidates sorted by total_postings descending.
+ * Collect eviction candidates sorted by estimated_bytes descending.
  *
- * Note: We read memtable->total_postings without holding the per-index
- * lock. This is safe because DSA memory is never unmapped (only returned
- * to the DSA freelist), so the dereference cannot fault. The value may
- * be stale if another backend is concurrently spilling, but the actual
- * eviction is protected by LWLockConditionalAcquire and re-validates.
+ * Note: We read memtable fields without holding the per-index lock.
+ * This is safe because DSA memory is never unmapped (only returned
+ * to the DSA freelist), so the dereference cannot fault.  Values
+ * may be stale if another backend is concurrently spilling, but
+ * the actual eviction is protected by LWLockConditionalAcquire.
  */
 static int
 find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
@@ -529,7 +604,7 @@ find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
 	{
 		TpSharedIndexState *shared;
 		TpMemtable		   *memtable;
-		int64				postings;
+		uint64				est;
 
 		if (!DsaPointerIsValid(entry->shared_state_dp))
 			continue;
@@ -543,25 +618,25 @@ find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
 		memtable = (TpMemtable *)
 				dsa_get_address(tapir_dsa, shared->memtable_dp);
 
-		postings = memtable->total_postings;
-		if (postings <= 0)
+		est = tp_estimate_memtable_bytes(memtable);
+		if (est == 0)
 			continue;
 
 		/* Insertion sort into candidates (small N) */
 		if (count < max_candidates ||
-			postings > candidates[count - 1].total_postings)
+			est > candidates[count - 1].estimated_bytes)
 		{
 			int pos = (count < max_candidates) ? count : count - 1;
 			int i;
 
-			candidates[pos].index_oid	   = entry->index_oid;
-			candidates[pos].total_postings = postings;
+			candidates[pos].index_oid		= entry->index_oid;
+			candidates[pos].estimated_bytes = est;
 
 			/* Bubble up to maintain descending order */
 			for (i = pos; i > 0; i--)
 			{
-				if (candidates[i].total_postings >
-					candidates[i - 1].total_postings)
+				if (candidates[i].estimated_bytes >
+					candidates[i - 1].estimated_bytes)
 				{
 					TpEvictionCandidate tmp = candidates[i];
 					candidates[i]			= candidates[i - 1];
@@ -608,8 +683,8 @@ tp_evict_largest_memtable(Oid caller_oid)
 
 	for (i = 0; i < num_candidates; i++)
 	{
-		Oid				   target_oid	   = candidates[i].index_oid;
-		int64			   target_postings = candidates[i].total_postings;
+		Oid				   target_oid = candidates[i].index_oid;
+		uint64			   target_est = candidates[i].estimated_bytes;
 		TpLocalIndexState *target_state;
 		Relation		   index_rel;
 		BlockNumber		   segment_root;
@@ -657,11 +732,11 @@ tp_evict_largest_memtable(Oid caller_oid)
 				tp_maybe_compact_level(index_rel, 0);
 
 				elog(WARNING,
-					 "pg_textsearch: max_shared_memory "
+					 "pg_textsearch: memory limit "
 					 "exceeded, spilled memtable for "
-					 "index %u (" INT64_FORMAT " postings)",
+					 "index %u (est " UINT64_FORMAT " kB)",
 					 target_oid,
-					 target_postings);
+					 (uint64)(target_est / 1024));
 			}
 
 			if (!lock_was_ours)

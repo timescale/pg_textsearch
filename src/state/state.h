@@ -36,12 +36,15 @@ typedef struct TpMemtable
 {
 	/* String interning hash table in DSA */
 	dshash_table_handle string_hash_handle; /* Handle to dshash string table */
-	int64				total_postings;		/* Total posting entries for spill
-											 * threshold */
+	int64				total_postings;		/* Total posting entries */
 
 	/* Document length hash table in DSA */
 	dshash_table_handle doc_lengths_handle; /* Handle for document length hash
 											 * table */
+
+	/* Counters for memory estimation (soft limit) */
+	int64 num_terms;	  /* Unique terms in string table */
+	int64 total_term_len; /* Sum of all term string lengths */
 } TpMemtable;
 
 /*

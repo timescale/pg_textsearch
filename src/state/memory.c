@@ -18,47 +18,61 @@ Datum
 tp_memory_usage(PG_FUNCTION_ARGS)
 {
 	TupleDesc tupdesc;
-	Datum	  values[5];
-	bool	  nulls[5];
+	Datum	  values[7];
+	bool	  nulls[7];
 	HeapTuple tuple;
-	uint64	  total_bytes;
-	int64	  max_kb;
-	uint64	  max_bytes;
+	uint64	  dsa_bytes;
+	uint64	  est_bytes;
 
 	/* Build tuple descriptor */
-	tupdesc = CreateTemplateTupleDesc(5);
-	TupleDescInitEntry(tupdesc, 1, "total_dsa_bytes", INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, 2, "total_dsa_mb", FLOAT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, 3, "max_memory_bytes", INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, 4, "max_memory_mb", FLOAT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, 5, "usage_pct", FLOAT4OID, -1, 0);
+	tupdesc = CreateTemplateTupleDesc(7);
+	TupleDescInitEntry(tupdesc, 1, "dsa_total_bytes", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "dsa_total_mb", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 3, "estimated_bytes", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 4, "estimated_mb", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 5, "soft_limit_mb", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 6, "hard_limit_mb", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 7, "soft_usage_pct", FLOAT4OID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	memset(nulls, 0, sizeof(nulls));
 
-	/* Read current DSA usage */
+	/* DSA segment reservation (hard metric) */
 	tp_registry_update_dsa_counter();
-	total_bytes = tp_registry_get_total_dsa_bytes();
+	dsa_bytes = tp_registry_get_total_dsa_bytes();
 
-	values[0] = Int64GetDatum((int64)total_bytes);
-	values[1] = Float4GetDatum((float4)total_bytes / (1024.0f * 1024.0f));
+	values[0] = Int64GetDatum((int64)dsa_bytes);
+	values[1] = Float4GetDatum((float4)dsa_bytes / (1024.0f * 1024.0f));
 
-	/* Read max_shared_memory GUC */
-	max_kb = (int64)tp_max_shared_memory;
+	/* Estimated memtable memory (soft metric) */
+	est_bytes = tp_estimate_total_memtable_bytes();
 
-	if (max_kb > 0)
+	values[2] = Int64GetDatum((int64)est_bytes);
+	values[3] = Float4GetDatum((float4)est_bytes / (1024.0f * 1024.0f));
+
+	/* Soft limit */
+	if (tp_memtable_memory_limit > 0)
 	{
-		max_bytes = (uint64)max_kb * 1024ULL;
-		values[2] = Int64GetDatum((int64)max_bytes);
-		values[3] = Float4GetDatum((float4)max_bytes / (1024.0f * 1024.0f));
-		values[4] = Float4GetDatum(
-				(float4)total_bytes / (float4)max_bytes * 100.0f);
+		uint64 soft_bytes = (uint64)tp_memtable_memory_limit * 1024ULL;
+		values[4] = Float4GetDatum((float4)soft_bytes / (1024.0f * 1024.0f));
+		values[6] = Float4GetDatum(
+				(float4)est_bytes / (float4)soft_bytes * 100.0f);
 	}
 	else
 	{
-		nulls[2] = true;
-		nulls[3] = true;
 		nulls[4] = true;
+		nulls[6] = true;
+	}
+
+	/* Hard limit */
+	if (tp_max_shared_memory > 0)
+	{
+		uint64 hard_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+		values[5] = Float4GetDatum((float4)hard_bytes / (1024.0f * 1024.0f));
+	}
+	else
+	{
+		nulls[5] = true;
 	}
 
 	tuple = heap_form_tuple(tupdesc, values, nulls);

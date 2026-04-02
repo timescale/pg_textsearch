@@ -247,6 +247,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -385,6 +387,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Store memtable pointer in shared state for memtable access */
@@ -461,6 +465,8 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
 	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	new_memtable->total_postings	 = 0;
+	new_memtable->num_terms			 = 0;
+	new_memtable->total_term_len	 = 0;
 	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -526,6 +532,8 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -1263,8 +1271,10 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 			memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 		}
 
-		/* Reset posting count */
+		/* Reset counters */
 		memtable->total_postings = 0;
+		memtable->num_terms		 = 0;
+		memtable->total_term_len = 0;
 
 		/* Try to reclaim DSA memory (best effort) */
 		dsa_trim(local_state->dsa);

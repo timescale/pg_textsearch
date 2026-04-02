@@ -74,5 +74,10 @@ extern void	  tp_registry_update_dsa_counter(void);
 /* Memory limit eviction */
 extern bool tp_evict_largest_memtable(Oid caller_oid);
 
-/* GUC variable declared in mod.c */
+/* GUC variables declared in mod.c */
 extern int tp_max_shared_memory;
+extern int tp_memtable_memory_limit;
+
+/* Memory estimation */
+extern uint64 tp_estimate_memtable_bytes(TpMemtable *memtable);
+extern uint64 tp_estimate_total_memtable_bytes(void);

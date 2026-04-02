@@ -1,7 +1,32 @@
--- Test pg_textsearch.max_shared_memory GUC and memory limit enforcement
+-- Test pg_textsearch memory limit GUCs:
+--   memtable_memory_limit (soft limit, estimated usage)
+--   max_shared_memory (hard limit, DSA reservation)
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-WARNING:  pg_textsearch v1.0.0-dev is a prerelease. Do not use in production.
--- Test 1: GUC default
+INFO:  pg_textsearch v1.0.0-dev
+-- Ensure clean GUC state from any prior test runs
+ALTER SYSTEM RESET pg_textsearch.memtable_memory_limit;
+ALTER SYSTEM RESET pg_textsearch.max_shared_memory;
+ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
+ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- Test 1: GUC defaults
+SHOW pg_textsearch.memtable_memory_limit;
+ pg_textsearch.memtable_memory_limit 
+-------------------------------------
+ 1GB
+(1 row)
+
 SHOW pg_textsearch.max_shared_memory;
  pg_textsearch.max_shared_memory 
 ---------------------------------
@@ -9,69 +34,22 @@ SHOW pg_textsearch.max_shared_memory;
 (1 row)
 
 -- Test 2: SET should fail (PGC_SIGHUP context)
+SET pg_textsearch.memtable_memory_limit = '64MB';
+ERROR:  parameter "pg_textsearch.memtable_memory_limit" cannot be changed now
 SET pg_textsearch.max_shared_memory = '64MB';
 ERROR:  parameter "pg_textsearch.max_shared_memory" cannot be changed now
--- Test 3: bm25_memory_usage() with no limit set
-SELECT total_dsa_bytes >= 0 AS has_dsa,
-       max_memory_bytes IS NULL AS limit_disabled,
-       max_memory_mb IS NULL AS limit_mb_null,
-       usage_pct IS NULL AS usage_null
-FROM bm25_memory_usage();
- has_dsa | limit_disabled | limit_mb_null | usage_null 
----------+----------------+---------------+------------
- t       | t              | t             | t
-(1 row)
-
--- Test 4: Set max_shared_memory via ALTER SYSTEM and reload
-ALTER SYSTEM SET pg_textsearch.max_shared_memory = '512MB';
-SELECT pg_reload_conf();
- pg_reload_conf 
-----------------
- t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
-SHOW pg_textsearch.max_shared_memory;
- pg_textsearch.max_shared_memory 
----------------------------------
- 512MB
-(1 row)
-
--- Test 5: bm25_memory_usage() now reflects the limit
-SELECT max_memory_bytes IS NOT NULL AS limit_set,
-       max_memory_mb > 0 AS has_limit_mb,
-       usage_pct IS NOT NULL AS has_usage_pct
-FROM bm25_memory_usage();
- limit_set | has_limit_mb | has_usage_pct 
------------+--------------+---------------
- t         | t            | t
-(1 row)
-
--- Test 6: Create table and index, verify memory tracking works
-CREATE TABLE max_mem_test (id serial, body text);
-CREATE INDEX idx_max_mem ON max_mem_test
+-- Test 3: Create table and index for subsequent tests
+CREATE TABLE mem_test (id serial, body text);
+CREATE INDEX idx_mem ON mem_test
     USING bm25(body) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation idx_max_mem
+NOTICE:  BM25 index build started for relation idx_mem
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
-INSERT INTO max_mem_test (body)
-SELECT 'word_' || i || ' word_' || (i+1) || ' word_' || (i+2)
-FROM generate_series(1, 100) i;
-SELECT total_dsa_bytes > 0 AS dsa_grew
-FROM bm25_memory_usage();
- dsa_grew 
-----------
- t
-(1 row)
-
--- Test 7: Verify max_shared_memory = 0 (disabled) allows unlimited inserts
-ALTER SYSTEM RESET pg_textsearch.max_shared_memory;
+-- Test 4: Soft limit triggers spill
+-- Set a very low soft limit so inserting data will trigger eviction.
+ALTER SYSTEM SET pg_textsearch.memtable_memory_limit = '100kB';
+ALTER SYSTEM SET pg_textsearch.max_shared_memory = 0;
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
@@ -84,46 +62,69 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
-SET pg_textsearch.bulk_load_threshold = 0;
-SET pg_textsearch.memtable_spill_threshold = 0;
-INSERT INTO max_mem_test (body)
-SELECT 'unlimited_' || i || '_' || j
-FROM generate_series(1, 200) i,
-     generate_series(1, 5) j;
-SELECT count(*) > 100 AS inserts_ok FROM max_mem_test;
+SHOW pg_textsearch.memtable_memory_limit;
+ pg_textsearch.memtable_memory_limit 
+-------------------------------------
+ 100kB
+(1 row)
+
+-- Suppress spill WARNINGs (they contain non-deterministic values)
+SET client_min_messages = error;
+INSERT INTO mem_test (body)
+SELECT 'softlimit_' || i || ' word_' || (i+1) || ' word_' || (i+2)
+FROM generate_series(1, 500) i;
+RESET client_min_messages;
+-- Verify data was inserted (spill does not reject writes)
+SELECT count(*) >= 500 AS inserts_ok FROM mem_test;
  inserts_ok 
 ------------
  t
 (1 row)
 
--- Test 8: Cross-index eviction with low memory limit.
--- Create a second index and fill both, then set a low limit.
--- Inserting into the smaller index should evict the larger one.
-CREATE TABLE max_mem_test2 (id serial, body text);
-CREATE INDEX idx_max_mem2 ON max_mem_test2
-    USING bm25(body) WITH (text_config='english');
-NOTICE:  BM25 index build started for relation idx_max_mem2
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
--- Spill both indexes to start clean
-SELECT bm25_spill_index('idx_max_mem') IS NOT NULL AS spilled1;
- spilled1 
-----------
+-- Verify we can query the index (data was spilled to segments)
+SELECT count(*) > 0 AS can_query
+FROM mem_test WHERE body <@> 'softlimit'::bm25query < 0;
+ can_query 
+-----------
  t
 (1 row)
 
-SELECT bm25_spill_index('idx_max_mem2') IS NOT NULL AS spilled2;
- spilled2 
-----------
- f
+-- Test 5: Disabled soft limit allows unlimited inserts
+ALTER SYSTEM SET pg_textsearch.memtable_memory_limit = 0;
+ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
+ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
 (1 row)
 
--- Fill the first index with more data (making it the eviction target)
-INSERT INTO max_mem_test (body)
-SELECT 'big_' || i || '_' || j
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT bm25_spill_index('idx_mem') IS NOT NULL AS spilled;
+ spilled 
+---------
+ t
+(1 row)
+
+INSERT INTO mem_test (body)
+SELECT 'nolimit_' || i || '_' || j
 FROM generate_series(1, 200) i,
-     generate_series(1, 3) j;
+     generate_series(1, 5) j;
+SELECT count(*) > 1000 AS unlimited_ok FROM mem_test;
+ unlimited_ok 
+--------------
+ t
+(1 row)
+
+-- Test 6: Hard limit (max_shared_memory) blocks inserts
+-- Set a very low hard limit. Since the memtable already has data
+-- in DSA from the unlimited inserts above, the next insert should
+-- fail immediately.
 ALTER SYSTEM SET pg_textsearch.max_shared_memory = '100kB';
 SELECT pg_reload_conf();
  pg_reload_conf 
@@ -137,58 +138,75 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
--- Suppress spill WARNINGs (they contain non-deterministic OIDs)
-SET client_min_messages = error;
--- Insert into the SECOND (smaller) index. The memory check should
--- find idx_max_mem as the largest memtable and evict it, exercising
--- the cross-index LWLockConditionalAcquire path.
-INSERT INTO max_mem_test2 (body)
-SELECT 'cross_evict_' || i
-FROM generate_series(1, 500) i;
--- Verify data was inserted in both tables (writes never rejected)
-SELECT count(*) > 1000 AS t1_ok FROM max_mem_test;
- t1_ok 
--------
- t
-(1 row)
-
-SELECT count(*) > 0 AS t2_ok FROM max_mem_test2;
- t2_ok 
--------
- t
-(1 row)
-
-RESET client_min_messages;
--- Test 9: Build blocked at limit
-CREATE TABLE max_mem_build_test (id serial, body text);
-INSERT INTO max_mem_build_test (body)
-SELECT 'build_test_' || i FROM generate_series(1, 10) i;
--- This should ERROR because DSA > 100kB.
--- The exact kB values in the error vary by platform, so we
--- verify the error code rather than the exact message.
-DO $$
-BEGIN
-    EXECUTE 'CREATE INDEX idx_max_mem_build ON max_mem_build_test '
-            'USING bm25(body) WITH (text_config=''english'')';
-    RAISE NOTICE 'ERROR: expected build to fail but it succeeded';
-EXCEPTION
-    WHEN program_limit_exceeded THEN
-        RAISE NOTICE 'build correctly blocked by max_shared_memory';
-END;
-$$;
-NOTICE:  BM25 index build started for relation idx_max_mem_build
-NOTICE:  Using text search configuration: english
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  build correctly blocked by max_shared_memory
--- Clean up
-ALTER SYSTEM RESET pg_textsearch.max_shared_memory;
+-- This should ERROR because DSA usage exceeds 100kB
+INSERT INTO mem_test (body) VALUES ('hard_limit_test');
+ERROR:  pg_textsearch DSA memory (2048 kB) exceeds max_shared_memory (100 kB)
+HINT:  Increase pg_textsearch.max_shared_memory, reduce memtable_memory_limit, or spill indexes with bm25_spill_index().
+-- Test 7: Hard limit allows inserts when within budget
+ALTER SYSTEM SET pg_textsearch.max_shared_memory = '2GB';
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
  t
 (1 row)
 
-DROP TABLE IF EXISTS max_mem_test CASCADE;
-DROP TABLE IF EXISTS max_mem_test2 CASCADE;
-DROP TABLE IF EXISTS max_mem_build_test CASCADE;
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+INSERT INTO mem_test (body) VALUES ('within_hard_limit');
+SELECT count(*) > 1000 AS hard_ok FROM mem_test;
+ hard_ok 
+---------
+ t
+(1 row)
+
+-- Test 8: Build with soft limit eviction
+-- Reset to a moderate soft limit. Building a new index should
+-- trigger eviction of existing memtables to make room.
+ALTER SYSTEM SET pg_textsearch.memtable_memory_limit = '100kB';
+ALTER SYSTEM SET pg_textsearch.max_shared_memory = 0;
+ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
+ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+CREATE TABLE mem_build_test (id serial, body text);
+INSERT INTO mem_build_test (body)
+SELECT 'build_test_' || i FROM generate_series(1, 10) i;
+SET client_min_messages = error;
+CREATE INDEX idx_mem_build ON mem_build_test
+    USING bm25(body) WITH (text_config='english');
+RESET client_min_messages;
+SELECT count(*) AS build_ok FROM mem_build_test
+    WHERE body <@> 'build_test'::bm25query < 0;
+ build_ok 
+----------
+       10
+(1 row)
+
+-- Clean up
+ALTER SYSTEM RESET pg_textsearch.memtable_memory_limit;
+ALTER SYSTEM RESET pg_textsearch.max_shared_memory;
+ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
+ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+DROP TABLE IF EXISTS mem_test CASCADE;
+DROP TABLE IF EXISTS mem_build_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
