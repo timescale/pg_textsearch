@@ -55,7 +55,8 @@ bool tp_log_bmw_stats = false;
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
-/* Global variable for memtable spill threshold (0 = disabled) */
+/* Global variable for memtable spill threshold (0 = disabled)
+ * Deprecated: use soft_limit_one_memtable instead */
 int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
 
 /* Global variable for segments per level before compaction */
@@ -66,11 +67,10 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  */
 bool tp_compress_segments = true;
 
-/* Global variable for hard memory limit (in KB, 0 = disabled) */
-int tp_max_shared_memory = 0; /* disabled by default */
-
-/* Global variable for soft memory limit (in KB, 0 = disabled) */
-int tp_memtable_memory_limit = 1048576; /* 1 GB */
+/* Memory limit GUCs (in KB, 0 = disabled) */
+int tp_soft_limit_one = 262144;	 /* 256 MB */
+int tp_soft_limit_all = 1048576; /* 1 GB */
+int tp_hard_limit_all = 2097152; /* 2 GB */
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -246,12 +246,28 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"pg_textsearch.memtable_memory_limit",
-			"Soft memory limit for pg_textsearch memtables",
-			"Estimated memory usage across all memtables. When "
-			"exceeded, the largest memtable is spilled to disk. "
-			"Set to 0 to disable.",
-			&tp_memtable_memory_limit,
+			"pg_textsearch.soft_limit_one_memtable",
+			"Per-index memtable size limit",
+			"Estimated size of a single memtable. When "
+			"exceeded, that index's memtable is spilled "
+			"to disk. Set to 0 to disable.",
+			&tp_soft_limit_one,
+			262144,		   /* default: 256 MB */
+			0,			   /* min: 0 (disabled) */
+			MAX_KILOBYTES, /* max */
+			PGC_SIGHUP,	   /* changeable via reload */
+			GUC_UNIT_KB,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.soft_limit_all_memtables",
+			"Total memtable size limit across all indexes",
+			"Estimated total size of all memtables. When "
+			"exceeded, the largest memtable is spilled to "
+			"disk. Set to 0 to disable.",
+			&tp_soft_limit_all,
 			1048576,	   /* default: 1 GB */
 			0,			   /* min: 0 (disabled) */
 			MAX_KILOBYTES, /* max */
@@ -262,13 +278,13 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"pg_textsearch.max_shared_memory",
-			"Hard memory limit for pg_textsearch DSA usage",
+			"pg_textsearch.hard_limit_all_memtables",
+			"Hard memory limit for all pg_textsearch DSA usage",
 			"Absolute cap on DSA segment memory reserved by "
 			"pg_textsearch. When exceeded, new inserts fail "
 			"with an error. Set to 0 to disable.",
-			&tp_max_shared_memory,
-			0,			   /* default: disabled */
+			&tp_hard_limit_all,
+			2097152,	   /* default: 2 GB */
 			0,			   /* min: 0 (disabled) */
 			MAX_KILOBYTES, /* max */
 			PGC_SIGHUP,	   /* changeable via reload */

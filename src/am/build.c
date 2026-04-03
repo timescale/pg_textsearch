@@ -123,26 +123,30 @@ tp_buildphasename(int64 phase)
  *
  * Two-tier limit scheme:
  *
- * 1. Per-index posting count threshold (memtable_spill_threshold):
- *    Spills this index's memtable when it exceeds the threshold.
+ * Three memory limits, checked in order:
  *
- * 2. Soft limit (memtable_memory_limit): estimated memory usage
- *    across all memtables, based on posting/term counts. When
- *    exceeded, the largest memtable is spilled. The estimate
- *    resets to near-zero after spill, so no cooldown is needed.
+ * 1. soft_limit_one_memtable: per-index estimated size.
+ *    Spills this index's memtable when exceeded.
  *
- * 3. Hard limit (max_shared_memory): actual DSA segment memory.
- *    Checked separately in tp_check_hard_memory_limit() and
- *    in the pre-build path. Triggers ERROR, not spill.
+ * 2. soft_limit_all_memtables: total estimated size across
+ *    all indexes. Evicts the largest memtable when exceeded.
  *
- * Called once per document insert. The soft limit check is
- * amortized to every ~100 documents.
+ * 3. hard_limit_all_memtables: DSA segment reservation.
+ *    Checked separately in tp_check_hard_limit(); triggers
+ *    ERROR, not spill.
+ *
+ * Also honors the legacy memtable_spill_threshold (posting
+ * count) if set.
+ *
+ * Called once per document insert. The global soft limit
+ * check is amortized to every ~100 documents.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
 	BlockNumber segment_root;
 	TpMemtable *memtable;
+	uint64		est_bytes;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -151,18 +155,16 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!memtable)
 		return;
 
-	/* Check per-index posting count threshold */
+	/* Legacy per-index posting count threshold */
 	if (tp_memtable_spill_threshold > 0 &&
 		memtable->total_postings >= tp_memtable_spill_threshold)
 	{
 		segment_root = tp_write_segment(index_state, index_rel);
-
 		if (segment_root != InvalidBlockNumber)
 		{
 			tp_clear_memtable(index_state);
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
-
 			pgstat_progress_update_param(
 					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 			tp_maybe_compact_level(index_rel, 0);
@@ -172,38 +174,56 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		return;
 	}
 
+	/* Per-index soft limit (estimated size) */
+	if (tp_soft_limit_one > 0)
+	{
+		uint64 limit = (uint64)tp_soft_limit_one * 1024ULL;
+		est_bytes	 = tp_estimate_memtable_bytes(memtable);
+
+		if (est_bytes > limit)
+		{
+			segment_root = tp_write_segment(index_state, index_rel);
+			if (segment_root != InvalidBlockNumber)
+			{
+				tp_clear_memtable(index_state);
+				tp_clear_docid_pages(index_rel);
+				tp_link_l0_chain_head(index_rel, segment_root);
+				pgstat_progress_update_param(
+						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
+				tp_maybe_compact_level(index_rel, 0);
+				pgstat_progress_update_param(
+						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+			}
+			return;
+		}
+	}
+
 	/*
-	 * Soft limit: estimated memory across all memtables.
+	 * Global soft limit (total estimated across all indexes).
 	 * Amortized check every ~100 documents.
 	 */
-	if (tp_memtable_memory_limit > 0)
+	if (tp_soft_limit_all > 0)
 	{
 		static int docs_since_check = 0;
 
 		if (++docs_since_check >= 100)
 		{
-			uint64 limit_bytes = (uint64)tp_memtable_memory_limit * 1024ULL;
-			uint64 est_bytes;
+			uint64 limit = (uint64)tp_soft_limit_all * 1024ULL;
 
 			docs_since_check = 0;
 			est_bytes		 = tp_estimate_total_memtable_bytes();
 
-			if (est_bytes > limit_bytes)
+			if (est_bytes > limit)
 			{
-				if (tp_evict_largest_memtable(index_state->shared->index_oid))
-				{
-					/* Estimate drops after spill — no
-					 * cooldown needed */
-				}
-				else
+				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
 				{
 					elog(WARNING,
 						 "pg_textsearch: "
-						 "memtable_memory_limit "
+						 "soft_limit_all_memtables "
 						 "exceeded (" UINT64_FORMAT " kB / %d kB) but no "
 						 "memtable could be spilled",
 						 (uint64)(est_bytes / 1024),
-						 tp_memtable_memory_limit);
+						 tp_soft_limit_all);
 				}
 			}
 		}
@@ -212,22 +232,22 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 /*
  * Hard limit check: fail the current operation if DSA segment
- * memory exceeds max_shared_memory.  Called from tp_insert
- * before adding terms to the memtable.
+ * memory exceeds hard_limit_all_memtables.  Called from
+ * tp_insert before adding terms to the memtable.
  *
  * Raises ERROR if the limit is exceeded; returns normally
  * otherwise.
  */
 static void
-tp_check_hard_memory_limit(void)
+tp_check_hard_limit(void)
 {
 	uint64 limit_bytes;
 	uint64 dsa_bytes;
 
-	if (tp_max_shared_memory <= 0)
+	if (tp_hard_limit_all <= 0)
 		return;
 
-	limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+	limit_bytes = (uint64)tp_hard_limit_all * 1024ULL;
 
 	tp_registry_update_dsa_counter();
 	dsa_bytes = tp_registry_get_total_dsa_bytes();
@@ -237,13 +257,13 @@ tp_check_hard_memory_limit(void)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("pg_textsearch DSA memory "
 						"(" UINT64_FORMAT " kB) exceeds "
-						"max_shared_memory (%d kB)",
+						"hard_limit_all_memtables "
+						"(%d kB)",
 						(uint64)(dsa_bytes / 1024),
-						tp_max_shared_memory),
+						tp_hard_limit_all),
 				 errhint("Increase pg_textsearch."
-						 "max_shared_memory, reduce "
-						 "memtable_memory_limit, or "
-						 "spill indexes with "
+						 "hard_limit_all_memtables "
+						 "or spill indexes with "
 						 "bm25_spill_index().")));
 }
 
@@ -829,40 +849,40 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Soft limit: try to evict if estimated usage is high.
 	 * Hard limit: fail if DSA reservation exceeds the cap.
 	 */
-	if (tp_memtable_memory_limit > 0)
+	if (tp_soft_limit_all > 0)
 	{
-		uint64 soft_bytes = (uint64)tp_memtable_memory_limit * 1024ULL;
+		uint64 soft = (uint64)tp_soft_limit_all * 1024ULL;
 
-		if (tp_estimate_total_memtable_bytes() > soft_bytes)
+		if (tp_estimate_total_memtable_bytes() > soft)
 			tp_evict_largest_memtable(InvalidOid);
 	}
 
-	if (tp_max_shared_memory > 0)
+	if (tp_hard_limit_all > 0)
 	{
-		uint64 limit_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+		uint64 limit = (uint64)tp_hard_limit_all * 1024ULL;
 		uint64 dsa_bytes;
 
 		tp_registry_update_dsa_counter();
 		dsa_bytes = tp_registry_get_total_dsa_bytes();
 
-		if (dsa_bytes > limit_bytes)
+		if (dsa_bytes > limit)
 		{
-			/* Try one eviction before failing */
 			if (!tp_evict_largest_memtable(InvalidOid))
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("pg_textsearch DSA memory "
-								"(" UINT64_FORMAT " kB) "
-								"exceeds "
-								"max_shared_memory "
-								"(%d kB), cannot start "
-								"index build",
+						 errmsg("pg_textsearch DSA "
+								"memory (" UINT64_FORMAT " kB) exceeds "
+								"hard_limit_all_"
+								"memtables (%d kB), "
+								"cannot start index "
+								"build",
 								(uint64)(dsa_bytes / 1024),
-								tp_max_shared_memory),
+								tp_hard_limit_all),
 						 errhint("Increase "
 								 "pg_textsearch."
-								 "max_shared_memory or "
-								 "spill indexes with "
+								 "hard_limit_all_"
+								 "memtables or spill "
+								 "indexes with "
 								 "bm25_spill_index().")));
 		}
 	}
@@ -1374,7 +1394,7 @@ tp_insert(
 		if (index_state != NULL)
 		{
 			/* Hard limit: fail before allocating more DSA memory */
-			tp_check_hard_memory_limit();
+			tp_check_hard_limit();
 
 			/* Validate TID before adding to posting list */
 			if (!ItemPointerIsValid(ht_ctid))

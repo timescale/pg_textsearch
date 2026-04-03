@@ -51,9 +51,9 @@ tp_memory_usage(PG_FUNCTION_ARGS)
 	values[3] = Float4GetDatum((float4)est_bytes / (1024.0f * 1024.0f));
 
 	/* Soft limit */
-	if (tp_memtable_memory_limit > 0)
+	if (tp_soft_limit_all > 0)
 	{
-		uint64 soft_bytes = (uint64)tp_memtable_memory_limit * 1024ULL;
+		uint64 soft_bytes = (uint64)tp_soft_limit_all * 1024ULL;
 		values[4] = Float4GetDatum((float4)soft_bytes / (1024.0f * 1024.0f));
 		values[6] = Float4GetDatum(
 				(float4)est_bytes / (float4)soft_bytes * 100.0f);
@@ -65,9 +65,9 @@ tp_memory_usage(PG_FUNCTION_ARGS)
 	}
 
 	/* Hard limit */
-	if (tp_max_shared_memory > 0)
+	if (tp_hard_limit_all > 0)
 	{
-		uint64 hard_bytes = (uint64)tp_max_shared_memory * 1024ULL;
+		uint64 hard_bytes = (uint64)tp_hard_limit_all * 1024ULL;
 		values[5] = Float4GetDatum((float4)hard_bytes / (1024.0f * 1024.0f));
 	}
 	else
