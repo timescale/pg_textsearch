@@ -186,7 +186,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 			uint64 est_bytes;
 
 			docs_since_check = 0;
-			est_bytes		 = tp_estimate_memtable_bytes(memtable);
+			est_bytes		 = tp_estimate_total_memtable_bytes();
 
 			if (est_bytes > limit_bytes)
 			{
@@ -215,8 +215,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
  * memory exceeds max_shared_memory.  Called from tp_insert
  * before adding terms to the memtable.
  *
- * Returns true if the operation should proceed, false if it
- * should be aborted (after raising an ERROR).
+ * Raises ERROR if the limit is exceeded; returns normally
+ * otherwise.
  */
 static void
 tp_check_hard_memory_limit(void)

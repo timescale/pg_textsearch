@@ -73,8 +73,18 @@ ALTER SYSTEM SET pg_textsearch.max_shared_memory = '100kB';
 SELECT pg_reload_conf();
 SELECT pg_sleep(0.1);
 
--- This should ERROR because DSA usage exceeds 100kB
-INSERT INTO mem_test (body) VALUES ('hard_limit_test');
+-- This should ERROR because DSA usage exceeds 100kB.
+-- Use DO block to check error code (exact kB values are
+-- platform-dependent).
+DO $$
+BEGIN
+    INSERT INTO mem_test (body) VALUES ('hard_limit_test');
+    RAISE NOTICE 'ERROR: expected insert to fail';
+EXCEPTION
+    WHEN program_limit_exceeded THEN
+        RAISE NOTICE 'insert correctly blocked by max_shared_memory';
+END;
+$$;
 
 -- Test 7: Hard limit allows inserts when within budget
 ALTER SYSTEM SET pg_textsearch.max_shared_memory = '2GB';

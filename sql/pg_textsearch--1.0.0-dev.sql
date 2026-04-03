@@ -220,11 +220,13 @@ CREATE FUNCTION bm25_summarize_index(text) RETURNS text
 -- Only exposes aggregate DSA byte counts and configured limits,
 -- not per-index or per-user data.
 CREATE FUNCTION bm25_memory_usage(
-    OUT total_dsa_bytes int8,
-    OUT total_dsa_mb float4,
-    OUT max_memory_bytes int8,
-    OUT max_memory_mb float4,
-    OUT usage_pct float4
+    OUT dsa_total_bytes int8,
+    OUT dsa_total_mb float4,
+    OUT estimated_bytes int8,
+    OUT estimated_mb float4,
+    OUT soft_limit_mb float4,
+    OUT hard_limit_mb float4,
+    OUT soft_usage_pct float4
 )
 AS 'MODULE_PATHNAME', 'tp_memory_usage'
 LANGUAGE C VOLATILE;

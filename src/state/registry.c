@@ -467,9 +467,9 @@ tp_registry_get_total_dsa_bytes(void)
  * IMPORTANT: Because dsa_get_total_size() never decreases, this
  * counter is a high-water mark, not current usage. After a spill,
  * freed memory returns to DSA's internal freelists but the counter
- * stays the same. Callers must account for this — see
- * tp_auto_spill_if_needed() which uses a cooldown period after
- * successful spills to avoid perpetual eviction attempts.
+ * stays the same. This counter is used only for the hard limit
+ * (max_shared_memory). The soft limit (memtable_memory_limit)
+ * uses estimation-based tracking that resets on spill.
  */
 void
 tp_registry_update_dsa_counter(void)
