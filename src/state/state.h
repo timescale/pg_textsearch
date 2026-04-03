@@ -102,6 +102,9 @@ typedef struct TpLocalIndexState
 
 	/* Bulk load tracking: terms added in current transaction */
 	int64 terms_added_this_xact;
+
+	/* Amortization counter for global soft limit check */
+	int docs_since_global_check;
 } TpLocalIndexState;
 
 /* Function declarations for index state management */

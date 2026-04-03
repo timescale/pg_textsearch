@@ -194,15 +194,13 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	 */
 	if (tp_soft_limit_all > 0)
 	{
-		static int docs_since_check = 0;
-
-		if (++docs_since_check >= 100)
+		if (++index_state->docs_since_global_check >= 100)
 		{
 			uint64 limit = (uint64)tp_soft_limit_all * 1024ULL;
 			uint64 est;
 
-			docs_since_check = 0;
-			est				 = tp_estimate_total_memtable_bytes();
+			index_state->docs_since_global_check = 0;
+			est = tp_estimate_total_memtable_bytes();
 
 			if (est > limit)
 			{

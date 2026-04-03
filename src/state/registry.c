@@ -14,6 +14,8 @@
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
 #include <storage/shmem.h>
 #include <utils/dsa.h>
@@ -703,13 +705,26 @@ tp_evict_largest_memtable(Oid caller_oid)
 		}
 
 		/*
-		 * Open the index, spill, and clean up. The entire
-		 * operation is wrapped in PG_TRY to ensure we release
-		 * the lock and close the relation on any error.
+		 * Try to lock the index relation without blocking.
+		 * If another transaction holds a conflicting lock,
+		 * skip this candidate to avoid deadlock (we already
+		 * hold an LWLock on the caller's index).
+		 */
+		if (!ConditionalLockRelationOid(target_oid, RowExclusiveLock))
+		{
+			if (!lock_was_ours)
+				tp_release_index_lock(target_state);
+			continue;
+		}
+
+		/*
+		 * Open the index (lock already held), spill, and
+		 * clean up.  Wrapped in PG_TRY to ensure we release
+		 * locks and close the relation on any error.
 		 */
 		PG_TRY();
 		{
-			index_rel = index_open(target_oid, RowExclusiveLock);
+			index_rel = index_open(target_oid, NoLock);
 
 			segment_root = tp_write_segment(target_state, index_rel);
 

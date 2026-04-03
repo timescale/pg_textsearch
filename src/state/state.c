@@ -172,12 +172,13 @@ tp_get_local_index_state(Oid index_oid)
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
-		local_state->shared				   = shared_state;
-		local_state->dsa				   = dsa;
-		local_state->is_build_mode		   = false; /* Runtime mode */
-		local_state->lock_held			   = false;
-		local_state->lock_mode			   = 0;
-		local_state->terms_added_this_xact = 0;
+		local_state->shared					 = shared_state;
+		local_state->dsa					 = dsa;
+		local_state->is_build_mode			 = false; /* Runtime mode */
+		local_state->lock_held				 = false;
+		local_state->lock_mode				 = 0;
+		local_state->terms_added_this_xact	 = 0;
+		local_state->docs_since_global_check = 0;
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -276,12 +277,13 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared				   = shared_state;
-	local_state->dsa				   = dsa;
-	local_state->is_build_mode		   = false; /* Runtime mode */
-	local_state->lock_held			   = false;
-	local_state->lock_mode			   = 0;
-	local_state->terms_added_this_xact = 0;
+	local_state->shared					 = shared_state;
+	local_state->dsa					 = dsa;
+	local_state->is_build_mode			 = false; /* Runtime mode */
+	local_state->lock_held				 = false;
+	local_state->lock_mode				 = 0;
+	local_state->terms_added_this_xact	 = 0;
+	local_state->docs_since_global_check = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -397,12 +399,13 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state pointing to PRIVATE DSA */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared				   = shared_state;
-	local_state->dsa				   = private_dsa; /* PRIVATE DSA */
-	local_state->is_build_mode		   = true;		  /* BUILD MODE */
-	local_state->lock_held			   = false;
-	local_state->lock_mode			   = 0;
-	local_state->terms_added_this_xact = 0;
+	local_state->shared					 = shared_state;
+	local_state->dsa					 = private_dsa; /* PRIVATE DSA */
+	local_state->is_build_mode			 = true;		/* BUILD MODE */
+	local_state->lock_held				 = false;
+	local_state->lock_mode				 = 0;
+	local_state->terms_added_this_xact	 = 0;
+	local_state->docs_since_global_check = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -1068,7 +1071,8 @@ tp_rebuild_posting_lists_from_docids(
 		 * memtable, which would otherwise count toward the bulk load
 		 * threshold and incorrectly trigger a segment write.
 		 */
-		local_state->terms_added_this_xact = 0;
+		local_state->terms_added_this_xact	 = 0;
+		local_state->docs_since_global_check = 0;
 	}
 }
 
@@ -1415,6 +1419,9 @@ tp_reset_bulk_load_counters(void)
 	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
 	{
 		if (entry->local_state)
-			entry->local_state->terms_added_this_xact = 0;
+		{
+			entry->local_state->terms_added_this_xact	= 0;
+			entry->local_state->docs_since_global_check = 0;
+		}
 	}
 }
