@@ -24,7 +24,14 @@ SET pg_textsearch.soft_limit_one_memtable = '64MB';
 SET pg_textsearch.soft_limit_all_memtables = '64MB';
 SET pg_textsearch.hard_limit_all_memtables = '64MB';
 
--- Test 3: Create table and index for subsequent tests
+-- Test 3: bm25_memory_usage() returns data with defaults
+SELECT dsa_total_bytes >= 0 AS has_dsa,
+       estimated_bytes >= 0 AS has_est,
+       soft_limit_mb > 0 AS has_soft,
+       hard_limit_mb > 0 AS has_hard
+FROM bm25_memory_usage();
+
+-- Test 4: Create table and index for subsequent tests
 CREATE TABLE mem_test (id serial, body text);
 CREATE INDEX idx_mem ON mem_test
     USING bm25(body) WITH (text_config='english');
@@ -68,6 +75,12 @@ RESET client_min_messages;
 
 SELECT count(*) >= 1000 AS global_ok FROM mem_test;
 
+-- Verify bm25_memory_usage() shows estimated usage and soft limit
+SELECT estimated_bytes > 0 AS has_est,
+       soft_limit_mb IS NOT NULL AS has_soft,
+       soft_usage_pct IS NOT NULL AS has_pct
+FROM bm25_memory_usage();
+
 -- Test 6: Disabled limits allow unlimited inserts
 ALTER SYSTEM SET pg_textsearch.soft_limit_one_memtable = 0;
 ALTER SYSTEM SET pg_textsearch.soft_limit_all_memtables = 0;
@@ -76,6 +89,12 @@ ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
 ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
 SELECT pg_reload_conf();
 SELECT pg_sleep(0.1);
+
+-- Verify bm25_memory_usage() with disabled limits shows NULLs
+SELECT soft_limit_mb IS NULL AS soft_null,
+       hard_limit_mb IS NULL AS hard_null,
+       soft_usage_pct IS NULL AS pct_null
+FROM bm25_memory_usage();
 
 SELECT bm25_spill_index('idx_mem') IS NOT NULL AS spilled;
 

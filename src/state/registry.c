@@ -749,6 +749,7 @@ tp_evict_largest_memtable(Oid caller_oid)
 
 			if (!lock_was_ours)
 				tp_release_index_lock(target_state);
+			index_close(index_rel, RowExclusiveLock);
 			FlushErrorState();
 			elog(WARNING,
 				 "pg_textsearch: eviction of index %u "
@@ -763,7 +764,14 @@ tp_evict_largest_memtable(Oid caller_oid)
 		/* Update the counter after spill */
 		tp_registry_update_dsa_counter();
 
-		return (segment_root != InvalidBlockNumber);
+		/*
+		 * If spill produced a segment, we succeeded.
+		 * If the memtable was empty (stale candidate),
+		 * try the next candidate.
+		 */
+		if (segment_root != InvalidBlockNumber)
+			return true;
+		/* else continue to next candidate */
 	}
 
 	return false;
