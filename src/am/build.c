@@ -119,34 +119,47 @@ tp_buildphasename(int64 phase)
 }
 
 /*
+ * Spill the current index's memtable to a disk segment.
+ * Returns true if a segment was written.
+ */
+static bool
+tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
+{
+	BlockNumber root;
+
+	root = tp_write_segment(index_state, index_rel);
+	if (root == InvalidBlockNumber)
+		return false;
+
+	tp_clear_memtable(index_state);
+	tp_clear_docid_pages(index_rel);
+	tp_link_l0_chain_head(index_rel, root);
+
+	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
+	tp_maybe_compact_level(index_rel, 0);
+	pgstat_progress_update_param(
+			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+
+	return true;
+}
+
+/*
  * Auto-spill memtable when memory limits are exceeded.
  *
- * Two-tier limit scheme:
+ * Checks in order:
+ * 1. Legacy memtable_spill_threshold (posting count).
+ * 2. soft_limit_one_memtable (per-index estimated size).
+ * 3. soft_limit_all_memtables (global estimated size,
+ *    amortized every ~100 documents).
  *
- * Three memory limits, checked in order:
- *
- * 1. soft_limit_one_memtable: per-index estimated size.
- *    Spills this index's memtable when exceeded.
- *
- * 2. soft_limit_all_memtables: total estimated size across
- *    all indexes. Evicts the largest memtable when exceeded.
- *
- * 3. hard_limit_all_memtables: DSA segment reservation.
- *    Checked separately in tp_check_hard_limit(); triggers
- *    ERROR, not spill.
- *
- * Also honors the legacy memtable_spill_threshold (posting
- * count) if set.
- *
- * Called once per document insert. The global soft limit
- * check is amortized to every ~100 documents.
+ * hard_limit_all_memtables is checked separately in
+ * tp_check_hard_limit().
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
-	BlockNumber segment_root;
 	TpMemtable *memtable;
-	uint64		est_bytes;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -159,18 +172,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (tp_memtable_spill_threshold > 0 &&
 		memtable->total_postings >= tp_memtable_spill_threshold)
 	{
-		segment_root = tp_write_segment(index_state, index_rel);
-		if (segment_root != InvalidBlockNumber)
-		{
-			tp_clear_memtable(index_state);
-			tp_clear_docid_pages(index_rel);
-			tp_link_l0_chain_head(index_rel, segment_root);
-			pgstat_progress_update_param(
-					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-			tp_maybe_compact_level(index_rel, 0);
-			pgstat_progress_update_param(
-					PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
-		}
+		tp_do_spill(index_state, index_rel);
 		return;
 	}
 
@@ -178,22 +180,10 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (tp_soft_limit_one > 0)
 	{
 		uint64 limit = (uint64)tp_soft_limit_one * 1024ULL;
-		est_bytes	 = tp_estimate_memtable_bytes(memtable);
 
-		if (est_bytes > limit)
+		if (tp_estimate_memtable_bytes(memtable) > limit)
 		{
-			segment_root = tp_write_segment(index_state, index_rel);
-			if (segment_root != InvalidBlockNumber)
-			{
-				tp_clear_memtable(index_state);
-				tp_clear_docid_pages(index_rel);
-				tp_link_l0_chain_head(index_rel, segment_root);
-				pgstat_progress_update_param(
-						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-				tp_maybe_compact_level(index_rel, 0);
-				pgstat_progress_update_param(
-						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
-			}
+			tp_do_spill(index_state, index_rel);
 			return;
 		}
 	}
@@ -209,20 +199,23 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		if (++docs_since_check >= 100)
 		{
 			uint64 limit = (uint64)tp_soft_limit_all * 1024ULL;
+			uint64 est;
 
 			docs_since_check = 0;
-			est_bytes		 = tp_estimate_total_memtable_bytes();
+			est				 = tp_estimate_total_memtable_bytes();
 
-			if (est_bytes > limit)
+			if (est > limit)
 			{
 				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
 				{
 					elog(WARNING,
 						 "pg_textsearch: "
-						 "soft_limit_all_memtables "
-						 "exceeded (" UINT64_FORMAT " kB / %d kB) but no "
-						 "memtable could be spilled",
-						 (uint64)(est_bytes / 1024),
+						 "soft_limit_all_memtables"
+						 " exceeded "
+						 "(" UINT64_FORMAT " kB / %d kB) but no "
+						 "memtable could be "
+						 "spilled",
+						 (uint64)(est / 1024),
 						 tp_soft_limit_all);
 				}
 			}

@@ -458,39 +458,28 @@ tp_registry_get_total_dsa_bytes(void)
  * Re-sync the global DSA byte counter from dsa_get_total_size().
  * Called after operations that may change DSA size.
  *
- * Uses a CAS loop that only updates when the new value exceeds
- * the stored value. Since dsa_get_total_size() is monotonically
- * non-decreasing (DSA never returns segments to the OS), this
- * prevents a racing backend with a stale read from overwriting
- * a newer, higher value.
+ * This is a simple atomic write of the current DSA segment
+ * reservation. A racing backend may briefly overwrite with a
+ * slightly stale value, but this is acceptable because:
+ * (a) the hard limit check is approximate by design, and
+ * (b) the next call from any backend will correct it.
  *
- * IMPORTANT: Because dsa_get_total_size() never decreases, this
- * counter is a high-water mark, not current usage. After a spill,
- * freed memory returns to DSA's internal freelists but the counter
- * stays the same. This counter is used only for the hard limit
- * (max_shared_memory). The soft limit (memtable_memory_limit)
- * uses estimation-based tracking that resets on spill.
+ * We intentionally do NOT use a monotonic CAS here, because
+ * dsa_get_total_size() CAN decrease when dsa_trim() frees
+ * empty segments. If we only allowed increases, the hard
+ * limit would become a permanent high-water mark that blocks
+ * inserts forever after a single overshoot.
  */
 void
 tp_registry_update_dsa_counter(void)
 {
 	uint64 new_size;
-	uint64 old_size;
 
 	if (!tapir_registry || !tapir_dsa)
 		return;
 
 	new_size = dsa_get_total_size(tapir_dsa);
-
-	for (;;)
-	{
-		old_size = pg_atomic_read_u64(&tapir_registry->total_dsa_bytes);
-		if (new_size <= old_size)
-			break;
-		if (pg_atomic_compare_exchange_u64(
-					&tapir_registry->total_dsa_bytes, &old_size, new_size))
-			break;
-	}
+	pg_atomic_write_u64(&tapir_registry->total_dsa_bytes, new_size);
 }
 
 /*
@@ -686,8 +675,8 @@ tp_evict_largest_memtable(Oid caller_oid)
 		Oid				   target_oid = candidates[i].index_oid;
 		uint64			   target_est = candidates[i].estimated_bytes;
 		TpLocalIndexState *target_state;
-		Relation		   index_rel;
-		BlockNumber		   segment_root;
+		Relation		   index_rel	 = NULL;
+		BlockNumber		   segment_root	 = InvalidBlockNumber;
 		bool			   lock_was_ours = false;
 
 		target_state = tp_get_local_index_state(target_oid);
@@ -749,7 +738,8 @@ tp_evict_largest_memtable(Oid caller_oid)
 
 			if (!lock_was_ours)
 				tp_release_index_lock(target_state);
-			index_close(index_rel, RowExclusiveLock);
+			if (index_rel)
+				index_close(index_rel, RowExclusiveLock);
 			FlushErrorState();
 			elog(WARNING,
 				 "pg_textsearch: eviction of index %u "
