@@ -755,6 +755,8 @@ tp_evict_largest_memtable(Oid caller_oid)
 				tp_release_index_lock(target_state);
 			if (index_rel)
 				index_close(index_rel, RowExclusiveLock);
+			else
+				UnlockRelationOid(target_oid, RowExclusiveLock);
 			FlushErrorState();
 			elog(WARNING,
 				 "pg_textsearch: eviction of index %u "

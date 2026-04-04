@@ -858,7 +858,13 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		if (dsa_bytes > limit)
 		{
-			if (!tp_evict_largest_memtable(InvalidOid))
+			tp_evict_largest_memtable(InvalidOid);
+
+			/* Re-check after eviction attempt */
+			tp_registry_update_dsa_counter();
+			dsa_bytes = tp_registry_get_total_dsa_bytes();
+
+			if (dsa_bytes > limit)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("pg_textsearch DSA "

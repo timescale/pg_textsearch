@@ -1420,8 +1420,11 @@ tp_reset_bulk_load_counters(void)
 	{
 		if (entry->local_state)
 		{
-			entry->local_state->terms_added_this_xact	= 0;
-			entry->local_state->docs_since_global_check = 0;
+			entry->local_state->terms_added_this_xact = 0;
+			/* Note: docs_since_global_check is NOT reset here.
+			 * It is an amortization counter that must persist
+			 * across transactions so that the global soft limit
+			 * check fires for single-row auto-commit INSERTs. */
 		}
 	}
 }
