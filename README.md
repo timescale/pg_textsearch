@@ -313,16 +313,30 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
+`pg_textsearch.memory_limit` | 2GB | Hard cap on DSA memory; soft spill thresholds derived internally (0 = disable)
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
-`pg_textsearch.memtable_spill_threshold` | 32000000 | Posting entries before auto-spill (0 = disable)
+`pg_textsearch.memtable_spill_threshold` | 32000000 | Posting entries before auto-spill; deprecated, use `memory_limit` (0 = disable)
 
-#### Spill thresholds
+#### Memory management
 
-The `memtable_spill_threshold` controls when the in-memory index flushes to
-a disk segment. When the memtable reaches this many posting entries, it
-automatically spills at transaction commit. The `bulk_load_threshold` triggers
-a spill based on term count within a single transaction. Both keep memory
-usage bounded while maintaining good query performance.
+`memory_limit` controls how much shared memory pg_textsearch can use for
+in-memory indexes (memtables). Three thresholds are derived from it:
+
+| Threshold | Value | Behavior |
+| --- | --- | --- |
+| Per-index soft limit | `memory_limit / 8` | Spills that index's memtable to disk |
+| Global soft limit | `memory_limit / 2` | Evicts the largest memtable across all indexes |
+| Hard limit | `memory_limit` | Rejects inserts with an ERROR |
+
+The soft limits keep memory usage well below the hard cap during normal
+operation. Operators only need to set `memory_limit`; the internal ratios
+are tuned for typical workloads.
+
+To check current memory usage:
+
+```sql
+SELECT * FROM bm25_memory_usage();
+```
 
 **Crash recovery**: The memtable is rebuilt from the heap on startup, so no
 data is lost if Postgres crashes before spilling to disk.

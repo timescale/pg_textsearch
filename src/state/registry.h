@@ -74,10 +74,32 @@ extern void	  tp_registry_update_dsa_counter(void);
 /* Memory limit eviction */
 extern bool tp_evict_largest_memtable(Oid caller_oid);
 
-/* GUC variables declared in mod.c */
-extern int tp_soft_limit_one;
-extern int tp_soft_limit_all;
-extern int tp_hard_limit_all;
+/* GUC variable declared in mod.c */
+extern int tp_memory_limit;
+
+/*
+ * Derived limits from tp_memory_limit (all in bytes, 0 = disabled):
+ *   hard  = memory_limit
+ *   soft  = memory_limit / 2   (global eviction threshold)
+ *   per   = memory_limit / 8   (per-index spill threshold)
+ */
+static inline uint64
+tp_hard_limit_bytes(void)
+{
+	return (uint64)tp_memory_limit * 1024ULL;
+}
+
+static inline uint64
+tp_soft_limit_bytes(void)
+{
+	return (uint64)tp_memory_limit * 512ULL; /* / 2 */
+}
+
+static inline uint64
+tp_per_index_limit_bytes(void)
+{
+	return (uint64)tp_memory_limit * 128ULL; /* / 8 */
+}
 
 /* Memory estimation */
 extern uint64 tp_estimate_memtable_bytes(TpMemtable *memtable);

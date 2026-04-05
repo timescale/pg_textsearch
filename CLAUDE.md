@@ -146,11 +146,9 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.default_limit` | Default limit for queries without LIMIT | 1000 |
 | `pg_textsearch.log_scores` | Log BM25 scores during scans | false |
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
+| `pg_textsearch.memory_limit` | Hard cap on memtable DSA memory (soft limits derived internally) | 2GB |
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill | 100000 |
-| `pg_textsearch.memtable_spill_threshold` | Posting entries to trigger spill (legacy) | 32000000 |
-| `pg_textsearch.soft_limit_one_memtable` | Per-index estimated memtable size limit | 256MB |
-| `pg_textsearch.soft_limit_all_memtables` | Total estimated memtable size limit | 1GB |
-| `pg_textsearch.hard_limit_all_memtables` | DSA reservation hard limit (ERROR on exceed) | 2GB |
+| `pg_textsearch.memtable_spill_threshold` | Posting entries to trigger spill (deprecated) | 32000000 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 

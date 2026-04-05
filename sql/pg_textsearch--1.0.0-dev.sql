@@ -224,9 +224,8 @@ CREATE FUNCTION bm25_memory_usage(
     OUT dsa_total_mb float4,
     OUT estimated_bytes int8,
     OUT estimated_mb float4,
-    OUT soft_limit_mb float4,
-    OUT hard_limit_mb float4,
-    OUT soft_usage_pct float4
+    OUT memory_limit_mb float4,
+    OUT usage_pct float4
 )
 AS 'MODULE_PATHNAME', 'tp_memory_usage'
 LANGUAGE C VOLATILE;

@@ -149,12 +149,12 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
  *
  * Checks in order:
  * 1. Legacy memtable_spill_threshold (posting count).
- * 2. soft_limit_one_memtable (per-index estimated size).
- * 3. soft_limit_all_memtables (global estimated size,
- *    amortized every ~100 documents).
+ * 2. Per-index soft limit: memory_limit / 8.
+ * 3. Global soft limit: memory_limit / 2
+ *    (amortized every ~100 documents).
  *
- * hard_limit_all_memtables is checked separately in
- * tp_check_hard_limit().
+ * The hard limit (memory_limit itself) is checked separately
+ * in tp_check_hard_limit().
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
@@ -168,7 +168,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!memtable)
 		return;
 
-	/* Legacy per-index posting count threshold */
+	/* Legacy per-index posting count threshold (deprecated) */
 	if (tp_memtable_spill_threshold > 0 &&
 		memtable->total_postings >= tp_memtable_spill_threshold)
 	{
@@ -176,12 +176,14 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		return;
 	}
 
-	/* Per-index soft limit (estimated size) */
-	if (tp_soft_limit_one > 0)
-	{
-		uint64 limit = (uint64)tp_soft_limit_one * 1024ULL;
+	if (tp_memory_limit <= 0)
+		return;
 
-		if (tp_estimate_memtable_bytes(memtable) > limit)
+	/* Per-index soft limit: memory_limit / 8 */
+	{
+		uint64 limit = tp_per_index_limit_bytes();
+
+		if (limit > 0 && tp_estimate_memtable_bytes(memtable) > limit)
 		{
 			tp_do_spill(index_state, index_rel);
 			return;
@@ -189,33 +191,28 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	}
 
 	/*
-	 * Global soft limit (total estimated across all indexes).
+	 * Global soft limit: memory_limit / 2.
 	 * Amortized check every ~100 documents.
 	 */
-	if (tp_soft_limit_all > 0)
+	if (++index_state->docs_since_global_check >= 100)
 	{
-		if (++index_state->docs_since_global_check >= 100)
+		uint64 limit = tp_soft_limit_bytes();
+		uint64 est;
+
+		index_state->docs_since_global_check = 0;
+		est = tp_estimate_total_memtable_bytes();
+
+		if (est > limit)
 		{
-			uint64 limit = (uint64)tp_soft_limit_all * 1024ULL;
-			uint64 est;
-
-			index_state->docs_since_global_check = 0;
-			est = tp_estimate_total_memtable_bytes();
-
-			if (est > limit)
+			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
 			{
-				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
-				{
-					elog(WARNING,
-						 "pg_textsearch: "
-						 "soft_limit_all_memtables"
-						 " exceeded "
-						 "(" UINT64_FORMAT " kB / %d kB) but no "
-						 "memtable could be "
-						 "spilled",
-						 (uint64)(est / 1024),
-						 tp_soft_limit_all);
-				}
+				elog(WARNING,
+					 "pg_textsearch: global soft "
+					 "limit exceeded "
+					 "(" UINT64_FORMAT " kB / " UINT64_FORMAT " kB) but no "
+					 "memtable could be spilled",
+					 (uint64)(est / 1024),
+					 (uint64)(limit / 1024));
 			}
 		}
 	}
@@ -223,8 +220,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 /*
  * Hard limit check: fail the current operation if DSA segment
- * memory exceeds hard_limit_all_memtables.  Called from
- * tp_insert before adding terms to the memtable.
+ * memory exceeds memory_limit.  Called from tp_insert before
+ * adding terms to the memtable.
  *
  * Raises ERROR if the limit is exceeded; returns normally
  * otherwise.
@@ -235,10 +232,10 @@ tp_check_hard_limit(void)
 	uint64 limit_bytes;
 	uint64 dsa_bytes;
 
-	if (tp_hard_limit_all <= 0)
+	if (tp_memory_limit <= 0)
 		return;
 
-	limit_bytes = (uint64)tp_hard_limit_all * 1024ULL;
+	limit_bytes = tp_hard_limit_bytes();
 
 	tp_registry_update_dsa_counter();
 	dsa_bytes = tp_registry_get_total_dsa_bytes();
@@ -248,13 +245,13 @@ tp_check_hard_limit(void)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("pg_textsearch DSA memory "
 						"(" UINT64_FORMAT " kB) exceeds "
-						"hard_limit_all_memtables "
+						"memory_limit "
 						"(%d kB)",
 						(uint64)(dsa_bytes / 1024),
-						tp_hard_limit_all),
+						tp_memory_limit),
 				 errhint("Increase pg_textsearch."
-						 "hard_limit_all_memtables "
-						 "or spill indexes with "
+						 "memory_limit or spill "
+						 "indexes with "
 						 "bm25_spill_index().")));
 }
 
@@ -840,47 +837,44 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Soft limit: try to evict if estimated usage is high.
 	 * Hard limit: fail if DSA reservation exceeds the cap.
 	 */
-	if (tp_soft_limit_all > 0)
+	if (tp_memory_limit > 0)
 	{
-		uint64 soft = (uint64)tp_soft_limit_all * 1024ULL;
+		uint64 soft = tp_soft_limit_bytes();
 
 		if (tp_estimate_total_memtable_bytes() > soft)
 			tp_evict_largest_memtable(InvalidOid);
-	}
 
-	if (tp_hard_limit_all > 0)
-	{
-		uint64 limit = (uint64)tp_hard_limit_all * 1024ULL;
-		uint64 dsa_bytes;
-
-		tp_registry_update_dsa_counter();
-		dsa_bytes = tp_registry_get_total_dsa_bytes();
-
-		if (dsa_bytes > limit)
 		{
-			tp_evict_largest_memtable(InvalidOid);
+			uint64 limit = tp_hard_limit_bytes();
+			uint64 dsa_bytes;
 
-			/* Re-check after eviction attempt */
 			tp_registry_update_dsa_counter();
 			dsa_bytes = tp_registry_get_total_dsa_bytes();
 
 			if (dsa_bytes > limit)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("pg_textsearch DSA "
-								"memory (" UINT64_FORMAT " kB) exceeds "
-								"hard_limit_all_"
-								"memtables (%d kB), "
-								"cannot start index "
-								"build",
-								(uint64)(dsa_bytes / 1024),
-								tp_hard_limit_all),
-						 errhint("Increase "
-								 "pg_textsearch."
-								 "hard_limit_all_"
-								 "memtables or spill "
-								 "indexes with "
-								 "bm25_spill_index().")));
+			{
+				tp_evict_largest_memtable(InvalidOid);
+
+				/* Re-check after eviction attempt */
+				tp_registry_update_dsa_counter();
+				dsa_bytes = tp_registry_get_total_dsa_bytes();
+
+				if (dsa_bytes > limit)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("pg_textsearch DSA "
+									"memory (" UINT64_FORMAT " kB) exceeds "
+									"memory_limit "
+									"(%d kB), cannot "
+									"start index build",
+									(uint64)(dsa_bytes / 1024),
+									tp_memory_limit),
+							 errhint("Increase "
+									 "pg_textsearch."
+									 "memory_limit or "
+									 "spill indexes with "
+									 "bm25_spill_index().")));
+			}
 		}
 	}
 

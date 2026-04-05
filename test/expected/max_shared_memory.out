@@ -1,13 +1,9 @@
--- Test pg_textsearch memory limit GUCs:
---   soft_limit_one_memtable (per-index estimated size)
---   soft_limit_all_memtables (global estimated size)
---   hard_limit_all_memtables (DSA reservation)
+-- Test pg_textsearch.memory_limit GUC
+-- Derives per-index (limit/8) and global (limit/2) soft limits internally.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 INFO:  pg_textsearch v1.0.0-dev
 -- Ensure clean GUC state from any prior test runs
-ALTER SYSTEM RESET pg_textsearch.soft_limit_one_memtable;
-ALTER SYSTEM RESET pg_textsearch.soft_limit_all_memtables;
-ALTER SYSTEM RESET pg_textsearch.hard_limit_all_memtables;
+ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
 ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
 SELECT pg_reload_conf();
@@ -22,41 +18,24 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
--- Test 1: GUC defaults
-SHOW pg_textsearch.soft_limit_one_memtable;
- pg_textsearch.soft_limit_one_memtable 
----------------------------------------
- 256MB
-(1 row)
-
-SHOW pg_textsearch.soft_limit_all_memtables;
- pg_textsearch.soft_limit_all_memtables 
-----------------------------------------
- 1GB
-(1 row)
-
-SHOW pg_textsearch.hard_limit_all_memtables;
- pg_textsearch.hard_limit_all_memtables 
-----------------------------------------
+-- Test 1: GUC default
+SHOW pg_textsearch.memory_limit;
+ pg_textsearch.memory_limit 
+----------------------------
  2GB
 (1 row)
 
 -- Test 2: SET should fail (PGC_SIGHUP context)
-SET pg_textsearch.soft_limit_one_memtable = '64MB';
-ERROR:  parameter "pg_textsearch.soft_limit_one_memtable" cannot be changed now
-SET pg_textsearch.soft_limit_all_memtables = '64MB';
-ERROR:  parameter "pg_textsearch.soft_limit_all_memtables" cannot be changed now
-SET pg_textsearch.hard_limit_all_memtables = '64MB';
-ERROR:  parameter "pg_textsearch.hard_limit_all_memtables" cannot be changed now
+SET pg_textsearch.memory_limit = '64MB';
+ERROR:  parameter "pg_textsearch.memory_limit" cannot be changed now
 -- Test 3: bm25_memory_usage() returns data with defaults
 SELECT dsa_total_bytes >= 0 AS has_dsa,
        estimated_bytes >= 0 AS has_est,
-       soft_limit_mb > 0 AS has_soft,
-       hard_limit_mb > 0 AS has_hard
+       memory_limit_mb > 0 AS has_limit
 FROM bm25_memory_usage();
- has_dsa | has_est | has_soft | has_hard 
----------+---------+----------+----------
- t       | t       | t        | t
+ has_dsa | has_est | has_limit 
+---------+---------+-----------
+ t       | t       | t
 (1 row)
 
 -- Test 4: Create table and index for subsequent tests
@@ -67,83 +46,10 @@ NOTICE:  BM25 index build started for relation idx_mem
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
--- Test 4: Per-index soft limit triggers spill
-ALTER SYSTEM SET pg_textsearch.soft_limit_one_memtable = '50kB';
-ALTER SYSTEM SET pg_textsearch.soft_limit_all_memtables = 0;
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = 0;
-SELECT pg_reload_conf();
- pg_reload_conf 
-----------------
- t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
-SET client_min_messages = error;
-INSERT INTO mem_test (body)
-SELECT 'perlimit_' || i || ' word_' || (i+1)
-FROM generate_series(1, 500) i;
-RESET client_min_messages;
--- Verify data was inserted (spill does not reject writes)
-SELECT count(*) >= 500 AS inserts_ok FROM mem_test;
- inserts_ok 
-------------
- t
-(1 row)
-
--- Verify we can query the index (data was spilled)
-SELECT count(*) > 0 AS can_query
-FROM mem_test WHERE body <@> 'perlimit'::bm25query < 0;
- can_query 
------------
- t
-(1 row)
-
--- Test 5: Global soft limit triggers cross-index eviction
-ALTER SYSTEM SET pg_textsearch.soft_limit_one_memtable = 0;
-ALTER SYSTEM SET pg_textsearch.soft_limit_all_memtables = '100kB';
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = 0;
-SELECT pg_reload_conf();
- pg_reload_conf 
-----------------
- t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
-SET client_min_messages = error;
-INSERT INTO mem_test (body)
-SELECT 'globallimit_' || i || ' word_' || (i+1)
-FROM generate_series(1, 500) i;
-RESET client_min_messages;
-SELECT count(*) >= 1000 AS global_ok FROM mem_test;
- global_ok 
------------
- t
-(1 row)
-
--- Verify bm25_memory_usage() shows estimated usage and soft limit
-SELECT estimated_bytes > 0 AS has_est,
-       soft_limit_mb IS NOT NULL AS has_soft,
-       soft_usage_pct IS NOT NULL AS has_pct
-FROM bm25_memory_usage();
- has_est | has_soft | has_pct 
----------+----------+---------
- t       | t        | t
-(1 row)
-
--- Test 6: Disabled limits allow unlimited inserts
-ALTER SYSTEM SET pg_textsearch.soft_limit_one_memtable = 0;
-ALTER SYSTEM SET pg_textsearch.soft_limit_all_memtables = 0;
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = 0;
+-- Test 5: Per-index soft limit (limit/8) triggers spill
+-- With limit=4MB, per-index soft = 512kB.
+-- Disable legacy thresholds so only the new limit drives spilling.
+ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
 ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
 ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
 SELECT pg_reload_conf();
@@ -158,14 +64,50 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
--- Verify bm25_memory_usage() with disabled limits shows NULLs
-SELECT soft_limit_mb IS NULL AS soft_null,
-       hard_limit_mb IS NULL AS hard_null,
-       soft_usage_pct IS NULL AS pct_null
+SET client_min_messages = error;
+-- Insert enough data to exceed 512kB estimated.
+-- Each row has ~3 terms: "perlimit_N", "word_M", and a long filler.
+INSERT INTO mem_test (body)
+SELECT 'perlimit_' || i || ' word_' || (i+1) || ' '
+       || repeat('filler_', 10)
+FROM generate_series(1, 2000) i;
+RESET client_min_messages;
+-- Verify data was inserted (spill does not reject writes)
+SELECT count(*) >= 2000 AS inserts_ok FROM mem_test;
+ inserts_ok 
+------------
+ t
+(1 row)
+
+-- Verify we can query the index (data was spilled to disk)
+SELECT count(*) > 0 AS can_query
+FROM mem_test WHERE body <@> 'perlimit'::bm25query < 0;
+ can_query 
+-----------
+ t
+(1 row)
+
+-- Test 6: Disabled limit allows unlimited inserts
+ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- Verify bm25_memory_usage() with disabled limit shows NULLs
+SELECT memory_limit_mb IS NULL AS limit_null,
+       usage_pct IS NULL AS pct_null
 FROM bm25_memory_usage();
- soft_null | hard_null | pct_null 
------------+-----------+----------
- t         | t         | t
+ limit_null | pct_null 
+------------+----------
+ t          | t
 (1 row)
 
 SELECT bm25_spill_index('idx_mem') IS NOT NULL AS spilled;
@@ -178,14 +120,15 @@ INSERT INTO mem_test (body)
 SELECT 'nolimit_' || i || '_' || j
 FROM generate_series(1, 200) i,
      generate_series(1, 5) j;
-SELECT count(*) > 1000 AS unlimited_ok FROM mem_test;
+SELECT count(*) > 2000 AS unlimited_ok FROM mem_test;
  unlimited_ok 
 --------------
  t
 (1 row)
 
--- Test 7: Hard limit blocks inserts
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = '100kB';
+-- Test 7: Hard limit blocks inserts when DSA exceeds limit
+-- First, load data so DSA is large, then set a tiny limit.
+ALTER SYSTEM SET pg_textsearch.memory_limit = '100kB';
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
@@ -204,12 +147,12 @@ BEGIN
     RAISE NOTICE 'ERROR: expected insert to fail';
 EXCEPTION
     WHEN program_limit_exceeded THEN
-        RAISE NOTICE 'insert correctly blocked by hard limit';
+        RAISE NOTICE 'insert correctly blocked by memory limit';
 END;
 $$;
-NOTICE:  insert correctly blocked by hard limit
--- Test 8: Hard limit allows inserts when within budget
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = '2GB';
+NOTICE:  insert correctly blocked by memory limit
+-- Test 8: Inserts succeed when within budget
+ALTER SYSTEM SET pg_textsearch.memory_limit = '2GB';
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
@@ -222,16 +165,15 @@ SELECT pg_sleep(0.1);
  
 (1 row)
 
-INSERT INTO mem_test (body) VALUES ('within_hard_limit');
-SELECT count(*) > 1000 AS hard_ok FROM mem_test;
+INSERT INTO mem_test (body) VALUES ('within_limit');
+SELECT count(*) > 2000 AS hard_ok FROM mem_test;
  hard_ok 
 ---------
  t
 (1 row)
 
--- Test 9: Build with soft limit eviction
-ALTER SYSTEM SET pg_textsearch.soft_limit_all_memtables = '100kB';
-ALTER SYSTEM SET pg_textsearch.hard_limit_all_memtables = '2GB';
+-- Test 9: Build with memory limit pre-check
+ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
 ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
 SELECT pg_reload_conf();
@@ -261,9 +203,7 @@ SELECT count(*) AS build_ok FROM mem_build_test
 (1 row)
 
 -- Clean up
-ALTER SYSTEM RESET pg_textsearch.soft_limit_one_memtable;
-ALTER SYSTEM RESET pg_textsearch.soft_limit_all_memtables;
-ALTER SYSTEM RESET pg_textsearch.hard_limit_all_memtables;
+ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
 ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
 SELECT pg_reload_conf();
