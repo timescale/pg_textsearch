@@ -218,18 +218,17 @@ coverage-clean:
 	@find . -name "*.gcno" -delete
 
 coverage-build: coverage-clean
-ifeq ($(shell uname),Darwin)
-	@echo "Error: Local coverage is not supported on macOS (gcov runtime crashes with Postgres extensions)."
-	@echo "Coverage reports are generated automatically in GitHub Actions CI."
-	@exit 1
-endif
 	@echo "Building with coverage instrumentation..."
 	@if ! command -v lcov >/dev/null 2>&1; then \
-		echo "lcov not found - install with: apt install lcov"; \
+		echo "lcov not found - install with: brew install lcov (macOS) or apt install lcov (Linux)"; \
 		exit 1; \
 	fi
 	$(MAKE) clean
+ifeq ($(shell uname),Darwin)
+	$(MAKE) PG_CFLAGS="-fprofile-arcs -ftest-coverage -O0 -g"
+else
 	$(MAKE) PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
+endif
 	$(MAKE) install
 
 coverage: coverage-build
