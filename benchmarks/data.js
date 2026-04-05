@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775374509087,
+  "lastUpdate": 1775374510569,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -53331,6 +53331,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 9.19,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 1491.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4f78c877a800f265237e57f785364f094e7d800e",
+          "message": "chore: bump version to 1.0.0-dev, linearize upgrade paths (#301)\n\n## Summary\n- Bump development version to 1.0.0-dev after the v1.0.0 release\n- Linearize upgrade paths into a single chain: `... → 0.5.0 → 0.5.1 →\n0.6.0 → 0.6.1 → 1.0.0 → 1.0.0-dev`\n- Remove shortcut upgrade scripts (0.5.0→1.0.0, 0.5.1→1.0.0,\n0.6.0→1.0.0) that bypassed intermediate versions\n- Add missing step-by-step scripts: 0.5.0→0.5.1, 0.6.0→0.6.1,\n1.0.0→1.0.0-dev\n- Simplify version checks in intermediate upgrade scripts to only verify\nthe library is loaded (not an exact version match), since multi-step\nupgrades always run against the final target library\n\n## Testing\n- CI will validate the full build and test suite\n- `pg_textsearch.control`, `mod.c`, Makefile DATA list, and base SQL\nfile all updated consistently",
+          "timestamp": "2026-04-01T01:23:23Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4f78c877a800f265237e57f785364f094e7d800e"
+        },
+        "date": 1775374510288,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.617,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 642463.096,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 5.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 6.03,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 8.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 9.94,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 9.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 15.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 18.93,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 26.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 9.43,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 10.83,
             "unit": "ms"
           },
           {
