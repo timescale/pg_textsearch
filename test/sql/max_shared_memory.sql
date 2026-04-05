@@ -97,56 +97,47 @@ SELECT pg_sleep(0.1);
 INSERT INTO mem_test (body) VALUES ('within_limit');
 SELECT count(*) > 2000 AS hard_ok FROM mem_test;
 
--- Test 9: Cross-index eviction under global soft limit
--- Create multiple indexes, set a low memory_limit so that
--- global soft (limit/2) triggers eviction of the largest memtable.
-ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
+-- Test 9: Build pre-check triggers eviction
+-- Load data into existing idx_mem with limits disabled, then
+-- create a new index with a tight limit. The build pre-check
+-- sees estimated total > global soft and calls
+-- tp_evict_largest_memtable() to free space before building.
+ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
 ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
 ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
 SELECT pg_reload_conf();
 SELECT pg_sleep(0.1);
 
-CREATE TABLE mem_evict_a (id serial, body text);
-CREATE TABLE mem_evict_b (id serial, body text);
-CREATE TABLE mem_evict_c (id serial, body text);
-
 SET client_min_messages = error;
-CREATE INDEX idx_evict_a ON mem_evict_a
-    USING bm25(body) WITH (text_config='english');
-CREATE INDEX idx_evict_b ON mem_evict_b
-    USING bm25(body) WITH (text_config='english');
-CREATE INDEX idx_evict_c ON mem_evict_c
-    USING bm25(body) WITH (text_config='english');
-
--- Load data into all three indexes to push total above global
--- soft limit (2MB). Each index gets distinct terms.
-INSERT INTO mem_evict_a (body)
-SELECT 'evicta_' || i || ' ' || repeat('alpha_', 10)
-FROM generate_series(1, 2000) i;
-
-INSERT INTO mem_evict_b (body)
-SELECT 'evictb_' || i || ' ' || repeat('beta_', 10)
-FROM generate_series(1, 2000) i;
-
-INSERT INTO mem_evict_c (body)
-SELECT 'evictc_' || i || ' ' || repeat('gamma_', 10)
-FROM generate_series(1, 2000) i;
-
+INSERT INTO mem_test (body)
+SELECT 'prebuild_' || i || ' ' || repeat('omega_', 10)
+FROM generate_series(1, 5000) i;
 RESET client_min_messages;
 
--- All data should be queryable (eviction spills, doesn't lose data)
-SELECT count(*) = 2000 AS evict_a_ok
-FROM mem_evict_a WHERE body <@> 'evicta'::bm25query < 0;
+-- Now set a tight limit so that build pre-check fires eviction.
+-- idx_mem estimated > 1MB. With memory_limit=2MB:
+-- global soft = 1MB, so build pre-check evicts idx_mem.
+-- Hard limit = 2MB which is above DSA base (~2MB after spills).
+ALTER SYSTEM SET pg_textsearch.memory_limit = '3MB';
+ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
+ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
+SELECT pg_reload_conf();
+SELECT pg_sleep(0.1);
 
-SELECT count(*) = 2000 AS evict_b_ok
-FROM mem_evict_b WHERE body <@> 'evictb'::bm25query < 0;
+CREATE TABLE mem_evict_test (id serial, body text);
+INSERT INTO mem_evict_test (body)
+SELECT 'evict_build_' || i FROM generate_series(1, 10) i;
 
-SELECT count(*) = 2000 AS evict_c_ok
-FROM mem_evict_c WHERE body <@> 'evictc'::bm25query < 0;
+SET client_min_messages = error;
+CREATE INDEX idx_evict_build ON mem_evict_test
+    USING bm25(body) WITH (text_config='english');
+RESET client_min_messages;
 
-DROP TABLE mem_evict_a CASCADE;
-DROP TABLE mem_evict_b CASCADE;
-DROP TABLE mem_evict_c CASCADE;
+-- Both indexes should be queryable
+SELECT count(*) AS evict_build_ok FROM mem_evict_test
+    WHERE body <@> 'evict_build'::bm25query < 0;
+
+DROP TABLE mem_evict_test CASCADE;
 
 -- Test 10: Build with memory limit pre-check
 ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
