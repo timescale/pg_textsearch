@@ -97,7 +97,58 @@ SELECT pg_sleep(0.1);
 INSERT INTO mem_test (body) VALUES ('within_limit');
 SELECT count(*) > 2000 AS hard_ok FROM mem_test;
 
--- Test 9: Build with memory limit pre-check
+-- Test 9: Cross-index eviction under global soft limit
+-- Create multiple indexes, set a low memory_limit so that
+-- global soft (limit/2) triggers eviction of the largest memtable.
+ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
+ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
+ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
+SELECT pg_reload_conf();
+SELECT pg_sleep(0.1);
+
+CREATE TABLE mem_evict_a (id serial, body text);
+CREATE TABLE mem_evict_b (id serial, body text);
+CREATE TABLE mem_evict_c (id serial, body text);
+
+SET client_min_messages = error;
+CREATE INDEX idx_evict_a ON mem_evict_a
+    USING bm25(body) WITH (text_config='english');
+CREATE INDEX idx_evict_b ON mem_evict_b
+    USING bm25(body) WITH (text_config='english');
+CREATE INDEX idx_evict_c ON mem_evict_c
+    USING bm25(body) WITH (text_config='english');
+
+-- Load data into all three indexes to push total above global
+-- soft limit (2MB). Each index gets distinct terms.
+INSERT INTO mem_evict_a (body)
+SELECT 'evicta_' || i || ' ' || repeat('alpha_', 10)
+FROM generate_series(1, 2000) i;
+
+INSERT INTO mem_evict_b (body)
+SELECT 'evictb_' || i || ' ' || repeat('beta_', 10)
+FROM generate_series(1, 2000) i;
+
+INSERT INTO mem_evict_c (body)
+SELECT 'evictc_' || i || ' ' || repeat('gamma_', 10)
+FROM generate_series(1, 2000) i;
+
+RESET client_min_messages;
+
+-- All data should be queryable (eviction spills, doesn't lose data)
+SELECT count(*) = 2000 AS evict_a_ok
+FROM mem_evict_a WHERE body <@> 'evicta'::bm25query < 0;
+
+SELECT count(*) = 2000 AS evict_b_ok
+FROM mem_evict_b WHERE body <@> 'evictb'::bm25query < 0;
+
+SELECT count(*) = 2000 AS evict_c_ok
+FROM mem_evict_c WHERE body <@> 'evictc'::bm25query < 0;
+
+DROP TABLE mem_evict_a CASCADE;
+DROP TABLE mem_evict_b CASCADE;
+DROP TABLE mem_evict_c CASCADE;
+
+-- Test 10: Build with memory limit pre-check
 ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
 ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
