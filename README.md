@@ -313,24 +313,51 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
-`pg_textsearch.memory_limit` | 2GB | Hard cap on DSA memory; soft spill thresholds derived internally (0 = disable)
+`pg_textsearch.memory_limit` | 2GB | Cap on shared memory used by memtables (0 = disable)
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
-`pg_textsearch.memtable_spill_threshold` | 32000000 | Posting entries before auto-spill; deprecated, use `memory_limit` (0 = disable)
+`pg_textsearch.memtable_spill_threshold` | 32000000 | **Deprecated.** Posting entries before auto-spill (0 = disable)
+
+> **`memtable_spill_threshold` is deprecated.** It was the original
+> mechanism for bounding memtable growth, triggering a spill when an
+> index accumulated a fixed number of posting entries. The newer
+> `memory_limit` GUC replaces it with byte-level estimation that
+> accounts for term overhead and works across indexes. Both checks
+> are evaluated (OR'd), so existing configurations continue to work.
+> New deployments should use `memory_limit` only.
 
 #### Memory management
 
-`memory_limit` controls how much shared memory pg_textsearch can use for
-in-memory indexes (memtables). Three thresholds are derived from it:
+pg_textsearch keeps in-memory inverted indexes (memtables) in Postgres
+dynamic shared memory (DSA). Without a limit, heavy write workloads can
+grow DSA until the OS OOM killer terminates the server.
 
-| Threshold | Value | Behavior |
+`memory_limit` caps this growth. It is the maximum amount of DSA memory
+the extension will use for memtables. When usage approaches this cap,
+the extension automatically spills memtables to on-disk segments. If
+usage still exceeds the cap, inserts fail with an ERROR rather than
+risking an OOM kill.
+
+Internally, three thresholds are derived from `memory_limit`:
+
+| Threshold | Value | What happens |
 | --- | --- | --- |
-| Per-index soft limit | `memory_limit / 8` | Spills that index's memtable to disk |
+| Per-index soft limit | `memory_limit / 8` | Spills that index's memtable to a disk segment |
 | Global soft limit | `memory_limit / 2` | Evicts the largest memtable across all indexes |
-| Hard limit | `memory_limit` | Rejects inserts with an ERROR |
+| Hard limit | `memory_limit` | Rejects the insert with an ERROR |
 
-The soft limits keep memory usage well below the hard cap during normal
-operation. Operators only need to set `memory_limit`; the internal ratios
-are tuned for typical workloads.
+During normal operation, the soft limits keep usage well below the hard
+cap. You only need to set `memory_limit`; the internal ratios are tuned
+for typical workloads.
+
+```sql
+-- Tune for a smaller instance (e.g., 4 GB RAM)
+ALTER SYSTEM SET pg_textsearch.memory_limit = '512MB';
+SELECT pg_reload_conf();
+
+-- Tune for a larger instance (e.g., 64 GB RAM)
+ALTER SYSTEM SET pg_textsearch.memory_limit = '16GB';
+SELECT pg_reload_conf();
+```
 
 To check current memory usage:
 
