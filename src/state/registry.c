@@ -813,54 +813,32 @@ tp_evict_largest_memtable(Oid caller_oid)
 
 		/*
 		 * Open the index (lock already held), spill, and
-		 * clean up.  Wrapped in PG_TRY to ensure we release
-		 * locks and close the relation on any error.
+		 * clean up.  On ERROR the transaction aborts and
+		 * tp_release_all_index_locks() + Postgres lock
+		 * manager handle cleanup.
 		 */
-		PG_TRY();
+		index_rel = index_open(target_oid, NoLock);
+
+		segment_root = tp_write_segment(target_state, index_rel);
+
+		if (segment_root != InvalidBlockNumber)
 		{
-			index_rel = index_open(target_oid, NoLock);
+			tp_clear_memtable(target_state);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
+			tp_maybe_compact_level(index_rel, 0);
 
-			segment_root = tp_write_segment(target_state, index_rel);
-
-			if (segment_root != InvalidBlockNumber)
-			{
-				tp_clear_memtable(target_state);
-				tp_clear_docid_pages(index_rel);
-				tp_link_l0_chain_head(index_rel, segment_root);
-				tp_maybe_compact_level(index_rel, 0);
-
-				elog(WARNING,
-					 "pg_textsearch: memory limit "
-					 "exceeded, spilled memtable for "
-					 "index %u (est " UINT64_FORMAT " kB)",
-					 target_oid,
-					 (uint64)(target_est / 1024));
-			}
-
-			if (!lock_was_ours)
-				tp_release_index_lock(target_state);
-			index_close(index_rel, RowExclusiveLock);
-		}
-		PG_CATCH();
-		{
-			ErrorData *edata = CopyErrorData();
-
-			if (!lock_was_ours)
-				tp_release_index_lock(target_state);
-			if (index_rel)
-				index_close(index_rel, RowExclusiveLock);
-			else
-				UnlockRelationOid(target_oid, RowExclusiveLock);
-			FlushErrorState();
-			elog(WARNING,
-				 "pg_textsearch: eviction of index %u "
-				 "failed: %s",
+			elog(LOG,
+				 "pg_textsearch: memory pressure, "
+				 "spilled memtable for index %u "
+				 "(est " UINT64_FORMAT " kB)",
 				 target_oid,
-				 edata->message);
-			FreeErrorData(edata);
-			continue;
+				 (uint64)(target_est / 1024));
 		}
-		PG_END_TRY();
+
+		if (!lock_was_ours)
+			tp_release_index_lock(target_state);
+		index_close(index_rel, RowExclusiveLock);
 
 		/* Update the counter after spill */
 		tp_registry_update_dsa_counter();
