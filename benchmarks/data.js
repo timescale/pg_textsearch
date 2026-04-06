@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775461111569,
+  "lastUpdate": 1775461113462,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -37858,6 +37858,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
             "value": 22675.941699,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4f78c877a800f265237e57f785364f094e7d800e",
+          "message": "chore: bump version to 1.0.0-dev, linearize upgrade paths (#301)\n\n## Summary\n- Bump development version to 1.0.0-dev after the v1.0.0 release\n- Linearize upgrade paths into a single chain: `... → 0.5.0 → 0.5.1 →\n0.6.0 → 0.6.1 → 1.0.0 → 1.0.0-dev`\n- Remove shortcut upgrade scripts (0.5.0→1.0.0, 0.5.1→1.0.0,\n0.6.0→1.0.0) that bypassed intermediate versions\n- Add missing step-by-step scripts: 0.5.0→0.5.1, 0.6.0→0.6.1,\n1.0.0→1.0.0-dev\n- Simplify version checks in intermediate upgrade scripts to only verify\nthe library is loaded (not an exact version match), since multi-step\nupgrades always run against the final target library\n\n## Testing\n- CI will validate the full build and test suite\n- `pg_textsearch.control`, `mod.c`, Makefile DATA list, and base SQL\nfile all updated consistently",
+          "timestamp": "2026-04-01T01:23:23Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4f78c877a800f265237e57f785364f094e7d800e"
+        },
+        "date": 1775461112953,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin_concurrent - Index Build Time",
+            "value": 0.479,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
+            "value": 21644.108867,
             "unit": "ms"
           }
         ]
