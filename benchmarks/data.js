@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775508988278,
+  "lastUpdate": 1775508990011,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -57846,6 +57846,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
             "value": 2.18,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "71ea124b2a8c90129201de591cc2cf955f6b917e",
+          "message": "test: add memory accounting shell test, fix DSA attachment\n\nNew test/scripts/memory_accounting.sh exercises:\n1. Counter grows with inserts, drops to 0 after spill\n2. DROP INDEX decrements the global counter\n3. Aborted CREATE INDEX does not leak the counter\n4. Concurrent inserts from 5 backends keep counter consistent\n5. Single-row auto-commit inserts accumulate correctly\n6. Multiple indexes — spill/drop track the sum\n\nAlso fixes tp_estimate_total_memtable_bytes() and\ntp_registry_update_dsa_counter() to lazily attach to the\nglobal DSA when called from a fresh backend that hasn't\naccessed any bm25 index yet. Previously, bm25_memory_usage()\nreturned zeros from such backends.",
+          "timestamp": "2026-04-06T20:29:39Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/71ea124b2a8c90129201de591cc2cf955f6b917e"
+        },
+        "date": 1775508989712,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_concurrent (0 docs) - Index Build Time",
+            "value": 1.201,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 630.833248,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
+            "value": 2.16,
             "unit": "ms"
           }
         ]
