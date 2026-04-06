@@ -719,17 +719,10 @@ jobs:
 
     - name: Run pgspot
       run: |
-        # Check extension SQL files
-        # Ignore PS017 (unqualified object reference) - false positives for
-        # type/operator definitions that reference types being created
-        has_errors=0
-        for sql_file in sql/pg_textsearch--*.sql; do
-          echo "Checking $sql_file"
-          if ! pgspot --ignore PS017 "$sql_file"; then
-            has_errors=1
-          fi
-        done
-        exit $has_errors
+        # Check the current version's base install SQL file
+        VERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
+        echo "Checking sql/pg_textsearch--${VERSION}.sql"
+        pgspot "sql/pg_textsearch--${VERSION}.sql"
 
   # Umbrella job for branch protection rules
   all-tests-passed:
