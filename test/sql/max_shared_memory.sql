@@ -101,6 +101,68 @@ SELECT pg_sleep(0.1);
 INSERT INTO mem_test (body) VALUES ('within_limit');
 SELECT count(*) > 2000 AS hard_ok FROM mem_test;
 
+-- Test 9: Atomic counter tracks inserts, spills, and drops
+-- Verify counter_bytes matches estimated_bytes (registry scan).
+CREATE TABLE mem_counter (id serial, body text);
+CREATE INDEX idx_counter ON mem_counter
+    USING bm25(body) WITH (text_config='english');
+
+INSERT INTO mem_counter (body)
+SELECT 'counter_' || i FROM generate_series(1, 500) i;
+
+SELECT counter_bytes > 0 AS counter_grows,
+       counter_bytes = estimated_bytes AS counter_matches
+FROM bm25_memory_usage();
+
+SELECT bm25_spill_index('idx_counter') IS NOT NULL AS spilled;
+
+SELECT counter_bytes = 0 AS counter_zeroed,
+       counter_bytes = estimated_bytes AS counter_matches
+FROM bm25_memory_usage();
+
+DROP INDEX idx_counter;
+
+SELECT counter_bytes = estimated_bytes AS counter_matches
+FROM bm25_memory_usage();
+
+DROP TABLE mem_counter;
+
+-- Test 10: Build pre-check eviction path
+-- Load data with limits disabled, then build a new index with
+-- a tight limit to trigger the eviction pre-check.
+ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
+ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
+ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
+SELECT pg_reload_conf();
+SELECT pg_sleep(0.1);
+
+SET client_min_messages = error;
+INSERT INTO mem_test (body)
+SELECT 'prebuild_' || i || ' ' || repeat('omega_', 10)
+FROM generate_series(1, 5000) i;
+RESET client_min_messages;
+
+-- Set a tight limit so build pre-check sees the memtable.
+ALTER SYSTEM SET pg_textsearch.memory_limit = '3MB';
+ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
+ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
+SELECT pg_reload_conf();
+SELECT pg_sleep(0.1);
+
+CREATE TABLE mem_build_test (id serial, body text);
+INSERT INTO mem_build_test (body)
+SELECT 'build_test_' || i FROM generate_series(1, 10) i;
+
+SET client_min_messages = error;
+CREATE INDEX idx_build ON mem_build_test
+    USING bm25(body) WITH (text_config='english');
+RESET client_min_messages;
+
+SELECT count(*) AS build_ok FROM mem_build_test
+    WHERE body <@> 'build_test'::bm25query < 0;
+
+DROP TABLE mem_build_test CASCADE;
+
 -- Clean up
 ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
