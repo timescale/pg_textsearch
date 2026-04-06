@@ -543,13 +543,14 @@ jobs:
       timeout-minutes: 10
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        # Run concurrency tests
+        # Run all shell-based tests for coverage.
+        # Each spawns its own Postgres instance; the coverage-
+        # instrumented .so writes gcda data to the build dir.
         (cd test/scripts && ./concurrency.sh) || true
-        # Run segment tests
         (cd test/scripts && ./segment.sh) || true
-        # Run recovery tests (exercises tp_rebuild_index_from_disk)
         (cd test/scripts && ./recovery.sh) || true
-        # Run memory accounting tests
+        (cd test/scripts && ./docid_chain_recovery.sh) || true
+        (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./memory_accounting.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
