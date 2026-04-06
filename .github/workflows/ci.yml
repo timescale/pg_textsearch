@@ -549,6 +549,8 @@ jobs:
         (cd test/scripts && ./segment.sh) || true
         # Run recovery tests (exercises tp_rebuild_index_from_disk)
         (cd test/scripts && ./recovery.sh) || true
+        # Run memory accounting tests
+        (cd test/scripts && ./memory_accounting.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
       run: |
