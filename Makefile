@@ -138,7 +138,11 @@ test-logical-replication:
 	@echo "Running logical replication tests..."
 	@cd test/scripts && ./logical_replication.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic
+test-memory:
+	@echo "Running memory accounting tests..."
+	@cd test/scripts && ./memory_accounting.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-memory
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell

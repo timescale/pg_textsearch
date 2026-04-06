@@ -478,7 +478,13 @@ tp_registry_update_dsa_counter(void)
 {
 	uint64 new_size;
 
-	if (!tapir_registry || !tapir_dsa)
+	if (!tapir_registry)
+		return;
+
+	if (!tapir_dsa)
+		tp_registry_get_dsa();
+
+	if (!tapir_dsa)
 		return;
 
 	new_size = dsa_get_total_size(tapir_dsa);
@@ -518,8 +524,14 @@ tp_estimate_total_memtable_bytes(void)
 	TpRegistryEntry	 *entry;
 	uint64			  total = 0;
 
-	if (!tapir_registry || !tapir_dsa ||
-		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+	if (!tapir_registry)
+		return 0;
+
+	/* Ensure DSA is attached (lazy init for fresh backends) */
+	if (!tapir_dsa)
+		tp_registry_get_dsa();
+
+	if (!tapir_dsa || tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 		return 0;
 
 	registry_hash =
