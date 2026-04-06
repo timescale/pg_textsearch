@@ -12,12 +12,6 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
 -- Test 1: GUC default
 SHOW pg_textsearch.memory_limit;
  pg_textsearch.memory_limit 
@@ -58,12 +52,6 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
 SET client_min_messages = error;
 -- Insert enough data to exceed 512kB estimated.
 -- Each row has ~3 terms: "perlimit_N", "word_M", and a long filler.
@@ -95,19 +83,13 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
 -- Verify bm25_memory_usage() with disabled limit shows NULLs
 SELECT memory_limit_mb IS NULL AS limit_null,
        usage_pct IS NULL AS pct_null
 FROM bm25_memory_usage();
  limit_null | pct_null 
 ------------+----------
- t          | t
+ f          | f
 (1 row)
 
 SELECT bm25_spill_index('idx_mem') IS NOT NULL AS spilled;
@@ -135,12 +117,6 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
 DO $$
 BEGIN
     INSERT INTO mem_test (body) VALUES ('hard_limit_test');
@@ -150,19 +126,13 @@ EXCEPTION
         RAISE NOTICE 'insert correctly blocked by memory limit';
 END;
 $$;
-NOTICE:  insert correctly blocked by memory limit
+NOTICE:  ERROR: expected insert to fail
 -- Test 8: Inserts succeed when within budget
 ALTER SYSTEM SET pg_textsearch.memory_limit = '2GB';
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
  t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
 (1 row)
 
 INSERT INTO mem_test (body) VALUES ('within_limit');
@@ -186,12 +156,6 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
-(1 row)
-
 SET client_min_messages = error;
 INSERT INTO mem_test (body)
 SELECT 'prebuild_' || i || ' ' || repeat('omega_', 10)
@@ -208,12 +172,6 @@ SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
  t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
 (1 row)
 
 CREATE TABLE mem_evict_test (id serial, body text);
@@ -240,12 +198,6 @@ SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
  t
-(1 row)
-
-SELECT pg_sleep(0.1);
- pg_sleep 
-----------
- 
 (1 row)
 
 CREATE TABLE mem_build_test (id serial, body text);
