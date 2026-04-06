@@ -12,6 +12,15 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
+-- pg_reload_conf() sends SIGHUP but the backend processes it
+-- lazily at the next CHECK_FOR_INTERRUPTS. A short sleep ensures
+-- the new values are visible to subsequent statements.
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
 -- Test 1: GUC default
 SHOW pg_textsearch.memory_limit;
  pg_textsearch.memory_limit 
@@ -53,6 +62,12 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
 SET client_min_messages = error;
 -- Insert enough data to exceed 512kB estimated.
 -- Each row has ~3 terms: "perlimit_N", "word_M", and a long filler.
@@ -84,13 +99,19 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
 -- Verify bm25_memory_usage() with disabled limit shows NULLs
 SELECT memory_limit_mb IS NULL AS limit_null,
        usage_pct IS NULL AS pct_null
 FROM bm25_memory_usage();
  limit_null | pct_null 
 ------------+----------
- f          | f
+ t          | t
 (1 row)
 
 SELECT bm25_spill_index('idx_mem') IS NOT NULL AS spilled;
@@ -118,6 +139,12 @@ SELECT pg_reload_conf();
  t
 (1 row)
 
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
 DO $$
 BEGIN
     INSERT INTO mem_test (body) VALUES ('hard_limit_test');
@@ -127,13 +154,19 @@ EXCEPTION
         RAISE NOTICE 'insert correctly blocked by memory limit';
 END;
 $$;
-NOTICE:  ERROR: expected insert to fail
+NOTICE:  insert correctly blocked by memory limit
 -- Test 8: Inserts succeed when within budget
 ALTER SYSTEM SET pg_textsearch.memory_limit = '2GB';
 SELECT pg_reload_conf();
  pg_reload_conf 
 ----------------
  t
+(1 row)
+
+SELECT pg_sleep(0.1);
+ pg_sleep 
+----------
+ 
 (1 row)
 
 INSERT INTO mem_test (body) VALUES ('within_limit');

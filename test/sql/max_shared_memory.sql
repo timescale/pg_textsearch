@@ -8,7 +8,10 @@ ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
 ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
 SELECT pg_reload_conf();
-
+-- pg_reload_conf() sends SIGHUP but the backend processes it
+-- lazily at the next CHECK_FOR_INTERRUPTS. A short sleep ensures
+-- the new values are visible to subsequent statements.
+SELECT pg_sleep(0.1);
 
 -- Test 1: GUC default
 SHOW pg_textsearch.memory_limit;
@@ -35,7 +38,7 @@ ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
 ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
 ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
 SELECT pg_reload_conf();
-
+SELECT pg_sleep(0.1);
 
 SET client_min_messages = error;
 
@@ -58,7 +61,7 @@ FROM mem_test WHERE body <@> 'perlimit'::bm25query < 0;
 -- Test 6: Disabled limit allows unlimited inserts
 ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
 SELECT pg_reload_conf();
-
+SELECT pg_sleep(0.1);
 
 -- Verify bm25_memory_usage() with disabled limit shows NULLs
 SELECT memory_limit_mb IS NULL AS limit_null,
@@ -78,7 +81,7 @@ SELECT count(*) > 2000 AS unlimited_ok FROM mem_test;
 -- First, load data so DSA is large, then set a tiny limit.
 ALTER SYSTEM SET pg_textsearch.memory_limit = '100kB';
 SELECT pg_reload_conf();
-
+SELECT pg_sleep(0.1);
 
 DO $$
 BEGIN
@@ -93,7 +96,7 @@ $$;
 -- Test 8: Inserts succeed when within budget
 ALTER SYSTEM SET pg_textsearch.memory_limit = '2GB';
 SELECT pg_reload_conf();
-
+SELECT pg_sleep(0.1);
 
 INSERT INTO mem_test (body) VALUES ('within_limit');
 SELECT count(*) > 2000 AS hard_ok FROM mem_test;
