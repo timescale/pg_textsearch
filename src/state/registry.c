@@ -154,6 +154,7 @@ tp_registry_shmem_startup(void)
 		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
 		tapir_registry->registry_handle = DSHASH_HANDLE_INVALID;
 		pg_atomic_init_u64(&tapir_registry->total_dsa_bytes, 0);
+		pg_atomic_init_u64(&tapir_registry->estimated_total_bytes, 0);
 	}
 
 	LWLockRelease(AddinShmemInitLock);
@@ -550,6 +551,87 @@ tp_estimate_total_memtable_bytes(void)
 	dshash_detach(registry_hash);
 
 	return total;
+}
+
+/*
+ * Update the per-index estimated_bytes atomically via CAS, and
+ * adjust the global estimated_total_bytes counter by the delta.
+ *
+ * Safe for concurrent callers on the same index: the CAS ensures
+ * exactly one caller applies each transition.  Losers retry and
+ * see the winner's value, producing a smaller (or zero) delta.
+ */
+void
+tp_update_index_estimate(TpSharedIndexState *shared, TpMemtable *memtable)
+{
+	uint64 new_est;
+	uint64 old_est;
+
+	if (!shared || !memtable || !tapir_registry)
+		return;
+
+	new_est = tp_estimate_memtable_bytes(memtable);
+
+	old_est = pg_atomic_read_u64(&shared->estimated_bytes);
+	if (old_est == new_est)
+		return;
+
+	while (!pg_atomic_compare_exchange_u64(
+			&shared->estimated_bytes, &old_est, new_est))
+	{
+		if (old_est == new_est)
+			return;
+	}
+
+	/*
+	 * CAS succeeded: old_est holds the previous value, new_est
+	 * is now stored.  Apply the signed delta to the global sum.
+	 */
+	if (new_est > old_est)
+		pg_atomic_fetch_add_u64(
+				&tapir_registry->estimated_total_bytes, new_est - old_est);
+	else
+		pg_atomic_fetch_sub_u64(
+				&tapir_registry->estimated_total_bytes, old_est - new_est);
+}
+
+/*
+ * Subtract this index's estimated bytes from the global counter
+ * and zero the per-index value.  Called before freeing shared
+ * state (DROP INDEX) or after clearing a memtable.
+ */
+void
+tp_subtract_index_estimate(TpSharedIndexState *shared)
+{
+	uint64 old_est;
+
+	if (!shared || !tapir_registry)
+		return;
+
+	old_est = pg_atomic_read_u64(&shared->estimated_bytes);
+	if (old_est == 0)
+		return;
+
+	while (!pg_atomic_compare_exchange_u64(
+			&shared->estimated_bytes, &old_est, 0))
+	{
+		if (old_est == 0)
+			return;
+	}
+
+	pg_atomic_fetch_sub_u64(&tapir_registry->estimated_total_bytes, old_est);
+}
+
+/*
+ * Read the global estimated total (O(1), no registry scan).
+ */
+uint64
+tp_get_estimated_total_bytes(void)
+{
+	if (!tapir_registry)
+		return 0;
+
+	return pg_atomic_read_u64(&tapir_registry->estimated_total_bytes);
 }
 
 /* --------------------------------------------------------

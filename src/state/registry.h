@@ -48,6 +48,14 @@ typedef struct TpGlobalRegistry
 	dsa_handle			dsa_handle;		 /* Handle for shared DSA area */
 	dshash_table_handle registry_handle; /* Handle for the registry dshash */
 	pg_atomic_uint64	total_dsa_bytes; /* Tracked global DSA size */
+
+	/*
+	 * Running sum of estimated memtable bytes across all indexes.
+	 * Updated incrementally via CAS on per-index estimated_bytes
+	 * and atomic add/sub here, avoiding expensive registry scans
+	 * on the insert hot path.
+	 */
+	pg_atomic_uint64 estimated_total_bytes;
 } TpGlobalRegistry;
 
 /* Registry management functions */
@@ -104,3 +112,9 @@ tp_per_index_limit_bytes(void)
 /* Memory estimation */
 extern uint64 tp_estimate_memtable_bytes(TpMemtable *memtable);
 extern uint64 tp_estimate_total_memtable_bytes(void);
+
+/* Global estimated-bytes counter (maintained incrementally) */
+extern void
+tp_update_index_estimate(TpSharedIndexState *shared, TpMemtable *memtable);
+extern void	  tp_subtract_index_estimate(TpSharedIndexState *shared);
+extern uint64 tp_get_estimated_total_bytes(void);

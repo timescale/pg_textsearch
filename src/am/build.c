@@ -182,17 +182,25 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	/* Per-index soft limit: memory_limit / 8 */
 	{
 		uint64 limit = tp_per_index_limit_bytes();
+		uint64 est	 = tp_estimate_memtable_bytes(memtable);
 
-		if (limit > 0 && tp_estimate_memtable_bytes(memtable) > limit)
+		if (limit > 0 && est > limit)
 		{
 			tp_do_spill(index_state, index_rel);
 			return;
 		}
+
+		/*
+		 * Piggyback the global counter update on the
+		 * per-index estimate we already computed.
+		 */
+		tp_update_index_estimate(index_state->shared, memtable);
 	}
 
 	/*
 	 * Global soft limit: memory_limit / 2.
 	 * Amortized check every ~100 documents.
+	 * Reads the atomic counter — O(1), no registry scan.
 	 */
 	if (++index_state->docs_since_global_check >= 100)
 	{
@@ -200,7 +208,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		uint64 est;
 
 		index_state->docs_since_global_check = 0;
-		est = tp_estimate_total_memtable_bytes();
+		est									 = tp_get_estimated_total_bytes();
 
 		if (est > limit)
 		{
@@ -841,7 +849,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	{
 		uint64 soft = tp_soft_limit_bytes();
 
-		if (tp_estimate_total_memtable_bytes() > soft)
+		if (tp_get_estimated_total_bytes() > soft)
 			tp_evict_largest_memtable(InvalidOid);
 
 		{

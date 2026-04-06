@@ -232,6 +232,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
+	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
 	 * Initialize the per-index LWLock using a fixed tranche ID.
@@ -345,6 +346,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->total_len	 = 0;
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
+	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
 	 * Initialize per-index LWLock using a fixed tranche ID.
@@ -681,6 +683,9 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		if (doc_lengths_hash != NULL)
 			dshash_destroy(doc_lengths_hash);
 	}
+
+	/* Subtract estimate from global counter before freeing */
+	tp_subtract_index_estimate(shared_state);
 
 	/* Free shared state structures from DSA */
 	dsa_free(dsa, shared_state->memtable_dp);
@@ -1223,6 +1228,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	memtable = get_memtable(local_state);
 	if (!memtable)
 		return;
+
+	/* Subtract this index's estimate from the global counter */
+	tp_subtract_index_estimate(local_state->shared);
 
 	/*
 	 * BUILD MODE: Destroy entire private DSA and create fresh one.

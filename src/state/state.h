@@ -67,6 +67,13 @@ typedef struct TpSharedIndexState
 	int64 total_len;  /* Total length of all documents */
 
 	/*
+	 * Cached estimated memtable size in bytes, updated
+	 * atomically by writers. Used to maintain the global
+	 * estimated_total_bytes counter without scanning.
+	 */
+	pg_atomic_uint64 estimated_bytes;
+
+	/*
 	 * Per-index LWLock for transaction-level serialization.
 	 * Writers acquire this in exclusive mode once per transaction.
 	 * Readers acquire this in shared mode once per transaction.
