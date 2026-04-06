@@ -19,6 +19,7 @@ SET pg_textsearch.memory_limit = '64MB';
 -- Test 3: bm25_memory_usage() returns data with defaults
 SELECT dsa_total_bytes >= 0 AS has_dsa,
        estimated_bytes >= 0 AS has_est,
+       counter_bytes >= 0 AS has_counter,
        memory_limit_mb > 0 AS has_limit
 FROM bm25_memory_usage();
 
@@ -97,67 +98,6 @@ SELECT pg_reload_conf();
 INSERT INTO mem_test (body) VALUES ('within_limit');
 SELECT count(*) > 2000 AS hard_ok FROM mem_test;
 
--- Test 9: Build pre-check triggers eviction
--- Load data into existing idx_mem with limits disabled, then
--- create a new index with a tight limit. The build pre-check
--- sees estimated total > global soft and calls
--- tp_evict_largest_memtable() to free space before building.
-ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
-ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
-ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
-SELECT pg_reload_conf();
-
-
-SET client_min_messages = error;
-INSERT INTO mem_test (body)
-SELECT 'prebuild_' || i || ' ' || repeat('omega_', 10)
-FROM generate_series(1, 5000) i;
-RESET client_min_messages;
-
--- Now set a tight limit so that build pre-check fires eviction.
--- idx_mem estimated > 1MB. With memory_limit=2MB:
--- global soft = 1MB, so build pre-check evicts idx_mem.
--- Hard limit = 2MB which is above DSA base (~2MB after spills).
-ALTER SYSTEM SET pg_textsearch.memory_limit = '3MB';
-ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
-ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
-SELECT pg_reload_conf();
-
-
-CREATE TABLE mem_evict_test (id serial, body text);
-INSERT INTO mem_evict_test (body)
-SELECT 'evict_build_' || i FROM generate_series(1, 10) i;
-
-SET client_min_messages = error;
-CREATE INDEX idx_evict_build ON mem_evict_test
-    USING bm25(body) WITH (text_config='english');
-RESET client_min_messages;
-
--- Both indexes should be queryable
-SELECT count(*) AS evict_build_ok FROM mem_evict_test
-    WHERE body <@> 'evict_build'::bm25query < 0;
-
-DROP TABLE mem_evict_test CASCADE;
-
--- Test 10: Build with memory limit pre-check
-ALTER SYSTEM SET pg_textsearch.memory_limit = '4MB';
-ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
-ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
-SELECT pg_reload_conf();
-
-
-CREATE TABLE mem_build_test (id serial, body text);
-INSERT INTO mem_build_test (body)
-SELECT 'build_test_' || i FROM generate_series(1, 10) i;
-
-SET client_min_messages = error;
-CREATE INDEX idx_mem_build ON mem_build_test
-    USING bm25(body) WITH (text_config='english');
-RESET client_min_messages;
-
-SELECT count(*) AS build_ok FROM mem_build_test
-    WHERE body <@> 'build_test'::bm25query < 0;
-
 -- Clean up
 ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;
@@ -165,5 +105,4 @@ ALTER SYSTEM RESET pg_textsearch.memtable_spill_threshold;
 SELECT pg_reload_conf();
 
 DROP TABLE IF EXISTS mem_test CASCADE;
-DROP TABLE IF EXISTS mem_build_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

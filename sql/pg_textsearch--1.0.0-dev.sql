@@ -224,6 +224,7 @@ CREATE FUNCTION bm25_memory_usage(
     OUT dsa_total_mb float4,
     OUT estimated_bytes int8,
     OUT estimated_mb float4,
+    OUT counter_bytes int8,
     OUT memory_limit_mb float4,
     OUT usage_pct float4
 )

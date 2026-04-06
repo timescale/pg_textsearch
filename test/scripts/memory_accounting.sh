@@ -108,6 +108,31 @@ get_estimated_bytes() {
     " 2>/dev/null | tail -1
 }
 
+get_counter_bytes() {
+    # Read the atomic counter value (the O(1) hot-path counter).
+    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -tAc "
+        SELECT COUNT(*) FROM _probe
+            WHERE body <@> 'xyzzy'::bm25query < 0;
+        SELECT counter_bytes FROM bm25_memory_usage();
+    " 2>/dev/null | tail -1
+}
+
+# Assert that the atomic counter matches the authoritative scan.
+# Accepts a small tolerance (default 0) for transient drift.
+assert_counter_matches() {
+    local label="$1"
+    local est
+    local ctr
+    est=$(get_estimated_bytes)
+    ctr=$(get_counter_bytes)
+
+    if [ "$est" != "$ctr" ]; then
+        error "❌ ${label}: counter_bytes ($ctr) != estimated_bytes ($est)"
+    fi
+    info "Counter verified: estimated=$est, counter=$ctr"
+}
+
 # -------------------------------------------------------
 # Test 1: Counter starts at zero, grows with inserts,
 #         drops to zero after spill.
@@ -134,6 +159,8 @@ test_basic_accounting() {
         error "❌ Test 1 failed: estimate did not grow after insert ($est_before -> $est_after)"
     fi
 
+    assert_counter_matches "Test 1 after insert"
+
     run_sql_quiet "SELECT bm25_spill_index('idx_acct1');"
 
     local est_spilled
@@ -143,6 +170,8 @@ test_basic_accounting() {
     if [ "$est_spilled" -ge "$est_after" ]; then
         error "❌ Test 1 failed: estimate did not drop after spill ($est_after -> $est_spilled)"
     fi
+
+    assert_counter_matches "Test 1 after spill"
 
     run_sql_quiet "DROP TABLE acct1 CASCADE;"
     log "✅ Test 1 passed"
@@ -180,6 +209,8 @@ test_drop_index_accounting() {
         error "❌ Test 2 failed: estimate did not decrease after DROP INDEX ($est_both -> $est_one)"
     fi
 
+    assert_counter_matches "Test 2 after DROP INDEX"
+
     run_sql_quiet "DROP TABLE acct2a CASCADE;"
     run_sql_quiet "DROP TABLE acct2b CASCADE;"
     log "✅ Test 2 passed"
@@ -191,18 +222,27 @@ test_drop_index_accounting() {
 test_abort_no_leak() {
     log "Test 3: Aborted CREATE INDEX does not leak the counter"
 
+    # Load enough data that the build processes many rows before
+    # hitting the statement_timeout. This ensures the atomic
+    # counter is incremented during the build.
     run_sql_quiet "CREATE TABLE acct3 (id serial, body text);"
     run_sql_quiet "INSERT INTO acct3 (body)
-        SELECT 'gamma_' || i FROM generate_series(1, 200) i;"
+        SELECT 'gamma_' || i || ' ' || repeat('filler_', 50)
+        FROM generate_series(1, 200000) i;"
 
     local est_before
     est_before=$(get_estimated_bytes)
     info "Estimated before aborted build: $est_before"
 
-    # Force the build to abort by using an invalid text_config.
-    # This should fail during build initialization and roll back.
-    run_sql_quiet "CREATE INDEX idx_acct3 ON acct3
-        USING bm25(body) WITH (text_config='nonexistent_config');" 2>/dev/null || true
+    # Use statement_timeout to abort the build mid-way through
+    # indexing 50K rows. The build will have updated the atomic
+    # counter for some rows before the abort fires.
+    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
+        SET statement_timeout = '200ms';
+        CREATE INDEX idx_acct3 ON acct3
+            USING bm25(body) WITH (text_config='english');
+    " >/dev/null 2>&1 || true
 
     local est_after
     est_after=$(get_estimated_bytes)
@@ -211,6 +251,8 @@ test_abort_no_leak() {
     if [ "$est_after" -gt "$((est_before + 1024))" ]; then
         error "❌ Test 3 failed: counter leaked after abort ($est_before -> $est_after, delta=$((est_after - est_before)))"
     fi
+
+    assert_counter_matches "Test 3 after aborted build"
 
     run_sql_quiet "DROP TABLE acct3 CASCADE;"
     log "✅ Test 3 passed"
@@ -282,6 +324,8 @@ test_concurrent_inserts() {
     if [ "$est_after_spill" -ge "$est" ]; then
         error "❌ Test 4 failed: estimate didn't drop after spill"
     fi
+
+    assert_counter_matches "Test 4 after concurrent inserts + spill"
 
     # Verify all data is queryable
     local search_count
@@ -397,9 +441,7 @@ test_multi_index_sum() {
         error "❌ Test 6 failed: estimate didn't drop after DROP INDEX"
     fi
 
-    # Only idx_acct6c should have data in memtable
-    # est_one should be roughly 1/3 of est_all
-    info "Ratio: est_one/est_all = $est_one / $est_all"
+    assert_counter_matches "Test 6 after spill + drop"
 
     run_sql_quiet "DROP TABLE acct6a CASCADE;"
     run_sql_quiet "DROP TABLE acct6b CASCADE;"
