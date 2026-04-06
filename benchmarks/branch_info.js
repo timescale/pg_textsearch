@@ -125,5 +125,6 @@ window.BRANCH_INFO = {
   "4b3d725b0ba272f05035627e969ead4b209bdbcb": "main",
   "76ea737a5e9a3ae79f4ea8b2028163f8e80e9406": "main",
   "b3192d6d3688362d889778350d468abb6fe104a7": "main",
-  "4f78c877a800f265237e57f785364f094e7d800e": "main"
+  "4f78c877a800f265237e57f785364f094e7d800e": "main",
+  "71ea124b2a8c90129201de591cc2cf955f6b917e": "feature/memory-guardrails"
 };
