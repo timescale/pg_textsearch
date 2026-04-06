@@ -607,6 +607,9 @@ tp_cleanup_build_mode_on_abort(void)
 			Oid			index_oid = local_state->shared->index_oid;
 			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
 
+			/* Subtract estimate before freeing shared state */
+			tp_subtract_index_estimate(local_state->shared);
+
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 			{
 				/* Free shared state from global DSA */
