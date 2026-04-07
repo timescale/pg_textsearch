@@ -271,6 +271,30 @@ FROM (
 
 SET pg_textsearch.default_limit = 1000;
 ------------------------------------------------------------------------
+-- Test 10: Postgres-level rescan via LATERAL join
+--
+-- Forces the executor to call the index's rescan function after
+-- results have already been returned.  Each outer row triggers a
+-- fresh index scan, so the second iteration must clean up the
+-- result arrays from the first.
+------------------------------------------------------------------------
+SELECT v.x, t.id
+FROM (VALUES (1), (2)) AS v(x),
+LATERAL (
+    SELECT id FROM rescan_test
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 2
+) t
+ORDER BY v.x, t.id;
+ x | id 
+---+----
+ 1 |  1
+ 1 |  2
+ 2 |  1
+ 2 |  2
+(4 rows)
+
+------------------------------------------------------------------------
 -- Cleanup
 ------------------------------------------------------------------------
 DROP TABLE rescan_test CASCADE;
