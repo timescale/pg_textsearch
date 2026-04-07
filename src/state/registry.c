@@ -10,14 +10,22 @@
 #include <postgres.h>
 
 #include <access/hash.h>
+#include <access/relation.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/ipc.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
 #include <storage/shmem.h>
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
+#include "am/am.h"
+#include "segment/merge.h"
+#include "segment/segment.h"
+#include "segment/segment_io.h"
+#include "state/metapage.h"
 #include "state/registry.h"
 
 /* Backend-local pointer to the registry in shared memory */
@@ -145,6 +153,8 @@ tp_registry_shmem_startup(void)
 		/* Initialize handles as invalid - DSA/dshash created on first use */
 		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
 		tapir_registry->registry_handle = DSHASH_HANDLE_INVALID;
+		pg_atomic_init_u64(&tapir_registry->total_dsa_bytes, 0);
+		pg_atomic_init_u64(&tapir_registry->estimated_total_bytes, 0);
 	}
 
 	LWLockRelease(AddinShmemInitLock);
@@ -199,6 +209,11 @@ tp_registry_get_dsa(void)
 
 		/* Pin the DSA to keep it alive across backends */
 		dsa_pin(tapir_dsa);
+
+		/* Initialize DSA byte counter */
+		pg_atomic_write_u64(
+				&tapir_registry->total_dsa_bytes,
+				dsa_get_total_size(tapir_dsa));
 
 		/* Pin the mapping for this backend */
 		dsa_pin_mapping(tapir_dsa);
@@ -428,4 +443,415 @@ tp_registry_unregister(Oid index_oid)
 	(void)deleted; /* Ignore if not found */
 
 	dshash_detach(registry_hash);
+}
+
+/*
+ * Read the current global DSA byte counter.
+ * Returns 0 if registry is not initialized.
+ */
+uint64
+tp_registry_get_total_dsa_bytes(void)
+{
+	if (!tapir_registry)
+		return 0;
+	return pg_atomic_read_u64(&tapir_registry->total_dsa_bytes);
+}
+
+/*
+ * Re-sync the global DSA byte counter from dsa_get_total_size().
+ * Called after operations that may change DSA size.
+ *
+ * This is a simple atomic write of the current DSA segment
+ * reservation. A racing backend may briefly overwrite with a
+ * slightly stale value, but this is acceptable because:
+ * (a) the hard limit check is approximate by design, and
+ * (b) the next call from any backend will correct it.
+ *
+ * We intentionally do NOT use a monotonic CAS here, because
+ * dsa_get_total_size() CAN decrease when dsa_trim() frees
+ * empty segments. If we only allowed increases, the hard
+ * limit would become a permanent high-water mark that blocks
+ * inserts forever after a single overshoot.
+ */
+void
+tp_registry_update_dsa_counter(void)
+{
+	uint64 new_size;
+
+	if (!tapir_registry)
+		return;
+
+	if (!tapir_dsa)
+		tp_registry_get_dsa();
+
+	if (!tapir_dsa)
+		return;
+
+	new_size = dsa_get_total_size(tapir_dsa);
+	pg_atomic_write_u64(&tapir_registry->total_dsa_bytes, new_size);
+}
+
+/*
+ * Estimate memory consumption for a memtable based on its
+ * statistics.  Derived empirically from MS MARCO profiling
+ * (8.8M passages, 234M postings).  The dominant cost is
+ * ~28 bytes per posting entry (DSA allocation overhead +
+ * TpPostingEntry).  Term overhead covers the dshash entry,
+ * DSA-allocated string, and posting list header.
+ */
+#define TP_BYTES_PER_POSTING	28
+#define TP_BYTES_PER_TERM_FIXED 200
+
+uint64
+tp_estimate_memtable_bytes(TpMemtable *memtable)
+{
+	if (!memtable)
+		return 0;
+
+	return (uint64)memtable->total_postings * TP_BYTES_PER_POSTING +
+		   (uint64)memtable->num_terms * TP_BYTES_PER_TERM_FIXED +
+		   (uint64)memtable->total_term_len;
+}
+
+/*
+ * Sum estimated memory across all registered memtables.
+ */
+uint64
+tp_estimate_total_memtable_bytes(void)
+{
+	dshash_table	 *registry_hash;
+	dshash_seq_status seq;
+	TpRegistryEntry	 *entry;
+	uint64			  total = 0;
+
+	if (!tapir_registry)
+		return 0;
+
+	/* Ensure DSA is attached (lazy init for fresh backends) */
+	if (!tapir_dsa)
+		tp_registry_get_dsa();
+
+	if (!tapir_dsa || tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+		return 0;
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+
+	dshash_seq_init(&seq, registry_hash, false);
+
+	while ((entry = dshash_seq_next(&seq)) != NULL)
+	{
+		TpSharedIndexState *shared;
+		TpMemtable		   *memtable;
+
+		if (!DsaPointerIsValid(entry->shared_state_dp))
+			continue;
+
+		shared = (TpSharedIndexState *)
+				dsa_get_address(tapir_dsa, entry->shared_state_dp);
+
+		if (!DsaPointerIsValid(shared->memtable_dp))
+			continue;
+
+		memtable = (TpMemtable *)
+				dsa_get_address(tapir_dsa, shared->memtable_dp);
+
+		total += tp_estimate_memtable_bytes(memtable);
+	}
+
+	dshash_seq_term(&seq);
+	dshash_detach(registry_hash);
+
+	return total;
+}
+
+/*
+ * Update the per-index estimated_bytes atomically via CAS, and
+ * adjust the global estimated_total_bytes counter by the delta.
+ *
+ * Safe for concurrent callers on the same index: the CAS ensures
+ * exactly one caller applies each transition.  Losers retry and
+ * see the winner's value, producing a smaller (or zero) delta.
+ */
+void
+tp_update_index_estimate(TpSharedIndexState *shared, TpMemtable *memtable)
+{
+	uint64 new_est;
+	uint64 old_est;
+
+	if (!shared || !memtable || !tapir_registry)
+		return;
+
+	new_est = tp_estimate_memtable_bytes(memtable);
+
+	old_est = pg_atomic_read_u64(&shared->estimated_bytes);
+	if (old_est == new_est)
+		return;
+
+	while (!pg_atomic_compare_exchange_u64(
+			&shared->estimated_bytes, &old_est, new_est))
+	{
+		if (old_est == new_est)
+			return;
+	}
+
+	/*
+	 * CAS succeeded: old_est holds the previous value, new_est
+	 * is now stored.  Apply the signed delta to the global sum.
+	 */
+	if (new_est > old_est)
+		pg_atomic_fetch_add_u64(
+				&tapir_registry->estimated_total_bytes, new_est - old_est);
+	else
+		pg_atomic_fetch_sub_u64(
+				&tapir_registry->estimated_total_bytes, old_est - new_est);
+}
+
+/*
+ * Subtract this index's estimated bytes from the global counter
+ * and zero the per-index value.  Called before freeing shared
+ * state (DROP INDEX) or after clearing a memtable.
+ */
+void
+tp_subtract_index_estimate(TpSharedIndexState *shared)
+{
+	uint64 old_est;
+
+	if (!shared || !tapir_registry)
+		return;
+
+	old_est = pg_atomic_read_u64(&shared->estimated_bytes);
+	if (old_est == 0)
+		return;
+
+	while (!pg_atomic_compare_exchange_u64(
+			&shared->estimated_bytes, &old_est, 0))
+	{
+		if (old_est == 0)
+			return;
+	}
+
+	pg_atomic_fetch_sub_u64(&tapir_registry->estimated_total_bytes, old_est);
+}
+
+/*
+ * Read the global estimated total (O(1), no registry scan).
+ */
+uint64
+tp_get_estimated_total_bytes(void)
+{
+	if (!tapir_registry)
+		return 0;
+
+	return pg_atomic_read_u64(&tapir_registry->estimated_total_bytes);
+}
+
+/* --------------------------------------------------------
+ * Eviction: spill largest memtable to free DSA memory
+ * --------------------------------------------------------
+ */
+
+#define TP_MAX_EVICTION_CANDIDATES 8
+
+typedef struct TpEvictionCandidate
+{
+	Oid	   index_oid;
+	uint64 estimated_bytes;
+} TpEvictionCandidate;
+
+/*
+ * Collect eviction candidates sorted by estimated_bytes descending.
+ *
+ * Note: We read memtable fields without holding the per-index lock.
+ * This is safe because DSA memory is never unmapped (only returned
+ * to the DSA freelist), so the dereference cannot fault.  Values
+ * may be stale if another backend is concurrently spilling, but
+ * the actual eviction is protected by LWLockConditionalAcquire.
+ */
+static int
+find_eviction_candidates(TpEvictionCandidate *candidates, int max_candidates)
+{
+	dshash_table	 *registry_hash;
+	dshash_seq_status seq;
+	TpRegistryEntry	 *entry;
+	int				  count = 0;
+
+	if (!tapir_registry || !tapir_dsa ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+		return 0;
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+
+	dshash_seq_init(&seq, registry_hash, false);
+
+	while ((entry = dshash_seq_next(&seq)) != NULL)
+	{
+		TpSharedIndexState *shared;
+		TpMemtable		   *memtable;
+		uint64				est;
+
+		if (!DsaPointerIsValid(entry->shared_state_dp))
+			continue;
+
+		shared = (TpSharedIndexState *)
+				dsa_get_address(tapir_dsa, entry->shared_state_dp);
+
+		if (!DsaPointerIsValid(shared->memtable_dp))
+			continue;
+
+		memtable = (TpMemtable *)
+				dsa_get_address(tapir_dsa, shared->memtable_dp);
+
+		est = tp_estimate_memtable_bytes(memtable);
+		if (est == 0)
+			continue;
+
+		/* Insertion sort into candidates (small N) */
+		if (count < max_candidates ||
+			est > candidates[count - 1].estimated_bytes)
+		{
+			int pos = (count < max_candidates) ? count : count - 1;
+			int i;
+
+			candidates[pos].index_oid		= entry->index_oid;
+			candidates[pos].estimated_bytes = est;
+
+			/* Bubble up to maintain descending order */
+			for (i = pos; i > 0; i--)
+			{
+				if (candidates[i].estimated_bytes >
+					candidates[i - 1].estimated_bytes)
+				{
+					TpEvictionCandidate tmp = candidates[i];
+					candidates[i]			= candidates[i - 1];
+					candidates[i - 1]		= tmp;
+				}
+				else
+					break;
+			}
+
+			if (count < max_candidates)
+				count++;
+		}
+	}
+
+	dshash_seq_term(&seq);
+	dshash_detach(registry_hash);
+
+	return count;
+}
+
+/*
+ * Attempt to spill the largest memtable to free DSA memory.
+ *
+ * caller_oid: the calling backend's own index OID (lock already
+ * held) or InvalidOid if no lock is held.
+ *
+ * Uses LWLockConditionalAcquire to avoid deadlocks when the
+ * caller already holds a per-index lock.
+ *
+ * Returns true if a memtable was successfully spilled.
+ */
+bool
+tp_evict_largest_memtable(Oid caller_oid)
+{
+	TpEvictionCandidate candidates[TP_MAX_EVICTION_CANDIDATES];
+	int					num_candidates;
+	int					i;
+
+	num_candidates =
+			find_eviction_candidates(candidates, TP_MAX_EVICTION_CANDIDATES);
+
+	if (num_candidates == 0)
+		return false;
+
+	for (i = 0; i < num_candidates; i++)
+	{
+		Oid				   target_oid = candidates[i].index_oid;
+		uint64			   target_est = candidates[i].estimated_bytes;
+		TpLocalIndexState *target_state;
+		Relation		   index_rel	 = NULL;
+		BlockNumber		   segment_root	 = InvalidBlockNumber;
+		bool			   lock_was_ours = false;
+
+		target_state = tp_get_local_index_state(target_oid);
+		if (!target_state)
+			continue;
+
+		/*
+		 * If this is the caller's own index, the lock is already
+		 * held. Otherwise, use conditional acquire to avoid
+		 * deadlocks.
+		 */
+		if (target_oid == caller_oid && target_state->lock_held)
+		{
+			lock_was_ours = true;
+		}
+		else
+		{
+			if (!LWLockConditionalAcquire(
+						&target_state->shared->lock, LW_EXCLUSIVE))
+				continue;
+
+			target_state->lock_held = true;
+			target_state->lock_mode = LW_EXCLUSIVE;
+		}
+
+		/*
+		 * Try to lock the index relation without blocking.
+		 * If another transaction holds a conflicting lock,
+		 * skip this candidate to avoid deadlock (we already
+		 * hold an LWLock on the caller's index).
+		 */
+		if (!ConditionalLockRelationOid(target_oid, RowExclusiveLock))
+		{
+			if (!lock_was_ours)
+				tp_release_index_lock(target_state);
+			continue;
+		}
+
+		/*
+		 * Open the index (lock already held), spill, and
+		 * clean up.  On ERROR the transaction aborts and
+		 * tp_release_all_index_locks() + Postgres lock
+		 * manager handle cleanup.
+		 */
+		index_rel = index_open(target_oid, NoLock);
+
+		segment_root = tp_write_segment(target_state, index_rel);
+
+		if (segment_root != InvalidBlockNumber)
+		{
+			tp_clear_memtable(target_state);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
+			tp_maybe_compact_level(index_rel, 0);
+
+			elog(LOG,
+				 "pg_textsearch: memory pressure, "
+				 "spilled memtable for index %u "
+				 "(est " UINT64_FORMAT " kB)",
+				 target_oid,
+				 (uint64)(target_est / 1024));
+		}
+
+		if (!lock_was_ours)
+			tp_release_index_lock(target_state);
+		index_close(index_rel, RowExclusiveLock);
+
+		/* Update the counter after spill */
+		tp_registry_update_dsa_counter();
+
+		/*
+		 * If spill produced a segment, we succeeded.
+		 * If the memtable was empty (stale candidate),
+		 * try the next candidate.
+		 */
+		if (segment_root != InvalidBlockNumber)
+			return true;
+		/* else continue to next candidate */
+	}
+
+	return false;
 }

@@ -443,6 +443,10 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 			elog(ERROR, "Failed to insert term '%s' into string table", term);
 			return NULL;
 		}
+
+		/* Track new term for memory estimation */
+		memtable->num_terms++;
+		memtable->total_term_len += term_len;
 	}
 
 	/* Check if posting list already exists for this term */

@@ -172,12 +172,13 @@ tp_get_local_index_state(Oid index_oid)
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
-		local_state->shared				   = shared_state;
-		local_state->dsa				   = dsa;
-		local_state->is_build_mode		   = false; /* Runtime mode */
-		local_state->lock_held			   = false;
-		local_state->lock_mode			   = 0;
-		local_state->terms_added_this_xact = 0;
+		local_state->shared					 = shared_state;
+		local_state->dsa					 = dsa;
+		local_state->is_build_mode			 = false; /* Runtime mode */
+		local_state->lock_held				 = false;
+		local_state->lock_mode				 = 0;
+		local_state->terms_added_this_xact	 = 0;
+		local_state->docs_since_global_check = 0;
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -231,6 +232,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->heap_oid	 = heap_oid;
 	shared_state->total_docs = 0;
 	shared_state->total_len	 = 0;
+	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
 	 * Initialize the per-index LWLock using a fixed tranche ID.
@@ -247,6 +249,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -274,12 +278,13 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared				   = shared_state;
-	local_state->dsa				   = dsa;
-	local_state->is_build_mode		   = false; /* Runtime mode */
-	local_state->lock_held			   = false;
-	local_state->lock_mode			   = 0;
-	local_state->terms_added_this_xact = 0;
+	local_state->shared					 = shared_state;
+	local_state->dsa					 = dsa;
+	local_state->is_build_mode			 = false; /* Runtime mode */
+	local_state->lock_held				 = false;
+	local_state->lock_mode				 = 0;
+	local_state->terms_added_this_xact	 = 0;
+	local_state->docs_since_global_check = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -341,6 +346,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->total_len	 = 0;
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
+	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
 	 * Initialize per-index LWLock using a fixed tranche ID.
@@ -385,6 +391,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Store memtable pointer in shared state for memtable access */
@@ -393,12 +401,13 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state pointing to PRIVATE DSA */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared				   = shared_state;
-	local_state->dsa				   = private_dsa; /* PRIVATE DSA */
-	local_state->is_build_mode		   = true;		  /* BUILD MODE */
-	local_state->lock_held			   = false;
-	local_state->lock_mode			   = 0;
-	local_state->terms_added_this_xact = 0;
+	local_state->shared					 = shared_state;
+	local_state->dsa					 = private_dsa; /* PRIVATE DSA */
+	local_state->is_build_mode			 = true;		/* BUILD MODE */
+	local_state->lock_held				 = false;
+	local_state->lock_mode				 = 0;
+	local_state->terms_added_this_xact	 = 0;
+	local_state->docs_since_global_check = 0;
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -461,6 +470,8 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
 	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	new_memtable->total_postings	 = 0;
+	new_memtable->num_terms			 = 0;
+	new_memtable->total_term_len	 = 0;
 	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -526,6 +537,8 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->total_postings	 = 0;
+	memtable->num_terms			 = 0;
+	memtable->total_term_len	 = 0;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -593,6 +606,9 @@ tp_cleanup_build_mode_on_abort(void)
 		{
 			Oid			index_oid = local_state->shared->index_oid;
 			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+
+			/* Subtract estimate before freeing shared state */
+			tp_subtract_index_estimate(local_state->shared);
 
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 			{
@@ -670,6 +686,9 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 		if (doc_lengths_hash != NULL)
 			dshash_destroy(doc_lengths_hash);
 	}
+
+	/* Subtract estimate from global counter before freeing */
+	tp_subtract_index_estimate(shared_state);
 
 	/* Free shared state structures from DSA */
 	dsa_free(dsa, shared_state->memtable_dp);
@@ -1060,7 +1079,8 @@ tp_rebuild_posting_lists_from_docids(
 		 * memtable, which would otherwise count toward the bulk load
 		 * threshold and incorrectly trigger a segment write.
 		 */
-		local_state->terms_added_this_xact = 0;
+		local_state->terms_added_this_xact	 = 0;
+		local_state->docs_since_global_check = 0;
 	}
 }
 
@@ -1212,6 +1232,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	if (!memtable)
 		return;
 
+	/* Subtract this index's estimate from the global counter */
+	tp_subtract_index_estimate(local_state->shared);
+
 	/*
 	 * BUILD MODE: Destroy entire private DSA and create fresh one.
 	 * This provides perfect memory reclamation - ALL memory returns to OS.
@@ -1263,8 +1286,10 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 			memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 		}
 
-		/* Reset posting count */
+		/* Reset counters */
 		memtable->total_postings = 0;
+		memtable->num_terms		 = 0;
+		memtable->total_term_len = 0;
 
 		/* Try to reclaim DSA memory (best effort) */
 		dsa_trim(local_state->dsa);
@@ -1405,6 +1430,12 @@ tp_reset_bulk_load_counters(void)
 	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
 	{
 		if (entry->local_state)
+		{
 			entry->local_state->terms_added_this_xact = 0;
+			/* Note: docs_since_global_check is NOT reset here.
+			 * It is an amortization counter that must persist
+			 * across transactions so that the global soft limit
+			 * check fires for single-row auto-commit INSERTs. */
+		}
 	}
 }

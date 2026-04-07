@@ -36,12 +36,15 @@ typedef struct TpMemtable
 {
 	/* String interning hash table in DSA */
 	dshash_table_handle string_hash_handle; /* Handle to dshash string table */
-	int64				total_postings;		/* Total posting entries for spill
-											 * threshold */
+	int64				total_postings;		/* Total posting entries */
 
 	/* Document length hash table in DSA */
 	dshash_table_handle doc_lengths_handle; /* Handle for document length hash
 											 * table */
+
+	/* Counters for memory estimation (soft limit) */
+	int64 num_terms;	  /* Unique terms in string table */
+	int64 total_term_len; /* Sum of all term string lengths */
 } TpMemtable;
 
 /*
@@ -62,6 +65,13 @@ typedef struct TpSharedIndexState
 	/* Corpus statistics for BM25 scoring */
 	int32 total_docs; /* Total number of documents */
 	int64 total_len;  /* Total length of all documents */
+
+	/*
+	 * Cached estimated memtable size in bytes, updated
+	 * atomically by writers. Used to maintain the global
+	 * estimated_total_bytes counter without scanning.
+	 */
+	pg_atomic_uint64 estimated_bytes;
 
 	/*
 	 * Per-index LWLock for transaction-level serialization.
@@ -99,6 +109,9 @@ typedef struct TpLocalIndexState
 
 	/* Bulk load tracking: terms added in current transaction */
 	int64 terms_added_this_xact;
+
+	/* Amortization counter for global soft limit check */
+	int docs_since_global_check;
 } TpLocalIndexState;
 
 /* Function declarations for index state management */

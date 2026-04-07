@@ -55,7 +55,8 @@ bool tp_log_bmw_stats = false;
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
-/* Global variable for memtable spill threshold (0 = disabled) */
+/* Global variable for memtable spill threshold (0 = disabled)
+ * Deprecated: use memory_limit instead */
 int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
 
 /* Global variable for segments per level before compaction */
@@ -65,6 +66,9 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
+
+/* Memory limit GUC (in KB, 0 = disabled) */
+int tp_memory_limit = 2097152; /* 2 GB */
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -235,6 +239,25 @@ _PG_init(void)
 			true,		 /* default on - benchmarks show net benefit */
 			PGC_USERSET, /* Can be changed per session */
 			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.memory_limit",
+			"Memory limit for pg_textsearch memtables",
+			"Hard cap on DSA memory reserved by "
+			"pg_textsearch. Inserts fail with an error "
+			"when exceeded. Internally, spill thresholds "
+			"at 50%% (global) and 12.5%% (per-index) "
+			"keep usage well below this limit. "
+			"Set to 0 to disable.",
+			&tp_memory_limit,
+			2097152,	   /* default: 2 GB */
+			0,			   /* min: 0 (disabled) */
+			MAX_KILOBYTES, /* max */
+			PGC_SIGHUP,	   /* changeable via reload */
+			GUC_UNIT_KB,
 			NULL,
 			NULL,
 			NULL);

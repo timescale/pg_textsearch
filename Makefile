@@ -49,6 +49,7 @@ OBJS = \
 	src/state/registry.o \
 	src/state/metapage.o \
 	src/state/limit.o \
+	src/state/memory.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/dump.o
@@ -69,7 +70,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended vacuum_rebuild dropped empty explicit_index force_merge implicit index inheritance limits lock manyterms memory merge mixed parallel_build parallel_bmw partitioned partitioned_many pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table unsupported updates vector unlogged_index wand text_config
+REGRESS = abort aerodocs basic binary_io bmw bulk_load compression concurrent_build coverage deletion vacuum vacuum_extended vacuum_rebuild dropped empty explicit_index force_merge implicit index inheritance limits lock manyterms max_shared_memory memory merge mixed parallel_build parallel_bmw partitioned partitioned_many pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table unsupported updates vector unlogged_index wand text_config
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
@@ -137,7 +138,11 @@ test-logical-replication:
 	@echo "Running logical replication tests..."
 	@cd test/scripts && ./logical_replication.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic
+test-memory:
+	@echo "Running memory accounting tests..."
+	@cd test/scripts && ./memory_accounting.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-memory
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -217,18 +222,17 @@ coverage-clean:
 	@find . -name "*.gcno" -delete
 
 coverage-build: coverage-clean
-ifeq ($(shell uname),Darwin)
-	@echo "Error: Local coverage is not supported on macOS (gcov runtime crashes with Postgres extensions)."
-	@echo "Coverage reports are generated automatically in GitHub Actions CI."
-	@exit 1
-endif
 	@echo "Building with coverage instrumentation..."
 	@if ! command -v lcov >/dev/null 2>&1; then \
-		echo "lcov not found - install with: apt install lcov"; \
+		echo "lcov not found - install with: brew install lcov (macOS) or apt install lcov (Linux)"; \
 		exit 1; \
 	fi
 	$(MAKE) clean
+ifeq ($(shell uname),Darwin)
+	$(MAKE) PG_CFLAGS="-fprofile-arcs -ftest-coverage -O0 -g"
+else
 	$(MAKE) PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
+endif
 	$(MAKE) install
 
 coverage: coverage-build
