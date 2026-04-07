@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775547211203,
+  "lastUpdate": 1775547212758,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -30489,6 +30489,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin - Index Build Time",
             "value": 4051.571,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin - Index Size",
+            "value": 43.28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0f5f67a192b6c7d0047acd5407dc3b6c8131b7f8",
+          "message": "feat: memory limits for memtable management (#293)\n\n## Summary\n\nAdds a `memory_limit` GUC that caps pg_textsearch shared memory usage,\npreventing the OOM killer from taking down the server under heavy\nindexing workloads.\n\nThe extension stores in-memory inverted indexes (memtables) in Postgres\nDSA (Dynamic Shared Areas). DSA reserves memory from the OS in segments\nthat grow geometrically and are not reliably returned after freeing —\n`dsa_get_total_size()` reports total segment reservation, not actual\nusage. This makes DSA reservation alone an unreliable signal for spill\ndecisions: after a spill, the counter stays high even though the freed\nmemory is available for reuse.\n\nTo solve this, we derive internal soft thresholds from the single\n`memory_limit` GUC, using estimated memtable usage from posting and term\ncounts (empirically calibrated at ~28 bytes/posting + ~200 bytes/term on\n8.8M MS MARCO passages). The estimate drops to near-zero after a spill,\nmaking it suitable for spill decisions. DSA reservation is tracked as a\nhard safety net.\n\n### GUC\n\n| GUC | Default | Description |\n|-----|---------|-------------|\n| `memory_limit` | 2 GB | Hard cap on DSA memory; internal soft limits\nderived automatically |\n\nThree thresholds are derived from this single GUC:\n\n| Threshold | Value | Behavior |\n|-----------|-------|----------|\n| Per-index soft | `memory_limit / 8` (256 MB) | Spills that index's\nmemtable to disk |\n| Global soft | `memory_limit / 2` (1 GB) | Evicts the largest memtable\nacross all indexes |\n| Hard limit | `memory_limit` (2 GB) | Fails inserts with ERROR |\n\nThe soft limits handle normal flow control. The hard limit is a circuit\nbreaker that prevents runaway DSA growth from reaching the OOM killer.\n\n### Usage\n\n**Check current memory usage:**\n\n```sql\nSELECT * FROM bm25_memory_usage();\n```\n\nReturns DSA reservation, estimated usage, configured limit, and usage\npercentage.\n\n**Tune for a memory-constrained environment:**\n\n```sql\nALTER SYSTEM SET pg_textsearch.memory_limit = '512MB';\nSELECT pg_reload_conf();\n```\n\n**Tune for a high-throughput environment:**\n\n```sql\nALTER SYSTEM SET pg_textsearch.memory_limit = '16GB';\nSELECT pg_reload_conf();\n```\n\n**Disable limit entirely (not recommended for production):**\n\n```sql\nALTER SYSTEM SET pg_textsearch.memory_limit = 0;\nSELECT pg_reload_conf();\n```\n\n**Manually spill a specific index:**\n\n```sql\nSELECT bm25_spill_index('my_index_name');\n```\n\nThe GUC is changeable via `ALTER SYSTEM` + `pg_reload_conf()` without a\nserver restart. The legacy `memtable_spill_threshold` GUC is kept for\nbackwards compatibility (OR'd with the new limit).\n\n### Other changes\n\n- Tracks `num_terms` and `total_term_len` in `TpMemtable` for the\nestimation formula\n- Updates `bm25_memory_usage()` to report DSA reservation, estimated\nusage, and configured limit\n- Fixes `segment.c` using wrong dshash params for doc_lengths table\n(caused crashes during eviction)\n- Fixes lock leak in eviction `PG_CATCH` path\n- Re-checks DSA bytes after eviction in build pre-check\n- Fixes `docs_since_global_check` amortization counter being reset on\ntransaction boundaries\n\n## Testing\n\n- New `max_shared_memory` regression test exercises per-index spill,\ndisabled limits, hard limit blocking, within-budget inserts, and build\npre-check\n- All 53 SQL regression tests pass\n- Shell-based tests (concurrency, recovery, segment, stress) pass",
+          "timestamp": "2026-04-07T01:04:20Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/0f5f67a192b6c7d0047acd5407dc3b6c8131b7f8"
+        },
+        "date": 1775547212442,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin - Index Build Time",
+            "value": 3740.671,
             "unit": "ms"
           },
           {
