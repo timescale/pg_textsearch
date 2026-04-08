@@ -246,6 +246,26 @@ FROM (
 SET pg_textsearch.default_limit = 1000;
 
 ------------------------------------------------------------------------
+-- Test 10: Postgres-level rescan via correlated LATERAL join
+--
+-- Forces the executor to call the index's rescan function after
+-- results have already been returned.  The correlation (category =
+-- v.x) prevents Postgres from materializing the subquery, so each
+-- outer row triggers a true index rescan that must clean up the
+-- result arrays from the previous iteration.
+------------------------------------------------------------------------
+
+SELECT v.x, t.id, t.category
+FROM (VALUES ('common'), ('rare')) AS v(x),
+LATERAL (
+    SELECT id, category FROM rescan_test
+    WHERE category = v.x
+    ORDER BY content <@> to_bm25query('database', 'rescan_idx')
+    LIMIT 2
+) t
+ORDER BY v.x, t.id;
+
+------------------------------------------------------------------------
 -- Cleanup
 ------------------------------------------------------------------------
 DROP TABLE rescan_test CASCADE;

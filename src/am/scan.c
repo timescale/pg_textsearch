@@ -133,40 +133,24 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 	if (!so)
 		return;
 
+	Assert(so->scan_context != NULL);
+
 	/* Clean up result CTIDs */
 	if (so->result_ctids)
 	{
-		if (so->scan_context)
-		{
-			MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
-			pfree(so->result_ctids);
-			so->result_ctids = NULL;
-			MemoryContextSwitchTo(oldcontext);
-		}
-		else
-		{
-			elog(WARNING,
-				 "No scan context available for cleanup - memory leak!");
-			so->result_ctids = NULL;
-		}
+		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
+		pfree(so->result_ctids);
+		so->result_ctids = NULL;
+		MemoryContextSwitchTo(oldcontext);
 	}
 
 	/* Clean up result scores */
 	if (so->result_scores)
 	{
-		if (so->scan_context)
-		{
-			MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
-			pfree(so->result_scores);
-			so->result_scores = NULL;
-			MemoryContextSwitchTo(oldcontext);
-		}
-		else
-		{
-			elog(WARNING,
-				 "No scan context available for cleanup - memory leak!");
-			so->result_scores = NULL;
-		}
+		MemoryContext oldcontext = MemoryContextSwitchTo(so->scan_context);
+		pfree(so->result_scores);
+		so->result_scores = NULL;
+		MemoryContextSwitchTo(oldcontext);
 	}
 }
 
