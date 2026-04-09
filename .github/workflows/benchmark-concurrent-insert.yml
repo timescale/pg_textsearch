@@ -225,6 +225,7 @@ jobs:
         tool: 'customBiggerIsBetter'
         output-file-path: tapir_concurrent_insert.json
         auto-push: true
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         gh-pages-branch: gh-pages
         benchmark-data-dir-path: benchmarks/concurrent-insert/pg_textsearch
 
@@ -403,6 +404,7 @@ jobs:
         tool: 'customBiggerIsBetter'
         output-file-path: paradedb_concurrent_insert.json
         auto-push: true
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         gh-pages-branch: gh-pages
         benchmark-data-dir-path: benchmarks/concurrent-insert/paradedb
 
