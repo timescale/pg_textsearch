@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775719356363,
+  "lastUpdate": 1775719358926,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -29801,6 +29801,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_gin - Index Build Time",
             "value": 130551.744,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin - Index Size",
+            "value": 824.93,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c7f61045409d1f90aa0d7ebb9edfa40726b13af0",
+          "message": "fix: remove dead code in scan cleanup (#303)\n\n## Summary\n\n- Replace unreachable else branch in `tp_rescan_cleanup_results()` with\nan `Assert`, matching the pattern used elsewhere in scan.c\n- `scan_context` is unconditionally created in `tp_beginscan` (line\n479), so it's always non-NULL when results exist\n- Removes misleading WARNING elog that suggested a memory leak could\nhappen in normal operation\n\nSupersedes #302 — thanks to @hobostay for flagging the code smell.\n\n## Testing\n\n- All 53 regression tests pass",
+          "timestamp": "2026-04-08T20:39:20Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c7f61045409d1f90aa0d7ebb9edfa40726b13af0"
+        },
+        "date": 1775719358164,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_gin - Index Build Time",
+            "value": 136645.125,
             "unit": "ms"
           },
           {
