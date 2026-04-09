@@ -17,11 +17,11 @@ on:
       runner:
         description: 'GitHub Actions runner label'
         required: false
-        default: 'ubuntu-latest-8-cores-TJ'
+        default: 'ubuntu-latest'
         type: choice
         options:
           - ubuntu-latest
-          - ubuntu-latest-8-cores-TJ
+          - ubuntu-latest
       msmarco_size:
         description: 'MS MARCO subset size'
         required: false
@@ -46,7 +46,7 @@ on:
 jobs:
   pg-textsearch:
     name: "pg_textsearch concurrent INSERT"
-    runs-on: ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 120
 
     steps:
@@ -126,7 +126,7 @@ jobs:
         echo "=============================================="
         echo " pg_textsearch Concurrent INSERT Benchmark"
         echo "=============================================="
-        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}"
+        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
         echo "vCPUs:    $(nproc)"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
         echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || '1M' }}"
@@ -180,7 +180,7 @@ jobs:
 
   paradedb:
     name: "ParadeDB concurrent INSERT"
-    runs-on: ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 120
 
     steps:
@@ -257,7 +257,7 @@ jobs:
         echo "=============================================="
         echo " ParadeDB Concurrent INSERT Benchmark"
         echo "=============================================="
-        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}"
+        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
         echo "vCPUs:    $(nproc)"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
         echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || '1M' }}"
