@@ -17,11 +17,11 @@ on:
       runner:
         description: 'GitHub Actions runner label'
         required: false
-        default: 'ubuntu-latest'
+        default: 'ubuntu-latest-8-cores-TJ'
         type: choice
         options:
-          - ubuntu-latest
-          - ubuntu-latest
+          - ubuntu-latest-8-cores-TJ
+          - ubuntu-latest-8-cores-TJ
       msmarco_size:
         description: 'MS MARCO subset size (must exceed duration * max_tps * num_levels)'
         required: false
@@ -45,7 +45,7 @@ on:
 jobs:
   pg-textsearch:
     name: "pg_textsearch concurrent INSERT"
-    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}
     timeout-minutes: 120
 
     steps:
@@ -137,7 +137,7 @@ jobs:
         echo "=============================================="
         echo " pg_textsearch Concurrent INSERT Benchmark"
         echo "=============================================="
-        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
+        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}"
         echo "vCPUs:    $NCPUS"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
         echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || 'full' }} ($STAGING_ROWS rows)"
@@ -201,7 +201,7 @@ jobs:
 
   paradedb:
     name: "ParadeDB concurrent INSERT"
-    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}
     timeout-minutes: 120
 
     steps:
@@ -290,7 +290,7 @@ jobs:
         echo "=============================================="
         echo " ParadeDB Concurrent INSERT Benchmark"
         echo "=============================================="
-        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
+        echo "Runner:   ${{ inputs.runner || 'ubuntu-latest-8-cores-TJ' }}"
         echo "vCPUs:    $NCPUS"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
         echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || 'full' }} ($STAGING_ROWS rows)"
