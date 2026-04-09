@@ -105,7 +105,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ inputs.msmarco_size || '1M' }}
+        ./download.sh ${{ inputs.msmarco_size || 'full' }}
 
     - name: Run concurrent insert setup
       run: |
