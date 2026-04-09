@@ -23,12 +23,11 @@ on:
           - ubuntu-latest
           - ubuntu-latest
       msmarco_size:
-        description: 'MS MARCO subset size'
+        description: 'MS MARCO subset size (must exceed duration * max_tps * num_levels)'
         required: false
-        default: '1M'
+        default: 'full'
         type: choice
         options:
-          - '100K'
           - '500K'
           - '1M'
           - 'full'
@@ -121,15 +120,27 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
         DURATION="${{ inputs.duration || '60' }}"
-        CLIENTS="${{ inputs.clients || '1 2 4 8 16' }}"
+
+        # Cap client counts to available vCPUs
+        NCPUS=$(nproc)
+        CLIENTS=""
+        for c in 1 2 4 8 16 32; do
+          if [ "$c" -le "$NCPUS" ]; then
+            CLIENTS="$CLIENTS $c"
+          fi
+        done
+        CLIENTS="${CLIENTS# }"
+
+        STAGING_ROWS=$(psql -qtAc \
+            "SELECT count(*) FROM msmarco_staging;")
 
         echo "=============================================="
         echo " pg_textsearch Concurrent INSERT Benchmark"
         echo "=============================================="
         echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
-        echo "vCPUs:    $(nproc)"
+        echo "vCPUs:    $NCPUS"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
-        echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || '1M' }}"
+        echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || 'full' }} ($STAGING_ROWS rows)"
         echo "Duration: ${DURATION}s per level"
         echo "Clients:  $CLIENTS"
         echo "Date:     $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -142,6 +153,16 @@ jobs:
         echo "--------------------------------------------------------------"
 
         for c in $CLIENTS; do
+          # Check remaining rows before each level
+          remaining=$(psql -qtAc \
+              "SELECT count(*) FROM msmarco_staging s
+               WHERE s.staging_id > currval('insert_seq');" \
+              2>/dev/null || echo "$STAGING_ROWS")
+          if [ "$remaining" -lt 1000 ]; then
+            echo "STOPPING: only $remaining rows remaining in staging"
+            break
+          fi
+
           output=$(pgbench -n -c "$c" -j "$c" -T "$DURATION" \
               -f insert/pgbench-insert.sql 2>&1)
 
@@ -237,7 +258,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ inputs.msmarco_size || '1M' }}
+        ./download.sh ${{ inputs.msmarco_size || 'full' }}
 
     - name: Run concurrent insert setup
       run: |
@@ -252,15 +273,27 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
         DURATION="${{ inputs.duration || '60' }}"
-        CLIENTS="${{ inputs.clients || '1 2 4 8 16' }}"
+
+        # Cap client counts to available vCPUs
+        NCPUS=$(nproc)
+        CLIENTS=""
+        for c in 1 2 4 8 16 32; do
+          if [ "$c" -le "$NCPUS" ]; then
+            CLIENTS="$CLIENTS $c"
+          fi
+        done
+        CLIENTS="${CLIENTS# }"
+
+        STAGING_ROWS=$(psql -qtAc \
+            "SELECT count(*) FROM msmarco_paradedb_staging;")
 
         echo "=============================================="
         echo " ParadeDB Concurrent INSERT Benchmark"
         echo "=============================================="
         echo "Runner:   ${{ inputs.runner || 'ubuntu-latest' }}"
-        echo "vCPUs:    $(nproc)"
+        echo "vCPUs:    $NCPUS"
         echo "RAM:      $(free -h | awk '/Mem:/{print $2}')"
-        echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || '1M' }}"
+        echo "Dataset:  MS MARCO ${{ inputs.msmarco_size || 'full' }} ($STAGING_ROWS rows)"
         echo "Duration: ${DURATION}s per level"
         echo "Clients:  $CLIENTS"
         echo "Date:     $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -273,6 +306,16 @@ jobs:
         echo "--------------------------------------------------------------"
 
         for c in $CLIENTS; do
+          # Check remaining rows before each level
+          remaining=$(psql -qtAc \
+              "SELECT count(*) FROM msmarco_paradedb_staging s
+               WHERE s.staging_id > currval('insert_seq');" \
+              2>/dev/null || echo "$STAGING_ROWS")
+          if [ "$remaining" -lt 1000 ]; then
+            echo "STOPPING: only $remaining rows remaining in staging"
+            break
+          fi
+
           output=$(pgbench -n -c "$c" -j "$c" -T "$DURATION" \
               -f paradedb/pgbench-insert.sql 2>&1)
 

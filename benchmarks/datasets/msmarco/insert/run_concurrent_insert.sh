@@ -40,8 +40,19 @@ DATA_DIR="${DATA_DIR:-$MSMARCO_DIR/data}"
 PGPORT="${PGPORT:-5434}"
 PGDATABASE="${PGDATABASE:-postgres}"
 DURATION="${DURATION:-60}"
-CLIENTS="${CLIENTS:-1 2 4 8 16}"
 SKIP_SETUP="${SKIP_SETUP:-0}"
+
+# Default client counts: powers of 2 up to available CPUs
+NCPUS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+if [[ -z "${CLIENTS:-}" ]]; then
+    CLIENTS=""
+    for c in 1 2 4 8 16 32; do
+        if [[ "$c" -le "$NCPUS" ]]; then
+            CLIENTS="$CLIENTS $c"
+        fi
+    done
+    CLIENTS="${CLIENTS# }"
+fi
 ENGINE="${1:-tapir}"
 
 # Strip leading -- from engine flag
@@ -97,7 +108,21 @@ echo "--- Results ---"
 printf "%-10s %10s %12s %12s %15s\n" \
     "CLIENTS" "TPS" "AVG_LAT_MS" "ROWS_60S" "CUMULATIVE"
 
+STAGING_TABLE="${COUNT_TABLE/passages/staging}"
+[[ "$STAGING_TABLE" == "$COUNT_TABLE" ]] && \
+    STAGING_TABLE="${COUNT_TABLE}_staging"
+
 for c in $CLIENTS; do
+    # Check remaining rows before each level
+    remaining=$(psql -qtAc \
+        "SELECT count(*) FROM $STAGING_TABLE s
+         WHERE s.staging_id > currval('insert_seq');" \
+        2>/dev/null || echo "999999")
+    if [[ "$remaining" -lt 1000 ]]; then
+        echo "STOPPING: only $remaining rows remaining in staging"
+        break
+    fi
+
     output=$(pgbench -n -c "$c" -j "$c" -T "$DURATION" \
         -f "$PGBENCH_SQL" 2>&1)
 
