@@ -1,7 +1,8 @@
 name: Concurrent INSERT Benchmark
 
 permissions:
-  contents: read
+  contents: write
+  deployments: write
 
 env:
   PARADEDB_VERSION: "0.21.6"
@@ -11,6 +12,9 @@ on:
   push:
     branches:
       - benchmark/concurrent-insert-runner
+
+  schedule:
+    - cron: '0 7 * * *'  # Daily at 7 AM UTC (after main benchmarks)
 
   workflow_dispatch:
     inputs:
@@ -36,11 +40,11 @@ on:
         required: false
         default: '60'
         type: string
-      clients:
-        description: 'Client counts (space-separated)'
+      dry_run:
+        description: 'Dry run - skip publishing to GitHub Pages'
         required: false
-        default: '1 2 4 8 16'
-        type: string
+        default: false
+        type: boolean
 
 jobs:
   pg-textsearch:
@@ -60,7 +64,7 @@ jobs:
     - name: Install PostgreSQL
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential
+        sudo apt-get install -y wget ca-certificates build-essential jq
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
             sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
@@ -148,6 +152,9 @@ jobs:
 
         cd benchmarks/datasets/msmarco
 
+        # Collect results as JSON for reporting
+        echo '[]' > /tmp/tapir_results.json
+
         printf "%-10s %10s %12s %12s %15s\n" \
             "CLIENTS" "TPS" "AVG_LAT_MS" "ROWS" "CUMULATIVE"
         echo "--------------------------------------------------------------"
@@ -185,13 +192,41 @@ jobs:
           if [ "$failed" != "0" ]; then
             echo "  WARNING: $failed failed transactions at c=$c"
           fi
+
+          # Append to JSON results
+          jq --arg c "$c" --arg tps "$tps" --arg lat "$lat" \
+              '. += [
+                {"name": "pg_textsearch INSERT TPS (c=\($c))",
+                 "unit": "tps",
+                 "value": ($tps | tonumber)},
+                {"name": "pg_textsearch INSERT latency (c=\($c))",
+                 "unit": "ms",
+                 "value": ($lat | tonumber)}
+              ]' /tmp/tapir_results.json > /tmp/tapir_results_tmp.json
+          mv /tmp/tapir_results_tmp.json /tmp/tapir_results.json
         done
+
+        cp /tmp/tapir_results.json "$GITHUB_WORKSPACE/tapir_concurrent_insert.json"
+        echo ""
+        echo "--- Results JSON ---"
+        cat "$GITHUB_WORKSPACE/tapir_concurrent_insert.json"
 
         echo ""
         echo "--- Index State ---"
         psql -c "SELECT * FROM bm25_summarize_index('msmarco_bm25_idx');"
         psql -c "SELECT pg_size_pretty(pg_relation_size('msmarco_bm25_idx')) as index_size,
                         pg_size_pretty(pg_table_size('msmarco_passages')) as table_size;"
+
+    - name: Publish pg_textsearch TPS results
+      if: always() && hashFiles('tapir_concurrent_insert.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'Concurrent INSERT (pg_textsearch)'
+        tool: 'customBiggerIsBetter'
+        output-file-path: tapir_concurrent_insert.json
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks/concurrent-insert/pg_textsearch
 
     - name: Cleanup
       if: always()
@@ -216,7 +251,7 @@ jobs:
     - name: Install PostgreSQL and ParadeDB
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential
+        sudo apt-get install -y wget ca-certificates build-essential jq
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
             sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
@@ -301,6 +336,9 @@ jobs:
 
         cd benchmarks/datasets/msmarco
 
+        # Collect results as JSON for reporting
+        echo '[]' > /tmp/paradedb_results.json
+
         printf "%-10s %10s %12s %12s %15s\n" \
             "CLIENTS" "TPS" "AVG_LAT_MS" "ROWS" "CUMULATIVE"
         echo "--------------------------------------------------------------"
@@ -338,7 +376,35 @@ jobs:
           if [ "$failed" != "0" ]; then
             echo "  WARNING: $failed failed transactions at c=$c"
           fi
+
+          # Append to JSON results
+          jq --arg c "$c" --arg tps "$tps" --arg lat "$lat" \
+              '. += [
+                {"name": "ParadeDB INSERT TPS (c=\($c))",
+                 "unit": "tps",
+                 "value": ($tps | tonumber)},
+                {"name": "ParadeDB INSERT latency (c=\($c))",
+                 "unit": "ms",
+                 "value": ($lat | tonumber)}
+              ]' /tmp/paradedb_results.json > /tmp/paradedb_results_tmp.json
+          mv /tmp/paradedb_results_tmp.json /tmp/paradedb_results.json
         done
+
+        cp /tmp/paradedb_results.json "$GITHUB_WORKSPACE/paradedb_concurrent_insert.json"
+        echo ""
+        echo "--- Results JSON ---"
+        cat "$GITHUB_WORKSPACE/paradedb_concurrent_insert.json"
+
+    - name: Publish ParadeDB TPS results
+      if: always() && hashFiles('paradedb_concurrent_insert.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'Concurrent INSERT (ParadeDB)'
+        tool: 'customBiggerIsBetter'
+        output-file-path: paradedb_concurrent_insert.json
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks/concurrent-insert/paradedb
 
     - name: Cleanup
       if: always()
