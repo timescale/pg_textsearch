@@ -37,6 +37,12 @@ Thumbs.db
 # Claude Code files
 .claude/
 
+# Git worktrees
+.worktrees/
+
+# Design docs
+docs/superpowers/
+
 # VSCode files
 compile_commands.json
 target/
