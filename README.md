@@ -131,7 +131,9 @@ ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-**Post-filtering** applies the BM25 index scan first, then filters results:
+**Post-filtering** applies the BM25 index scan first, then filters
+results. Columns without their own index are filtered after the BM25
+scan:
 ```sql
 SELECT * FROM documents
 WHERE price < 50.00
@@ -146,7 +148,7 @@ depends on corpus statistics:
 ```sql
 SELECT * FROM documents
 WHERE content <@> to_bm25query('search terms', 'docs_idx') < -5.0
-ORDER BY content <@> 'search terms'
+ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
 LIMIT 10;
 ```
 
