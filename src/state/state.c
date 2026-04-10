@@ -1335,9 +1335,6 @@ tp_bulk_load_spill_check(void)
 		TpLocalIndexState *local_state = entry->local_state;
 		Relation		   index_rel;
 		BlockNumber		   segment_root;
-		Buffer			   metabuf;
-		Page			   metapage;
-		TpIndexMetaPage	   metap;
 		bool			   index_open_failed = false;
 
 		if (!local_state || !local_state->shared)
@@ -1388,39 +1385,13 @@ tp_bulk_load_spill_check(void)
 		if (segment_root != InvalidBlockNumber)
 		{
 			tp_clear_memtable(local_state);
-
-			/* Link new segment as L0 chain head */
-			metabuf = ReadBuffer(index_rel, 0);
-			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			metapage = BufferGetPage(metabuf);
-			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-			if (metap->level_heads[0] != InvalidBlockNumber)
-			{
-				/* Point new segment to old chain head */
-				Buffer			 seg_buf;
-				Page			 seg_page;
-				TpSegmentHeader *seg_header;
-
-				seg_buf = ReadBuffer(index_rel, segment_root);
-				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-				seg_page   = BufferGetPage(seg_buf);
-				seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-				seg_header->next_segment = metap->level_heads[0];
-				MarkBufferDirty(seg_buf);
-				UnlockReleaseBuffer(seg_buf);
-			}
-
-			metap->level_heads[0] = segment_root;
-			metap->level_counts[0]++;
-			MarkBufferDirty(metabuf);
-			UnlockReleaseBuffer(metabuf);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
 
 			elog(DEBUG2,
 				 "Bulk load spilled memtable to segment "
-				 "at block %u (L0 count: %u)",
-				 segment_root,
-				 metap->level_counts[0]);
+				 "at block %u",
+				 segment_root);
 
 			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);

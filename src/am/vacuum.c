@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
@@ -336,12 +337,10 @@ tp_vacuum_replace_segment(
 		BlockNumber new_root,
 		BlockNumber prev_root)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
-	BlockNumber	   *old_pages;
-	uint32			old_page_count;
-	BlockNumber		old_next;
+	Buffer		 metabuf;
+	BlockNumber *old_pages;
+	uint32		 old_page_count;
+	BlockNumber	 old_next;
 
 	/*
 	 * Read old segment's next_segment pointer before we free it.
@@ -358,66 +357,76 @@ tp_vacuum_replace_segment(
 	/* Collect old segment pages for freeing */
 	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
 
-	/* Set new segment's next_segment and level */
-	if (new_root != InvalidBlockNumber)
+	/*
+	 * Update chain pointers atomically via GenericXLog.
+	 * Up to 3 buffers: metapage, new segment, prev segment.
+	 */
 	{
-		Buffer			 new_buf;
-		Page			 new_page;
-		TpSegmentHeader *new_header;
+		GenericXLogState *xlog_state;
+		Page			  meta_copy;
+		TpIndexMetaPage	  meta_ptr;
+		Buffer			  new_buf  = InvalidBuffer;
+		Buffer			  prev_buf = InvalidBuffer;
 
-		new_buf = ReadBuffer(index, new_root);
-		LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
-		new_page   = BufferGetPage(new_buf);
-		new_header = (TpSegmentHeader *)PageGetContents(new_page);
-		new_header->next_segment = old_next;
-		new_header->level		 = level;
-		MarkBufferDirty(new_buf);
-		UnlockReleaseBuffer(new_buf);
-	}
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
-	/* Update chain pointers in metapage */
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+		xlog_state = GenericXLogStart(index);
+		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+		meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
 
-	if (prev_root == InvalidBlockNumber)
-	{
-		/* old_root was the head of this level */
+		/* Set new segment's next_segment and level */
 		if (new_root != InvalidBlockNumber)
-			metap->level_heads[level] = new_root;
-		else
 		{
-			metap->level_heads[level] = old_next;
-			metap->level_counts[level]--;
-		}
-	}
-	else
-	{
-		/* Update prev's next_segment */
-		Buffer			 prev_buf;
-		Page			 prev_page;
-		TpSegmentHeader *prev_header;
+			Page			 new_page;
+			TpSegmentHeader *new_header;
 
-		prev_buf = ReadBuffer(index, prev_root);
-		LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
-		prev_page	= BufferGetPage(prev_buf);
-		prev_header = (TpSegmentHeader *)PageGetContents(prev_page);
-
-		if (new_root != InvalidBlockNumber)
-			prev_header->next_segment = new_root;
-		else
-		{
-			prev_header->next_segment = old_next;
-			metap->level_counts[level]--;
+			new_buf = ReadBuffer(index, new_root);
+			LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
+			new_page   = GenericXLogRegisterBuffer(xlog_state, new_buf, 0);
+			new_header = (TpSegmentHeader *)PageGetContents(new_page);
+			new_header->next_segment = old_next;
+			new_header->level		 = level;
 		}
 
-		MarkBufferDirty(prev_buf);
-		UnlockReleaseBuffer(prev_buf);
-	}
+		if (prev_root == InvalidBlockNumber)
+		{
+			/* old_root was the head of this level */
+			if (new_root != InvalidBlockNumber)
+				meta_ptr->level_heads[level] = new_root;
+			else
+			{
+				meta_ptr->level_heads[level] = old_next;
+				meta_ptr->level_counts[level]--;
+			}
+		}
+		else
+		{
+			/* Update prev's next_segment */
+			Page			 prev_page;
+			TpSegmentHeader *prev_header;
 
-	MarkBufferDirty(metabuf);
-	UnlockReleaseBuffer(metabuf);
+			prev_buf = ReadBuffer(index, prev_root);
+			LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
+			prev_page	= GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
+			prev_header = (TpSegmentHeader *)PageGetContents(prev_page);
+
+			if (new_root != InvalidBlockNumber)
+				prev_header->next_segment = new_root;
+			else
+			{
+				prev_header->next_segment = old_next;
+				meta_ptr->level_counts[level]--;
+			}
+		}
+
+		GenericXLogFinish(xlog_state);
+		if (BufferIsValid(prev_buf))
+			UnlockReleaseBuffer(prev_buf);
+		if (BufferIsValid(new_buf))
+			UnlockReleaseBuffer(new_buf);
+		UnlockReleaseBuffer(metabuf);
+	}
 
 	/* Free old segment pages */
 	if (old_pages && old_page_count > 0)
@@ -586,21 +595,24 @@ tp_bulkdelete(
 
 		/* Phase 4: Update metapage statistics */
 		{
-			Buffer			mbuf;
-			Page			mpage;
-			TpIndexMetaPage mp;
+			Buffer			  mbuf;
+			GenericXLogState *xlog_state;
+			Page			  mpage;
+			TpIndexMetaPage	  mp;
 
 			mbuf = ReadBuffer(info->index, TP_METAPAGE_BLKNO);
 			LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-			mpage = BufferGetPage(mbuf);
-			mp	  = (TpIndexMetaPage)PageGetContents(mpage);
+
+			xlog_state = GenericXLogStart(info->index);
+			mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
+			mp		   = (TpIndexMetaPage)PageGetContents(mpage);
 
 			if (mp->total_docs >= (uint64)total_dead)
 				mp->total_docs -= total_dead;
 			else
 				mp->total_docs = new_total_docs;
 
-			MarkBufferDirty(mbuf);
+			GenericXLogFinish(xlog_state);
 			UnlockReleaseBuffer(mbuf);
 		}
 	}

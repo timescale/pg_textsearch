@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/relation.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -1637,41 +1638,50 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 	/*
 	 * Update metapage: clear source level, add to target level.
+	 * Use GenericXLog to WAL-log the metapage and (optionally)
+	 * the new segment header atomically.
 	 */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	/*
-	 * Update source level: keep any unmerged remainder segments.
-	 * If we merged all segments, the level is now empty.
-	 */
-	metap->level_heads[level]  = remainder_head;
-	metap->level_counts[level] = total_at_level - segment_count;
-
-	/* Add merged segment to target level */
-	if (metap->level_heads[level + 1] != InvalidBlockNumber)
 	{
-		/* Link to existing chain */
-		Buffer			 seg_buf;
-		Page			 seg_page;
-		TpSegmentHeader *seg_header;
+		GenericXLogState *xlog_state;
+		Page			  meta_copy;
+		TpIndexMetaPage	  meta_ptr;
+		Buffer			  seg_buf = InvalidBuffer;
 
-		seg_buf = ReadBuffer(index, new_segment);
-		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page   = BufferGetPage(seg_buf);
-		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-		seg_header->next_segment = metap->level_heads[level + 1];
-		MarkBufferDirty(seg_buf);
-		UnlockReleaseBuffer(seg_buf);
+		metabuf = ReadBuffer(index, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+		xlog_state = GenericXLogStart(index);
+		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+		meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
+
+		/*
+		 * Update source level: keep any unmerged remainder
+		 * segments.  If we merged all, the level is now empty.
+		 */
+		meta_ptr->level_heads[level]  = remainder_head;
+		meta_ptr->level_counts[level] = total_at_level - segment_count;
+
+		/* Add merged segment to target level */
+		if (meta_ptr->level_heads[level + 1] != InvalidBlockNumber)
+		{
+			Page			 seg_page;
+			TpSegmentHeader *seg_header;
+
+			seg_buf = ReadBuffer(index, new_segment);
+			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+			seg_page   = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
+			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
+			seg_header->next_segment = meta_ptr->level_heads[level + 1];
+		}
+
+		meta_ptr->level_heads[level + 1] = new_segment;
+		meta_ptr->level_counts[level + 1]++;
+
+		GenericXLogFinish(xlog_state);
+		if (BufferIsValid(seg_buf))
+			UnlockReleaseBuffer(seg_buf);
+		UnlockReleaseBuffer(metabuf);
 	}
-
-	metap->level_heads[level + 1] = new_segment;
-	metap->level_counts[level + 1]++;
-
-	MarkBufferDirty(metabuf);
-	UnlockReleaseBuffer(metabuf);
 
 	/*
 	 * Free pages from merged source segments. Now that the metapage no longer
