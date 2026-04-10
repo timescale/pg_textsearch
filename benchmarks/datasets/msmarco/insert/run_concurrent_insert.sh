@@ -69,12 +69,14 @@ case "$ENGINE" in
         SETUP_SQL="$SCRIPT_DIR/concurrent-setup.sql"
         PGBENCH_SQL="$SCRIPT_DIR/pgbench-insert.sql"
         COUNT_TABLE="msmarco_passages"
+        STAGING_TABLE="msmarco_staging"
         ;;
     paradedb|pg_search)
         ENGINE_LABEL="ParadeDB"
         SETUP_SQL="$MSMARCO_DIR/paradedb/concurrent-setup.sql"
         PGBENCH_SQL="$MSMARCO_DIR/paradedb/pgbench-insert.sql"
         COUNT_TABLE="msmarco_passages_paradedb"
+        STAGING_TABLE="msmarco_paradedb_staging"
         ;;
     *)
         echo "Unknown engine: $ENGINE" >&2
@@ -108,15 +110,11 @@ echo "--- Results ---"
 printf "%-10s %10s %12s %12s %15s\n" \
     "CLIENTS" "TPS" "AVG_LAT_MS" "ROWS_60S" "CUMULATIVE"
 
-STAGING_TABLE="${COUNT_TABLE/passages/staging}"
-[[ "$STAGING_TABLE" == "$COUNT_TABLE" ]] && \
-    STAGING_TABLE="${COUNT_TABLE}_staging"
-
 for c in $CLIENTS; do
     # Check remaining rows before each level
     remaining=$(psql -qtAc \
         "SELECT count(*) FROM $STAGING_TABLE s
-         WHERE s.staging_id > currval('insert_seq');" \
+         WHERE s.staging_id > (SELECT last_value FROM insert_seq);" \
         2>/dev/null || echo "999999")
     if [[ "$remaining" -lt 1000 ]]; then
         echo "STOPPING: only $remaining rows remaining in staging"

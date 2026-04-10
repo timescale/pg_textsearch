@@ -163,7 +163,7 @@ jobs:
           # Check remaining rows before each level
           remaining=$(psql -qtAc \
               "SELECT count(*) FROM msmarco_staging s
-               WHERE s.staging_id > currval('insert_seq');" \
+               WHERE s.staging_id > (SELECT last_value FROM insert_seq);" \
               2>/dev/null || echo "$STAGING_ROWS")
           if [ "$remaining" -lt 1000 ]; then
             echo "STOPPING: only $remaining rows remaining in staging"
@@ -189,7 +189,7 @@ jobs:
           printf "%-10s %10s %12s %12s %15s\n" \
               "$c" "$tps" "$lat" "$txns" "$cumulative"
 
-          if [ "$failed" != "0" ]; then
+          if [ "${failed:-0}" != "0" ]; then
             echo "  WARNING: $failed failed transactions at c=$c"
           fi
 
@@ -348,7 +348,7 @@ jobs:
           # Check remaining rows before each level
           remaining=$(psql -qtAc \
               "SELECT count(*) FROM msmarco_paradedb_staging s
-               WHERE s.staging_id > currval('insert_seq');" \
+               WHERE s.staging_id > (SELECT last_value FROM insert_seq);" \
               2>/dev/null || echo "$STAGING_ROWS")
           if [ "$remaining" -lt 1000 ]; then
             echo "STOPPING: only $remaining rows remaining in staging"
@@ -374,7 +374,7 @@ jobs:
           printf "%-10s %10s %12s %12s %15s\n" \
               "$c" "$tps" "$lat" "$txns" "$cumulative"
 
-          if [ "$failed" != "0" ]; then
+          if [ "${failed:-0}" != "0" ]; then
             echo "  WARNING: $failed failed transactions at c=$c"
           fi
 
