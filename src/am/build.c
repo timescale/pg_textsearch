@@ -170,7 +170,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 	/* Legacy per-index posting count threshold (deprecated) */
 	if (tp_memtable_spill_threshold > 0 &&
-		memtable->total_postings >= tp_memtable_spill_threshold)
+		(int64)pg_atomic_read_u64(&memtable->total_postings) >=
+				tp_memtable_spill_threshold)
 	{
 		tp_do_spill(index_state, index_rel);
 		return;
@@ -1175,8 +1176,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		}
 
 		/* Update shared state for runtime queries */
-		index_state->shared->total_docs = total_docs;
-		index_state->shared->total_len	= total_len;
+		pg_atomic_write_u32(&index_state->shared->total_docs, total_docs);
+		pg_atomic_write_u64(&index_state->shared->total_len, total_len);
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));

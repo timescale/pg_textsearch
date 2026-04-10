@@ -63,7 +63,7 @@ tp_vacuum_spill_memtable(Relation index, TpLocalIndexState *index_state)
 		return;
 
 	memtable = get_memtable(index_state);
-	if (!memtable || memtable->total_postings == 0)
+	if (!memtable || pg_atomic_read_u64(&memtable->total_postings) == 0)
 		return;
 
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);

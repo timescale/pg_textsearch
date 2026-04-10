@@ -1039,8 +1039,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	header.dictionary_offset = sizeof(TpSegmentHeader);
 
 	/* Get corpus statistics from shared state */
-	header.num_docs		= state->shared->total_docs;
-	header.total_tokens = state->shared->total_len;
+	header.num_docs		= pg_atomic_read_u32(&state->shared->total_docs);
+	header.total_tokens = pg_atomic_read_u64(&state->shared->total_len);
 
 	/* Write placeholder header */
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));

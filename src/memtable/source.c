@@ -127,13 +127,13 @@ tp_memtable_source_create(TpLocalIndexState *local_state)
 	Assert(local_state != NULL);
 
 	memtable = get_memtable(local_state);
-	if (!memtable || memtable->total_postings == 0)
+	if (!memtable || pg_atomic_read_u64(&memtable->total_postings) == 0)
 		return NULL;
 
 	ms			 = (TpMemtableSource *)palloc0(sizeof(TpMemtableSource));
 	ms->base.ops = &memtable_source_ops;
-	ms->base.total_docs = local_state->shared->total_docs;
-	ms->base.total_len	= local_state->shared->total_len;
+	ms->base.total_docs = pg_atomic_read_u32(&local_state->shared->total_docs);
+	ms->base.total_len	= pg_atomic_read_u64(&local_state->shared->total_len);
 	ms->local_state		= local_state;
 
 	/* Attach to string table if available */

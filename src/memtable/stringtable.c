@@ -445,8 +445,8 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 		}
 
 		/* Track new term for memory estimation */
-		memtable->num_terms++;
-		memtable->total_term_len += term_len;
+		pg_atomic_fetch_add_u64(&memtable->num_terms, 1);
+		pg_atomic_fetch_add_u64(&memtable->total_term_len, term_len);
 	}
 
 	/* Check if posting list already exists for this term */
@@ -508,8 +508,8 @@ tp_add_document_terms(
 	 * The lock's memory barriers ensure these updates are visible to other
 	 * backends on NUMA systems.
 	 */
-	local_state->shared->total_docs++;
-	local_state->shared->total_len += doc_length;
+	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
+	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);
 
 	/* Track terms added in this transaction for bulk load detection */
 	local_state->terms_added_this_xact += term_count;

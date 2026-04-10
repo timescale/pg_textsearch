@@ -192,7 +192,7 @@ tp_add_document_to_posting_list(
 	{
 		TpMemtable *memtable = dsa_get_address(
 				local_state->dsa, local_state->shared->memtable_dp);
-		memtable->total_postings++;
+		pg_atomic_fetch_add_u64(&memtable->total_postings, 1);
 	}
 }
 

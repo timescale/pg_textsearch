@@ -788,8 +788,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 								child_index_oid)));
 			}
 
-			total_docs	= index_state->shared->total_docs;
-			total_len	= index_state->shared->total_len;
+			total_docs	= pg_atomic_read_u32(&index_state->shared->total_docs);
+			total_len	= pg_atomic_read_u64(&index_state->shared->total_len);
 			avg_doc_len = total_docs > 0 ? (float4)((double)total_len /
 													(double)total_docs)
 										 : 0.0f;
@@ -806,8 +806,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 								index_oid)));
 			}
 
-			total_docs = index_state->shared->total_docs;
-			total_len  = index_state->shared->total_len;
+			total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
+			total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
 
 			/*
 			 * If the index has no documents, check if this is an
@@ -829,8 +829,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						TpIndexMetaPage child_metap;
 
 						index_state = child_state;
-						total_docs	= child_state->shared->total_docs;
-						total_len	= child_state->shared->total_len;
+						total_docs	= pg_atomic_read_u32(
+								 &child_state->shared->total_docs);
+						total_len = pg_atomic_read_u64(
+								&child_state->shared->total_len);
 
 						/*
 						 * Also switch to the child index for segment access.

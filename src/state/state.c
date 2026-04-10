@@ -228,10 +228,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid	 = index_oid;
-	shared_state->heap_oid	 = heap_oid;
-	shared_state->total_docs = 0;
-	shared_state->total_len	 = 0;
+	shared_state->index_oid = index_oid;
+	shared_state->heap_oid	= heap_oid;
+	pg_atomic_init_u32(&shared_state->total_docs, 0);
+	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
@@ -248,9 +248,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -340,10 +340,10 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 			dsa_get_address(global_dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid	 = index_oid;
-	shared_state->heap_oid	 = heap_oid;
-	shared_state->total_docs = 0;
-	shared_state->total_len	 = 0;
+	shared_state->index_oid = index_oid;
+	shared_state->heap_oid	= heap_oid;
+	pg_atomic_init_u32(&shared_state->total_docs, 0);
+	pg_atomic_init_u64(&shared_state->total_len, 0);
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
@@ -390,9 +390,9 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Store memtable pointer in shared state for memtable access */
@@ -469,9 +469,9 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
 	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	new_memtable->total_postings	 = 0;
-	new_memtable->num_terms			 = 0;
-	new_memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&new_memtable->total_postings, 0);
+	pg_atomic_init_u64(&new_memtable->num_terms, 0);
+	pg_atomic_init_u64(&new_memtable->total_term_len, 0);
 	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -536,9 +536,9 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -830,8 +830,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		 * the stats. The metapage is the authoritative source for total_docs
 		 * and total_len.
 		 */
-		local_state->shared->total_docs = metap->total_docs;
-		local_state->shared->total_len	= metap->total_len;
+		pg_atomic_write_u32(
+				&local_state->shared->total_docs, metap->total_docs);
+		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
 	}
 
 	/* Clean up */
@@ -1017,8 +1018,10 @@ tp_rebuild_posting_lists_from_docids(
 							&doc_length))
 				{
 					/* Update corpus statistics */
-					local_state->shared->total_docs++;
-					local_state->shared->total_len += doc_length;
+					pg_atomic_fetch_add_u32(
+							&local_state->shared->total_docs, 1);
+					pg_atomic_fetch_add_u64(
+							&local_state->shared->total_len, doc_length);
 				}
 			}
 
@@ -1069,9 +1072,10 @@ tp_rebuild_posting_lists_from_docids(
 	if (local_state && local_state->shared)
 	{
 		elog(INFO,
-			 "Recovery complete for tapir index %u: %u documents restored",
+			 "Recovery complete for tapir index %u: "
+			 "%u documents restored",
 			 index_rel->rd_id,
-			 local_state->shared->total_docs);
+			 pg_atomic_read_u32(&local_state->shared->total_docs));
 
 		/*
 		 * Reset terms_added_this_xact to prevent bulk load spill from
@@ -1287,9 +1291,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		}
 
 		/* Reset counters */
-		memtable->total_postings = 0;
-		memtable->num_terms		 = 0;
-		memtable->total_term_len = 0;
+		pg_atomic_write_u64(&memtable->total_postings, 0);
+		pg_atomic_write_u64(&memtable->num_terms, 0);
+		pg_atomic_write_u64(&memtable->total_term_len, 0);
 
 		/* Try to reclaim DSA memory (best effort) */
 		dsa_trim(local_state->dsa);

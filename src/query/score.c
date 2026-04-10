@@ -141,10 +141,12 @@ tp_score_documents(
 		return 0;
 	}
 
-	total_docs	= local_state->shared->total_docs;
-	avg_doc_len = total_docs > 0 ? (float4)(local_state->shared->total_len /
-											(double)total_docs)
-								 : 0.0f;
+	total_docs	= pg_atomic_read_u32(&local_state->shared->total_docs);
+	avg_doc_len = total_docs > 0
+						? (float4)(pg_atomic_read_u64(
+										   &local_state->shared->total_len) /
+								   (double)total_docs)
+						: 0.0f;
 
 	if (total_docs <= 0)
 		return 0;

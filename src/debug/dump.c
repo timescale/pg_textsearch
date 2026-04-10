@@ -286,14 +286,20 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 
 	/* Corpus statistics */
 	dump_printf(out, "\nCorpus Statistics:\n");
-	dump_printf(out, "  total_docs: %d\n", index_state->shared->total_docs);
 	dump_printf(
-			out, "  total_len: %ld\n", (long)index_state->shared->total_len);
+			out,
+			"  total_docs: %u\n",
+			pg_atomic_read_u32(&index_state->shared->total_docs));
+	dump_printf(
+			out,
+			"  total_len: %ld\n",
+			(long)pg_atomic_read_u64(&index_state->shared->total_len));
 
-	if (index_state->shared->total_docs > 0)
+	if (pg_atomic_read_u32(&index_state->shared->total_docs) > 0)
 	{
-		float avg_doc_len = (float)index_state->shared->total_len /
-							(float)index_state->shared->total_docs;
+		float avg_doc_len =
+				(float)pg_atomic_read_u64(&index_state->shared->total_len) /
+				(float)pg_atomic_read_u32(&index_state->shared->total_docs);
 		dump_printf(out, "  avg_doc_len: %.2f\n", avg_doc_len);
 	}
 
@@ -541,14 +547,20 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 
 	/* Corpus statistics */
 	dump_printf(out, "Corpus Statistics:\n");
-	dump_printf(out, "  total_docs: %d\n", index_state->shared->total_docs);
 	dump_printf(
-			out, "  total_len: %ld\n", (long)index_state->shared->total_len);
+			out,
+			"  total_docs: %u\n",
+			pg_atomic_read_u32(&index_state->shared->total_docs));
+	dump_printf(
+			out,
+			"  total_len: %ld\n",
+			(long)pg_atomic_read_u64(&index_state->shared->total_len));
 
-	if (index_state->shared->total_docs > 0)
+	if (pg_atomic_read_u32(&index_state->shared->total_docs) > 0)
 	{
-		float avg_doc_len = (float)index_state->shared->total_len /
-							(float)index_state->shared->total_docs;
+		float avg_doc_len =
+				(float)pg_atomic_read_u64(&index_state->shared->total_len) /
+				(float)pg_atomic_read_u32(&index_state->shared->total_docs);
 		dump_printf(out, "  avg_doc_len: %.4f\n", avg_doc_len);
 	}
 	else

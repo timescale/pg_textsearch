@@ -9,6 +9,7 @@
 #include <postgres.h>
 
 #include <lib/dshash.h>
+#include <port/atomics.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
@@ -35,16 +36,17 @@ typedef struct TpDsmSegmentHeader
 typedef struct TpMemtable
 {
 	/* String interning hash table in DSA */
-	dshash_table_handle string_hash_handle; /* Handle to dshash string table */
-	int64				total_postings;		/* Total posting entries */
+	dshash_table_handle string_hash_handle; /* Handle to dshash string
+											 * table */
+	pg_atomic_uint64 total_postings;		/* Total posting entries */
 
 	/* Document length hash table in DSA */
-	dshash_table_handle doc_lengths_handle; /* Handle for document length hash
-											 * table */
+	dshash_table_handle doc_lengths_handle; /* Handle for document
+											 * length hash table */
 
 	/* Counters for memory estimation (soft limit) */
-	int64 num_terms;	  /* Unique terms in string table */
-	int64 total_term_len; /* Sum of all term string lengths */
+	pg_atomic_uint64 num_terms;		 /* Unique terms in string table */
+	pg_atomic_uint64 total_term_len; /* Sum of all term string lengths */
 } TpMemtable;
 
 /*
@@ -63,8 +65,8 @@ typedef struct TpSharedIndexState
 	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
 	/* Corpus statistics for BM25 scoring */
-	int32 total_docs; /* Total number of documents */
-	int64 total_len;  /* Total length of all documents */
+	pg_atomic_uint32 total_docs; /* Total number of documents */
+	pg_atomic_uint64 total_len;	 /* Total length of all documents */
 
 	/*
 	 * Cached estimated memtable size in bytes, updated
