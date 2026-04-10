@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775779956199,
+  "lastUpdate": 1775785588704,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -127,6 +127,70 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.897,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "tj@timescale.com",
+            "name": "Todd J. Green",
+            "username": "tjgreen42"
+          },
+          "committer": {
+            "email": "tj@timescale.com",
+            "name": "Todd J. Green",
+            "username": "tjgreen42"
+          },
+          "distinct": true,
+          "id": "05414a352926fbce22a75420712ea861ba70cc9c",
+          "message": "bench: add concurrent INSERT links to benchmarks index page",
+          "timestamp": "2026-04-09T18:35:50-07:00",
+          "tree_id": "18d06406f983fd8fa21b02b42754207d66109091",
+          "url": "https://github.com/timescale/pg_textsearch/commit/05414a352926fbce22a75420712ea861ba70cc9c"
+        },
+        "date": 1775785586033,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2442.674639,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.409,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4050.264832,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.494,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 4104.38632,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.975,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 4114.942463,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 1.944,
             "unit": "ms"
           }
         ]
