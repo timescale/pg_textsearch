@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/tableam.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
@@ -318,33 +319,37 @@ tp_build_flush_and_link(TpBuildContext *ctx, Relation index)
 void
 tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	Buffer			  seg_buf = InvalidBuffer;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state	 = GenericXLogStart(index);
+	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 	if (metap->level_heads[0] != InvalidBlockNumber)
 	{
-		Buffer			 seg_buf;
 		Page			 seg_page;
 		TpSegmentHeader *seg_header;
 
 		seg_buf = ReadBuffer(index, segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page   = BufferGetPage(seg_buf);
+		seg_page   = GenericXLogRegisterBuffer(state, seg_buf, 0);
 		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 		seg_header->next_segment = metap->level_heads[0];
-		MarkBufferDirty(seg_buf);
-		UnlockReleaseBuffer(seg_buf);
 	}
 
 	metap->level_heads[0] = segment_root;
 	metap->level_counts[0]++;
-	MarkBufferDirty(metabuf);
+
+	GenericXLogFinish(state);
+	if (BufferIsValid(seg_buf))
+		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -589,32 +594,26 @@ static void
 tp_build_init_metapage(
 		Relation index, Oid text_config_oid, double k1, double b)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	/* Initialize metapage */
 	metabuf = ReadBuffer(index, P_NEW);
 	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state = GenericXLogStart(index);
+	metapage =
+			GenericXLogRegisterBuffer(state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
 	tp_init_metapage(metapage, text_config_oid);
 	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
 	metap->k1 = k1;
 	metap->b  = b;
 
-	MarkBufferDirty(metabuf);
-
-	/*
-	 * Flush metapage to disk immediately to ensure crash recovery
-	 * works.  Skip for temp relations: local buffers cannot be
-	 * flushed via FlushOneBuffer, and temp data doesn't need
-	 * crash recovery anyway.
-	 */
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
-
+	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -1186,21 +1185,22 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Update metapage with corpus statistics */
 		{
-			Buffer			metabuf;
-			Page			metapage;
-			TpIndexMetaPage metap;
+			Buffer			  metabuf;
+			GenericXLogState *state;
+			Page			  metapage;
+			TpIndexMetaPage	  metap;
 
 			metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			metapage = BufferGetPage(metabuf);
+
+			state	 = GenericXLogStart(index);
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 			metap->total_docs = total_docs;
 			metap->total_len  = total_len;
 
-			MarkBufferDirty(metabuf);
-			if (!BufferIsLocal(metabuf))
-				FlushOneBuffer(metabuf);
+			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);
 		}
 
@@ -1307,19 +1307,22 @@ tp_buildempty(Relation index)
 	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
-	metapage = BufferGetPage(metabuf);
-	tp_init_metapage(metapage, text_config_oid);
+	{
+		GenericXLogState *state;
 
-	/* Set additional parameters after init */
-	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
-	metap->k1 = TP_DEFAULT_K1;
-	metap->b  = TP_DEFAULT_B;
+		state	 = GenericXLogStart(index);
+		metapage = GenericXLogRegisterBuffer(
+				state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
-	MarkBufferDirty(metabuf);
+		tp_init_metapage(metapage, text_config_oid);
 
-	/* Flush metapage to disk -- skip for temp relations */
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
+		/* Set additional parameters after init */
+		metap	  = (TpIndexMetaPage)PageGetContents(metapage);
+		metap->k1 = TP_DEFAULT_K1;
+		metap->b  = TP_DEFAULT_B;
+
+		GenericXLogFinish(state);
+	}
 
 	UnlockReleaseBuffer(metabuf);
 }

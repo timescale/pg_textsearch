@@ -9,6 +9,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <catalog/index.h>
 #include <storage/bufmgr.h>
@@ -399,27 +400,28 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 void
 tp_clear_docid_pages(Relation index)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	/* Get the metapage to clear the docid page pointer */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state	 = GenericXLogStart(index);
+	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 	/*
-	 * Simply clear the first_docid_page pointer. We don't need to
-	 * physically delete the pages - they'll be reused or reclaimed
-	 * by vacuum. This ensures recovery won't try to rebuild from
-	 * stale docids.
+	 * Simply clear the first_docid_page pointer. We don't need
+	 * to physically delete the pages - they'll be reused or
+	 * reclaimed by vacuum. This ensures recovery won't try to
+	 * rebuild from stale docids.
 	 */
 	metap->first_docid_page = InvalidBlockNumber;
 
-	MarkBufferDirty(metabuf);
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
+	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
 
 	/* Invalidate the docid writer cache since pages are cleared */
