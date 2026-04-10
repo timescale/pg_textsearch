@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775780094672,
+  "lastUpdate": 1775785353274,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -127,6 +127,70 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.584,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "tj@timescale.com",
+            "name": "Todd J. Green",
+            "username": "tjgreen42"
+          },
+          "committer": {
+            "email": "tj@timescale.com",
+            "name": "Todd J. Green",
+            "username": "tjgreen42"
+          },
+          "distinct": true,
+          "id": "05414a352926fbce22a75420712ea861ba70cc9c",
+          "message": "bench: add concurrent INSERT links to benchmarks index page",
+          "timestamp": "2026-04-09T18:35:50-07:00",
+          "tree_id": "18d06406f983fd8fa21b02b42754207d66109091",
+          "url": "https://github.com/timescale/pg_textsearch/commit/05414a352926fbce22a75420712ea861ba70cc9c"
+        },
+        "date": 1775785350110,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2849.836678,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.351,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5410.478111,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8886.558477,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 13620.363494,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.587,
             "unit": "ms"
           }
         ]
