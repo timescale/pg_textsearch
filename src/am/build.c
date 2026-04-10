@@ -1296,7 +1296,13 @@ tp_buildempty(Relation index)
 }
 
 /*
- * Insert a tuple into the Tapir index
+ * Insert a tuple into the Tapir index.
+ *
+ * Tokenization happens before any lock is acquired so that
+ * CPU-intensive text processing does not serialize inserts.
+ * The per-index lock is held as LW_SHARED for the memtable
+ * write and docid-page update, then released before the
+ * auto-spill check (which may need LW_EXCLUSIVE).
  */
 bool
 tp_insert(
@@ -1313,11 +1319,12 @@ tp_insert(
 	Datum			   vector_datum;
 	TpVector		  *tpvec;
 	TpVectorEntry	  *vector_entry;
-	int32			  *frequencies;
+	int32			  *frequencies = NULL;
 	int				   term_count;
 	int				   doc_length = 0;
 	int				   i;
 	TpLocalIndexState *index_state;
+	char			 **terms = NULL;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -1328,23 +1335,8 @@ tp_insert(
 	if (isnull[0])
 		return true;
 
-	/* Get index state */
-	index_state = tp_get_local_index_state(RelationGetRelid(index));
-
-	/*
-	 * Acquire exclusive lock for this transaction if not already held.
-	 * This ensures memory consistency on NUMA systems and serializes
-	 * write transactions with respect to reads.
-	 */
-	if (index_state != NULL)
-	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	}
-
-	/* Extract text from first column */
+	/* --- Phase 1: Tokenize (no lock held) --- */
 	document_text = DatumGetTextPP(values[0]);
-
-	/* Vectorize the document */
 	{
 		char *index_name;
 		char *schema_name;
@@ -1364,12 +1356,11 @@ tp_insert(
 	}
 	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
-	/* Extract term IDs and frequencies from tpvector */
+	/* Extract terms and frequencies */
 	term_count = tpvec->entry_count;
 	if (term_count > 0)
 	{
-		char **terms = palloc(term_count * sizeof(char *));
-
+		terms		= palloc(term_count * sizeof(char *));
 		frequencies = palloc(term_count * sizeof(int32));
 
 		vector_entry = TPVECTOR_ENTRIES_PTR(tpvec);
@@ -1377,52 +1368,77 @@ tp_insert(
 		{
 			char *lexeme;
 
-			/* Always allocate on heap for terms array */
 			lexeme = palloc(vector_entry->lexeme_len + 1);
 			memcpy(lexeme, vector_entry->lexeme, vector_entry->lexeme_len);
 			lexeme[vector_entry->lexeme_len] = '\0';
 
-			/* Store the lexeme string directly in terms array */
 			terms[i]	   = lexeme;
 			frequencies[i] = vector_entry->frequency;
 			doc_length += vector_entry->frequency;
 
 			vector_entry = get_tpvector_next_entry(vector_entry);
 		}
+	}
 
-		/* Add document terms to posting lists (if shared memory available) */
-		if (index_state != NULL)
+	/* --- Phase 2: Shared-memory work (under lock) --- */
+	index_state = tp_get_local_index_state(RelationGetRelid(index));
+
+	if (index_state != NULL && term_count > 0)
+	{
+		/* Hard limit check (atomic read, no lock needed) */
+		tp_check_hard_limit();
+
+		/*
+		 * Acquire per-index LW_SHARED — prevents spill from
+		 * destroying the memtable while we write into it.
+		 * Multiple inserters hold shared concurrently.
+		 */
+		tp_acquire_index_lock(index_state, LW_SHARED);
+
+		/* Validate TID before adding to posting list */
+		if (!ItemPointerIsValid(ht_ctid))
+			elog(WARNING, "Invalid TID in tp_insert, skipping");
+		else
 		{
-			/* Hard limit: fail before allocating more DSA memory */
-			tp_check_hard_limit();
-
-			/* Validate TID before adding to posting list */
-			if (!ItemPointerIsValid(ht_ctid))
-				elog(WARNING, "Invalid TID in tp_insert, skipping");
-			else
-			{
-				tp_add_document_terms(
-						index_state,
-						ht_ctid,
-						terms,
-						frequencies,
-						term_count,
-						doc_length);
-
-				/* Auto-spill if memory limit exceeded */
-				tp_auto_spill_if_needed(index_state, index);
-			}
+			tp_add_document_terms(
+					index_state,
+					ht_ctid,
+					terms,
+					frequencies,
+					term_count,
+					doc_length);
 		}
 
-		/* Free the terms array and individual lexemes */
+		/*
+		 * Docid pages under LW_SHARED — spill clears these
+		 * under LW_EXCLUSIVE, so they must be written while
+		 * we hold shared to prevent the race.
+		 */
+		tp_add_docid_to_pages(index, ht_ctid);
+
+		/* Release lock before spill check */
+		tp_release_index_lock(index_state);
+
+		/*
+		 * Auto-spill check runs outside the lock — may
+		 * acquire LW_EXCLUSIVE if a spill is needed.
+		 */
+		tp_auto_spill_if_needed(index_state, index);
+	}
+	else
+	{
+		/* No shared state or empty doc — still record TID */
+		tp_add_docid_to_pages(index, ht_ctid);
+	}
+
+	/* Free the terms array and individual lexemes */
+	if (terms)
+	{
 		for (i = 0; i < term_count; i++)
 			pfree(terms[i]);
 		pfree(terms);
 		pfree(frequencies);
 	}
-
-	/* Store the docid for crash recovery */
-	tp_add_docid_to_pages(index, ht_ctid);
 
 	return true;
 }
