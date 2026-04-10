@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775807299514,
+  "lastUpdate": 1775859663283,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -253,6 +253,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.626,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "d94be32c3c919ab7c946df0942385d7999240c72",
+          "message": "refactor: add debug warning for stale locks at xact end\n\nWith per-operation locking, locks should be released by each\noperation. The xact callback is now a safety net — log when it\nfires to flag bugs in lock release paths.",
+          "timestamp": "2026-04-10T19:57:51Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d94be32c3c919ab7c946df0942385d7999240c72"
+        },
+        "date": 1775859660421,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2863.501819,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.349,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5280.160483,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.379,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8473.025637,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.472,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 38054.899892,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.21,
             "unit": "ms"
           }
         ]
