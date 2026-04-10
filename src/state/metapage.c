@@ -295,6 +295,19 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 					LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
 					docid_header = (TpDocidPageHeader *)PageGetContents(
 							docid_page);
+
+					/*
+					 * Re-check: another backend may have extended
+					 * the chain while we released the lock.
+					 */
+					if (docid_header->next_page != InvalidBlockNumber)
+					{
+						next_page = docid_header->next_page;
+						UnlockReleaseBuffer(docid_buf);
+						current_page = next_page;
+						continue;
+					}
+
 					target_page = current_page;
 					break;
 				}
