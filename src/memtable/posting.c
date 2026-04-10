@@ -104,6 +104,7 @@ tp_alloc_posting_list(dsa_area *dsa)
 
 	/* Initialize posting list */
 	memset(posting_list, 0, sizeof(TpPostingList));
+	LWLockInitialize(&posting_list->lock, TP_TRANCHE_POSTING_LOCK);
 	posting_list->doc_count	 = 0;
 	posting_list->capacity	 = 0;
 	posting_list->is_sorted	 = false;

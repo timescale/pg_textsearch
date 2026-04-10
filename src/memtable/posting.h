@@ -23,6 +23,7 @@
  */
 typedef struct TpPostingList
 {
+	LWLock		lock;		/* Per-posting-list concurrency */
 	int32		doc_count;	/* Length of the entries array */
 	int32		capacity;	/* Allocated array capacity */
 	bool		is_sorted;	/* True after final sort for queries */

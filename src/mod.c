@@ -321,6 +321,7 @@ _PG_init(void)
 	LWLockRegisterTranche(TP_STRING_HASH_TRANCHE_ID, "tapir_string_hash");
 	LWLockRegisterTranche(
 			TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
+	LWLockRegisterTranche(TP_TRANCHE_POSTING_LOCK, "tapir_posting_lock");
 }
 
 /*
