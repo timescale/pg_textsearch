@@ -136,19 +136,22 @@ results. Columns without their own index are filtered after the BM25
 scan:
 ```sql
 SELECT * FROM documents
-WHERE price < 50.00
+WHERE length(content) > 100
 ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
 You can also post-filter on the BM25 score itself. Since `<@>` returns
-negative scores, `< -5.0` keeps only documents scoring above 5.0. This
-requires knowing what score range is meaningful for your index, which
-depends on corpus statistics:
+negative scores, `< -5.0` keeps only documents scoring above 5.0. Use a
+subquery to compute the score once:
 ```sql
-SELECT * FROM documents
-WHERE content <@> to_bm25query('search terms', 'docs_idx') < -5.0
-ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
+SELECT * FROM (
+    SELECT *, content <@> to_bm25query('search terms', 'docs_idx') AS score
+    FROM documents
+    ORDER BY score
+    LIMIT 100
+) sub
+WHERE score < -5.0
 LIMIT 10;
 ```
 
