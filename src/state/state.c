@@ -1349,6 +1349,13 @@ tp_bulk_load_spill_check(void)
 			 (long)local_state->terms_added_this_xact,
 			 tp_bulk_load_threshold);
 
+		/*
+		 * Acquire exclusive lock — no lock is held at
+		 * PRE_COMMIT since per-operation locking releases
+		 * after each insert.
+		 */
+		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
+
 		/* Open the index relation */
 		PG_TRY();
 		{
@@ -1364,7 +1371,10 @@ tp_bulk_load_spill_check(void)
 		PG_END_TRY();
 
 		if (index_open_failed)
+		{
+			tp_release_index_lock(local_state);
 			continue;
+		}
 
 		/* Write the segment */
 		segment_root = tp_write_segment(local_state, index_rel);
@@ -1402,8 +1412,8 @@ tp_bulk_load_spill_check(void)
 			UnlockReleaseBuffer(metabuf);
 
 			elog(DEBUG2,
-				 "Bulk load spilled memtable to segment at block %u "
-				 "(L0 count: %u)",
+				 "Bulk load spilled memtable to segment "
+				 "at block %u (L0 count: %u)",
 				 segment_root,
 				 metap->level_counts[0]);
 
@@ -1412,6 +1422,7 @@ tp_bulk_load_spill_check(void)
 		}
 
 		index_close(index_rel, RowExclusiveLock);
+		tp_release_index_lock(local_state);
 	}
 }
 

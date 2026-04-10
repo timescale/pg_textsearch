@@ -160,6 +160,7 @@ static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
 	TpMemtable *memtable;
+	bool		needs_spill = false;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -168,63 +169,91 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!memtable)
 		return;
 
-	/* Legacy per-index posting count threshold (deprecated) */
+	/* --- Check thresholds (no lock, approximate) --- */
+
+	/* Legacy per-index posting count threshold */
 	if (tp_memtable_spill_threshold > 0 &&
-		(int64)pg_atomic_read_u64(&memtable->total_postings) >=
-				tp_memtable_spill_threshold)
+		pg_atomic_read_u64(&memtable->total_postings) >=
+				(uint64)tp_memtable_spill_threshold)
 	{
-		tp_do_spill(index_state, index_rel);
-		return;
+		needs_spill = true;
 	}
 
-	if (tp_memory_limit <= 0)
-		return;
-
-	/* Per-index soft limit: memory_limit / 8 */
+	if (!needs_spill && tp_memory_limit > 0)
 	{
+		/* Per-index soft limit: memory_limit / 8 */
 		uint64 limit = tp_per_index_limit_bytes();
 		uint64 est	 = tp_estimate_memtable_bytes(memtable);
 
+		/* Update global estimate while we have it */
+		tp_update_index_estimate(index_state->shared, memtable);
+
 		if (limit > 0 && est > limit)
-		{
-			tp_do_spill(index_state, index_rel);
-			return;
-		}
+			needs_spill = true;
 
 		/*
-		 * Piggyback the global counter update on the
-		 * per-index estimate we already computed.
+		 * Global soft limit: memory_limit / 2
+		 * (amortized every ~100 docs)
 		 */
-		tp_update_index_estimate(index_state->shared, memtable);
-	}
-
-	/*
-	 * Global soft limit: memory_limit / 2.
-	 * Amortized check every ~100 documents.
-	 * Reads the atomic counter — O(1), no registry scan.
-	 */
-	if (++index_state->docs_since_global_check >= 100)
-	{
-		uint64 limit = tp_soft_limit_bytes();
-		uint64 est;
-
-		index_state->docs_since_global_check = 0;
-		est									 = tp_get_estimated_total_bytes();
-
-		if (est > limit)
+		if (!needs_spill && ++index_state->docs_since_global_check >= 100)
 		{
-			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+			uint64 g_limit = tp_soft_limit_bytes();
+			uint64 g_est;
+
+			index_state->docs_since_global_check = 0;
+			g_est = tp_get_estimated_total_bytes();
+
+			if (g_est > g_limit)
 			{
-				elog(WARNING,
-					 "pg_textsearch: global soft "
-					 "limit exceeded "
-					 "(" UINT64_FORMAT " kB / " UINT64_FORMAT " kB) but no "
-					 "memtable could be spilled",
-					 (uint64)(est / 1024),
-					 (uint64)(limit / 1024));
+				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+				{
+					elog(WARNING,
+						 "pg_textsearch: global soft "
+						 "limit exceeded "
+						 "(" UINT64_FORMAT " kB / " UINT64_FORMAT
+						 " kB) but no "
+						 "memtable could be spilled",
+						 (uint64)(g_est / 1024),
+						 (uint64)(g_limit / 1024));
+				}
+				return;
 			}
 		}
 	}
+
+	if (!needs_spill)
+		return;
+
+	/* --- Acquire exclusive lock to spill --- */
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
+	/*
+	 * Re-check: another backend may have spilled while
+	 * we waited for the exclusive lock.
+	 */
+	memtable = get_memtable(index_state);
+	if (memtable)
+	{
+		bool still_needed = false;
+
+		if (tp_memtable_spill_threshold > 0 &&
+			pg_atomic_read_u64(&memtable->total_postings) >=
+					(uint64)tp_memtable_spill_threshold)
+			still_needed = true;
+
+		if (!still_needed && tp_memory_limit > 0)
+		{
+			uint64 limit = tp_per_index_limit_bytes();
+			uint64 est	 = tp_estimate_memtable_bytes(memtable);
+			if (limit > 0 && est > limit)
+				still_needed = true;
+		}
+
+		if (still_needed)
+			tp_do_spill(index_state, index_rel);
+	}
+
+	tp_release_index_lock(index_state);
 }
 
 /*
