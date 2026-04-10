@@ -91,7 +91,8 @@ Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` o
 The index is automatically detected from the column. For explicit index specification:
 ```sql
 SELECT * FROM documents
-WHERE content <@> to_bm25query('database system', 'docs_idx') < -1.0;
+ORDER BY content <@> to_bm25query('database system', 'docs_idx')
+LIMIT 5;
 ```
 
 Supported operations:
@@ -131,6 +132,17 @@ LIMIT 10;
 ```
 
 **Post-filtering** applies the BM25 index scan first, then filters results:
+```sql
+SELECT * FROM documents
+WHERE price < 50.00
+ORDER BY content <@> 'search terms'
+LIMIT 10;
+```
+
+You can also post-filter on the BM25 score itself. Since `<@>` returns
+negative scores, `< -5.0` keeps only documents scoring above 5.0. This
+requires knowing what score range is meaningful for your index, which
+depends on corpus statistics:
 ```sql
 SELECT * FROM documents
 WHERE content <@> to_bm25query('search terms', 'docs_idx') < -5.0
@@ -461,10 +473,13 @@ WHERE category = 'engineering'
 ORDER BY content <@> 'search terms'
 LIMIT 10;
 
--- Compute facet counts over BM25-matched results
+-- Compute facet counts over top search results
 SELECT category, count(*)
-FROM documents
-WHERE content <@> to_bm25query('search terms', 'docs_idx') < -1.0
+FROM (
+    SELECT category FROM documents
+    ORDER BY content <@> 'search terms'
+    LIMIT 100
+) matches
 GROUP BY category;
 ```
 
