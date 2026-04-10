@@ -1209,6 +1209,11 @@ tp_release_all_index_locks(void)
 	{
 		if (entry->local_state && entry->local_state->lock_held)
 		{
+			if (entry->local_state->shared != NULL)
+				elog(DEBUG1,
+					 "pg_textsearch: releasing stale lock for "
+					 "index %u at transaction end (safety net)",
+					 entry->local_state->shared->index_oid);
 			tp_release_index_lock(entry->local_state);
 		}
 	}
