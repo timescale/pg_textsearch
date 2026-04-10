@@ -375,26 +375,27 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 }
 
 /*
- * Get or create a posting list for a term
- * This function manages the coordination between string table and posting
- * lists
+ * Get or create a posting list for a term.
+ *
+ * Uses a single dshash_find_or_insert call to atomically find or
+ * create the entry, eliminating the lookup-then-insert race that
+ * exists when two backends see "not found" for the same term.
  */
 TpPostingList *
 tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 {
 	TpMemtable		  *memtable;
 	dshash_table	  *string_table;
-	TpStringHashEntry *string_entry;
+	TpStringHashEntry *entry;
+	TpStringKey		   lookup_key;
 	TpPostingList	  *posting_list;
-	dsa_pointer		   posting_list_dp;
 	size_t			   term_len;
+	bool			   found;
 
 	Assert(local_state != NULL);
 	Assert(term != NULL);
 
 	term_len = strlen(term);
-
-	/* Get memtable from local state */
 	memtable = get_memtable(local_state);
 	if (!memtable)
 	{
@@ -405,21 +406,17 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	/* Initialize string hash table if needed */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
-		/* Create new dshash table */
 		string_table = tp_string_table_create(local_state->dsa);
 		if (!string_table)
 		{
 			elog(ERROR, "Failed to create string hash table");
 			return NULL;
 		}
-
-		/* Store the handle for other processes */
 		memtable->string_hash_handle = dshash_get_hash_table_handle(
 				string_table);
 	}
 	else
 	{
-		/* Attach to existing table */
 		string_table = tp_string_table_attach(
 				local_state->dsa, memtable->string_hash_handle);
 		if (!string_table)
@@ -429,43 +426,30 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 		}
 	}
 
-	/* Look up or insert the term in the string table */
-	string_entry = tp_string_table_lookup(
-			local_state->dsa, string_table, term, term_len);
+	/* Build lookup key */
+	lookup_key.term.str		= term;
+	lookup_key.posting_list = InvalidDsaPointer;
+	lookup_key.len			= term_len;
 
-	if (!string_entry)
+	/* Atomic find-or-insert: holds exclusive partition lock */
+	entry = (TpStringHashEntry *)
+			dshash_find_or_insert(string_table, &lookup_key, &found);
+
+	if (!found)
 	{
-		/* Insert the term */
-		string_entry = tp_string_table_insert(
-				local_state->dsa, string_table, term, term_len);
-		if (!string_entry)
-		{
-			elog(ERROR, "Failed to insert term '%s' into string table", term);
-			return NULL;
-		}
+		/* New term -- initialize under partition lock */
+		entry->key.term.dp =
+				tp_alloc_string_dsa(local_state->dsa, term, term_len);
+		entry->key.posting_list = tp_alloc_posting_list(local_state->dsa);
 
-		/* Track new term for memory estimation */
 		pg_atomic_fetch_add_u64(&memtable->num_terms, 1);
 		pg_atomic_fetch_add_u64(&memtable->total_term_len, term_len);
 	}
 
-	/* Check if posting list already exists for this term */
-	if (DsaPointerIsValid(string_entry->key.posting_list))
-	{
-		posting_list = dsa_get_address(
-				local_state->dsa, string_entry->key.posting_list);
-	}
-	else
-	{
-		/* Create new posting list */
-		posting_list_dp = tp_alloc_posting_list(local_state->dsa);
-		posting_list	= dsa_get_address(local_state->dsa, posting_list_dp);
+	posting_list = dsa_get_address(local_state->dsa, entry->key.posting_list);
 
-		/* Associate posting list with string entry */
-		string_entry->key.posting_list = posting_list_dp;
-	}
-
-	/* Detach from string table */
+	/* Release partition lock */
+	dshash_release_lock(string_table, entry);
 	dshash_detach(string_table);
 
 	return posting_list;

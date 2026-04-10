@@ -132,6 +132,9 @@ tp_add_document_to_posting_list(
 	Assert(posting_list != NULL);
 	Assert(ItemPointerIsValid(ctid));
 
+	if (!local_state->is_build_mode)
+		LWLockAcquire(&posting_list->lock, LW_EXCLUSIVE);
+
 	/* Expand array if needed */
 	if (posting_list->doc_count >= posting_list->capacity)
 	{
@@ -186,6 +189,9 @@ tp_add_document_to_posting_list(
 	posting_list->doc_count++;
 	posting_list->doc_freq	= posting_list->doc_count;
 	posting_list->is_sorted = false; /* New entry may break sort order */
+
+	if (!local_state->is_build_mode)
+		LWLockRelease(&posting_list->lock);
 
 	/* Track total postings for spill threshold */
 	if (local_state->shared &&

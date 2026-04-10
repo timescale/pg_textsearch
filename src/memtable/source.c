@@ -45,14 +45,25 @@ memtable_get_postings(TpDataSource *source, const char *term)
 	posting_list = tp_string_table_get_posting_list(
 			ms->local_state->dsa, ms->string_table, term);
 
-	if (!posting_list || posting_list->doc_count == 0)
+	if (!posting_list)
 		return NULL;
+
+	LWLockAcquire(&posting_list->lock, LW_SHARED);
+
+	if (posting_list->doc_count == 0)
+	{
+		LWLockRelease(&posting_list->lock);
+		return NULL;
+	}
 
 	entries = tp_get_posting_entries(ms->local_state->dsa, posting_list);
 	if (!entries)
+	{
+		LWLockRelease(&posting_list->lock);
 		return NULL;
+	}
 
-	/* Convert to columnar format */
+	/* Copy to local memory under the lock */
 	data		   = tp_alloc_posting_data(posting_list->doc_count);
 	data->count	   = posting_list->doc_count;
 	data->doc_freq = posting_list->doc_freq > 0 ? posting_list->doc_freq
@@ -63,6 +74,8 @@ memtable_get_postings(TpDataSource *source, const char *term)
 		data->ctids[i]		 = entries[i].ctid;
 		data->frequencies[i] = entries[i].frequency;
 	}
+
+	LWLockRelease(&posting_list->lock);
 
 	return data;
 }
