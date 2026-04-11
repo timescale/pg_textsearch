@@ -63,14 +63,13 @@ typedef struct TpParallelWorkerResult
 typedef struct TpParallelBuildShared
 {
 	/* Immutable configuration (set before workers launch) */
-	Oid		   heaprelid;		  /* Heap relation OID */
-	Oid		   indexrelid;		  /* Index relation OID */
-	Oid		   text_config_oid;	  /* Text search config OID */
-	AttrNumber attnum;			  /* Attribute number */
-	double	   k1;				  /* BM25 k1 parameter */
-	double	   b;				  /* BM25 b parameter */
-	int32	   nworkers;		  /* Workers requested */
-	int32	   nworkers_launched; /* Actual workers launched */
+	Oid	   heaprelid;		  /* Heap relation OID */
+	Oid	   indexrelid;		  /* Index relation OID */
+	Oid	   text_config_oid;	  /* Text search config OID */
+	double k1;				  /* BM25 k1 parameter */
+	double b;				  /* BM25 b parameter */
+	int32  nworkers;		  /* Workers requested */
+	int32  nworkers_launched; /* Actual workers launched */
 
 	/* Per-worker heap block ranges for disjoint TID scan */
 	BlockNumber		 worker_start_block[TP_MAX_PARALLEL_WORKERS];

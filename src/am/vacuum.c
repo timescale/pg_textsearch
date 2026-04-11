@@ -9,11 +9,14 @@
 #include <access/genam.h>
 #include <access/generic_xlog.h>
 #include <access/heapam.h>
+#include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
+#include <executor/executor.h>
 #include <fmgr.h>
 #include <lib/dshash.h>
+#include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
 #include <tsearch/ts_utils.h>
@@ -193,7 +196,12 @@ tp_vacuum_rebuild_segment(
 	TpBuildContext	*build_ctx;
 	BlockNumber		 new_root;
 	Oid				 text_config_oid;
-	AttrNumber		 attnum;
+	IndexInfo		*indexInfo;
+	EState			*estate;
+	ExprContext		*econtext;
+	TupleTableSlot	*eval_slot;
+	Datum			 idx_values[INDEX_MAX_KEYS];
+	bool			 idx_isnull[INDEX_MAX_KEYS];
 	MemoryContext	 per_doc_ctx;
 	MemoryContext	 old_ctx;
 	uint64			 docs_added = 0;
@@ -207,8 +215,12 @@ tp_vacuum_rebuild_segment(
 		pfree(mp);
 	}
 
-	/* Get the indexed column number */
-	attnum = index->rd_index->indkey.values[0];
+	/* Set up expression evaluation for index */
+	indexInfo = BuildIndexInfo(index);
+	estate	  = CreateExecutorState();
+	econtext  = GetPerTupleExprContext(estate);
+	eval_slot = MakeSingleTupleTableSlot(
+			RelationGetDescr(heap), &TTSOpsBufferHeapTuple);
 
 	/* Open segment with CTID preloading */
 	reader = tp_segment_open_ex(index, old_root, true);
@@ -238,8 +250,6 @@ tp_vacuum_rebuild_segment(
 		HeapTuple		tuple	 = &tuple_data;
 		Buffer			heap_buf = InvalidBuffer;
 		bool			valid;
-		Datum			text_datum;
-		bool			isnull;
 		text		   *document_text;
 		Datum			tsvector_datum;
 		TSVector		tsvector;
@@ -266,12 +276,23 @@ tp_vacuum_rebuild_segment(
 			continue;
 		}
 
-		/* Extract text from indexed column */
-		text_datum =
-				heap_getattr(tuple, attnum, RelationGetDescr(heap), &isnull);
+		/* Evaluate index expression */
+		ExecStoreBufferHeapTuple(tuple, eval_slot, heap_buf);
+		econtext->ecxt_scantuple = eval_slot;
+		FormIndexDatum(indexInfo, eval_slot, estate, idx_values, idx_isnull);
 
-		if (isnull)
+		if (idx_isnull[0])
 		{
+			ExecClearTuple(eval_slot);
+			ReleaseBuffer(heap_buf);
+			continue;
+		}
+
+		/* Check partial index predicate */
+		if (indexInfo->ii_Predicate != NIL &&
+			!ExecQual(indexInfo->ii_PredicateState, econtext))
+		{
+			ExecClearTuple(eval_slot);
 			ReleaseBuffer(heap_buf);
 			continue;
 		}
@@ -279,7 +300,7 @@ tp_vacuum_rebuild_segment(
 		/* Tokenize in per-doc context (includes detoasting) */
 		old_ctx = MemoryContextSwitchTo(per_doc_ctx);
 
-		document_text = DatumGetTextPP(text_datum);
+		document_text = DatumGetTextPP(idx_values[0]);
 
 		tsvector_datum = DirectFunctionCall2Coll(
 				to_tsvector_byid,
@@ -307,9 +328,13 @@ tp_vacuum_rebuild_segment(
 		}
 
 		MemoryContextReset(per_doc_ctx);
+		ExecClearTuple(eval_slot);
+		ResetExprContext(econtext);
 		ReleaseBuffer(heap_buf);
 	}
 
+	ExecDropSingleTupleTableSlot(eval_slot);
+	FreeExecutorState(estate);
 	tp_segment_close(reader);
 
 	/* Write new segment if any docs survived */

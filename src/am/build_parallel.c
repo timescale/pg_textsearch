@@ -22,7 +22,9 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <commands/progress.h>
+#include <executor/executor.h>
 #include <miscadmin.h>
+#include <nodes/execnodes.h>
 #include <storage/buffile.h>
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
@@ -124,7 +126,6 @@ tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
-		AttrNumber			   attnum,
 		double				   k1,
 		double				   b,
 		int					   nworkers)
@@ -138,7 +139,6 @@ tp_init_parallel_shared(
 	shared->heaprelid		= RelationGetRelid(heap);
 	shared->indexrelid		= RelationGetRelid(index);
 	shared->text_config_oid = text_config_oid;
-	shared->attnum			= attnum;
 	shared->k1				= k1;
 	shared->b				= b;
 	shared->nworkers		= nworkers;
@@ -174,6 +174,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	TpParallelWorkerResult *my_result;
 	Relation				heap;
 	Relation				index;
+	IndexInfo			   *indexInfo;
+	EState				   *estate;
+	ExprContext			   *econtext;
+	Datum					idx_values[INDEX_MAX_KEYS];
+	bool					idx_isnull[INDEX_MAX_KEYS];
 	TableScanDesc			scan;
 	Snapshot				snap;
 	TupleTableSlot		   *slot;
@@ -196,6 +201,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	/* Open heap and index relations */
 	heap  = table_open(shared->heaprelid, AccessShareLock);
 	index = index_open(shared->indexrelid, AccessExclusiveLock);
+
+	/* Set up expression evaluation for index */
+	indexInfo = BuildIndexInfo(index);
+	estate	  = CreateExecutorState();
+	econtext  = GetPerTupleExprContext(estate);
 
 	/* Attach to SharedFileSet and create worker's BufFile */
 	SharedFileSetAttach(&shared->fileset, seg);
@@ -260,8 +270,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	while (scan != NULL &&
 		   table_scan_getnextslot_tidrange(scan, ForwardScanDirection, slot))
 	{
-		bool		isnull;
-		Datum		text_datum;
 		text	   *document_text;
 		ItemPointer ctid;
 		Datum		tsvector_datum;
@@ -271,11 +279,19 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		int			term_count;
 		int			doc_length;
 
-		text_datum = slot_getattr(slot, shared->attnum, &isnull);
-		if (isnull)
+		/* Evaluate index expression (or extract plain column) */
+		econtext->ecxt_scantuple = slot;
+		FormIndexDatum(indexInfo, slot, estate, idx_values, idx_isnull);
+
+		if (idx_isnull[0])
 			goto next_tuple;
 
-		document_text = DatumGetTextPP(text_datum);
+		/* Check partial index predicate */
+		if (indexInfo->ii_Predicate != NIL &&
+			!ExecQual(indexInfo->ii_PredicateState, econtext))
+			goto next_tuple;
+
+		document_text = DatumGetTextPP(idx_values[0]);
 		slot_getallattrs(slot);
 		ctid = &slot->tts_tid;
 
@@ -310,6 +326,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		/* Reset per-doc context */
 		MemoryContextReset(build_tmpctx);
+		ResetExprContext(econtext);
 
 		/* Budget-based flush to BufFile */
 		if (tp_build_context_should_flush(build_ctx))
@@ -405,6 +422,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	BufFileClose(buffile);
 
 	/* Cleanup Phase 1 resources */
+	FreeExecutorState(estate);
 	tp_build_context_destroy(build_ctx);
 	tracker_destroy(&tracker);
 	MemoryContextDelete(build_tmpctx);
@@ -456,6 +474,9 @@ tp_build_parallel(
 	uint64				   total_docs = 0;
 	uint64				   total_len  = 0;
 
+	/* Workers reconstruct IndexInfo via BuildIndexInfo() */
+	(void)indexInfo;
+
 	/* Ensure reasonable number of workers */
 	if (nworkers > TP_MAX_PARALLEL_WORKERS)
 		nworkers = TP_MAX_PARALLEL_WORKERS;
@@ -497,14 +518,7 @@ tp_build_parallel(
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
 	tp_init_parallel_shared(
-			shared,
-			heap,
-			index,
-			text_config_oid,
-			indexInfo->ii_IndexAttrNumbers[0],
-			k1,
-			b,
-			nworkers);
+			shared, heap, index, text_config_oid, k1, b, nworkers);
 
 	/* Initialize SharedFileSet for worker temp files */
 	SharedFileSetInit(&shared->fileset, pcxt->seg);
