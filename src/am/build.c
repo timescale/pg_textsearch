@@ -1423,28 +1423,28 @@ tp_insert(
 		tp_check_hard_limit();
 
 		/*
-		 * Ensure the string hash table exists. This is a
-		 * cold path (once per memtable lifecycle). Check
-		 * without lock first; if needed, take exclusive
-		 * briefly to initialize, then downgrade to shared.
+		 * Acquire per-index lock. Normally LW_SHARED so
+		 * multiple inserters run concurrently.
+		 *
+		 * Cold path: if the string hash table is not yet
+		 * initialized (fresh memtable after creation or
+		 * spill), acquire LW_EXCLUSIVE instead and init
+		 * it. We stay exclusive for the rest of this
+		 * insert to avoid the race where a concurrent
+		 * spill clears the table between init and use.
+		 * This only happens once per memtable lifecycle.
 		 */
 		{
-			TpMemtable *mt = get_memtable(index_state);
+			TpMemtable *mt		  = get_memtable(index_state);
+			bool		need_init = mt &&
+							 mt->string_hash_handle == DSHASH_HANDLE_INVALID;
 
-			if (mt && mt->string_hash_handle == DSHASH_HANDLE_INVALID)
-			{
-				tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			tp_acquire_index_lock(
+					index_state, need_init ? LW_EXCLUSIVE : LW_SHARED);
+
+			if (need_init)
 				tp_ensure_string_table_initialized(index_state);
-				tp_release_index_lock(index_state);
-			}
 		}
-
-		/*
-		 * Acquire per-index LW_SHARED — prevents spill from
-		 * destroying the memtable while we write into it.
-		 * Multiple inserters hold shared concurrently.
-		 */
-		tp_acquire_index_lock(index_state, LW_SHARED);
 
 		/* Validate TID before adding to posting list */
 		if (!ItemPointerIsValid(ht_ctid))
