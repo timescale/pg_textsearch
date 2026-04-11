@@ -1669,7 +1669,9 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 			seg_buf = ReadBuffer(index, new_segment);
 			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page   = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
+			seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
+			/* Ensure pd_lower covers content for GenericXLog */
+			((PageHeader)seg_page)->pd_lower = BLCKSZ;
 			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 			seg_header->next_segment = meta_ptr->level_heads[level + 1];
 		}

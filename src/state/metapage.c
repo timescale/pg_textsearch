@@ -263,6 +263,14 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 			docid_header->num_docids = 0;
 			docid_header->next_page	 = InvalidBlockNumber;
 
+			/*
+			 * Mark the full content area as used so
+			 * GenericXLog does not zero it. Docid pages
+			 * manage their own layout and do not use the
+			 * standard Postgres ItemId/tuple mechanism.
+			 */
+			((PageHeader)docid_page)->pd_lower = BLCKSZ;
+
 			/* Update metapage to point to this new page */
 			target_page = BufferGetBlockNumber(docid_buf);
 			{
@@ -367,6 +375,9 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		new_header->version	   = TP_DOCID_PAGE_VERSION;
 		new_header->num_docids = 0;
 		new_header->next_page  = InvalidBlockNumber;
+
+		/* Mark full content area as used for GenericXLog */
+		((PageHeader)new_docid_page)->pd_lower = BLCKSZ;
 
 		/* Link old page to new page */
 		old_copy	 = GenericXLogRegisterBuffer(xlog_state, docid_buf, 0);

@@ -383,7 +383,9 @@ tp_vacuum_replace_segment(
 
 			new_buf = ReadBuffer(index, new_root);
 			LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
-			new_page   = GenericXLogRegisterBuffer(xlog_state, new_buf, 0);
+			new_page = GenericXLogRegisterBuffer(xlog_state, new_buf, 0);
+			/* Ensure pd_lower covers content for GenericXLog */
+			((PageHeader)new_page)->pd_lower = BLCKSZ;
 			new_header = (TpSegmentHeader *)PageGetContents(new_page);
 			new_header->next_segment = old_next;
 			new_header->level		 = level;
@@ -408,7 +410,9 @@ tp_vacuum_replace_segment(
 
 			prev_buf = ReadBuffer(index, prev_root);
 			LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
-			prev_page	= GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
+			prev_page = GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
+			/* Ensure pd_lower covers content for GenericXLog */
+			((PageHeader)prev_page)->pd_lower = BLCKSZ;
 			prev_header = (TpSegmentHeader *)PageGetContents(prev_page);
 
 			if (new_root != InvalidBlockNumber)

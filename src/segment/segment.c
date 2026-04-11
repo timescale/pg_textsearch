@@ -748,6 +748,8 @@ allocate_segment_page(Relation index)
 		buffer = ReadBuffer(index, block);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+		/* Ensure pd_lower covers content for GenericXLog */
+		((PageHeader)BufferGetPage(buffer))->pd_lower = BLCKSZ;
 		MarkBufferDirty(buffer);
 		UnlockReleaseBuffer(buffer);
 		return block;
@@ -758,6 +760,8 @@ allocate_segment_page(Relation index)
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
 	PageInit(BufferGetPage(buffer), BLCKSZ, 0);
+	/* Ensure pd_lower covers content for GenericXLog */
+	((PageHeader)BufferGetPage(buffer))->pd_lower = BLCKSZ;
 	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
 	return block;
@@ -1426,6 +1430,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header->data_size			 = header.data_size;
 	existing_header->num_pages			 = header.num_pages;
 	existing_header->page_index			 = header.page_index;
+
+	/* Ensure pd_lower covers content for GenericXLog */
+	((PageHeader)header_page)->pd_lower = BLCKSZ;
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);

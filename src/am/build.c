@@ -339,7 +339,9 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 
 		seg_buf = ReadBuffer(index, segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page   = GenericXLogRegisterBuffer(state, seg_buf, 0);
+		seg_page = GenericXLogRegisterBuffer(state, seg_buf, 0);
+		/* Ensure pd_lower covers content for GenericXLog */
+		((PageHeader)seg_page)->pd_lower = BLCKSZ;
 		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 		seg_header->next_segment = metap->level_heads[0];
 	}
