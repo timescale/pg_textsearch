@@ -10,6 +10,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/relation.h>
 #include <lib/dshash.h>
@@ -1055,17 +1056,19 @@ tp_rebuild_posting_lists_from_docids(
 	if (chain_truncated && last_valid_page != InvalidBlockNumber)
 	{
 		Buffer			   trunc_buf;
+		GenericXLogState  *xlog_state;
 		Page			   trunc_page;
 		TpDocidPageHeader *trunc_hdr;
 
 		trunc_buf = ReadBuffer(index_rel, last_valid_page);
 		LockBuffer(trunc_buf, BUFFER_LOCK_EXCLUSIVE);
-		trunc_page = BufferGetPage(trunc_buf);
+
+		xlog_state = GenericXLogStart(index_rel);
+		trunc_page = GenericXLogRegisterBuffer(xlog_state, trunc_buf, 0);
 		trunc_hdr  = (TpDocidPageHeader *)PageGetContents(trunc_page);
 		trunc_hdr->next_page = InvalidBlockNumber;
-		MarkBufferDirty(trunc_buf);
-		if (!BufferIsLocal(trunc_buf))
-			FlushOneBuffer(trunc_buf);
+		GenericXLogFinish(xlog_state);
+
 		UnlockReleaseBuffer(trunc_buf);
 	}
 	else if (chain_truncated)
