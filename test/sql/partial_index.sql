@@ -200,6 +200,39 @@ ORDER BY content <@>
 LIMIT 5;
 
 -- ============================================================
+-- Implicit resolution skips partial indexes
+-- ============================================================
+
+-- Table with ONLY a partial index (no non-partial BM25 index)
+CREATE TABLE partial_only (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    category TEXT
+);
+
+INSERT INTO partial_only (content, category) VALUES
+    ('database management', 'tech'),
+    ('cooking recipes', 'lifestyle');
+
+CREATE INDEX partial_only_idx ON partial_only
+    USING bm25 (content)
+    WITH (text_config='english')
+    WHERE category = 'tech';
+
+-- Implicit resolution should not find the partial index.
+-- This exercises the "skip partial" path in
+-- find_bm25_index_for_column.  The query will use seq scan
+-- with standalone scoring (returns all rows, score 0 for
+-- non-matching).
+SELECT id,
+       ROUND((content <@> 'database')::numeric, 4) AS score
+FROM partial_only
+ORDER BY content <@> 'database'
+LIMIT 5;
+
+DROP TABLE partial_only CASCADE;
+
+-- ============================================================
 -- Cleanup
 -- ============================================================
 

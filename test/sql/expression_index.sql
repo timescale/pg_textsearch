@@ -221,13 +221,20 @@ LIMIT 3;
 DROP INDEX expr_jsonb_idx2;
 
 -- ============================================================
--- Error case: non-text expression type
+-- Error cases
 -- ============================================================
 \set ON_ERROR_STOP off
 
+-- Non-text expression type
 CREATE INDEX expr_bad_idx ON expr_lower
     USING bm25 ((length(content)))
     WITH (text_config='simple');
+
+-- Constant left operand with bm25query
+SELECT 'hello' <@> to_bm25query('world', 'expr_jsonb_idx');
+
+-- Constant left operand with text
+SELECT 'hello' <@> 'world';
 
 \set ON_ERROR_STOP on
 

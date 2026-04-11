@@ -257,14 +257,23 @@ HINT:  If this is not desired, use a planner hint to force a specific index, or 
 
 DROP INDEX expr_jsonb_idx2;
 -- ============================================================
--- Error case: non-text expression type
+-- Error cases
 -- ============================================================
 \set ON_ERROR_STOP off
+-- Non-text expression type
 CREATE INDEX expr_bad_idx ON expr_lower
     USING bm25 ((length(content)))
     WITH (text_config='simple');
 ERROR:  data type integer has no default operator class for access method "bm25"
 HINT:  You must specify an operator class for the index or define a default operator class for the data type.
+-- Constant left operand with bm25query
+SELECT 'hello' <@> to_bm25query('world', 'expr_jsonb_idx');
+ERROR:  left operand of <@> must reference a table column
+HINT:  Use column_name <@> bm25query, not a constant.
+-- Constant left operand with text
+SELECT 'hello' <@> 'world';
+ERROR:  left operand of <@> must reference a table column
+HINT:  Use column_name <@> 'query text', not a constant.
 \set ON_ERROR_STOP on
 -- ============================================================
 -- Cleanup
