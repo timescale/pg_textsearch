@@ -289,21 +289,60 @@ indexes_match_by_attribute(Oid scan_index_oid, Oid query_index_oid)
 		if (scan_am == bm25_am_oid && query_am == bm25_am_oid &&
 			oid_inherits_from(scan_heap_oid, query_heap_oid))
 		{
-			/*
-			 * Compare by column name rather than raw attnum.
-			 * Dropped columns can cause parent and child tables
-			 * to have different physical attnums for the same
-			 * logical column (e.g., TimescaleDB hypertables or
-			 * inheritance after ALTER TABLE DROP COLUMN).
-			 */
-			char *scan_colname = get_attname(scan_heap_oid, scan_attnum, true);
-			char *query_colname =
-					get_attname(query_heap_oid, query_attnum, true);
-
-			if (scan_colname && query_colname &&
-				strcmp(scan_colname, query_colname) == 0)
+			if (scan_attnum != 0 && query_attnum != 0)
 			{
-				result = true;
+				/*
+				 * Plain column: compare by column name rather
+				 * than raw attnum.  Dropped columns can cause
+				 * parent and child tables to have different
+				 * physical attnums for the same logical column
+				 * (e.g., TimescaleDB hypertables or inheritance
+				 * after ALTER TABLE DROP COLUMN).
+				 */
+				char *scan_colname =
+						get_attname(scan_heap_oid, scan_attnum, true);
+				char *query_colname =
+						get_attname(query_heap_oid, query_attnum, true);
+
+				if (scan_colname && query_colname &&
+					strcmp(scan_colname, query_colname) == 0)
+				{
+					result = true;
+				}
+			}
+			else if (scan_attnum == 0 && query_attnum == 0)
+			{
+				/*
+				 * Expression indexes: compare stored
+				 * expression trees from pg_index.
+				 */
+				Datum scan_expr_d, query_expr_d;
+				bool  scan_null, query_null;
+
+				scan_expr_d = SysCacheGetAttr(
+						INDEXRELID,
+						scan_idx_tuple,
+						Anum_pg_index_indexprs,
+						&scan_null);
+				query_expr_d = SysCacheGetAttr(
+						INDEXRELID,
+						query_idx_tuple,
+						Anum_pg_index_indexprs,
+						&query_null);
+
+				if (!scan_null && !query_null)
+				{
+					char *scan_str	  = TextDatumGetCString(scan_expr_d);
+					char *query_str	  = TextDatumGetCString(query_expr_d);
+					List *scan_exprs  = (List *)stringToNode(scan_str);
+					List *query_exprs = (List *)stringToNode(query_str);
+
+					pfree(scan_str);
+					pfree(query_str);
+
+					if (equal(scan_exprs, query_exprs))
+						result = true;
+				}
 			}
 		}
 	}

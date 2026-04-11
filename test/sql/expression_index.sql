@@ -23,11 +23,6 @@ CREATE INDEX expr_jsonb_idx ON expr_jsonb
 SET enable_seqscan = off;
 
 -- Query with explicit index naming
--- Expression indexes require the expression in the query to match
--- the index expression exactly.  The scan path does not yet resolve
--- expression-based <@> operands, so this errors for now.
-\set ON_ERROR_STOP off
-
 SELECT id,
        ROUND(((data->>'content') <@>
               to_bm25query('database', 'expr_jsonb_idx'))::numeric, 4)
@@ -36,8 +31,6 @@ FROM expr_jsonb
 ORDER BY (data->>'content') <@>
          to_bm25query('database', 'expr_jsonb_idx')
 LIMIT 5;
-
-\set ON_ERROR_STOP on
 
 -- ============================================================
 -- Multi-column concatenation expression index
@@ -58,8 +51,6 @@ CREATE INDEX expr_concat_idx ON expr_concat
     USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
     WITH (text_config='english');
 
-\set ON_ERROR_STOP off
-
 SELECT id,
        ROUND(((coalesce(title, '') || ' ' || coalesce(body, '')) <@>
               to_bm25query('database', 'expr_concat_idx'))::numeric, 4)
@@ -68,8 +59,6 @@ FROM expr_concat
 ORDER BY (coalesce(title, '') || ' ' || coalesce(body, '')) <@>
          to_bm25query('database', 'expr_concat_idx')
 LIMIT 5;
-
-\set ON_ERROR_STOP on
 
 -- ============================================================
 -- Simple transformation expression index
@@ -89,8 +78,6 @@ CREATE INDEX expr_lower_idx ON expr_lower
     USING bm25 ((lower(content)))
     WITH (text_config='simple');
 
-\set ON_ERROR_STOP off
-
 SELECT id,
        ROUND(((lower(content)) <@>
               to_bm25query('database', 'expr_lower_idx'))::numeric, 4)
@@ -99,8 +86,6 @@ FROM expr_lower
 ORDER BY (lower(content)) <@>
          to_bm25query('database', 'expr_lower_idx')
 LIMIT 5;
-
-\set ON_ERROR_STOP on
 
 -- ============================================================
 -- Error case: non-text expression type

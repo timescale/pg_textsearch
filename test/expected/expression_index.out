@@ -21,10 +21,6 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.67
 SET enable_seqscan = off;
 -- Query with explicit index naming
--- Expression indexes require the expression in the query to match
--- the index expression exactly.  The scan path does not yet resolve
--- expression-based <@> operands, so this errors for now.
-\set ON_ERROR_STOP off
 SELECT id,
        ROUND(((data->>'content') <@>
               to_bm25query('database', 'expr_jsonb_idx'))::numeric, 4)
@@ -33,9 +29,11 @@ FROM expr_jsonb
 ORDER BY (data->>'content') <@>
          to_bm25query('database', 'expr_jsonb_idx')
 LIMIT 5;
-ERROR:  left operand of <@> must be a table column
-HINT:  Use column_name <@> bm25query, not a constant or expression.
-\set ON_ERROR_STOP on
+ id |  score  
+----+---------
+  1 | -0.9457
+(1 row)
+
 -- ============================================================
 -- Multi-column concatenation expression index
 -- ============================================================
@@ -55,7 +53,6 @@ NOTICE:  BM25 index build started for relation expr_concat_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=5.67
-\set ON_ERROR_STOP off
 SELECT id,
        ROUND(((coalesce(title, '') || ' ' || coalesce(body, '')) <@>
               to_bm25query('database', 'expr_concat_idx'))::numeric, 4)
@@ -64,9 +61,11 @@ FROM expr_concat
 ORDER BY (coalesce(title, '') || ' ' || coalesce(body, '')) <@>
          to_bm25query('database', 'expr_concat_idx')
 LIMIT 5;
-ERROR:  left operand of <@> must be a table column
-HINT:  Use column_name <@> bm25query, not a constant or expression.
-\set ON_ERROR_STOP on
+ id |  score  
+----+---------
+  1 | -1.3948
+(1 row)
+
 -- ============================================================
 -- Simple transformation expression index
 -- ============================================================
@@ -85,7 +84,6 @@ NOTICE:  BM25 index build started for relation expr_lower_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.67
-\set ON_ERROR_STOP off
 SELECT id,
        ROUND(((lower(content)) <@>
               to_bm25query('database', 'expr_lower_idx'))::numeric, 4)
@@ -94,9 +92,11 @@ FROM expr_lower
 ORDER BY (lower(content)) <@>
          to_bm25query('database', 'expr_lower_idx')
 LIMIT 5;
-ERROR:  left operand of <@> must be a table column
-HINT:  Use column_name <@> bm25query, not a constant or expression.
-\set ON_ERROR_STOP on
+ id |  score  
+----+---------
+  1 | -1.0596
+(1 row)
+
 -- ============================================================
 -- Error case: non-text expression type
 -- ============================================================

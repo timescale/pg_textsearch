@@ -35,6 +35,7 @@
 #include <parser/parse_func.h>
 #include <parser/parse_oper.h>
 #include <parser/parsetree.h>
+#include <rewrite/rewriteManip.h>
 #include <utils/builtins.h>
 #include <utils/catcache.h>
 #include <utils/fmgroids.h>
@@ -85,7 +86,8 @@ static bool			invalidation_registered = false;
 typedef struct ExplicitIndexRequirement
 {
 	Oid		   relid;			   /* Table OID */
-	AttrNumber attnum;			   /* Column attribute number */
+	AttrNumber attnum;			   /* Column attr (0 for expr) */
+	Node	  *expr;			   /* Expression (NULL for cols) */
 	Oid		   required_index_oid; /* The index that must be used */
 } ExplicitIndexRequirement;
 
@@ -342,6 +344,65 @@ get_var_relation_and_attnum(
 }
 
 /*
+ * Extract relation OID from an arbitrary expression.
+ * Returns InvalidOid if vars reference multiple relations
+ * or none. Sets *varno_out to the varno of the relation.
+ */
+static Oid
+get_expr_relid(Node *expr, Query *query, Index *varno_out)
+{
+	List	 *vars;
+	ListCell *lc;
+	Oid		  relid = InvalidOid;
+	Index	  varno = 0;
+
+	vars = pull_var_clause(expr, 0);
+	if (vars == NIL)
+		return InvalidOid;
+
+	foreach (lc, vars)
+	{
+		Var			  *var = (Var *)lfirst(lc);
+		RangeTblEntry *rte;
+
+		if (var->varlevelsup != 0)
+		{
+			list_free(vars);
+			return InvalidOid;
+		}
+
+		if (var->varno < 1 || var->varno > list_length(query->rtable))
+		{
+			list_free(vars);
+			return InvalidOid;
+		}
+
+		rte = rt_fetch(var->varno, query->rtable);
+		if (rte->rtekind != RTE_RELATION)
+		{
+			list_free(vars);
+			return InvalidOid;
+		}
+
+		if (relid == InvalidOid)
+		{
+			relid = rte->relid;
+			varno = var->varno;
+		}
+		else if (rte->relid != relid)
+		{
+			list_free(vars);
+			return InvalidOid;
+		}
+	}
+
+	list_free(vars);
+	if (varno_out)
+		*varno_out = varno;
+	return relid;
+}
+
+/*
  * Find BM25 index OID from a Var node representing the indexed column.
  */
 static Oid
@@ -355,6 +416,111 @@ find_index_for_var(Var *var, ResolveIndexContext *context)
 
 	return find_bm25_index_for_column(
 			relid, attnum, context->oid_cache->bm25_am_oid);
+}
+
+/*
+ * Find BM25 index matching an expression on a relation.
+ * For plain Var, delegates to find_bm25_index_for_column.
+ * For complex expressions, compares expression trees.
+ */
+static Oid
+find_bm25_index_for_expr(Node *expr, Oid relid, Index varno, Oid bm25_am_oid)
+{
+	Relation	indexRelation;
+	SysScanDesc scan;
+	HeapTuple	indexTuple;
+	Oid			result		= InvalidOid;
+	int			index_count = 0;
+	ScanKeyData scanKey;
+
+	if (!OidIsValid(bm25_am_oid))
+		return InvalidOid;
+
+	/* Fast path: plain column reference */
+	if (IsA(expr, Var))
+	{
+		Var *var = (Var *)expr;
+
+		return find_bm25_index_for_column(relid, var->varattno, bm25_am_oid);
+	}
+
+	/* Slow path: expression comparison */
+	indexRelation = table_open(IndexRelationId, AccessShareLock);
+
+	ScanKeyInit(
+			&scanKey,
+			Anum_pg_index_indrelid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(relid));
+
+	scan = systable_beginscan(
+			indexRelation, IndexIndrelidIndexId, true, NULL, 1, &scanKey);
+
+	while ((indexTuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_index indexForm = (Form_pg_index)GETSTRUCT(indexTuple);
+		Oid			  indexOid	= indexForm->indexrelid;
+		HeapTuple	  classTuple;
+		Oid			  indexAmOid;
+
+		classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indexOid));
+		if (!HeapTupleIsValid(classTuple))
+			continue;
+		indexAmOid = ((Form_pg_class)GETSTRUCT(classTuple))->relam;
+		ReleaseSysCache(classTuple);
+
+		if (indexAmOid != bm25_am_oid)
+			continue;
+
+		/* Must be an expression index */
+		if (indexForm->indkey.values[0] != 0)
+			continue;
+
+		{
+			Datum exprDatum;
+			bool  isnull;
+			List *idx_exprs;
+			Node *idx_expr;
+
+			exprDatum = SysCacheGetAttr(
+					INDEXRELID, indexTuple, Anum_pg_index_indexprs, &isnull);
+			if (isnull)
+				continue;
+
+			idx_exprs = (List *)stringToNode(TextDatumGetCString(exprDatum));
+			if (idx_exprs == NIL)
+				continue;
+
+			idx_expr = (Node *)linitial(idx_exprs);
+
+			/*
+			 * pg_index stores expressions with varno=1.
+			 * Normalize to match the query's varno.
+			 */
+			ChangeVarNodes(idx_expr, 1, varno, 0);
+
+			if (equal(idx_expr, expr))
+			{
+				index_count++;
+				if (result == InvalidOid)
+					result = indexOid;
+			}
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(indexRelation, AccessShareLock);
+
+	if (index_count > 1)
+		ereport(WARNING,
+				(errmsg("multiple BM25 indexes match the "
+						"expression"),
+				 errhint("Use explicit to_bm25query('query',"
+						 " 'index_name') to specify which "
+						 "index.")));
+
+	return result;
 }
 
 /*
@@ -439,57 +605,92 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	tpquery = (TpQuery *)DatumGetPointer(constNode->constvalue);
 
 	/*
-	 * The left operand of <@> must be a column reference for both index
-	 * resolution and index scan support.
+	 * Reject constant left operands (no table column refs).
+	 * Expression index operands contain Var nodes referencing
+	 * table columns; a bare constant like 'hello' does not.
 	 */
-	if (!IsA(left, Var))
+	if (!IsA(left, Var) && !contain_var_clause(left))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("left operand of <@> must be a table column"),
-				 errhint("Use column_name <@> bm25query, not a constant "
-						 "or expression.")));
+				 errmsg("left operand of <@> must reference "
+						"a table column"),
+				 errhint("Use column_name <@> bm25query, not "
+						 "a constant.")));
 	}
 
 	/*
-	 * If the bm25query has an explicit index, validate that the index is on
-	 * the column being queried. This catches cases where the user specifies
-	 * an index that is on a different column.
+	 * If the bm25query has an explicit index, validate that the
+	 * index matches the column or expression being queried.
 	 */
 	if (OidIsValid(tpquery->index_oid))
 	{
-		Var		  *var = (Var *)left;
-		Oid		   relid;
-		AttrNumber attnum;
-
-		if (get_var_relation_and_attnum(var, context->query, &relid, &attnum))
+		if (IsA(left, Var))
 		{
-			if (!index_is_on_column(tpquery->index_oid, relid, attnum))
-			{
-				char *index_name = get_rel_name(tpquery->index_oid);
-				char *col_name	 = get_attname(relid, attnum, false);
-				char *table_name = get_rel_name(relid);
+			Var		  *var = (Var *)left;
+			Oid		   relid;
+			AttrNumber attnum;
 
-				ereport(ERROR,
-						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-						 errmsg("index \"%s\" is not on column \"%s\"",
-								index_name ? index_name : "(unknown)",
-								col_name ? col_name : "(unknown)"),
-						 errdetail(
-								 "The explicitly specified index is not "
-								 "built on the column being searched."),
-						 errhint("Use an index that is built on column "
-								 "\"%s\" of table \"%s\", or omit the "
-								 "index name to use automatic index "
-								 "resolution.",
-								 col_name ? col_name : "(unknown)",
-								 table_name ? table_name : "(unknown)")));
+			if (get_var_relation_and_attnum(
+						var, context->query, &relid, &attnum))
+			{
+				if (!index_is_on_column(tpquery->index_oid, relid, attnum))
+				{
+					char *index_name = get_rel_name(tpquery->index_oid);
+					char *col_name	 = get_attname(relid, attnum, false);
+					char *table_name = get_rel_name(relid);
+
+					ereport(ERROR,
+							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+							 errmsg("index \"%s\" is not on "
+									"column \"%s\"",
+									index_name ? index_name : "(unknown)",
+									col_name ? col_name : "(unknown)"),
+							 errdetail(
+									 "The explicitly specified "
+									 "index is not built on the "
+									 "column being searched."),
+							 errhint("Use an index that is built"
+									 " on column \"%s\" of table"
+									 " \"%s\", or omit the index"
+									 " name to use automatic "
+									 "index resolution.",
+									 col_name ? col_name : "(unknown)",
+									 table_name ? table_name : "(unknown)")));
+				}
 			}
 		}
-		return NULL; /* Already resolved, validation passed */
+
+		/*
+		 * For expressions, trust the user's explicit index
+		 * specification. Full validation would require
+		 * deserializing pg_index.indexprs and comparing
+		 * trees, but the user explicitly named the index.
+		 */
+		return NULL; /* Already resolved */
 	}
 
-	index_oid = find_index_for_var((Var *)left, context);
+	/*
+	 * Implicit index resolution: find a BM25 index that
+	 * matches the left operand.
+	 */
+	if (IsA(left, Var))
+	{
+		index_oid = find_index_for_var((Var *)left, context);
+	}
+	else
+	{
+		Index varno;
+		Oid	  relid;
+
+		relid = get_expr_relid(left, context->query, &varno);
+		if (OidIsValid(relid))
+			index_oid = find_bm25_index_for_expr(
+					left, relid, varno, context->oid_cache->bm25_am_oid);
+		else
+			index_oid = InvalidOid;
+	}
+
 	if (!OidIsValid(index_oid))
 		return NULL;
 
@@ -512,7 +713,6 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	BM25OidCache *oids = context->oid_cache;
 	Node		 *left;
 	Node		 *right;
-	Var			 *var;
 	Const		 *text_const;
 	Oid			  index_oid;
 	char		 *query_text;
@@ -530,25 +730,45 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	left  = linitial(opexpr->args);
 	right = lsecond(opexpr->args);
 
-	if (!IsA(left, Var))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("left operand of <@> must be a table column"),
-				 errhint("Use column_name <@> 'query text', not a "
-						 "constant or expression.")));
-	}
-
 	if (!IsA(right, Const))
 		return NULL;
 
-	var		   = (Var *)left;
 	text_const = (Const *)right;
 
 	if (text_const->consttype != TEXTOID || text_const->constisnull)
 		return NULL;
 
-	index_oid = find_index_for_var(var, context);
+	/*
+	 * Reject constant left operands (no table column refs).
+	 */
+	if (!IsA(left, Var) && !contain_var_clause(left))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("left operand of <@> must reference "
+						"a table column"),
+				 errhint("Use column_name <@> 'query text', "
+						 "not a constant.")));
+	}
+
+	/* Find index: plain column or expression */
+	if (IsA(left, Var))
+	{
+		index_oid = find_index_for_var((Var *)left, context);
+	}
+	else
+	{
+		Index varno;
+		Oid	  relid;
+
+		relid = get_expr_relid(left, context->query, &varno);
+		if (OidIsValid(relid))
+			index_oid = find_bm25_index_for_expr(
+					left, relid, varno, context->oid_cache->bm25_am_oid);
+		else
+			index_oid = InvalidOid;
+	}
+
 	if (!OidIsValid(index_oid))
 		return NULL;
 
@@ -1193,15 +1413,9 @@ collect_explicit_indexes_walker(
 			Node *left	= linitial(opexpr->args);
 			Node *right = lsecond(opexpr->args);
 
-			/* Left arg must be a column reference */
-			if (!IsA(left, Var))
-				return expression_tree_walker(
-						node, collect_explicit_indexes_walker, context);
-
 			/*
-			 * Try to fold FuncExpr (e.g., to_bm25query()) to a Const.
-			 * This is needed because parse analysis may not have folded
-			 * the function call if the index was already explicit.
+			 * Try to fold FuncExpr (e.g., to_bm25query())
+			 * to a Const.
 			 */
 			if (IsA(right, FuncExpr))
 				right = eval_const_expressions(NULL, right);
@@ -1218,8 +1432,8 @@ collect_explicit_indexes_walker(
 							constNode->constvalue);
 
 					/*
-					 * Only collect explicitly specified indexes (from
-					 * to_bm25query with index name or bm25query input).
+					 * Only collect explicitly specified indexes
+					 * (from to_bm25query with index name).
 					 */
 					if (tpquery_is_explicit_index(tpquery))
 					{
@@ -1232,12 +1446,23 @@ collect_explicit_indexes_walker(
 							if (OidIsValid(table_oid))
 							{
 								ExplicitIndexRequirement *req;
-								Var						 *var = (Var *)left;
 
 								req = palloc(sizeof(ExplicitIndexRequirement));
 								req->relid				= table_oid;
-								req->attnum				= var->varattno;
 								req->required_index_oid = index_oid;
+
+								if (IsA(left, Var))
+								{
+									Var *var = (Var *)left;
+
+									req->attnum = var->varattno;
+									req->expr	= NULL;
+								}
+								else
+								{
+									req->attnum = 0;
+									req->expr	= copyObject(left);
+								}
 								context->requirements =
 										lappend(context->requirements, req);
 							}
@@ -1276,11 +1501,14 @@ collect_explicit_index_requirements(Query *parse, BM25OidCache *oid_cache)
 }
 
 /*
- * Find an explicit index requirement for a given relation and column.
+ * Find an explicit index requirement for a given relation and
+ * column or expression.  For plain columns (attnum > 0), matches
+ * by relid and attnum.  For expression indexes (attnum == 0),
+ * matches by relid and expression tree equality.
  * Returns NULL if no explicit requirement exists.
  */
 static ExplicitIndexRequirement *
-find_explicit_requirement_for_column(Oid relid, AttrNumber attnum)
+find_explicit_requirement(Oid relid, AttrNumber attnum, Node *expr)
 {
 	ListCell *lc;
 
@@ -1291,7 +1519,14 @@ find_explicit_requirement_for_column(Oid relid, AttrNumber attnum)
 	{
 		ExplicitIndexRequirement *req = (ExplicitIndexRequirement *)lfirst(lc);
 
-		if (req->relid == relid && req->attnum == attnum)
+		if (req->relid != relid)
+			continue;
+
+		if (attnum != 0 && req->attnum == attnum)
+			return req;
+
+		if (attnum == 0 && req->attnum == 0 && expr != NULL &&
+			req->expr != NULL && equal(expr, req->expr))
 			return req;
 	}
 
@@ -1367,7 +1602,14 @@ fix_bm25_indexpaths(
 			continue;
 		attnum = indexpath->indexinfo->indexkeys[0];
 
-		req = find_explicit_requirement_for_column(relid, attnum);
+		{
+			Node *idx_expr = NULL;
+
+			if (attnum == 0 && indexpath->indexinfo->indexprs)
+				idx_expr = (Node *)linitial(indexpath->indexinfo->indexprs);
+
+			req = find_explicit_requirement(relid, attnum, idx_expr);
+		}
 		if (req == NULL)
 			continue;
 
