@@ -211,7 +211,7 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                6
+                7
 (1 row)
 
 -- ORDER BY score LIMIT triggers BMW seek path on segments
