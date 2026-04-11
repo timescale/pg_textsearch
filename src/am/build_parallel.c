@@ -330,7 +330,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		/* Reset per-doc context */
 		MemoryContextReset(build_tmpctx);
-		ResetExprContext(econtext);
 
 		/* Budget-based flush to BufFile */
 		if (tp_build_context_should_flush(build_ctx))
@@ -361,6 +360,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		}
 
 	next_tuple:
+		ResetExprContext(econtext);
 		my_result->tuples_scanned++;
 
 		if (my_result->tuples_scanned % TP_PROGRESS_REPORT_INTERVAL == 0)

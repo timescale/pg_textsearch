@@ -1177,8 +1177,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				tp_build_callback,
 				&bs,
 				NULL);
-		(void)reltuples;
-
 		/* Accumulate final batch stats */
 		total_docs = bs.total_docs + build_ctx->num_docs;
 		total_len  = bs.total_len + build_ctx->total_len;
@@ -1221,7 +1219,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
-		result->heap_tuples	 = total_docs;
+		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
 		if (build_progress.active)

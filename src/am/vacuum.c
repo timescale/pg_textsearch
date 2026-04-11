@@ -288,6 +288,7 @@ tp_vacuum_rebuild_segment(
 		if (idx_isnull[0])
 		{
 			ExecClearTuple(eval_slot);
+			ResetExprContext(econtext);
 			ReleaseBuffer(heap_buf);
 			continue;
 		}
@@ -297,6 +298,7 @@ tp_vacuum_rebuild_segment(
 			!ExecQual(indexInfo->ii_PredicateState, econtext))
 		{
 			ExecClearTuple(eval_slot);
+			ResetExprContext(econtext);
 			ReleaseBuffer(heap_buf);
 			continue;
 		}
