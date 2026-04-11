@@ -375,11 +375,46 @@ tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
 }
 
 /*
+ * Ensure the memtable's string hash table is initialized.
+ *
+ * Must be called under LW_EXCLUSIVE on the per-index lock.
+ * This is the cold path — only needed once per memtable
+ * lifecycle (after creation or spill). Separated from
+ * tp_get_or_create_posting_list so the hot path (which
+ * runs under LW_SHARED) never races on hash table creation.
+ */
+void
+tp_ensure_string_table_initialized(TpLocalIndexState *local_state)
+{
+	TpMemtable	 *memtable;
+	dshash_table *string_table;
+
+	Assert(local_state != NULL);
+
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		return;
+
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+		return; /* Already initialized */
+
+	string_table = tp_string_table_create(local_state->dsa);
+	if (!string_table)
+		elog(ERROR, "Failed to create string hash table");
+
+	memtable->string_hash_handle = dshash_get_hash_table_handle(string_table);
+	dshash_detach(string_table);
+}
+
+/*
  * Get or create a posting list for a term.
  *
  * Uses a single dshash_find_or_insert call to atomically find or
  * create the entry, eliminating the lookup-then-insert race that
  * exists when two backends see "not found" for the same term.
+ *
+ * Caller must have ensured the string hash table is initialized
+ * (via tp_ensure_string_table_initialized under LW_EXCLUSIVE).
  */
 TpPostingList *
 tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
@@ -403,15 +438,24 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 		return NULL;
 	}
 
-	/* Initialize string hash table if needed */
+	/*
+	 * The string hash table must already be initialized
+	 * by tp_ensure_string_table_initialized (called under
+	 * LW_EXCLUSIVE). In build mode it's created lazily
+	 * since there's no concurrency.
+	 */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
 	{
+		if (!local_state->is_build_mode)
+			elog(ERROR,
+				 "String hash table not initialized "
+				 "(call tp_ensure_string_table_initialized "
+				 "first)");
+
+		/* Build mode: create lazily (single-threaded) */
 		string_table = tp_string_table_create(local_state->dsa);
 		if (!string_table)
-		{
 			elog(ERROR, "Failed to create string hash table");
-			return NULL;
-		}
 		memtable->string_hash_handle = dshash_get_hash_table_handle(
 				string_table);
 	}
@@ -420,10 +464,9 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 		string_table = tp_string_table_attach(
 				local_state->dsa, memtable->string_hash_handle);
 		if (!string_table)
-		{
-			elog(ERROR, "Failed to attach to string hash table");
-			return NULL;
-		}
+			elog(ERROR,
+				 "Failed to attach to string hash "
+				 "table");
 	}
 
 	/* Build lookup key */

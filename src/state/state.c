@@ -1106,9 +1106,9 @@ get_memtable(TpLocalIndexState *local_state)
 }
 
 /*
- * Acquire the per-index lock if not already held in this transaction.
- * This provides transaction-level serialization and ensures memory
- * consistency on NUMA systems through LWLock's built-in memory barriers.
+ * Acquire the per-index lock if not already held by this backend.
+ * Ensures memory consistency on NUMA systems through LWLock's
+ * built-in memory barriers.
  */
 void
 tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)

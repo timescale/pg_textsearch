@@ -1421,6 +1421,23 @@ tp_insert(
 		tp_check_hard_limit();
 
 		/*
+		 * Ensure the string hash table exists. This is a
+		 * cold path (once per memtable lifecycle). Check
+		 * without lock first; if needed, take exclusive
+		 * briefly to initialize, then downgrade to shared.
+		 */
+		{
+			TpMemtable *mt = get_memtable(index_state);
+
+			if (mt && mt->string_hash_handle == DSHASH_HANDLE_INVALID)
+			{
+				tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+				tp_ensure_string_table_initialized(index_state);
+				tp_release_index_lock(index_state);
+			}
+		}
+
+		/*
 		 * Acquire per-index LW_SHARED — prevents spill from
 		 * destroying the memtable while we write into it.
 		 * Multiple inserters hold shared concurrently.
@@ -1439,14 +1456,14 @@ tp_insert(
 					frequencies,
 					term_count,
 					doc_length);
-		}
 
-		/*
-		 * Docid pages under LW_SHARED — spill clears these
-		 * under LW_EXCLUSIVE, so they must be written while
-		 * we hold shared to prevent the race.
-		 */
-		tp_add_docid_to_pages(index, ht_ctid);
+			/*
+			 * Docid pages under LW_SHARED — spill clears
+			 * these under LW_EXCLUSIVE, so they must be
+			 * written while we hold shared.
+			 */
+			tp_add_docid_to_pages(index, ht_ctid);
+		}
 
 		/* Release lock before spill check */
 		tp_release_index_lock(index_state);
@@ -1457,9 +1474,9 @@ tp_insert(
 		 */
 		tp_auto_spill_if_needed(index_state, index);
 	}
-	else
+	else if (term_count > 0 && ItemPointerIsValid(ht_ctid))
 	{
-		/* No shared state or empty doc — still record TID */
+		/* No shared state but valid doc — record TID */
 		tp_add_docid_to_pages(index, ht_ctid);
 	}
 
