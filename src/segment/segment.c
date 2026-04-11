@@ -827,8 +827,8 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32 entries_per_page = (BLCKSZ - SizeOfPageHeaderData -
 							   MAXALIGN(sizeof(TpPageIndexSpecial))) /
 							  sizeof(BlockNumber);
-	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
-							 entries_per_page;
+	uint32 num_index_pages	= (num_pages + entries_per_page - 1) /
+							  entries_per_page;
 
 	/* Allocate index pages incrementally */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
@@ -1321,8 +1321,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset +
-						   ((uint64)i * sizeof(TpDictEntry));
+			entry_offset	   = header.entries_offset +
+								 ((uint64)i * sizeof(TpDictEntry));
 			entry_logical_page = (uint32)(entry_offset /
 										  SEGMENT_DATA_PER_PAGE);
 			page_offset = (uint32)(entry_offset % SEGMENT_DATA_PER_PAGE);
@@ -1371,7 +1371,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					Page  page = BufferGetPage(dict_buf);
 					char *dest = (char *)page + SizeOfPageHeaderData +
 								 page_offset;
-					char *src = (char *)&entry;
+					char *src  = (char *)&entry;
 
 					/* Write first part to current page */
 					memcpy(dest, src, bytes_on_this_page);

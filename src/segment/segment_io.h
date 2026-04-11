@@ -79,7 +79,7 @@ struct TpLocalIndexState;
 
 /* Writer functions */
 extern BlockNumber
-			tp_write_segment(struct TpLocalIndexState *state, Relation index);
+tp_write_segment(struct TpLocalIndexState *state, Relation index);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
@@ -90,7 +90,7 @@ extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 extern TpSegmentReader *
 tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
-extern TpSegmentReader			   *
+extern TpSegmentReader *
 tp_segment_open_from_buffile(BufFile *file, uint64 base_offset);
 extern void tp_segment_read(
 		TpSegmentReader *reader,

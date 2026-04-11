@@ -65,7 +65,7 @@ Datum tpquery_eq(PG_FUNCTION_ARGS);
 TpQuery *create_tpquery(const char *query_text, Oid index_oid);
 TpQuery *create_tpquery_explicit(
 		const char *query_text, Oid index_oid, bool explicit_index);
-TpQuery		  *
+TpQuery *
 create_tpquery_from_name(const char *query_text, const char *index_name);
 Oid	  get_tpquery_index_oid(TpQuery *tpquery);
 char *get_tpquery_text(TpQuery *tpquery);
