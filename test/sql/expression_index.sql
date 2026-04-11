@@ -218,7 +218,31 @@ FROM expr_jsonb
 ORDER BY (data->>'content') <@> to_bm25query('database')
 LIMIT 3;
 
+-- Explicit naming with multiple expression indexes exercises
+-- the expression branch in collect_explicit_indexes_walker,
+-- find_explicit_requirement, and fix_bm25_indexpaths.
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database',
+                           'expr_jsonb_idx2'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('database', 'expr_jsonb_idx2')
+LIMIT 3;
+
 DROP INDEX expr_jsonb_idx2;
+
+-- ============================================================
+-- Implicit text <@> text with expression index
+-- ============================================================
+
+SELECT id,
+       ROUND(((data->>'content') <@> 'database')::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@> 'database'
+LIMIT 3;
 
 -- ============================================================
 -- Error cases
