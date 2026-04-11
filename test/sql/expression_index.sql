@@ -88,6 +88,63 @@ ORDER BY (lower(content)) <@>
 LIMIT 5;
 
 -- ============================================================
+-- Implicit resolution (no explicit index name)
+-- ============================================================
+
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database'))::numeric, 4) AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@> to_bm25query('database')
+LIMIT 5;
+
+-- ============================================================
+-- Verify index scan is used
+-- ============================================================
+
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('database', 'expr_jsonb_idx')
+LIMIT 5;
+
+-- ============================================================
+-- NULL handling: row with missing JSONB key
+-- ============================================================
+
+INSERT INTO expr_jsonb (data) VALUES
+    ('{"other_field": "no content key"}'),
+    (NULL);
+
+-- These should not affect results
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database',
+                           'expr_jsonb_idx'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('database', 'expr_jsonb_idx')
+LIMIT 5;
+
+-- ============================================================
+-- Delete a document and verify index still works
+-- ============================================================
+
+DELETE FROM expr_jsonb WHERE id = 1;
+
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('search',
+                           'expr_jsonb_idx'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('search', 'expr_jsonb_idx')
+LIMIT 5;
+
+-- ============================================================
 -- Error case: non-text expression type
 -- ============================================================
 \set ON_ERROR_STOP off

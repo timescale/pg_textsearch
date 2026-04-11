@@ -702,7 +702,7 @@ score_memtable_multi_term(
 	hash_ctl.entrysize = sizeof(DocumentScoreEntry);
 	hash_ctl.hcxt	   = CurrentMemoryContext;
 	doc_accum		   = hash_create(
-			"Memtable Doc Accum", 1024, &hash_ctl, HASH_ELEM | HASH_BLOBS);
+			 "Memtable Doc Accum", 1024, &hash_ctl, HASH_ELEM | HASH_BLOBS);
 
 	/* Process each term */
 	for (term_idx = 0; term_idx < term_count; term_idx++)

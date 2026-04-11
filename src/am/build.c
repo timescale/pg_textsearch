@@ -1387,7 +1387,7 @@ tp_insert(
 
 		schema_name = get_namespace_name(namespace_oid);
 		index_name	= quote_qualified_identifier(
-				schema_name, RelationGetRelationName(index));
+				 schema_name, RelationGetRelationName(index));
 
 		vector_datum = DirectFunctionCall2(
 				to_tpvector,

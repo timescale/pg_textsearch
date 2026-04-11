@@ -98,6 +98,75 @@ LIMIT 5;
 (1 row)
 
 -- ============================================================
+-- Implicit resolution (no explicit index name)
+-- ============================================================
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database'))::numeric, 4) AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@> to_bm25query('database')
+LIMIT 5;
+ id |  score  
+----+---------
+  1 | -0.9457
+(1 row)
+
+-- ============================================================
+-- Verify index scan is used
+-- ============================================================
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('database', 'expr_jsonb_idx')
+LIMIT 5;
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using expr_jsonb_idx on expr_jsonb
+         Order By: ((data ->> 'content'::text) <@> 'expr_jsonb_idx:database'::bm25query)
+(3 rows)
+
+-- ============================================================
+-- NULL handling: row with missing JSONB key
+-- ============================================================
+INSERT INTO expr_jsonb (data) VALUES
+    ('{"other_field": "no content key"}'),
+    (NULL);
+-- These should not affect results
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database',
+                           'expr_jsonb_idx'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('database', 'expr_jsonb_idx')
+LIMIT 5;
+ id |  score  
+----+---------
+  1 | -0.9457
+(1 row)
+
+-- ============================================================
+-- Delete a document and verify index still works
+-- ============================================================
+DELETE FROM expr_jsonb WHERE id = 1;
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('search',
+                           'expr_jsonb_idx'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('search', 'expr_jsonb_idx')
+LIMIT 5;
+ id |  score  
+----+---------
+  3 | -0.9457
+(1 row)
+
+-- ============================================================
 -- Error case: non-text expression type
 -- ============================================================
 \set ON_ERROR_STOP off

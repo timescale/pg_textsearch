@@ -294,7 +294,23 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 
 		if (classForm->relam == bm25_am_oid)
 		{
-			int nkeys = indexForm->indnatts;
+			bool  predNull;
+			Datum predDatum;
+			int	  nkeys = indexForm->indnatts;
+
+			/*
+			 * Skip partial indexes for implicit
+			 * resolution.  Users must name them
+			 * explicitly via to_bm25query.
+			 */
+			predDatum = SysCacheGetAttr(
+					INDEXRELID, indexTuple, Anum_pg_index_indpred, &predNull);
+			(void)predDatum;
+			if (!predNull)
+			{
+				ReleaseSysCache(classTuple);
+				continue;
+			}
 
 			for (int i = 0; i < nkeys; i++)
 			{
@@ -476,6 +492,22 @@ find_bm25_index_for_expr(Node *expr, Oid relid, Index varno, Oid bm25_am_oid)
 		/* Must be an expression index */
 		if (indexForm->indkey.values[0] != 0)
 			continue;
+
+		/*
+		 * Skip partial indexes for implicit resolution.
+		 * Users must name them explicitly via
+		 * to_bm25query.
+		 */
+		{
+			Datum predDatum;
+			bool  predNull;
+
+			predDatum = SysCacheGetAttr(
+					INDEXRELID, indexTuple, Anum_pg_index_indpred, &predNull);
+			(void)predDatum;
+			if (!predNull)
+				continue;
+		}
 
 		{
 			Datum exprDatum;

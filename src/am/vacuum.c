@@ -215,13 +215,6 @@ tp_vacuum_rebuild_segment(
 		pfree(mp);
 	}
 
-	/* Set up expression evaluation for index */
-	indexInfo = BuildIndexInfo(index);
-	estate	  = CreateExecutorState();
-	econtext  = GetPerTupleExprContext(estate);
-	eval_slot = MakeSingleTupleTableSlot(
-			RelationGetDescr(heap), &TTSOpsBufferHeapTuple);
-
 	/* Open segment with CTID preloading */
 	reader = tp_segment_open_ex(index, old_root, true);
 	if (!reader || !reader->header)
@@ -233,6 +226,17 @@ tp_vacuum_rebuild_segment(
 			*new_total_len = 0;
 		return InvalidBlockNumber;
 	}
+
+	/* Set up expression evaluation for index */
+	indexInfo = BuildIndexInfo(index);
+	estate	  = CreateExecutorState();
+	econtext  = GetPerTupleExprContext(estate);
+	eval_slot = MakeSingleTupleTableSlot(
+			RelationGetDescr(heap), &TTSOpsBufferHeapTuple);
+
+	if (indexInfo->ii_Predicate != NIL)
+		indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
 	/* Create build context (no budget limit for VACUUM rebuild) */
 	build_ctx = tp_build_context_create(0);

@@ -207,6 +207,10 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	estate	  = CreateExecutorState();
 	econtext  = GetPerTupleExprContext(estate);
 
+	if (indexInfo->ii_Predicate != NIL)
+		indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
 	/* Attach to SharedFileSet and create worker's BufFile */
 	SharedFileSetAttach(&shared->fileset, seg);
 	snprintf(file_name, sizeof(file_name), "tp_worker_%d", worker_id);
@@ -559,8 +563,8 @@ tp_build_parallel(
 
 		for (i = 0; i < launched; i++)
 		{
-			BlockNumber count			  = blocks_per_worker +
-											(i < (int)remainder ? 1 : 0);
+			BlockNumber count = blocks_per_worker +
+								(i < (int)remainder ? 1 : 0);
 			shared->worker_start_block[i] = cursor;
 			shared->worker_end_block[i]	  = cursor + count;
 			cursor += count;

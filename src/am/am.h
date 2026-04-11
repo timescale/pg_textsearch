@@ -99,7 +99,7 @@ void tp_truncate_dead_pages(Relation index);
 /*
  * Build functions (am/build.c)
  */
-struct IndexBuildResult *
+struct IndexBuildResult		 *
 tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
 void tp_buildempty(Relation index);
 bool tp_insert(
@@ -137,11 +137,11 @@ void tp_build_progress_end(void);
  */
 IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
 void		  tp_rescan(
-		IndexScanDesc scan,
-		ScanKey		  keys,
-		int			  nkeys,
-		ScanKey		  orderbys,
-		int			  norderbys);
+				 IndexScanDesc scan,
+				 ScanKey	   keys,
+				 int		   nkeys,
+				 ScanKey	   orderbys,
+				 int		   norderbys);
 void tp_endscan(IndexScanDesc scan);
 bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
 

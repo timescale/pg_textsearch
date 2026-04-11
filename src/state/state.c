@@ -887,6 +887,10 @@ tp_rebuild_posting_lists_from_docids(
 	eval_slot = MakeSingleTupleTableSlot(
 			RelationGetDescr(heap_rel), &TTSOpsBufferHeapTuple);
 
+	if (indexInfo->ii_Predicate != NIL)
+		indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
 	current_page = metap->first_docid_page;
 
 	/* Scan through all docid pages */
@@ -1005,6 +1009,16 @@ tp_rebuild_posting_lists_from_docids(
 			econtext->ecxt_scantuple = eval_slot;
 			FormIndexDatum(
 					indexInfo, eval_slot, estate, idx_values, idx_isnull);
+
+			/* Check partial index predicate */
+			if (indexInfo->ii_Predicate != NIL &&
+				!ExecQual(indexInfo->ii_PredicateState, econtext))
+			{
+				ExecClearTuple(eval_slot);
+				ResetExprContext(econtext);
+				ReleaseBuffer(heap_buf);
+				continue;
+			}
 
 			if (!idx_isnull[0])
 			{
