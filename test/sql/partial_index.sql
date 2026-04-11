@@ -169,6 +169,25 @@ ORDER BY content <@>
 LIMIT 5;
 
 -- ============================================================
+-- VACUUM on partial index
+-- ============================================================
+
+DELETE FROM partial_docs WHERE id = 1;
+VACUUM partial_docs;
+
+-- Verify partial index still works after vacuum
+SELECT id, content,
+       ROUND((content <@>
+              to_bm25query('database',
+                           'partial_tech_idx'))::numeric, 4)
+              AS score
+FROM partial_docs
+WHERE category = 'tech'
+ORDER BY content <@>
+         to_bm25query('database', 'partial_tech_idx')
+LIMIT 5;
+
+-- ============================================================
 -- Verify partial index scan is used
 -- ============================================================
 

@@ -145,6 +145,82 @@ ORDER BY (data->>'content') <@>
 LIMIT 5;
 
 -- ============================================================
+-- VACUUM: delete rows and vacuum to exercise rebuild
+-- ============================================================
+
+DELETE FROM expr_jsonb WHERE id <= 2;
+VACUUM expr_jsonb;
+
+-- Verify index still works after vacuum
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('search',
+                           'expr_jsonb_idx'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@>
+         to_bm25query('search', 'expr_jsonb_idx')
+LIMIT 5;
+
+-- ============================================================
+-- Partitioned table with expression index
+-- ============================================================
+
+CREATE TABLE expr_part (
+    id SERIAL,
+    data JSONB,
+    created_at DATE NOT NULL
+) PARTITION BY RANGE (created_at);
+
+CREATE TABLE expr_part_2024 PARTITION OF expr_part
+    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+CREATE TABLE expr_part_2025 PARTITION OF expr_part
+    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+INSERT INTO expr_part (data, created_at) VALUES
+    ('{"text": "database management systems"}',
+     '2024-06-15'),
+    ('{"text": "machine learning algorithms"}',
+     '2024-09-20'),
+    ('{"text": "search engine optimization"}',
+     '2025-03-10');
+
+CREATE INDEX expr_part_idx ON expr_part
+    USING bm25 ((data->>'text'))
+    WITH (text_config='english');
+
+SELECT id,
+       ROUND(((data->>'text') <@>
+              to_bm25query('database',
+                           'expr_part_idx'))::numeric,
+             4) AS score
+FROM expr_part
+ORDER BY (data->>'text') <@>
+         to_bm25query('database', 'expr_part_idx')
+LIMIT 5;
+
+DROP TABLE expr_part CASCADE;
+
+-- ============================================================
+-- Multiple expression indexes trigger warning
+-- ============================================================
+
+CREATE INDEX expr_jsonb_idx2 ON expr_jsonb
+    USING bm25 ((data->>'content'))
+    WITH (text_config='simple');
+
+-- Implicit resolution should warn about multiple indexes
+SELECT id,
+       ROUND(((data->>'content') <@>
+              to_bm25query('database'))::numeric, 4)
+              AS score
+FROM expr_jsonb
+ORDER BY (data->>'content') <@> to_bm25query('database')
+LIMIT 3;
+
+DROP INDEX expr_jsonb_idx2;
+
+-- ============================================================
 -- Error case: non-text expression type
 -- ============================================================
 \set ON_ERROR_STOP off
