@@ -82,7 +82,15 @@ typedef struct TpSharedIndexState
 	 * This ensures memory consistency on NUMA systems and proper
 	 * transaction isolation.
 	 */
-	LWLock lock; /* Transaction-level lock for this index */
+	LWLock lock; /* Per-index lock for this index */
+
+	/*
+	 * Generation counter for docid page cache invalidation.
+	 * Incremented under LW_EXCLUSIVE when docid pages are
+	 * cleared (spill). Backends compare their cached
+	 * generation to detect stale docid page caches.
+	 */
+	pg_atomic_uint64 spill_generation;
 } TpSharedIndexState;
 
 /*

@@ -63,6 +63,7 @@ extern int32 tp_get_document_length(
 extern int32 tp_get_document_length_attached(
 		dshash_table *doclength_table, ItemPointer ctid);
 
+extern dshash_table *tp_doclength_table_create(dsa_area *area);
 extern dshash_table *
 tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle);
 

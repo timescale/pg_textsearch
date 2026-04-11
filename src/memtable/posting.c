@@ -253,7 +253,7 @@ tp_doclength_copy_function(
 /*
  * Create document length hash table
  */
-static dshash_table *
+dshash_table *
 tp_doclength_table_create(dsa_area *area)
 {
 	dshash_parameters params;

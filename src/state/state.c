@@ -241,6 +241,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
@@ -355,6 +356,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
 	if (tp_registry_lookup(index_oid) != NULL)

@@ -387,7 +387,7 @@ void
 tp_ensure_string_table_initialized(TpLocalIndexState *local_state)
 {
 	TpMemtable	 *memtable;
-	dshash_table *string_table;
+	dshash_table *table;
 
 	Assert(local_state != NULL);
 
@@ -395,15 +395,25 @@ tp_ensure_string_table_initialized(TpLocalIndexState *local_state)
 	if (!memtable)
 		return;
 
-	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
-		return; /* Already initialized */
+	/* Initialize string hash table if needed */
+	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
+	{
+		table = tp_string_table_create(local_state->dsa);
+		if (!table)
+			elog(ERROR, "Failed to create string hash table");
+		memtable->string_hash_handle = dshash_get_hash_table_handle(table);
+		dshash_detach(table);
+	}
 
-	string_table = tp_string_table_create(local_state->dsa);
-	if (!string_table)
-		elog(ERROR, "Failed to create string hash table");
-
-	memtable->string_hash_handle = dshash_get_hash_table_handle(string_table);
-	dshash_detach(string_table);
+	/* Initialize doc lengths hash table if needed */
+	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+	{
+		table = tp_doclength_table_create(local_state->dsa);
+		if (!table)
+			elog(ERROR, "Failed to create doc length table");
+		memtable->doc_lengths_handle = dshash_get_hash_table_handle(table);
+		dshash_detach(table);
+	}
 }
 
 /*

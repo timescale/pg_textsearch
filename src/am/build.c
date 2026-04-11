@@ -467,6 +467,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	if (segment_root != InvalidBlockNumber)
 	{
 		tp_clear_memtable(index_state);
+		tp_clear_docid_pages(index_rel);
 
 		tp_link_l0_chain_head(index_rel, segment_root);
 
@@ -1426,24 +1427,48 @@ tp_insert(
 		 * Acquire per-index lock. Normally LW_SHARED so
 		 * multiple inserters run concurrently.
 		 *
-		 * Cold path: if the string hash table is not yet
-		 * initialized (fresh memtable after creation or
-		 * spill), acquire LW_EXCLUSIVE instead and init
-		 * it. We stay exclusive for the rest of this
-		 * insert to avoid the race where a concurrent
-		 * spill clears the table between init and use.
-		 * This only happens once per memtable lifecycle.
+		 * Cold path: if the memtable hash tables are not
+		 * yet initialized, acquire LW_EXCLUSIVE and init.
+		 * We stay exclusive for the cold-path insert to
+		 * prevent a concurrent spill from clearing the
+		 * tables between init and use.
+		 *
+		 * The lockless pre-check is an optimization to
+		 * avoid exclusive on the hot path. If a concurrent
+		 * spill invalidates between the check and lock
+		 * acquire, we detect it under the lock and retry.
 		 */
+		for (;;)
 		{
 			TpMemtable *mt		  = get_memtable(index_state);
 			bool		need_init = mt &&
-							 mt->string_hash_handle == DSHASH_HANDLE_INVALID;
+							 (mt->string_hash_handle ==
+									  DSHASH_HANDLE_INVALID ||
+							  mt->doc_lengths_handle == DSHASH_HANDLE_INVALID);
 
 			tp_acquire_index_lock(
 					index_state, need_init ? LW_EXCLUSIVE : LW_SHARED);
 
 			if (need_init)
+			{
 				tp_ensure_string_table_initialized(index_state);
+				break; /* Hold exclusive for insert */
+			}
+
+			/*
+			 * Re-check under shared lock: a spill may
+			 * have cleared the tables after our lockless
+			 * read but before we acquired shared.
+			 */
+			mt = get_memtable(index_state);
+			if (mt && (mt->string_hash_handle == DSHASH_HANDLE_INVALID ||
+					   mt->doc_lengths_handle == DSHASH_HANDLE_INVALID))
+			{
+				/* Stale read — retry with exclusive */
+				tp_release_index_lock(index_state);
+				continue;
+			}
+			break;
 		}
 
 		/* Validate TID before adding to posting list */

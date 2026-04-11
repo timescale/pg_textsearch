@@ -42,12 +42,13 @@ typedef struct TpDocidWriterState
 	Oid			index_oid;	/* Index this state is for */
 	BlockNumber last_page;	/* Last docid page written to */
 	uint32		num_docids; /* Number of docids on that page */
+	uint64		generation; /* Spill generation at cache time */
 	bool		valid;		/* Is this cache entry valid? */
 } TpDocidWriterState;
 
 /* Backend-local cache for docid writer */
 static TpDocidWriterState docid_writer_cache =
-		{InvalidOid, InvalidBlockNumber, 0, false};
+		{InvalidOid, InvalidBlockNumber, 0, 0, false};
 
 /*
  * Invalidate the docid writer cache.
@@ -188,13 +189,28 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	bool			   cache_valid;
 
 	/*
-	 * Check if we have a valid cache entry for this index. The cache is valid
-	 * if it's for the same index and the cached page isn't full yet.
+	 * Check if we have a valid cache entry for this index.
+	 * The cache is valid if it's for the same index, the
+	 * page isn't full, and the spill generation matches
+	 * (a concurrent spill invalidates all caches by
+	 * incrementing the generation counter).
 	 */
 	cache_valid = docid_writer_cache.valid &&
 				  docid_writer_cache.index_oid == index_oid &&
 				  docid_writer_cache.last_page != InvalidBlockNumber &&
 				  docid_writer_cache.num_docids < page_capacity;
+
+	if (cache_valid)
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(index_oid);
+		if (ls && ls->shared &&
+			docid_writer_cache.generation !=
+					pg_atomic_read_u64(&ls->shared->spill_generation))
+		{
+			docid_writer_cache.valid = false;
+			cache_valid				 = false;
+		}
+	}
 
 	if (cache_valid)
 	{
@@ -422,7 +438,14 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	docid_writer_cache.index_oid  = index_oid;
 	docid_writer_cache.last_page  = target_page;
 	docid_writer_cache.num_docids = docid_header->num_docids;
-	docid_writer_cache.valid	  = true;
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(index_oid);
+		docid_writer_cache.generation =
+				(ls && ls->shared)
+						? pg_atomic_read_u64(&ls->shared->spill_generation)
+						: 0;
+	}
+	docid_writer_cache.valid = true;
 
 	UnlockReleaseBuffer(docid_buf);
 }
@@ -458,6 +481,19 @@ tp_clear_docid_pages(Relation index)
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
 
-	/* Invalidate the docid writer cache since pages are cleared */
+	/* Invalidate this backend's docid writer cache */
 	docid_writer_cache.valid = false;
+
+	/*
+	 * Increment the spill generation counter so other backends
+	 * detect their cached docid page is stale. This is the
+	 * broadcast invalidation — each backend checks this
+	 * counter against its cached generation on the fast path.
+	 */
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(
+				RelationGetRelid(index));
+		if (ls && ls->shared)
+			pg_atomic_fetch_add_u64(&ls->shared->spill_generation, 1);
+	}
 }
