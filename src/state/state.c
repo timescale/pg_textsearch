@@ -876,6 +876,15 @@ tp_rebuild_posting_lists_from_docids(
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
 
+	/*
+	 * Ensure the string hash table is initialized before
+	 * rebuilding posting lists. Recovery is single-threaded
+	 * so no lock is needed, but
+	 * tp_get_or_create_posting_list requires the table to
+	 * exist when not in build mode.
+	 */
+	tp_ensure_string_table_initialized(local_state);
+
 	current_page = metap->first_docid_page;
 
 	/* Scan through all docid pages */
