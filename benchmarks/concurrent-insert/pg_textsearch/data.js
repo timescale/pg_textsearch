@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776153099104,
+  "lastUpdate": 1776194204943,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -625,6 +625,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.9,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f",
+          "message": "fix: address code review feedback\n\n- Expand comment on lockless threshold checks explaining why\n  approximate reads are safe (false positive → unnecessary lock,\n  false negative → deferred to next insert)\n- Document how the global soft limit warning state is reached\n  (all eviction candidates locked or empty)\n- Document spill lock duration and deadlock safety\n- Clarify tp_check_hard_limit is a read-only check, no lock held\n- Document vacuum spill preconditions (AccessExclusiveLock held,\n  DSA pinned, pre-lock read is fast bailout)\n- Fix user-facing messages: \"tapir index\" → \"pg_textsearch index\",\n  \"Tapir shared DSA\" → \"pg_textsearch shared DSA\"\n- Remove all DEBUG traces from state.c (stale-lock safety net,\n  bulk-load spill, build-mode lifecycle)",
+          "timestamp": "2026-04-14T00:52:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f"
+        },
+        "date": 1776194201366,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2819.578995,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.355,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 5305.738223,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.377,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 8652.328391,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.462,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 13058.300603,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.613,
             "unit": "ms"
           }
         ]
