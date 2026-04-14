@@ -21,6 +21,7 @@
 #include <access/tableam.h>
 #include <access/xact.h>
 #include <catalog/index.h>
+#include <catalog/pg_type.h>
 #include <commands/progress.h>
 #include <executor/executor.h>
 #include <miscadmin.h>
@@ -29,6 +30,7 @@
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
 #include <tsearch/ts_type.h>
+#include <utils/array.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/memutils.h>
@@ -128,6 +130,7 @@ tp_init_parallel_shared(
 		Oid					   text_config_oid,
 		double				   k1,
 		double				   b,
+		bool				   is_text_array,
 		int					   nworkers)
 {
 	TpParallelWorkerResult *results;
@@ -141,6 +144,7 @@ tp_init_parallel_shared(
 	shared->text_config_oid = text_config_oid;
 	shared->k1				= k1;
 	shared->b				= b;
+	shared->is_text_array	= is_text_array;
 	shared->nworkers		= nworkers;
 
 	/* Coordination */
@@ -307,7 +311,10 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		/* Tokenize in temporary context (includes detoasting) */
 		oldctx = MemoryContextSwitchTo(build_tmpctx);
 
-		document_text = DatumGetTextPP(idx_values[0]);
+		if (shared->is_text_array)
+			document_text = tp_flatten_text_array(idx_values[0]);
+		else
+			document_text = DatumGetTextPP(idx_values[0]);
 
 		tsvector_datum = DirectFunctionCall2Coll(
 				to_tsvector_byid,
@@ -471,6 +478,7 @@ tp_build_parallel(
 		Oid		   text_config_oid,
 		double	   k1,
 		double	   b,
+		bool	   is_text_array,
 		int		   nworkers)
 {
 	IndexBuildResult	  *result;
@@ -526,7 +534,14 @@ tp_build_parallel(
 	/* Allocate and initialize shared state */
 	shared = (TpParallelBuildShared *)shm_toc_allocate(pcxt->toc, shmem_size);
 	tp_init_parallel_shared(
-			shared, heap, index, text_config_oid, k1, b, nworkers);
+			shared,
+			heap,
+			index,
+			text_config_oid,
+			k1,
+			b,
+			is_text_array,
+			nworkers);
 
 	/* Initialize SharedFileSet for worker temp files */
 	SharedFileSetInit(&shared->fileset, pcxt->seg);

@@ -1061,7 +1061,14 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			}
 
 			par_result = tp_build_parallel(
-					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+					heap,
+					index,
+					indexInfo,
+					text_config_oid,
+					k1,
+					b,
+					is_text_array,
+					nworkers);
 
 			/* Accumulate stats for build progress */
 			if (build_progress.active)
@@ -1441,17 +1448,24 @@ tp_insert(
 	TpLocalIndexState *index_state;
 	char			 **terms = NULL;
 
-	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
 	(void)indexUnchanged; /* unused */
-	(void)indexInfo;	  /* unused */
 
 	/* Skip NULL documents */
 	if (isnull[0])
 		return true;
 
 	/* --- Phase 1: Tokenize (no lock held) --- */
-	document_text = DatumGetTextPP(values[0]);
+	{
+		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
+		Oid		   atttype =
+				TupleDescAttr(RelationGetDescr(heapRel), attnum - 1)->atttypid;
+
+		if (is_text_array_type(atttype))
+			document_text = tp_flatten_text_array(values[0]);
+		else
+			document_text = DatumGetTextPP(values[0]);
+	}
 	{
 		char *index_name;
 		char *schema_name;

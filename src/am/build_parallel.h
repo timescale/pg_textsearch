@@ -68,6 +68,7 @@ typedef struct TpParallelBuildShared
 	Oid	   text_config_oid;	  /* Text search config OID */
 	double k1;				  /* BM25 k1 parameter */
 	double b;				  /* BM25 b parameter */
+	bool   is_text_array;	  /* Indexed column is text[] */
 	int32  nworkers;		  /* Workers requested */
 	int32  nworkers_launched; /* Actual workers launched */
 
@@ -119,6 +120,7 @@ extern struct IndexBuildResult *tp_build_parallel(
 		Oid				  text_config_oid,
 		double			  k1,
 		double			  b,
+		bool			  is_text_array,
 		int				  nworkers);
 
 /* Worker entry point (called by parallel infrastructure) */
