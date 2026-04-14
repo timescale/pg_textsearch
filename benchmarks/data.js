@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776196466555,
+  "lastUpdate": 1776196468215,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -60794,6 +60794,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 7.94,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f",
+          "message": "fix: address code review feedback\n\n- Expand comment on lockless threshold checks explaining why\n  approximate reads are safe (false positive → unnecessary lock,\n  false negative → deferred to next insert)\n- Document how the global soft limit warning state is reached\n  (all eviction candidates locked or empty)\n- Document spill lock duration and deadlock safety\n- Clarify tp_check_hard_limit is a read-only check, no lock held\n- Document vacuum spill preconditions (AccessExclusiveLock held,\n  DSA pinned, pre-lock read is fast bailout)\n- Fix user-facing messages: \"tapir index\" → \"pg_textsearch index\",\n  \"Tapir shared DSA\" → \"pg_textsearch shared DSA\"\n- Remove all DEBUG traces from state.c (stale-lock safety net,\n  bulk-load spill, build-mode lifecycle)",
+          "timestamp": "2026-04-14T00:52:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f"
+        },
+        "date": 1776196467899,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.527,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 1.351,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 1318340.451901,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 1.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 3.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 5.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 7.54,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 11.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 15.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 21.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 32.54,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 7.8,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 9.28,
             "unit": "ms"
           }
         ]
