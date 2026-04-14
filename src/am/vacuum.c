@@ -52,7 +52,15 @@ typedef struct TpVacuumSegmentInfo
  * Spill memtable to L0 segment if non-empty.
  *
  * During VACUUM, we want all index data in segments for uniform
- * processing. This forces any in-memory data to disk.
+ * processing.  This forces any in-memory data to disk.
+ *
+ * Caller must hold at least AccessExclusiveLock on the index
+ * (standard for ambulkdelete).  The memtable is in DSA, which
+ * is pinned for the lifetime of the shared index state and
+ * cannot be freed by another backend.  The pre-lock read of
+ * total_postings is a fast bailout; if it races with an insert,
+ * the worst case is we enter tp_write_segment with an empty
+ * memtable, which is a harmless no-op.
  */
 static void
 tp_vacuum_spill_memtable(Relation index, TpLocalIndexState *index_state)

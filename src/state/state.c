@@ -421,11 +421,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	entry->local_state = local_state;
 
-	elog(DEBUG1,
-		 "BUILD MODE: Created private DSA for index %u (will be destroyed on "
-		 "spills)",
-		 index_oid);
-
 	return local_state;
 }
 
@@ -445,8 +440,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
-
-	elog(DEBUG1, "BUILD MODE: Destroying private DSA and creating fresh one");
 
 	/*
 	 * Detach from old DSA. This calls dsa_detach() which, for a
@@ -482,8 +475,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	/* Update local state with new DSA */
 	local_state->dsa = new_dsa;
-
-	elog(DEBUG1, "BUILD MODE: Fresh private DSA created");
 }
 
 /*
@@ -506,8 +497,6 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
-
-	elog(DEBUG1, "BUILD MODE: Finalizing and transitioning to runtime mode");
 
 	/*
 	 * Destroy the private DSA. This returns ALL memory to the OS.
@@ -549,8 +538,6 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	/* Transition to runtime mode */
 	local_state->is_build_mode = false;
-
-	elog(DEBUG1, "BUILD MODE: Successfully transitioned to runtime mode");
 }
 
 /*
@@ -586,10 +573,6 @@ tp_cleanup_build_mode_on_abort(void)
 
 		if (!local_state->is_build_mode)
 			continue;
-
-		elog(DEBUG1,
-			 "BUILD MODE ABORT: Cleaning up index %u",
-			 local_state->shared->index_oid);
 
 		/*
 		 * Detach from private DSA. Since this is a private DSA with no other
@@ -1086,7 +1069,7 @@ tp_rebuild_posting_lists_from_docids(
 	if (local_state && local_state->shared)
 	{
 		elog(INFO,
-			 "Recovery complete for tapir index %u: "
+			 "Recovery complete for pg_textsearch index %u: "
 			 "%u documents restored",
 			 index_rel->rd_id,
 			 pg_atomic_read_u32(&local_state->shared->total_docs));
@@ -1222,14 +1205,7 @@ tp_release_all_index_locks(void)
 	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
 	{
 		if (entry->local_state && entry->local_state->lock_held)
-		{
-			if (entry->local_state->shared != NULL)
-				elog(DEBUG1,
-					 "pg_textsearch: releasing stale lock for "
-					 "index %u at transaction end (safety net)",
-					 entry->local_state->shared->index_oid);
 			tp_release_index_lock(entry->local_state);
-		}
 	}
 }
 
@@ -1264,14 +1240,8 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	 */
 	if (local_state->is_build_mode)
 	{
-		Size mem_before = dsa_get_total_size(local_state->dsa);
-
 		/* Destroy and recreate private DSA */
 		tp_recreate_build_dsa(local_state);
-
-		elog(DEBUG1,
-			 "BUILD MODE: DSA destroyed and recreated, freed %zu bytes",
-			 mem_before);
 		return;
 	}
 
@@ -1358,13 +1328,6 @@ tp_bulk_load_spill_check(void)
 		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
 			continue;
 
-		elog(DEBUG1,
-			 "Bulk load spill for index %u: %ld terms this xact "
-			 "(threshold: %d)",
-			 local_state->shared->index_oid,
-			 (long)local_state->terms_added_this_xact,
-			 tp_bulk_load_threshold);
-
 		/*
 		 * Acquire exclusive lock — no lock is held at
 		 * PRE_COMMIT since per-operation locking releases
@@ -1401,11 +1364,6 @@ tp_bulk_load_spill_check(void)
 			tp_clear_memtable(local_state);
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
-
-			elog(DEBUG2,
-				 "Bulk load spilled memtable to segment "
-				 "at block %u",
-				 segment_root);
 
 			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);

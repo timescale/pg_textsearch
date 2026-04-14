@@ -170,7 +170,15 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!memtable)
 		return;
 
-	/* --- Check thresholds (no lock, approximate) --- */
+	/*
+	 * Check thresholds without the per-index lock.  These reads
+	 * are approximate: a concurrent insert may have bumped the
+	 * counters since we read them, and a concurrent spill may
+	 * have cleared them.  That's fine — a false positive just
+	 * triggers an unnecessary lock acquisition (the double-check
+	 * under LW_EXCLUSIVE below catches it), and a false negative
+	 * means this insert doesn't spill but the next one will.
+	 */
 
 	/* Legacy per-index posting count threshold */
 	if (tp_memtable_spill_threshold > 0 &&
@@ -206,6 +214,13 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 
 			if (g_est > g_limit)
 			{
+				/*
+				 * Global memory exceeds the soft limit.
+				 * Try to evict the largest memtable.  This
+				 * can fail if every candidate is locked by
+				 * another backend or has an empty memtable
+				 * (stale estimate).
+				 */
 				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
 				{
 					elog(WARNING,
@@ -225,7 +240,15 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!needs_spill)
 		return;
 
-	/* --- Acquire exclusive lock to spill --- */
+	/*
+	 * Acquire exclusive lock to spill.  This blocks concurrent
+	 * inserters (who hold LW_SHARED) until the spill completes.
+	 * The spill itself writes segment pages and updates the
+	 * metapage — it does not acquire any other LWLock or
+	 * heavyweight lock, so deadlock is not possible.  The
+	 * duration is bounded by the memtable size (limited by the
+	 * per-index soft limit).
+	 */
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 	/*
@@ -1420,7 +1443,13 @@ tp_insert(
 
 	if (index_state != NULL && term_count > 0)
 	{
-		/* Hard limit check (atomic read, no lock needed) */
+		/*
+		 * Hard limit check before acquiring the per-index lock.
+		 * This is a simple atomic read of the global DSA counter
+		 * — it does not flush or evict any memtable.  If over
+		 * the hard limit, we ERROR out before touching any
+		 * shared state.
+		 */
 		tp_check_hard_limit();
 
 		/*

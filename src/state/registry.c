@@ -239,7 +239,9 @@ tp_registry_get_dsa(void)
 		if (tapir_dsa == NULL)
 		{
 			LWLockRelease(&tapir_registry->lock);
-			elog(ERROR, "Failed to attach to Tapir shared DSA");
+			elog(ERROR,
+				 "Failed to attach to pg_textsearch "
+				 "shared DSA");
 		}
 
 		/* Pin the mapping for this backend */
