@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776197025295,
+  "lastUpdate": 1776197027026,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -29954,6 +29954,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin_insert - Insert Time",
             "value": 274.122,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Index Size",
+            "value": 2.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f",
+          "message": "fix: address code review feedback\n\n- Expand comment on lockless threshold checks explaining why\n  approximate reads are safe (false positive → unnecessary lock,\n  false negative → deferred to next insert)\n- Document how the global soft limit warning state is reached\n  (all eviction candidates locked or empty)\n- Document spill lock duration and deadlock safety\n- Clarify tp_check_hard_limit is a read-only check, no lock held\n- Document vacuum spill preconditions (AccessExclusiveLock held,\n  DSA pinned, pre-lock read is fast bailout)\n- Fix user-facing messages: \"tapir index\" → \"pg_textsearch index\",\n  \"Tapir shared DSA\" → \"pg_textsearch shared DSA\"\n- Remove all DEBUG traces from state.c (stale-lock safety net,\n  bulk-load spill, build-mode lifecycle)",
+          "timestamp": "2026-04-14T00:52:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f"
+        },
+        "date": 1776197026689,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin_insert - Index Build Time",
+            "value": 0.569,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Insert Time",
+            "value": 301.16,
             "unit": "ms"
           },
           {
