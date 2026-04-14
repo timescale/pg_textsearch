@@ -1193,11 +1193,17 @@ bm25_text_text_score(PG_FUNCTION_ARGS)
 Datum
 bm25_textarray_bm25query_score(PG_FUNCTION_ARGS)
 {
-	/* Stub - will be implemented with tp_flatten_text_array */
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("text[] scoring not yet implemented")));
-	PG_RETURN_NULL();
+	Datum array_datum = PG_GETARG_DATUM(0);
+	text *flattened	  = tp_flatten_text_array(array_datum);
+
+	/*
+	 * Replace the first argument with the flattened text,
+	 * then delegate to the scalar scoring function.
+	 */
+	fcinfo->args[0].value  = PointerGetDatum(flattened);
+	fcinfo->args[0].isnull = false;
+
+	return bm25_text_bm25query_score(fcinfo);
 }
 
 /*
