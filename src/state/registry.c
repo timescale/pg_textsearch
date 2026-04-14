@@ -239,7 +239,9 @@ tp_registry_get_dsa(void)
 		if (tapir_dsa == NULL)
 		{
 			LWLockRelease(&tapir_registry->lock);
-			elog(ERROR, "Failed to attach to Tapir shared DSA");
+			elog(ERROR,
+				 "Failed to attach to pg_textsearch "
+				 "shared DSA");
 		}
 
 		/* Pin the mapping for this backend */
@@ -500,7 +502,7 @@ tp_registry_update_dsa_counter(void)
  * DSA-allocated string, and posting list header.
  */
 #define TP_BYTES_PER_POSTING	28
-#define TP_BYTES_PER_TERM_FIXED 200
+#define TP_BYTES_PER_TERM_FIXED 216
 
 uint64
 tp_estimate_memtable_bytes(TpMemtable *memtable)
@@ -508,9 +510,11 @@ tp_estimate_memtable_bytes(TpMemtable *memtable)
 	if (!memtable)
 		return 0;
 
-	return (uint64)memtable->total_postings * TP_BYTES_PER_POSTING +
-		   (uint64)memtable->num_terms * TP_BYTES_PER_TERM_FIXED +
-		   (uint64)memtable->total_term_len;
+	return (uint64)pg_atomic_read_u64(&memtable->total_postings) *
+				   TP_BYTES_PER_POSTING +
+		   (uint64)pg_atomic_read_u64(&memtable->num_terms) *
+				   TP_BYTES_PER_TERM_FIXED +
+		   (uint64)pg_atomic_read_u64(&memtable->total_term_len);
 }
 
 /*

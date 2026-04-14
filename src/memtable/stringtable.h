@@ -66,6 +66,9 @@ extern TpStringHashEntry *tp_string_table_insert(
 		dsa_area *area, dshash_table *ht, const char *str, size_t len);
 extern void tp_string_table_clear(dsa_area *area, dshash_table *ht);
 
+/* Ensure the string hash table is initialized (call under EXCLUSIVE) */
+extern void tp_ensure_string_table_initialized(TpLocalIndexState *local_state);
+
 /* Document term management functions */
 extern void tp_add_document_terms(
 		TpLocalIndexState *local_state,

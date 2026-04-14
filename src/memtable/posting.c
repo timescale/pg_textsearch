@@ -104,6 +104,7 @@ tp_alloc_posting_list(dsa_area *dsa)
 
 	/* Initialize posting list */
 	memset(posting_list, 0, sizeof(TpPostingList));
+	LWLockInitialize(&posting_list->lock, TP_TRANCHE_POSTING_LOCK);
 	posting_list->doc_count	 = 0;
 	posting_list->capacity	 = 0;
 	posting_list->is_sorted	 = false;
@@ -130,6 +131,9 @@ tp_add_document_to_posting_list(
 	Assert(local_state != NULL);
 	Assert(posting_list != NULL);
 	Assert(ItemPointerIsValid(ctid));
+
+	if (!local_state->is_build_mode)
+		LWLockAcquire(&posting_list->lock, LW_EXCLUSIVE);
 
 	/* Expand array if needed */
 	if (posting_list->doc_count >= posting_list->capacity)
@@ -186,13 +190,16 @@ tp_add_document_to_posting_list(
 	posting_list->doc_freq	= posting_list->doc_count;
 	posting_list->is_sorted = false; /* New entry may break sort order */
 
+	if (!local_state->is_build_mode)
+		LWLockRelease(&posting_list->lock);
+
 	/* Track total postings for spill threshold */
 	if (local_state->shared &&
 		DsaPointerIsValid(local_state->shared->memtable_dp))
 	{
 		TpMemtable *memtable = dsa_get_address(
 				local_state->dsa, local_state->shared->memtable_dp);
-		memtable->total_postings++;
+		pg_atomic_fetch_add_u64(&memtable->total_postings, 1);
 	}
 }
 
@@ -246,7 +253,7 @@ tp_doclength_copy_function(
 /*
  * Create document length hash table
  */
-static dshash_table *
+dshash_table *
 tp_doclength_table_create(dsa_area *area)
 {
 	dshash_parameters params;

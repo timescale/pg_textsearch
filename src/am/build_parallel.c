@@ -15,6 +15,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/parallel.h>
 #include <access/table.h>
 #include <access/tableam.h>
@@ -758,13 +759,16 @@ tp_build_parallel(
 
 			/* Link as L0 head in metapage */
 			{
-				Buffer			metabuf;
-				Page			metapage;
-				TpIndexMetaPage metap;
+				Buffer			  metabuf;
+				GenericXLogState *state;
+				Page			  metapage;
+				TpIndexMetaPage	  metap;
 
 				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 				LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-				metapage = BufferGetPage(metabuf);
+
+				state	 = GenericXLogStart(index);
+				metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 				metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 				metap->level_heads[0]  = segment_root;
@@ -772,7 +776,7 @@ tp_build_parallel(
 				metap->total_docs	   = total_docs;
 				metap->total_len	   = total_len;
 
-				MarkBufferDirty(metabuf);
+				GenericXLogFinish(state);
 				UnlockReleaseBuffer(metabuf);
 			}
 
@@ -795,19 +799,22 @@ tp_build_parallel(
 		else
 		{
 			/* No segments at all — just update metapage stats */
-			Buffer			metabuf;
-			Page			metapage;
-			TpIndexMetaPage metap;
+			Buffer			  metabuf;
+			GenericXLogState *state;
+			Page			  metapage;
+			TpIndexMetaPage	  metap;
 
 			metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			metapage = BufferGetPage(metabuf);
+
+			state	 = GenericXLogStart(index);
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 			metap->total_docs = total_docs;
 			metap->total_len  = total_len;
 
-			MarkBufferDirty(metabuf);
+			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);
 		}
 

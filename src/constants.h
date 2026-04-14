@@ -74,14 +74,15 @@
  * LWLockNewTrancheId() for each index, we would quickly exhaust the available
  * tranche IDs and get "too many LWLocks taken" errors.
  */
-#define TP_TRANCHE_STRING	   1001
-#define TP_TRANCHE_POSTING	   1002
-#define TP_TRANCHE_CORPUS	   1003
-#define TP_TRANCHE_DOC_LENGTHS 1004
-#define TP_TRANCHE_INDEX_LOCK  1005
-#define TP_TRANCHE_BUILD_DSA   1006
-#define TP_TRANCHE_GLOBAL_DSA  1007
-#define TP_TRANCHE_REGISTRY	   1008
+#define TP_TRANCHE_STRING		1001
+#define TP_TRANCHE_POSTING		1002
+#define TP_TRANCHE_CORPUS		1003
+#define TP_TRANCHE_DOC_LENGTHS	1004
+#define TP_TRANCHE_INDEX_LOCK	1005
+#define TP_TRANCHE_BUILD_DSA	1006
+#define TP_TRANCHE_GLOBAL_DSA	1007
+#define TP_TRANCHE_REGISTRY		1008
+#define TP_TRANCHE_POSTING_LOCK 1009
 
 /*
  * Global GUC variables declared in mod.c

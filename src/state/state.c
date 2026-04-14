@@ -10,6 +10,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/relation.h>
 #include <lib/dshash.h>
@@ -228,10 +229,10 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid	 = index_oid;
-	shared_state->heap_oid	 = heap_oid;
-	shared_state->total_docs = 0;
-	shared_state->total_len	 = 0;
+	shared_state->index_oid = index_oid;
+	shared_state->heap_oid	= heap_oid;
+	pg_atomic_init_u32(&shared_state->total_docs, 0);
+	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 
 	/*
@@ -240,6 +241,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
@@ -248,9 +250,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	shared_state->memtable_dp = memtable_dp;
@@ -340,10 +342,10 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 			dsa_get_address(global_dsa, shared_dp);
 
 	/* Initialize shared state */
-	shared_state->index_oid	 = index_oid;
-	shared_state->heap_oid	 = heap_oid;
-	shared_state->total_docs = 0;
-	shared_state->total_len	 = 0;
+	shared_state->index_oid = index_oid;
+	shared_state->heap_oid	= heap_oid;
+	pg_atomic_init_u32(&shared_state->total_docs, 0);
+	pg_atomic_init_u64(&shared_state->total_len, 0);
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
@@ -354,6 +356,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
 	if (tp_registry_lookup(index_oid) != NULL)
@@ -390,9 +393,9 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Store memtable pointer in shared state for memtable access */
@@ -418,11 +421,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	entry->local_state = local_state;
 
-	elog(DEBUG1,
-		 "BUILD MODE: Created private DSA for index %u (will be destroyed on "
-		 "spills)",
-		 index_oid);
-
 	return local_state;
 }
 
@@ -442,8 +440,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
-
-	elog(DEBUG1, "BUILD MODE: Destroying private DSA and creating fresh one");
 
 	/*
 	 * Detach from old DSA. This calls dsa_detach() which, for a
@@ -469,9 +465,9 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
 	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	new_memtable->total_postings	 = 0;
-	new_memtable->num_terms			 = 0;
-	new_memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&new_memtable->total_postings, 0);
+	pg_atomic_init_u64(&new_memtable->num_terms, 0);
+	pg_atomic_init_u64(&new_memtable->total_term_len, 0);
 	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -479,8 +475,6 @@ tp_recreate_build_dsa(TpLocalIndexState *local_state)
 
 	/* Update local state with new DSA */
 	local_state->dsa = new_dsa;
-
-	elog(DEBUG1, "BUILD MODE: Fresh private DSA created");
 }
 
 /*
@@ -503,8 +497,6 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
-
-	elog(DEBUG1, "BUILD MODE: Finalizing and transitioning to runtime mode");
 
 	/*
 	 * Destroy the private DSA. This returns ALL memory to the OS.
@@ -536,9 +528,9 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->total_postings	 = 0;
-	memtable->num_terms			 = 0;
-	memtable->total_term_len	 = 0;
+	pg_atomic_init_u64(&memtable->total_postings, 0);
+	pg_atomic_init_u64(&memtable->num_terms, 0);
+	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 
 	/* Update shared state with new memtable pointer */
@@ -546,8 +538,6 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	/* Transition to runtime mode */
 	local_state->is_build_mode = false;
-
-	elog(DEBUG1, "BUILD MODE: Successfully transitioned to runtime mode");
 }
 
 /*
@@ -583,10 +573,6 @@ tp_cleanup_build_mode_on_abort(void)
 
 		if (!local_state->is_build_mode)
 			continue;
-
-		elog(DEBUG1,
-			 "BUILD MODE ABORT: Cleaning up index %u",
-			 local_state->shared->index_oid);
 
 		/*
 		 * Detach from private DSA. Since this is a private DSA with no other
@@ -830,8 +816,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		 * the stats. The metapage is the authoritative source for total_docs
 		 * and total_len.
 		 */
-		local_state->shared->total_docs = metap->total_docs;
-		local_state->shared->total_len	= metap->total_len;
+		pg_atomic_write_u32(
+				&local_state->shared->total_docs, metap->total_docs);
+		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
 	}
 
 	/* Clean up */
@@ -874,6 +861,15 @@ tp_rebuild_posting_lists_from_docids(
 
 	/* Open the heap relation to fetch document text */
 	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+
+	/*
+	 * Ensure the string hash table is initialized before
+	 * rebuilding posting lists. Recovery is single-threaded
+	 * so no lock is needed, but
+	 * tp_get_or_create_posting_list requires the table to
+	 * exist when not in build mode.
+	 */
+	tp_ensure_string_table_initialized(local_state);
 
 	current_page = metap->first_docid_page;
 
@@ -1017,8 +1013,10 @@ tp_rebuild_posting_lists_from_docids(
 							&doc_length))
 				{
 					/* Update corpus statistics */
-					local_state->shared->total_docs++;
-					local_state->shared->total_len += doc_length;
+					pg_atomic_fetch_add_u32(
+							&local_state->shared->total_docs, 1);
+					pg_atomic_fetch_add_u64(
+							&local_state->shared->total_len, doc_length);
 				}
 			}
 
@@ -1043,17 +1041,19 @@ tp_rebuild_posting_lists_from_docids(
 	if (chain_truncated && last_valid_page != InvalidBlockNumber)
 	{
 		Buffer			   trunc_buf;
+		GenericXLogState  *xlog_state;
 		Page			   trunc_page;
 		TpDocidPageHeader *trunc_hdr;
 
 		trunc_buf = ReadBuffer(index_rel, last_valid_page);
 		LockBuffer(trunc_buf, BUFFER_LOCK_EXCLUSIVE);
-		trunc_page = BufferGetPage(trunc_buf);
+
+		xlog_state = GenericXLogStart(index_rel);
+		trunc_page = GenericXLogRegisterBuffer(xlog_state, trunc_buf, 0);
 		trunc_hdr  = (TpDocidPageHeader *)PageGetContents(trunc_page);
 		trunc_hdr->next_page = InvalidBlockNumber;
-		MarkBufferDirty(trunc_buf);
-		if (!BufferIsLocal(trunc_buf))
-			FlushOneBuffer(trunc_buf);
+		GenericXLogFinish(xlog_state);
+
 		UnlockReleaseBuffer(trunc_buf);
 	}
 	else if (chain_truncated)
@@ -1069,9 +1069,10 @@ tp_rebuild_posting_lists_from_docids(
 	if (local_state && local_state->shared)
 	{
 		elog(INFO,
-			 "Recovery complete for tapir index %u: %u documents restored",
+			 "Recovery complete for pg_textsearch index %u: "
+			 "%u documents restored",
 			 index_rel->rd_id,
-			 local_state->shared->total_docs);
+			 pg_atomic_read_u32(&local_state->shared->total_docs));
 
 		/*
 		 * Reset terms_added_this_xact to prevent bulk load spill from
@@ -1102,9 +1103,9 @@ get_memtable(TpLocalIndexState *local_state)
 }
 
 /*
- * Acquire the per-index lock if not already held in this transaction.
- * This provides transaction-level serialization and ensures memory
- * consistency on NUMA systems through LWLock's built-in memory barriers.
+ * Acquire the per-index lock if not already held by this backend.
+ * Ensures memory consistency on NUMA systems through LWLock's
+ * built-in memory barriers.
  */
 void
 tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
@@ -1204,9 +1205,7 @@ tp_release_all_index_locks(void)
 	while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) != NULL)
 	{
 		if (entry->local_state && entry->local_state->lock_held)
-		{
 			tp_release_index_lock(entry->local_state);
-		}
 	}
 }
 
@@ -1241,14 +1240,8 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	 */
 	if (local_state->is_build_mode)
 	{
-		Size mem_before = dsa_get_total_size(local_state->dsa);
-
 		/* Destroy and recreate private DSA */
 		tp_recreate_build_dsa(local_state);
-
-		elog(DEBUG1,
-			 "BUILD MODE: DSA destroyed and recreated, freed %zu bytes",
-			 mem_before);
 		return;
 	}
 
@@ -1287,9 +1280,9 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 		}
 
 		/* Reset counters */
-		memtable->total_postings = 0;
-		memtable->num_terms		 = 0;
-		memtable->total_term_len = 0;
+		pg_atomic_write_u64(&memtable->total_postings, 0);
+		pg_atomic_write_u64(&memtable->num_terms, 0);
+		pg_atomic_write_u64(&memtable->total_term_len, 0);
 
 		/* Try to reclaim DSA memory (best effort) */
 		dsa_trim(local_state->dsa);
@@ -1326,9 +1319,6 @@ tp_bulk_load_spill_check(void)
 		TpLocalIndexState *local_state = entry->local_state;
 		Relation		   index_rel;
 		BlockNumber		   segment_root;
-		Buffer			   metabuf;
-		Page			   metapage;
-		TpIndexMetaPage	   metap;
 		bool			   index_open_failed = false;
 
 		if (!local_state || !local_state->shared)
@@ -1338,12 +1328,12 @@ tp_bulk_load_spill_check(void)
 		if (local_state->terms_added_this_xact < tp_bulk_load_threshold)
 			continue;
 
-		elog(DEBUG1,
-			 "Bulk load spill for index %u: %ld terms this xact "
-			 "(threshold: %d)",
-			 local_state->shared->index_oid,
-			 (long)local_state->terms_added_this_xact,
-			 tp_bulk_load_threshold);
+		/*
+		 * Acquire exclusive lock — no lock is held at
+		 * PRE_COMMIT since per-operation locking releases
+		 * after each insert.
+		 */
+		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
 
 		/* Open the index relation */
 		PG_TRY();
@@ -1360,7 +1350,10 @@ tp_bulk_load_spill_check(void)
 		PG_END_TRY();
 
 		if (index_open_failed)
+		{
+			tp_release_index_lock(local_state);
 			continue;
+		}
 
 		/* Write the segment */
 		segment_root = tp_write_segment(local_state, index_rel);
@@ -1369,45 +1362,15 @@ tp_bulk_load_spill_check(void)
 		if (segment_root != InvalidBlockNumber)
 		{
 			tp_clear_memtable(local_state);
-
-			/* Link new segment as L0 chain head */
-			metabuf = ReadBuffer(index_rel, 0);
-			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			metapage = BufferGetPage(metabuf);
-			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-			if (metap->level_heads[0] != InvalidBlockNumber)
-			{
-				/* Point new segment to old chain head */
-				Buffer			 seg_buf;
-				Page			 seg_page;
-				TpSegmentHeader *seg_header;
-
-				seg_buf = ReadBuffer(index_rel, segment_root);
-				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-				seg_page   = BufferGetPage(seg_buf);
-				seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-				seg_header->next_segment = metap->level_heads[0];
-				MarkBufferDirty(seg_buf);
-				UnlockReleaseBuffer(seg_buf);
-			}
-
-			metap->level_heads[0] = segment_root;
-			metap->level_counts[0]++;
-			MarkBufferDirty(metabuf);
-			UnlockReleaseBuffer(metabuf);
-
-			elog(DEBUG2,
-				 "Bulk load spilled memtable to segment at block %u "
-				 "(L0 count: %u)",
-				 segment_root,
-				 metap->level_counts[0]);
+			tp_clear_docid_pages(index_rel);
+			tp_link_l0_chain_head(index_rel, segment_root);
 
 			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);
 		}
 
 		index_close(index_rel, RowExclusiveLock);
+		tp_release_index_lock(local_state);
 	}
 }
 

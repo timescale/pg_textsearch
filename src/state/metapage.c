@@ -9,6 +9,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <catalog/index.h>
 #include <storage/bufmgr.h>
@@ -41,12 +42,13 @@ typedef struct TpDocidWriterState
 	Oid			index_oid;	/* Index this state is for */
 	BlockNumber last_page;	/* Last docid page written to */
 	uint32		num_docids; /* Number of docids on that page */
+	uint64		generation; /* Spill generation at cache time */
 	bool		valid;		/* Is this cache entry valid? */
 } TpDocidWriterState;
 
 /* Backend-local cache for docid writer */
 static TpDocidWriterState docid_writer_cache =
-		{InvalidOid, InvalidBlockNumber, 0, false};
+		{InvalidOid, InvalidBlockNumber, 0, 0, false};
 
 /*
  * Invalidate the docid writer cache.
@@ -181,20 +183,34 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 	Page			   metapage, docid_page;
 	TpIndexMetaPage	   metap;
 	TpDocidPageHeader *docid_header;
-	ItemPointer		   docids;
 	BlockNumber		   target_page;
 	uint32			   page_capacity = TP_DOCIDS_PER_PAGE;
 	Oid				   index_oid	 = RelationGetRelid(index);
 	bool			   cache_valid;
 
 	/*
-	 * Check if we have a valid cache entry for this index. The cache is valid
-	 * if it's for the same index and the cached page isn't full yet.
+	 * Check if we have a valid cache entry for this index.
+	 * The cache is valid if it's for the same index, the
+	 * page isn't full, and the spill generation matches
+	 * (a concurrent spill invalidates all caches by
+	 * incrementing the generation counter).
 	 */
 	cache_valid = docid_writer_cache.valid &&
 				  docid_writer_cache.index_oid == index_oid &&
 				  docid_writer_cache.last_page != InvalidBlockNumber &&
 				  docid_writer_cache.num_docids < page_capacity;
+
+	if (cache_valid)
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(index_oid);
+		if (ls && ls->shared &&
+			docid_writer_cache.generation !=
+					pg_atomic_read_u64(&ls->shared->spill_generation))
+		{
+			docid_writer_cache.valid = false;
+			cache_valid				 = false;
+		}
+	}
 
 	if (cache_valid)
 	{
@@ -237,11 +253,24 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 
 		if (target_page == InvalidBlockNumber)
 		{
+			GenericXLogState *xlog_state;
+
 			/* No docid pages yet, create the first one */
 			docid_buf = ReadBuffer(index, P_NEW);
 			LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
 
-			docid_page = BufferGetPage(docid_buf);
+			/*
+			 * Register both the new docid page and the
+			 * metapage in one GenericXLog operation. This
+			 * ensures atomicity: both the new page init and
+			 * the metapage pointer update are WAL-logged
+			 * together, so a crash cannot leave
+			 * first_docid_page pointing to an uninitialized
+			 * block.
+			 */
+			xlog_state = GenericXLogStart(index);
+			docid_page = GenericXLogRegisterBuffer(
+					xlog_state, docid_buf, GENERIC_XLOG_FULL_IMAGE);
 			PageInit(docid_page, BLCKSZ, 0);
 
 			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
@@ -250,24 +279,34 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 			docid_header->num_docids = 0;
 			docid_header->next_page	 = InvalidBlockNumber;
 
-			MarkBufferDirty(docid_buf);
-
 			/*
-			 * Flush this page before updating the metapage
-			 * pointer that references it. Without this
-			 * ordering, a crash could leave first_docid_page
-			 * pointing to an uninitialized (all-zero) block.
+			 * Mark the full content area as used so
+			 * GenericXLog does not zero it. Docid pages
+			 * manage their own layout and do not use the
+			 * standard Postgres ItemId/tuple mechanism.
 			 */
-			if (!BufferIsLocal(docid_buf))
-				FlushOneBuffer(docid_buf);
+			((PageHeader)docid_page)->pd_lower = BLCKSZ;
 
 			/* Update metapage to point to this new page */
-			target_page				= BufferGetBlockNumber(docid_buf);
-			metap->first_docid_page = target_page;
+			target_page = BufferGetBlockNumber(docid_buf);
+			{
+				Page			metapage_copy;
+				TpIndexMetaPage metap_copy;
 
-			MarkBufferDirty(metabuf);
-			if (!BufferIsLocal(metabuf))
-				FlushOneBuffer(metabuf);
+				metapage_copy =
+						GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+				metap_copy = (TpIndexMetaPage)PageGetContents(metapage_copy);
+				metap_copy->first_docid_page = target_page;
+			}
+
+			GenericXLogFinish(xlog_state);
+
+			/*
+			 * Re-read from the actual buffer page since the
+			 * GenericXLog copy is no longer valid after Finish.
+			 */
+			docid_page	 = BufferGetPage(docid_buf);
+			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 		}
 		else
 		{
@@ -295,6 +334,19 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 					LockBuffer(docid_buf, BUFFER_LOCK_EXCLUSIVE);
 					docid_header = (TpDocidPageHeader *)PageGetContents(
 							docid_page);
+
+					/*
+					 * Re-check: another backend may have extended
+					 * the chain while we released the lock.
+					 */
+					if (docid_header->next_page != InvalidBlockNumber)
+					{
+						next_page = docid_header->next_page;
+						UnlockReleaseBuffer(docid_buf);
+						current_page = next_page;
+						continue;
+					}
+
 					target_page = current_page;
 					break;
 				}
@@ -316,10 +368,22 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		Buffer			   new_buf;
 		Page			   new_docid_page;
 		TpDocidPageHeader *new_header;
+		GenericXLogState  *xlog_state;
+		Page			   old_copy;
+		TpDocidPageHeader *old_copy_hdr;
 
 		new_buf = ReadBuffer(index, P_NEW);
 		LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
-		new_docid_page = BufferGetPage(new_buf);
+
+		/*
+		 * Register both the new page and the old page in one
+		 * GenericXLog operation. This ensures the new page
+		 * init and the old page's next_page pointer are
+		 * WAL-logged atomically.
+		 */
+		xlog_state	   = GenericXLogStart(index);
+		new_docid_page = GenericXLogRegisterBuffer(
+				xlog_state, new_buf, GENERIC_XLOG_FULL_IMAGE);
 		PageInit(new_docid_page, BLCKSZ, 0);
 
 		new_header = (TpDocidPageHeader *)PageGetContents(new_docid_page);
@@ -328,53 +392,60 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		new_header->num_docids = 0;
 		new_header->next_page  = InvalidBlockNumber;
 
-		MarkBufferDirty(new_buf);
-
-		/*
-		 * Flush the new page before updating the chain
-		 * pointer that references it. Without this ordering,
-		 * a crash could leave next_page pointing to an
-		 * uninitialized (all-zero) block.
-		 */
-		if (!BufferIsLocal(new_buf))
-			FlushOneBuffer(new_buf);
+		/* Mark full content area as used for GenericXLog */
+		((PageHeader)new_docid_page)->pd_lower = BLCKSZ;
 
 		/* Link old page to new page */
-		docid_header->next_page = BufferGetBlockNumber(new_buf);
-		MarkBufferDirty(docid_buf);
-		if (!BufferIsLocal(docid_buf))
-			FlushOneBuffer(docid_buf);
+		old_copy	 = GenericXLogRegisterBuffer(xlog_state, docid_buf, 0);
+		old_copy_hdr = (TpDocidPageHeader *)PageGetContents(old_copy);
+		old_copy_hdr->next_page = BufferGetBlockNumber(new_buf);
 
+		GenericXLogFinish(xlog_state);
 		UnlockReleaseBuffer(docid_buf);
 
 		/* Switch to new page */
 		docid_buf	 = new_buf;
-		docid_page	 = new_docid_page;
-		docid_header = new_header;
+		docid_page	 = BufferGetPage(new_buf);
+		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
 		target_page	 = BufferGetBlockNumber(new_buf);
 	}
 
 	/* Add the docid to the current page */
-	docids = (ItemPointer)((char *)docid_header +
-						   MAXALIGN(sizeof(TpDocidPageHeader)));
+	{
+		GenericXLogState  *xlog_state;
+		Page			   page_copy;
+		TpDocidPageHeader *hdr_copy;
+		ItemPointer		   docids_copy;
 
-	docids[docid_header->num_docids] = *ctid;
-	docid_header->num_docids++;
+		xlog_state = GenericXLogStart(index);
+		page_copy  = GenericXLogRegisterBuffer(xlog_state, docid_buf, 0);
+		hdr_copy   = (TpDocidPageHeader *)PageGetContents(page_copy);
 
-	MarkBufferDirty(docid_buf);
+		docids_copy = (ItemPointer)((char *)hdr_copy +
+									MAXALIGN(sizeof(TpDocidPageHeader)));
 
-	/*
-	 * Only flush when page is full. Individual docids are protected by the
-	 * dirty page - they'll be written during checkpoint or when full.
-	 */
-	if (docid_header->num_docids >= page_capacity && !BufferIsLocal(docid_buf))
-		FlushOneBuffer(docid_buf);
+		docids_copy[hdr_copy->num_docids] = *ctid;
+		hdr_copy->num_docids++;
+
+		GenericXLogFinish(xlog_state);
+
+		/* Update local pointer for cache update below */
+		docid_header = (TpDocidPageHeader *)PageGetContents(
+				BufferGetPage(docid_buf));
+	}
 
 	/* Update cache for next call */
 	docid_writer_cache.index_oid  = index_oid;
 	docid_writer_cache.last_page  = target_page;
 	docid_writer_cache.num_docids = docid_header->num_docids;
-	docid_writer_cache.valid	  = true;
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(index_oid);
+		docid_writer_cache.generation =
+				(ls && ls->shared)
+						? pg_atomic_read_u64(&ls->shared->spill_generation)
+						: 0;
+	}
+	docid_writer_cache.valid = true;
 
 	UnlockReleaseBuffer(docid_buf);
 }
@@ -386,29 +457,43 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 void
 tp_clear_docid_pages(Relation index)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	/* Get the metapage to clear the docid page pointer */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state	 = GenericXLogStart(index);
+	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 	/*
-	 * Simply clear the first_docid_page pointer. We don't need to
-	 * physically delete the pages - they'll be reused or reclaimed
-	 * by vacuum. This ensures recovery won't try to rebuild from
-	 * stale docids.
+	 * Simply clear the first_docid_page pointer. We don't need
+	 * to physically delete the pages - they'll be reused or
+	 * reclaimed by vacuum. This ensures recovery won't try to
+	 * rebuild from stale docids.
 	 */
 	metap->first_docid_page = InvalidBlockNumber;
 
-	MarkBufferDirty(metabuf);
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
+	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
 
-	/* Invalidate the docid writer cache since pages are cleared */
+	/* Invalidate this backend's docid writer cache */
 	docid_writer_cache.valid = false;
+
+	/*
+	 * Increment the spill generation counter so other backends
+	 * detect their cached docid page is stale. This is the
+	 * broadcast invalidation — each backend checks this
+	 * counter against its cached generation on the fast path.
+	 */
+	{
+		TpLocalIndexState *ls = tp_get_local_index_state(
+				RelationGetRelid(index));
+		if (ls && ls->shared)
+			pg_atomic_fetch_add_u64(&ls->shared->spill_generation, 1);
+	}
 }

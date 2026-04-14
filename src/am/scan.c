@@ -605,30 +605,36 @@ tp_execute_scoring_query(IndexScanDesc scan)
 	so->result_count = 0;
 	so->current_pos	 = 0;
 
-	/* Get index metadata */
-	metap = tp_get_metapage(scan->indexRelation);
-	if (!metap)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("failed to get metapage for index %s",
-						RelationGetRelationName(scan->indexRelation))));
-	}
-
 	/* Get the index state with posting lists */
 	index_state = tp_get_local_index_state(
 			RelationGetRelid(scan->indexRelation));
 
 	if (!index_state)
 	{
-		pfree(metap);
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("could not get index state for BM25 search")));
+				 errmsg("could not get index state for BM25 "
+						"search")));
 	}
 
-	/* Acquire shared lock for reading the memtable */
+	/*
+	 * Acquire shared lock BEFORE reading metapage.
+	 * This ensures the metapage and memtable are read in a
+	 * consistent state — spill (which rewrites both) requires
+	 * LW_EXCLUSIVE, which is blocked while we hold shared.
+	 */
 	tp_acquire_index_lock(index_state, LW_SHARED);
+
+	/* Now read metapage under the lock */
+	metap = tp_get_metapage(scan->indexRelation);
+	if (!metap)
+	{
+		tp_release_index_lock(index_state);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("failed to get metapage for index %s",
+						RelationGetRelationName(scan->indexRelation))));
+	}
 
 	/* Use the original query vector or create one from text */
 	query_vector = so->query_vector;

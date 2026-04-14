@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/tableam.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
@@ -160,6 +161,7 @@ static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
 	TpMemtable *memtable;
+	bool		needs_spill = false;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -168,62 +170,114 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (!memtable)
 		return;
 
-	/* Legacy per-index posting count threshold (deprecated) */
+	/*
+	 * Check thresholds without the per-index lock.  These reads
+	 * are approximate: a concurrent insert may have bumped the
+	 * counters since we read them, and a concurrent spill may
+	 * have cleared them.  That's fine — a false positive just
+	 * triggers an unnecessary lock acquisition (the double-check
+	 * under LW_EXCLUSIVE below catches it), and a false negative
+	 * means this insert doesn't spill but the next one will.
+	 */
+
+	/* Legacy per-index posting count threshold */
 	if (tp_memtable_spill_threshold > 0 &&
-		memtable->total_postings >= tp_memtable_spill_threshold)
+		pg_atomic_read_u64(&memtable->total_postings) >=
+				(uint64)tp_memtable_spill_threshold)
 	{
-		tp_do_spill(index_state, index_rel);
-		return;
+		needs_spill = true;
 	}
 
-	if (tp_memory_limit <= 0)
-		return;
-
-	/* Per-index soft limit: memory_limit / 8 */
+	if (!needs_spill && tp_memory_limit > 0)
 	{
+		/* Per-index soft limit: memory_limit / 8 */
 		uint64 limit = tp_per_index_limit_bytes();
 		uint64 est	 = tp_estimate_memtable_bytes(memtable);
 
+		/* Update global estimate while we have it */
+		tp_update_index_estimate(index_state->shared, memtable);
+
 		if (limit > 0 && est > limit)
-		{
-			tp_do_spill(index_state, index_rel);
-			return;
-		}
+			needs_spill = true;
 
 		/*
-		 * Piggyback the global counter update on the
-		 * per-index estimate we already computed.
+		 * Global soft limit: memory_limit / 2
+		 * (amortized every ~100 docs)
 		 */
-		tp_update_index_estimate(index_state->shared, memtable);
-	}
-
-	/*
-	 * Global soft limit: memory_limit / 2.
-	 * Amortized check every ~100 documents.
-	 * Reads the atomic counter — O(1), no registry scan.
-	 */
-	if (++index_state->docs_since_global_check >= 100)
-	{
-		uint64 limit = tp_soft_limit_bytes();
-		uint64 est;
-
-		index_state->docs_since_global_check = 0;
-		est									 = tp_get_estimated_total_bytes();
-
-		if (est > limit)
+		if (!needs_spill && ++index_state->docs_since_global_check >= 100)
 		{
-			if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+			uint64 g_limit = tp_soft_limit_bytes();
+			uint64 g_est;
+
+			index_state->docs_since_global_check = 0;
+			g_est = tp_get_estimated_total_bytes();
+
+			if (g_est > g_limit)
 			{
-				elog(WARNING,
-					 "pg_textsearch: global soft "
-					 "limit exceeded "
-					 "(" UINT64_FORMAT " kB / " UINT64_FORMAT " kB) but no "
-					 "memtable could be spilled",
-					 (uint64)(est / 1024),
-					 (uint64)(limit / 1024));
+				/*
+				 * Global memory exceeds the soft limit.
+				 * Try to evict the largest memtable.  This
+				 * can fail if every candidate is locked by
+				 * another backend or has an empty memtable
+				 * (stale estimate).
+				 */
+				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
+				{
+					elog(WARNING,
+						 "pg_textsearch: global soft "
+						 "limit exceeded "
+						 "(" UINT64_FORMAT " kB / " UINT64_FORMAT
+						 " kB) but no "
+						 "memtable could be spilled",
+						 (uint64)(g_est / 1024),
+						 (uint64)(g_limit / 1024));
+				}
+				return;
 			}
 		}
 	}
+
+	if (!needs_spill)
+		return;
+
+	/*
+	 * Acquire exclusive lock to spill.  This blocks concurrent
+	 * inserters (who hold LW_SHARED) until the spill completes.
+	 * The spill itself writes segment pages and updates the
+	 * metapage — it does not acquire any other LWLock or
+	 * heavyweight lock, so deadlock is not possible.  The
+	 * duration is bounded by the memtable size (limited by the
+	 * per-index soft limit).
+	 */
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
+	/*
+	 * Re-check: another backend may have spilled while
+	 * we waited for the exclusive lock.
+	 */
+	memtable = get_memtable(index_state);
+	if (memtable)
+	{
+		bool still_needed = false;
+
+		if (tp_memtable_spill_threshold > 0 &&
+			pg_atomic_read_u64(&memtable->total_postings) >=
+					(uint64)tp_memtable_spill_threshold)
+			still_needed = true;
+
+		if (!still_needed && tp_memory_limit > 0)
+		{
+			uint64 limit = tp_per_index_limit_bytes();
+			uint64 est	 = tp_estimate_memtable_bytes(memtable);
+			if (limit > 0 && est > limit)
+				still_needed = true;
+		}
+
+		if (still_needed)
+			tp_do_spill(index_state, index_rel);
+	}
+
+	tp_release_index_lock(index_state);
 }
 
 /*
@@ -288,33 +342,39 @@ tp_build_flush_and_link(TpBuildContext *ctx, Relation index)
 void
 tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	Buffer			  seg_buf = InvalidBuffer;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state	 = GenericXLogStart(index);
+	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 	if (metap->level_heads[0] != InvalidBlockNumber)
 	{
-		Buffer			 seg_buf;
 		Page			 seg_page;
 		TpSegmentHeader *seg_header;
 
 		seg_buf = ReadBuffer(index, segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-		seg_page   = BufferGetPage(seg_buf);
+		seg_page = GenericXLogRegisterBuffer(state, seg_buf, 0);
+		/* Ensure pd_lower covers content for GenericXLog */
+		((PageHeader)seg_page)->pd_lower = BLCKSZ;
 		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
 		seg_header->next_segment = metap->level_heads[0];
-		MarkBufferDirty(seg_buf);
-		UnlockReleaseBuffer(seg_buf);
 	}
 
 	metap->level_heads[0] = segment_root;
 	metap->level_counts[0]++;
-	MarkBufferDirty(metabuf);
+
+	GenericXLogFinish(state);
+	if (BufferIsValid(seg_buf))
+		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -430,6 +490,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	if (segment_root != InvalidBlockNumber)
 	{
 		tp_clear_memtable(index_state);
+		tp_clear_docid_pages(index_rel);
 
 		tp_link_l0_chain_head(index_rel, segment_root);
 
@@ -559,32 +620,26 @@ static void
 tp_build_init_metapage(
 		Relation index, Oid text_config_oid, double k1, double b)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
 
 	/* Initialize metapage */
 	metabuf = ReadBuffer(index, P_NEW);
 	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
+
+	state = GenericXLogStart(index);
+	metapage =
+			GenericXLogRegisterBuffer(state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
 	tp_init_metapage(metapage, text_config_oid);
 	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
 	metap->k1 = k1;
 	metap->b  = b;
 
-	MarkBufferDirty(metabuf);
-
-	/*
-	 * Flush metapage to disk immediately to ensure crash recovery
-	 * works.  Skip for temp relations: local buffers cannot be
-	 * flushed via FlushOneBuffer, and temp data doesn't need
-	 * crash recovery anyway.
-	 */
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
-
+	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -1156,27 +1211,28 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Update metapage with corpus statistics */
 		{
-			Buffer			metabuf;
-			Page			metapage;
-			TpIndexMetaPage metap;
+			Buffer			  metabuf;
+			GenericXLogState *state;
+			Page			  metapage;
+			TpIndexMetaPage	  metap;
 
 			metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			metapage = BufferGetPage(metabuf);
+
+			state	 = GenericXLogStart(index);
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 			metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 			metap->total_docs = total_docs;
 			metap->total_len  = total_len;
 
-			MarkBufferDirty(metabuf);
-			if (!BufferIsLocal(metabuf))
-				FlushOneBuffer(metabuf);
+			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);
 		}
 
 		/* Update shared state for runtime queries */
-		index_state->shared->total_docs = total_docs;
-		index_state->shared->total_len	= total_len;
+		pg_atomic_write_u32(&index_state->shared->total_docs, total_docs);
+		pg_atomic_write_u64(&index_state->shared->total_len, total_len);
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
@@ -1277,25 +1333,34 @@ tp_buildempty(Relation index)
 	Assert(BufferGetBlockNumber(metabuf) == TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
-	metapage = BufferGetPage(metabuf);
-	tp_init_metapage(metapage, text_config_oid);
+	{
+		GenericXLogState *state;
 
-	/* Set additional parameters after init */
-	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
-	metap->k1 = TP_DEFAULT_K1;
-	metap->b  = TP_DEFAULT_B;
+		state	 = GenericXLogStart(index);
+		metapage = GenericXLogRegisterBuffer(
+				state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
-	MarkBufferDirty(metabuf);
+		tp_init_metapage(metapage, text_config_oid);
 
-	/* Flush metapage to disk -- skip for temp relations */
-	if (!BufferIsLocal(metabuf))
-		FlushOneBuffer(metabuf);
+		/* Set additional parameters after init */
+		metap	  = (TpIndexMetaPage)PageGetContents(metapage);
+		metap->k1 = TP_DEFAULT_K1;
+		metap->b  = TP_DEFAULT_B;
+
+		GenericXLogFinish(state);
+	}
 
 	UnlockReleaseBuffer(metabuf);
 }
 
 /*
- * Insert a tuple into the Tapir index
+ * Insert a tuple into the Tapir index.
+ *
+ * Tokenization happens before any lock is acquired so that
+ * CPU-intensive text processing does not serialize inserts.
+ * The per-index lock is held as LW_SHARED for the memtable
+ * write and docid-page update, then released before the
+ * auto-spill check (which may need LW_EXCLUSIVE).
  */
 bool
 tp_insert(
@@ -1312,11 +1377,12 @@ tp_insert(
 	Datum			   vector_datum;
 	TpVector		  *tpvec;
 	TpVectorEntry	  *vector_entry;
-	int32			  *frequencies;
+	int32			  *frequencies = NULL;
 	int				   term_count;
 	int				   doc_length = 0;
 	int				   i;
 	TpLocalIndexState *index_state;
+	char			 **terms = NULL;
 
 	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
@@ -1327,23 +1393,8 @@ tp_insert(
 	if (isnull[0])
 		return true;
 
-	/* Get index state */
-	index_state = tp_get_local_index_state(RelationGetRelid(index));
-
-	/*
-	 * Acquire exclusive lock for this transaction if not already held.
-	 * This ensures memory consistency on NUMA systems and serializes
-	 * write transactions with respect to reads.
-	 */
-	if (index_state != NULL)
-	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	}
-
-	/* Extract text from first column */
+	/* --- Phase 1: Tokenize (no lock held) --- */
 	document_text = DatumGetTextPP(values[0]);
-
-	/* Vectorize the document */
 	{
 		char *index_name;
 		char *schema_name;
@@ -1363,12 +1414,11 @@ tp_insert(
 	}
 	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
-	/* Extract term IDs and frequencies from tpvector */
+	/* Extract terms and frequencies */
 	term_count = tpvec->entry_count;
 	if (term_count > 0)
 	{
-		char **terms = palloc(term_count * sizeof(char *));
-
+		terms		= palloc(term_count * sizeof(char *));
 		frequencies = palloc(term_count * sizeof(int32));
 
 		vector_entry = TPVECTOR_ENTRIES_PTR(tpvec);
@@ -1376,52 +1426,124 @@ tp_insert(
 		{
 			char *lexeme;
 
-			/* Always allocate on heap for terms array */
 			lexeme = palloc(vector_entry->lexeme_len + 1);
 			memcpy(lexeme, vector_entry->lexeme, vector_entry->lexeme_len);
 			lexeme[vector_entry->lexeme_len] = '\0';
 
-			/* Store the lexeme string directly in terms array */
 			terms[i]	   = lexeme;
 			frequencies[i] = vector_entry->frequency;
 			doc_length += vector_entry->frequency;
 
 			vector_entry = get_tpvector_next_entry(vector_entry);
 		}
+	}
 
-		/* Add document terms to posting lists (if shared memory available) */
-		if (index_state != NULL)
+	/* --- Phase 2: Shared-memory work (under lock) --- */
+	index_state = tp_get_local_index_state(RelationGetRelid(index));
+
+	if (index_state != NULL && term_count > 0)
+	{
+		/*
+		 * Hard limit check before acquiring the per-index lock.
+		 * This is a simple atomic read of the global DSA counter
+		 * — it does not flush or evict any memtable.  If over
+		 * the hard limit, we ERROR out before touching any
+		 * shared state.
+		 */
+		tp_check_hard_limit();
+
+		/*
+		 * Acquire per-index lock. Normally LW_SHARED so
+		 * multiple inserters run concurrently.
+		 *
+		 * Cold path: if the memtable hash tables are not
+		 * yet initialized, acquire LW_EXCLUSIVE and init.
+		 * We stay exclusive for the cold-path insert to
+		 * prevent a concurrent spill from clearing the
+		 * tables between init and use.
+		 *
+		 * The lockless pre-check is an optimization to
+		 * avoid exclusive on the hot path. If a concurrent
+		 * spill invalidates between the check and lock
+		 * acquire, we detect it under the lock and retry.
+		 */
+		for (;;)
 		{
-			/* Hard limit: fail before allocating more DSA memory */
-			tp_check_hard_limit();
+			TpMemtable *mt		  = get_memtable(index_state);
+			bool		need_init = mt &&
+							 (mt->string_hash_handle ==
+									  DSHASH_HANDLE_INVALID ||
+							  mt->doc_lengths_handle == DSHASH_HANDLE_INVALID);
 
-			/* Validate TID before adding to posting list */
-			if (!ItemPointerIsValid(ht_ctid))
-				elog(WARNING, "Invalid TID in tp_insert, skipping");
-			else
+			tp_acquire_index_lock(
+					index_state, need_init ? LW_EXCLUSIVE : LW_SHARED);
+
+			if (need_init)
 			{
-				tp_add_document_terms(
-						index_state,
-						ht_ctid,
-						terms,
-						frequencies,
-						term_count,
-						doc_length);
-
-				/* Auto-spill if memory limit exceeded */
-				tp_auto_spill_if_needed(index_state, index);
+				tp_ensure_string_table_initialized(index_state);
+				break; /* Hold exclusive for insert */
 			}
+
+			/*
+			 * Re-check under shared lock: a spill may
+			 * have cleared the tables after our lockless
+			 * read but before we acquired shared.
+			 */
+			mt = get_memtable(index_state);
+			if (mt && (mt->string_hash_handle == DSHASH_HANDLE_INVALID ||
+					   mt->doc_lengths_handle == DSHASH_HANDLE_INVALID))
+			{
+				/* Stale read — retry with exclusive */
+				tp_release_index_lock(index_state);
+				continue;
+			}
+			break;
 		}
 
-		/* Free the terms array and individual lexemes */
+		/* Validate TID before adding to posting list */
+		if (!ItemPointerIsValid(ht_ctid))
+			elog(WARNING, "Invalid TID in tp_insert, skipping");
+		else
+		{
+			tp_add_document_terms(
+					index_state,
+					ht_ctid,
+					terms,
+					frequencies,
+					term_count,
+					doc_length);
+
+			/*
+			 * Docid pages under LW_SHARED — spill clears
+			 * these under LW_EXCLUSIVE, so they must be
+			 * written while we hold shared.
+			 */
+			tp_add_docid_to_pages(index, ht_ctid);
+		}
+
+		/* Release lock before spill check */
+		tp_release_index_lock(index_state);
+
+		/*
+		 * Auto-spill check runs outside the lock — may
+		 * acquire LW_EXCLUSIVE if a spill is needed.
+		 */
+		tp_auto_spill_if_needed(index_state, index);
+	}
+	else if (term_count > 0 && ItemPointerIsValid(ht_ctid))
+	{
+		/* No shared state but valid doc — record TID */
+		tp_add_docid_to_pages(index, ht_ctid);
+	}
+
+	/* Free the terms array and individual lexemes */
+	if (terms)
+	{
 		for (i = 0; i < term_count; i++)
 			pfree(terms[i]);
 		pfree(terms);
 		pfree(frequencies);
 	}
-
-	/* Store the docid for crash recovery */
-	tp_add_docid_to_pages(index, ht_ctid);
 
 	return true;
 }
