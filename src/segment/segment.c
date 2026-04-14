@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <access/hash.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
@@ -1436,6 +1437,43 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
+
+	/*
+	 * WAL-log all segment content pages via GenericXLog
+	 * FULL_IMAGE.  All modifications (content, dictionary
+	 * patches, header) have already been applied to the real
+	 * buffer pages above.  This pass generates WAL records so
+	 * the pages survive crash recovery.
+	 */
+	{
+		uint32 pg_idx = 0;
+
+		while (pg_idx < writer.pages_allocated)
+		{
+			GenericXLogState *state;
+			Buffer			  bufs[MAX_GENERIC_XLOG_PAGES];
+			uint32			  n = 0;
+			uint32			  j;
+
+			state = GenericXLogStart(index);
+
+			for (j = 0;
+				 j < MAX_GENERIC_XLOG_PAGES && pg_idx < writer.pages_allocated;
+				 j++, pg_idx++)
+			{
+				bufs[n] = ReadBuffer(index, writer.pages[pg_idx]);
+				LockBuffer(bufs[n], BUFFER_LOCK_EXCLUSIVE);
+				GenericXLogRegisterBuffer(
+						state, bufs[n], GENERIC_XLOG_FULL_IMAGE);
+				n++;
+			}
+
+			GenericXLogFinish(state);
+
+			for (j = 0; j < n; j++)
+				UnlockReleaseBuffer(bufs[j]);
+		}
+	}
 
 	FlushRelationBuffers(index);
 

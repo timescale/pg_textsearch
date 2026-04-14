@@ -1586,6 +1586,36 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				total_tokens,
 				false);
 
+		/* WAL-log all merged segment pages */
+		{
+			uint32 pg_idx = 0;
+
+			while (pg_idx < sink.writer.pages_allocated)
+			{
+				GenericXLogState *xstate;
+				Buffer			  xbufs[MAX_GENERIC_XLOG_PAGES];
+				uint32			  xn = 0, xj;
+
+				xstate = GenericXLogStart(index);
+
+				for (xj = 0; xj < MAX_GENERIC_XLOG_PAGES &&
+							 pg_idx < sink.writer.pages_allocated;
+					 xj++, pg_idx++)
+				{
+					xbufs[xn] = ReadBuffer(index, sink.writer.pages[pg_idx]);
+					LockBuffer(xbufs[xn], BUFFER_LOCK_EXCLUSIVE);
+					GenericXLogRegisterBuffer(
+							xstate, xbufs[xn], GENERIC_XLOG_FULL_IMAGE);
+					xn++;
+				}
+
+				GenericXLogFinish(xstate);
+
+				for (xj = 0; xj < xn; xj++)
+					UnlockReleaseBuffer(xbufs[xj]);
+			}
+		}
+
 		/* Free writer pages array */
 		if (sink.writer.pages)
 			pfree(sink.writer.pages);
