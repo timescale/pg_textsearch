@@ -59,6 +59,8 @@ Datum to_tpquery_text_index(PG_FUNCTION_ARGS);
 /* Operator functions */
 Datum bm25_text_bm25query_score(PG_FUNCTION_ARGS);
 Datum bm25_text_text_score(PG_FUNCTION_ARGS);
+Datum bm25_textarray_bm25query_score(PG_FUNCTION_ARGS);
+Datum bm25_textarray_text_score(PG_FUNCTION_ARGS);
 Datum tpquery_eq(PG_FUNCTION_ARGS);
 
 /* Utility functions */

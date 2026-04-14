@@ -162,6 +162,8 @@ PG_FUNCTION_INFO_V1(to_tpquery_text);
 PG_FUNCTION_INFO_V1(to_tpquery_text_index);
 PG_FUNCTION_INFO_V1(bm25_text_bm25query_score);
 PG_FUNCTION_INFO_V1(bm25_text_text_score);
+PG_FUNCTION_INFO_V1(bm25_textarray_bm25query_score);
+PG_FUNCTION_INFO_V1(bm25_textarray_text_score);
 PG_FUNCTION_INFO_V1(tpquery_eq);
 PG_FUNCTION_INFO_V1(bm25_get_current_score);
 
@@ -1178,6 +1180,41 @@ bm25_text_text_score(PG_FUNCTION_ARGS)
 			 errmsg("no BM25 index found for text <@> text expression"),
 			 errdetail("Create a BM25 index on the column or use ORDER BY."),
 			 errhint("SELECT col <@> to_bm25query('q', 'idx') AS score")));
+
+	PG_RETURN_NULL(); /* never reached */
+}
+
+/*
+ * Standalone scoring for text[] <@> bm25query.
+ *
+ * Flattens the array elements into a single space-separated text
+ * value, then delegates to bm25_text_bm25query_score().
+ */
+Datum
+bm25_textarray_bm25query_score(PG_FUNCTION_ARGS)
+{
+	/* Stub - will be implemented with tp_flatten_text_array */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("text[] scoring not yet implemented")));
+	PG_RETURN_NULL();
+}
+
+/*
+ * Error stub for text[] <@> text when planner rewrite fails.
+ */
+Datum
+bm25_textarray_text_score(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_UNDEFINED_OBJECT),
+			 errmsg("no BM25 index found for text[] <@> text "
+					"expression"),
+			 errdetail(
+					 "Create a BM25 index on the column or "
+					 "use ORDER BY."),
+			 errhint("SELECT col <@> to_bm25query('q', 'idx') "
+					 "AS score")));
 
 	PG_RETURN_NULL(); /* never reached */
 }
