@@ -186,6 +186,43 @@ DEFAULT FOR TYPE text USING bm25 AS
     OPERATOR    1   @extschema@.<@> (text, @extschema@.bm25query) FOR ORDER BY float_ops,
     FUNCTION    8   (text, @extschema@.bm25query)   @extschema@.bm25_text_bm25query_score(text, @extschema@.bm25query);
 
+-- BM25 scoring function for text[] <@> bm25query operations
+-- Flattens array elements with spaces, then scores as a single document.
+CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
+    left_arr text[], right_query @extschema@.bm25query)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+
+-- Error stub for text[] <@> text (planner should rewrite to bm25query)
+CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_textarray_text_score'
+LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+
+-- <@> operator for text[] <@> bm25query operations
+CREATE OPERATOR @extschema@.<@> (
+    LEFTARG = text[],
+    RIGHTARG = @extschema@.bm25query,
+    PROCEDURE = @extschema@.bm25_textarray_bm25query_score
+);
+
+-- <@> operator for text[] <@> text operations (implicit index resolution)
+CREATE OPERATOR @extschema@.<@> (
+    LEFTARG = text[],
+    RIGHTARG = text,
+    PROCEDURE = @extschema@.bm25_textarray_text_score
+);
+
+-- bm25 operator class for text[] columns
+CREATE OPERATOR CLASS @extschema@.text_array_bm25_ops
+DEFAULT FOR TYPE text[] USING bm25 AS
+    OPERATOR    1   @extschema@.<@> (text[], @extschema@.bm25query)
+                    FOR ORDER BY float_ops,
+    FUNCTION    8   (text[], @extschema@.bm25query)
+                    @extschema@.bm25_textarray_bm25query_score(
+                        text[], @extschema@.bm25query);
+
 -- Debug function to dump index contents (memtable and segments)
 CREATE FUNCTION @extschema@.bm25_dump_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
