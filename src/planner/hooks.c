@@ -260,8 +260,9 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 	Relation	indexRelation;
 	SysScanDesc scan;
 	HeapTuple	indexTuple;
-	Oid			result		= InvalidOid;
-	int			index_count = 0;
+	Oid			result			= InvalidOid;
+	int			index_count		= 0;
+	int			partial_skipped = 0;
 	ScanKeyData scanKey;
 
 	if (!OidIsValid(bm25_am_oid))
@@ -308,6 +309,14 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 			(void)predDatum;
 			if (!predNull)
 			{
+				for (int i = 0; i < nkeys; i++)
+				{
+					if (indexForm->indkey.values[i] == attnum)
+					{
+						partial_skipped++;
+						break;
+					}
+				}
 				ReleaseSysCache(classTuple);
 				continue;
 			}
@@ -334,6 +343,17 @@ find_bm25_index_for_column(Oid relid, AttrNumber attnum, Oid bm25_am_oid)
 				(errmsg("multiple BM25 indexes exist on the same column"),
 				 errhint("Use explicit to_bm25query('query', 'index_name') "
 						 "to specify which index to use.")));
+
+	if (index_count == 0 && partial_skipped > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("no non-partial BM25 index found "
+						"for this column "
+						"(%d partial index(es) skipped)",
+						partial_skipped),
+				 errhint("Use to_bm25query('query', "
+						 "'index_name') to specify which "
+						 "partial index to use.")));
 
 	return result;
 }
@@ -445,8 +465,9 @@ find_bm25_index_for_expr(Node *expr, Oid relid, Index varno, Oid bm25_am_oid)
 	Relation	indexRelation;
 	SysScanDesc scan;
 	HeapTuple	indexTuple;
-	Oid			result		= InvalidOid;
-	int			index_count = 0;
+	Oid			result			= InvalidOid;
+	int			index_count		= 0;
+	int			partial_skipped = 0;
 	ScanKeyData scanKey;
 
 	if (!OidIsValid(bm25_am_oid))
@@ -506,7 +527,10 @@ find_bm25_index_for_expr(Node *expr, Oid relid, Index varno, Oid bm25_am_oid)
 					INDEXRELID, indexTuple, Anum_pg_index_indpred, &predNull);
 			(void)predDatum;
 			if (!predNull)
+			{
+				partial_skipped++;
 				continue;
+			}
 		}
 
 		{
@@ -551,6 +575,17 @@ find_bm25_index_for_expr(Node *expr, Oid relid, Index varno, Oid bm25_am_oid)
 				 errhint("Use explicit to_bm25query('query',"
 						 " 'index_name') to specify which "
 						 "index.")));
+
+	if (index_count == 0 && partial_skipped > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("no non-partial BM25 index found "
+						"for this expression "
+						"(%d partial index(es) skipped)",
+						partial_skipped),
+				 errhint("Use to_bm25query('query', "
+						 "'index_name') to specify which "
+						 "partial index to use.")));
 
 	return result;
 }

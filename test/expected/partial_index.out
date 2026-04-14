@@ -264,9 +264,8 @@ SELECT id,
 FROM partial_only
 ORDER BY content <@> 'database'
 LIMIT 5;
-ERROR:  no BM25 index found for text <@> text expression
-DETAIL:  Create a BM25 index on the column or use ORDER BY.
-HINT:  SELECT col <@> to_bm25query('q', 'idx') AS score
+ERROR:  no non-partial BM25 index found for this column (1 partial index(es) skipped)
+HINT:  Use to_bm25query('query', 'index_name') to specify which partial index to use.
 DROP TABLE partial_only CASCADE;
 -- ============================================================
 -- Cleanup
