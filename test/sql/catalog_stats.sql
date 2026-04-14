@@ -1,0 +1,212 @@
+-- Test that BM25 indexes report correct catalog statistics
+-- (pg_class.reltuples, pg_class.relpages, pg_stat_user_indexes)
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+-- ============================================================
+-- heap_tuples vs index_tuples for partial indexes
+--
+-- IndexBuildResult.heap_tuples updates pg_class.reltuples for
+-- the HEAP relation.  For a partial index, this must be the
+-- total heap rows scanned, not just rows that passed the
+-- predicate.  Otherwise the planner underestimates table size.
+-- ============================================================
+
+CREATE TABLE stats_partial (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    category TEXT
+);
+
+INSERT INTO stats_partial (content, category)
+SELECT 'document ' || i || ' about databases',
+       CASE WHEN i <= 10 THEN 'tech' ELSE 'other' END
+FROM generate_series(1, 100) i;
+
+-- Record heap reltuples before index build
+ANALYZE stats_partial;
+SELECT reltuples AS heap_reltuples_before
+FROM pg_class WHERE oid = 'stats_partial'::regclass;
+
+-- Build partial index (only 10 of 100 rows match)
+CREATE INDEX stats_partial_idx ON stats_partial
+    USING bm25 (content)
+    WITH (text_config='english')
+    WHERE category = 'tech';
+
+-- heap reltuples must still reflect ~100, not 10
+SELECT reltuples >= 90 AS heap_tuples_ok
+FROM pg_class WHERE oid = 'stats_partial'::regclass;
+
+-- index reltuples should reflect ~10 (indexed docs)
+SELECT reltuples BETWEEN 5 AND 15 AS index_tuples_ok
+FROM pg_class WHERE oid = 'stats_partial_idx'::regclass;
+
+DROP TABLE stats_partial CASCADE;
+
+-- ============================================================
+-- heap_tuples for non-partial index (baseline sanity check)
+-- ============================================================
+
+CREATE TABLE stats_full (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+INSERT INTO stats_full (content)
+SELECT 'document ' || i || ' about databases'
+FROM generate_series(1, 100) i;
+
+CREATE INDEX stats_full_idx ON stats_full
+    USING bm25 (content)
+    WITH (text_config='english');
+
+-- Both heap and index should reflect ~100
+SELECT reltuples >= 90 AS heap_tuples_ok
+FROM pg_class WHERE oid = 'stats_full'::regclass;
+
+SELECT reltuples >= 90 AS index_tuples_ok
+FROM pg_class WHERE oid = 'stats_full_idx'::regclass;
+
+DROP TABLE stats_full CASCADE;
+
+-- ============================================================
+-- heap_tuples for expression index
+-- ============================================================
+
+CREATE TABLE stats_expr (
+    id SERIAL PRIMARY KEY,
+    data JSONB
+);
+
+INSERT INTO stats_expr (data)
+SELECT ('{"content": "document ' || i || ' about databases"}')::jsonb
+FROM generate_series(1, 100) i;
+
+CREATE INDEX stats_expr_idx ON stats_expr
+    USING bm25 ((data->>'content'))
+    WITH (text_config='english');
+
+SELECT reltuples >= 90 AS heap_tuples_ok
+FROM pg_class WHERE oid = 'stats_expr'::regclass;
+
+SELECT reltuples >= 90 AS index_tuples_ok
+FROM pg_class WHERE oid = 'stats_expr_idx'::regclass;
+
+DROP TABLE stats_expr CASCADE;
+
+-- ============================================================
+-- heap_tuples for expression + partial combined
+-- ============================================================
+
+CREATE TABLE stats_expr_partial (
+    id SERIAL PRIMARY KEY,
+    data JSONB,
+    active BOOLEAN
+);
+
+INSERT INTO stats_expr_partial (data, active)
+SELECT ('{"text": "document ' || i || ' about databases"}')::jsonb,
+       (i <= 20)
+FROM generate_series(1, 100) i;
+
+CREATE INDEX stats_ep_idx ON stats_expr_partial
+    USING bm25 ((data->>'text'))
+    WITH (text_config='english')
+    WHERE active = true;
+
+-- heap must reflect ~100
+SELECT reltuples >= 90 AS heap_tuples_ok
+FROM pg_class WHERE oid = 'stats_expr_partial'::regclass;
+
+-- index should reflect ~20
+SELECT reltuples BETWEEN 15 AND 25 AS index_tuples_ok
+FROM pg_class WHERE oid = 'stats_ep_idx'::regclass;
+
+DROP TABLE stats_expr_partial CASCADE;
+
+-- ============================================================
+-- pg_relation_size: index should have nonzero size after build
+-- ============================================================
+
+CREATE TABLE stats_size (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+INSERT INTO stats_size (content)
+SELECT 'document ' || i || ' about databases and search'
+FROM generate_series(1, 50) i;
+
+CREATE INDEX stats_size_idx ON stats_size
+    USING bm25 (content) WITH (text_config='english');
+
+SELECT pg_relation_size('stats_size_idx') > 0 AS has_size;
+
+DROP TABLE stats_size CASCADE;
+
+-- ============================================================
+-- Stats after VACUUM: reltuples should decrease after deletes
+-- ============================================================
+
+CREATE TABLE stats_vacuum (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+
+INSERT INTO stats_vacuum (content)
+SELECT 'document ' || i || ' about databases'
+FROM generate_series(1, 100) i;
+
+CREATE INDEX stats_vacuum_idx ON stats_vacuum
+    USING bm25 (content) WITH (text_config='english');
+
+-- Delete half the rows and vacuum
+DELETE FROM stats_vacuum WHERE id > 50;
+VACUUM stats_vacuum;
+
+-- Index reltuples should reflect roughly 50 after vacuum
+SELECT reltuples BETWEEN 40 AND 60 AS index_tuples_after_vacuum
+FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+
+DROP TABLE stats_vacuum CASCADE;
+
+-- ============================================================
+-- Stats after REINDEX: should reflect current row count
+-- ============================================================
+
+CREATE TABLE stats_reindex (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    category TEXT
+);
+
+INSERT INTO stats_reindex (content, category)
+SELECT 'document ' || i || ' about databases',
+       CASE WHEN i <= 30 THEN 'tech' ELSE 'other' END
+FROM generate_series(1, 100) i;
+
+CREATE INDEX stats_reindex_idx ON stats_reindex
+    USING bm25 (content) WITH (text_config='english')
+    WHERE category = 'tech';
+
+-- Delete some matching rows
+DELETE FROM stats_reindex WHERE category = 'tech' AND id > 20;
+
+REINDEX INDEX stats_reindex_idx;
+
+-- heap reltuples should still be ~90 (100 - 10 deleted)
+SELECT reltuples >= 80 AS heap_tuples_ok
+FROM pg_class WHERE oid = 'stats_reindex'::regclass;
+
+-- index reltuples should reflect ~20 remaining tech rows
+SELECT reltuples BETWEEN 15 AND 25 AS index_tuples_ok
+FROM pg_class WHERE oid = 'stats_reindex_idx'::regclass;
+
+DROP TABLE stats_reindex CASCADE;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+
+DROP EXTENSION pg_textsearch CASCADE;
