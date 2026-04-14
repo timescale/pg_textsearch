@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776151305496,
+  "lastUpdate": 1776151827802,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -63663,6 +63663,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield (1.4K docs) - Index Build Time",
             "value": 116.591,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Throughput (avg ms/query)",
+            "value": 0.89,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Size",
+            "value": 3.25,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b622d909d9a12186814b72baa49037048a9ef6ac",
+          "message": "docs: improve README WHERE clause examples (#306)\n\n## Summary\n- Replace score-threshold-only examples with more intuitive patterns\n- Explicit index specification now uses ORDER BY + LIMIT instead of a\nscore comparison\n- Post-filtering section leads with a price filter (common case), then\nshows score thresholds as a secondary option with caveats about\ncorpus-dependent interpretation\n- Faceted search uses a top-k subquery instead of a score cutoff\n\n## Testing\nDocs-only change, no code affected.",
+          "timestamp": "2026-04-10T03:24:20Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b622d909d9a12186814b72baa49037048a9ef6ac"
+        },
+        "date": 1776151822424,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Build Time",
+            "value": 114.3,
             "unit": "ms"
           },
           {
