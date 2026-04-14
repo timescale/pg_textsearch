@@ -57,48 +57,48 @@ LIMIT 5;
 CREATE TABLE multilang (
     id SERIAL PRIMARY KEY,
     content TEXT,
-    language TEXT
+    lang CHAR(2) NOT NULL
 );
 
-INSERT INTO multilang (content, language) VALUES
-    ('the quick brown fox jumps over the lazy dog', 'english'),
-    ('postgresql database management system', 'english'),
-    ('full text searching and information retrieval', 'english'),
-    ('simple words without stemming needed', 'simple'),
-    ('another simple document for testing', 'simple');
+INSERT INTO multilang (content, lang) VALUES
+    ('the quick brown fox jumps over the lazy dog', 'en'),
+    ('postgresql database management system', 'en'),
+    ('full text searching and information retrieval', 'en'),
+    ('simple words without stemming needed', 'xx'),
+    ('another simple document for testing', 'xx');
 
-CREATE INDEX multilang_english_idx ON multilang
+CREATE INDEX multilang_en_idx ON multilang
     USING bm25 (content)
     WITH (text_config='english')
-    WHERE language = 'english';
+    WHERE lang = 'en';
 
-CREATE INDEX multilang_simple_idx ON multilang
+CREATE INDEX multilang_xx_idx ON multilang
     USING bm25 (content)
     WITH (text_config='simple')
-    WHERE language = 'simple';
+    WHERE lang = 'xx';
 
 -- English stemming: "databases" matches "database"
 SELECT id, content,
        ROUND((content <@>
               to_bm25query('databases',
-                           'multilang_english_idx'))::numeric,
+                           'multilang_en_idx'))::numeric,
              4) AS score
 FROM multilang
-WHERE language = 'english'
+WHERE lang = 'en'
 ORDER BY content <@>
-         to_bm25query('databases', 'multilang_english_idx')
+         to_bm25query('databases', 'multilang_en_idx')
 LIMIT 5;
 
 -- Simple: no stemming
 SELECT id, content,
        ROUND((content <@>
               to_bm25query('simple',
-                           'multilang_simple_idx'))::numeric,
+                           'multilang_xx_idx'))::numeric,
              4) AS score
 FROM multilang
-WHERE language = 'simple'
+WHERE lang = 'xx'
 ORDER BY content <@>
-         to_bm25query('simple', 'multilang_simple_idx')
+         to_bm25query('simple', 'multilang_xx_idx')
 LIMIT 5;
 
 -- ============================================================
