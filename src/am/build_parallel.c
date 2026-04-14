@@ -295,15 +295,15 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			!ExecQual(indexInfo->ii_PredicateState, econtext))
 			goto next_tuple;
 
-		document_text = DatumGetTextPP(idx_values[0]);
-		slot_getallattrs(slot);
 		ctid = &slot->tts_tid;
 
 		if (!ItemPointerIsValid(ctid))
 			goto next_tuple;
 
-		/* Tokenize in temporary context */
+		/* Tokenize in temporary context (includes detoasting) */
 		oldctx = MemoryContextSwitchTo(build_tmpctx);
+
+		document_text = DatumGetTextPP(idx_values[0]);
 
 		tsvector_datum = DirectFunctionCall2Coll(
 				to_tsvector_byid,

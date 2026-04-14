@@ -850,13 +850,15 @@ tp_build_callback(
 	if (!ItemPointerIsValid(ctid))
 		return;
 
-	document_text = DatumGetTextPP(values[0]);
-
 	/*
 	 * Tokenize in temporary context to prevent
 	 * to_tsvector_byid memory from accumulating.
+	 * Detoasting also happens here so the copy is freed
+	 * by MemoryContextReset below.
 	 */
 	oldctx = MemoryContextSwitchTo(bs->per_doc_ctx);
+
+	document_text = DatumGetTextPP(values[0]);
 
 	tsvector_datum = DirectFunctionCall2Coll(
 			to_tsvector_byid,
