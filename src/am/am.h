@@ -121,6 +121,9 @@ bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
+/* Flatten a text array into a space-separated text value */
+text *tp_flatten_text_array(Datum array_datum);
+
 /* Extract terms and frequencies from a TSVector */
 int tp_extract_terms_from_tsvector(
 		TSVector tsvector,

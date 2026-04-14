@@ -245,7 +245,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 			ItemPointerSet(&min_tid, start_blk, FirstOffsetNumber);
 			ItemPointerSet(&max_tid, end_blk - 1, MaxOffsetNumber);
+#if PG_VERSION_NUM >= 180000
+			scan = table_beginscan_tidrange(heap, snap, &min_tid, &max_tid, 0);
+#else
 			scan = table_beginscan_tidrange(heap, snap, &min_tid, &max_tid);
+#endif
 		}
 		else
 		{
