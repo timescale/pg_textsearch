@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776197123944,
+  "lastUpdate": 1776197125661,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -69084,6 +69084,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 1010.87,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f",
+          "message": "fix: address code review feedback\n\n- Expand comment on lockless threshold checks explaining why\n  approximate reads are safe (false positive → unnecessary lock,\n  false negative → deferred to next insert)\n- Document how the global soft limit warning state is reached\n  (all eviction candidates locked or empty)\n- Document spill lock duration and deadlock safety\n- Clarify tp_check_hard_limit is a read-only check, no lock held\n- Document vacuum spill preconditions (AccessExclusiveLock held,\n  DSA pinned, pre-lock read is fast bailout)\n- Fix user-facing messages: \"tapir index\" → \"pg_textsearch index\",\n  \"Tapir shared DSA\" → \"pg_textsearch shared DSA\"\n- Remove all DEBUG traces from state.c (stale-lock safety net,\n  bulk-load spill, build-mode lifecycle)",
+          "timestamp": "2026-04-14T00:52:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f"
+        },
+        "date": 1776197125208,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3752.106,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 268846.011,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 113.02,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 112.12,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 118.75,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 118.71,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 96.73,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 103.9,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 105.18,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 109.81,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 97.76,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 980.22,
             "unit": "MB"
           }
         ]
