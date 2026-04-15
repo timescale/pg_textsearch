@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776238084834,
+  "lastUpdate": 1776238086495,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -26972,6 +26972,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_gin - Index Build Time",
             "value": 130514.349,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin - Index Size",
+            "value": 824.93,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e8f54c3b2c776b8f09ab29d5b5a093873cbfafd8",
+          "message": "fix: create shared index state after parallel build (#312)\n\n## Summary\n\n- After a parallel index build, `tp_build()` returned without creating\nshared index state in the registry, forcing subsequent accesses through\nthe crash-recovery path (`tp_rebuild_index_from_disk`)\n- This created a race window where concurrent backends could recreate\nthe shared state independently, leaving the inserting backend's memtable\ninvisible to scans — `tp_memtable_source_create()` would see\n`total_postings == 0` and skip the memtable\n- Fix calls `tp_create_shared_index_state()` after `tp_build_parallel()`\nreturns and populates `total_docs`/`total_len` from the metapage,\nmatching the serial build path's behavior\n\nCloses #310\n\n## Test plan\n\n- [ ] `parallel_build` regression test passes consistently (was flaky\nbefore)\n- [ ] Full regression suite (53 tests) passes\n- [ ] `make format-check` passes",
+          "timestamp": "2026-04-15T02:36:24Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e8f54c3b2c776b8f09ab29d5b5a093873cbfafd8"
+        },
+        "date": 1776238086171,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_gin - Index Build Time",
+            "value": 144388.856,
             "unit": "ms"
           },
           {
