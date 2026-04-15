@@ -225,10 +225,28 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 			header->num_docs			= v3.num_docs;
 			header->total_tokens		= v3.total_tokens;
 			header->page_index			= v3.page_index;
+
+			/* V3 has no alive bitset */
+			header->alive_bitset_offset = 0;
+			header->alive_count			= header->num_docs;
 		}
-		else if (raw_version == TP_SEGMENT_FORMAT_VERSION)
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
-			/* V4: direct copy */
+			/*
+			 * V4 header: same layout as V5 but without
+			 * alive_bitset_offset / alive_count.  Copy the
+			 * raw bytes that exist and zero-init the new fields.
+			 */
+			memcpy(reader->header,
+				   PageGetContents(header_page),
+				   offsetof(TpSegmentHeader, alive_bitset_offset));
+			header						= reader->header;
+			header->alive_bitset_offset = 0;
+			header->alive_count			= header->num_docs;
+		}
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION)
+		{
+			/* V5+: full header */
 			memcpy(reader->header,
 				   PageGetContents(header_page),
 				   sizeof(TpSegmentHeader));
@@ -1427,6 +1445,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
 	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
 	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+	existing_header->alive_bitset_offset = header.alive_bitset_offset;
+	existing_header->alive_count		 = header.alive_count;
 	existing_header->num_docs			 = header.num_docs;
 	existing_header->data_size			 = header.data_size;
 	existing_header->num_pages			 = header.num_pages;
