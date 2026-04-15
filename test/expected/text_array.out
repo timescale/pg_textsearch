@@ -1,0 +1,125 @@
+-- Test BM25 index on text[] columns
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v1.0.0-dev
+-- Basic text array table and index
+CREATE TABLE docs_array (
+    id SERIAL PRIMARY KEY,
+    content text[]
+);
+CREATE INDEX docs_array_bm25_idx ON docs_array
+    USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation docs_array_bm25_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO docs_array (content) VALUES
+    (ARRAY['the quick brown fox', 'jumped over the lazy dog']),
+    (ARRAY['database system design', 'query optimization']),
+    (ARRAY['full text search', 'inverted index structure']),
+    (ARRAY['postgres extensions', 'custom access methods']),
+    (ARRAY['information retrieval', 'relevance ranking']);
+-- BM25 search using explicit bm25query
+SELECT id, content
+FROM docs_array
+ORDER BY content <@> to_bm25query('database', 'docs_array_bm25_idx')
+LIMIT 3;
+ id |                     content                     
+----+-------------------------------------------------
+  2 | {"database system design","query optimization"}
+(1 row)
+
+-- Score equivalence: text[] scores should match scalar concatenation
+-- Create equivalent scalar table
+CREATE TABLE docs_scalar (
+    id SERIAL PRIMARY KEY,
+    content text
+);
+CREATE INDEX docs_scalar_bm25_idx ON docs_scalar
+    USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation docs_scalar_bm25_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO docs_scalar (content) VALUES
+    ('the quick brown fox jumped over the lazy dog'),
+    ('database system design query optimization'),
+    ('full text search inverted index structure'),
+    ('postgres extensions custom access methods'),
+    ('information retrieval relevance ranking');
+-- Scores from text[] and text should match for same content
+SELECT
+    a.id,
+    a.content <@> to_bm25query('database',
+        'docs_array_bm25_idx') AS array_score,
+    s.content <@> to_bm25query('database',
+        'docs_scalar_bm25_idx') AS scalar_score
+FROM docs_array a
+JOIN docs_scalar s ON a.id = s.id
+WHERE a.id = 2
+ORDER BY a.id;
+ id |     array_score     |    scalar_score     
+----+---------------------+---------------------
+  2 | -1.4084553718566895 | -1.4084553718566895
+(1 row)
+
+-- NULL handling: NULL elements should be skipped
+INSERT INTO docs_array (content) VALUES
+    (ARRAY['hello world', NULL, 'test document']);
+SELECT id, content
+FROM docs_array
+ORDER BY content <@> to_bm25query('hello', 'docs_array_bm25_idx')
+LIMIT 1;
+ id |               content                
+----+--------------------------------------
+  6 | {"hello world",NULL,"test document"}
+(1 row)
+
+-- NULL array should be skipped (no crash)
+INSERT INTO docs_array (content) VALUES (NULL);
+-- Empty array should be handled gracefully
+INSERT INTO docs_array (content) VALUES (ARRAY[]::text[]);
+-- Search still works after NULLs and empties
+SELECT id, content
+FROM docs_array
+ORDER BY content <@> to_bm25query('database', 'docs_array_bm25_idx')
+LIMIT 1;
+ id |                     content                     
+----+-------------------------------------------------
+  2 | {"database system design","query optimization"}
+(1 row)
+
+-- UPDATE a text[] row and verify search picks up changes
+UPDATE docs_array SET content = ARRAY['updated database', 'new content']
+WHERE id = 1;
+SELECT id, content
+FROM docs_array
+ORDER BY content <@> to_bm25query('updated', 'docs_array_bm25_idx')
+LIMIT 1;
+ id |              content               
+----+------------------------------------
+  1 | {"updated database","new content"}
+(1 row)
+
+-- DELETE and verify
+DELETE FROM docs_array WHERE id = 2;
+SELECT count(*) FROM docs_array
+WHERE id = 2;
+ count 
+-------
+     0
+(1 row)
+
+-- Implicit text[] <@> text resolution
+SELECT id, content
+FROM docs_array
+ORDER BY content <@> 'postgres'
+LIMIT 1;
+ id |                     content                     
+----+-------------------------------------------------
+  4 | {"postgres extensions","custom access methods"}
+(1 row)
+
+-- Clean up
+DROP TABLE docs_array CASCADE;
+DROP TABLE docs_scalar CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

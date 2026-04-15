@@ -38,6 +38,7 @@
 #include "state/metapage.h"
 #include "state/registry.h"
 #include "state/state.h"
+#include "types/array.h"
 #include "types/vector.h"
 
 /*
@@ -810,6 +811,7 @@ typedef struct TpBuildCallbackState
 	Relation		index;
 	Oid				text_config_oid;
 	MemoryContext	per_doc_ctx;
+	bool			is_text_array;
 	uint64			total_docs;
 	uint64			total_len;
 	uint64			tuples_done;
@@ -858,7 +860,10 @@ tp_build_callback(
 	 */
 	oldctx = MemoryContextSwitchTo(bs->per_doc_ctx);
 
-	document_text = DatumGetTextPP(values[0]);
+	if (bs->is_text_array)
+		document_text = tp_flatten_text_array(values[0]);
+	else
+		document_text = DatumGetTextPP(values[0]);
 
 	tsvector_datum = DirectFunctionCall2Coll(
 			to_tsvector_byid,
@@ -924,6 +929,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	bool			   is_text_array;
 
 	/* Show "started" for first partition only (suppresses duplicates) */
 	if (!build_progress.active || build_progress.partition_count == 0)
@@ -937,6 +943,25 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * with different block layout than the old one.
 	 */
 	tp_invalidate_docid_cache();
+
+	/*
+	 * Determine if the indexed column is a text array type.
+	 * If so, we flatten array elements into a single text value
+	 * before tokenization. Expression indexes (attnum == 0)
+	 * are never text arrays.
+	 */
+	{
+		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
+
+		if (attnum > 0)
+		{
+			Oid atttype = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
+								  ->atttypid;
+			is_text_array = tp_is_text_array_type(atttype);
+		}
+		else
+			is_text_array = false;
+	}
 
 	/* Report initialization phase */
 	pgstat_progress_update_param(
@@ -1076,7 +1101,14 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			}
 
 			par_result = tp_build_parallel(
-					heap, index, indexInfo, text_config_oid, k1, b, nworkers);
+					heap,
+					index,
+					indexInfo,
+					text_config_oid,
+					k1,
+					b,
+					is_text_array,
+					nworkers);
 
 			/* Accumulate stats for build progress */
 			if (build_progress.active)
@@ -1149,6 +1181,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		bs.build_ctx	   = build_ctx;
 		bs.index		   = index;
 		bs.text_config_oid = text_config_oid;
+		bs.is_text_array   = is_text_array;
 		bs.per_doc_ctx	   = AllocSetContextCreate(
 				CurrentMemoryContext,
 				"build per-doc temp",
@@ -1179,6 +1212,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				tp_build_callback,
 				&bs,
 				NULL);
+
 		/* Accumulate final batch stats */
 		total_docs = bs.total_docs + build_ctx->num_docs;
 		total_len  = bs.total_len + build_ctx->total_len;
@@ -1369,17 +1403,24 @@ tp_insert(
 	TpLocalIndexState *index_state;
 	char			 **terms = NULL;
 
-	(void)heapRel;		  /* unused */
 	(void)checkUnique;	  /* unused */
 	(void)indexUnchanged; /* unused */
-	(void)indexInfo;	  /* unused */
 
 	/* Skip NULL documents */
 	if (isnull[0])
 		return true;
 
 	/* --- Phase 1: Tokenize (no lock held) --- */
-	document_text = DatumGetTextPP(values[0]);
+	{
+		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
+		Oid		   atttype =
+				TupleDescAttr(RelationGetDescr(heapRel), attnum - 1)->atttypid;
+
+		if (tp_is_text_array_type(atttype))
+			document_text = tp_flatten_text_array(values[0]);
+		else
+			document_text = DatumGetTextPP(values[0]);
+	}
 	{
 		char *index_name;
 		char *schema_name;

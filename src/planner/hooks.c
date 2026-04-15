@@ -62,6 +62,8 @@ typedef struct BM25OidCache
 	Oid tpquery_type_oid;
 	Oid text_tpquery_operator_oid;
 	Oid text_text_operator_oid;
+	Oid textarray_tpquery_operator_oid;
+	Oid textarray_text_operator_oid;
 } BM25OidCache;
 
 /*
@@ -169,6 +171,18 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	/* Look up the <@> operator for (text, text) */
 	opname						  = list_make1(makeString("<@>"));
 	cache->text_text_operator_oid = OpernameGetOprid(opname, TEXTOID, TEXTOID);
+	list_free(opname);
+
+	/* Look up the <@> operator for (text[], bm25query) */
+	opname = list_make1(makeString("<@>"));
+	cache->textarray_tpquery_operator_oid =
+			OpernameGetOprid(opname, TEXTARRAYOID, cache->tpquery_type_oid);
+	list_free(opname);
+
+	/* Look up the <@> operator for (text[], text) */
+	opname = list_make1(makeString("<@>"));
+	cache->textarray_text_operator_oid =
+			OpernameGetOprid(opname, TEXTARRAYOID, TEXTOID);
 	list_free(opname);
 
 	return true;
@@ -646,7 +660,8 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	Oid			  index_oid;
 	Const		 *new_const;
 
-	if (opexpr->opno != oids->text_tpquery_operator_oid)
+	if (opexpr->opno != oids->text_tpquery_operator_oid &&
+		opexpr->opno != oids->textarray_tpquery_operator_oid)
 		return NULL;
 
 	/* Mark that we found a BM25 operator for later optimization */
@@ -785,8 +800,10 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	char		 *query_text;
 	TpQuery		 *tpquery;
 	Const		 *tpquery_const;
+	bool		  is_text_array_op =
+			(opexpr->opno == oids->textarray_text_operator_oid);
 
-	if (opexpr->opno != oids->text_text_operator_oid)
+	if (opexpr->opno != oids->text_text_operator_oid && !is_text_array_op)
 		return NULL;
 
 	/* Mark that we found a BM25 operator for later optimization */
@@ -853,7 +870,8 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 			false);
 
 	return (Node *)create_opexpr(
-			oids->text_tpquery_operator_oid,
+			is_text_array_op ? oids->textarray_tpquery_operator_oid
+							 : oids->text_tpquery_operator_oid,
 			left,
 			(Node *)tpquery_const,
 			opexpr->inputcollid,
@@ -1035,7 +1053,8 @@ is_bm25_score_opexpr(Node *node, BM25OidCache *oids)
 		return false;
 
 	opexpr = (OpExpr *)node;
-	return opexpr->opno == oids->text_tpquery_operator_oid;
+	return opexpr->opno == oids->text_tpquery_operator_oid ||
+		   opexpr->opno == oids->textarray_tpquery_operator_oid;
 }
 
 /*
@@ -1271,7 +1290,8 @@ extract_tpquery_from_expr(Node *node, BM25OidCache *oids)
 	{
 		OpExpr *opexpr = (OpExpr *)node;
 
-		if (opexpr->opno == oids->text_tpquery_operator_oid &&
+		if ((opexpr->opno == oids->text_tpquery_operator_oid ||
+			 opexpr->opno == oids->textarray_tpquery_operator_oid) &&
 			list_length(opexpr->args) == 2)
 		{
 			Node *right = lsecond(opexpr->args);
@@ -1474,7 +1494,9 @@ collect_explicit_indexes_walker(
 	{
 		OpExpr *opexpr = (OpExpr *)node;
 
-		if (opexpr->opno == context->oid_cache->text_tpquery_operator_oid &&
+		if ((opexpr->opno == context->oid_cache->text_tpquery_operator_oid ||
+			 opexpr->opno ==
+					 context->oid_cache->textarray_tpquery_operator_oid) &&
 			list_length(opexpr->args) == 2)
 		{
 			Node *left	= linitial(opexpr->args);

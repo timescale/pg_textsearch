@@ -10,6 +10,7 @@
 #include <access/htup_details.h>
 #include <access/reloptions.h>
 #include <catalog/pg_opclass.h>
+#include <catalog/pg_type.h>
 #include <commands/vacuum.h>
 #include <utils/syscache.h>
 
@@ -174,13 +175,17 @@ tp_validate(Oid opclassoid)
 	{
 	case TEXTOID:
 	case VARCHAROID:
-	case BPCHAROID: /* char(n) */
+	case BPCHAROID:	   /* char(n) */
+	case TEXTARRAYOID: /* text[] */
+	case 1015:		   /* varchar[] */
+	case 1014:		   /* bpchar[] */
 		result = true;
 		break;
 	default:
 		elog(WARNING,
-			 "Tapir index can only be created on text, varchar, or char "
-			 "columns (got type OID %u)",
+			 "Tapir index can only be created on text, varchar, "
+			 "or char columns (or arrays thereof) "
+			 "(got type OID %u)",
 			 opcintype);
 		result = false;
 		break;
