@@ -99,6 +99,13 @@ static void tp_object_access(
 /* Transaction callback to release index locks */
 static void tp_xact_callback(XactEvent event, void *arg);
 
+/* Subtransaction callback for savepoint rollback cleanup */
+static void tp_subxact_callback(
+		SubXactEvent	 event,
+		SubTransactionId mySubid,
+		SubTransactionId parentSubid,
+		void			*arg);
+
 /* ProcessUtility hook for tracking CREATE INDEX USING bm25 */
 static void tp_process_utility(
 		PlannedStmt			 *pstmt,
@@ -307,6 +314,9 @@ _PG_init(void)
 	 */
 	RegisterXactCallback(tp_xact_callback, NULL);
 
+	/* Register subtransaction callback for savepoint rollback cleanup */
+	RegisterSubXactCallback(tp_subxact_callback, NULL);
+
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
 
@@ -428,6 +438,42 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 	case XACT_EVENT_PRE_PREPARE:
 	case XACT_EVENT_PREPARE:
 		/* Nothing to do for these events */
+		break;
+	}
+}
+
+/*
+ * Subtransaction callback - clean up index state on savepoint rollback
+ *
+ * When a subtransaction aborts (ROLLBACK TO SAVEPOINT), we must:
+ * 1. Clean up registry/shared memory for indexes created in that
+ *    subtransaction (OAT_DROP doesn't fire for subtransaction abort)
+ * 2. Reset lock tracking (LWLockReleaseAll releases all locks)
+ *
+ * When a subtransaction commits (RELEASE SAVEPOINT), we promote
+ * states to the parent subtransaction so they get cleaned up if the
+ * parent later aborts.
+ */
+static void
+tp_subxact_callback(
+		SubXactEvent	 event,
+		SubTransactionId mySubid,
+		SubTransactionId parentSubid,
+		void			*arg __attribute__((unused)))
+{
+	switch (event)
+	{
+	case SUBXACT_EVENT_ABORT_SUB:
+		tp_cleanup_subxact_abort(mySubid);
+		break;
+
+	case SUBXACT_EVENT_COMMIT_SUB:
+		tp_promote_subxact_states(mySubid, parentSubid);
+		break;
+
+	case SUBXACT_EVENT_START_SUB:
+	case SUBXACT_EVENT_PRE_COMMIT_SUB:
+		/* Nothing to do */
 		break;
 	}
 }

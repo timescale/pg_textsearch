@@ -122,6 +122,15 @@ typedef struct TpLocalIndexState
 
 	/* Amortization counter for global soft limit check */
 	int docs_since_global_check;
+
+	/*
+	 * Subtransaction tracking: which subtransaction created this
+	 * state. Used to clean up on subtransaction abort (e.g.,
+	 * ROLLBACK TO SAVEPOINT after CREATE INDEX).
+	 * InvalidSubTransactionId means not created in any tracked
+	 * subtransaction (e.g., rebuilt from disk on restart).
+	 */
+	SubTransactionId created_in_subxact;
 } TpLocalIndexState;
 
 /* Function declarations for index state management */
@@ -155,3 +164,8 @@ extern void tp_clear_memtable(TpLocalIndexState *local_state);
 /* Bulk load auto-spill */
 extern void tp_bulk_load_spill_check(void);
 extern void tp_reset_bulk_load_counters(void);
+
+/* Subtransaction cleanup */
+extern void tp_cleanup_subxact_abort(SubTransactionId mySubid);
+extern void tp_promote_subxact_states(
+		SubTransactionId mySubid, SubTransactionId parentSubid);
