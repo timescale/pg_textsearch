@@ -143,20 +143,6 @@ ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-You can also post-filter on the BM25 score itself. Since `<@>` returns
-negative scores, `< -5.0` keeps only documents scoring above 5.0. Use a
-subquery to compute the score once:
-```sql
-SELECT * FROM (
-    SELECT *, content <@> to_bm25query('search terms', 'docs_idx') AS score
-    FROM documents
-    ORDER BY score
-    LIMIT 100
-) sub
-WHERE score < -5.0
-LIMIT 10;
-```
-
 **Performance considerations**:
 
 - **Pre-filtering tradeoff**: If the filter matches many rows (e.g., 100K+), scoring
