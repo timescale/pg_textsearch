@@ -817,7 +817,7 @@ tp_setup_table_scan(
 	snapshot = GetTransactionSnapshot();
 	if (snapshot)
 		snapshot = RegisterSnapshot(snapshot);
-	*scan_out = table_beginscan(heap, snapshot, 0, NULL, 0);
+	*scan_out = table_beginscan(heap, snapshot, 0, NULL);
 #else
 	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
 #endif
