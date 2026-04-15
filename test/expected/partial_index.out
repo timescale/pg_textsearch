@@ -214,7 +214,7 @@ ORDER BY content <@>
 LIMIT 5;
  id |                  content                  |  score  
 ----+-------------------------------------------+---------
-  6 | advanced database optimization techniques | -1.1375
+  6 | advanced database optimization techniques | -0.6549
 (1 row)
 
 -- ============================================================
