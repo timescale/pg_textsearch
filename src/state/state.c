@@ -13,6 +13,7 @@
 #include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/relation.h>
+#include <access/xact.h>
 #include <catalog/index.h>
 #include <executor/executor.h>
 #include <lib/dshash.h>
@@ -148,6 +149,13 @@ tp_get_local_index_state(Oid index_oid)
 			local_state = tp_rebuild_index_from_disk(index_oid);
 			if (local_state != NULL)
 			{
+				/*
+				 * Rebuilt from disk = pre-existing index.
+				 * Override the subtransaction ID so rollback
+				 * of an enclosing savepoint won't destroy the
+				 * shared state used by all backends.
+				 */
+				local_state->created_in_subxact = InvalidSubTransactionId;
 				return local_state;
 			}
 
@@ -183,6 +191,8 @@ tp_get_local_index_state(Oid index_oid)
 		local_state->lock_mode				 = 0;
 		local_state->terms_added_this_xact	 = 0;
 		local_state->docs_since_global_check = 0;
+		local_state->created_in_subxact =
+				InvalidSubTransactionId; /* pre-existing index */
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -290,6 +300,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	local_state->lock_mode				 = 0;
 	local_state->terms_added_this_xact	 = 0;
 	local_state->docs_since_global_check = 0;
+	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -414,6 +425,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	local_state->lock_mode				 = 0;
 	local_state->terms_added_this_xact	 = 0;
 	local_state->docs_since_global_check = 0;
+	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
 
 	/* Cache the local state */
 	init_local_state_cache();
@@ -614,6 +626,158 @@ tp_cleanup_build_mode_on_abort(void)
 		/* Free local state */
 		pfree(local_state);
 		entry->local_state = NULL;
+	}
+}
+
+/*
+ * Clean up index state on subtransaction abort
+ *
+ * Called from the SubXactCallback when a subtransaction aborts
+ * (e.g., ROLLBACK TO SAVEPOINT). This handles two issues:
+ *
+ * 1. Registry/shared memory leak: If CREATE INDEX completed within
+ *    the subtransaction, the OAT_DROP hook won't fire during
+ *    subtransaction abort, so we must clean up manually.
+ *
+ * 2. LWLock tracking desync: AbortSubTransaction calls
+ *    LWLockReleaseAll(), releasing all locks including those
+ *    acquired before the savepoint. We must reset our lock_held
+ *    tracking for ALL entries to match.
+ */
+void
+tp_cleanup_subxact_abort(SubTransactionId mySubid)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+	dsa_area			 *global_dsa;
+
+	if (local_state_cache == NULL)
+		return;
+
+	global_dsa = tp_registry_get_dsa();
+
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		TpLocalIndexState *ls = entry->local_state;
+
+		if (ls == NULL)
+			continue;
+
+		/*
+		 * Reset lock tracking for ALL entries, not just ones
+		 * from the aborting subtransaction. LWLockReleaseAll()
+		 * releases every lock held by this backend.
+		 */
+		ls->lock_held = false;
+		ls->lock_mode = 0;
+
+		/* Only clean up state created in the aborting subxact */
+		if (ls->created_in_subxact != mySubid)
+			continue;
+
+		/*
+		 * Reset bulk load counter only for entries being
+		 * destroyed. Resetting surviving entries would suppress
+		 * the PRE_COMMIT spill check for terms already in the
+		 * memtable from the outer transaction.
+		 */
+		ls->terms_added_this_xact = 0;
+
+		if (ls->is_build_mode)
+		{
+			/*
+			 * Build mode: private DSA not shared with anyone.
+			 * Detach destroys it and returns memory to OS.
+			 */
+			if (ls->dsa != NULL && ls->dsa != global_dsa)
+			{
+				dsa_detach(ls->dsa);
+				ls->dsa = NULL;
+			}
+		}
+		else if (ls->shared != NULL && global_dsa != NULL)
+		{
+			/*
+			 * Runtime mode: memtable is in global DSA.
+			 * Destroy hash tables before freeing to avoid
+			 * leaking DSA memory.
+			 */
+			if (DsaPointerIsValid(ls->shared->memtable_dp))
+			{
+				TpMemtable *mt = (TpMemtable *)
+						dsa_get_address(global_dsa, ls->shared->memtable_dp);
+
+				if (mt->string_hash_handle != DSHASH_HANDLE_INVALID)
+				{
+					dshash_table *ht = tp_string_table_attach(
+							global_dsa, mt->string_hash_handle);
+					if (ht)
+					{
+						tp_string_table_clear(global_dsa, ht);
+						dshash_destroy(ht);
+					}
+				}
+
+				if (mt->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+				{
+					dshash_table *ht = tp_doclength_table_attach(
+							global_dsa, mt->doc_lengths_handle);
+					if (ht)
+						dshash_destroy(ht);
+				}
+
+				dsa_free(global_dsa, ls->shared->memtable_dp);
+			}
+		}
+
+		/* Free shared state from global DSA and unregister */
+		if (ls->shared != NULL)
+		{
+			Oid			index_oid = ls->shared->index_oid;
+			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+
+			tp_subtract_index_estimate(ls->shared);
+
+			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
+				dsa_free(global_dsa, shared_dp);
+
+			tp_registry_unregister(index_oid);
+			ls->shared = NULL;
+		}
+
+		pfree(ls);
+		entry->local_state = NULL;
+	}
+}
+
+/*
+ * Promote subtransaction state on subtransaction commit
+ *
+ * When a subtransaction commits (RELEASE SAVEPOINT), states created
+ * within it are "promoted" to the parent subtransaction. This ensures
+ * they get cleaned up if the parent later aborts.
+ */
+void
+tp_promote_subxact_states(
+		SubTransactionId mySubid, SubTransactionId parentSubid)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	if (local_state_cache == NULL)
+		return;
+
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		TpLocalIndexState *ls = entry->local_state;
+
+		if (ls == NULL)
+			continue;
+
+		if (ls->created_in_subxact == mySubid)
+			ls->created_in_subxact = parentSubid;
 	}
 }
 
