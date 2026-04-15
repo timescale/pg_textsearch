@@ -234,13 +234,30 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
 			/*
-			 * V4 header: same layout as V5 but without
-			 * alive_bitset_offset / alive_count.  Copy the
-			 * raw bytes that exist and zero-init the new fields.
+			 * V4 header: identical to V5 except the alive_bitset
+			 * fields (alive_bitset_offset, alive_count) are absent.
+			 * The fields before and after the gap share the same
+			 * names but sit at different struct offsets, so we copy
+			 * in two halves and zero-init the gap.
 			 */
+			const char *src = PageGetContents(header_page);
+
+			/* First half: magic … ctid_offsets_offset (same layout) */
 			memcpy(reader->header,
-				   PageGetContents(header_page),
+				   src,
 				   offsetof(TpSegmentHeader, alive_bitset_offset));
+
+			/* Second half: num_terms … page_index.
+			 * In V4 on-disk, these start right after
+			 * ctid_offsets_offset — which is the same byte offset
+			 * as alive_bitset_offset in V5. */
+			memcpy(&reader->header->num_terms,
+				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
+				   sizeof(uint32)			/* num_terms */
+						   + sizeof(uint32) /* num_docs */
+						   + sizeof(uint64) /* total_tokens */
+						   + sizeof(BlockNumber) /* page_index */);
+
 			header						= reader->header;
 			header->alive_bitset_offset = 0;
 			header->alive_count			= header->num_docs;
