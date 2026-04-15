@@ -26,6 +26,9 @@
 #include "segment_io.h"
 #include "state/metapage.h"
 
+/* Sentinel for dead docs in old_to_new mapping */
+#define TP_MERGE_DOC_DEAD UINT32_MAX
+
 /* GUC variable for segment compression */
 extern bool tp_compress_segments;
 
@@ -770,6 +773,11 @@ build_merged_docmap(
 
 			for (j = 0; j < ms->num_docs; j++)
 			{
+				if (!tp_segment_is_alive(sources[i].reader, j))
+				{
+					mapping->old_to_new[i][j] = TP_MERGE_DOC_DEAD;
+					continue;
+				}
 				mapping->old_to_new[i][j]  = new_doc_id;
 				out_pages[new_doc_id]	   = ms->ctid_pages[j];
 				out_offsets[new_doc_id]	   = ms->ctid_offsets[j];
@@ -797,6 +805,14 @@ build_merged_docmap(
 				BlockNumber			 pg;
 				OffsetNumber		 off;
 
+				/* Skip past dead docs */
+				while (ms->cursor < ms->num_docs &&
+					   !tp_segment_is_alive(sources[i].reader, ms->cursor))
+				{
+					mapping->old_to_new[i][ms->cursor] = TP_MERGE_DOC_DEAD;
+					ms->cursor++;
+				}
+
 				if (ms->cursor >= ms->num_docs)
 					continue;
 
@@ -812,7 +828,8 @@ build_merged_docmap(
 				}
 			}
 
-			Assert(min_src >= 0);
+			if (min_src < 0)
+				break; /* All sources exhausted */
 
 			{
 				TpDocmapMergeSource *ms	 = &msources[min_src];
@@ -831,8 +848,8 @@ build_merged_docmap(
 	/* Step 4: Package into a TpDocMapBuilder (finalized, no hash table) */
 	docmap				 = palloc0(sizeof(TpDocMapBuilder));
 	docmap->ctid_to_id	 = NULL; /* No hash table needed */
-	docmap->num_docs	 = total_docs;
-	docmap->capacity	 = total_docs;
+	docmap->num_docs	 = new_doc_id;
+	docmap->capacity	 = new_doc_id;
 	docmap->finalized	 = true;
 	docmap->ctid_pages	 = out_pages;
 	docmap->ctid_offsets = out_offsets;
@@ -979,6 +996,25 @@ write_merged_segment_to_sink(
 	/* Build docmap and direct mapping arrays from source segments */
 	docmap = build_merged_docmap(
 			sources, num_sources, &doc_mapping, disjoint_sources);
+
+	/* Recompute total_tokens from live docs' fieldnorms */
+	{
+		uint64 live_tokens = 0;
+
+		for (uint32 d = 0; d < docmap->num_docs; d++)
+			live_tokens += decode_fieldnorm(docmap->fieldnorms[d]);
+		total_tokens = live_tokens;
+	}
+
+	/*
+	 * If all docs are dead, nothing to write. Clean up and return.
+	 */
+	if (docmap->num_docs == 0)
+	{
+		free_merge_doc_mapping(&doc_mapping);
+		tp_docmap_destroy(docmap);
+		return;
+	}
 
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
@@ -1156,10 +1192,16 @@ write_merged_segment_to_sink(
 							&psources[src].block_postings
 									 [psources[src].current_in_block];
 					int	   seg_idx = terms[i].segment_refs[src].segment_idx;
-					uint32 new_doc_id =
+					uint32 new_id =
 							doc_mapping.old_to_new[seg_idx][bp->doc_id];
 
-					block_buf[block_count].doc_id	 = new_doc_id;
+					if (new_id == TP_MERGE_DOC_DEAD)
+					{
+						posting_source_advance_fast(&psources[src]);
+						continue;
+					}
+
+					block_buf[block_count].doc_id	 = new_id;
 					block_buf[block_count].frequency = bp->frequency;
 					block_buf[block_count].fieldnorm = bp->fieldnorm;
 					block_buf[block_count].reserved	 = 0;
@@ -1193,10 +1235,16 @@ write_merged_segment_to_sink(
 				{
 					int src_idx = terms[i].segment_refs[min_idx].segment_idx;
 					uint32 old_doc_id = psources[min_idx].current.old_doc_id;
-					uint32 new_doc_id =
+					uint32 new_id =
 							doc_mapping.old_to_new[src_idx][old_doc_id];
 
-					block_buf[block_count].doc_id = new_doc_id;
+					if (new_id == TP_MERGE_DOC_DEAD)
+					{
+						posting_source_advance(&psources[min_idx]);
+						continue;
+					}
+
+					block_buf[block_count].doc_id = new_id;
 					block_buf[block_count].frequency =
 							psources[min_idx].current.frequency;
 					block_buf[block_count].fieldnorm =
