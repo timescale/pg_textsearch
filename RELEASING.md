@@ -63,10 +63,10 @@ Update the status line to reflect release state. Examples:
 ```markdown
 # For early releases:
 🚀 **Status**: v0.3.0 - Query performance is production-ready. Index compression
-and parallel index builds are coming soon. See [ROADMAP.md](ROADMAP.md) for details.
+and parallel index builds are coming soon.
 
 # For stable releases:
-🚀 **Status**: v1.0.0 - Production ready. See [ROADMAP.md](ROADMAP.md) for upcoming features.
+🚀 **Status**: v1.0.0 - Production ready.
 ```
 
 Remove any "Now Open Source" or similar one-time announcements from previous releases.
