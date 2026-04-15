@@ -112,6 +112,187 @@ SELECT body FROM subxact_test
     WHERE body <@> to_bm25query('five', 'subxact_idx2') < 0
     ORDER BY body <@> to_bm25query('five', 'subxact_idx2');
 
+-- =============================================================
+-- Scenario 6: CREATE INDEX + INSERT in same savepoint, then
+-- rollback. Exercises runtime-mode cleanup where memtable hash
+-- tables (string_hash, doc_lengths) have been populated in the
+-- global DSA and must be destroyed to avoid DSA memory leaks.
+-- =============================================================
+DROP INDEX subxact_idx2;
+BEGIN;
+SAVEPOINT sp6;
+CREATE INDEX subxact_idx6 ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+-- Insert after CREATE INDEX populates global DSA hash tables
+INSERT INTO subxact_test (body) VALUES ('hash table cleanup test');
+SELECT body <@> 'cleanup' FROM subxact_test
+    ORDER BY body <@> 'cleanup' LIMIT 1;
+ROLLBACK TO SAVEPOINT sp6;
+COMMIT;
+-- Verify the index is gone and registry is clean
+SELECT count(*) FROM pg_class WHERE relname = 'subxact_idx6';
+
+-- =============================================================
+-- Scenario 7: RELEASE SAVEPOINT (commit sub), then full ROLLBACK
+-- Tests promotion: state created in inner subxact is promoted to
+-- parent via SUBXACT_EVENT_COMMIT_SUB, then the top-level abort
+-- cleans it up via the XactCallback.
+-- =============================================================
+BEGIN;
+SAVEPOINT sp7;
+CREATE INDEX subxact_idx7 ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+INSERT INTO subxact_test (body) VALUES ('promotion test row');
+RELEASE SAVEPOINT sp7;
+-- Index state has been promoted to the top-level transaction.
+-- A full ROLLBACK should clean everything up.
+ROLLBACK;
+SELECT count(*) FROM pg_class WHERE relname = 'subxact_idx7';
+
+-- =============================================================
+-- Scenario 8: Repeated savepoint create/rollback cycles
+-- Stress the registry cleanup by doing it multiple times to
+-- ensure no accumulation of leaked entries.
+-- =============================================================
+BEGIN;
+SAVEPOINT cyc;
+CREATE INDEX subxact_cyc ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+ROLLBACK TO SAVEPOINT cyc;
+
+SAVEPOINT cyc;
+CREATE INDEX subxact_cyc ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+ROLLBACK TO SAVEPOINT cyc;
+
+SAVEPOINT cyc;
+CREATE INDEX subxact_cyc ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+ROLLBACK TO SAVEPOINT cyc;
+COMMIT;
+SELECT count(*) FROM pg_class WHERE relname = 'subxact_cyc';
+
+-- =============================================================
+-- Scenario 9: Deeply nested savepoints (3 levels)
+-- Tests that the promotion chain works through multiple levels
+-- and that cleanup propagates correctly.
+-- =============================================================
+BEGIN;
+SAVEPOINT lv1;
+  SAVEPOINT lv2;
+    SAVEPOINT lv3;
+    CREATE INDEX subxact_deep ON subxact_test
+        USING bm25 (body) WITH (text_config = 'english');
+    RELEASE SAVEPOINT lv3;  -- promote to lv2
+  RELEASE SAVEPOINT lv2;    -- promote to lv1
+ROLLBACK TO SAVEPOINT lv1;  -- abort lv1 => should clean up
+COMMIT;
+SELECT count(*) FROM pg_class WHERE relname = 'subxact_deep';
+-- Re-create should succeed (registry is clean)
+CREATE INDEX subxact_deep ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+SELECT body <@> 'fox' FROM subxact_test
+    ORDER BY body <@> 'fox' LIMIT 1;
+DROP INDEX subxact_deep;
+
+-- =============================================================
+-- Scenario 10: Multiple indexes in the same savepoint
+-- Tests cleanup of multiple entries at once.
+-- =============================================================
+CREATE TABLE subxact_test2 (id serial, body text);
+INSERT INTO subxact_test2 (body) VALUES ('second table data');
+BEGIN;
+SAVEPOINT sp10;
+CREATE INDEX subxact_m1 ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+CREATE INDEX subxact_m2 ON subxact_test2
+    USING bm25 (body) WITH (text_config = 'english');
+ROLLBACK TO SAVEPOINT sp10;
+COMMIT;
+SELECT count(*) FROM pg_class
+    WHERE relname IN ('subxact_m1', 'subxact_m2');
+-- Both should be re-creatable
+CREATE INDEX subxact_m1 ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+CREATE INDEX subxact_m2 ON subxact_test2
+    USING bm25 (body) WITH (text_config = 'english');
+SELECT body <@> 'fox' FROM subxact_test
+    ORDER BY body <@> 'fox' LIMIT 1;
+SELECT body <@> 'data' FROM subxact_test2
+    ORDER BY body <@> 'data' LIMIT 1;
+
+-- =============================================================
+-- Scenario 11: Multiple scan errors across savepoints
+-- Tests repeated lock tracking resets within one transaction.
+-- =============================================================
+BEGIN;
+SELECT id FROM subxact_test
+    ORDER BY body <@> to_bm25query('fox', 'subxact_m1')
+    LIMIT 1;
+SAVEPOINT e1;
+SELECT 1/0;
+ROLLBACK TO SAVEPOINT e1;
+-- Scan works after first error
+SELECT id FROM subxact_test
+    ORDER BY body <@> to_bm25query('fox', 'subxact_m1')
+    LIMIT 1;
+SAVEPOINT e2;
+SELECT 1/0;
+ROLLBACK TO SAVEPOINT e2;
+-- Scan works after second error
+SELECT id FROM subxact_test
+    ORDER BY body <@> to_bm25query('fox', 'subxact_m1')
+    LIMIT 1;
+SAVEPOINT e3;
+SELECT 1/0;
+ROLLBACK TO SAVEPOINT e3;
+-- Scan works after third error
+SELECT id FROM subxact_test
+    ORDER BY body <@> to_bm25query('fox', 'subxact_m1')
+    LIMIT 1;
+COMMIT;
+
+-- =============================================================
+-- Scenario 12: Savepoint rollback does NOT affect pre-existing
+-- index. Verifies that InvalidSubTransactionId entries survive.
+-- =============================================================
+BEGIN;
+-- Scan pre-existing index (caches local state with InvalidSubTxnId)
+SELECT id FROM subxact_test
+    ORDER BY body <@> to_bm25query('quick', 'subxact_m1')
+    LIMIT 1;
+SAVEPOINT sp12;
+INSERT INTO subxact_test (body) VALUES ('will be rolled back');
+SELECT 1/0;
+ROLLBACK TO SAVEPOINT sp12;
+-- Pre-existing index should still work normally
+INSERT INTO subxact_test (body) VALUES ('survives rollback');
+COMMIT;
+SELECT body FROM subxact_test
+    WHERE body <@> to_bm25query('survives', 'subxact_m1') < 0;
+
+-- =============================================================
+-- Scenario 13: bm25_summarize_index on a re-created index after
+-- savepoint rollback. Direct verification that the index state
+-- is fully functional.
+-- =============================================================
+DROP INDEX subxact_m1;
+BEGIN;
+SAVEPOINT sp13;
+CREATE INDEX subxact_verify ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+INSERT INTO subxact_test (body) VALUES ('verify will vanish');
+ROLLBACK TO SAVEPOINT sp13;
+COMMIT;
+-- Create properly and verify internal state is consistent
+CREATE INDEX subxact_verify ON subxact_test
+    USING bm25 (body) WITH (text_config = 'english');
+SELECT bm25_summarize_index('subxact_verify') IS NOT NULL
+    AS summary_ok;
+SELECT body <@> 'fox' FROM subxact_test
+    ORDER BY body <@> 'fox' LIMIT 1;
+
 -- Cleanup
+DROP TABLE subxact_test2;
 DROP TABLE subxact_test;
 DROP EXTENSION pg_textsearch CASCADE;
