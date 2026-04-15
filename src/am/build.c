@@ -9,7 +9,6 @@
 #include <access/generic_xlog.h>
 #include <access/tableam.h>
 #include <catalog/namespace.h>
-#include <catalog/pg_type.h>
 #include <catalog/storage.h>
 #include <commands/progress.h>
 #include <executor/spi.h>
@@ -21,7 +20,6 @@
 #include <storage/bufmgr.h>
 #include <tsearch/ts_type.h>
 #include <utils/acl.h>
-#include <utils/array.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
@@ -40,6 +38,7 @@
 #include "state/metapage.h"
 #include "state/registry.h"
 #include "state/state.h"
+#include "types/array.h"
 #include "types/vector.h"
 
 /*
@@ -645,58 +644,6 @@ tp_build_init_metapage(
 }
 
 /*
- * Is this type OID a text-like array (text[], varchar[], bpchar[])?
- */
-static inline bool
-is_text_array_type(Oid typid)
-{
-	return typid == TEXTARRAYOID || typid == 1015 || /* varchar[] */
-		   typid == 1014;							 /* bpchar[] */
-}
-
-/*
- * Flatten a text array into a single space-separated text value.
- * NULL elements are skipped. Returns empty text for empty arrays.
- * Works for text[], varchar[], and bpchar[] (same binary format).
- */
-text *
-tp_flatten_text_array(Datum array_datum)
-{
-	ArrayType	  *arr;
-	Datum		  *elems;
-	bool		  *nulls;
-	int			   nelems;
-	StringInfoData buf;
-
-	arr = DatumGetArrayTypeP(array_datum);
-	deconstruct_array(
-			arr, TEXTOID, -1, false, TYPALIGN_INT, &elems, &nulls, &nelems);
-
-	initStringInfo(&buf);
-
-	for (int i = 0; i < nelems; i++)
-	{
-		text *elem;
-		int	  len;
-
-		if (nulls[i])
-			continue;
-
-		elem = DatumGetTextPP(elems[i]);
-		len	 = VARSIZE_ANY_EXHDR(elem);
-
-		if (len == 0)
-			continue;
-
-		if (buf.len > 0)
-			appendStringInfoChar(&buf, ' ');
-		appendBinaryStringInfo(&buf, VARDATA_ANY(elem), len);
-	}
-
-	return cstring_to_text_with_len(buf.data, buf.len);
-}
-
-/*
  * Extract terms and frequencies from a TSVector
  * Returns the document length (sum of all term frequencies)
  */
@@ -920,7 +867,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
 		Oid		   atttype =
 				TupleDescAttr(RelationGetDescr(heap), attnum - 1)->atttypid;
-		is_text_array = is_text_array_type(atttype);
+		is_text_array = tp_is_text_array_type(atttype);
 	}
 
 	/* Report initialization phase */
@@ -1183,10 +1130,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			if (isnull)
 				continue;
 
-			if (is_text_array)
-				document_text = tp_flatten_text_array(text_datum);
-			else
-				document_text = DatumGetTextPP(text_datum);
 			slot_getallattrs(slot);
 			ctid = &slot->tts_tid;
 
@@ -1194,10 +1137,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				continue;
 
 			/*
-			 * Tokenize in temporary context to prevent
-			 * to_tsvector_byid memory from accumulating.
+			 * Switch to temporary context before text extraction
+			 * so flatten allocations are freed per-document.
 			 */
 			oldctx = MemoryContextSwitchTo(build_tmpctx);
+
+			if (is_text_array)
+				document_text = tp_flatten_text_array(text_datum);
+			else
+				document_text = DatumGetTextPP(text_datum);
 
 			tsvector_datum = DirectFunctionCall2Coll(
 					to_tsvector_byid,
@@ -1461,7 +1409,7 @@ tp_insert(
 		Oid		   atttype =
 				TupleDescAttr(RelationGetDescr(heapRel), attnum - 1)->atttypid;
 
-		if (is_text_array_type(atttype))
+		if (tp_is_text_array_type(atttype))
 			document_text = tp_flatten_text_array(values[0]);
 		else
 			document_text = DatumGetTextPP(values[0]);

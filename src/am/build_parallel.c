@@ -21,7 +21,6 @@
 #include <access/tableam.h>
 #include <access/xact.h>
 #include <catalog/index.h>
-#include <catalog/pg_type.h>
 #include <commands/progress.h>
 #include <executor/executor.h>
 #include <miscadmin.h>
@@ -30,7 +29,6 @@
 #include <storage/bufmgr.h>
 #include <storage/condition_variable.h>
 #include <tsearch/ts_type.h>
-#include <utils/array.h>
 #include <utils/backend_progress.h>
 #include <utils/builtins.h>
 #include <utils/memutils.h>
@@ -47,6 +45,7 @@
 #include "segment/segment.h"
 #include "segment/segment_io.h"
 #include "state/metapage.h"
+#include "types/array.h"
 
 /* ----------------------------------------------------------------
  * Worker-local segment tracking
@@ -308,7 +307,10 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		if (!ItemPointerIsValid(ctid))
 			goto next_tuple;
 
-		/* Tokenize in temporary context (includes detoasting) */
+		/*
+		 * Switch to temporary context before text extraction
+		 * so flatten allocations are freed per-document.
+		 */
 		oldctx = MemoryContextSwitchTo(build_tmpctx);
 
 		if (shared->is_text_array)

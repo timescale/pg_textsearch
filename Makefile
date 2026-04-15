@@ -43,6 +43,7 @@ OBJS = \
 	src/segment/compression.o \
 	src/query/bmw.o \
 	src/query/score.o \
+	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
 	src/state/state.o \
