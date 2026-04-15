@@ -25,6 +25,7 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
+#include "alive_bitset.h"
 #include "compression.h"
 #include "debug/dump.h"
 #include "dictionary.h"
@@ -1292,6 +1293,25 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 				&writer,
 				docmap->ctid_offsets,
 				docmap->num_docs * sizeof(OffsetNumber));
+	}
+
+	/* Write alive bitset (all alive) */
+	header.alive_bitset_offset = writer.current_offset;
+	header.alive_count		   = docmap->num_docs;
+	if (docmap->num_docs > 0)
+	{
+		uint32 bitset_size = tp_alive_bitset_size(docmap->num_docs);
+		uint8 *bitset_data = palloc(bitset_size);
+
+		memset(bitset_data, 0xFF, bitset_size);
+		if (docmap->num_docs % 8 != 0)
+		{
+			uint8 mask = (1 << (docmap->num_docs % 8)) - 1;
+
+			bitset_data[bitset_size - 1] &= mask;
+		}
+		tp_segment_writer_write(&writer, bitset_data, bitset_size);
+		pfree(bitset_data);
 	}
 
 	/* Update num_docs to actual count from this segment */
