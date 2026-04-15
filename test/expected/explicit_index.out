@@ -42,8 +42,8 @@ LIMIT 10;
 
 -- This should ERROR: left operand is a constant, not a column
 SELECT 'hello' <@> to_bm25query('postgres', 'content_idx') AS score;
-ERROR:  left operand of <@> must be a table column
-HINT:  Use column_name <@> bm25query, not a constant or expression.
+ERROR:  left operand of <@> must reference a table column
+HINT:  Use column_name <@> bm25query, not a constant.
 -- Clean up
 DROP TABLE explicit_index_test;
 -----------------------------------------------------------------------

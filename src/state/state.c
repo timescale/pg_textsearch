@@ -13,8 +13,11 @@
 #include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/relation.h>
+#include <catalog/index.h>
+#include <executor/executor.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
+#include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
@@ -847,6 +850,12 @@ tp_rebuild_posting_lists_from_docids(
 	BlockNumber		   current_page;
 	BlockNumber		   last_valid_page = InvalidBlockNumber;
 	Relation		   heap_rel;
+	IndexInfo		  *indexInfo;
+	EState			  *estate;
+	ExprContext		  *econtext;
+	TupleTableSlot	  *eval_slot;
+	Datum			   idx_values[INDEX_MAX_KEYS];
+	bool			   idx_isnull[INDEX_MAX_KEYS];
 	bool			   chain_truncated = false;
 
 	if (!metap || metap->first_docid_page == InvalidBlockNumber)
@@ -870,6 +879,17 @@ tp_rebuild_posting_lists_from_docids(
 	 * exist when not in build mode.
 	 */
 	tp_ensure_string_table_initialized(local_state);
+
+	/* Set up expression evaluation */
+	indexInfo = BuildIndexInfo(index_rel);
+	estate	  = CreateExecutorState();
+	econtext  = GetPerTupleExprContext(estate);
+	eval_slot = MakeSingleTupleTableSlot(
+			RelationGetDescr(heap_rel), &TTSOpsBufferHeapTuple);
+
+	if (indexInfo->ii_Predicate != NIL)
+		indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
 	current_page = metap->first_docid_page;
 
@@ -937,17 +957,14 @@ tp_rebuild_posting_lists_from_docids(
 			HeapTuple	  tuple = &tuple_data;
 			Buffer		  heap_buf;
 			bool		  valid;
-			Datum		  text_datum;
-			bool		  isnull;
-			text		 *document_text;
-			int32		  doc_length;
 			BlockNumber	  heap_blkno;
-			AttrNumber	  attnum;
 
 			/* Validate the ItemPointer before attempting fetch */
 			if (!ItemPointerIsValid(ctid))
 			{
-				elog(WARNING, "Invalid ItemPointer in docid page - skipping");
+				elog(WARNING,
+					 "Invalid ItemPointer in docid page"
+					 " - skipping");
 				continue;
 			}
 
@@ -955,29 +972,30 @@ tp_rebuild_posting_lists_from_docids(
 			tuple->t_self = *ctid;
 
 			/*
-			 * Try to fetch the document from heap using the stored ctid.
-			 * We use heap_fetch with SnapshotAny to see all tuples,
-			 * but we need to be careful because the tuple might not exist
-			 * if this is stale data from a previous index incarnation.
+			 * Try to fetch the document from heap using the
+			 * stored ctid. We use heap_fetch with SnapshotAny
+			 * to see all tuples, but we need to be careful
+			 * because the tuple might not exist if this is
+			 * stale data from a previous index incarnation.
 			 *
-			 * First check if the block exists in the heap relation.
+			 * First check if the block exists in the heap.
 			 */
 			heap_blkno = ItemPointerGetBlockNumber(ctid);
 			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
 			{
 				/*
-				 * Block doesn't exist in heap - this is stale data.
+				 * Block doesn't exist in heap - stale data.
 				 * This can occur when:
-				 * - The heap was VACUUMed and pages were truncated
-				 * - The table was TRUNCATEd after index was built
-				 * - Crash occurred between index update and heap update
+				 * - The heap was VACUUMed and pages truncated
+				 * - The table was TRUNCATEd after index built
+				 * - Crash between index update and heap update
 				 * - Data corruption resulted in invalid ctids
-				 * We skip these entries rather than failing recovery.
+				 * Skip these entries rather than failing.
 				 */
 				continue;
 			}
 
-			/* Fetch document from heap using the stored ctid */
+			/* Fetch document from heap */
 			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
 			if (!valid || !HeapTupleIsValid(tuple))
 			{
@@ -986,30 +1004,33 @@ tp_rebuild_posting_lists_from_docids(
 				continue; /* Skip invalid documents */
 			}
 
-			/* Extract text from the indexed column.
-			 * We need to get the actual column number from the index.
-			 * rd_index->indkey.values[0] contains the attribute number
-			 * of the first indexed column in the heap relation.
-			 */
-			attnum	   = index_rel->rd_index->indkey.values[0];
-			text_datum = heap_getattr(
-					tuple, attnum, RelationGetDescr(heap_rel), &isnull);
+			/* Evaluate index expression */
+			ExecStoreBufferHeapTuple(tuple, eval_slot, heap_buf);
+			econtext->ecxt_scantuple = eval_slot;
+			FormIndexDatum(
+					indexInfo, eval_slot, estate, idx_values, idx_isnull);
 
-			if (!isnull)
+			/* Check partial index predicate */
+			if (indexInfo->ii_Predicate != NIL &&
+				!ExecQual(indexInfo->ii_PredicateState, econtext))
 			{
-				document_text = DatumGetTextPP(text_datum);
+				ExecClearTuple(eval_slot);
+				ResetExprContext(econtext);
+				ReleaseBuffer(heap_buf);
+				continue;
+			}
 
-				/*
-				 * Use shared helper to process document text and rebuild
-				 * posting lists. Pass NULL for index_rel to disable auto-spill
-				 * during recovery (we're rebuilding from docid pages).
-				 */
+			if (!idx_isnull[0])
+			{
+				text *document_text = DatumGetTextPP(idx_values[0]);
+				int32 doc_length;
+
 				if (tp_process_document_text(
 							document_text,
 							ctid,
 							metap->text_config_oid,
 							local_state,
-							NULL, /* No auto-spill during recovery */
+							NULL,
 							&doc_length))
 				{
 					/* Update corpus statistics */
@@ -1020,6 +1041,8 @@ tp_rebuild_posting_lists_from_docids(
 				}
 			}
 
+			ExecClearTuple(eval_slot);
+			ResetExprContext(econtext);
 			ReleaseBuffer(heap_buf);
 		}
 
@@ -1029,6 +1052,8 @@ tp_rebuild_posting_lists_from_docids(
 		UnlockReleaseBuffer(docid_buf);
 	}
 
+	ExecDropSingleTupleTableSlot(eval_slot);
+	FreeExecutorState(estate);
 	relation_close(heap_rel, AccessShareLock);
 
 	/*

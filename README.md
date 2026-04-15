@@ -9,6 +9,8 @@ Modern ranked text search for Postgres.
 - Simple syntax: `ORDER BY content <@> 'search terms'`
 - BM25 ranking with configurable parameters (k1, b)
 - Works with Postgres text search configurations (english, french, german, etc.)
+- Expression indexes for JSONB fields, multi-column search, and text transformations
+- Partial indexes for scoped search and multilingual tables
 - Fast top-k queries via Block-Max WAND optimization
 - Parallel index builds for large tables
 - Supports partitioned tables
@@ -201,6 +203,85 @@ CREATE INDEX docs_simple_idx ON documents USING bm25(content) WITH (text_config=
 -- Language-specific configurations
 CREATE INDEX docs_fr_idx ON french_docs USING bm25(content) WITH (text_config='french');
 CREATE INDEX docs_de_idx ON german_docs USING bm25(content) WITH (text_config='german');
+```
+
+### Expression Indexes
+
+Index expressions instead of plain columns — useful for JSONB fields,
+multi-column concatenation, and text transformations:
+
+```sql
+-- JSONB field extraction
+CREATE INDEX ON events USING bm25 ((data->>'description'))
+    WITH (text_config='english');
+
+SELECT * FROM events
+ORDER BY (data->>'description') <@> to_bm25query('network error', 'events_expr_idx')
+LIMIT 10;
+
+-- Multi-column search
+CREATE INDEX ON articles USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
+    WITH (text_config='english');
+
+-- Text transformation
+CREATE INDEX ON docs USING bm25 ((lower(content)))
+    WITH (text_config='simple');
+```
+
+The expression must evaluate to `text` and use only IMMUTABLE functions.
+Queries must repeat the same expression in the `ORDER BY` clause.
+
+### Partial Indexes
+
+Index a subset of rows by adding a `WHERE` clause. Partial indexes are
+smaller and faster when queries always target a specific subset:
+
+```sql
+CREATE INDEX ON docs USING bm25 (content)
+    WITH (text_config='english')
+    WHERE status = 'published';
+
+SELECT * FROM docs
+WHERE status = 'published'
+ORDER BY content <@> to_bm25query('search terms', 'docs_content_idx')
+LIMIT 10;
+```
+
+Partial indexes require explicit index naming via `to_bm25query()` — the
+implicit `text <@> 'query'` syntax skips them.
+
+Expression and partial indexes can be combined:
+
+```sql
+CREATE INDEX ON events USING bm25 ((data->>'message'))
+    WITH (text_config='english')
+    WHERE (data->>'severity') = 'error';
+```
+
+### Multilingual Tables
+
+For tables with documents in multiple languages, create one partial index
+per language, each with the appropriate text search configuration:
+
+```sql
+ALTER TABLE docs ADD COLUMN lang CHAR(2) NOT NULL DEFAULT 'en';
+
+CREATE INDEX docs_en_idx ON docs USING bm25 (content)
+    WITH (text_config='english') WHERE lang = 'en';
+CREATE INDEX docs_de_idx ON docs USING bm25 (content)
+    WITH (text_config='german')  WHERE lang = 'de';
+CREATE INDEX docs_fr_idx ON docs USING bm25 (content)
+    WITH (text_config='french')  WHERE lang = 'fr';
+```
+
+Each index applies language-appropriate stemming and stop words. Query
+with the matching predicate and index name:
+
+```sql
+SELECT * FROM docs
+WHERE lang = 'en'
+ORDER BY content <@> to_bm25query('databases', 'docs_en_idx')
+LIMIT 10;
 ```
 
 ## Data Types
@@ -450,21 +531,6 @@ LIMIT 10;
 
 Because the post-filter eliminates some results, the inner LIMIT should
 be larger than the desired result count.
-
-### No Expression Indexing
-
-Each BM25 index covers a single text column. You cannot create an index on
-an expression like `lower(title) || ' ' || content`. As a workaround, use
-a generated column:
-
-```sql
-ALTER TABLE documents ADD COLUMN search_text text
-    GENERATED ALWAYS AS (
-        COALESCE(title, '') || ' ' || COALESCE(content, '')
-    ) STORED;
-CREATE INDEX ON documents USING bm25(search_text)
-    WITH (text_config = 'english');
-```
 
 ### No Built-in Faceted Search
 
