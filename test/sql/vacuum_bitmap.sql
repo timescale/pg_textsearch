@@ -194,4 +194,119 @@ LIMIT 5;
 
 DROP TABLE vb_scores;
 
+-- =============================================================
+-- Test 7: Many deletes (>64 per segment, exercises realloc)
+-- =============================================================
+CREATE TABLE vb_many (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_many (content)
+SELECT 'manydelete document ' || i || ' searchable'
+FROM generate_series(1, 200) i;
+
+CREATE INDEX vb_many_idx ON vb_many
+    USING bm25 (content) WITH (text_config = 'english');
+
+-- Delete 150 of 200 rows (well past the initial 64-element array)
+DELETE FROM vb_many WHERE id <= 150;
+VACUUM vb_many;
+
+SELECT count(*) FROM vb_many
+WHERE content <@> to_bm25query('searchable', 'vb_many_idx') < 0;
+
+DROP TABLE vb_many;
+
+-- =============================================================
+-- Test 8: Multi-segment merge with dead docs
+-- =============================================================
+CREATE TABLE vb_multimerge (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_multimerge (content)
+SELECT 'batch1 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+
+CREATE INDEX vb_mm_idx ON vb_multimerge
+    USING bm25 (content) WITH (text_config = 'english');
+
+SELECT bm25_spill_index('vb_mm_idx');
+
+INSERT INTO vb_multimerge (content)
+SELECT 'batch2 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+
+SELECT bm25_spill_index('vb_mm_idx');
+
+INSERT INTO vb_multimerge (content)
+SELECT 'batch3 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+
+SELECT bm25_spill_index('vb_mm_idx');
+
+-- Delete from each batch
+DELETE FROM vb_multimerge WHERE id <= 10;
+DELETE FROM vb_multimerge WHERE id > 50 AND id <= 60;
+DELETE FROM vb_multimerge WHERE id > 100 AND id <= 110;
+
+VACUUM vb_multimerge;
+
+-- Merge all segments — exercises N-way merge with dead docs
+SELECT bm25_force_merge('vb_mm_idx');
+
+-- 150 total - 30 deleted = 120 live
+SELECT count(*) FROM vb_multimerge
+WHERE content <@> to_bm25query('target', 'vb_mm_idx') < 0;
+
+DROP TABLE vb_multimerge;
+
+-- =============================================================
+-- Test 9: All docs dead across segments then merge
+-- =============================================================
+CREATE TABLE vb_alldead (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_alldead (content)
+SELECT 'alldead doc ' || i FROM generate_series(1, 30) i;
+
+CREATE INDEX vb_alldead_idx ON vb_alldead
+    USING bm25 (content) WITH (text_config = 'english');
+
+SELECT bm25_spill_index('vb_alldead_idx');
+
+INSERT INTO vb_alldead (content)
+SELECT 'alldead second ' || i FROM generate_series(1, 30) i;
+
+SELECT bm25_spill_index('vb_alldead_idx');
+
+DELETE FROM vb_alldead;
+VACUUM vb_alldead;
+
+-- Both segments should be dropped — merge is a no-op
+SELECT bm25_force_merge('vb_alldead_idx');
+
+SELECT count(*) FROM vb_alldead
+WHERE content <@> to_bm25query('alldead', 'vb_alldead_idx') < 0;
+
+-- Insert fresh data to verify index still works
+INSERT INTO vb_alldead (content) VALUES ('revival document here');
+
+SELECT count(*) FROM vb_alldead
+WHERE content <@> to_bm25query('revival', 'vb_alldead_idx') < 0;
+
+DROP TABLE vb_alldead;
+
+-- =============================================================
+-- Test 10: Dump shows alive bitset info
+-- =============================================================
+CREATE TABLE vb_dump (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_dump (content)
+SELECT 'dump test ' || i FROM generate_series(1, 10) i;
+
+CREATE INDEX vb_dump_idx ON vb_dump
+    USING bm25 (content) WITH (text_config = 'english');
+
+-- Verify dump output includes alive bitset info
+SELECT bm25_dump_index('vb_dump_idx') LIKE '%Alive: 10 / 10 docs%'
+    AS has_alive_info;
+
+DROP TABLE vb_dump;
+
 DROP EXTENSION pg_textsearch;
