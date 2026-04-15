@@ -40,6 +40,7 @@ OBJS = \
 	src/segment/scan.o \
 	src/segment/merge.o \
 	src/segment/docmap.o \
+	src/segment/alive_bitset.o \
 	src/segment/compression.o \
 	src/query/bmw.o \
 	src/query/score.o \
