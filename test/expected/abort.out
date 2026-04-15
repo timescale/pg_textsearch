@@ -130,6 +130,77 @@ SELECT id FROM abort_test2
 SELECT 1/0;
 ERROR:  division by zero
 ROLLBACK;
+-- Scenario 9: SAVEPOINT rollback of CREATE INDEX with populated memtable
+-- Exercises SubXactCallback cleanup of dshash tables in memtable
+BEGIN;
+CREATE TABLE abort_subxact1 (id serial PRIMARY KEY, body text);
+SAVEPOINT sp1;
+CREATE INDEX abort_subxact1_idx ON abort_subxact1
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_subxact1_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Insert data to populate the memtable (creates string_hash + doc_lengths)
+INSERT INTO abort_subxact1 (body) VALUES ('memtable data one');
+INSERT INTO abort_subxact1 (body) VALUES ('memtable data two');
+ROLLBACK TO sp1;
+-- Table should still be usable without the index
+INSERT INTO abort_subxact1 (body) VALUES ('after rollback');
+COMMIT;
+SELECT count(*) FROM abort_subxact1;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE abort_subxact1;
+-- Scenario 10: Nested savepoints with RELEASE (promotes subxact state)
+BEGIN;
+CREATE TABLE abort_subxact2 (id serial PRIMARY KEY, body text);
+SAVEPOINT sp1;
+SAVEPOINT sp2;
+CREATE INDEX abort_subxact2_idx ON abort_subxact2
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_subxact2_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+RELEASE SAVEPOINT sp2;
+-- Index alive, state promoted from sp2 to sp1
+INSERT INTO abort_subxact2 (body) VALUES ('after release');
+ROLLBACK TO sp1;
+-- Index (promoted to sp1) should be cleaned up
+COMMIT;
+SELECT count(*) FROM abort_subxact2;
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE abort_subxact2;
+-- Scenario 11: SAVEPOINT abort followed by full transaction abort
+-- Validates no double-free between subxact and xact cleanup
+BEGIN;
+CREATE TABLE abort_subxact3 (id serial PRIMARY KEY, body text);
+SAVEPOINT sp1;
+CREATE INDEX abort_subxact3_idx ON abort_subxact3
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation abort_subxact3_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO abort_subxact3 (body) VALUES ('will be rolled back');
+ROLLBACK TO sp1;
+-- Subxact cleanup already ran; now abort the whole transaction
+ROLLBACK;
+-- Table should not exist after full rollback
+SELECT count(*) FROM pg_class WHERE relname = 'abort_subxact3';
+ count 
+-------
+     0
+(1 row)
+
 -- Cleanup
 DROP TABLE abort_test2;
 DROP TABLE abort_test4;
