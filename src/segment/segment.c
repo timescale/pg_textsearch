@@ -1737,6 +1737,14 @@ tp_dump_segment_to_output(
 	dump_printf(out, "Data size: %" PRIu64 " bytes\n", header.data_size);
 	dump_printf(out, "Level: %u\n", header.level);
 	dump_printf(out, "Page index: block %u\n", header.page_index);
+	dump_printf(
+			out, "Alive: %u / %u docs\n", header.alive_count, header.num_docs);
+	if (header.alive_bitset_offset > 0)
+		dump_printf(
+				out,
+				"Alive bitset offset: %" PRIu64 " (%u bytes)\n",
+				header.alive_bitset_offset,
+				tp_alive_bitset_size(header.num_docs));
 
 	/* Corpus statistics */
 	dump_printf(out, "\n=== CORPUS STATISTICS ===\n");
