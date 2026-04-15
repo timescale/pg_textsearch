@@ -251,6 +251,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	int				   segment_count   = 0;
 	uint32			   segment_terms   = 0;
 	uint32			   segment_docs	   = 0;
+	uint32			   segment_alive   = 0;
 	uint32			   recovery_pages  = 0;
 	uint32			   recovery_docids = 0;
 
@@ -447,20 +448,39 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 					level_segment_count++;
 					segment_terms += header->num_terms;
 					segment_docs += header->num_docs;
+					segment_alive += header->alive_count;
 					segment_pages += header->num_pages;
 					seg_size = (Size)header->num_pages * BLCKSZ;
 
-					dump_printf(
-							out,
-							"  L%d Segment %d: block=%u, pages=%u, "
-							"size=%.1fMB, terms=%u, docs=%u\n",
-							level,
-							level_segment_count,
-							current_segment,
-							header->num_pages,
-							(double)seg_size / (1024.0 * 1024.0),
-							header->num_terms,
-							header->num_docs);
+					if (header->alive_count < header->num_docs)
+						dump_printf(
+								out,
+								"  L%d Segment %d: block=%u, "
+								"pages=%u, size=%.1fMB, "
+								"terms=%u, docs=%u "
+								"(alive=%u, dead=%u)\n",
+								level,
+								level_segment_count,
+								current_segment,
+								header->num_pages,
+								(double)seg_size / (1024.0 * 1024.0),
+								header->num_terms,
+								header->num_docs,
+								header->alive_count,
+								header->num_docs - header->alive_count);
+					else
+						dump_printf(
+								out,
+								"  L%d Segment %d: block=%u, "
+								"pages=%u, size=%.1fMB, "
+								"terms=%u, docs=%u\n",
+								level,
+								level_segment_count,
+								current_segment,
+								header->num_pages,
+								(double)seg_size / (1024.0 * 1024.0),
+								header->num_terms,
+								header->num_docs);
 
 					current_segment = header->next_segment;
 					tp_segment_close(reader);
@@ -474,15 +494,31 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 
 		if (has_segments)
 		{
-			dump_printf(
-					out,
-					"  Total: %d segments, " UINT64_FORMAT " pages (%.1fMB), "
-					"%u terms, %u docs\n",
-					segment_count,
-					segment_pages,
-					(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
-					segment_terms,
-					segment_docs);
+			if (segment_alive < segment_docs)
+				dump_printf(
+						out,
+						"  Total: %d segments, " UINT64_FORMAT
+						" pages (%.1fMB), "
+						"%u terms, %u docs "
+						"(alive=%u, dead=%u)\n",
+						segment_count,
+						segment_pages,
+						(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
+						segment_terms,
+						segment_docs,
+						segment_alive,
+						segment_docs - segment_alive);
+			else
+				dump_printf(
+						out,
+						"  Total: %d segments, " UINT64_FORMAT
+						" pages (%.1fMB), "
+						"%u terms, %u docs\n",
+						segment_count,
+						segment_pages,
+						(double)(segment_pages * BLCKSZ) / (1024.0 * 1024.0),
+						segment_terms,
+						segment_docs);
 		}
 		else
 		{

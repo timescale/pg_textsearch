@@ -40,9 +40,9 @@ tp_alive_bitset_size(uint32 num_docs)
 
 /*
  * Check if a doc is alive by reading from segment pages.
- * Used in the hot scoring path — reads one byte via paged I/O.
- * Returns true if the segment has no bitset (pre-V5) or if the
- * doc's bit is set.
+ * Used in the hot scoring path — reads one byte via paged
+ * I/O.  Returns true if the segment has no bitset (pre-V5)
+ * or if all docs are alive, or if the doc's bit is set.
  */
 static inline bool
 tp_segment_is_alive(TpSegmentReader *reader, uint32 doc_id)
@@ -50,13 +50,81 @@ tp_segment_is_alive(TpSegmentReader *reader, uint32 doc_id)
 	uint64 byte_offset;
 	uint8  byte;
 
-	if (reader->header->alive_bitset_offset == 0)
+	if (reader->header->alive_bitset_offset == 0 ||
+		reader->header->alive_count == reader->header->num_docs)
 		return true;
 
 	byte_offset = reader->header->alive_bitset_offset + (doc_id >> 3);
 	tp_segment_read(reader, byte_offset, &byte, 1);
 	return (byte >> (doc_id & 7)) & 1;
 }
+
+/*
+ * Batch alive check for a range of doc_ids (used by BMW to
+ * amortize paged I/O across a posting block).  Reads the
+ * bitset bytes covering [first_doc_id, last_doc_id] into a
+ * caller-supplied buffer, then provides a fast bit-test macro.
+ *
+ * Usage:
+ *   uint8 buf[TP_ALIVE_BLOCK_BUF_SIZE];
+ *   uint32 base;
+ *   tp_alive_bitset_load_range(reader, first, last, buf, &base);
+ *   if (TP_ALIVE_BIT(buf, base, doc_id)) { ... }
+ */
+#define TP_ALIVE_BLOCK_BUF_SIZE 20 /* ceil(128/8) + 2 slack */
+
+/*
+ * Load the bitset byte range covering [first_doc_id, last_doc_id].
+ * Sets *base_byte_out to the byte index of the first byte loaded,
+ * so callers can test bits with TP_ALIVE_BIT.
+ *
+ * Returns false if all docs are alive (caller can skip checks).
+ */
+static inline bool
+tp_alive_bitset_load_range(
+		TpSegmentReader *reader,
+		uint32			 first_doc_id,
+		uint32			 last_doc_id,
+		uint8			*buf,
+		uint32			*base_byte_out)
+{
+	uint32 first_byte;
+	uint32 last_byte;
+	uint32 nbytes;
+
+	if (reader->header->alive_bitset_offset == 0 ||
+		reader->header->alive_count == reader->header->num_docs)
+		return false;
+
+	first_byte = first_doc_id >> 3;
+	last_byte  = last_doc_id >> 3;
+	nbytes	   = last_byte - first_byte + 1;
+
+	Assert(nbytes <= TP_ALIVE_BLOCK_BUF_SIZE);
+
+	tp_segment_read(
+			reader,
+			reader->header->alive_bitset_offset + first_byte,
+			buf,
+			nbytes);
+
+	*base_byte_out = first_byte;
+	return true;
+}
+
+/*
+ * Test a doc_id against a pre-loaded bitset range.
+ * base_byte is the value set by tp_alive_bitset_load_range.
+ */
+#define TP_ALIVE_BIT(buf, base_byte, doc_id) \
+	((buf[((doc_id) >> 3) - (base_byte)] >> ((doc_id) & 7)) & 1)
+
+/*
+ * Initialize a raw bitset buffer to all-alive for num_docs.
+ * Sets all bits to 1, then clears trailing bits beyond num_docs.
+ * Used by segment writers to avoid duplicating the mask logic.
+ */
+extern void tp_alive_bitset_init_data(uint8 *buf, uint32 num_docs);
 
 /*
  * Create an in-memory bitset with all docs alive.
@@ -79,7 +147,9 @@ extern bool tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id);
 /*
  * Write the in-memory bitset back to segment pages and
  * update the segment header's alive_count.  Uses
- * GenericXLog for crash safety.
+ * GenericXLog for crash safety.  The header update is
+ * batched into the final bitset page's GenericXLog
+ * transaction for atomicity.
  */
 extern void tp_alive_bitset_write(
 		TpAliveBitset *bitset, TpSegmentReader *reader, Relation index);

@@ -1330,13 +1330,7 @@ write_merged_segment_to_sink(
 		uint32 bitset_size = tp_alive_bitset_size(docmap->num_docs);
 		uint8 *bitset_data = palloc(bitset_size);
 
-		memset(bitset_data, 0xFF, bitset_size);
-		if (docmap->num_docs % 8 != 0)
-		{
-			uint8 mask = (1 << (docmap->num_docs % 8)) - 1;
-
-			bitset_data[bitset_size - 1] &= mask;
-		}
+		tp_alive_bitset_init_data(bitset_data, docmap->num_docs);
 		merge_sink_write(sink, bitset_data, bitset_size);
 		pfree(bitset_data);
 	}

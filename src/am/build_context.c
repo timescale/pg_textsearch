@@ -523,13 +523,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		uint32 bitset_size = tp_alive_bitset_size(ctx->num_docs);
 		uint8 *bitset_data = palloc(bitset_size);
 
-		memset(bitset_data, 0xFF, bitset_size);
-		if (ctx->num_docs % 8 != 0)
-		{
-			uint8 mask = (1 << (ctx->num_docs % 8)) - 1;
-
-			bitset_data[bitset_size - 1] &= mask;
-		}
+		tp_alive_bitset_init_data(bitset_data, ctx->num_docs);
 		tp_segment_writer_write(&writer, bitset_data, bitset_size);
 		pfree(bitset_data);
 	}

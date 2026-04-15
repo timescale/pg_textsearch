@@ -17,6 +17,25 @@
 #include "segment_io.h"
 
 /*
+ * Initialize a raw bitset buffer to all-alive for num_docs.
+ * Sets all bits to 1, then clears trailing bits in the last byte.
+ */
+void
+tp_alive_bitset_init_data(uint8 *buf, uint32 num_docs)
+{
+	uint32 nbytes = tp_alive_bitset_size(num_docs);
+
+	memset(buf, 0xFF, nbytes);
+
+	if (num_docs % 8 != 0)
+	{
+		uint8 mask = (1 << (num_docs % 8)) - 1;
+
+		buf[nbytes - 1] &= mask;
+	}
+}
+
+/*
  * Create an in-memory bitset with all docs alive.
  *
  * Allocates a TpAliveBitset with all bits set to 1, then clears
@@ -34,16 +53,7 @@ tp_alive_bitset_create(uint32 num_docs)
 
 	nbytes		 = tp_alive_bitset_size(num_docs);
 	bitset->bits = palloc(nbytes);
-	memset(bitset->bits, 0xFF, nbytes);
-
-	/* Clear trailing bits in the last byte beyond num_docs */
-	if (num_docs % 8 != 0)
-	{
-		uint32 trailing_bits = num_docs % 8;
-		uint8  mask			 = (1 << trailing_bits) - 1;
-
-		bitset->bits[nbytes - 1] &= mask;
-	}
+	tp_alive_bitset_init_data(bitset->bits, num_docs);
 
 	return bitset;
 }
@@ -102,14 +112,14 @@ tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id)
 }
 
 /*
- * Write the in-memory bitset back to segment pages using GenericXLog,
- * then update alive_count in the segment header page.
+ * Write the in-memory bitset back to segment pages using
+ * GenericXLog, then update alive_count in the segment header.
  *
- * The bitset data lives in the segment's logical address space starting
- * at reader->header->alive_bitset_offset.  We iterate the bitset bytes,
- * mapping each range to its physical page, and copy using GenericXLog
- * for crash safety.  Finally, the segment header's alive_count is
- * updated in a separate GenericXLog record.
+ * The header update is batched into the final bitset page's
+ * GenericXLog transaction so that the bitset data and
+ * alive_count are crash-atomic.  If the header page happens
+ * to be the same physical page as the last bitset page, both
+ * updates go into a single GenericXLog with one buffer.
  */
 void
 tp_alive_bitset_write(
@@ -124,8 +134,9 @@ tp_alive_bitset_write(
 	bytes_written = 0;
 
 	/*
-	 * Write bitset data page by page.  Each iteration handles one
-	 * physical page worth of bitset bytes (or less for the last page).
+	 * Write bitset data page by page.  On the last page,
+	 * batch the header alive_count update into the same
+	 * GenericXLog transaction for crash atomicity.
 	 */
 	while (bytes_written < nbytes)
 	{
@@ -137,6 +148,8 @@ tp_alive_bitset_write(
 		Buffer			  buf;
 		Page			  page;
 		GenericXLogState *xstate;
+		bool			  is_last_page;
+		Buffer			  header_buf = InvalidBuffer;
 
 		logical_offset = bitset_offset + bytes_written;
 		logical_page   = tp_logical_page(logical_offset);
@@ -145,10 +158,11 @@ tp_alive_bitset_write(
 		Assert(logical_page < reader->num_pages);
 		physical_block = reader->page_map[logical_page];
 
-		/* How many bitset bytes fit on this page from page_off */
 		bytes_on_page = SEGMENT_DATA_PER_PAGE - page_off;
 		if (bytes_on_page > nbytes - bytes_written)
 			bytes_on_page = nbytes - bytes_written;
+
+		is_last_page = (bytes_written + bytes_on_page >= nbytes);
 
 		buf = ReadBuffer(index, physical_block);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -159,31 +173,42 @@ tp_alive_bitset_write(
 			   bitset->bits + bytes_written,
 			   bytes_on_page);
 
+		/*
+		 * On the last bitset page, also update alive_count
+		 * in the segment header within the same GenericXLog
+		 * transaction for crash atomicity.
+		 */
+		if (is_last_page)
+		{
+			if (physical_block == reader->root_block)
+			{
+				/*
+				 * Header is on the same page — update the
+				 * already-registered buffer.
+				 */
+				TpSegmentHeader *hdr = (TpSegmentHeader *)PageGetContents(
+						page);
+				hdr->alive_count = bitset->alive_count;
+			}
+			else
+			{
+				Page header_page;
+
+				header_buf = ReadBuffer(index, reader->root_block);
+				LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+				header_page = GenericXLogRegisterBuffer(xstate, header_buf, 0);
+				((TpSegmentHeader *)PageGetContents(header_page))
+						->alive_count = bitset->alive_count;
+			}
+		}
+
 		GenericXLogFinish(xstate);
 		UnlockReleaseBuffer(buf);
 
+		if (BufferIsValid(header_buf))
+			UnlockReleaseBuffer(header_buf);
+
 		bytes_written += bytes_on_page;
-	}
-
-	/*
-	 * Update alive_count in the segment header page.
-	 */
-	{
-		Buffer			  header_buf;
-		Page			  header_page;
-		TpSegmentHeader	 *hdr;
-		GenericXLogState *xstate;
-
-		header_buf = ReadBuffer(index, reader->root_block);
-		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-		xstate		= GenericXLogStart(index);
-		header_page = GenericXLogRegisterBuffer(xstate, header_buf, 0);
-		hdr			= (TpSegmentHeader *)PageGetContents(header_page);
-
-		hdr->alive_count = bitset->alive_count;
-
-		GenericXLogFinish(xstate);
-		UnlockReleaseBuffer(header_buf);
 	}
 }
 

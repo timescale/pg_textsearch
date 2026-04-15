@@ -247,16 +247,16 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 				   src,
 				   offsetof(TpSegmentHeader, alive_bitset_offset));
 
-			/* Second half: num_terms … page_index.
-			 * In V4 on-disk, these start right after
-			 * ctid_offsets_offset — which is the same byte offset
-			 * as alive_bitset_offset in V5. */
+			/*
+			 * Second half: num_terms … page_index.  In V4
+			 * on-disk, these start right after
+			 * ctid_offsets_offset, which is the same byte
+			 * offset as alive_bitset_offset in V5.
+			 */
 			memcpy(&reader->header->num_terms,
 				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
-				   sizeof(uint32)			/* num_terms */
-						   + sizeof(uint32) /* num_docs */
-						   + sizeof(uint64) /* total_tokens */
-						   + sizeof(BlockNumber) /* page_index */);
+				   sizeof(TpSegmentHeader) -
+						   offsetof(TpSegmentHeader, num_terms));
 
 			header						= reader->header;
 			header->alive_bitset_offset = 0;
@@ -1320,13 +1320,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		uint32 bitset_size = tp_alive_bitset_size(docmap->num_docs);
 		uint8 *bitset_data = palloc(bitset_size);
 
-		memset(bitset_data, 0xFF, bitset_size);
-		if (docmap->num_docs % 8 != 0)
-		{
-			uint8 mask = (1 << (docmap->num_docs % 8)) - 1;
-
-			bitset_data[bitset_size - 1] &= mask;
-		}
+		tp_alive_bitset_init_data(bitset_data, docmap->num_docs);
 		tp_segment_writer_write(&writer, bitset_data, bitset_size);
 		pfree(bitset_data);
 	}
