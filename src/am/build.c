@@ -803,28 +803,117 @@ tp_process_document_text(
 }
 
 /*
- * Set up a table scan for serial index build.
- * Returns the snapshot (PG18+ only) for later unregistration
+ * Callback state for table_index_build_scan during serial builds.
  */
-static Snapshot
-tp_setup_table_scan(
-		Relation heap, TableScanDesc *scan_out, TupleTableSlot **slot_out)
+typedef struct TpBuildCallbackState
 {
-	Snapshot snapshot = NULL;
+	TpBuildContext *build_ctx;
+	Relation		index;
+	Oid				text_config_oid;
+	MemoryContext	per_doc_ctx;
+	bool			is_text_array;
+	uint64			total_docs;
+	uint64			total_len;
+	uint64			tuples_done;
+} TpBuildCallbackState;
 
-#if PG_VERSION_NUM >= 180000
-	/* PG18: Must register the snapshot for index builds */
-	snapshot = GetTransactionSnapshot();
-	if (snapshot)
-		snapshot = RegisterSnapshot(snapshot);
-	*scan_out = table_beginscan(heap, snapshot, 0, NULL);
-#else
-	*scan_out = table_beginscan(heap, GetTransactionSnapshot(), 0, NULL);
-#endif
+/*
+ * Per-tuple callback for table_index_build_scan.
+ *
+ * Receives pre-evaluated index expression values from the scan,
+ * tokenizes the document text, and adds it to the build context.
+ */
+static void
+tp_build_callback(
+		Relation	index,
+		ItemPointer ctid,
+		Datum	   *values,
+		bool	   *isnull,
+		bool		tupleIsAlive,
+		void	   *state)
+{
+	TpBuildCallbackState *bs = (TpBuildCallbackState *)state;
+	text				 *document_text;
+	Datum				  tsvector_datum;
+	TSVector			  tsvector;
+	char				**terms;
+	int32				 *frequencies;
+	int					  term_count;
+	int					  doc_length;
+	MemoryContext		  oldctx;
 
-	*slot_out = table_slot_create(heap, NULL);
+	/* Suppress unused parameter warnings for callback signature */
+	(void)index;
+	(void)tupleIsAlive;
 
-	return snapshot;
+	if (isnull[0])
+		return;
+
+	if (!ItemPointerIsValid(ctid))
+		return;
+
+	/*
+	 * Tokenize in temporary context to prevent
+	 * to_tsvector_byid memory from accumulating.
+	 * Detoasting also happens here so the copy is freed
+	 * by MemoryContextReset below.
+	 */
+	oldctx = MemoryContextSwitchTo(bs->per_doc_ctx);
+
+	if (bs->is_text_array)
+		document_text = tp_flatten_text_array(values[0]);
+	else
+		document_text = DatumGetTextPP(values[0]);
+
+	tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid,
+			ObjectIdGetDatum(bs->text_config_oid),
+			PointerGetDatum(document_text));
+	tsvector = DatumGetTSVector(tsvector_datum);
+
+	doc_length = tp_extract_terms_from_tsvector(
+			tsvector, &terms, &frequencies, &term_count);
+
+	MemoryContextSwitchTo(oldctx);
+
+	if (term_count > 0)
+	{
+		tp_build_context_add_document(
+				bs->build_ctx,
+				terms,
+				frequencies,
+				term_count,
+				doc_length,
+				ctid);
+	}
+
+	/* Reset per-doc context (frees tsvector, terms) */
+	MemoryContextReset(bs->per_doc_ctx);
+
+	/* Budget-based flush */
+	if (tp_build_context_should_flush(bs->build_ctx))
+	{
+		bs->total_docs += bs->build_ctx->num_docs;
+		bs->total_len += bs->build_ctx->total_len;
+
+		tp_build_flush_and_link(bs->build_ctx, bs->index);
+		tp_build_context_reset(bs->build_ctx);
+
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
+		tp_maybe_compact_level(bs->index, 0);
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+	}
+
+	bs->tuples_done++;
+	if (bs->tuples_done % TP_PROGRESS_REPORT_INTERVAL == 0)
+	{
+		pgstat_progress_update_param(
+				PROGRESS_CREATEIDX_TUPLES_DONE, bs->tuples_done);
+		CHECK_FOR_INTERRUPTS();
+	}
 }
 
 /*
@@ -837,9 +926,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	char			  *text_config_name = NULL;
 	Oid				   text_config_oid	= InvalidOid;
 	double			   k1, b;
-	TableScanDesc	   scan;
-	TupleTableSlot	  *slot;
-	Snapshot		   snapshot	  = NULL;
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
@@ -861,13 +947,20 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/*
 	 * Determine if the indexed column is a text array type.
 	 * If so, we flatten array elements into a single text value
-	 * before tokenization. This check runs once before the scan.
+	 * before tokenization. Expression indexes (attnum == 0)
+	 * are never text arrays.
 	 */
 	{
 		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
-		Oid		   atttype =
-				TupleDescAttr(RelationGetDescr(heap), attnum - 1)->atttypid;
-		is_text_array = tp_is_text_array_type(atttype);
+
+		if (attnum > 0)
+		{
+			Oid atttype = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
+								  ->atttypid;
+			is_text_array = tp_is_text_array_type(atttype);
+		}
+		else
+			is_text_array = false;
 	}
 
 	/* Report initialization phase */
@@ -1066,11 +1159,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * maintenance_work_mem controls the per-batch memory budget.
 	 */
 	{
-		TpBuildContext *build_ctx;
-		MemoryContext	build_tmpctx;
-		MemoryContext	oldctx;
-		Size			budget;
-		uint64			tuples_done = 0;
+		TpBuildCallbackState bs;
+		TpBuildContext		*build_ctx;
+		Size				 budget;
+		double				 reltuples;
 
 		/*
 		 * Still create build index state for:
@@ -1085,15 +1177,18 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		budget	  = (Size)maintenance_work_mem * 1024L;
 		build_ctx = tp_build_context_create(budget);
 
-		/*
-		 * Per-document memory context for tokenization temporaries.
-		 * Reset after each document to prevent unbounded growth
-		 * from to_tsvector_byid allocations.
-		 */
-		build_tmpctx = AllocSetContextCreate(
+		/* Initialize callback state */
+		bs.build_ctx	   = build_ctx;
+		bs.index		   = index;
+		bs.text_config_oid = text_config_oid;
+		bs.is_text_array   = is_text_array;
+		bs.per_doc_ctx	   = AllocSetContextCreate(
 				CurrentMemoryContext,
 				"build per-doc temp",
 				ALLOCSET_DEFAULT_SIZES);
+		bs.total_docs  = 0;
+		bs.total_len   = 0;
+		bs.tuples_done = 0;
 
 		/* Report loading phase */
 		pgstat_progress_update_param(
@@ -1107,111 +1202,23 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					PROGRESS_CREATEIDX_TUPLES_TOTAL, tuples_est);
 		}
 
-		/* Prepare to scan table */
-		snapshot = tp_setup_table_scan(heap, &scan, &slot);
-		(void)snapshot; /* used only on PG18+ for UnregisterSnapshot */
-
-		/* Process each document */
-		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-		{
-			bool		isnull;
-			Datum		text_datum;
-			text	   *document_text;
-			ItemPointer ctid;
-			Datum		tsvector_datum;
-			TSVector	tsvector;
-			char	  **terms;
-			int32	   *frequencies;
-			int			term_count;
-			int			doc_length;
-
-			text_datum = slot_getattr(
-					slot, indexInfo->ii_IndexAttrNumbers[0], &isnull);
-			if (isnull)
-				continue;
-
-			slot_getallattrs(slot);
-			ctid = &slot->tts_tid;
-
-			if (!ItemPointerIsValid(ctid))
-				continue;
-
-			/*
-			 * Switch to temporary context before text extraction
-			 * so flatten allocations are freed per-document.
-			 */
-			oldctx = MemoryContextSwitchTo(build_tmpctx);
-
-			if (is_text_array)
-				document_text = tp_flatten_text_array(text_datum);
-			else
-				document_text = DatumGetTextPP(text_datum);
-
-			tsvector_datum = DirectFunctionCall2Coll(
-					to_tsvector_byid,
-					InvalidOid,
-					ObjectIdGetDatum(text_config_oid),
-					PointerGetDatum(document_text));
-			tsvector = DatumGetTSVector(tsvector_datum);
-
-			doc_length = tp_extract_terms_from_tsvector(
-					tsvector, &terms, &frequencies, &term_count);
-
-			MemoryContextSwitchTo(oldctx);
-
-			if (term_count > 0)
-			{
-				tp_build_context_add_document(
-						build_ctx,
-						terms,
-						frequencies,
-						term_count,
-						doc_length,
-						ctid);
-			}
-
-			/* Reset per-doc context (frees tsvector, terms) */
-			MemoryContextReset(build_tmpctx);
-
-			/* Budget-based flush */
-			if (tp_build_context_should_flush(build_ctx))
-			{
-				total_docs += build_ctx->num_docs;
-				total_len += build_ctx->total_len;
-
-				tp_build_flush_and_link(build_ctx, index);
-				tp_build_context_reset(build_ctx);
-
-				pgstat_progress_update_param(
-						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-				tp_maybe_compact_level(index, 0);
-				pgstat_progress_update_param(
-						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
-			}
-
-			tuples_done++;
-			if (tuples_done % TP_PROGRESS_REPORT_INTERVAL == 0)
-			{
-				pgstat_progress_update_param(
-						PROGRESS_CREATEIDX_TUPLES_DONE, tuples_done);
-				CHECK_FOR_INTERRUPTS();
-			}
-		}
+		/* Scan table with expression evaluation */
+		reltuples = table_index_build_scan(
+				heap,
+				index,
+				indexInfo,
+				true,
+				false,
+				tp_build_callback,
+				&bs,
+				NULL);
 
 		/* Accumulate final batch stats */
-		total_docs += build_ctx->num_docs;
-		total_len += build_ctx->total_len;
+		total_docs = bs.total_docs + build_ctx->num_docs;
+		total_len  = bs.total_len + build_ctx->total_len;
 
 		pgstat_progress_update_param(
-				PROGRESS_CREATEIDX_TUPLES_DONE, tuples_done);
-
-		ExecDropSingleTupleTableSlot(slot);
-		table_endscan(scan);
-
-#if PG_VERSION_NUM >= 180000
-		if (snapshot)
-			UnregisterSnapshot(snapshot);
-#endif
+				PROGRESS_CREATEIDX_TUPLES_DONE, bs.tuples_done);
 
 		/* Report writing phase */
 		pgstat_progress_update_param(
@@ -1248,7 +1255,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));
-		result->heap_tuples	 = total_docs;
+		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
 		if (build_progress.active)
@@ -1283,7 +1290,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Cleanup */
 		tp_build_context_destroy(build_ctx);
-		MemoryContextDelete(build_tmpctx);
+		MemoryContextDelete(bs.per_doc_ctx);
 	}
 
 	return result;
