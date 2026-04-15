@@ -1110,21 +1110,49 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					is_text_array,
 					nworkers);
 
-			/* Accumulate stats for build progress */
-			if (build_progress.active)
+			/*
+			 * Create shared index state for runtime queries.
+			 *
+			 * The parallel build writes segments and updates
+			 * the metapage, but does not create the in-memory
+			 * shared state that INSERT and SELECT need.
+			 * Without this, the first post-build access falls
+			 * through to tp_rebuild_index_from_disk() (the
+			 * crash-recovery path), which is fragile: a
+			 * concurrent backend can race to recreate the
+			 * state, leaving the inserting backend's memtable
+			 * invisible to scans.
+			 *
+			 * By creating the state here — the same backend
+			 * that ran the build — we ensure the registry
+			 * entry and local cache are ready before the
+			 * CREATE INDEX transaction commits.
+			 */
 			{
-				Buffer			metabuf;
-				Page			metapage;
-				TpIndexMetaPage metap;
+				TpLocalIndexState *pstate;
+				Buffer			   metabuf;
+				Page			   mpage;
+				TpIndexMetaPage	   metap;
+
+				pstate = tp_create_shared_index_state(
+						RelationGetRelid(index), RelationGetRelid(heap));
 
 				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-				metapage = BufferGetPage(metabuf);
-				metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+				mpage = BufferGetPage(metabuf);
+				metap = (TpIndexMetaPage)PageGetContents(mpage);
 
-				build_progress.total_docs += (uint64)metap->total_docs;
-				build_progress.total_len += (uint64)metap->total_len;
-				build_progress.partition_count++;
+				pg_atomic_write_u32(
+						&pstate->shared->total_docs, metap->total_docs);
+				pg_atomic_write_u64(
+						&pstate->shared->total_len, metap->total_len);
+
+				if (build_progress.active)
+				{
+					build_progress.total_docs += (uint64)metap->total_docs;
+					build_progress.total_len += (uint64)metap->total_len;
+					build_progress.partition_count++;
+				}
 
 				UnlockReleaseBuffer(metabuf);
 			}
