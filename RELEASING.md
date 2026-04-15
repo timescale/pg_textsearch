@@ -58,18 +58,11 @@ Update the image reference in README.md.
 
 ### 5. Update README Status
 
-Update the status line to reflect release state. Examples:
+Update the status line with the new version number:
 
 ```markdown
-# For early releases:
-🚀 **Status**: v0.3.0 - Query performance is production-ready. Index compression
-and parallel index builds are coming soon.
-
-# For stable releases:
-🚀 **Status**: v1.0.0 - Production ready.
+🚀 **Status**: vX.Y.Z - Production ready.
 ```
-
-Remove any "Now Open Source" or similar one-time announcements from previous releases.
 
 ### 6. Verify Paged Data Structure Versions
 
