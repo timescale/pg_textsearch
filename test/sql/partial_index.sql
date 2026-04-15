@@ -219,16 +219,15 @@ CREATE INDEX partial_only_idx ON partial_only
     WITH (text_config='english')
     WHERE category = 'tech';
 
--- Implicit resolution should not find the partial index.
--- This exercises the "skip partial" path in
--- find_bm25_index_for_column.  The query will use seq scan
--- with standalone scoring (returns all rows, score 0 for
--- non-matching).
+-- Implicit resolution should ERROR because only partial
+-- indexes exist on this column.
+\set ON_ERROR_STOP off
 SELECT id,
        ROUND((content <@> 'database')::numeric, 4) AS score
 FROM partial_only
 ORDER BY content <@> 'database'
 LIMIT 5;
+\set ON_ERROR_STOP on
 
 DROP TABLE partial_only CASCADE;
 

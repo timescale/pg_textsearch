@@ -254,11 +254,9 @@ NOTICE:  BM25 index build started for relation partial_only_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 1 documents, avg_length=2.00
--- Implicit resolution should not find the partial index.
--- This exercises the "skip partial" path in
--- find_bm25_index_for_column.  The query will use seq scan
--- with standalone scoring (returns all rows, score 0 for
--- non-matching).
+-- Implicit resolution should ERROR because only partial
+-- indexes exist on this column.
+\set ON_ERROR_STOP off
 SELECT id,
        ROUND((content <@> 'database')::numeric, 4) AS score
 FROM partial_only
@@ -266,6 +264,7 @@ ORDER BY content <@> 'database'
 LIMIT 5;
 ERROR:  no non-partial BM25 index found for this column (1 partial index(es) skipped)
 HINT:  Use to_bm25query('query', 'index_name') to specify which partial index to use.
+\set ON_ERROR_STOP on
 DROP TABLE partial_only CASCADE;
 -- ============================================================
 -- Cleanup

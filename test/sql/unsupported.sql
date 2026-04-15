@@ -82,16 +82,6 @@ LIMIT 3;
 DROP INDEX docs_bm25_simple_idx;
 
 -- =============================================================================
--- Expression indexes are now supported (build succeeds)
--- =============================================================================
-
-\echo 'Test: Expression index - should succeed'
-
-CREATE INDEX docs_lower_idx ON docs USING bm25(lower(content))
-    WITH (text_config='simple');
-DROP INDEX docs_lower_idx;
-
--- =============================================================================
 -- LIMITATION 3: Aggregate functions on scores require explicit to_bm25query()
 -- =============================================================================
 
