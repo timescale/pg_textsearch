@@ -133,5 +133,6 @@ window.BRANCH_INFO = {
   "dd08790abc9c1cd93e7b943ed2ef9f9e6aeaed7f": "concurrent-memtable",
   "e8f54c3b2c776b8f09ab29d5b5a093873cbfafd8": "main",
   "e517ec761e7404d55876ff565116f896442afcd3": "feat/alive-bitset",
-  "8b8d5bdaf4b658b2a10d330659083f9d41940740": "main"
+  "8b8d5bdaf4b658b2a10d330659083f9d41940740": "main",
+  "dc424c502a62bda4224a646847e8ab63021ec4b3": "feat/alive-bitset"
 };
