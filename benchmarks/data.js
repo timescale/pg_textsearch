@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776307132103,
+  "lastUpdate": 1776322933563,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -5692,6 +5692,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
             "value": 2.31,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8b8d5bdaf4b658b2a10d330659083f9d41940740",
+          "message": "feat: VACUUM performance benchmark (partial vs full) (#319)\n\n## Summary\n\n- Add a VACUUM benchmark that measures partial vs full VACUUM\nperformance against a multi-segment BM25 index\n- The standard load produces a single merged segment, so the benchmark\nfirst inserts 4 batches of ~100K rows with controlled memtable spills\n(`bm25_spill_index`) to create distinct segments (1 large original + 4\nsmall L0)\n- Three scenarios, each affecting ~100K rows:\n- **Partial VACUUM**: delete from one batch — only its segment is\naffected, VACUUM skips the rest\n- **Full VACUUM (delete)**: delete uniformly via `hashint4()` — dead\ntuples in all segments\n- **Full VACUUM (update)**: update uniformly — old tuple versions create\ndead entries across all segments\n- Tracks per-scenario: VACUUM wall-clock time, post-vacuum index size,\nquery latency\n- Integrated into CI with metrics extraction, GitHub Actions historical\ntracking, and job summary tables\n- Runs as part of the nightly benchmark schedule\n- Available locally via `./benchmarks/runner/run_benchmark.sh msmarco\n--vacuum`\n\nMotivation: establish a baseline before the partial vacuum optimization\nPR lands.\n\n## Local results (pg18-release, 8.8M MS MARCO passages)\n\n| Scenario | VACUUM Time | Query Latency |\n|----------|------------|---------------|\n| Partial (concentrated delete, 1 segment) | 3.7s | 11.1 ms/query |\n| Full (uniform delete, all segments) | 234s | 10.0 ms/query |\n| Full (uniform update, all segments) | 230s | 7.6 ms/query |\n\nPartial-to-full ratio is ~62x. The full VACUUM is dominated by\nrebuilding the large 8.7M-doc segment even though only ~1% of its docs\nare dead.\n\n## Testing\n\n- Ran full benchmark locally against pg18-release with 8.8M MS MARCO\npassages\n- Validated metric extraction and GitHub Actions formatting pipelines\nend-to-end",
+          "timestamp": "2026-04-16T01:21:07Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8b8d5bdaf4b658b2a10d330659083f9d41940740"
+        },
+        "date": 1776322928494,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.3K docs) - Index Build Time",
+            "value": 237.813,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.3K docs) - Throughput (avg ms/query)",
+            "value": 2.25,
             "unit": "ms"
           },
           {
