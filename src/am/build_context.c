@@ -18,6 +18,7 @@
 #include "constants.h"
 #include "memtable/arena.h"
 #include "memtable/expull.h"
+#include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/fieldnorm.h"
 #include "segment/pagemapper.h"
@@ -514,6 +515,19 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		pfree(ctid_offsets);
 	}
 
+	/* Write alive bitset (all alive) */
+	header.alive_bitset_offset = writer.current_offset;
+	header.alive_count		   = ctx->num_docs;
+	if (ctx->num_docs > 0)
+	{
+		uint32 bitset_size = tp_alive_bitset_size(ctx->num_docs);
+		uint8 *bitset_data = palloc(bitset_size);
+
+		tp_alive_bitset_init_data(bitset_data, ctx->num_docs);
+		tp_segment_writer_write(&writer, bitset_data, bitset_size);
+		pfree(bitset_data);
+	}
+
 	/* Flush remaining buffered data */
 	tp_segment_writer_flush(&writer);
 
@@ -651,6 +665,8 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		hdr->fieldnorm_offset	 = header.fieldnorm_offset;
 		hdr->ctid_pages_offset	 = header.ctid_pages_offset;
 		hdr->ctid_offsets_offset = header.ctid_offsets_offset;
+		hdr->alive_bitset_offset = header.alive_bitset_offset;
+		hdr->alive_count		 = header.alive_count;
 		hdr->num_docs			 = header.num_docs;
 		hdr->data_size			 = header.data_size;
 		hdr->num_pages			 = header.num_pages;

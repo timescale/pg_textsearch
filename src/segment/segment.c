@@ -25,6 +25,7 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
+#include "alive_bitset.h"
 #include "compression.h"
 #include "debug/dump.h"
 #include "dictionary.h"
@@ -225,10 +226,45 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 			header->num_docs			= v3.num_docs;
 			header->total_tokens		= v3.total_tokens;
 			header->page_index			= v3.page_index;
+
+			/* V3 has no alive bitset */
+			header->alive_bitset_offset = 0;
+			header->alive_count			= header->num_docs;
 		}
-		else if (raw_version == TP_SEGMENT_FORMAT_VERSION)
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
-			/* V4: direct copy */
+			/*
+			 * V4 header: identical to V5 except the alive_bitset
+			 * fields (alive_bitset_offset, alive_count) are absent.
+			 * The fields before and after the gap share the same
+			 * names but sit at different struct offsets, so we copy
+			 * in two halves and zero-init the gap.
+			 */
+			const char *src = PageGetContents(header_page);
+
+			/* First half: magic … ctid_offsets_offset (same layout) */
+			memcpy(reader->header,
+				   src,
+				   offsetof(TpSegmentHeader, alive_bitset_offset));
+
+			/*
+			 * Second half: num_terms … page_index.  In V4
+			 * on-disk, these start right after
+			 * ctid_offsets_offset, which is the same byte
+			 * offset as alive_bitset_offset in V5.
+			 */
+			memcpy(&reader->header->num_terms,
+				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
+				   sizeof(TpSegmentHeader) -
+						   offsetof(TpSegmentHeader, num_terms));
+
+			header						= reader->header;
+			header->alive_bitset_offset = 0;
+			header->alive_count			= header->num_docs;
+		}
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION)
+		{
+			/* V5+: full header */
 			memcpy(reader->header,
 				   PageGetContents(header_page),
 				   sizeof(TpSegmentHeader));
@@ -1276,6 +1312,19 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 				docmap->num_docs * sizeof(OffsetNumber));
 	}
 
+	/* Write alive bitset (all alive) */
+	header.alive_bitset_offset = writer.current_offset;
+	header.alive_count		   = docmap->num_docs;
+	if (docmap->num_docs > 0)
+	{
+		uint32 bitset_size = tp_alive_bitset_size(docmap->num_docs);
+		uint8 *bitset_data = palloc(bitset_size);
+
+		tp_alive_bitset_init_data(bitset_data, docmap->num_docs);
+		tp_segment_writer_write(&writer, bitset_data, bitset_size);
+		pfree(bitset_data);
+	}
+
 	/* Update num_docs to actual count from this segment */
 	header.num_docs = docmap->num_docs;
 
@@ -1427,6 +1476,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
 	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
 	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+	existing_header->alive_bitset_offset = header.alive_bitset_offset;
+	existing_header->alive_count		 = header.alive_count;
 	existing_header->num_docs			 = header.num_docs;
 	existing_header->data_size			 = header.data_size;
 	existing_header->num_pages			 = header.num_pages;
@@ -1642,10 +1693,26 @@ tp_dump_segment_to_output(
 			header.fieldnorm_offset	   = (uint64)v3.fieldnorm_offset;
 			header.ctid_pages_offset   = (uint64)v3.ctid_pages_offset;
 			header.ctid_offsets_offset = (uint64)v3.ctid_offsets_offset;
+			header.alive_bitset_offset = 0;
+			header.alive_count		   = v3.num_docs;
 			header.num_terms		   = v3.num_terms;
 			header.num_docs			   = v3.num_docs;
 			header.total_tokens		   = v3.total_tokens;
 			header.page_index		   = v3.page_index;
+		}
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
+		{
+			const char *src = PageGetContents(header_page);
+
+			memcpy(&header,
+				   src,
+				   offsetof(TpSegmentHeader, alive_bitset_offset));
+			header.alive_bitset_offset = 0;
+			memcpy(&header.num_terms,
+				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
+				   sizeof(TpSegmentHeader) -
+						   offsetof(TpSegmentHeader, num_terms));
+			header.alive_count = header.num_docs;
 		}
 		else
 		{
@@ -1697,6 +1764,14 @@ tp_dump_segment_to_output(
 	dump_printf(out, "Data size: %" PRIu64 " bytes\n", header.data_size);
 	dump_printf(out, "Level: %u\n", header.level);
 	dump_printf(out, "Page index: block %u\n", header.page_index);
+	dump_printf(
+			out, "Alive: %u / %u docs\n", header.alive_count, header.num_docs);
+	if (header.alive_bitset_offset > 0)
+		dump_printf(
+				out,
+				"Alive bitset offset: %" PRIu64 " (%u bytes)\n",
+				header.alive_bitset_offset,
+				tp_alive_bitset_size(header.num_docs));
 
 	/* Corpus statistics */
 	dump_printf(out, "\n=== CORPUS STATISTICS ===\n");

@@ -219,6 +219,20 @@ Top-k queries use Block-Max WAND optimization:
 - Early termination when blocks cannot contribute to results
 - Skip lists for fast block seeking in segments
 
+### VACUUM and Alive Bitset
+
+VACUUM uses per-segment alive bitsets (1 bit per doc) to mark dead
+documents instead of rebuilding segments. This is O(dead_docs) instead
+of O(all_docs). Dead docs are filtered during BMW scoring and
+physically removed during segment merge.
+
+**Stale statistics after VACUUM**: After VACUUM marks docs dead, the
+segment's `total_docs`, `total_tokens`, and per-term `doc_freq` are
+not updated. This means BM25 IDF calculations use slightly stale
+corpus statistics until the next segment merge/compaction, which
+corrects them. For small numbers of deletes this is negligible; mass
+deletion can affect ranking quality until the next merge.
+
 ## Benchmarking
 
 The `benchmarks/` directory contains performance testing tools:

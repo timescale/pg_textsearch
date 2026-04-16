@@ -112,7 +112,8 @@ typedef struct TpBMWStats
 	uint64 segment_docs_scored; /* Documents scored from segments */
 	uint64 docs_in_results;		/* Documents in final results */
 
-	uint64 seeks_performed; /* Binary search seeks executed */
+	uint64 seeks_performed;	  /* Binary search seeks executed */
+	uint64 dead_docs_skipped; /* Dead docs filtered by alive bitset */
 } TpBMWStats;
 
 /*

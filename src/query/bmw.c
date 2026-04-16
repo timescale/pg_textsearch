@@ -14,6 +14,7 @@
 #include "memtable/source.h"
 #include "query/bmw.h"
 #include "query/score.h"
+#include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/fieldnorm.h"
 #include "segment/segment_io.h"
@@ -533,6 +534,14 @@ score_segment_single_term_bmw(
 			 */
 			if (iter.current_block != i)
 				break;
+
+			/* Skip dead docs */
+			if (!tp_segment_is_alive(reader, posting->doc_id))
+			{
+				if (stats)
+					stats->dead_docs_skipped++;
+				continue;
+			}
 
 			score = compute_bm25_score(
 					idf,
@@ -1442,15 +1451,25 @@ score_segment_multi_term_bmw(
 		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
 			continue; /* Re-pivot with new positions */
 
-		/* Step 5: Score the pivot document */
-		doc_score = score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
+		/* Skip dead docs */
+		if (!tp_segment_is_alive(reader, pivot_doc_id))
+		{
+			if (stats)
+				stats->dead_docs_skipped++;
+		}
+		else
+		{
+			/* Step 5: Score the pivot document */
+			doc_score =
+					score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
 
-		if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
-			tp_topk_add_segment(
-					heap, reader->root_block, pivot_doc_id, doc_score);
+			if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
+				tp_topk_add_segment(
+						heap, reader->root_block, pivot_doc_id, doc_score);
 
-		if (stats)
-			stats->segment_docs_scored++;
+			if (stats)
+				stats->segment_docs_scored++;
+		}
 
 		/*
 		 * Step 6: Advance all pivot terms past pivot_doc_id.
