@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776238123667,
+  "lastUpdate": 1776303019902,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -18747,6 +18747,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Index Size",
             "value": 1214.94,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "e517ec761e7404d55876ff565116f896442afcd3",
+          "message": "fix: address Claude code review findings\n\n1. Dump V4 compat: tp_dump_segment_to_output was reading V4\n   headers with sizeof(TpSegmentHeader) (12 bytes too large),\n   corrupting num_terms/num_docs/total_tokens. Add the same\n   two-part memcpy treatment as tp_segment_open_ex.\n\n2. VACUUM double-count: skip already-dead docs in the identify\n   phase to prevent CTID reuse from inflating total_dead and\n   corrupting metapage total_docs across repeated VACUUMs.\n\n3. Stack overflow: remove tp_alive_bitset_load_range and the\n   TP_ALIVE_BLOCK_BUF_SIZE stack buffer. Posting blocks can\n   span the full doc_id range (128 matching docs scattered\n   across millions of IDs), so the 20-byte buffer could\n   overflow by 125KB+. Revert single-term BMW to per-doc\n   tp_segment_is_alive (alive_count == num_docs fast path\n   avoids the read for segments without dead docs).",
+          "timestamp": "2026-04-16T00:01:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e517ec761e7404d55876ff565116f896442afcd3"
+        },
+        "date": 1776303014794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 221143.924,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.83,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 8.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 13.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 20.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.95,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1216,
             "unit": "MB"
           }
         ]
