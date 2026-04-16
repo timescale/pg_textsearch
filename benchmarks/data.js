@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776305531268,
+  "lastUpdate": 1776305569656,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -71099,6 +71099,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 1032.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "id": "dc424c502a62bda4224a646847e8ab63021ec4b3",
+          "message": "test: use ORDER BY ... LIMIT instead of WHERE score < 0\n\nThe WHERE score < 0 pattern bypasses the index scan and uses\nstandalone operator evaluation. Use ORDER BY ... LIMIT to\nexercise the actual BMW index scan path.",
+          "timestamp": "2026-04-16T01:34:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dc424c502a62bda4224a646847e8ab63021ec4b3"
+        },
+        "date": 1776305564854,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 4213.917,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 266925.196,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 114.12,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 114.45,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 119.58,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 123.91,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 97.93,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 104.73,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 105.87,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 112.13,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 100.28,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 1016.73,
             "unit": "MB"
           }
         ]
