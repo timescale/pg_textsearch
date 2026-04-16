@@ -15,8 +15,11 @@ CREATE INDEX vb_idx ON vb_test
     USING bm25 (content) WITH (text_config = 'english');
 
 -- Verify initial query works
-SELECT count(*) FROM vb_test
-WHERE content <@> to_bm25query('databases', 'vb_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_test
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
+) q;
 
 -- Delete some rows
 DELETE FROM vb_test WHERE id <= 20;
@@ -25,13 +28,17 @@ DELETE FROM vb_test WHERE id <= 20;
 VACUUM vb_test;
 
 -- Query should return only live rows
-SELECT count(*) FROM vb_test
-WHERE content <@> to_bm25query('databases', 'vb_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_test
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
+) q;
 
 -- Verify no deleted rows appear
 SELECT count(*) FROM (
     SELECT id FROM vb_test
-    WHERE content <@> to_bm25query('databases', 'vb_idx') < 0
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
 ) q WHERE id <= 20;
 
 DROP TABLE vb_test;
@@ -52,14 +59,20 @@ DELETE FROM vb_full;
 VACUUM vb_full;
 
 -- Should return 0 results
-SELECT count(*) FROM vb_full
-WHERE content <@> to_bm25query('fulldelete', 'vb_full_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_full
+    ORDER BY content <@> to_bm25query('fulldelete', 'vb_full_idx')
+    LIMIT 1000
+) q;
 
 -- Index should still be usable after inserting new rows
 INSERT INTO vb_full (content) VALUES ('fresh document about topics');
 
-SELECT count(*) FROM vb_full
-WHERE content <@> to_bm25query('fresh', 'vb_full_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_full
+    ORDER BY content <@> to_bm25query('fresh', 'vb_full_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_full;
 
@@ -76,8 +89,11 @@ CREATE INDEX vb_reuse_idx ON vb_reuse
     USING bm25 (content) WITH (text_config = 'english');
 
 -- Verify alpha matches
-SELECT count(*) > 0 AS has_alpha FROM vb_reuse
-WHERE content <@> to_bm25query('alpha', 'vb_reuse_idx') < 0;
+SELECT count(*) > 0 AS has_alpha FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('alpha', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
 
 -- Delete all, VACUUM (frees CTIDs for reuse)
 DELETE FROM vb_reuse;
@@ -89,12 +105,18 @@ SELECT 'beta keyword document ' || i
 FROM generate_series(1, 50) i;
 
 -- alpha should return nothing
-SELECT count(*) FROM vb_reuse
-WHERE content <@> to_bm25query('alpha', 'vb_reuse_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('alpha', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
 
 -- beta should return results
-SELECT count(*) > 0 AS has_beta FROM vb_reuse
-WHERE content <@> to_bm25query('beta', 'vb_reuse_idx') < 0;
+SELECT count(*) > 0 AS has_beta FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('beta', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_reuse;
 
@@ -127,8 +149,11 @@ DELETE FROM vb_multi WHERE id <= 25;
 VACUUM vb_multi;
 
 -- Should find docs from both batches (minus deleted)
-SELECT count(*) FROM vb_multi
-WHERE content <@> to_bm25query('search', 'vb_multi_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_multi
+    ORDER BY content <@> to_bm25query('search', 'vb_multi_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_multi;
 
@@ -152,13 +177,16 @@ VACUUM vb_merge;
 SELECT bm25_force_merge('vb_merge_idx');
 
 -- Query should still work correctly
-SELECT count(*) FROM vb_merge
-WHERE content <@> to_bm25query('merge', 'vb_merge_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_merge
+    ORDER BY content <@> to_bm25query('merge', 'vb_merge_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_merge;
 
 -- =============================================================
--- Test 6: Score correctness after deletes
+-- Test 6: Score correctness after deletes (multi-term BMW)
 -- =============================================================
 CREATE TABLE vb_scores (id serial PRIMARY KEY, content text);
 
@@ -181,13 +209,11 @@ CREATE INDEX vb_scores_idx ON vb_scores
 DELETE FROM vb_scores WHERE content LIKE '%delete me%';
 VACUUM vb_scores;
 
--- Query with LIMIT (uses BMW)
+-- Multi-term query via BMW index scan
 SELECT id,
        content <@> to_bm25query('performance database',
                                 'vb_scores_idx') AS score
 FROM vb_scores
-WHERE content <@> to_bm25query('performance database',
-                               'vb_scores_idx') < 0
 ORDER BY content <@> to_bm25query('performance database',
                                   'vb_scores_idx')
 LIMIT 5;
@@ -210,8 +236,11 @@ CREATE INDEX vb_many_idx ON vb_many
 DELETE FROM vb_many WHERE id <= 150;
 VACUUM vb_many;
 
-SELECT count(*) FROM vb_many
-WHERE content <@> to_bm25query('searchable', 'vb_many_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_many
+    ORDER BY content <@> to_bm25query('searchable', 'vb_many_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_many;
 
@@ -252,8 +281,11 @@ VACUUM vb_multimerge;
 SELECT bm25_force_merge('vb_mm_idx');
 
 -- 150 total - 30 deleted = 120 live
-SELECT count(*) FROM vb_multimerge
-WHERE content <@> to_bm25query('target', 'vb_mm_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_multimerge
+    ORDER BY content <@> to_bm25query('target', 'vb_mm_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_multimerge;
 
@@ -281,14 +313,20 @@ VACUUM vb_alldead;
 -- Both segments should be dropped — merge is a no-op
 SELECT bm25_force_merge('vb_alldead_idx');
 
-SELECT count(*) FROM vb_alldead
-WHERE content <@> to_bm25query('alldead', 'vb_alldead_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_alldead
+    ORDER BY content <@> to_bm25query('alldead', 'vb_alldead_idx')
+    LIMIT 1000
+) q;
 
 -- Insert fresh data to verify index still works
 INSERT INTO vb_alldead (content) VALUES ('revival document here');
 
-SELECT count(*) FROM vb_alldead
-WHERE content <@> to_bm25query('revival', 'vb_alldead_idx') < 0;
+SELECT count(*) FROM (
+    SELECT id FROM vb_alldead
+    ORDER BY content <@> to_bm25query('revival', 'vb_alldead_idx')
+    LIMIT 1000
+) q;
 
 DROP TABLE vb_alldead;
 
