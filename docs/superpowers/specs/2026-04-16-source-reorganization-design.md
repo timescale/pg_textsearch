@@ -237,6 +237,16 @@ The `Makefile` lists source files in `SRCS` (or `OBJS`). This must be
 updated to reflect new paths. The `-I$(srcdir)/src` flag should
 already be present; verify and add if missing.
 
+#### CONTRIBUTING.md updates
+
+The reorg PR should add or update `CONTRIBUTING.md` to document:
+
+- The layered directory structure and what each directory contains
+- The dependency rules (Layer 1 -> 2 -> 3, no upward deps)
+- The include path convention (full `src/`-relative paths, no
+  short-form or relative `../` includes)
+- File size philosophy: split on responsibility, not line count
+
 ## Verification
 
 For the reorg PR:
