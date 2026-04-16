@@ -24,7 +24,12 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   before CREATE EXTENSION. A server restart is also required after updating
   the binary (e.g., after `make install` during development).
 
-- Do not ignore "pre-existing test failures".  They are almost never "pre-existing" as we keep CI green on main.
+- **Every test failure matters.** We keep CI green on main. Do not
+  dismiss failures as "pre-existing" — they almost never are. If a
+  test fails, investigate and fix the root cause. If you believe a
+  failure is unrelated to your changes, verify by checking out main
+  and running the same test. Even if it does reproduce on main, it
+  still needs to be investigated and fixed, not ignored.
 
 ## Core Architecture
 
