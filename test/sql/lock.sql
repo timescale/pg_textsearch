@@ -46,7 +46,6 @@ SELECT COUNT(*) FROM lock_upgrade_test;
 -- Test that subsequent operations work normally
 SELECT id, content
 FROM lock_upgrade_test
-WHERE content <@> 'database concurrency' < -0.001
 ORDER BY content <@> 'database concurrency'
 LIMIT 5;
 

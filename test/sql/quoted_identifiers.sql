@@ -21,7 +21,6 @@ SET enable_seqscan = off;
 SELECT id, content,
        ROUND((content <@> to_bm25query('lorem', 'IX_qi_test1_content'))::numeric, 4) AS score
 FROM qi_test1
-WHERE content <@> to_bm25query('lorem', 'IX_qi_test1_content') < 0
 ORDER BY content <@> to_bm25query('lorem', 'IX_qi_test1_content'), id;
 
 -- Test 3: Uppercase schema name with lowercase index
@@ -41,8 +40,6 @@ SELECT id, content,
        ROUND((content <@> to_bm25query('hello',
          '"MySchema".idx_myschema_docs'))::numeric, 4) AS score
 FROM "MySchema".docs
-WHERE content <@> to_bm25query('hello',
-  '"MySchema".idx_myschema_docs') < 0
 ORDER BY content <@> to_bm25query('hello',
   '"MySchema".idx_myschema_docs'), id;
 
@@ -62,8 +59,6 @@ SELECT id, content,
        ROUND((content <@> to_bm25query('alpha',
          '"MySchema"."IX_MyDocs"'))::numeric, 4) AS score
 FROM "MySchema".docs2
-WHERE content <@> to_bm25query('alpha',
-  '"MySchema"."IX_MyDocs"') < 0
 ORDER BY content <@> to_bm25query('alpha',
   '"MySchema"."IX_MyDocs"'), id;
 

@@ -30,12 +30,13 @@ CREATE INDEX CONCURRENTLY cic_basic_idx ON cic_basic USING bm25(content)
 SELECT indisvalid FROM pg_index WHERE indexrelid = 'cic_basic_idx'::regclass;
 
 -- Verify no duplicate entries (this was a bug symptom before the fix)
-SELECT COUNT(*) = 1 AS no_duplicates FROM cic_basic
-WHERE content <@> to_bm25query('database', 'cic_basic_idx') < 0;
+SELECT COUNT(*) = 1 AS no_duplicates FROM (
+    SELECT 1 FROM cic_basic
+    ORDER BY content <@> to_bm25query('database', 'cic_basic_idx')
+) sub;
 
 -- Verify index is used in query plan
 EXPLAIN (COSTS OFF) SELECT id FROM cic_basic
-WHERE content <@> to_bm25query('database', 'cic_basic_idx') < 0
 ORDER BY content <@> to_bm25query('database', 'cic_basic_idx')
 LIMIT 3;
 
@@ -58,7 +59,6 @@ SELECT indisvalid FROM pg_index WHERE indexrelid = 'cic_basic_idx'::regclass;
 
 -- Query should work and return expected results
 SELECT id FROM cic_basic
-WHERE content <@> to_bm25query('database', 'cic_basic_idx') < 0
 ORDER BY content <@> to_bm25query('database', 'cic_basic_idx');
 
 --------------------------------------------------------------------------------

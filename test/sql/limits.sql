@@ -123,7 +123,7 @@ SELECT * FROM (
     FROM limit_test
     ORDER BY content <@> to_bm25query('mining', 'limit_test_idx')
     LIMIT 3
-) sub WHERE score < 0;
+) sub;
 
 -- Test 9: Multiple queries with different LIMIT values to test limit storage/cleanup
 SELECT 'Query 1' as query_name, COUNT(*) as results FROM (

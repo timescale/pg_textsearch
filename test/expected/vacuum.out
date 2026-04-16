@@ -22,6 +22,8 @@ NOTICE:  BM25 index build started for relation vacuum_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.60
+-- Force index scan (small table would otherwise prefer seq scan)
+SET enable_seqscan = off;
 -- Check index statistics before deletions
 -- Extract just the total_docs line from debug output
 SELECT split_part(
@@ -61,10 +63,8 @@ SELECT split_part(
 (1 row)
 
 -- Search should still work correctly after VACUUM
--- Note: WHERE with score comparison requires explicit index reference
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'vacuum_idx')
 LIMIT 5;
  id |    content_preview     
@@ -96,7 +96,6 @@ SELECT split_part(
 -- Verify search still works
 SELECT id, substring(content, 1, 30) as content_preview
 FROM vacuum_test
-WHERE content <@> to_bm25query('test', 'vacuum_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'vacuum_idx');
  id |    content_preview     
 ----+------------------------

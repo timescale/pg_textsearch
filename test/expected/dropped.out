@@ -23,9 +23,10 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.00
 -- Query should work with index (using explicit index reference)
-SELECT COUNT(*) AS with_index
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+SELECT COUNT(*) AS with_index FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx')
+) sub;
  with_index 
 ------------
           5
@@ -34,14 +35,16 @@ WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
 -- Drop the index
 DROP INDEX dropped_idx;
 -- Query should ERROR when index doesn't exist
-SELECT COUNT(*) AS after_drop
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+SELECT COUNT(*) AS after_drop FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx')
+) sub;
 ERROR:  index "dropped_idx" does not exist
 -- Also test with a completely non-existent index name
-SELECT COUNT(*) AS nonexistent
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
+SELECT COUNT(*) AS nonexistent FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'totally_fake_index')
+) sub;
 ERROR:  index "totally_fake_index" does not exist
 -- Test registry slot cleanup (issue #83)
 -- Create multiple indexes, drop them, then create new ones
@@ -105,9 +108,10 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 5 documents, avg_length=3.00
 -- Test that the new indexes work
-SELECT COUNT(*) AS recycled_slots_work
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx_6') < -0.001;
+SELECT COUNT(*) AS recycled_slots_work FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx_6')
+) sub;
  recycled_slots_work 
 ---------------------
                    5

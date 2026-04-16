@@ -30,8 +30,8 @@ CREATE INDEX parallel_test_serial_idx ON parallel_test_serial USING bm25(content
   WITH (text_config='english');
 
 -- Verify queries work
-SELECT COUNT(*) AS apple_count FROM parallel_test_serial
-WHERE content <@> to_bm25query('apple', 'parallel_test_serial_idx') < 0;
+SELECT COUNT(*) AS apple_count FROM (SELECT 1 FROM parallel_test_serial
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_serial_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 2: Single worker (edge case - minimum parallelism)
@@ -53,8 +53,8 @@ ANALYZE parallel_test_1worker;
 CREATE INDEX parallel_test_1worker_idx ON parallel_test_1worker USING bm25(content)
   WITH (text_config='english');
 
-SELECT COUNT(*) AS database_count FROM parallel_test_1worker
-WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
+SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_1worker
+ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 3: Two workers (common case)
@@ -90,20 +90,20 @@ CREATE INDEX parallel_test_2workers_idx ON parallel_test_2workers USING bm25(con
   WITH (text_config='english');
 
 -- Verify all document groups are searchable
-SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS apple_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_2workers_idx')) sub;
 
-SELECT COUNT(*) AS database_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('database', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('database', 'parallel_test_2workers_idx')) sub;
 
-SELECT COUNT(*) AS machine_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('machine', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS machine_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('machine', 'parallel_test_2workers_idx')) sub;
 
-SELECT COUNT(*) AS distributed_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('distributed', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS distributed_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('distributed', 'parallel_test_2workers_idx')) sub;
 
-SELECT COUNT(*) AS network_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('network', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS network_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('network', 'parallel_test_2workers_idx')) sub;
 
 -- Verify top-k ordering (limit to deterministic results)
 SELECT id, ROUND((content <@> to_bm25query('machine learning', 'parallel_test_2workers_idx'))::numeric, 4) AS score
@@ -142,11 +142,11 @@ ANALYZE parallel_test_4workers;
 CREATE INDEX parallel_test_4workers_idx ON parallel_test_4workers USING bm25(content)
   WITH (text_config='english');
 
-SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
-WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
+SELECT COUNT(*) AS fox_count FROM (SELECT 1 FROM parallel_test_4workers
+ORDER BY content <@> to_bm25query('fox', 'parallel_test_4workers_idx')) sub;
 
-SELECT COUNT(*) AS postgres_count FROM parallel_test_4workers
-WHERE content <@> to_bm25query('postgres', 'parallel_test_4workers_idx') < 0;
+SELECT COUNT(*) AS postgres_count FROM (SELECT 1 FROM parallel_test_4workers
+ORDER BY content <@> to_bm25query('postgres', 'parallel_test_4workers_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 5: Corner case - very short documents (single term)
@@ -179,11 +179,11 @@ CREATE INDEX parallel_test_short_idx ON parallel_test_short USING bm25(content)
   WITH (text_config='english');
 
 -- Each term should appear in 10% of documents
-SELECT COUNT(*) AS alpha_count FROM parallel_test_short
-WHERE content <@> to_bm25query('alpha', 'parallel_test_short_idx') < 0;
+SELECT COUNT(*) AS alpha_count FROM (SELECT 1 FROM parallel_test_short
+ORDER BY content <@> to_bm25query('alpha', 'parallel_test_short_idx')) sub;
 
-SELECT COUNT(*) AS beta_count FROM parallel_test_short
-WHERE content <@> to_bm25query('beta', 'parallel_test_short_idx') < 0;
+SELECT COUNT(*) AS beta_count FROM (SELECT 1 FROM parallel_test_short
+ORDER BY content <@> to_bm25query('beta', 'parallel_test_short_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 6: Corner case - documents with many duplicate terms
@@ -203,12 +203,12 @@ CREATE INDEX parallel_test_dupes_idx ON parallel_test_dupes USING bm25(content)
   WITH (text_config='english');
 
 -- "repeat" appears in all documents with varying term frequency
-SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
-WHERE content <@> to_bm25query('repeat', 'parallel_test_dupes_idx') < 0;
+SELECT COUNT(*) AS repeat_count FROM (SELECT 1 FROM parallel_test_dupes
+ORDER BY content <@> to_bm25query('repeat', 'parallel_test_dupes_idx')) sub;
 
 -- Each "unique" term appears exactly once
-SELECT COUNT(*) AS unique_count FROM parallel_test_dupes
-WHERE content <@> to_bm25query('unique1', 'parallel_test_dupes_idx') < 0;
+SELECT COUNT(*) AS unique_count FROM (SELECT 1 FROM parallel_test_dupes
+ORDER BY content <@> to_bm25query('unique1', 'parallel_test_dupes_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 7: Corner case - NULL content (should be skipped)
@@ -228,8 +228,8 @@ CREATE INDEX parallel_test_nulls_idx ON parallel_test_nulls USING bm25(content)
   WITH (text_config='english');
 
 -- Only non-NULL documents should be indexed (90%)
-SELECT COUNT(*) AS document_count FROM parallel_test_nulls
-WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
+SELECT COUNT(*) AS document_count FROM (SELECT 1 FROM parallel_test_nulls
+ORDER BY content <@> to_bm25query('document', 'parallel_test_nulls_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 8: Post-build operations work correctly
@@ -241,15 +241,15 @@ INSERT INTO parallel_test_2workers (content)
 VALUES ('completely new unique document inserted after parallel build');
 
 -- Search for newly inserted content
-SELECT COUNT(*) AS new_doc_found FROM parallel_test_2workers
-WHERE content <@> to_bm25query('completely', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS new_doc_found FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('completely', 'parallel_test_2workers_idx')) sub;
 
 -- VACUUM should work
 VACUUM parallel_test_2workers;
 
 -- Queries still work after VACUUM
-SELECT COUNT(*) AS apple_after_vacuum FROM parallel_test_2workers
-WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS apple_after_vacuum FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_2workers_idx')) sub;
 
 -- Index stats still available
 SELECT bm25_summarize_index('parallel_test_2workers_idx') IS NOT NULL AS has_summary;
@@ -272,8 +272,8 @@ ANALYZE parallel_test_custom;
 CREATE INDEX parallel_test_custom_idx ON parallel_test_custom USING bm25(content)
   WITH (text_config='english', k1='1.5', b='0.5');
 
-SELECT COUNT(*) AS custom_count FROM parallel_test_custom
-WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
+SELECT COUNT(*) AS custom_count FROM (SELECT 1 FROM parallel_test_custom
+ORDER BY content <@> to_bm25query('custom', 'parallel_test_custom_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Test 10: Below threshold - should use serial even with workers configured
@@ -294,8 +294,8 @@ ANALYZE parallel_test_below_threshold;
 CREATE INDEX parallel_test_below_idx ON parallel_test_below_threshold USING bm25(content)
   WITH (text_config='english');
 
-SELECT COUNT(*) AS small_count FROM parallel_test_below_threshold
-WHERE content <@> to_bm25query('small', 'parallel_test_below_idx') < 0;
+SELECT COUNT(*) AS small_count FROM (SELECT 1 FROM parallel_test_below_threshold
+ORDER BY content <@> to_bm25query('small', 'parallel_test_below_idx')) sub;
 
 --------------------------------------------------------------------------------
 -- Cleanup

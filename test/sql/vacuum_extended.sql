@@ -25,8 +25,10 @@ DELETE FROM vacuum_seg_test WHERE id <= 100;
 VACUUM vacuum_seg_test;
 
 -- Verify search still works after vacuum with segments
-SELECT count(*) FROM vacuum_seg_test
-WHERE content <@> to_bm25query('vacuum', 'vacuum_seg_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM vacuum_seg_test
+    ORDER BY content <@> to_bm25query('vacuum', 'vacuum_seg_idx')
+) sub;
 
 -- =============================================================================
 -- Test 2: VACUUM FULL with segments (forces index rebuild)
@@ -37,8 +39,10 @@ VACUUM FULL vacuum_seg_test;
 \set VERBOSITY default
 
 -- Verify search works after VACUUM FULL rebuild
-SELECT count(*) FROM vacuum_seg_test
-WHERE content <@> to_bm25query('vacuum', 'vacuum_seg_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM vacuum_seg_test
+    ORDER BY content <@> to_bm25query('vacuum', 'vacuum_seg_idx')
+) sub;
 
 DROP TABLE vacuum_seg_test;
 
@@ -80,8 +84,10 @@ DELETE FROM vacuum_bulk_test WHERE id > 5;
 VACUUM vacuum_bulk_test;
 
 -- Verify remaining docs are searchable
-SELECT count(*) FROM vacuum_bulk_test
-WHERE content <@> to_bm25query('bulk', 'vacuum_bulk_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM vacuum_bulk_test
+    ORDER BY content <@> to_bm25query('bulk', 'vacuum_bulk_idx')
+) sub;
 
 DROP TABLE vacuum_bulk_test;
 
@@ -109,8 +115,10 @@ FROM generate_series(1, 50) AS i;
 SELECT bm25_spill_index('reindex_memtable_idx');
 
 -- Verify baseline: all 50 docs are searchable
-SELECT count(*) AS pre_reindex_count FROM reindex_memtable_test
-WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+SELECT count(*) AS pre_reindex_count FROM (
+    SELECT 1 FROM reindex_memtable_test
+    ORDER BY content <@> to_bm25query('databases', 'reindex_memtable_idx')
+) sub;
 
 -- Phase 2: Insert more rows that stay in memtable (unflushed)
 INSERT INTO reindex_memtable_test (content)
@@ -118,8 +126,10 @@ SELECT 'additional document about databases number ' || i
 FROM generate_series(51, 75) AS i;
 
 -- Verify memtable scan finds all 75 docs
-SELECT count(*) AS with_memtable_count FROM reindex_memtable_test
-WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+SELECT count(*) AS with_memtable_count FROM (
+    SELECT 1 FROM reindex_memtable_test
+    ORDER BY content <@> to_bm25query('databases', 'reindex_memtable_idx')
+) sub;
 
 -- Phase 3: REINDEX discards memtable, rebuilds from heap
 \set VERBOSITY terse
@@ -127,15 +137,19 @@ REINDEX INDEX reindex_memtable_idx;
 \set VERBOSITY default
 
 -- All 75 docs must still be found (rebuilt from heap, not memtable)
-SELECT count(*) AS post_reindex_count FROM reindex_memtable_test
-WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+SELECT count(*) AS post_reindex_count FROM (
+    SELECT 1 FROM reindex_memtable_test
+    ORDER BY content <@> to_bm25query('databases', 'reindex_memtable_idx')
+) sub;
 
 -- Phase 4: Verify INSERTs still work after REINDEX
 INSERT INTO reindex_memtable_test (content)
 VALUES ('final document about databases after reindex');
 
-SELECT count(*) AS final_count FROM reindex_memtable_test
-WHERE content <@> to_bm25query('databases', 'reindex_memtable_idx') < 0;
+SELECT count(*) AS final_count FROM (
+    SELECT 1 FROM reindex_memtable_test
+    ORDER BY content <@> to_bm25query('databases', 'reindex_memtable_idx')
+) sub;
 
 DROP TABLE reindex_memtable_test;
 
@@ -164,8 +178,10 @@ INSERT INTO bulk_memtable_test (content)
 SELECT 'initial document about networking topic ' || i
 FROM generate_series(1, 10) AS i;
 
-SELECT count(*) AS initial_count FROM bulk_memtable_test
-WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+SELECT count(*) AS initial_count FROM (
+    SELECT 1 FROM bulk_memtable_test
+    ORDER BY content <@> to_bm25query('networking', 'bulk_memtable_idx')
+) sub;
 
 -- Phase 2: Bulk insert triggers multiple auto-spills
 INSERT INTO bulk_memtable_test (content)
@@ -173,8 +189,10 @@ SELECT 'bulk loaded document about networking and databases number ' || i
 FROM generate_series(11, 5000) AS i;
 
 -- All 5000 docs must be found (initial memtable + spilled segments + tail)
-SELECT count(*) AS after_bulk_count FROM bulk_memtable_test
-WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+SELECT count(*) AS after_bulk_count FROM (
+    SELECT 1 FROM bulk_memtable_test
+    ORDER BY content <@> to_bm25query('networking', 'bulk_memtable_idx')
+) sub;
 
 -- Verify segments were created by the auto-spill
 SELECT bm25_summarize_index('bulk_memtable_idx') ~ 'Total:.*segments'
@@ -184,8 +202,10 @@ SELECT bm25_summarize_index('bulk_memtable_idx') ~ 'Total:.*segments'
 INSERT INTO bulk_memtable_test (content)
 VALUES ('final document about networking after bulk load');
 
-SELECT count(*) AS final_count FROM bulk_memtable_test
-WHERE content <@> to_bm25query('networking', 'bulk_memtable_idx') < 0;
+SELECT count(*) AS final_count FROM (
+    SELECT 1 FROM bulk_memtable_test
+    ORDER BY content <@> to_bm25query('networking', 'bulk_memtable_idx')
+) sub;
 
 RESET pg_textsearch.memtable_spill_threshold;
 DROP TABLE bulk_memtable_test;

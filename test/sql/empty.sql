@@ -26,11 +26,12 @@ CREATE INDEX empty_docs_idx ON empty_docs
 USING bm25 (content)
 WITH (text_config = 'english');
 
+-- Force index scan (small table would otherwise prefer seq scan)
+SET enable_seqscan = off;
+
 -- Try searching - should return no results without warnings
--- Note: WHERE with score comparison requires explicit index reference
 SELECT id, content
 FROM empty_docs
-WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'empty_docs_idx')
 LIMIT 5;
 
@@ -40,7 +41,6 @@ INSERT INTO empty_docs (content) VALUES ('test document with content');
 -- Search again - should find only the document with content
 SELECT id, substring(content, 1, 30) as content_preview
 FROM empty_docs
-WHERE content <@> to_bm25query('test', 'empty_docs_idx') < -0.001
 ORDER BY content <@> to_bm25query('test', 'empty_docs_idx')
 LIMIT 5;
 

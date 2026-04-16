@@ -115,7 +115,6 @@ CREATE INDEX inh_child_bm25 ON inh_child USING bm25(content)
 SELECT content,
        content <@> to_bm25query('fox', 'inh_parent_bm25') AS score
 FROM inh_parent
-WHERE content <@> to_bm25query('fox', 'inh_parent_bm25') < 0
 ORDER BY content <@> to_bm25query('fox', 'inh_parent_bm25')
 LIMIT 3;
 
@@ -223,7 +222,6 @@ SELECT
 SELECT content,
        content <@> to_bm25query('fox', 'drift2_parent_bm25') AS score
 FROM drift2_parent
-WHERE content <@> to_bm25query('fox', 'drift2_parent_bm25') < 0
 ORDER BY content <@> to_bm25query('fox', 'drift2_parent_bm25')
 LIMIT 3;
 

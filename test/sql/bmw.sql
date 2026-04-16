@@ -4,6 +4,10 @@
 -- Setup: Create extension
 CREATE EXTENSION pg_textsearch;
 
+-- Force index scan so ORDER BY uses the BM25 index (small tables
+-- would otherwise prefer seq scan, returning non-matching rows)
+SET enable_seqscan = off;
+
 \set ECHO none
 \i test/sql/validation.sql
 \set ECHO all
@@ -30,7 +34,6 @@ CREATE INDEX bmw_basic_idx ON bmw_basic USING bm25(content)
 -- Test: Single-term BMW should return docs in score order
 SELECT id, content <@> 'apple'::bm25query as score
 FROM bmw_basic
-WHERE content <@> 'apple'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 DROP TABLE bmw_basic;
@@ -50,17 +53,14 @@ CREATE INDEX bmw_empty_idx ON bmw_empty USING bm25(content)
 
 -- Test: Query term not in corpus (empty results)
 SELECT id FROM bmw_empty
-WHERE content <@> 'elephant'::bm25query < 0
 ORDER BY content <@> 'elephant'::bm25query LIMIT 10;
 
 -- Test: Only 1 document matches
 SELECT id FROM bmw_empty
-WHERE content <@> 'whale'::bm25query < 0
 ORDER BY content <@> 'whale'::bm25query LIMIT 10;
 
 -- Test: Fewer results than LIMIT (3 docs match, LIMIT 10)
 SELECT id FROM bmw_empty
-WHERE content <@> 'cat fish lion'::bm25query < 0
 ORDER BY content <@> 'cat fish lion'::bm25query LIMIT 10;
 
 DROP TABLE bmw_empty;
@@ -86,7 +86,6 @@ CREATE INDEX bmw_ties_idx ON bmw_ties USING bm25(content)
 -- All "exact same length" docs have tf=1 and same doc_len
 SELECT id, content <@> 'exact'::bm25query as score
 FROM bmw_ties
-WHERE content <@> 'exact'::bm25query < 0
 ORDER BY content <@> 'exact'::bm25query LIMIT 10;
 
 DROP TABLE bmw_ties;
@@ -107,20 +106,17 @@ CREATE INDEX bmw_limits_idx ON bmw_limits USING bm25(content)
 
 -- Test: LIMIT 1 (minimum)
 SELECT id FROM bmw_limits
-WHERE content <@> 'test'::bm25query < 0
 ORDER BY content <@> 'test'::bm25query LIMIT 1;
 
 -- Test: LIMIT equals exact document count
 SELECT COUNT(*) FROM (
     SELECT id FROM bmw_limits
-    WHERE content <@> 'test'::bm25query < 0
     ORDER BY content <@> 'test'::bm25query LIMIT 20
 ) x;
 
 -- Test: LIMIT exceeds document count
 SELECT COUNT(*) FROM (
     SELECT id FROM bmw_limits
-    WHERE content <@> 'test'::bm25query < 0
     ORDER BY content <@> 'test'::bm25query LIMIT 100
 ) x;
 
@@ -147,24 +143,20 @@ CREATE INDEX bmw_multi_idx ON bmw_multi USING bm25(content)
 -- Test: 2-term query
 SELECT id, content <@> 'alpha beta'::bm25query as score
 FROM bmw_multi
-WHERE content <@> 'alpha beta'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 -- Test: 3-term query
 SELECT id, content <@> 'alpha beta gamma'::bm25query as score
 FROM bmw_multi
-WHERE content <@> 'alpha beta gamma'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 -- Test: Query with non-existent term (partial match)
 SELECT id, content <@> 'alpha nonexistent'::bm25query as score
 FROM bmw_multi
-WHERE content <@> 'alpha nonexistent'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 -- Test: Query where all terms are non-existent
 SELECT id FROM bmw_multi
-WHERE content <@> 'xxx yyy zzz'::bm25query < 0
 ORDER BY content <@> 'xxx yyy zzz'::bm25query LIMIT 5;
 
 DROP TABLE bmw_multi;
@@ -188,13 +180,11 @@ CREATE INDEX bmw_8term_idx ON bmw_8term USING bm25(content)
 -- Test: Exactly 8 terms (should use multi-term BMW)
 SELECT id, content <@> 'one two three four five six seven eight'::bm25query as score
 FROM bmw_8term
-WHERE content <@> 'one two three four five six seven eight'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 -- Test: 9+ terms (should fall back to exhaustive, but still work)
 SELECT id, content <@> 'one two three four five six seven eight nine'::bm25query as score
 FROM bmw_8term
-WHERE content <@> 'one two three four five six seven eight nine'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 DROP TABLE bmw_8term;
@@ -220,7 +210,6 @@ CREATE INDEX bmw_lengths_idx ON bmw_lengths USING bm25(content)
 SELECT id, length(content) as doc_chars,
        content <@> 'word'::bm25query as score
 FROM bmw_lengths
-WHERE content <@> 'word'::bm25query < 0
 ORDER BY content <@> 'word'::bm25query LIMIT 5;
 
 DROP TABLE bmw_lengths;
@@ -244,7 +233,6 @@ CREATE INDEX bmw_highfreq_idx ON bmw_highfreq USING bm25(content)
 -- Test: High TF documents should rank higher (with saturation)
 SELECT id, content <@> 'keyword'::bm25query as score
 FROM bmw_highfreq
-WHERE content <@> 'keyword'::bm25query < 0
 ORDER BY content <@> 'keyword'::bm25query LIMIT 5;
 
 -- Verify: Order should be 5,4,3,2,1 (highest tf first)
@@ -467,7 +455,6 @@ CREATE INDEX bmw_repeat_idx ON bmw_repeat USING bm25(content)
 -- Test: Repeated terms in query should boost relevance
 SELECT id, content <@> 'cat cat'::bm25query as score
 FROM bmw_repeat
-WHERE content <@> 'cat cat'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 DROP TABLE bmw_repeat;
@@ -491,12 +478,10 @@ CREATE INDEX bmw_unicode_idx ON bmw_unicode USING bm25(content)
 -- Test: Should handle various character sets
 SELECT id, content <@> 'beijing'::bm25query as score
 FROM bmw_unicode
-WHERE content <@> 'beijing'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 SELECT id, content <@> 'simple'::bm25query as score
 FROM bmw_unicode
-WHERE content <@> 'simple'::bm25query < 0
 ORDER BY score LIMIT 5;
 
 DROP TABLE bmw_unicode;
@@ -636,8 +621,10 @@ ORDER BY content <@> 'targetword'::bm25query LIMIT 10;
 -- Verify: Results should include docs from batch 3 (id > 600) at top
 
 -- Also verify total count is correct (use to_bm25query for count)
-SELECT COUNT(*) FROM bmw_multiseg
-WHERE content <@> to_bm25query('targetword', 'bmw_multiseg_idx') < 0;
+SELECT COUNT(*) FROM (
+    SELECT 1 FROM bmw_multiseg
+    ORDER BY content <@> to_bm25query('targetword', 'bmw_multiseg_idx')
+) sub;
 
 DROP TABLE bmw_multiseg;
 
@@ -671,7 +658,6 @@ SELECT validate_bm25_scoring('bmw_partial', 'content', 'bmw_partial_idx',
 -- Verify doc 145 is top result (highest tf in partial block)
 SELECT 'partial-block-top' as test,
     CASE WHEN (SELECT id FROM bmw_partial
-               WHERE content <@> to_bm25query('partial', 'bmw_partial_idx') < 0
                ORDER BY content <@> to_bm25query('partial', 'bmw_partial_idx') LIMIT 1) = 145
          THEN 'PASS' ELSE 'FAIL' END as result;
 
@@ -710,8 +696,10 @@ ORDER BY content <@> 'uniquememterm'::bm25query LIMIT 5;
 
 -- Verify: Should return exactly 3 docs, in tf order (201, 202, 203)
 SELECT 'memtable-only-term' as test,
-    CASE WHEN (SELECT COUNT(*) FROM bmw_memonly
-               WHERE content <@> to_bm25query('uniquememterm', 'bmw_memonly_idx') < 0) = 3
+    CASE WHEN (SELECT COUNT(*) FROM (
+                SELECT 1 FROM bmw_memonly
+                ORDER BY content <@> to_bm25query('uniquememterm', 'bmw_memonly_idx')
+           ) sub) = 3
          THEN 'PASS' ELSE 'FAIL' END as result;
 
 -- Test: Multi-term with one term in segment, one in memtable only
@@ -745,8 +733,10 @@ CREATE INDEX bmw_sparse_idx ON bmw_sparse USING bm25(content)
 
 -- Test: Should find all 10 sparse docs
 SELECT 'sparse-count' as test,
-    CASE WHEN (SELECT COUNT(*) FROM bmw_sparse
-               WHERE content <@> to_bm25query('sparse', 'bmw_sparse_idx') < 0) = 10
+    CASE WHEN (SELECT COUNT(*) FROM (
+                SELECT 1 FROM bmw_sparse
+                ORDER BY content <@> to_bm25query('sparse', 'bmw_sparse_idx')
+           ) sub) = 10
          THEN 'PASS' ELSE 'FAIL' END as result;
 
 -- Test: BMW should match exhaustive for sparse terms
@@ -826,7 +816,6 @@ CREATE INDEX bmw_threshold_idx ON bmw_threshold USING bm25(content)
 SELECT 'threshold-boundary' as test,
     CASE WHEN (SELECT COUNT(*) FROM (
         SELECT id FROM bmw_threshold
-        WHERE content <@> to_bm25query('threshold', 'bmw_threshold_idx') < 0
         ORDER BY content <@> to_bm25query('threshold', 'bmw_threshold_idx') LIMIT 10
     ) x) = 10
     THEN 'PASS' ELSE 'FAIL' END as result;
@@ -835,7 +824,6 @@ SELECT 'threshold-boundary' as test,
 SELECT 'threshold-tiebreak' as test,
     CASE WHEN (SELECT array_agg(id ORDER BY id) FROM (
         SELECT id FROM bmw_threshold
-        WHERE content <@> to_bm25query('threshold', 'bmw_threshold_idx') < 0
         ORDER BY content <@> to_bm25query('threshold', 'bmw_threshold_idx') LIMIT 10
     ) x) = ARRAY[1,2,3,4,5,6,7,8,9,10]
     THEN 'PASS' ELSE 'FAIL' END as result;

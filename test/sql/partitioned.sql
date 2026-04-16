@@ -342,8 +342,7 @@ FROM (
     FROM partitioned_scoring
     ORDER BY content <@> to_bm25query('database', 'scoring_bm25_idx')
     LIMIT 5
-) t
-WHERE score > 0;
+) t;
 
 -- Cleanup
 SET enable_seqscan = on;

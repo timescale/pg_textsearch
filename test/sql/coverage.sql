@@ -67,7 +67,6 @@ SET enable_seqscan = off;
 -- The implicit form should find coverage_idx automatically
 SELECT content, content <@> 'hello'::text AS score
 FROM coverage_docs
-WHERE content <@> 'hello'::text < 0
 ORDER BY content <@> 'hello'::text
 LIMIT 3;
 
@@ -99,7 +98,6 @@ SET pg_textsearch.log_scores = true;
 
 SELECT content <@> to_bm25query('hello', 'coverage_idx') AS score
 FROM coverage_docs
-WHERE content <@> to_bm25query('hello', 'coverage_idx') < 0
 ORDER BY content <@> to_bm25query('hello', 'coverage_idx')
 LIMIT 1;
 
@@ -112,12 +110,16 @@ SET pg_textsearch.log_scores = false;
 SET pg_textsearch.log_bmw_stats = true;
 
 -- Single-term query
-SELECT count(*) FROM coverage_docs
-WHERE content <@> to_bm25query('hello', 'coverage_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM coverage_docs
+    ORDER BY content <@> to_bm25query('hello', 'coverage_idx')
+) sub;
 
 -- Multi-term query
-SELECT count(*) FROM coverage_docs
-WHERE content <@> to_bm25query('hello world', 'coverage_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM coverage_docs
+    ORDER BY content <@> to_bm25query('hello world', 'coverage_idx')
+) sub;
 
 SET pg_textsearch.log_bmw_stats = false;
 
@@ -169,7 +171,6 @@ SELECT bm25_spill_index('coverage_idx');
 -- (adding secondary sort key to inner query would prevent index use)
 SELECT id FROM (
     SELECT id FROM coverage_docs
-    WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
     ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
     LIMIT 5
 ) sub ORDER BY id;
@@ -177,7 +178,6 @@ SELECT id FROM (
 -- Multi-term BMW seek with segment data
 SELECT id FROM (
     SELECT id FROM coverage_docs
-    WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
     ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
     LIMIT 3
 ) sub ORDER BY id;
@@ -199,7 +199,6 @@ SET pg_textsearch.log_bmw_stats = true;
 -- Single-term with ORDER BY LIMIT (BMW seek on segments)
 SELECT count(*) FROM (
     SELECT id FROM coverage_docs
-    WHERE content <@> to_bm25query('alpha', 'coverage_idx') < 0
     ORDER BY content <@> to_bm25query('alpha', 'coverage_idx')
     LIMIT 10
 ) sub;
@@ -207,7 +206,6 @@ SELECT count(*) FROM (
 -- Multi-term with ORDER BY LIMIT
 SELECT count(*) FROM (
     SELECT id FROM coverage_docs
-    WHERE content <@> to_bm25query('seek alpha', 'coverage_idx') < 0
     ORDER BY content <@> to_bm25query('seek alpha', 'coverage_idx')
     LIMIT 10
 ) sub;
@@ -223,7 +221,6 @@ SET enable_seqscan = off;
 -- The implicit text <@> text form in ORDER BY
 SELECT id FROM (
     SELECT id FROM coverage_docs
-    WHERE content <@> 'alpha'::text < 0
     ORDER BY content <@> 'alpha'::text
     LIMIT 3
 ) sub ORDER BY id;
@@ -236,8 +233,10 @@ SET enable_seqscan = on;
 
 -- Use BM25 operator in HAVING clause
 SELECT left(content, 20) AS prefix, count(*) AS cnt
-FROM coverage_docs
-WHERE content <@> to_bm25query('document', 'coverage_idx') < 0
+FROM (
+    SELECT content FROM coverage_docs
+    ORDER BY content <@> to_bm25query('document', 'coverage_idx')
+) sub
 GROUP BY left(content, 20)
 HAVING count(*) > 1
 ORDER BY cnt DESC
@@ -263,8 +262,10 @@ CREATE INDEX build_spill_idx ON build_spill_test USING bm25(content)
 SET pg_textsearch.memtable_spill_threshold = 32000000;
 
 -- Verify index works after build-mode spill
-SELECT count(*) FROM build_spill_test
-WHERE content <@> to_bm25query('buildspill', 'build_spill_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM build_spill_test
+    ORDER BY content <@> to_bm25query('buildspill', 'build_spill_idx')
+) sub;
 
 DROP TABLE build_spill_test;
 

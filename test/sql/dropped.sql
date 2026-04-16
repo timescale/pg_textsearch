@@ -23,22 +23,25 @@ USING bm25 (content)
 WITH (text_config = 'english');
 
 -- Query should work with index (using explicit index reference)
-SELECT COUNT(*) AS with_index
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+SELECT COUNT(*) AS with_index FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx')
+) sub;
 
 -- Drop the index
 DROP INDEX dropped_idx;
 
 -- Query should ERROR when index doesn't exist
-SELECT COUNT(*) AS after_drop
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx') < -0.001;
+SELECT COUNT(*) AS after_drop FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx')
+) sub;
 
 -- Also test with a completely non-existent index name
-SELECT COUNT(*) AS nonexistent
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'totally_fake_index') < -0.001;
+SELECT COUNT(*) AS nonexistent FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'totally_fake_index')
+) sub;
 
 -- Test registry slot cleanup (issue #83)
 -- Create multiple indexes, drop them, then create new ones
@@ -66,9 +69,10 @@ CREATE INDEX dropped_idx_9 ON dropped_idx_test USING bm25 (content) WITH (text_c
 CREATE INDEX dropped_idx_10 ON dropped_idx_test USING bm25 (content) WITH (text_config = 'english');
 
 -- Test that the new indexes work
-SELECT COUNT(*) AS recycled_slots_work
-FROM dropped_idx_test
-WHERE content <@> to_bm25query('test', 'dropped_idx_6') < -0.001;
+SELECT COUNT(*) AS recycled_slots_work FROM (
+    SELECT 1 FROM dropped_idx_test
+    ORDER BY content <@> to_bm25query('test', 'dropped_idx_6')
+) sub;
 
 -- Also test CASCADE drop (table drop should clean up index slots)
 CREATE TABLE cascade_test (id SERIAL, content TEXT);

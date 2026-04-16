@@ -20,8 +20,10 @@ FROM generate_series(1, 200) AS i;
 COMMIT;
 
 -- Verify the data is searchable (spill should have happened)
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('uniqueterm1', 'bulk_load_idx')
+) sub;
 
 -- Check index summary shows segment data
 SELECT bm25_summarize_index('bulk_load_idx') IS NOT NULL AS has_summary;
@@ -43,11 +45,15 @@ FROM generate_series(1, 200) AS i;
 COMMIT;
 
 -- Verify both batches are searchable
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('uniqueterm1', 'bulk_load_idx')
+) sub;
 
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('secondbatch1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('secondbatch1', 'bulk_load_idx')
+) sub;
 
 -- Reset threshold
 SET pg_textsearch.bulk_load_threshold = 100000;

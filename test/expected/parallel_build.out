@@ -27,8 +27,8 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=8.00
 -- Verify queries work
-SELECT COUNT(*) AS apple_count FROM parallel_test_serial
-WHERE content <@> to_bm25query('apple', 'parallel_test_serial_idx') < 0;
+SELECT COUNT(*) AS apple_count FROM (SELECT 1 FROM parallel_test_serial
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_serial_idx')) sub;
  apple_count 
 -------------
       100000
@@ -54,8 +54,8 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 1 of 1 requested workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
-SELECT COUNT(*) AS database_count FROM parallel_test_1worker
-WHERE content <@> to_bm25query('database', 'parallel_test_1worker_idx') < 0;
+SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_1worker
+ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
  database_count 
 ----------------
          100000
@@ -95,36 +95,36 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
 NOTICE:  BM25 index build completed: 150000 documents, avg_length=16.00
 -- Verify all document groups are searchable
-SELECT COUNT(*) AS apple_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS apple_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_2workers_idx')) sub;
  apple_count 
 -------------
        30000
 (1 row)
 
-SELECT COUNT(*) AS database_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('database', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('database', 'parallel_test_2workers_idx')) sub;
  database_count 
 ----------------
           30000
 (1 row)
 
-SELECT COUNT(*) AS machine_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('machine', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS machine_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('machine', 'parallel_test_2workers_idx')) sub;
  machine_count 
 ---------------
          30000
 (1 row)
 
-SELECT COUNT(*) AS distributed_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('distributed', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS distributed_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('distributed', 'parallel_test_2workers_idx')) sub;
  distributed_count 
 -------------------
              30000
 (1 row)
 
-SELECT COUNT(*) AS network_count FROM parallel_test_2workers
-WHERE content <@> to_bm25query('network', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS network_count FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('network', 'parallel_test_2workers_idx')) sub;
  network_count 
 ---------------
          30000
@@ -175,15 +175,15 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 4 of 4 requested workers
 NOTICE:  BM25 index build completed: 200000 documents, avg_length=9.00
-SELECT COUNT(*) AS fox_count FROM parallel_test_4workers
-WHERE content <@> to_bm25query('fox', 'parallel_test_4workers_idx') < 0;
+SELECT COUNT(*) AS fox_count FROM (SELECT 1 FROM parallel_test_4workers
+ORDER BY content <@> to_bm25query('fox', 'parallel_test_4workers_idx')) sub;
  fox_count 
 -----------
      28571
 (1 row)
 
-SELECT COUNT(*) AS postgres_count FROM parallel_test_4workers
-WHERE content <@> to_bm25query('postgres', 'parallel_test_4workers_idx') < 0;
+SELECT COUNT(*) AS postgres_count FROM (SELECT 1 FROM parallel_test_4workers
+ORDER BY content <@> to_bm25query('postgres', 'parallel_test_4workers_idx')) sub;
  postgres_count 
 ----------------
           28572
@@ -220,15 +220,15 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=1.00
 -- Each term should appear in 10% of documents
-SELECT COUNT(*) AS alpha_count FROM parallel_test_short
-WHERE content <@> to_bm25query('alpha', 'parallel_test_short_idx') < 0;
+SELECT COUNT(*) AS alpha_count FROM (SELECT 1 FROM parallel_test_short
+ORDER BY content <@> to_bm25query('alpha', 'parallel_test_short_idx')) sub;
  alpha_count 
 -------------
        10000
 (1 row)
 
-SELECT COUNT(*) AS beta_count FROM parallel_test_short
-WHERE content <@> to_bm25query('beta', 'parallel_test_short_idx') < 0;
+SELECT COUNT(*) AS beta_count FROM (SELECT 1 FROM parallel_test_short
+ORDER BY content <@> to_bm25query('beta', 'parallel_test_short_idx')) sub;
  beta_count 
 ------------
       10000
@@ -253,16 +253,16 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=26.50
 -- "repeat" appears in all documents with varying term frequency
-SELECT COUNT(*) AS repeat_count FROM parallel_test_dupes
-WHERE content <@> to_bm25query('repeat', 'parallel_test_dupes_idx') < 0;
+SELECT COUNT(*) AS repeat_count FROM (SELECT 1 FROM parallel_test_dupes
+ORDER BY content <@> to_bm25query('repeat', 'parallel_test_dupes_idx')) sub;
  repeat_count 
 --------------
        100000
 (1 row)
 
 -- Each "unique" term appears exactly once
-SELECT COUNT(*) AS unique_count FROM parallel_test_dupes
-WHERE content <@> to_bm25query('unique1', 'parallel_test_dupes_idx') < 0;
+SELECT COUNT(*) AS unique_count FROM (SELECT 1 FROM parallel_test_dupes
+ORDER BY content <@> to_bm25query('unique1', 'parallel_test_dupes_idx')) sub;
  unique_count 
 --------------
             1
@@ -287,8 +287,8 @@ NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 2 of 2 requested workers
 NOTICE:  BM25 index build completed: 90000 documents, avg_length=3.00
 -- Only non-NULL documents should be indexed (90%)
-SELECT COUNT(*) AS document_count FROM parallel_test_nulls
-WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
+SELECT COUNT(*) AS document_count FROM (SELECT 1 FROM parallel_test_nulls
+ORDER BY content <@> to_bm25query('document', 'parallel_test_nulls_idx')) sub;
  document_count 
 ----------------
           90000
@@ -302,8 +302,8 @@ WHERE content <@> to_bm25query('document', 'parallel_test_nulls_idx') < 0;
 INSERT INTO parallel_test_2workers (content)
 VALUES ('completely new unique document inserted after parallel build');
 -- Search for newly inserted content
-SELECT COUNT(*) AS new_doc_found FROM parallel_test_2workers
-WHERE content <@> to_bm25query('completely', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS new_doc_found FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('completely', 'parallel_test_2workers_idx')) sub;
  new_doc_found 
 ---------------
              1
@@ -312,8 +312,8 @@ WHERE content <@> to_bm25query('completely', 'parallel_test_2workers_idx') < 0;
 -- VACUUM should work
 VACUUM parallel_test_2workers;
 -- Queries still work after VACUUM
-SELECT COUNT(*) AS apple_after_vacuum FROM parallel_test_2workers
-WHERE content <@> to_bm25query('apple', 'parallel_test_2workers_idx') < 0;
+SELECT COUNT(*) AS apple_after_vacuum FROM (SELECT 1 FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query('apple', 'parallel_test_2workers_idx')) sub;
  apple_after_vacuum 
 --------------------
               30000
@@ -345,8 +345,8 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.50, b=0.50
 NOTICE:  parallel index build: launched 2 of 2 requested workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
-SELECT COUNT(*) AS custom_count FROM parallel_test_custom
-WHERE content <@> to_bm25query('custom', 'parallel_test_custom_idx') < 0;
+SELECT COUNT(*) AS custom_count FROM (SELECT 1 FROM parallel_test_custom
+ORDER BY content <@> to_bm25query('custom', 'parallel_test_custom_idx')) sub;
  custom_count 
 --------------
        100000
@@ -371,8 +371,8 @@ NOTICE:  BM25 index build started for relation parallel_test_below_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 50000 documents, avg_length=4.00
-SELECT COUNT(*) AS small_count FROM parallel_test_below_threshold
-WHERE content <@> to_bm25query('small', 'parallel_test_below_idx') < 0;
+SELECT COUNT(*) AS small_count FROM (SELECT 1 FROM parallel_test_below_threshold
+ORDER BY content <@> to_bm25query('small', 'parallel_test_below_idx')) sub;
  small_count 
 -------------
        50000
