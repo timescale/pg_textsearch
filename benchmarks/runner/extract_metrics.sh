@@ -149,6 +149,60 @@ if [ -n "$WEIGHTED_THROUGHPUT_LINE" ]; then
     WEIGHTED_THROUGHPUT_MS=$(echo "$WEIGHTED_THROUGHPUT_LINE" | grep -oE "[0-9]+\.[0-9]+ ms/query" | grep -oE "[0-9]+\.[0-9]+" || echo "")
 fi
 
+# ============================================================
+# VACUUM benchmark metrics (from vacuum.sql output)
+# Scenarios: partial (concentrated), full (uniform), update
+# ============================================================
+
+# Extract timing between START/END markers using \timing output
+extract_marker_time() {
+    local start_marker="$1"
+    local end_marker="$2"
+    local time_val
+    time_val=$(sed -n "/${start_marker}/,/${end_marker}/p" "$LOG_FILE" 2>/dev/null | \
+        grep -oE "Time: [0-9]+\.[0-9]+ ms" | tail -1 | \
+        grep -oE "[0-9]+\.[0-9]+" || echo "")
+    echo "$time_val"
+}
+
+# Scenario A: Partial VACUUM (concentrated delete)
+VACUUM_PARTIAL_DELETE_MS=$(extract_marker_time "VACUUM_PARTIAL_DELETE_START:" "VACUUM_PARTIAL_DELETE_END:")
+VACUUM_PARTIAL_MS=$(extract_marker_time "VACUUM_PARTIAL_START:" "VACUUM_PARTIAL_END:")
+
+# Scenario B: Full VACUUM (uniform delete)
+VACUUM_FULL_DELETE_MS=$(extract_marker_time "VACUUM_FULL_DELETE_START:" "VACUUM_FULL_DELETE_END:")
+VACUUM_FULL_MS=$(extract_marker_time "VACUUM_FULL_START:" "VACUUM_FULL_END:")
+
+# Scenario C: Full VACUUM (uniform update)
+VACUUM_UPDATE_MS=$(extract_marker_time "VACUUM_UPDATE_START:" "VACUUM_UPDATE_END:")
+VACUUM_UPDATE_VACUUM_MS=$(extract_marker_time "VACUUM_UPDATE_VACUUM_START:" "VACUUM_UPDATE_VACUUM_END:")
+
+# Extract index sizes (bytes from last column of psql output)
+extract_index_bytes() {
+    local marker="$1"
+    grep -E "${marker}" "$LOG_FILE" 2>/dev/null | \
+        awk '{print $NF}' | grep -E "^[0-9]+$" | head -1 || echo ""
+}
+
+VACUUM_BASELINE_INDEX_BYTES=$(extract_index_bytes "VACUUM_BASELINE_INDEX_SIZE:")
+VACUUM_PARTIAL_POST_INDEX_BYTES=$(extract_index_bytes "VACUUM_PARTIAL_POST_INDEX_SIZE:")
+VACUUM_FULL_POST_INDEX_BYTES=$(extract_index_bytes "VACUUM_FULL_POST_INDEX_SIZE:")
+VACUUM_UPDATE_POST_INDEX_BYTES=$(extract_index_bytes "VACUUM_UPDATE_POST_INDEX_SIZE:")
+
+# Extract query latency averages per scenario
+# Format: VACUUM_*_QUERY: avg=Xms min=Yms max=Zms (n=N)
+extract_vacuum_query_avg() {
+    local marker="$1"
+    grep -E "${marker}" "$LOG_FILE" 2>/dev/null | \
+        grep -oE "avg=[0-9]+\.[0-9]+" | \
+        grep -oE "[0-9]+\.[0-9]+" | head -1 || echo ""
+}
+
+VACUUM_BASELINE_QUERY_AVG=$(extract_vacuum_query_avg "VACUUM_BASELINE_QUERY:")
+VACUUM_PARTIAL_QUERY_AVG=$(extract_vacuum_query_avg "VACUUM_PARTIAL_QUERY:")
+VACUUM_FULL_QUERY_AVG=$(extract_vacuum_query_avg "VACUUM_FULL_QUERY:")
+VACUUM_UPDATE_QUERY_AVG=$(extract_vacuum_query_avg "VACUUM_UPDATE_QUERY:")
+
 # Build JSON output
 cat > "$OUTPUT_FILE" << EOJSON
 {
@@ -186,6 +240,22 @@ cat > "$OUTPUT_FILE" << EOJSON
     },
     "weighted_throughput": {
       "avg_ms_per_query": $(num_or_null "$WEIGHTED_THROUGHPUT_MS")
+    },
+    "vacuum": {
+      "partial_delete_ms": $(num_or_null "$VACUUM_PARTIAL_DELETE_MS"),
+      "partial_vacuum_ms": $(num_or_null "$VACUUM_PARTIAL_MS"),
+      "full_delete_ms": $(num_or_null "$VACUUM_FULL_DELETE_MS"),
+      "full_vacuum_ms": $(num_or_null "$VACUUM_FULL_MS"),
+      "update_ms": $(num_or_null "$VACUUM_UPDATE_MS"),
+      "update_vacuum_ms": $(num_or_null "$VACUUM_UPDATE_VACUUM_MS"),
+      "baseline_index_bytes": $(num_or_null "$VACUUM_BASELINE_INDEX_BYTES"),
+      "partial_post_index_bytes": $(num_or_null "$VACUUM_PARTIAL_POST_INDEX_BYTES"),
+      "full_post_index_bytes": $(num_or_null "$VACUUM_FULL_POST_INDEX_BYTES"),
+      "update_post_index_bytes": $(num_or_null "$VACUUM_UPDATE_POST_INDEX_BYTES"),
+      "baseline_query_avg_ms": $(num_or_null "$VACUUM_BASELINE_QUERY_AVG"),
+      "partial_query_avg_ms": $(num_or_null "$VACUUM_PARTIAL_QUERY_AVG"),
+      "full_query_avg_ms": $(num_or_null "$VACUUM_FULL_QUERY_AVG"),
+      "update_query_avg_ms": $(num_or_null "$VACUUM_UPDATE_QUERY_AVG")
     }
   }
 }

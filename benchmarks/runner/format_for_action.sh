@@ -174,6 +174,79 @@ jq --arg dataset "$DATASET_LABEL" '[
             unit: "MB",
             value: ((.metrics.index_size_bytes / 1048576 * 100 | floor) / 100)
         }
+    else empty end),
+
+    # VACUUM benchmark metrics: partial vs full
+    (if .metrics.vacuum.partial_vacuum_ms != null then
+        {
+            name: "\($dataset) - Partial VACUUM (concentrated delete)",
+            unit: "ms",
+            value: .metrics.vacuum.partial_vacuum_ms
+        }
+    else empty end),
+
+    (if .metrics.vacuum.full_vacuum_ms != null then
+        {
+            name: "\($dataset) - Full VACUUM (uniform delete)",
+            unit: "ms",
+            value: .metrics.vacuum.full_vacuum_ms
+        }
+    else empty end),
+
+    (if .metrics.vacuum.update_vacuum_ms != null then
+        {
+            name: "\($dataset) - Full VACUUM (uniform update)",
+            unit: "ms",
+            value: .metrics.vacuum.update_vacuum_ms
+        }
+    else empty end),
+
+    (if .metrics.vacuum.partial_post_index_bytes != null then
+        {
+            name: "\($dataset) - Index Size After Partial VACUUM",
+            unit: "MB",
+            value: ((.metrics.vacuum.partial_post_index_bytes / 1048576 * 100 | floor) / 100)
+        }
+    else empty end),
+
+    (if .metrics.vacuum.full_post_index_bytes != null then
+        {
+            name: "\($dataset) - Index Size After Full VACUUM",
+            unit: "MB",
+            value: ((.metrics.vacuum.full_post_index_bytes / 1048576 * 100 | floor) / 100)
+        }
+    else empty end),
+
+    (if .metrics.vacuum.partial_query_avg_ms != null then
+        {
+            name: "\($dataset) - Query Latency After Partial VACUUM",
+            unit: "ms",
+            value: .metrics.vacuum.partial_query_avg_ms
+        }
+    else empty end),
+
+    (if .metrics.vacuum.full_query_avg_ms != null then
+        {
+            name: "\($dataset) - Query Latency After Full VACUUM",
+            unit: "ms",
+            value: .metrics.vacuum.full_query_avg_ms
+        }
+    else empty end),
+
+    (if .metrics.vacuum.update_post_index_bytes != null then
+        {
+            name: "\($dataset) - Index Size After Update VACUUM",
+            unit: "MB",
+            value: ((.metrics.vacuum.update_post_index_bytes / 1048576 * 100 | floor) / 100)
+        }
+    else empty end),
+
+    (if .metrics.vacuum.update_query_avg_ms != null then
+        {
+            name: "\($dataset) - Query Latency After Update VACUUM",
+            unit: "ms",
+            value: .metrics.vacuum.update_query_avg_ms
+        }
     else empty end)
 ]' "$INPUT_FILE" > "$OUTPUT_FILE"
 
