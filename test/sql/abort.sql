@@ -73,7 +73,6 @@ INSERT INTO abort_test2 (body)
     VALUES ('after rollback to savepoint');
 COMMIT;
 SELECT id, body FROM abort_test2
-    WHERE body <@> to_bm25query('savepoint', 'abort_test2_idx') < 0
     ORDER BY body <@> to_bm25query('savepoint', 'abort_test2_idx');
 
 -- Scenario 7: Error in a BM25 query

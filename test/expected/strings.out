@@ -183,11 +183,15 @@ SELECT
         WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
         ELSE 'Heap allocation likely'
     END as allocation_type,
-    ROUND((content <@> 'term allocation')::numeric, 4) as score
+    ROUND((content <@> to_bm25query('term allocation', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
-    AND content <@> 'term allocation' < 0
-ORDER BY content_length;
+ORDER BY content <@> to_bm25query('term allocation', 'long_strings_idx'), content_length;
+NOTICE:  BM25 index scan: tid=(0,12), BM25_score=-1.7085
+NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-1.7085
+NOTICE:  BM25 index scan: tid=(0,14), BM25_score=-1.3618
+NOTICE:  BM25 index scan: tid=(0,7), BM25_score=-1.0380
+NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-0.7634
  id |     category     | content_length |     allocation_type     |  score  
 ----+------------------+----------------+-------------------------+---------
  12 | stack_test       |            612 | Stack allocation likely | -1.7085
@@ -202,10 +206,12 @@ INSERT INTO long_string_docs (content, category) VALUES
 SELECT
     'Extreme length test' as test_name,
     LENGTH(content) as total_length,
-    ROUND((content <@> 'extreme testing')::numeric, 4) as score
+    ROUND((content <@> to_bm25query('extreme testing', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category = 'extreme'
-    AND content <@> 'extreme testing' < 0;
+ORDER BY content <@> to_bm25query('extreme testing', 'long_strings_idx');
+NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-4.2077
+NOTICE:  BM25 index scan: tid=(0,14), BM25_score=-2.8100
       test_name      | total_length |  score  
 ---------------------+--------------+---------
  Extreme length test |        23614 | -4.2254

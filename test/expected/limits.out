@@ -206,7 +206,7 @@ SELECT * FROM (
     FROM limit_test
     ORDER BY content <@> to_bm25query('mining', 'limit_test_idx')
     LIMIT 3
-) sub WHERE score < 0;
+) sub;
 NOTICE:  BM25 index scan: tid=(0,5), BM25_score=-2.0767
 NOTICE:  BM25 index scan: tid=(0,13), BM25_score=-2.0767
      title      |  score  

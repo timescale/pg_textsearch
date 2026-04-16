@@ -138,7 +138,6 @@ NOTICE:  BM25 index build completed: 4 documents, avg_length=4.50
 SELECT content,
        content <@> to_bm25query('fox', 'inh_parent_bm25') AS score
 FROM inh_parent
-WHERE content <@> to_bm25query('fox', 'inh_parent_bm25') < 0
 ORDER BY content <@> to_bm25query('fox', 'inh_parent_bm25')
 LIMIT 3;
                    content                   |        score        
@@ -265,7 +264,6 @@ SELECT
 SELECT content,
        content <@> to_bm25query('fox', 'drift2_parent_bm25') AS score
 FROM drift2_parent
-WHERE content <@> to_bm25query('fox', 'drift2_parent_bm25') < 0
 ORDER BY content <@> to_bm25query('fox', 'drift2_parent_bm25')
 LIMIT 3;
                    content                   |        score        

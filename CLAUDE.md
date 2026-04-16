@@ -179,6 +179,32 @@ make format-single FILE=path/to/file.c  # format specific file
 - Returns negative BM25 scores for Postgres ASC ordering
 - bm25query with index name required for WHERE clause queries
 
+### Query Style Guidelines
+
+**Do not use WHERE clauses that compare against BM25 scores.** Numeric
+score comparisons like `WHERE content <@> query < 0` or
+`WHERE content <@> query < -0.001` are an anti-pattern in tests and
+examples:
+
+- BM25 scores are for ranking, not filtering; their numeric values are
+  opaque and not meaningful to compare against thresholds
+- A WHERE clause with `<@>` triggers standalone scoring (sequential
+  scan), not an index scan; index scans require ORDER BY
+- The correct pattern is `ORDER BY content <@> query LIMIT n`
+
+For counting matching documents, use a subquery with ORDER BY:
+```sql
+-- WRONG: standalone scoring with numeric comparison
+SELECT count(*) FROM docs
+WHERE content <@> to_bm25query('term', 'idx') < 0;
+
+-- RIGHT: index scan via ORDER BY
+SELECT count(*) FROM (
+    SELECT 1 FROM docs
+    ORDER BY content <@> to_bm25query('term', 'idx')
+) sub;
+```
+
 ### Block-Max WAND Optimization
 
 Top-k queries use Block-Max WAND optimization:

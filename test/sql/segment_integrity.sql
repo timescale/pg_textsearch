@@ -267,14 +267,14 @@ SELECT
         AS expected,
     (SELECT COUNT(*) FROM (
         SELECT id FROM integrity_test
-        WHERE (content <@> to_bm25query('hello', 'integrity_test_idx')) < 0
+        ORDER BY content <@> to_bm25query('hello', 'integrity_test_idx')
     ) t) AS found,
     CASE
         WHEN (SELECT COUNT(*) FROM integrity_test
               WHERE to_tsvector('english', content) @@ to_tsquery('english', 'hello'))
            = (SELECT COUNT(*) FROM (
                 SELECT id FROM integrity_test
-                WHERE (content <@> to_bm25query('hello', 'integrity_test_idx')) < 0
+                ORDER BY content <@> to_bm25query('hello', 'integrity_test_idx')
               ) t)
         THEN 'PASS'
         ELSE 'FAIL'
@@ -287,14 +287,14 @@ SELECT
         AS expected,
     (SELECT COUNT(*) FROM (
         SELECT id FROM integrity_test
-        WHERE (content <@> to_bm25query('world', 'integrity_test_idx')) < 0
+        ORDER BY content <@> to_bm25query('world', 'integrity_test_idx')
     ) t) AS found,
     CASE
         WHEN (SELECT COUNT(*) FROM integrity_test
               WHERE to_tsvector('english', content) @@ to_tsquery('english', 'world'))
            = (SELECT COUNT(*) FROM (
                 SELECT id FROM integrity_test
-                WHERE (content <@> to_bm25query('world', 'integrity_test_idx')) < 0
+                ORDER BY content <@> to_bm25query('world', 'integrity_test_idx')
               ) t)
         THEN 'PASS'
         ELSE 'FAIL'
@@ -307,14 +307,14 @@ SELECT
         AS expected,
     (SELECT COUNT(*) FROM (
         SELECT id FROM integrity_test
-        WHERE (content <@> to_bm25query('search', 'integrity_test_idx')) < 0
+        ORDER BY content <@> to_bm25query('search', 'integrity_test_idx')
     ) t) AS found,
     CASE
         WHEN (SELECT COUNT(*) FROM integrity_test
               WHERE to_tsvector('english', content) @@ to_tsquery('english', 'search'))
            = (SELECT COUNT(*) FROM (
                 SELECT id FROM integrity_test
-                WHERE (content <@> to_bm25query('search', 'integrity_test_idx')) < 0
+                ORDER BY content <@> to_bm25query('search', 'integrity_test_idx')
               ) t)
         THEN 'PASS'
         ELSE 'FAIL'

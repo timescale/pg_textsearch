@@ -20,8 +20,10 @@ SELECT 'uniqueterm' || i || ' extra words for length variation'
 FROM generate_series(1, 200) AS i;
 COMMIT;
 -- Verify the data is searchable (spill should have happened)
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('uniqueterm1', 'bulk_load_idx')
+) sub;
  count 
 -------
      1
@@ -53,15 +55,19 @@ SELECT 'secondbatch' || i || ' more content for spill'
 FROM generate_series(1, 200) AS i;
 COMMIT;
 -- Verify both batches are searchable
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('uniqueterm1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('uniqueterm1', 'bulk_load_idx')
+) sub;
  count 
 -------
      1
 (1 row)
 
-SELECT count(*) FROM bulk_load_test
-WHERE content <@> to_bm25query('secondbatch1', 'bulk_load_idx') < 0;
+SELECT count(*) FROM (
+    SELECT 1 FROM bulk_load_test
+    ORDER BY content <@> to_bm25query('secondbatch1', 'bulk_load_idx')
+) sub;
  count 
 -------
      1

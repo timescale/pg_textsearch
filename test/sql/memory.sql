@@ -53,7 +53,6 @@ SELECT COUNT(*) AS total_docs FROM memory_test;
 -- Search should find documents
 SELECT id, left(content, 50) AS content_preview
 FROM memory_test
-WHERE content <@> 'test' < -0.001
 ORDER BY content <@> 'test'
 LIMIT 5;
 

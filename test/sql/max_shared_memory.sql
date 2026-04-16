@@ -55,8 +55,10 @@ RESET client_min_messages;
 SELECT count(*) >= 2000 AS inserts_ok FROM mem_test;
 
 -- Verify we can query the index (data was spilled to disk)
-SELECT count(*) > 0 AS can_query
-FROM mem_test WHERE body <@> 'perlimit'::bm25query < 0;
+SELECT count(*) > 0 AS can_query FROM (
+    SELECT 1 FROM mem_test
+    ORDER BY body <@> 'perlimit'::bm25query
+) sub;
 
 -- Test 6: Disabled limit allows unlimited inserts
 ALTER SYSTEM SET pg_textsearch.memory_limit = 0;
@@ -158,8 +160,10 @@ CREATE INDEX idx_build ON mem_build_test
     USING bm25(body) WITH (text_config='english');
 RESET client_min_messages;
 
-SELECT count(*) AS build_ok FROM mem_build_test
-    WHERE body <@> 'build_test'::bm25query < 0;
+SELECT count(*) AS build_ok FROM (
+    SELECT 1 FROM mem_build_test
+    ORDER BY body <@> 'build_test'::bm25query
+) sub;
 
 DROP TABLE mem_build_test CASCADE;
 

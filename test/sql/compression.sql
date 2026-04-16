@@ -26,18 +26,17 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('compression_idx');
 
 -- Query should work correctly with compressed segments
-SELECT count(*) FROM compression_docs
-WHERE content <@> to_bm25query('fox', 'compression_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM compression_docs
+ORDER BY content <@> to_bm25query('fox', 'compression_idx')) sub;
 
 -- Test with multiple query terms
-SELECT count(*) FROM compression_docs
-WHERE content <@> to_bm25query('quick brown', 'compression_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM compression_docs
+ORDER BY content <@> to_bm25query('quick brown', 'compression_idx')) sub;
 
 -- Test that scores are reasonable (not corrupted by compression)
 -- Scores should be negative (BM25 returns negative for ORDER BY ASC)
 SELECT id, content <@> to_bm25query('fox', 'compression_idx') AS score
 FROM compression_docs
-WHERE content <@> to_bm25query('fox', 'compression_idx') < 0
 ORDER BY score
 LIMIT 5;
 
@@ -50,16 +49,15 @@ FROM generate_series(1, 100) AS i;
 SELECT bm25_spill_index('compression_idx');
 
 -- Query across both segments
-SELECT count(*) FROM compression_docs
-WHERE content <@> to_bm25query('fox', 'compression_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM compression_docs
+ORDER BY content <@> to_bm25query('fox', 'compression_idx')) sub;
 
 -- Query the new content
-SELECT count(*) FROM compression_docs
-WHERE content <@> to_bm25query('zephyr', 'compression_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM compression_docs
+ORDER BY content <@> to_bm25query('zephyr', 'compression_idx')) sub;
 
 -- Test BMW query with compressed segments
 SELECT id FROM compression_docs
-WHERE content <@> to_bm25query('fox', 'compression_idx') < 0
 ORDER BY content <@> to_bm25query('fox', 'compression_idx')
 LIMIT 5;
 
@@ -86,8 +84,8 @@ FROM generate_series(1, 150) AS i;
 SELECT bm25_spill_index('uncompressed_idx');
 
 -- Should work the same
-SELECT count(*) FROM uncompressed_docs
-WHERE content <@> to_bm25query('testing', 'uncompressed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM uncompressed_docs
+ORDER BY content <@> to_bm25query('testing', 'uncompressed_idx')) sub;
 
 -- Clean up
 DROP TABLE uncompressed_docs;
@@ -116,8 +114,8 @@ FROM generate_series(1, 150) AS i;
 SELECT bm25_spill_index('mixed_idx');
 
 -- Verify compressed segment works
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('alpha', 'mixed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs
+ORDER BY content <@> to_bm25query('alpha', 'mixed_idx')) sub;
 
 -- Now turn compression OFF and add more data
 SET pg_textsearch.compress_segments = off;
@@ -130,16 +128,16 @@ FROM generate_series(151, 300) AS i;
 SELECT bm25_spill_index('mixed_idx');
 
 -- Query should work across mixed compressed/uncompressed segments
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('alpha', 'mixed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs
+ORDER BY content <@> to_bm25query('alpha', 'mixed_idx')) sub;
 
 -- Query term only in compressed segment
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('beta', 'mixed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs
+ORDER BY content <@> to_bm25query('beta', 'mixed_idx')) sub;
 
 -- Query term only in uncompressed segment
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('delta', 'mixed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs
+ORDER BY content <@> to_bm25query('delta', 'mixed_idx')) sub;
 
 -- Turn compression back on, add more data, and trigger merge
 SET pg_textsearch.compress_segments = on;
@@ -152,8 +150,8 @@ SELECT bm25_spill_index('mixed_idx');
 
 -- Now we have: compressed segment, uncompressed segment, compressed segment
 -- Query should still work
-SELECT count(*) FROM mixed_docs
-WHERE content <@> to_bm25query('alpha', 'mixed_idx') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs
+ORDER BY content <@> to_bm25query('alpha', 'mixed_idx')) sub;
 
 -- Clean up
 DROP TABLE mixed_docs;
@@ -190,14 +188,14 @@ FROM generate_series(151, 300) AS i;
 SELECT bm25_spill_index('mixed_idx2');
 
 -- Query across uncompressed and compressed segments
-SELECT count(*) FROM mixed_docs2
-WHERE content <@> to_bm25query('apple', 'mixed_idx2') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs2
+ORDER BY content <@> to_bm25query('apple', 'mixed_idx2')) sub;
 
-SELECT count(*) FROM mixed_docs2
-WHERE content <@> to_bm25query('banana', 'mixed_idx2') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs2
+ORDER BY content <@> to_bm25query('banana', 'mixed_idx2')) sub;
 
-SELECT count(*) FROM mixed_docs2
-WHERE content <@> to_bm25query('date', 'mixed_idx2') < 0;
+SELECT count(*) FROM (SELECT 1 FROM mixed_docs2
+ORDER BY content <@> to_bm25query('date', 'mixed_idx2')) sub;
 
 -- Clean up
 DROP TABLE mixed_docs2;

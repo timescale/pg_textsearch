@@ -137,11 +137,10 @@ SELECT
         WHEN LENGTH(content) < 1000 THEN 'Stack allocation likely'
         ELSE 'Heap allocation likely'
     END as allocation_type,
-    ROUND((content <@> 'term allocation')::numeric, 4) as score
+    ROUND((content <@> to_bm25query('term allocation', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category IN ('stack_test', 'heap_test', 'mixed_allocation')
-    AND content <@> 'term allocation' < 0
-ORDER BY content_length;
+ORDER BY content <@> to_bm25query('term allocation', 'long_strings_idx'), content_length;
 
 -- Test 9: Extreme length document (tests PostgreSQL's text limit handling)
 INSERT INTO long_string_docs (content, category) VALUES
@@ -151,10 +150,10 @@ INSERT INTO long_string_docs (content, category) VALUES
 SELECT
     'Extreme length test' as test_name,
     LENGTH(content) as total_length,
-    ROUND((content <@> 'extreme testing')::numeric, 4) as score
+    ROUND((content <@> to_bm25query('extreme testing', 'long_strings_idx'))::numeric, 4) as score
 FROM long_string_docs
 WHERE category = 'extreme'
-    AND content <@> 'extreme testing' < 0;
+ORDER BY content <@> to_bm25query('extreme testing', 'long_strings_idx');
 
 -- Cleanup
 DROP TABLE long_string_docs CASCADE;
