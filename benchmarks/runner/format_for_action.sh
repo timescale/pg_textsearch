@@ -231,6 +231,22 @@ jq --arg dataset "$DATASET_LABEL" '[
             unit: "ms",
             value: .metrics.vacuum.full_query_avg_ms
         }
+    else empty end),
+
+    (if .metrics.vacuum.update_post_index_bytes != null then
+        {
+            name: "\($dataset) - Index Size After Update VACUUM",
+            unit: "MB",
+            value: ((.metrics.vacuum.update_post_index_bytes / 1048576 * 100 | floor) / 100)
+        }
+    else empty end),
+
+    (if .metrics.vacuum.update_query_avg_ms != null then
+        {
+            name: "\($dataset) - Query Latency After Update VACUUM",
+            unit: "ms",
+            value: .metrics.vacuum.update_query_avg_ms
+        }
     else empty end)
 ]' "$INPUT_FILE" > "$OUTPUT_FILE"
 

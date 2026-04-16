@@ -378,9 +378,9 @@ SELECT
     pg_relation_size('msmarco_bm25_idx')
         as index_bytes;
 
--- Cleanup
-DROP FUNCTION vacuum_benchmark_queries;
+-- Cleanup: re-enable autovacuum first in case later statements fail
 ALTER TABLE msmarco_passages SET (autovacuum_enabled = true);
+DROP FUNCTION IF EXISTS vacuum_benchmark_queries;
 
 \echo ''
 \echo '=== VACUUM Benchmark Complete ==='

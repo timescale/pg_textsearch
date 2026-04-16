@@ -203,29 +203,6 @@ run_benchmark() {
         fi
     fi
 
-    # VACUUM benchmark (runs after queries; destructive to data)
-    if $DO_VACUUM; then
-        if [ -f "$dataset_dir/vacuum.sql" ]; then
-            echo ""
-            echo "--- Running $dataset VACUUM benchmark ---"
-            local vacuum_log="$RESULTS_DIR/${dataset}_vacuum_${TIMESTAMP}.log"
-
-            local start_time=$(date +%s.%N)
-
-            psql -f "$dataset_dir/vacuum.sql" 2>&1 | tee "$vacuum_log"
-
-            local end_time=$(date +%s.%N)
-            local vacuum_time=$(echo "$end_time - $start_time" | bc)
-
-            echo ""
-            echo "VACUUM benchmark time: ${vacuum_time}s"
-            echo "VACUUM_TIME_${dataset}=${vacuum_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
-        else
-            echo ""
-            echo "--- No vacuum.sql found for $dataset, skipping ---"
-        fi
-    fi
-
     # Validation (runs automatically after queries unless --skip-validate)
     if $DO_QUERY && ! $SKIP_VALIDATE; then
         local ground_truth_file="$dataset_dir/ground_truth.tsv"
@@ -271,6 +248,29 @@ run_benchmark() {
             echo ""
             echo "--- Skipping validation: validate_queries.sql not found ---"
             echo "VALIDATION_${dataset}=SKIPPED" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        fi
+    fi
+
+    # VACUUM benchmark (runs after validation; destructive to data)
+    if $DO_VACUUM; then
+        if [ -f "$dataset_dir/vacuum.sql" ]; then
+            echo ""
+            echo "--- Running $dataset VACUUM benchmark ---"
+            local vacuum_log="$RESULTS_DIR/${dataset}_vacuum_${TIMESTAMP}.log"
+
+            local start_time=$(date +%s.%N)
+
+            psql -f "$dataset_dir/vacuum.sql" 2>&1 | tee "$vacuum_log"
+
+            local end_time=$(date +%s.%N)
+            local vacuum_time=$(echo "$end_time - $start_time" | bc)
+
+            echo ""
+            echo "VACUUM benchmark time: ${vacuum_time}s"
+            echo "VACUUM_TIME_${dataset}=${vacuum_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        else
+            echo ""
+            echo "--- No vacuum.sql found for $dataset, skipping ---"
         fi
     fi
 }
