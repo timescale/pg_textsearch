@@ -181,10 +181,10 @@ make format-single FILE=path/to/file.c  # format specific file
 
 ### Query Style Guidelines
 
-**Do not use WHERE clauses that compare against BM25 scores.** Numeric
-score comparisons like `WHERE content <@> query < 0` or
-`WHERE content <@> query < -0.001` are an anti-pattern in tests and
-examples:
+**Do not use WHERE clauses that compare against BM25 scores** as a
+generic way to filter for matching documents. Numeric score
+comparisons like `WHERE content <@> query < 0` are an anti-pattern
+when used as a convenience filter in tests and examples:
 
 - BM25 scores are for ranking, not filtering; their numeric values are
   opaque and not meaningful to compare against thresholds
@@ -194,7 +194,7 @@ examples:
 
 For counting matching documents, use a subquery with ORDER BY:
 ```sql
--- WRONG: standalone scoring with numeric comparison
+-- WRONG: standalone scoring as a convenience filter
 SELECT count(*) FROM docs
 WHERE content <@> to_bm25query('term', 'idx') < 0;
 
@@ -204,6 +204,13 @@ SELECT count(*) FROM (
     ORDER BY content <@> to_bm25query('term', 'idx')
 ) sub;
 ```
+
+**Exception: standalone scoring as an explicit test target.** Tests
+that deliberately exercise the standalone scoring code path (e.g.,
+comparing index scan results against standalone results) should use
+WHERE with `<@>` and document the intent. See `validation.sql`
+(`validate_index_vs_standalone`), `queries.sql`, and `vector.sql`
+for examples of this pattern.
 
 ### Block-Max WAND Optimization
 
