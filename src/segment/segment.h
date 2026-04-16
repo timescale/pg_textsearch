@@ -66,7 +66,8 @@ typedef struct TpPageIndexSpecial
  * Segment format versions
  */
 #define TP_SEGMENT_FORMAT_VERSION_3 3 /* Legacy: uint32 offsets */
-#define TP_SEGMENT_FORMAT_VERSION	4 /* Current: uint64 offsets */
+#define TP_SEGMENT_FORMAT_VERSION_4 4 /* Legacy: no alive bitset */
+#define TP_SEGMENT_FORMAT_VERSION	5 /* Current: alive bitset */
 
 /*
  * V3 legacy segment header - preserved for reading old segments.
@@ -122,6 +123,10 @@ typedef struct TpSegmentHeader
 	uint64 fieldnorm_offset;	/* Offset to fieldnorm table */
 	uint64 ctid_pages_offset;	/* Offset to BlockNumber array */
 	uint64 ctid_offsets_offset; /* Offset to OffsetNumber array */
+
+	/* Alive bitset for tombstone tracking (V5+) */
+	uint64 alive_bitset_offset; /* Offset to alive bitset data */
+	uint32 alive_count;			/* Number of alive docs (bits set) */
 
 	/* Corpus statistics */
 	uint32 num_terms;	 /* Total unique terms */

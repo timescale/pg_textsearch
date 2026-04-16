@@ -30,6 +30,7 @@
 #include "am/build_context.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "segment/alive_bitset.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
 #include "segment/segment_io.h"
@@ -47,8 +48,10 @@ typedef struct TpVacuumSegmentInfo
 	BlockNumber next_segment;
 	uint32		level;
 	uint32		num_docs;
-	int64		dead_count;
+	uint32	   *dead_doc_ids; /* Array of dead doc_ids */
+	uint32		dead_count;
 	bool		affected;
+	bool		is_v5; /* true if segment has alive bitset */
 } TpVacuumSegmentInfo;
 
 /*
@@ -120,7 +123,7 @@ tp_vacuum_identify_affected(
 		while (seg != InvalidBlockNumber)
 		{
 			TpSegmentReader *reader;
-			int64			 seg_dead = 0;
+			uint32			 seg_dead = 0;
 
 			reader = tp_segment_open_ex(index, seg, true);
 			if (!reader || !reader->header)
@@ -131,32 +134,62 @@ tp_vacuum_identify_affected(
 			}
 
 			/* Check each CTID against the callback */
-			for (uint32 i = 0; i < reader->header->num_docs; i++)
 			{
-				ItemPointerData ctid;
+				uint32 *dead_ids   = NULL;
+				uint32	dead_cap   = 0;
+				bool	has_bitset = (reader->header->alive_bitset_offset > 0);
 
-				tp_segment_lookup_ctid(reader, i, &ctid);
-				if (ItemPointerIsValid(&ctid) &&
-					callback(&ctid, callback_state))
+				for (uint32 i = 0; i < reader->header->num_docs; i++)
 				{
-					seg_dead++;
+					ItemPointerData ctid;
+
+					/*
+					 * Skip docs already marked dead in the alive
+					 * bitset.  Without this, CTID reuse after a
+					 * previous VACUUM would double-count dead docs
+					 * and corrupt total_docs in the metapage.
+					 */
+					if (has_bitset && !tp_segment_is_alive(reader, i))
+						continue;
+
+					tp_segment_lookup_ctid(reader, i, &ctid);
+					if (ItemPointerIsValid(&ctid) &&
+						callback(&ctid, callback_state))
+					{
+						if (seg_dead >= dead_cap)
+						{
+							dead_cap = (dead_cap == 0) ? 64 : dead_cap * 2;
+							dead_ids = dead_ids
+											 ? repalloc(
+													   dead_ids,
+													   dead_cap *
+															   sizeof(uint32))
+											 : palloc(dead_cap *
+													  sizeof(uint32));
+						}
+						dead_ids[seg_dead] = i;
+						seg_dead++;
+					}
 				}
-			}
 
-			/* Record segment info */
-			if (count >= capacity)
-			{
-				capacity *= 2;
-				segments = repalloc(
-						segments, capacity * sizeof(TpVacuumSegmentInfo));
-			}
+				/* Record segment info */
+				if (count >= capacity)
+				{
+					capacity *= 2;
+					segments = repalloc(
+							segments, capacity * sizeof(TpVacuumSegmentInfo));
+				}
 
-			segments[count].root_block	 = seg;
-			segments[count].next_segment = reader->header->next_segment;
-			segments[count].level		 = level;
-			segments[count].num_docs	 = reader->header->num_docs;
-			segments[count].dead_count	 = seg_dead;
-			segments[count].affected	 = (seg_dead > 0);
+				segments[count].root_block	 = seg;
+				segments[count].next_segment = reader->header->next_segment;
+				segments[count].level		 = level;
+				segments[count].num_docs	 = reader->header->num_docs;
+				segments[count].dead_doc_ids = dead_ids;
+				segments[count].dead_count	 = seg_dead;
+				segments[count].affected	 = (seg_dead > 0);
+				segments[count].is_v5 =
+						(reader->header->alive_bitset_offset > 0);
+			}
 
 			total_dead += seg_dead;
 			count++;
@@ -481,12 +514,59 @@ tp_vacuum_replace_segment(
 }
 
 /*
+ * Apply dead doc marks to a V5 segment's alive bitset.
+ *
+ * Loads the bitset, marks dead docs, writes back via
+ * GenericXLog.  Returns the new alive_count, or 0 if all
+ * docs are dead (caller should drop the segment).
+ */
+static uint32
+tp_vacuum_mark_dead(
+		Relation	index,
+		BlockNumber root_block,
+		uint32	   *dead_doc_ids,
+		uint32		dead_count)
+{
+	TpSegmentReader *reader;
+	TpAliveBitset	*bitset;
+	uint32			 alive;
+
+	reader = tp_segment_open_ex(index, root_block, false);
+	if (!reader || !reader->header)
+	{
+		if (reader)
+			tp_segment_close(reader);
+		return 0;
+	}
+
+	bitset = tp_alive_bitset_load(reader);
+	if (!bitset)
+	{
+		tp_segment_close(reader);
+		return 0;
+	}
+
+	for (uint32 i = 0; i < dead_count; i++)
+		tp_alive_bitset_mark_dead(bitset, dead_doc_ids[i]);
+
+	alive = bitset->alive_count;
+
+	if (alive > 0)
+		tp_alive_bitset_write(bitset, reader, index);
+
+	tp_alive_bitset_free(bitset);
+	tp_segment_close(reader);
+
+	return alive;
+}
+
+/*
  * Bulk delete callback for vacuum and CREATE INDEX CONCURRENTLY
  *
  * Four-phase approach:
  * 1. Spill memtable to segments (all data in uniform format)
  * 2. Identify segments containing dead CTIDs (O(segments) memory)
- * 3. Rebuild affected segments from heap via TpBuildContext
+ * 3. Mark dead docs or rebuild affected segments
  * 4. Update metapage statistics
  *
  * Also called during CREATE INDEX CONCURRENTLY validation with a
@@ -573,19 +653,14 @@ tp_bulkdelete(
 	}
 
 	elog(DEBUG1,
-		 "Tapir VACUUM: %lld dead tuples across %d segments, "
-		 "rebuilding affected segments",
+		 "Tapir VACUUM: %lld dead tuples across %d segments",
 		 (long long)total_dead,
 		 num_segments);
 
-	/* Phase 3: Rebuild affected segments */
+	/* Phase 3: Mark dead docs or rebuild affected segments */
 	{
 		uint64 new_total_docs = 0;
 
-		/*
-		 * Walk segments per-level to track prev pointers for
-		 * chain replacement.
-		 */
 		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			BlockNumber prev = InvalidBlockNumber;
@@ -597,36 +672,67 @@ tp_bulkdelete(
 
 				if (segments[i].affected)
 				{
-					BlockNumber new_root;
-					uint64		seg_docs;
+					if (segments[i].is_v5)
+					{
+						/*
+						 * V5 segment: flip bits in alive
+						 * bitset.
+						 */
+						uint32 alive = tp_vacuum_mark_dead(
+								info->index,
+								segments[i].root_block,
+								segments[i].dead_doc_ids,
+								segments[i].dead_count);
 
-					new_root = tp_vacuum_rebuild_segment(
-							info->index,
-							info->heaprel,
-							segments[i].root_block,
-							level,
-							callback,
-							callback_state,
-							&seg_docs,
-							NULL);
+						if (alive == 0)
+						{
+							/*
+							 * All docs dead -- drop segment.
+							 */
+							tp_vacuum_replace_segment(
+									info->index,
+									level,
+									segments[i].root_block,
+									InvalidBlockNumber,
+									prev);
+							/* prev stays the same */
+						}
+						else
+						{
+							new_total_docs += alive;
+							prev = segments[i].root_block;
+						}
+					}
+					else
+					{
+						/*
+						 * Pre-V5 segment: rebuild into V5.
+						 */
+						BlockNumber new_root;
+						uint64		seg_docs;
 
-					tp_vacuum_replace_segment(
-							info->index,
-							level,
-							segments[i].root_block,
-							new_root,
-							prev);
+						new_root = tp_vacuum_rebuild_segment(
+								info->index,
+								info->heaprel,
+								segments[i].root_block,
+								level,
+								callback,
+								callback_state,
+								&seg_docs,
+								NULL);
 
-					new_total_docs += seg_docs;
+						tp_vacuum_replace_segment(
+								info->index,
+								level,
+								segments[i].root_block,
+								new_root,
+								prev);
 
-					/*
-					 * If we replaced (not removed), the new
-					 * segment becomes prev for the next
-					 * iteration.
-					 */
-					if (new_root != InvalidBlockNumber)
-						prev = new_root;
-					/* else prev stays the same */
+						new_total_docs += seg_docs;
+
+						if (new_root != InvalidBlockNumber)
+							prev = new_root;
+					}
 				}
 				else
 				{
@@ -675,6 +781,11 @@ tp_bulkdelete(
 	}
 
 	pfree(metap);
+	for (int i = 0; i < num_segments; i++)
+	{
+		if (segments[i].dead_doc_ids)
+			pfree(segments[i].dead_doc_ids);
+	}
 	pfree(segments);
 
 	return stats;

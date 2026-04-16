@@ -1,0 +1,438 @@
+-- Test alive bitset tombstone tracking during VACUUM
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v1.0.0-dev
+-- =============================================================
+-- Test 1: Basic VACUUM with bitmap marking
+-- =============================================================
+CREATE TABLE vb_test (id serial PRIMARY KEY, content text);
+INSERT INTO vb_test (content)
+SELECT 'document number ' || i || ' about databases'
+FROM generate_series(1, 100) i;
+CREATE INDEX vb_idx ON vb_test
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 100 documents, avg_length=4.00
+-- Verify initial query works
+SELECT count(*) FROM (
+    SELECT id FROM vb_test
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+   100
+(1 row)
+
+-- Delete some rows
+DELETE FROM vb_test WHERE id <= 20;
+-- VACUUM to apply bitmap marking
+VACUUM vb_test;
+-- Query should return only live rows
+SELECT count(*) FROM (
+    SELECT id FROM vb_test
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    80
+(1 row)
+
+-- Verify no deleted rows appear
+SELECT count(*) FROM (
+    SELECT id FROM vb_test
+    ORDER BY content <@> to_bm25query('databases', 'vb_idx')
+    LIMIT 1000
+) q WHERE id <= 20;
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE vb_test;
+-- =============================================================
+-- Test 2: Full segment delete — segment should be dropped
+-- =============================================================
+CREATE TABLE vb_full (id serial PRIMARY KEY, content text);
+INSERT INTO vb_full (content)
+SELECT 'fulldelete document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vb_full_idx ON vb_full
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_full_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=3.00
+DELETE FROM vb_full;
+VACUUM vb_full;
+-- Should return 0 results
+SELECT count(*) FROM (
+    SELECT id FROM vb_full
+    ORDER BY content <@> to_bm25query('fulldelete', 'vb_full_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     0
+(1 row)
+
+-- Index should still be usable after inserting new rows
+INSERT INTO vb_full (content) VALUES ('fresh document about topics');
+SELECT count(*) FROM (
+    SELECT id FROM vb_full
+    ORDER BY content <@> to_bm25query('fresh', 'vb_full_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE vb_full;
+-- =============================================================
+-- Test 3: CTID reuse correctness
+-- =============================================================
+CREATE TABLE vb_reuse (id serial PRIMARY KEY, content text);
+INSERT INTO vb_reuse (content)
+SELECT 'alpha keyword document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vb_reuse_idx ON vb_reuse
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_reuse_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=4.00
+-- Verify alpha matches
+SELECT count(*) > 0 AS has_alpha FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('alpha', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
+ has_alpha 
+-----------
+ t
+(1 row)
+
+-- Delete all, VACUUM (frees CTIDs for reuse)
+DELETE FROM vb_reuse;
+VACUUM vb_reuse;
+-- Insert new rows (Postgres may reuse CTIDs)
+INSERT INTO vb_reuse (content)
+SELECT 'beta keyword document ' || i
+FROM generate_series(1, 50) i;
+-- alpha should return nothing
+SELECT count(*) FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('alpha', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     0
+(1 row)
+
+-- beta should return results
+SELECT count(*) > 0 AS has_beta FROM (
+    SELECT id FROM vb_reuse
+    ORDER BY content <@> to_bm25query('beta', 'vb_reuse_idx')
+    LIMIT 1000
+) q;
+ has_beta 
+----------
+ t
+(1 row)
+
+DROP TABLE vb_reuse;
+-- =============================================================
+-- Test 4: Multiple segments with mixed deletes
+-- =============================================================
+CREATE TABLE vb_multi (id serial PRIMARY KEY, content text);
+INSERT INTO vb_multi (content)
+SELECT 'first batch document ' || i || ' with search term'
+FROM generate_series(1, 50) i;
+CREATE INDEX vb_multi_idx ON vb_multi
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_multi_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=6.00
+-- Force first batch to segment
+SELECT bm25_spill_index('vb_multi_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+-- Insert second batch
+INSERT INTO vb_multi (content)
+SELECT 'second batch document ' || i || ' with search term'
+FROM generate_series(1, 50) i;
+-- Force second batch to segment
+SELECT bm25_spill_index('vb_multi_idx');
+ bm25_spill_index 
+------------------
+                4
+(1 row)
+
+-- Delete from first batch only
+DELETE FROM vb_multi WHERE id <= 25;
+VACUUM vb_multi;
+-- Should find docs from both batches (minus deleted)
+SELECT count(*) FROM (
+    SELECT id FROM vb_multi
+    ORDER BY content <@> to_bm25query('search', 'vb_multi_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    75
+(1 row)
+
+DROP TABLE vb_multi;
+-- =============================================================
+-- Test 5: Merge after VACUUM cleans up dead docs
+-- =============================================================
+CREATE TABLE vb_merge (id serial PRIMARY KEY, content text);
+INSERT INTO vb_merge (content)
+SELECT 'merge test document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vb_merge_idx ON vb_merge
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_merge_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=4.00
+-- Delete half
+DELETE FROM vb_merge WHERE id <= 25;
+VACUUM vb_merge;
+-- Force merge to clean up dead docs
+SELECT bm25_force_merge('vb_merge_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+-- Query should still work correctly
+SELECT count(*) FROM (
+    SELECT id FROM vb_merge
+    ORDER BY content <@> to_bm25query('merge', 'vb_merge_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    25
+(1 row)
+
+DROP TABLE vb_merge;
+-- =============================================================
+-- Test 6: Score correctness after deletes (multi-term BMW)
+-- =============================================================
+CREATE TABLE vb_scores (id serial PRIMARY KEY, content text);
+INSERT INTO vb_scores (content) VALUES
+    ('database systems performance tuning'),
+    ('performance optimization techniques'),
+    ('database indexing strategies'),
+    ('query optimization in databases'),
+    ('systems programming fundamentals'),
+    ('advanced database concepts'),
+    ('delete me not relevant'),
+    ('also delete me irrelevant'),
+    ('performance database benchmark'),
+    ('indexing performance metrics');
+CREATE INDEX vb_scores_idx ON vb_scores
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_scores_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 10 documents, avg_length=3.00
+-- Delete some rows
+DELETE FROM vb_scores WHERE content LIKE '%delete me%';
+VACUUM vb_scores;
+-- Multi-term query via BMW index scan
+SELECT id,
+       content <@> to_bm25query('performance database',
+                                'vb_scores_idx') AS score
+FROM vb_scores
+ORDER BY content <@> to_bm25query('performance database',
+                                  'vb_scores_idx')
+LIMIT 5;
+ id |        score        
+----+---------------------
+  9 | -1.5869650840759277
+  1 | -1.3965292572975159
+  2 | -0.8938179016113281
+ 10 | -0.8938179016113281
+  3 | -0.6931471824645996
+(5 rows)
+
+DROP TABLE vb_scores;
+-- =============================================================
+-- Test 7: Many deletes (>64 per segment, exercises realloc)
+-- =============================================================
+CREATE TABLE vb_many (id serial PRIMARY KEY, content text);
+INSERT INTO vb_many (content)
+SELECT 'manydelete document ' || i || ' searchable'
+FROM generate_series(1, 200) i;
+CREATE INDEX vb_many_idx ON vb_many
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_many_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 200 documents, avg_length=4.00
+-- Delete 150 of 200 rows (well past the initial 64-element array)
+DELETE FROM vb_many WHERE id <= 150;
+VACUUM vb_many;
+SELECT count(*) FROM (
+    SELECT id FROM vb_many
+    ORDER BY content <@> to_bm25query('searchable', 'vb_many_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    50
+(1 row)
+
+DROP TABLE vb_many;
+-- =============================================================
+-- Test 8: Multi-segment merge with dead docs
+-- =============================================================
+CREATE TABLE vb_multimerge (id serial PRIMARY KEY, content text);
+INSERT INTO vb_multimerge (content)
+SELECT 'batch1 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+CREATE INDEX vb_mm_idx ON vb_multimerge
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_mm_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=4.00
+SELECT bm25_spill_index('vb_mm_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+INSERT INTO vb_multimerge (content)
+SELECT 'batch2 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+SELECT bm25_spill_index('vb_mm_idx');
+ bm25_spill_index 
+------------------
+                4
+(1 row)
+
+INSERT INTO vb_multimerge (content)
+SELECT 'batch3 doc ' || i || ' target'
+FROM generate_series(1, 50) i;
+SELECT bm25_spill_index('vb_mm_idx');
+ bm25_spill_index 
+------------------
+                7
+(1 row)
+
+-- Delete from each batch
+DELETE FROM vb_multimerge WHERE id <= 10;
+DELETE FROM vb_multimerge WHERE id > 50 AND id <= 60;
+DELETE FROM vb_multimerge WHERE id > 100 AND id <= 110;
+VACUUM vb_multimerge;
+-- Merge all segments — exercises N-way merge with dead docs
+SELECT bm25_force_merge('vb_mm_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+-- 150 total - 30 deleted = 120 live
+SELECT count(*) FROM (
+    SELECT id FROM vb_multimerge
+    ORDER BY content <@> to_bm25query('target', 'vb_mm_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+   120
+(1 row)
+
+DROP TABLE vb_multimerge;
+-- =============================================================
+-- Test 9: All docs dead across segments then merge
+-- =============================================================
+CREATE TABLE vb_alldead (id serial PRIMARY KEY, content text);
+INSERT INTO vb_alldead (content)
+SELECT 'alldead doc ' || i FROM generate_series(1, 30) i;
+CREATE INDEX vb_alldead_idx ON vb_alldead
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_alldead_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 30 documents, avg_length=3.00
+SELECT bm25_spill_index('vb_alldead_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+INSERT INTO vb_alldead (content)
+SELECT 'alldead second ' || i FROM generate_series(1, 30) i;
+SELECT bm25_spill_index('vb_alldead_idx');
+ bm25_spill_index 
+------------------
+                4
+(1 row)
+
+DELETE FROM vb_alldead;
+VACUUM vb_alldead;
+-- Both segments should be dropped — merge is a no-op
+SELECT bm25_force_merge('vb_alldead_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+SELECT count(*) FROM (
+    SELECT id FROM vb_alldead
+    ORDER BY content <@> to_bm25query('alldead', 'vb_alldead_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     0
+(1 row)
+
+-- Insert fresh data to verify index still works
+INSERT INTO vb_alldead (content) VALUES ('revival document here');
+SELECT count(*) FROM (
+    SELECT id FROM vb_alldead
+    ORDER BY content <@> to_bm25query('revival', 'vb_alldead_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE vb_alldead;
+-- =============================================================
+-- Test 10: Dump shows alive bitset info
+-- =============================================================
+CREATE TABLE vb_dump (id serial PRIMARY KEY, content text);
+INSERT INTO vb_dump (content)
+SELECT 'dump test ' || i FROM generate_series(1, 10) i;
+CREATE INDEX vb_dump_idx ON vb_dump
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vb_dump_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 10 documents, avg_length=3.00
+-- Verify dump output includes alive bitset info
+SELECT bm25_dump_index('vb_dump_idx') LIKE '%Alive: 10 / 10 docs%'
+    AS has_alive_info;
+ has_alive_info 
+----------------
+ t
+(1 row)
+
+DROP TABLE vb_dump;
+DROP EXTENSION pg_textsearch;
