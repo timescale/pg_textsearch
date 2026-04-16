@@ -135,12 +135,22 @@ tp_vacuum_identify_affected(
 
 			/* Check each CTID against the callback */
 			{
-				uint32 *dead_ids = NULL;
-				uint32	dead_cap = 0;
+				uint32 *dead_ids   = NULL;
+				uint32	dead_cap   = 0;
+				bool	has_bitset = (reader->header->alive_bitset_offset > 0);
 
 				for (uint32 i = 0; i < reader->header->num_docs; i++)
 				{
 					ItemPointerData ctid;
+
+					/*
+					 * Skip docs already marked dead in the alive
+					 * bitset.  Without this, CTID reuse after a
+					 * previous VACUUM would double-count dead docs
+					 * and corrupt total_docs in the metapage.
+					 */
+					if (has_bitset && !tp_segment_is_alive(reader, i))
+						continue;
 
 					tp_segment_lookup_ctid(reader, i, &ctid);
 					if (ItemPointerIsValid(&ctid) &&

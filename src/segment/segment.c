@@ -1693,10 +1693,26 @@ tp_dump_segment_to_output(
 			header.fieldnorm_offset	   = (uint64)v3.fieldnorm_offset;
 			header.ctid_pages_offset   = (uint64)v3.ctid_pages_offset;
 			header.ctid_offsets_offset = (uint64)v3.ctid_offsets_offset;
+			header.alive_bitset_offset = 0;
+			header.alive_count		   = v3.num_docs;
 			header.num_terms		   = v3.num_terms;
 			header.num_docs			   = v3.num_docs;
 			header.total_tokens		   = v3.total_tokens;
 			header.page_index		   = v3.page_index;
+		}
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
+		{
+			const char *src = PageGetContents(header_page);
+
+			memcpy(&header,
+				   src,
+				   offsetof(TpSegmentHeader, alive_bitset_offset));
+			header.alive_bitset_offset = 0;
+			memcpy(&header.num_terms,
+				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
+				   sizeof(TpSegmentHeader) -
+						   offsetof(TpSegmentHeader, num_terms));
+			header.alive_count = header.num_docs;
 		}
 		else
 		{

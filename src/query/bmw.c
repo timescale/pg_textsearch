@@ -523,60 +523,42 @@ score_segment_single_term_bmw(
 		iter.finished	   = false; /* Reset so we can process this block */
 		tp_segment_posting_iterator_load_block(&iter);
 
-		/*
-		 * Pre-load alive bitset bytes for this block to
-		 * amortize paged I/O (one read per block instead
-		 * of one per posting).
-		 */
+		while (tp_segment_posting_iterator_next(&iter, &posting))
 		{
-			uint8  alive_buf[TP_ALIVE_BLOCK_BUF_SIZE];
-			uint32 alive_base;
-			bool   has_dead = tp_alive_bitset_load_range(
-					  reader,
-					  iter.block_postings[0].doc_id,
-					  iter.skip_entry.last_doc_id,
-					  alive_buf,
-					  &alive_base);
+			float4 score;
 
-			while (tp_segment_posting_iterator_next(&iter, &posting))
+			/*
+			 * Break if iterator auto-advanced to next block.
+			 * This ensures we only process block i, allowing the outer
+			 * for loop to apply threshold checks to subsequent blocks.
+			 */
+			if (iter.current_block != i)
+				break;
+
+			/* Skip dead docs */
+			if (!tp_segment_is_alive(reader, posting->doc_id))
 			{
-				float4 score;
-
-				/*
-				 * Break if iterator auto-advanced to next block.
-				 * This ensures we only process block i, allowing
-				 * the outer for loop to apply threshold checks to
-				 * subsequent blocks.
-				 */
-				if (iter.current_block != i)
-					break;
-
-				/* Skip dead docs */
-				if (has_dead &&
-					!TP_ALIVE_BIT(alive_buf, alive_base, posting->doc_id))
-				{
-					if (stats)
-						stats->dead_docs_skipped++;
-					continue;
-				}
-
-				score = compute_bm25_score(
-						idf,
-						posting->frequency,
-						posting->doc_length,
-						k1,
-						b,
-						avg_doc_len);
-
-				if (!tp_topk_dominated(heap, score))
-				{
-					tp_topk_add_segment(
-							heap, reader->root_block, posting->doc_id, score);
-				}
-
 				if (stats)
-					stats->segment_docs_scored++;
+					stats->dead_docs_skipped++;
+				continue;
 			}
+
+			score = compute_bm25_score(
+					idf,
+					posting->frequency,
+					posting->doc_length,
+					k1,
+					b,
+					avg_doc_len);
+
+			if (!tp_topk_dominated(heap, score))
+			{
+				tp_topk_add_segment(
+						heap, reader->root_block, posting->doc_id, score);
+			}
+
+			if (stats)
+				stats->segment_docs_scored++;
 		}
 	}
 
