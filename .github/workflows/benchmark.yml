@@ -1256,6 +1256,20 @@ jobs:
 
         echo "MS MARCO validation PASSED" | tee -a benchmark_results.txt
 
+    - name: Run MS MARCO VACUUM benchmark
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+
+        echo "=== MS MARCO VACUUM Benchmark ===" | tee -a benchmark_results.txt
+        echo "Start: $(date)" | tee -a benchmark_results.txt
+
+        time psql -f benchmarks/datasets/msmarco/vacuum.sql 2>&1 | \
+            tee msmarco_vacuum_results.txt | tee -a benchmark_results.txt
+
+        echo "End: $(date)" | tee -a benchmark_results.txt
+
     - name: Run parallel scaling benchmark
       if: github.event.inputs.parallel_scaling == 'true' && (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all')
       run: |
@@ -1340,6 +1354,13 @@ jobs:
         else
           ./benchmarks/runner/extract_metrics.sh benchmark_results.txt \
               benchmark_metrics.json "$DATASET" || true
+        fi
+
+        # Extract VACUUM benchmark metrics (from dedicated log)
+        if [ -f msmarco_vacuum_results.txt ]; then
+          ./benchmarks/runner/extract_metrics.sh \
+              msmarco_vacuum_results.txt \
+              msmarco_vacuum_metrics.json "msmarco_vacuum" || true
         fi
 
         # Add metrics to summary
@@ -1430,6 +1451,19 @@ jobs:
           output_metrics_table "benchmark_metrics.json" "$DATASET"
         fi
 
+        # VACUUM benchmark summary
+        if [ -f msmarco_vacuum_metrics.json ]; then
+          echo "### VACUUM Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Scenario | VACUUM Time | Index Size | Query Latency |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------------|------------|---------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Baseline | - | $(jq -r '(.metrics.vacuum.baseline_index_bytes // 0) / 1048576 | floor' msmarco_vacuum_metrics.json) MB | $(jq -r '.metrics.vacuum.baseline_query_avg_ms // "N/A"' msmarco_vacuum_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Partial (concentrated delete) | $(jq -r '.metrics.vacuum.partial_vacuum_ms // "N/A"' msmarco_vacuum_metrics.json) ms | $(jq -r '(.metrics.vacuum.partial_post_index_bytes // 0) / 1048576 | floor' msmarco_vacuum_metrics.json) MB | $(jq -r '.metrics.vacuum.partial_query_avg_ms // "N/A"' msmarco_vacuum_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Full (uniform delete) | $(jq -r '.metrics.vacuum.full_vacuum_ms // "N/A"' msmarco_vacuum_metrics.json) ms | $(jq -r '(.metrics.vacuum.full_post_index_bytes // 0) / 1048576 | floor' msmarco_vacuum_metrics.json) MB | $(jq -r '.metrics.vacuum.full_query_avg_ms // "N/A"' msmarco_vacuum_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Full (uniform update) | $(jq -r '.metrics.vacuum.update_vacuum_ms // "N/A"' msmarco_vacuum_metrics.json) ms | $(jq -r '(.metrics.vacuum.update_post_index_bytes // 0) / 1048576 | floor' msmarco_vacuum_metrics.json) MB | $(jq -r '.metrics.vacuum.update_query_avg_ms // "N/A"' msmarco_vacuum_metrics.json) ms |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
     - name: Format metrics for benchmark tracking
       if: always()
       id: format_metrics
@@ -1453,6 +1487,12 @@ jobs:
             echo "dataset=$DATASET" >> $GITHUB_OUTPUT
           fi
           echo "is_all=false" >> $GITHUB_OUTPUT
+        fi
+
+        # Format VACUUM metrics if available
+        if [ -f msmarco_vacuum_metrics.json ]; then
+          ./benchmarks/runner/format_for_action.sh \
+              msmarco_vacuum_metrics.json msmarco_vacuum_action.json
         fi
 
     - name: Publish Cranfield benchmark
@@ -1482,6 +1522,21 @@ jobs:
         gh-pages-branch: gh-pages
         benchmark-data-dir-path: benchmarks
         alert-threshold: '150%'
+        comment-on-alert: true
+        fail-on-alert: false
+
+    - name: Publish MS MARCO VACUUM benchmark
+      if: always() && hashFiles('msmarco_vacuum_action.json') != '' && github.event.inputs.dry_run != 'true'
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: 'msmarco_vacuum Benchmarks'
+        tool: 'customSmallerIsBetter'
+        output-file-path: msmarco_vacuum_action.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        gh-pages-branch: gh-pages
+        benchmark-data-dir-path: benchmarks
+        alert-threshold: '200%'
         comment-on-alert: true
         fail-on-alert: false
 

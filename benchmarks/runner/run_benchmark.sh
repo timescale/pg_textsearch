@@ -16,6 +16,7 @@
 #   --download     - Download dataset if not present
 #   --load         - Load data and create index (drops existing)
 #   --query        - Run query benchmarks only
+#   --vacuum       - Run VACUUM benchmark (destructive; run after --query)
 #   --skip-validate - Skip validation (not recommended)
 #   --report       - Generate markdown report
 #   --port PORT    - Postgres port (default: 5433 for release build)
@@ -42,6 +43,7 @@ DATASET=""
 DO_DOWNLOAD=false
 DO_LOAD=false
 DO_QUERY=false
+DO_VACUUM=false
 SKIP_VALIDATE=false
 DO_REPORT=false
 VALIDATION_FAILED=false
@@ -63,6 +65,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --query)
             DO_QUERY=true
+            shift
+            ;;
+        --vacuum)
+            DO_VACUUM=true
             shift
             ;;
         --skip-validate)
@@ -91,6 +97,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --download       - Download dataset if not present"
             echo "  --load           - Load data and create index"
             echo "  --query          - Run query benchmarks"
+            echo "  --vacuum         - Run VACUUM benchmark (destructive)"
             echo "  --skip-validate  - Skip validation (not recommended)"
             echo "  --report         - Generate markdown report"
             echo "  --port PORT      - Postgres port (default: 5433)"
@@ -106,7 +113,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Default: run everything if no specific action requested
-if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_REPORT; then
+if ! $DO_DOWNLOAD && ! $DO_LOAD && ! $DO_QUERY && ! $DO_VACUUM && ! $DO_REPORT; then
     DO_DOWNLOAD=true
     DO_LOAD=true
     DO_QUERY=true
@@ -193,6 +200,29 @@ run_benchmark() {
             echo ""
             echo "Query benchmark time: ${query_time}s"
             echo "QUERY_TIME_${dataset}=${query_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        fi
+    fi
+
+    # VACUUM benchmark (runs after queries; destructive to data)
+    if $DO_VACUUM; then
+        if [ -f "$dataset_dir/vacuum.sql" ]; then
+            echo ""
+            echo "--- Running $dataset VACUUM benchmark ---"
+            local vacuum_log="$RESULTS_DIR/${dataset}_vacuum_${TIMESTAMP}.log"
+
+            local start_time=$(date +%s.%N)
+
+            psql -f "$dataset_dir/vacuum.sql" 2>&1 | tee "$vacuum_log"
+
+            local end_time=$(date +%s.%N)
+            local vacuum_time=$(echo "$end_time - $start_time" | bc)
+
+            echo ""
+            echo "VACUUM benchmark time: ${vacuum_time}s"
+            echo "VACUUM_TIME_${dataset}=${vacuum_time}" >> "$RESULTS_DIR/metrics_${TIMESTAMP}.env"
+        else
+            echo ""
+            echo "--- No vacuum.sql found for $dataset, skipping ---"
         fi
     fi
 
