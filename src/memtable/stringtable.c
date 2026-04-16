@@ -15,11 +15,11 @@
 
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
-#include "memory.h"
-#include "memtable.h"
-#include "posting.h"
-#include "state/state.h"
-#include "stringtable.h"
+#include "index/memory.h"
+#include "index/state.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
 
 /*
  * Get string length from key.

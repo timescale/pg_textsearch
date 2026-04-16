@@ -49,9 +49,8 @@ The code is organized into logical directories:
 ```
 src/
 ├── mod.c              # Extension init, GUC registration
-├── source.c/h         # Abstract data source interface
 ├── constants.h        # Shared constants and configuration
-├── am/                # Access method implementation
+├── access/            # Access method implementation
 │   ├── handler.c      # Index handler (amhandler)
 │   ├── build.c        # Index build and insert
 │   ├── build_context.c # Build context management
@@ -71,20 +70,24 @@ src/
 │   ├── dictionary.c   # Term dictionary encoding
 │   ├── docmap.c       # Document ID mapping
 │   ├── compression.c  # Posting list compression
+│   ├── fieldnorm.c    # Field length normalization
 │   ├── scan.c         # Segment scan operations
 │   ├── merge.c        # Segment compaction/merge
+│   ├── format.h       # On-disk format definitions
+│   ├── io.h           # Block I/O helpers
 │   └── source.c       # Data source interface for segments
-├── query/             # Query execution
-│   ├── score.c        # BM25 scoring implementation
+├── scoring/           # BM25 scoring and query optimization
+│   ├── bm25.c         # BM25 scoring implementation
 │   └── bmw.c          # Block-Max WAND optimization
 ├── types/             # SQL data types
 │   ├── vector.c       # bm25vector type
 │   └── query.c        # bm25query type
-├── state/             # Index state management
+├── index/             # Index state management
 │   ├── state.c        # Index state coordination
 │   ├── registry.c     # Global registry for index mapping
 │   ├── metapage.c     # Index metadata pages
-│   └── limit.c        # Query result limits
+│   ├── limit.c        # Query result limits
+│   └── source.c/h     # Abstract data source interface
 ├── planner/           # Query planner integration
 │   ├── hooks.c        # Planner hooks for implicit resolution
 │   └── cost.c         # Cost estimation

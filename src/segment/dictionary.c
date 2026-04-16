@@ -9,11 +9,11 @@
 #include <lib/dshash.h>
 #include <utils/memutils.h>
 
-#include "dictionary.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "state/state.h"
+#include "segment/dictionary.h"
 
 /*
  * Comparison function for qsort

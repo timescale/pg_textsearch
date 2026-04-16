@@ -14,7 +14,7 @@
 #include <storage/bufpage.h>
 #include <tsearch/ts_type.h>
 
-#include "state/state.h"
+#include "index/state.h"
 #include "types/vector.h"
 
 /*

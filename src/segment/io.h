@@ -13,7 +13,7 @@
  */
 #pragma once
 
-#include "segment.h"
+#include "segment/segment.h"
 
 /*
  * Segment reader context

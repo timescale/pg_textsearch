@@ -26,16 +26,16 @@
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
 
-#include "am.h"
-#include "am/build_context.h"
+#include "access/am.h"
+#include "access/build_context.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "segment/alive_bitset.h"
+#include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/state.h"
 
 /*
  * Per-segment state for VACUUM dead tuple tracking.

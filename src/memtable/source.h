@@ -8,8 +8,8 @@
 
 #include <postgres.h>
 
-#include "../source.h"
-#include "../state/state.h"
+#include "index/source.h"
+#include "index/state.h"
 
 /*
  * Create a data source that reads from the memtable.

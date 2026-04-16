@@ -21,12 +21,12 @@
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
-#include "am/am.h"
+#include "access/am.h"
+#include "index/metapage.h"
+#include "index/registry.h"
+#include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/registry.h"
 
 /* Backend-local pointer to the registry in shared memory */
 static TpGlobalRegistry *tapir_registry = NULL;

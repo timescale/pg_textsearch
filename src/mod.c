@@ -21,15 +21,15 @@
 #include <utils/guc.h>
 #include <utils/inval.h>
 
-#include "am/am.h"
+#include "access/am.h"
 #include "constants.h"
+#include "index/registry.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "planner/hooks.h"
-#include "query/score.h"
-#include "state/registry.h"
-#include "state/state.h"
+#include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.0.0-dev");

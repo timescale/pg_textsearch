@@ -25,20 +25,20 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
-#include "alive_bitset.h"
-#include "compression.h"
 #include "debug/dump.h"
-#include "dictionary.h"
-#include "docmap.h"
-#include "fieldnorm.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "pagemapper.h"
-#include "segment.h"
-#include "segment_io.h"
-#include "state/metapage.h"
-#include "state/state.h"
+#include "segment/alive_bitset.h"
+#include "segment/compression.h"
+#include "segment/dictionary.h"
+#include "segment/docmap.h"
+#include "segment/fieldnorm.h"
+#include "segment/io.h"
+#include "segment/pagemapper.h"
+#include "segment/segment.h"
 
 /* External: compression GUC from mod.c */
 extern bool tp_compress_segments;

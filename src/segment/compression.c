@@ -20,7 +20,7 @@
 #define TP_SIMD_NEON 1
 #endif
 
-#include "compression.h"
+#include "segment/compression.h"
 
 /*
  * Compute minimum bits needed to represent a value.

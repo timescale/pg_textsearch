@@ -10,9 +10,9 @@
 
 #include <access/relscan.h>
 
-#include "am/am.h"
-#include "state/metapage.h"
-#include "state/state.h"
+#include "access/am.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "types/vector.h"
 
 /*

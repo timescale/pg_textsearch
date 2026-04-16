@@ -14,7 +14,7 @@
 #include <commands/vacuum.h>
 #include <utils/syscache.h>
 
-#include "am.h"
+#include "access/am.h"
 #include "planner/cost.h"
 
 /* Relation options - initialized in mod.c */

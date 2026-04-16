@@ -14,17 +14,17 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
-#include "alive_bitset.h"
-#include "compression.h"
 #include "constants.h"
-#include "docmap.h"
-#include "fieldnorm.h"
-#include "merge.h"
-#include "merge_internal.h"
-#include "pagemapper.h"
-#include "segment.h"
-#include "segment_io.h"
-#include "state/metapage.h"
+#include "index/metapage.h"
+#include "segment/alive_bitset.h"
+#include "segment/compression.h"
+#include "segment/docmap.h"
+#include "segment/fieldnorm.h"
+#include "segment/io.h"
+#include "segment/merge.h"
+#include "segment/merge_internal.h"
+#include "segment/pagemapper.h"
+#include "segment/segment.h"
 
 /* Sentinel for dead docs in old_to_new mapping */
 #define TP_MERGE_DOC_DEAD UINT32_MAX

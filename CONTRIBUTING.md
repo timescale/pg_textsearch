@@ -69,6 +69,59 @@ make format        # auto-format all source files
 make format-check  # check formatting without changes
 ```
 
+### Source Code Architecture
+
+The `src/` directory is organized into layers. The directory structure
+communicates the dependency flow: upper layers depend on lower layers,
+not the reverse.
+
+**Layer 1 — Postgres interface:**
+- `access/` — Access method (handler, build, scan, vacuum)
+- `types/` — SQL types (`bm25query`, `bm25vector`) and operators
+- `planner/` — Query optimizer hooks and cost estimation
+
+**Layer 2 — Index coordination:**
+- `scoring/` — BM25 score computation and Block-Max WAND optimization
+- `index/` — Index lifecycle, shared state registry, metadata pages,
+  posting source abstraction
+
+**Layer 3 — Storage:**
+- `memtable/` — In-memory inverted index (shared memory, DSA)
+- `segment/` — On-disk segments, merge/compaction, compression
+
+**Cross-cutting:**
+- `debug/` — Index dump utilities (exempt from layering rules)
+- `mod.c` — Extension init and GUC registration
+
+**Dependency rules:**
+- Layer 1 may depend on Layer 2 and Layer 3
+- Layer 2 may depend on Layer 3
+- Layer 3 should not depend on Layer 1 or Layer 2
+
+These rules are enforced by convention and code review, not
+mechanically.
+
+### Include Path Convention
+
+All project-local `#include` directives use full paths relative to
+`src/`:
+
+```c
+#include "segment/segment.h"   /* correct */
+#include "index/source.h"     /* correct */
+#include "segment.h"          /* wrong: missing directory */
+#include "../source.h"        /* wrong: relative path */
+```
+
+Postgres system includes (`<postgres.h>`, `<access/generic_xlog.h>`,
+etc.) are unaffected.
+
+### File Size
+
+Split files based on responsibility, not line count. A 1500-line file
+with a single clear purpose is fine. A 400-line file doing three
+unrelated things should be split.
+
 ### Testing Requirements
 
 Before submitting a pull request:

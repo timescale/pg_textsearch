@@ -29,16 +29,16 @@
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
 
-#include "am/am.h"
+#include "access/am.h"
 #include "constants.h"
+#include "index/metapage.h"
+#include "index/registry.h"
+#include "index/state.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/registry.h"
-#include "state/state.h"
 
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;

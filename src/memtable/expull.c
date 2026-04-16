@@ -8,8 +8,8 @@
  */
 #include <postgres.h>
 
-#include "arena.h"
-#include "expull.h"
+#include "memtable/arena.h"
+#include "memtable/expull.h"
 
 /*
  * Allocate a new block and link it into the EXPULL chain.

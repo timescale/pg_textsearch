@@ -44,8 +44,8 @@
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
-#include "hooks.h"
-#include "query/score.h"
+#include "planner/hooks.h"
+#include "scoring/bm25.h"
 #include "types/query.h"
 
 /* Previous hooks in chain */

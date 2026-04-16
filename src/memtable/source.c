@@ -9,11 +9,11 @@
 #include <lib/dshash.h>
 #include <utils/memutils.h>
 
-#include "../source.h"
-#include "memtable.h"
-#include "posting.h"
-#include "source.h"
-#include "stringtable.h"
+#include "index/source.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/source.h"
+#include "memtable/stringtable.h"
 
 /*
  * Memtable-specific data source state

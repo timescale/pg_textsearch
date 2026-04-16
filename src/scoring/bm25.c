@@ -10,12 +10,12 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
-#include "query/bmw.h"
-#include "query/score.h"
+#include "scoring/bm25.h"
+#include "scoring/bmw.h"
 #include "segment/segment.h"
-#include "state/metapage.h"
-#include "state/state.h"
 
 /*
  * Centralized IDF calculation (basic version)

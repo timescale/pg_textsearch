@@ -7,8 +7,8 @@
 #pragma once
 
 #include "postgres.h"
-#include "segment.h"
-#include "segment_io.h"
+#include "segment/io.h"
+#include "segment/segment.h"
 #include "storage/block.h"
 #include "utils/rel.h"
 

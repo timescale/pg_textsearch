@@ -8,7 +8,7 @@
 
 #include <utils/memutils.h>
 
-#include "source.h"
+#include "index/source.h"
 
 /*
  * Allocate posting data with given capacity.

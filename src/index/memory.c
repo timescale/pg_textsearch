@@ -9,8 +9,8 @@
 #include <funcapi.h>
 #include <utils/builtins.h>
 
-#include "state/memory.h"
-#include "state/registry.h"
+#include "index/memory.h"
+#include "index/registry.h"
 
 PG_FUNCTION_INFO_V1(tp_memory_usage);
 

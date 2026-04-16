@@ -12,12 +12,12 @@
 #include <access/relscan.h>
 #include <utils/memutils.h>
 
-#include "memtable.h"
-#include "query/score.h"
-#include "scan.h"
-#include "state/limit.h"
-#include "state/metapage.h"
-#include "state/state.h"
+#include "index/limit.h"
+#include "index/metapage.h"
+#include "index/state.h"
+#include "memtable/memtable.h"
+#include "memtable/scan.h"
+#include "scoring/bm25.h"
 #include "types/vector.h"
 
 /*

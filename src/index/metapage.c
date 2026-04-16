@@ -19,11 +19,11 @@
 #include <utils/rel.h>
 
 #include "constants.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "state/metapage.h"
-#include "state/state.h"
 #include "types/vector.h"
 
 /* Maximum number of docids that fit in a page */

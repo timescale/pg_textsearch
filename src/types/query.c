@@ -32,17 +32,17 @@
 #include <utils/syscache.h>
 #include <varatt.h>
 
-#include "am/am.h"
+#include "access/am.h"
 #include "constants.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "planner/hooks.h"
-#include "query/score.h"
+#include "scoring/bm25.h"
 #include "segment/fieldnorm.h"
+#include "segment/io.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/state.h"
 #include "types/array.h"
 #include "types/query.h"
 #include "types/vector.h"

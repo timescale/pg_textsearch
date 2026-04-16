@@ -8,4 +8,4 @@
 
 #include <utils/memutils.h>
 
-#include "memtable.h"
+#include "memtable/memtable.h"

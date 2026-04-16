@@ -13,7 +13,7 @@
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
-#include "posting.h"
+#include "memtable/posting.h"
 
 typedef struct TpStringHashEntry TpStringHashEntry;
 

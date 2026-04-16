@@ -12,9 +12,9 @@
 #include <utils/selfuncs.h>
 
 #include "constants.h"
-#include "cost.h"
-#include "state/limit.h"
-#include "state/metapage.h"
+#include "index/limit.h"
+#include "index/metapage.h"
+#include "planner/cost.h"
 
 /*
  * Estimate cost of BM25 index scan

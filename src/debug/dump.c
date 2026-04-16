@@ -16,15 +16,15 @@
 #include <utils/dsa.h>
 #include <utils/lsyscache.h>
 
-#include "am/am.h"
+#include "access/am.h"
 #include "debug/dump.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "segment/io.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/state.h"
 
 /* Output size limits for string mode */
 #define MAX_OUTPUT_SIZE		  (256 * 1024) /* 256KB soft limit */

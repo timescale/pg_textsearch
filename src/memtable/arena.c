@@ -17,7 +17,7 @@
 
 #include <utils/memutils.h>
 
-#include "arena.h"
+#include "memtable/arena.h"
 
 /* Initial capacity for the pages array */
 #define ARENA_INITIAL_PAGES 16

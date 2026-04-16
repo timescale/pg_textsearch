@@ -11,15 +11,15 @@
 #include <utils/memutils.h>
 
 #include "constants.h"
+#include "index/metapage.h"
+#include "index/source.h"
 #include "memtable/source.h"
-#include "query/bmw.h"
-#include "query/score.h"
+#include "scoring/bm25.h"
+#include "scoring/bmw.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/fieldnorm.h"
-#include "segment/segment_io.h"
-#include "source.h"
-#include "state/metapage.h"
+#include "segment/io.h"
 
 /*
  * ------------------------------------------------------------

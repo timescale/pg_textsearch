@@ -35,16 +35,16 @@
 #include <utils/rel.h>
 #include <utils/wait_event.h>
 
-#include "am.h"
-#include "build_context.h"
-#include "build_parallel.h"
+#include "access/am.h"
+#include "access/build_context.h"
+#include "access/build_parallel.h"
 #include "constants.h"
+#include "index/metapage.h"
+#include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/merge_internal.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
 #include "types/array.h"
 
 /* ----------------------------------------------------------------

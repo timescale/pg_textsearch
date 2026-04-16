@@ -8,12 +8,12 @@
 
 #include <utils/memutils.h>
 
-#include "compression.h"
+#include "index/state.h"
+#include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/fieldnorm.h"
+#include "segment/io.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/state.h"
 
 /*
  * Read a skip entry by block index.

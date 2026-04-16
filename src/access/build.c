@@ -25,19 +25,19 @@
 #include <utils/lsyscache.h>
 #include <utils/regproc.h>
 
-#include "am.h"
-#include "build_context.h"
-#include "build_parallel.h"
+#include "access/am.h"
+#include "access/build_context.h"
+#include "access/build_parallel.h"
 #include "constants.h"
+#include "index/metapage.h"
+#include "index/registry.h"
+#include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
-#include "state/metapage.h"
-#include "state/registry.h"
-#include "state/state.h"
 #include "types/array.h"
 #include "types/vector.h"
 

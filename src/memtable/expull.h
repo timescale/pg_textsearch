@@ -18,7 +18,7 @@
 
 #include <postgres.h>
 
-#include "arena.h"
+#include "memtable/arena.h"
 
 /*
  * Single posting entry stored in EXPULL blocks.

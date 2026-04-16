@@ -14,16 +14,16 @@
 #include <storage/bufmgr.h>
 #include <utils/memutils.h>
 
-#include "build_context.h"
+#include "access/build_context.h"
 #include "constants.h"
 #include "memtable/arena.h"
 #include "memtable/expull.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/fieldnorm.h"
+#include "segment/io.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
-#include "segment/segment_io.h"
 
 /* Forward declarations for hash table support */
 static uint32 build_term_hash(const void *key, Size keysize);

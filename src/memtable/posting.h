@@ -13,8 +13,8 @@
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 
-#include "posting_entry.h"
-#include "state/state.h"
+#include "index/state.h"
+#include "memtable/posting_entry.h"
 
 /*
  * Posting list for a single term

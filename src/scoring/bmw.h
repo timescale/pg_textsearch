@@ -14,8 +14,8 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
+#include "index/state.h"
 #include "segment/segment.h"
-#include "state/state.h"
 
 /*
  * Top-K min-heap for maintaining threshold during scoring.

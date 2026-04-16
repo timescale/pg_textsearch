@@ -16,12 +16,12 @@
 
 #include "common/hashfn.h"
 #include "constants.h"
-#include "memtable.h"
-#include "posting.h"
-#include "state/metapage.h"
-#include "state/registry.h"
-#include "state/state.h"
-#include "stringtable.h"
+#include "index/metapage.h"
+#include "index/registry.h"
+#include "index/state.h"
+#include "memtable/memtable.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
 
 /* Configuration parameters */
 int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;

@@ -21,13 +21,12 @@ DATA = sql/pg_textsearch--1.0.0-dev.sql \
 # Source files organized by directory
 OBJS = \
 	src/mod.o \
-	src/source.o \
-	src/am/handler.o \
-	src/am/build.o \
-	src/am/build_context.o \
-	src/am/build_parallel.o \
-	src/am/scan.o \
-	src/am/vacuum.o \
+	src/access/handler.o \
+	src/access/build.o \
+	src/access/build_context.o \
+	src/access/build_parallel.o \
+	src/access/scan.o \
+	src/access/vacuum.o \
 	src/memtable/arena.o \
 	src/memtable/expull.o \
 	src/memtable/memtable.o \
@@ -42,16 +41,18 @@ OBJS = \
 	src/segment/docmap.o \
 	src/segment/alive_bitset.o \
 	src/segment/compression.o \
-	src/query/bmw.o \
-	src/query/score.o \
+	src/segment/fieldnorm.o \
+	src/scoring/bmw.o \
+	src/scoring/bm25.o \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
-	src/state/state.o \
-	src/state/registry.o \
-	src/state/metapage.o \
-	src/state/limit.o \
-	src/state/memory.o \
+	src/index/state.o \
+	src/index/registry.o \
+	src/index/metapage.o \
+	src/index/limit.o \
+	src/index/memory.o \
+	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/dump.o

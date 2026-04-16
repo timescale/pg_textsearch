@@ -12,7 +12,7 @@
 
 #include <postgres.h>
 
-#include "segment.h"
+#include "segment/segment.h"
 
 /*
  * Compressed block header - stored at start of compressed block data.

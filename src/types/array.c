@@ -15,7 +15,7 @@
 #include <utils/array.h>
 #include <utils/builtins.h>
 
-#include "array.h"
+#include "types/array.h"
 
 /*
  * Is this type OID a text-like array (text[], varchar[], bpchar[])?

@@ -12,9 +12,9 @@
 #include <utils/memutils.h>
 #include <utils/rel.h>
 
-#include "alive_bitset.h"
-#include "pagemapper.h"
-#include "segment_io.h"
+#include "segment/alive_bitset.h"
+#include "segment/io.h"
+#include "segment/pagemapper.h"
 
 /*
  * Initialize a raw bitset buffer to all-alive for num_docs.

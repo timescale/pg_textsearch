@@ -26,12 +26,12 @@
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
-#include "am.h"
+#include "access/am.h"
 #include "constants.h"
+#include "index/limit.h"
+#include "index/metapage.h"
+#include "index/state.h"
 #include "memtable/scan.h"
-#include "state/limit.h"
-#include "state/metapage.h"
-#include "state/state.h"
 #include "types/query.h"
 #include "types/vector.h"
 

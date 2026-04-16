@@ -15,7 +15,7 @@
 #include <storage/bufmgr.h>
 #include <utils/rel.h>
 
-#include "segment_io.h"
+#include "segment/io.h"
 
 /*
  * In-memory alive bitset, used during VACUUM to batch-update

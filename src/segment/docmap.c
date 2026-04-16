@@ -4,9 +4,9 @@
  *
  * docmap.c - Document ID mapping implementation
  */
-#include "docmap.h"
-#include "fieldnorm.h"
 #include "postgres.h"
+#include "segment/docmap.h"
+#include "segment/fieldnorm.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
