@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776452957344,
+  "lastUpdate": 1776453356811,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -74107,6 +74107,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 1032.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "804a7415ebb62d245e5ca438e99e9bff0ecf4f8b",
+          "message": "Merge branch 'main' into refactor/deduplicate-read-term",
+          "timestamp": "2026-04-17T19:00:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/804a7415ebb62d245e5ca438e99e9bff0ecf4f8b"
+        },
+        "date": 1776453351245,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - Index Build Time",
+            "value": 282.541,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - Insert Time",
+            "value": 30385.408,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 1 Token Query (p50)",
+            "value": 77.19,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 2 Token Query (p50)",
+            "value": 78.36,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 3 Token Query (p50)",
+            "value": 79.07,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 4 Token Query (p50)",
+            "value": 79.58,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 5 Token Query (p50)",
+            "value": 85.21,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 6 Token Query (p50)",
+            "value": 84.27,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 7 Token Query (p50)",
+            "value": 84.06,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - 8+ Token Query (p50)",
+            "value": 87.92,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - Throughput (avg ms/query)",
+            "value": 82.49,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (1.0M docs) - Index Size",
+            "value": 103.07,
             "unit": "MB"
           }
         ]
