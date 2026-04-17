@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776410446926,
+  "lastUpdate": 1776410449362,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -64157,6 +64157,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 8.49,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "199bfcb9dae8b46417f6551fd683edd6f5a8c4c0",
+          "message": "Remove WHERE clauses comparing against BM25 scores in tests (#322)\n\n## Summary\n\n- Remove `WHERE content <@> query < 0` and similar score-comparison\n  WHERE clauses from 22 SQL test files\n- Replace with idiomatic `ORDER BY ... LIMIT` patterns that use the\n  BM25 index scan instead of standalone scoring\n- For COUNT queries, wrap in `ORDER BY` subqueries\n- Add `SET enable_seqscan = off` where needed for small-table tests\n- Add query style guidelines to CLAUDE.md\n\nBM25 scores are for ranking, not filtering. The numeric thresholds\n(`< 0`, `< -0.001`, `> -5`) were opaque, and the WHERE clause\ntriggered standalone scoring (seq scan) instead of the index scan\nthat ORDER BY provides.\n\nTwo intentional exceptions left in place:\n- `validation.sql`: deliberately uses standalone scoring as a\n  reference to validate index scan correctness\n- `aerodocs.sql`: CROSS JOIN evaluating all doc-query pairs where\n  an index scan isn't applicable\n\n## Testing\n\nAll 57 SQL regression tests pass + shell tests pass on PG17.",
+          "timestamp": "2026-04-16T16:57:30Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/199bfcb9dae8b46417f6551fd683edd6f5a8c4c0"
+        },
+        "date": 1776410448816,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.436,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 2.536,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 1493693.75024,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 1.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 2.89,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 4.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 6.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 10.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 14.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 20.2,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 29.59,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 6.97,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 8.35,
             "unit": "ms"
           }
         ]
