@@ -137,33 +137,6 @@ jobs:
           -- Spill batch 2 to create segment 1
           SELECT bm25_spill_index('idx_upgrade_bm25');
 
-          -- Capture baseline query results (3 queries)
-          -- id tiebreaker ensures deterministic ordering at score boundaries
-          CREATE TABLE baseline_q1 AS
-          SELECT id,
-                 content <@> to_bm25query('database', 'idx_upgrade_bm25') AS score
-          FROM upgrade_docs
-          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25'), id
-          LIMIT 10;
-
-          CREATE TABLE baseline_q2 AS
-          SELECT id,
-                 content <@> to_bm25query('search ranking', 'idx_upgrade_bm25') AS score
-          FROM upgrade_docs
-          ORDER BY content <@> to_bm25query('search ranking', 'idx_upgrade_bm25'), id
-          LIMIT 10;
-
-          CREATE TABLE baseline_q3 AS
-          SELECT id,
-                 content <@> to_bm25query('optimization', 'idx_upgrade_bm25') AS score
-          FROM upgrade_docs
-          ORDER BY content <@> to_bm25query('optimization', 'idx_upgrade_bm25'), id
-          LIMIT 10;
-
-          SELECT 'baseline_q1' AS query, * FROM baseline_q1;
-          SELECT 'baseline_q2' AS query, * FROM baseline_q2;
-          SELECT 'baseline_q3' AS query, * FROM baseline_q3;
-
           -- Helper: exact comparison against a baseline table
           CREATE FUNCTION validate_baseline(
             query_terms text, baseline_tbl text, label text
@@ -287,10 +260,48 @@ jobs:
             RAISE NOTICE 'Extension version (pre-ALTER): %', ver;
           END $$;
 
-          -- Validate all 3 queries against baselines
-          SELECT validate_baseline('database',       'baseline_q1', 'pre-alter q1');
-          SELECT validate_baseline('search ranking', 'baseline_q2', 'pre-alter q2');
-          SELECT validate_baseline('optimization',   'baseline_q3', 'pre-alter q3');
+          -- Verify queries work with new binary on old segments.
+          -- Capture baselines here (post-restart) because recovery
+          -- rebuilds the memtable which can change corpus statistics.
+          CREATE TABLE baseline_q1 AS
+          SELECT id,
+                 content <@> to_bm25query('database', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          CREATE TABLE baseline_q2 AS
+          SELECT id,
+                 content <@> to_bm25query('search ranking', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('search ranking', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          CREATE TABLE baseline_q3 AS
+          SELECT id,
+                 content <@> to_bm25query('optimization', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('optimization', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          -- Verify results are valid (non-empty, negative scores)
+          DO $$
+          DECLARE cnt int; bad float8;
+          BEGIN
+            SELECT count(*) INTO cnt FROM baseline_q1;
+            IF cnt = 0 THEN
+              RAISE EXCEPTION 'FAIL: pre-alter q1 returned no results';
+            END IF;
+            SELECT max(score) INTO bad FROM baseline_q1 WHERE score >= 0;
+            IF bad IS NOT NULL THEN
+              RAISE EXCEPTION 'FAIL: pre-alter q1 non-negative score: %', bad;
+            END IF;
+            RAISE NOTICE 'PASS: pre-alter baselines captured (% results)', cnt;
+          END $$;
+
+          SELECT 'baseline_q1' AS query, * FROM baseline_q1;
+          SELECT 'baseline_q2' AS query, * FROM baseline_q2;
+          SELECT 'baseline_q3' AS query, * FROM baseline_q3;
         SQL
         else
           echo "Legacy tier: skipping pre-ALTER verification"

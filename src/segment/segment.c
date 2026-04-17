@@ -196,11 +196,14 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 			/*
 			 * V4 header: identical to V5 except the alive_bitset
 			 * fields (alive_bitset_offset, alive_count) are absent.
-			 * The fields before and after the gap share the same
-			 * names but sit at different struct offsets, so we copy
-			 * in two halves and zero-init the gap.
+			 *
+			 * Copy the first half (through ctid_offsets_offset) in
+			 * bulk since the layout is identical.  Copy tail fields
+			 * individually because V4 and V5 have different struct
+			 * padding after num_docs (total_tokens alignment).
 			 */
 			const char *src = PageGetContents(header_page);
+			const char *tail;
 
 			/* First half: magic … ctid_offsets_offset (same layout) */
 			memcpy(reader->header,
@@ -208,17 +211,22 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 				   offsetof(TpSegmentHeader, alive_bitset_offset));
 
 			/*
-			 * Second half: num_terms … page_index.  In V4
-			 * on-disk, these start right after
-			 * ctid_offsets_offset, which is the same byte
-			 * offset as alive_bitset_offset in V5.
+			 * Second half: num_terms … page_index.  In V4 on-disk,
+			 * these start right after ctid_offsets_offset.  Copy
+			 * field-by-field to avoid struct padding mismatches.
 			 */
-			memcpy(&reader->header->num_terms,
-				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
-				   sizeof(TpSegmentHeader) -
-						   offsetof(TpSegmentHeader, num_terms));
+			header = reader->header;
+			tail   = src + offsetof(TpSegmentHeader, alive_bitset_offset);
 
-			header						= reader->header;
+			memcpy(&header->num_terms, tail, sizeof(uint32));
+			tail += sizeof(uint32);
+			memcpy(&header->num_docs, tail, sizeof(uint32));
+			tail += sizeof(uint32);
+			memcpy(&header->total_tokens, tail, sizeof(uint64));
+			tail += sizeof(uint64);
+			memcpy(&header->page_index, tail, sizeof(BlockNumber));
+
+			/* V4 has no alive bitset */
 			header->alive_bitset_offset = 0;
 			header->alive_count			= header->num_docs;
 		}
