@@ -26,6 +26,7 @@
 #include "access/am.h"
 #include "constants.h"
 #include "index/metapage.h"
+#include "index/resolve.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "types/vector.h"
