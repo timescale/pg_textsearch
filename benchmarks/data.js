@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776410455872,
+  "lastUpdate": 1776410458748,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -33439,6 +33439,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_gin_insert - Index Size",
             "value": 972.13,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "199bfcb9dae8b46417f6551fd683edd6f5a8c4c0",
+          "message": "Remove WHERE clauses comparing against BM25 scores in tests (#322)\n\n## Summary\n\n- Remove `WHERE content <@> query < 0` and similar score-comparison\n  WHERE clauses from 22 SQL test files\n- Replace with idiomatic `ORDER BY ... LIMIT` patterns that use the\n  BM25 index scan instead of standalone scoring\n- For COUNT queries, wrap in `ORDER BY` subqueries\n- Add `SET enable_seqscan = off` where needed for small-table tests\n- Add query style guidelines to CLAUDE.md\n\nBM25 scores are for ranking, not filtering. The numeric thresholds\n(`< 0`, `< -0.001`, `> -5`) were opaque, and the WHERE clause\ntriggered standalone scoring (seq scan) instead of the index scan\nthat ORDER BY provides.\n\nTwo intentional exceptions left in place:\n- `validation.sql`: deliberately uses standalone scoring as a\n  reference to validate index scan correctness\n- `aerodocs.sql`: CROSS JOIN evaluating all doc-query pairs where\n  an index scan isn't applicable\n\n## Testing\n\nAll 57 SQL regression tests pass + shell tests pass on PG17.",
+          "timestamp": "2026-04-16T16:57:30Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/199bfcb9dae8b46417f6551fd683edd6f5a8c4c0"
+        },
+        "date": 1776410458024,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_gin_insert - Index Build Time",
+            "value": 0.699,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin_insert - Insert Time",
+            "value": 665834.067,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin_insert - Index Size",
+            "value": 972.11,
             "unit": "MB"
           }
         ]
