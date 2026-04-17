@@ -13,7 +13,6 @@
 #include <catalog/pg_am.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
-#include <storage/bufmgr.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
