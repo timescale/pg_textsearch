@@ -72,12 +72,6 @@ struct IndexBuildResult;
  * Shared utility functions
  */
 
-/* Resolve index name to OID (supports schema.index notation) */
-Oid tp_resolve_index_name_shared(const char *index_name);
-
-/* Get qualified index name for display */
-char *tp_get_qualified_index_name(Relation indexRelation);
-
 /* Cached score for ORDER BY optimization */
 float8 tp_get_cached_score(void);
 
