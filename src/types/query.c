@@ -35,6 +35,7 @@
 #include "access/am.h"
 #include "constants.h"
 #include "index/metapage.h"
+#include "index/resolve.h"
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"

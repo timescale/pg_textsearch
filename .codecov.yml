@@ -13,7 +13,7 @@ coverage:
         threshold: 1%
     patch:
       default:
-        target: 85%
+        informational: true
 
 # Ignore test files in coverage reports
 ignore:

@@ -52,6 +52,7 @@ OBJS = \
 	src/index/metapage.o \
 	src/index/limit.o \
 	src/index/memory.o \
+	src/index/resolve.o \
 	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
