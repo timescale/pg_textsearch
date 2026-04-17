@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776452911564,
+  "lastUpdate": 1776452913973,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -64697,6 +64697,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 8.35,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "804a7415ebb62d245e5ca438e99e9bff0ecf4f8b",
+          "message": "Merge branch 'main' into refactor/deduplicate-read-term",
+          "timestamp": "2026-04-17T19:00:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/804a7415ebb62d245e5ca438e99e9bff0ecf4f8b"
+        },
+        "date": 1776452913544,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.3,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 0.409,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 165351.065667,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 1.17,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 1.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 2.08,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 2.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 3.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 5.08,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 7.99,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 2.15,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 2.6,
             "unit": "ms"
           }
         ]
