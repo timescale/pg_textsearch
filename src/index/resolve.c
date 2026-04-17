@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/htup_details.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
 #include <catalog/pg_am.h>
