@@ -11,6 +11,8 @@
 
 /* Forward declarations */
 struct TpLocalIndexState;
+struct TpSegmentReader;
+struct TpSegmentHeader;
 
 /*
  * Term info for building dictionary
@@ -27,3 +29,10 @@ typedef struct TermInfo
 extern TermInfo *
 tp_build_dictionary(struct TpLocalIndexState *state, uint32 *num_terms);
 extern void tp_free_dictionary(TermInfo *terms, uint32 num_terms);
+
+/* Shared term-reading helper */
+extern char *tp_segment_read_term_at_index(
+		struct TpSegmentReader *reader,
+		struct TpSegmentHeader *header,
+		uint32				   *string_offsets,
+		uint32					index);

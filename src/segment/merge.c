@@ -18,6 +18,7 @@
 #include "index/metapage.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
+#include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/fieldnorm.h"
 #include "segment/io.h"
@@ -106,39 +107,6 @@ merge_sink_write_at(
  */
 
 /*
- * Read term at index from a segment's dictionary.
- * Returns palloc'd string that must be freed by caller.
- */
-static char *
-merge_read_term_at_index(TpMergeSource *source, uint32 index)
-{
-	TpSegmentHeader *header = source->reader->header;
-	uint32			 string_offset;
-	uint32			 length;
-	char			*term;
-
-	string_offset = header->strings_offset + source->string_offsets[index];
-
-	/* Read string length */
-	tp_segment_read(source->reader, string_offset, &length, sizeof(uint32));
-
-	if (length > TP_MAX_TERM_LENGTH)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupt segment: term length %u exceeds "
-						"maximum",
-						length)));
-
-	/* Allocate and read string */
-	term = palloc(length + 1);
-	tp_segment_read(
-			source->reader, string_offset + sizeof(uint32), term, length);
-	term[length] = '\0';
-
-	return term;
-}
-
-/*
  * Advance a merge source to its next term.
  * Returns false if source is exhausted.
  */
@@ -168,8 +136,11 @@ merge_source_advance(TpMergeSource *source)
 	header = source->reader->header;
 
 	/* Read the term at current index */
-	source->current_term =
-			merge_read_term_at_index(source, source->current_idx);
+	source->current_term = tp_segment_read_term_at_index(
+			source->reader,
+			source->reader->header,
+			source->string_offsets,
+			source->current_idx);
 
 	/* Read the dictionary entry (version-aware) */
 	tp_segment_read_dict_entry(

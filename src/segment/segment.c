@@ -51,46 +51,6 @@ extern bool tp_compress_segments;
  */
 
 /*
- * Helper function to read a term string at a given dictionary index.
- * Returns the allocated string which must be freed by caller.
- */
-static char *
-read_term_at_index(
-		TpSegmentReader *reader,
-		TpSegmentHeader *header,
-		uint32			 index,
-		uint32			*string_offsets)
-{
-	TpStringEntry string_entry;
-	char		 *term_text;
-	uint64		  string_offset;
-
-	string_offset = header->strings_offset + string_offsets[index];
-
-	/* Read string length */
-	tp_segment_read(
-			reader, string_offset, &string_entry.length, sizeof(uint32));
-
-	if (string_entry.length > TP_MAX_TERM_LENGTH)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupt segment: term length %u exceeds "
-						"maximum",
-						string_entry.length)));
-
-	/* Allocate buffer and read term text */
-	term_text = palloc(string_entry.length + 1);
-	tp_segment_read(
-			reader,
-			string_offset + sizeof(uint32),
-			term_text,
-			string_entry.length);
-	term_text[string_entry.length] = '\0';
-
-	return term_text;
-}
-
-/*
  * Version-aware dictionary entry reader.
  * V3 segments have 12-byte TpDictEntryV3; V4 have 16-byte TpDictEntry.
  */
@@ -1880,7 +1840,8 @@ tp_dump_segment_to_output(
 		{
 			char *term_text;
 
-			term_text = read_term_at_index(reader, &header, i, string_offsets);
+			term_text = tp_segment_read_term_at_index(
+					reader, &header, string_offsets, i);
 
 			if (strlen(term_text) > 1024)
 			{
