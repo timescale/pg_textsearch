@@ -49,56 +49,18 @@ The index uses a hybrid storage approach:
 
 ### Source Code Structure
 
-The code is organized into logical directories:
+The `src/` directory is organized in layers (see CONTRIBUTING.md for
+details):
 
-```
-src/
-├── mod.c              # Extension init, GUC registration
-├── constants.h        # Shared constants and configuration
-├── access/            # Access method implementation
-│   ├── handler.c      # Index handler (amhandler)
-│   ├── build.c        # Index build and insert
-│   ├── build_context.c # Build context management
-│   ├── build_parallel.c # Parallel index build
-│   ├── scan.c         # Index scan operations
-│   └── vacuum.c       # Vacuum support
-├── memtable/          # In-memory index structures
-│   ├── arena.c        # Memory arena allocator
-│   ├── expull.c       # Expandable pull buffer
-│   ├── memtable.c     # Memtable management
-│   ├── posting.c      # Posting list data structures
-│   ├── stringtable.c  # String interning hash table
-│   ├── scan.c         # Memtable scan operations
-│   └── source.c       # Data source interface for memtable
-├── segment/           # Disk-based segment storage
-│   ├── segment.c      # Segment read/write operations
-│   ├── dictionary.c   # Term dictionary encoding
-│   ├── docmap.c       # Document ID mapping
-│   ├── compression.c  # Posting list compression
-│   ├── fieldnorm.c    # Field length normalization
-│   ├── scan.c         # Segment scan operations
-│   ├── merge.c        # Segment compaction/merge
-│   ├── format.h       # On-disk format definitions
-│   ├── io.h           # Block I/O helpers
-│   └── source.c       # Data source interface for segments
-├── scoring/           # BM25 scoring and query optimization
-│   ├── bm25.c         # BM25 scoring implementation
-│   └── bmw.c          # Block-Max WAND optimization
-├── types/             # SQL data types
-│   ├── vector.c       # bm25vector type
-│   └── query.c        # bm25query type
-├── index/             # Index state management
-│   ├── state.c        # Index state coordination
-│   ├── registry.c     # Global registry for index mapping
-│   ├── metapage.c     # Index metadata pages
-│   ├── limit.c        # Query result limits
-│   └── source.c/h     # Abstract data source interface
-├── planner/           # Query planner integration
-│   ├── hooks.c        # Planner hooks for implicit resolution
-│   └── cost.c         # Cost estimation
-└── debug/             # Debugging utilities
-    └── dump.c         # Index dump functions
-```
+- **Layer 1 (Postgres interface):** `access/` (AM handler, build,
+  scan, vacuum), `types/` (bm25query, bm25vector), `planner/`
+  (optimizer hooks, cost estimation)
+- **Layer 2 (Index coordination):** `scoring/` (BM25, Block-Max
+  WAND), `index/` (state lifecycle, registry, metapage, posting
+  source abstraction)
+- **Layer 3 (Storage):** `memtable/` (in-memory inverted index),
+  `segment/` (on-disk segments, merge, compression)
+- **Cross-cutting:** `debug/` (dump utilities), `mod.c` (init)
 
 ### Data Types
 

@@ -8,7 +8,6 @@
 
 #include <utils/memutils.h>
 
-#include "index/state.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/fieldnorm.h"

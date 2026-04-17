@@ -99,7 +99,10 @@ not the reverse.
 - Layer 3 should not depend on Layer 1 or Layer 2
 
 These rules are enforced by convention and code review, not
-mechanically.
+mechanically. Known exceptions: `segment/dictionary.c` and
+`segment/segment.c` depend on `index/state.h` for
+`TpLocalIndexState` (DSA and memtable access). Resolving this
+coupling is future work.
 
 ### Include Path Convention
 

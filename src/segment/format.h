@@ -8,8 +8,8 @@
 
 #include <postgres.h>
 
-#include "storage/itemptr.h"
-#include "utils/timestamp.h"
+#include <storage/itemptr.h>
+#include <utils/timestamp.h>
 
 /*
  * Page types for segment pages.
