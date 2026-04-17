@@ -9,11 +9,13 @@
 #include <lib/dshash.h>
 #include <utils/memutils.h>
 
+#include "constants.h"
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "segment/dictionary.h"
+#include "segment/io.h"
 
 /*
  * Comparison function for qsort
@@ -128,4 +130,39 @@ tp_free_dictionary(TermInfo *terms, uint32 num_terms)
 	}
 
 	pfree(terms);
+}
+
+/*
+ * Read a term string from a segment's string pool at a given dictionary
+ * index. Returns a palloc'd string that must be freed by the caller.
+ */
+char *
+tp_segment_read_term_at_index(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			*string_offsets,
+		uint32			 index)
+{
+	uint32 string_offset;
+	uint32 length;
+	char  *term;
+
+	string_offset = header->strings_offset + string_offsets[index];
+
+	/* Read string length */
+	tp_segment_read(reader, string_offset, &length, sizeof(uint32));
+
+	if (length > TP_MAX_TERM_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupt segment: term length %u exceeds "
+						"maximum",
+						length)));
+
+	/* Allocate and read string */
+	term = palloc(length + 1);
+	tp_segment_read(reader, string_offset + sizeof(uint32), term, length);
+	term[length] = '\0';
+
+	return term;
 }
