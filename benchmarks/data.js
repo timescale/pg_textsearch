@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776452913973,
+  "lastUpdate": 1776452953202,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -28218,6 +28218,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_gin - Index Size",
             "value": 824.93,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "804a7415ebb62d245e5ca438e99e9bff0ecf4f8b",
+          "message": "Merge branch 'main' into refactor/deduplicate-read-term",
+          "timestamp": "2026-04-17T19:00:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/804a7415ebb62d245e5ca438e99e9bff0ecf4f8b"
+        },
+        "date": 1776452947879,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_gin - Index Build Time",
+            "value": 16220.944,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin - Insert Time",
+            "value": 71915.696,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin - Concurrent Insert Time",
+            "value": 131264.084974,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin - Index Size",
+            "value": 133.42,
             "unit": "MB"
           }
         ]
