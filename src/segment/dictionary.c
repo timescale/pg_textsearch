@@ -143,7 +143,7 @@ tp_segment_read_term_at_index(
 		uint32			*string_offsets,
 		uint32			 index)
 {
-	uint32 string_offset;
+	uint64 string_offset;
 	uint32 length;
 	char  *term;
 
