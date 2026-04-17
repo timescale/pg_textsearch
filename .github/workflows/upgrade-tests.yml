@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'sql/**'
+      - 'src/segment/**'
       - 'pg_textsearch.control'
       - '.github/workflows/upgrade-tests.yml'
   schedule:
@@ -79,39 +80,169 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
+        # CREATE EXTENSION needs GHA variable; use -c to avoid
+        # shell-expanding $$ in the heredoc SQL that follows.
+        psql -h /tmp -d upgrade_test -c \
+          "CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';"
+
         psql -h /tmp -d upgrade_test << 'SQL'
-        -- Install old version
-        CREATE EXTENSION pg_textsearch VERSION '${{ matrix.old_version }}';
+        \set ON_ERROR_STOP on
 
-        -- Check installed version
-        SELECT extversion AS old_version FROM pg_extension WHERE extname = 'pg_textsearch';
+        SELECT extversion AS old_version
+        FROM pg_extension WHERE extname = 'pg_textsearch';
 
-        -- Create test table with documents
         CREATE TABLE upgrade_docs (
           id SERIAL PRIMARY KEY,
           content TEXT NOT NULL
         );
 
-        INSERT INTO upgrade_docs (content) VALUES
-          ('PostgreSQL is a powerful open source database system'),
-          ('Full text search with BM25 ranking provides relevance scoring'),
-          ('The quick brown fox jumps over the lazy dog'),
-          ('Database indexing improves query performance significantly'),
-          ('Search engines use inverted indexes for fast lookups');
+        -- Batch 1: 120 rows across 8 topic clusters
+        INSERT INTO upgrade_docs (content)
+        SELECT CASE (g % 8)
+          WHEN 0 THEN 'PostgreSQL database management and query optimization'
+          WHEN 1 THEN 'full text search engine with BM25 relevance ranking'
+          WHEN 2 THEN 'machine learning classification using neural networks'
+          WHEN 3 THEN 'distributed computing consensus protocols replication'
+          WHEN 4 THEN 'programming language compiler design type inference'
+          WHEN 5 THEN 'cloud infrastructure container orchestration deploy'
+          WHEN 6 THEN 'database indexing strategies for analytical workloads'
+          WHEN 7 THEN 'search engine document scoring with term weighting'
+        END || ' document ' || g
+        FROM generate_series(1, 120) g;
 
-        -- Create BM25 index
+        -- Build batch 1 into segment 0
         CREATE INDEX idx_upgrade_bm25 ON upgrade_docs
           USING bm25 (content) WITH (text_config = 'english');
-
-        -- Run a query and save results for comparison
-        CREATE TABLE pre_upgrade_results AS
-        SELECT id, content <@> 'database search'::text AS score
-        FROM upgrade_docs
-        ORDER BY score
-        LIMIT 5;
-
-        SELECT * FROM pre_upgrade_results;
         SQL
+
+        # Compat tier (>= 0.5.1): add batch 2, spill, capture baselines
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+          psql -h /tmp -d upgrade_test << 'SQL'
+          \set ON_ERROR_STOP on
+
+          -- Batch 2: 80 rows (will be spilled to segment 1)
+          INSERT INTO upgrade_docs (content)
+          SELECT CASE (g % 8)
+            WHEN 0 THEN 'relational database storage engine buffer management'
+            WHEN 1 THEN 'information retrieval term scoring document ranking'
+            WHEN 2 THEN 'deep learning optimization gradient descent training'
+            WHEN 3 THEN 'network protocol design for distributed messaging'
+            WHEN 4 THEN 'functional programming immutable data composition'
+            WHEN 5 THEN 'serverless computing event driven scaling patterns'
+            WHEN 6 THEN 'query planner cost estimation and join ordering'
+            WHEN 7 THEN 'lexical analysis tokenization for search indexing'
+          END || ' entry ' || g
+          FROM generate_series(1, 80) g;
+
+          -- Spill batch 2 to create segment 1
+          SELECT bm25_spill_index('idx_upgrade_bm25');
+
+          -- Capture baseline query results (3 queries)
+          -- id tiebreaker ensures deterministic ordering at score boundaries
+          CREATE TABLE baseline_q1 AS
+          SELECT id,
+                 content <@> to_bm25query('database', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          CREATE TABLE baseline_q2 AS
+          SELECT id,
+                 content <@> to_bm25query('search ranking', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('search ranking', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          CREATE TABLE baseline_q3 AS
+          SELECT id,
+                 content <@> to_bm25query('optimization', 'idx_upgrade_bm25') AS score
+          FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('optimization', 'idx_upgrade_bm25'), id
+          LIMIT 10;
+
+          SELECT 'baseline_q1' AS query, * FROM baseline_q1;
+          SELECT 'baseline_q2' AS query, * FROM baseline_q2;
+          SELECT 'baseline_q3' AS query, * FROM baseline_q3;
+
+          -- Helper: exact comparison against a baseline table
+          CREATE FUNCTION validate_baseline(
+            query_terms text, baseline_tbl text, label text
+          ) RETURNS void AS $$
+          DECLARE
+            diff_count int;
+          BEGIN
+            EXECUTE format(
+              'CREATE TEMP TABLE _vb AS
+               SELECT id,
+                      content <@> to_bm25query(%L, ''idx_upgrade_bm25'') AS score
+               FROM upgrade_docs
+               ORDER BY content <@> to_bm25query(%L, ''idx_upgrade_bm25''), id
+               LIMIT 10',
+              query_terms, query_terms
+            );
+            EXECUTE format(
+              'SELECT count(*) FROM (
+                 (SELECT id, score FROM %I
+                  EXCEPT ALL
+                  SELECT id, score FROM _vb)
+                 UNION ALL
+                 (SELECT id, score FROM _vb
+                  EXCEPT ALL
+                  SELECT id, score FROM %I)
+               ) d', baseline_tbl, baseline_tbl
+            ) INTO diff_count;
+            DROP TABLE _vb;
+            IF diff_count > 0 THEN
+              RAISE EXCEPTION 'FAIL [%]: % differences vs baseline',
+                label, diff_count;
+            END IF;
+            RAISE NOTICE 'PASS [%]: results match baseline', label;
+          END;
+          $$ LANGUAGE plpgsql;
+
+          -- Helper: verify no deleted rows appear, all scores valid
+          CREATE FUNCTION validate_post_delete(
+            query_terms text, max_deleted_id int, label text
+          ) RETURNS void AS $$
+          DECLARE
+            bad_count int;
+            result_count int;
+            bad_score float8;
+          BEGIN
+            EXECUTE format(
+              'CREATE TEMP TABLE _vd AS
+               SELECT id,
+                      content <@> to_bm25query(%L, ''idx_upgrade_bm25'') AS score
+               FROM upgrade_docs
+               ORDER BY content <@> to_bm25query(%L, ''idx_upgrade_bm25''), id
+               LIMIT 10',
+              query_terms, query_terms
+            );
+            SELECT count(*) INTO bad_count FROM _vd
+            WHERE id <= max_deleted_id;
+            IF bad_count > 0 THEN
+              DROP TABLE _vd;
+              RAISE EXCEPTION 'FAIL [%]: % deleted rows in results',
+                label, bad_count;
+            END IF;
+            SELECT count(*) INTO result_count FROM _vd;
+            IF result_count = 0 THEN
+              DROP TABLE _vd;
+              RAISE EXCEPTION 'FAIL [%]: query returned no results', label;
+            END IF;
+            SELECT max(score) INTO bad_score FROM _vd WHERE score >= 0;
+            IF bad_score IS NOT NULL THEN
+              DROP TABLE _vd;
+              RAISE EXCEPTION 'FAIL [%]: non-negative score: %',
+                label, bad_score;
+            END IF;
+            DROP TABLE _vd;
+            RAISE NOTICE 'PASS [%]: % results, no deleted rows, valid scores',
+              label, result_count;
+          END;
+          $$ LANGUAGE plpgsql;
+        SQL
+        fi
 
     - name: Stop PostgreSQL, install current version, restart
       run: |
@@ -138,121 +269,221 @@ jobs:
         # Restart with new binary
         pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
 
+    - name: Verify queries before ALTER EXTENSION (compat tier)
+      run: |
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+          echo "=== Testing new binary reads old segments (pre-ALTER EXTENSION) ==="
+          psql -h /tmp -d upgrade_test << 'SQL'
+          \set ON_ERROR_STOP on
+
+          -- Extension version should still be the old one
+          DO $$
+          DECLARE ver text;
+          BEGIN
+            SELECT extversion INTO ver
+            FROM pg_extension WHERE extname = 'pg_textsearch';
+            RAISE NOTICE 'Extension version (pre-ALTER): %', ver;
+          END $$;
+
+          -- Validate all 3 queries against baselines
+          SELECT validate_baseline('database',       'baseline_q1', 'pre-alter q1');
+          SELECT validate_baseline('search ranking', 'baseline_q2', 'pre-alter q2');
+          SELECT validate_baseline('optimization',   'baseline_q3', 'pre-alter q3');
+        SQL
+        else
+          echo "Legacy tier: skipping pre-ALTER verification"
+        fi
+
     - name: Upgrade extension to current version
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        # Perform the upgrade
-        psql -h /tmp -d upgrade_test << 'SQL'
-        -- Upgrade extension
-        ALTER EXTENSION pg_textsearch UPDATE;
-
-        -- Verify new version
-        SELECT extversion AS new_version FROM pg_extension WHERE extname = 'pg_textsearch';
-
-        -- Rebuild indexes (required when upgrading across format changes)
-        REINDEX INDEX idx_upgrade_bm25;
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+          echo "=== Compat tier: ALTER EXTENSION UPDATE (no REINDEX) ==="
+          psql -h /tmp -d upgrade_test << 'SQL'
+          \set ON_ERROR_STOP on
+          ALTER EXTENSION pg_textsearch UPDATE;
+          SELECT extversion AS new_version
+          FROM pg_extension WHERE extname = 'pg_textsearch';
         SQL
+        else
+          echo "=== Legacy tier: ALTER EXTENSION UPDATE + REINDEX ==="
+          psql -h /tmp -d upgrade_test << 'SQL'
+          \set ON_ERROR_STOP on
+          ALTER EXTENSION pg_textsearch UPDATE;
+          SELECT extversion AS new_version
+          FROM pg_extension WHERE extname = 'pg_textsearch';
+          REINDEX INDEX idx_upgrade_bm25;
+        SQL
+        fi
 
     - name: Verify upgrade succeeded
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
+        EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
+          pg_textsearch.control | cut -d. -f1,2)
 
-        # Extract expected version prefix from control file (e.g., "0.5" from "0.5.0-dev")
-        EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' pg_textsearch.control | cut -d. -f1,2)
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+          echo "=== Compat tier: multi-phase segment validation ==="
+          psql -h /tmp -d upgrade_test \
+            -v expected_version="$EXPECTED_VERSION" << 'SQL'
+          \set ON_ERROR_STOP on
 
-        psql -h /tmp -d upgrade_test -v expected_version="$EXPECTED_VERSION" << 'SQL'
-        \set ON_ERROR_STOP on
+          -- Phase 1: Post-ALTER EXTENSION — old segments, new SQL
+          SELECT validate_baseline('database',       'baseline_q1', 'post-alter q1');
+          SELECT validate_baseline('search ranking', 'baseline_q2', 'post-alter q2');
+          SELECT validate_baseline('optimization',   'baseline_q3', 'post-alter q3');
 
-        -- Store expected version in temp table for use in DO blocks
-        CREATE TEMP TABLE _expected(version_prefix text);
-        INSERT INTO _expected VALUES (:'expected_version');
+          -- Phase 2: DELETE + VACUUM — alive bitset on old-format segments
+          -- Delete ~20% of rows (40 of 200, 5 per topic cluster in batch 1)
+          DELETE FROM upgrade_docs WHERE id <= 40;
+          VACUUM upgrade_docs;
 
-        -- Test 1: Verify extension upgraded to expected version
-        DO $$
-        DECLARE
-          ver text;
-          expected text;
-        BEGIN
-          SELECT version_prefix INTO expected FROM _expected;
-          SELECT extversion INTO ver FROM pg_extension WHERE extname = 'pg_textsearch';
-          IF ver NOT LIKE expected || '%' THEN
-            RAISE EXCEPTION 'FAIL: Extension did not upgrade properly. Version: %, expected: %*', ver, expected;
-          END IF;
-          RAISE NOTICE 'PASS: Extension upgraded to version: %', ver;
-        END $$;
+          SELECT validate_post_delete('database',       40, 'post-vacuum q1');
+          SELECT validate_post_delete('search ranking', 40, 'post-vacuum q2');
+          SELECT validate_post_delete('optimization',   40, 'post-vacuum q3');
 
-        -- Test 2: Verify BM25 index scan works with ORDER BY ... LIMIT
-        -- Note: Must use explicit to_bm25query() in PL/pgSQL - implicit resolution doesn't work
-        DO $$
-        DECLARE
-          rec record;
-        BEGIN
-          SELECT * INTO rec FROM upgrade_docs
-          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25') LIMIT 1;
-          IF rec.id IS NULL THEN
-            RAISE EXCEPTION 'FAIL: Query returned no results';
-          END IF;
-          RAISE NOTICE 'PASS: BM25 query works, got id=%', rec.id;
-        END $$;
+          -- Phase 3: force_merge — merges old segments into V5
+          SELECT bm25_force_merge('idx_upgrade_bm25');
 
-        -- Test 3: Verify scores are negative (BM25 returns negative for ASC)
-        DO $$
-        DECLARE
-          score_val float8;
-        BEGIN
-          SELECT content <@> to_bm25query('database', 'idx_upgrade_bm25') INTO score_val
-          FROM upgrade_docs
-          ORDER BY 1 LIMIT 1;
-          IF score_val IS NULL OR score_val >= 0 THEN
-            RAISE EXCEPTION 'FAIL: BM25 score should be negative, got: %', score_val;
-          END IF;
-          RAISE NOTICE 'PASS: BM25 scoring correct, score=%', score_val;
-        END $$;
+          SELECT validate_post_delete('database',       40, 'post-merge q1');
+          SELECT validate_post_delete('search ranking', 40, 'post-merge q2');
+          SELECT validate_post_delete('optimization',   40, 'post-merge q3');
 
-        -- Test 4: Verify index scan is used (run EXPLAIN outside DO block)
-        EXPLAIN (COSTS OFF)
-        SELECT * FROM upgrade_docs
-        ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25')
-        LIMIT 5;
+          -- Phase 4: INSERT new data alongside merged segments
+          INSERT INTO upgrade_docs (content) VALUES
+            ('newly inserted document about database query testing'),
+            ('another new document with search ranking verification');
 
-        -- Test 5: Insert new data and verify it's searchable
-        INSERT INTO upgrade_docs (content) VALUES
-          ('New document added after upgrade to test index updates');
+          DO $$
+          DECLARE rec record;
+          BEGIN
+            SELECT * INTO rec FROM upgrade_docs
+            ORDER BY content <@> to_bm25query('newly inserted', 'idx_upgrade_bm25')
+            LIMIT 1;
+            IF rec.id IS NULL THEN
+              RAISE EXCEPTION 'FAIL: new data not searchable after merge';
+            END IF;
+            RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
+          END $$;
 
-        DO $$
-        DECLARE
-          rec record;
-        BEGIN
-          SELECT * INTO rec FROM upgrade_docs
-          ORDER BY content <@> to_bm25query('upgrade', 'idx_upgrade_bm25') LIMIT 1;
-          IF rec.id IS NULL THEN
-            RAISE EXCEPTION 'FAIL: Could not find newly inserted document';
-          END IF;
-          RAISE NOTICE 'PASS: New document searchable, id=%', rec.id;
-        END $$;
+          -- Phase 5: Version check
+          CREATE TEMP TABLE _expected(version_prefix text);
+          INSERT INTO _expected VALUES (:'expected_version');
 
-        -- Test 6: Create new index after upgrade
-        CREATE TABLE post_upgrade_docs (content TEXT);
-        INSERT INTO post_upgrade_docs VALUES ('Testing post-upgrade index creation');
-        CREATE INDEX idx_post_upgrade ON post_upgrade_docs
-          USING bm25 (content) WITH (text_config = 'english');
+          DO $$
+          DECLARE ver text; expected text;
+          BEGIN
+            SELECT version_prefix INTO expected FROM _expected;
+            SELECT extversion INTO ver
+            FROM pg_extension WHERE extname = 'pg_textsearch';
+            IF ver NOT LIKE expected || '%' THEN
+              RAISE EXCEPTION 'FAIL: version %, expected %*', ver, expected;
+            END IF;
+            RAISE NOTICE 'PASS: extension version %', ver;
+          END $$;
 
-        DO $$
-        DECLARE
-          score_val float8;
-        BEGIN
-          SELECT content <@> to_bm25query('testing', 'idx_post_upgrade') INTO score_val
-          FROM post_upgrade_docs
-          ORDER BY 1 LIMIT 1;
-          IF score_val IS NULL OR score_val >= 0 THEN
-            RAISE EXCEPTION 'FAIL: New index query failed, score=%', score_val;
-          END IF;
-          RAISE NOTICE 'PASS: New index works, score=%', score_val;
-        END $$;
-
-        SELECT 'All compatible upgrade tests passed!' as final_status;
+          SELECT 'All compat-tier upgrade tests passed!' AS status;
         SQL
+
+        else
+          echo "=== Legacy tier: standard verification ==="
+          psql -h /tmp -d upgrade_test \
+            -v expected_version="$EXPECTED_VERSION" << 'SQL'
+          \set ON_ERROR_STOP on
+
+          CREATE TEMP TABLE _expected(version_prefix text);
+          INSERT INTO _expected VALUES (:'expected_version');
+
+          -- Test 1: Version check
+          DO $$
+          DECLARE ver text; expected text;
+          BEGIN
+            SELECT version_prefix INTO expected FROM _expected;
+            SELECT extversion INTO ver
+            FROM pg_extension WHERE extname = 'pg_textsearch';
+            IF ver NOT LIKE expected || '%' THEN
+              RAISE EXCEPTION 'FAIL: version %, expected %*', ver, expected;
+            END IF;
+            RAISE NOTICE 'PASS: extension version %', ver;
+          END $$;
+
+          -- Test 2: BM25 index scan works
+          DO $$
+          DECLARE rec record;
+          BEGIN
+            SELECT * INTO rec FROM upgrade_docs
+            ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25')
+            LIMIT 1;
+            IF rec.id IS NULL THEN
+              RAISE EXCEPTION 'FAIL: query returned no results';
+            END IF;
+            RAISE NOTICE 'PASS: BM25 query works, id=%', rec.id;
+          END $$;
+
+          -- Test 3: Scores are negative
+          DO $$
+          DECLARE score_val float8;
+          BEGIN
+            SELECT content <@> to_bm25query('database', 'idx_upgrade_bm25')
+            INTO score_val
+            FROM upgrade_docs
+            ORDER BY 1 LIMIT 1;
+            IF score_val IS NULL OR score_val >= 0 THEN
+              RAISE EXCEPTION 'FAIL: score should be negative, got %',
+                score_val;
+            END IF;
+            RAISE NOTICE 'PASS: scoring correct, score=%', score_val;
+          END $$;
+
+          -- Test 4: Index scan is used
+          EXPLAIN (COSTS OFF)
+          SELECT * FROM upgrade_docs
+          ORDER BY content <@> to_bm25query('database', 'idx_upgrade_bm25')
+          LIMIT 5;
+
+          -- Test 5: Insert new data
+          INSERT INTO upgrade_docs (content) VALUES
+            ('New document added after upgrade to test index updates');
+
+          DO $$
+          DECLARE rec record;
+          BEGIN
+            SELECT * INTO rec FROM upgrade_docs
+            ORDER BY content <@> to_bm25query('upgrade', 'idx_upgrade_bm25')
+            LIMIT 1;
+            IF rec.id IS NULL THEN
+              RAISE EXCEPTION 'FAIL: could not find newly inserted document';
+            END IF;
+            RAISE NOTICE 'PASS: new document searchable, id=%', rec.id;
+          END $$;
+
+          -- Test 6: New index after upgrade
+          CREATE TABLE post_upgrade_docs (content TEXT);
+          INSERT INTO post_upgrade_docs VALUES
+            ('Testing post-upgrade index creation');
+          CREATE INDEX idx_post_upgrade ON post_upgrade_docs
+            USING bm25 (content) WITH (text_config = 'english');
+
+          DO $$
+          DECLARE score_val float8;
+          BEGIN
+            SELECT content <@> to_bm25query('testing', 'idx_post_upgrade')
+            INTO score_val
+            FROM post_upgrade_docs
+            ORDER BY 1 LIMIT 1;
+            IF score_val IS NULL OR score_val >= 0 THEN
+              RAISE EXCEPTION 'FAIL: new index query failed, score=%',
+                score_val;
+            END IF;
+            RAISE NOTICE 'PASS: new index works, score=%', score_val;
+          END $$;
+
+          SELECT 'All legacy-tier upgrade tests passed!' AS status;
+        SQL
+        fi
 
     - name: Cleanup
       if: always()
