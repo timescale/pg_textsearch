@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776412221438,
+  "lastUpdate": 1776498230752,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -873,6 +873,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.647,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "54ab691bfad94b016bdeb5dbd22ed7680e12e393",
+          "message": "refactor: deduplicate read_term_at_index into dictionary.c (#324)\n\n## Summary\n\n- Extract shared term-reading logic from `segment.c` and `merge.c`\n  into `dictionary.c` as `tp_segment_read_term_at_index()`\n- Both files had nearly identical static functions for reading a term\n  string from the segment string pool\n\n## Testing\n\n- Compiles cleanly on PG17 and PG18\n- All regression tests pass (no behavioral change)",
+          "timestamp": "2026-04-17T20:33:31Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/54ab691bfad94b016bdeb5dbd22ed7680e12e393"
+        },
+        "date": 1776498226919,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2089.327105,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.479,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 3786.665425,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.528,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6899.744865,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.58,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 11095.497615,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.721,
             "unit": "ms"
           }
         ]
