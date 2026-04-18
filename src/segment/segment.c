@@ -193,38 +193,33 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		}
 		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
-			/*
-			 * V4 header: identical to V5 except the alive_bitset
-			 * fields (alive_bitset_offset, alive_count) are absent.
-			 *
-			 * Copy the first half (through ctid_offsets_offset) in
-			 * bulk since the layout is identical.  Copy tail fields
-			 * individually because V4 and V5 have different struct
-			 * padding after num_docs (total_tokens alignment).
-			 */
-			const char *src = PageGetContents(header_page);
-			const char *tail;
+			/* V4: read legacy struct and widen to V5 */
+			TpSegmentHeaderV4 v4;
 
-			/* First half: magic … ctid_offsets_offset (same layout) */
-			memcpy(reader->header,
-				   src,
-				   offsetof(TpSegmentHeader, alive_bitset_offset));
+			memcpy(&v4,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeaderV4));
 
-			/*
-			 * Second half: num_terms … page_index.  In V4 on-disk,
-			 * these start right after ctid_offsets_offset.  Copy
-			 * field-by-field to avoid struct padding mismatches.
-			 */
-			header = reader->header;
-			tail   = src + offsetof(TpSegmentHeader, alive_bitset_offset);
-
-			memcpy(&header->num_terms, tail, sizeof(uint32));
-			tail += sizeof(uint32);
-			memcpy(&header->num_docs, tail, sizeof(uint32));
-			tail += sizeof(uint32);
-			memcpy(&header->total_tokens, tail, sizeof(uint64));
-			tail += sizeof(uint64);
-			memcpy(&header->page_index, tail, sizeof(BlockNumber));
+			header						= reader->header;
+			header->magic				= v4.magic;
+			header->version				= v4.version;
+			header->created_at			= v4.created_at;
+			header->num_pages			= v4.num_pages;
+			header->data_size			= v4.data_size;
+			header->level				= v4.level;
+			header->next_segment		= v4.next_segment;
+			header->dictionary_offset	= v4.dictionary_offset;
+			header->strings_offset		= v4.strings_offset;
+			header->entries_offset		= v4.entries_offset;
+			header->postings_offset		= v4.postings_offset;
+			header->skip_index_offset	= v4.skip_index_offset;
+			header->fieldnorm_offset	= v4.fieldnorm_offset;
+			header->ctid_pages_offset	= v4.ctid_pages_offset;
+			header->ctid_offsets_offset = v4.ctid_offsets_offset;
+			header->num_terms			= v4.num_terms;
+			header->num_docs			= v4.num_docs;
+			header->total_tokens		= v4.total_tokens;
+			header->page_index			= v4.page_index;
 
 			/* V4 has no alive bitset */
 			header->alive_bitset_offset = 0;
