@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776496223654,
+  "lastUpdate": 1776496225777,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -61706,6 +61706,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
             "value": 2.14,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "54ab691bfad94b016bdeb5dbd22ed7680e12e393",
+          "message": "refactor: deduplicate read_term_at_index into dictionary.c (#324)\n\n## Summary\n\n- Extract shared term-reading logic from `segment.c` and `merge.c`\n  into `dictionary.c` as `tp_segment_read_term_at_index()`\n- Both files had nearly identical static functions for reading a term\n  string from the segment string pool\n\n## Testing\n\n- Compiles cleanly on PG17 and PG18\n- All regression tests pass (no behavioral change)",
+          "timestamp": "2026-04-17T20:33:31Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/54ab691bfad94b016bdeb5dbd22ed7680e12e393"
+        },
+        "date": 1776496225360,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_concurrent (0 docs) - Index Build Time",
+            "value": 1.395,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 322.162941,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
+            "value": 2.26,
             "unit": "ms"
           }
         ]
