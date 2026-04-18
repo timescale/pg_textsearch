@@ -347,40 +347,7 @@ jobs:
           SELECT validate_baseline('search ranking', 'baseline_q2', 'post-alter q2');
           SELECT validate_baseline('optimization',   'baseline_q3', 'post-alter q3');
 
-          -- Phase 2: DELETE + VACUUM — alive bitset on old-format segments
-          -- Delete ~20% of rows (40 of 200, 5 per topic cluster in batch 1)
-          DELETE FROM upgrade_docs WHERE id <= 40;
-          VACUUM upgrade_docs;
-
-          SELECT validate_post_delete('database',       40, 'post-vacuum q1');
-          SELECT validate_post_delete('search ranking', 40, 'post-vacuum q2');
-          SELECT validate_post_delete('optimization',   40, 'post-vacuum q3');
-
-          -- Phase 3: force_merge — merges old segments into V5
-          SELECT bm25_force_merge('idx_upgrade_bm25');
-
-          SELECT validate_post_delete('database',       40, 'post-merge q1');
-          SELECT validate_post_delete('search ranking', 40, 'post-merge q2');
-          SELECT validate_post_delete('optimization',   40, 'post-merge q3');
-
-          -- Phase 4: INSERT new data alongside merged segments
-          INSERT INTO upgrade_docs (content) VALUES
-            ('newly inserted document about database query testing'),
-            ('another new document with search ranking verification');
-
-          DO $$
-          DECLARE rec record;
-          BEGIN
-            SELECT * INTO rec FROM upgrade_docs
-            ORDER BY content <@> to_bm25query('newly inserted', 'idx_upgrade_bm25')
-            LIMIT 1;
-            IF rec.id IS NULL THEN
-              RAISE EXCEPTION 'FAIL: new data not searchable after merge';
-            END IF;
-            RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
-          END $$;
-
-          -- Phase 5: Version check
+          -- Phase 2: Version check
           CREATE TEMP TABLE _expected(version_prefix text);
           INSERT INTO _expected VALUES (:'expected_version');
 
@@ -396,8 +363,53 @@ jobs:
             RAISE NOTICE 'PASS: extension version %', ver;
           END $$;
 
-          SELECT 'All compat-tier upgrade tests passed!' AS status;
+          SELECT 'Compat-tier baseline tests passed!' AS status;
         SQL
+
+          # V4+ (>= 0.6.0): full VACUUM/merge/insert flow.
+          # V3 segments (0.5.1) lack alive bitset support so
+          # VACUUM cannot mark dead docs — skip these phases.
+          if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.6.0"; then
+            echo "=== Compat V4+: VACUUM / merge / insert phases ==="
+            psql -h /tmp -d upgrade_test << 'SQL'
+            \set ON_ERROR_STOP on
+
+            -- Phase 3: DELETE + VACUUM — alive bitset on old-format segments
+            -- Delete ~20% of rows (40 of 200, 5 per topic cluster in batch 1)
+            DELETE FROM upgrade_docs WHERE id <= 40;
+            VACUUM upgrade_docs;
+
+            SELECT validate_post_delete('database',       40, 'post-vacuum q1');
+            SELECT validate_post_delete('search ranking', 40, 'post-vacuum q2');
+            SELECT validate_post_delete('optimization',   40, 'post-vacuum q3');
+
+            -- Phase 4: force_merge — merges old segments into V5
+            SELECT bm25_force_merge('idx_upgrade_bm25');
+
+            SELECT validate_post_delete('database',       40, 'post-merge q1');
+            SELECT validate_post_delete('search ranking', 40, 'post-merge q2');
+            SELECT validate_post_delete('optimization',   40, 'post-merge q3');
+
+            -- Phase 5: INSERT new data alongside merged segments
+            INSERT INTO upgrade_docs (content) VALUES
+              ('newly inserted document about database query testing'),
+              ('another new document with search ranking verification');
+
+            DO $$
+            DECLARE rec record;
+            BEGIN
+              SELECT * INTO rec FROM upgrade_docs
+              ORDER BY content <@> to_bm25query('newly inserted', 'idx_upgrade_bm25')
+              LIMIT 1;
+              IF rec.id IS NULL THEN
+                RAISE EXCEPTION 'FAIL: new data not searchable after merge';
+              END IF;
+              RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
+            END $$;
+
+            SELECT 'All V4+ compat phases passed!' AS status;
+        SQL
+          fi
 
         else
           echo "=== Legacy tier: standard verification ==="
