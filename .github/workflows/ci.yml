@@ -631,6 +631,7 @@ jobs:
 
         # Exercise V4 compat reading: query, ALTER, VACUUM, merge
         psql -h $PWD/tmp_upgrade_cov -p 55435 -d upgrade_cov << 'SQL'
+        \set ON_ERROR_STOP on
         -- V4 segment reading (pre-ALTER)
         SELECT count(*) FROM (
           SELECT 1 FROM docs
