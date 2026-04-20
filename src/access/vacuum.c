@@ -476,24 +476,39 @@ tp_vacuum_replace_segment(
 		}
 		else
 		{
-			/* Update prev's next_segment */
-			Page			 prev_page;
-			TpSegmentHeader *prev_header;
+			/* Update prev's next_segment pointer. */
+			Page		prev_page;
+			char	   *prev_content;
+			uint32		prev_version;
+			BlockNumber new_next;
 
 			prev_buf = ReadBuffer(index, prev_root);
 			LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
 			prev_page = GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
 			/* Ensure pd_lower covers content for GenericXLog */
 			((PageHeader)prev_page)->pd_lower = BLCKSZ;
-			prev_header = (TpSegmentHeader *)PageGetContents(prev_page);
 
-			if (new_root != InvalidBlockNumber)
-				prev_header->next_segment = new_root;
+			new_next = (new_root != InvalidBlockNumber) ? new_root : old_next;
+
+			/*
+			 * The previous segment may still be on an older on-disk
+			 * format.  V3 uses uint32 offsets and places next_segment
+			 * at byte 28; V4/V5 use uint64 offsets with 4 bytes of
+			 * padding before data_size, placing next_segment at byte
+			 * 36.  Write at the offset matching the on-disk version
+			 * so we don't clobber adjacent fields.  magic/version
+			 * live at the same bytes in every version, so reading
+			 * version via the V5 struct is safe.
+			 */
+			prev_content = PageGetContents(prev_page);
+			prev_version = ((TpSegmentHeader *)prev_content)->version;
+			if (prev_version <= TP_SEGMENT_FORMAT_VERSION_3)
+				((TpSegmentHeaderV3 *)prev_content)->next_segment = new_next;
 			else
-			{
-				prev_header->next_segment = old_next;
+				((TpSegmentHeader *)prev_content)->next_segment = new_next;
+
+			if (new_root == InvalidBlockNumber)
 				meta_ptr->level_counts[level]--;
-			}
 		}
 
 		GenericXLogFinish(xlog_state);
