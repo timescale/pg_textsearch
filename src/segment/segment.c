@@ -193,32 +193,35 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		}
 		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
-			/*
-			 * V4 header: identical to V5 except the alive_bitset
-			 * fields (alive_bitset_offset, alive_count) are absent.
-			 * The fields before and after the gap share the same
-			 * names but sit at different struct offsets, so we copy
-			 * in two halves and zero-init the gap.
-			 */
-			const char *src = PageGetContents(header_page);
+			/* V4: read legacy struct and widen to V5 */
+			TpSegmentHeaderV4 v4;
 
-			/* First half: magic … ctid_offsets_offset (same layout) */
-			memcpy(reader->header,
-				   src,
-				   offsetof(TpSegmentHeader, alive_bitset_offset));
-
-			/*
-			 * Second half: num_terms … page_index.  In V4
-			 * on-disk, these start right after
-			 * ctid_offsets_offset, which is the same byte
-			 * offset as alive_bitset_offset in V5.
-			 */
-			memcpy(&reader->header->num_terms,
-				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
-				   sizeof(TpSegmentHeader) -
-						   offsetof(TpSegmentHeader, num_terms));
+			memcpy(&v4,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeaderV4));
 
 			header						= reader->header;
+			header->magic				= v4.magic;
+			header->version				= v4.version;
+			header->created_at			= v4.created_at;
+			header->num_pages			= v4.num_pages;
+			header->data_size			= v4.data_size;
+			header->level				= v4.level;
+			header->next_segment		= v4.next_segment;
+			header->dictionary_offset	= v4.dictionary_offset;
+			header->strings_offset		= v4.strings_offset;
+			header->entries_offset		= v4.entries_offset;
+			header->postings_offset		= v4.postings_offset;
+			header->skip_index_offset	= v4.skip_index_offset;
+			header->fieldnorm_offset	= v4.fieldnorm_offset;
+			header->ctid_pages_offset	= v4.ctid_pages_offset;
+			header->ctid_offsets_offset = v4.ctid_offsets_offset;
+			header->num_terms			= v4.num_terms;
+			header->num_docs			= v4.num_docs;
+			header->total_tokens		= v4.total_tokens;
+			header->page_index			= v4.page_index;
+
+			/* V4 has no alive bitset */
 			header->alive_bitset_offset = 0;
 			header->alive_count			= header->num_docs;
 		}
@@ -1662,17 +1665,33 @@ tp_dump_segment_to_output(
 		}
 		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_4)
 		{
-			const char *src = PageGetContents(header_page);
+			TpSegmentHeaderV4 v4;
 
-			memcpy(&header,
-				   src,
-				   offsetof(TpSegmentHeader, alive_bitset_offset));
+			memcpy(&v4,
+				   PageGetContents(header_page),
+				   sizeof(TpSegmentHeaderV4));
+
+			header.magic			   = v4.magic;
+			header.version			   = v4.version;
+			header.created_at		   = v4.created_at;
+			header.num_pages		   = v4.num_pages;
+			header.data_size		   = v4.data_size;
+			header.level			   = v4.level;
+			header.next_segment		   = v4.next_segment;
+			header.dictionary_offset   = v4.dictionary_offset;
+			header.strings_offset	   = v4.strings_offset;
+			header.entries_offset	   = v4.entries_offset;
+			header.postings_offset	   = v4.postings_offset;
+			header.skip_index_offset   = v4.skip_index_offset;
+			header.fieldnorm_offset	   = v4.fieldnorm_offset;
+			header.ctid_pages_offset   = v4.ctid_pages_offset;
+			header.ctid_offsets_offset = v4.ctid_offsets_offset;
 			header.alive_bitset_offset = 0;
-			memcpy(&header.num_terms,
-				   src + offsetof(TpSegmentHeader, alive_bitset_offset),
-				   sizeof(TpSegmentHeader) -
-						   offsetof(TpSegmentHeader, num_terms));
-			header.alive_count = header.num_docs;
+			header.alive_count		   = v4.num_docs;
+			header.num_terms		   = v4.num_terms;
+			header.num_docs			   = v4.num_docs;
+			header.total_tokens		   = v4.total_tokens;
+			header.page_index		   = v4.page_index;
 		}
 		else
 		{

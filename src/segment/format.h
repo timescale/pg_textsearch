@@ -71,7 +71,34 @@ typedef struct TpSegmentHeaderV3
 } TpSegmentHeaderV3;
 
 /*
- * Segment header - stored on the first page (V4: uint64 offsets)
+ * V4 legacy segment header - preserved for reading old segments.
+ * Same as V5 but without alive_bitset_offset / alive_count.
+ */
+typedef struct TpSegmentHeaderV4
+{
+	uint32		magic;
+	uint32		version;
+	TimestampTz created_at;
+	uint32		num_pages;
+	uint64		data_size;
+	uint32		level;
+	BlockNumber next_segment;
+	uint64		dictionary_offset;
+	uint64		strings_offset;
+	uint64		entries_offset;
+	uint64		postings_offset;
+	uint64		skip_index_offset;
+	uint64		fieldnorm_offset;
+	uint64		ctid_pages_offset;
+	uint64		ctid_offsets_offset;
+	uint32		num_terms;
+	uint32		num_docs;
+	uint64		total_tokens;
+	BlockNumber page_index;
+} TpSegmentHeaderV4;
+
+/*
+ * Segment header - stored on the first page (V5: alive bitset)
  */
 typedef struct TpSegmentHeader
 {
