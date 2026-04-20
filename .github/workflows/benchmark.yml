@@ -2660,9 +2660,14 @@ jobs:
             WITH (text_config = 'english');
         SELECT bm25_spill_index('passages_bm25_idx');
 
-        -- Capture compressed results (100 test queries)
+        -- Capture compressed results: top-50 per query via the BM25
+        -- index scan. Using ORDER BY ... LIMIT (rather than
+        -- WHERE score < 0) exercises the compression-aware segment
+        -- decoders — which is the code path this job exists to
+        -- validate.
         CREATE TABLE compressed_results AS
-        WITH queries(q) AS (VALUES
+        SELECT q AS query, id, score
+        FROM (VALUES
             ('what is'),
             ('how to'),
             ('search engine'),
@@ -2673,15 +2678,14 @@ jobs:
             ('full text'),
             ('ranking algorithm'),
             ('document search')
-        )
-        SELECT
-            q as query,
-            id,
-            passage_text <@> to_bm25query(q, 'passages_bm25_idx') as score
-        FROM queries, passages
-        WHERE passage_text <@> to_bm25query(q, 'passages_bm25_idx') < 0
-        ORDER BY q, score, id
-        LIMIT 500;
+        ) AS queries(q)
+        CROSS JOIN LATERAL (
+            SELECT id,
+                   passage_text <@> to_bm25query(queries.q, 'passages_bm25_idx') AS score
+            FROM passages
+            ORDER BY passage_text <@> to_bm25query(queries.q, 'passages_bm25_idx')
+            LIMIT 50
+        ) hits;
 
         SELECT count(*) as compressed_count FROM compressed_results;
 
@@ -2696,9 +2700,10 @@ jobs:
             WITH (text_config = 'english');
         SELECT bm25_spill_index('passages_bm25_idx');
 
-        -- Capture uncompressed results (same queries)
+        -- Capture uncompressed results (same queries, same pattern)
         CREATE TABLE uncompressed_results AS
-        WITH queries(q) AS (VALUES
+        SELECT q AS query, id, score
+        FROM (VALUES
             ('what is'),
             ('how to'),
             ('search engine'),
@@ -2709,15 +2714,14 @@ jobs:
             ('full text'),
             ('ranking algorithm'),
             ('document search')
-        )
-        SELECT
-            q as query,
-            id,
-            passage_text <@> to_bm25query(q, 'passages_bm25_idx') as score
-        FROM queries, passages
-        WHERE passage_text <@> to_bm25query(q, 'passages_bm25_idx') < 0
-        ORDER BY q, score, id
-        LIMIT 500;
+        ) AS queries(q)
+        CROSS JOIN LATERAL (
+            SELECT id,
+                   passage_text <@> to_bm25query(queries.q, 'passages_bm25_idx') AS score
+            FROM passages
+            ORDER BY passage_text <@> to_bm25query(queries.q, 'passages_bm25_idx')
+            LIMIT 50
+        ) hits;
 
         SELECT count(*) as uncompressed_count FROM uncompressed_results;
         EOSQL
