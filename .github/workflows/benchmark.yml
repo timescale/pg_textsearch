@@ -36,16 +36,6 @@ on:
           - '100K'
           - '1M'
           - 'full'
-      msmarco_size:
-        description: 'MS MARCO subset size (passages)'
-        required: false
-        default: 'full'
-        type: choice
-        options:
-          - '100K'
-          - '500K'
-          - '1M'
-          - 'full'
       enable_profile:
         description: 'Enable CPU profiling (generates flamegraph)'
         required: false
@@ -142,7 +132,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ github.event.inputs.msmarco_size }}
+        ./download.sh full
 
     - name: Load data (without index)
       run: |
@@ -317,7 +307,7 @@ jobs:
         echo "**Date:** $(date -u)" >> profile_summary.md
         echo "**Commit:** ${{ github.sha }}" >> profile_summary.md
         echo "**Branch:** ${{ github.ref_name }}" >> profile_summary.md
-        echo "**Dataset:** MS MARCO ${{ github.event.inputs.msmarco_size }}" >> profile_summary.md
+        echo "**Dataset:** MS MARCO (full)" >> profile_summary.md
         echo "" >> profile_summary.md
 
         echo "## Index Build Profile" >> profile_summary.md
@@ -400,7 +390,7 @@ jobs:
           "branch": "${{ github.ref_name }}",
           "date": "${COMMIT_DATE}",
           "message": "${COMMIT_MSG}",
-          "dataset": "MS MARCO ${{ github.event.inputs.msmarco_size }}"
+          "dataset": "MS MARCO (full)"
         }
         EOF
 
@@ -412,7 +402,7 @@ jobs:
         <body>
         <h1>CPU Profiles for ${{ github.ref_name }} @ ${SHORT_SHA}</h1>
         <p><b>Commit:</b> ${COMMIT_MSG}</p>
-        <p><b>Dataset:</b> MS MARCO ${{ github.event.inputs.msmarco_size }}</p>
+        <p><b>Dataset:</b> MS MARCO (full)</p>
         <p><b>Date:</b> $(date -u)</p>
         <h2>Flamegraphs</h2>
         <ul>
@@ -616,12 +606,9 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
-          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
-          # Scheduled: run all with full MS MARCO
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
-          echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
@@ -629,7 +616,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+        ./download.sh full
 
     - name: Download Wikipedia dataset
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
@@ -1170,12 +1157,9 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
-          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
-          # Weekly schedule: run all with full MS MARCO
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
-          echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
@@ -1183,7 +1167,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+        ./download.sh full
 
     - name: Download Wikipedia dataset
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
@@ -1225,9 +1209,7 @@ jobs:
         echo "End: $(date)" | tee -a benchmark_results.txt
 
     - name: Validate MS MARCO results
-      if: |
-        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
-        steps.datasets.outputs.msmarco_size == 'full'
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1725,11 +1707,9 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
-          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
-          echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
@@ -1737,7 +1717,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+        ./download.sh full
 
     - name: Download Wikipedia dataset
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
@@ -1782,9 +1762,7 @@ jobs:
         echo "End: $(date)" | tee -a insert_results.txt
 
     - name: Validate MS MARCO insert results
-      if: |
-        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
-        steps.datasets.outputs.msmarco_size == 'full'
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1918,9 +1896,7 @@ jobs:
             tee -a insert_results.txt
 
     - name: Validate MS MARCO concurrent results
-      if: |
-        (steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all') &&
-        steps.datasets.outputs.msmarco_size == 'full'
+      if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -2217,11 +2193,9 @@ jobs:
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "dataset=${{ github.event.inputs.dataset }}" >> $GITHUB_OUTPUT
           echo "wiki_size=${{ github.event.inputs.wikipedia_size }}" >> $GITHUB_OUTPUT
-          echo "msmarco_size=${{ github.event.inputs.msmarco_size }}" >> $GITHUB_OUTPUT
         else
           echo "dataset=all" >> $GITHUB_OUTPUT
           echo "wiki_size=100K" >> $GITHUB_OUTPUT
-          echo "msmarco_size=full" >> $GITHUB_OUTPUT
         fi
 
     - name: Download MS MARCO dataset
@@ -2229,7 +2203,7 @@ jobs:
       run: |
         cd benchmarks/datasets/msmarco
         chmod +x download.sh
-        ./download.sh ${{ steps.datasets.outputs.msmarco_size }}
+        ./download.sh full
 
     - name: Download Wikipedia dataset
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
@@ -2645,28 +2619,19 @@ jobs:
 
     - name: Download MS MARCO dataset
       run: |
-        MSMARCO_SIZE="${{ github.event.inputs.msmarco_size || '100K' }}"
-        echo "Downloading MS MARCO ${MSMARCO_SIZE}..."
+        # Compression validation uses a 100K subset — the job only needs
+        # enough documents to exercise the compression code paths, not
+        # a realistic throughput benchmark.
+        echo "Downloading MS MARCO 100K subset..."
 
         mkdir -p benchmarks/datasets/msmarco
         cd benchmarks/datasets/msmarco
 
-        if [ "$MSMARCO_SIZE" = "full" ]; then
-          wget -q https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz
-          tar -xzf collection.tar.gz
-          rm collection.tar.gz
-        else
-          # Download and truncate
-          wget -q https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz
-          tar -xzf collection.tar.gz
-          case $MSMARCO_SIZE in
-            100K) head -100000 collection.tsv > collection_subset.tsv ;;
-            500K) head -500000 collection.tsv > collection_subset.tsv ;;
-            1M)   head -1000000 collection.tsv > collection_subset.tsv ;;
-          esac
-          mv collection_subset.tsv collection.tsv
-          rm collection.tar.gz
-        fi
+        wget -q https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz
+        tar -xzf collection.tar.gz
+        head -100000 collection.tsv > collection_subset.tsv
+        mv collection_subset.tsv collection.tsv
+        rm collection.tar.gz
 
         wc -l collection.tsv
 
