@@ -1,6 +1,6 @@
 -- Test alive bitset tombstone tracking during VACUUM
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0-dev
+INFO:  pg_textsearch v1.1.0-dev
 -- =============================================================
 -- Test 1: Basic VACUUM with bitmap marking
 -- =============================================================

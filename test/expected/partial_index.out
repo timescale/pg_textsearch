@@ -1,6 +1,6 @@
 -- Partial index tests for pg_textsearch
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0-dev
+INFO:  pg_textsearch v1.1.0-dev
 -- ============================================================
 -- Basic partial index
 -- ============================================================

@@ -6,7 +6,7 @@
 -- causing BMW to underestimate block score upper bounds and incorrectly
 -- skip blocks containing high-scoring short documents.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.0.0-dev
+INFO:  pg_textsearch v1.1.0-dev
 SET enable_seqscan = off;
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = '256MB';
