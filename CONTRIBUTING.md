@@ -147,11 +147,8 @@ suite uses public IR datasets to measure indexing and query performance.
 Trigger benchmarks manually using the GitHub CLI:
 
 ```sh
-# Full MS MARCO benchmark (8.8M passages, ~13 minutes)
-gh workflow run benchmark.yml -f dataset=msmarco -f msmarco_size=full
-
-# Quick test with smaller subset (1M passages, ~4 minutes)
-gh workflow run benchmark.yml -f dataset=msmarco -f msmarco_size=1M
+# MS MARCO benchmark (8.8M passages, ~1 hour)
+gh workflow run benchmark.yml -f dataset=msmarco
 
 # Run all datasets (MS MARCO + Wikipedia)
 gh workflow run benchmark.yml -f dataset=all
