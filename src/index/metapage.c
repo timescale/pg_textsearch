@@ -404,10 +404,8 @@ tp_add_docid_to_pages(Relation index, ItemPointer ctid)
 		UnlockReleaseBuffer(docid_buf);
 
 		/* Switch to new page */
-		docid_buf	 = new_buf;
-		docid_page	 = BufferGetPage(new_buf);
-		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-		target_page	 = BufferGetBlockNumber(new_buf);
+		docid_buf	= new_buf;
+		target_page = BufferGetBlockNumber(new_buf);
 	}
 
 	/* Add the docid to the current page */
