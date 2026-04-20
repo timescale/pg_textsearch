@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776717323400,
+  "lastUpdate": 1776717325808,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -74164,6 +74164,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco (8.8M docs) - Index Size",
             "value": 1416.8,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "736f883cbf2c744eb43ac4111d35c7cfd5742fd6",
+          "message": "fix: address Coverity static analysis defects (#331)\n\n## Summary\n\nFix three defects flagged by a recent Coverity scan.\n\n- **CID 645711** (UNUSED_VALUE) in `src/index/metapage.c`\n`tp_add_docid_to_pages` assigned `docid_page` and `docid_header` after\nswitching to a newly created docid page, but `docid_header` is\nreassigned in the following block before any read, and `docid_page` is\nnever read again. Removed the dead assignments.\n\n- **CID 645710 / CID 645709** (TAINTED_SCALAR) in `src/debug/dump.c`\n`tp_summarize_index_to_output` and `tp_dump_index_to_output` each read\n`total_docs` three times via `pg_atomic_read_u32` — once for the `> 0`\ncheck and once as the divisor in `total_len / total_docs`. Under\nconcurrent writers this could observe `total_docs > 0` at the check but\n`0` at the divisor, producing a division by zero. Snapshot `total_docs`\nand `total_len` into local variables and use those throughout.\n\n## Testing\n\n- `make` (Postgres 17 build)\n- `make installcheck` — all 58 SQL regression tests pass, shell tests\npass\n- `make format-check` passes",
+          "timestamp": "2026-04-20T17:45:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/736f883cbf2c744eb43ac4111d35c7cfd5742fd6"
+        },
+        "date": 1776717325349,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Build Time",
+            "value": 145940.413,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 17.3,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 17.32,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 22.69,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 24.19,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 26.9,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 33.78,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 34.98,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 41.39,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Throughput (avg ms/query)",
+            "value": 28.85,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Size",
+            "value": 1505.06,
             "unit": "MB"
           }
         ]
