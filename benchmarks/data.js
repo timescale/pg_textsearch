@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776756690209,
+  "lastUpdate": 1776756692387,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -79339,6 +79339,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 996.84,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "da18d486a5c5a09f75d4c441821d2488e7a7d4b2",
+          "message": "chore: bump version to 1.1.0-dev (#332)\n\n## Summary\nPost-1.0.0 release bump — we forgot to do this after the 1.0.0 release.\n\n- Rename `pg_textsearch--1.0.0-dev.sql` → `pg_textsearch--1.1.0-dev.sql`\n- Rename upgrade script `pg_textsearch--1.0.0--1.0.0-dev.sql` →\n`pg_textsearch--1.0.0--1.1.0-dev.sql`\n- Update version strings in `pg_textsearch.control`, `src/mod.c`,\n`CLAUDE.md`, `Makefile`, test scripts, and expected outputs\n- Drop the `timescaledb-docker-ha` step from `RELEASING.md`; that part\nof the release procedure now lives in internal docs\n\n## Testing\n- `make test` passes\n- `make format-check` clean",
+          "timestamp": "2026-04-21T02:51:41Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/da18d486a5c5a09f75d4c441821d2488e7a7d4b2"
+        },
+        "date": 1776756692030,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3772.173,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 272679.184,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 113.58,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 114.72,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 121.32,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 121.74,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 98.82,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 107.6,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 107.79,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 113.33,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 99.36,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 968.05,
             "unit": "MB"
           }
         ]
