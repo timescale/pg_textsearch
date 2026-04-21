@@ -3,7 +3,7 @@
 -- identifiers for both index names and schema names.
 -- Regression test for https://github.com/timescale/pg_textsearch/issues/285
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0-dev
+INFO:  pg_textsearch v1.1.0
 -- Test 1: Uppercase index name (the reported bug)
 CREATE TABLE qi_test1 (
     id SERIAL PRIMARY KEY,

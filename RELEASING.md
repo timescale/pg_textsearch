@@ -149,7 +149,7 @@ to exactly one next version — no shortcuts that skip intermediate steps.
 This keeps the number of upgrade scripts minimal and the path predictable.
 
 ```
-... → 0.5.0 → 0.5.1 → 0.6.0 → 0.6.1 → 1.0.0 → 1.1.0-dev
+... → 0.5.0 → 0.5.1 → 0.6.0 → 0.6.1 → 1.0.0 → 1.1.0
 ```
 
 Every release must have an upgrade path from the previous stable release

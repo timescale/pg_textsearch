@@ -1,7 +1,7 @@
 -- Test pg_textsearch.memory_limit GUC
 -- Derives per-index (limit/8) and global (limit/2) soft limits internally.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0-dev
+INFO:  pg_textsearch v1.1.0
 -- Ensure clean GUC state from any prior test runs
 ALTER SYSTEM RESET pg_textsearch.memory_limit;
 ALTER SYSTEM RESET pg_textsearch.bulk_load_threshold;

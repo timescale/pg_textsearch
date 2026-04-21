@@ -7,7 +7,7 @@
 -- 3. Queries return correct results after merge
 -- 4. Inserts work normally after force merge
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0-dev
+INFO:  pg_textsearch v1.1.0
 \set ECHO none
 SET pg_textsearch.log_scores = false;
 SET enable_seqscan = off;

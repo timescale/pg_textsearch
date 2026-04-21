@@ -1,7 +1,7 @@
 -- Test bulk load spill threshold
 -- Exercises state.c bulk_load_spill_check path
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0-dev
+INFO:  pg_textsearch v1.1.0
 -- Set a very low bulk load threshold to trigger automatic spill
 SET pg_textsearch.bulk_load_threshold = 100;
 -- Create table and index
