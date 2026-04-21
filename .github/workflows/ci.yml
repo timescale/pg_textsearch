@@ -550,6 +550,7 @@ jobs:
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
         (cd test/scripts && ./docid_chain_recovery.sh) || true
+        (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./memory_accounting.sh) || true
 

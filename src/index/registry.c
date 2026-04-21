@@ -830,6 +830,7 @@ tp_evict_largest_memtable(Oid caller_oid)
 			tp_clear_memtable(target_state);
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
+			tp_sync_metapage_stats(index_rel, target_state);
 			tp_maybe_compact_level(index_rel, 0);
 
 			elog(LOG,

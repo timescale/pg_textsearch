@@ -55,21 +55,21 @@ typedef struct TpVacuumSegmentInfo
 } TpVacuumSegmentInfo;
 
 /*
- * Spill memtable to L0 segment if non-empty.
+ * Spill memtable to an L0 segment if non-empty.
  *
- * During VACUUM, we want all index data in segments for uniform
- * processing.  This forces any in-memory data to disk.
+ * Used both by VACUUM (to force all data into segments for uniform
+ * processing) and by the backend-exit shutdown hook (to drain the
+ * docid-page chain before the next server start).  No-op if the
+ * memtable is empty.
  *
- * Caller must hold at least AccessExclusiveLock on the index
- * (standard for ambulkdelete).  The memtable is in DSA, which
- * is pinned for the lifetime of the shared index state and
- * cannot be freed by another backend.  The pre-lock read of
- * total_postings is a fast bailout; if it races with an insert,
- * the worst case is we enter tp_write_segment with an empty
- * memtable, which is a harmless no-op.
+ * The memtable lives in DSA and is pinned for the lifetime of the
+ * shared index state, so it can't be freed by another backend.  The
+ * pre-lock read of total_postings is a fast bailout; if it races with
+ * an insert, the worst case is we enter tp_write_segment with an
+ * empty memtable, which is a harmless no-op.
  */
-static void
-tp_vacuum_spill_memtable(Relation index, TpLocalIndexState *index_state)
+void
+tp_spill_memtable_if_needed(Relation index, TpLocalIndexState *index_state)
 {
 	TpMemtable *memtable;
 	BlockNumber segment_root;
@@ -89,6 +89,7 @@ tp_vacuum_spill_memtable(Relation index, TpLocalIndexState *index_state)
 		tp_clear_memtable(index_state);
 		tp_clear_docid_pages(index);
 		tp_link_l0_chain_head(index, segment_root);
+		tp_sync_metapage_stats(index, index_state);
 		tp_maybe_compact_level(index, 0);
 	}
 
@@ -633,7 +634,7 @@ tp_bulkdelete(
 	/* Phase 1: Spill memtable so all data is in segments */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_vacuum_spill_memtable(info->index, index_state);
+		tp_spill_memtable_if_needed(info->index, index_state);
 
 	/* Re-read metapage after spill */
 	pfree(metap);
@@ -778,6 +779,29 @@ tp_bulkdelete(
 
 			GenericXLogFinish(xlog_state);
 			UnlockReleaseBuffer(mbuf);
+
+			/*
+			 * Intentionally do NOT update the shared-memory atomic
+			 * here.  Segment-level doc_freq metadata (written at
+			 * segment creation time) reflects the original insert
+			 * count, not the post-VACUUM alive count.  Leaving the
+			 * atomic at "cumulative inserts" keeps BM25 IDF's N and
+			 * per-term df in the same reference frame; reducing N
+			 * to "alive count" while df stays at "cumulative" makes
+			 * N < df for common terms, producing negative IDF.
+			 *
+			 * The consequence is that tp_sync_metapage_stats in any
+			 * post-Phase-4 spill (e.g. tp_vacuumcleanup) will
+			 * overwrite the decremented metapage with the un-adjusted
+			 * atomic, effectively rolling back Phase 4.  That is
+			 * acceptable for now — it restores the pre-PR behavior
+			 * where VACUUM's metapage adjustment was only observable
+			 * until the next spill/restart, which is the same
+			 * frame-of-reference the segment doc_freqs sit in.  A
+			 * proper fix requires also updating per-segment
+			 * doc_freq counts on VACUUM, which is out of scope for
+			 * issue #333.
+			 */
 		}
 	}
 
@@ -833,7 +857,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_vacuum_spill_memtable(info->index, index_state);
+		tp_spill_memtable_if_needed(info->index, index_state);
 
 	/* Get current index statistics from metapage */
 	metap = tp_get_metapage(info->index);

@@ -168,6 +168,48 @@ tp_get_metapage(Relation index)
 }
 
 /*
+ * Copy the live total_docs / total_len from the shared-memory atomics
+ * into the metapage.  Callers must already hold LW_EXCLUSIVE on the
+ * per-index lock.
+ *
+ * This needs to run on every successful spill (VACUUM, shutdown
+ * hook, bm25_spill_index, auto-spill): the crash-recovery path in
+ * tp_rebuild_index_from_disk reads metap->total_docs as authoritative
+ * and overwrites the shared-memory atomic with it, so un-synced
+ * post-build inserts would otherwise be forgotten across a restart
+ * and BM25 scoring would degrade.
+ */
+void
+tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state)
+{
+	Buffer			  mbuf;
+	GenericXLogState *xlog_state;
+	Page			  mpage;
+	TpIndexMetaPage	  mp;
+	uint32			  total_docs;
+	uint64			  total_len;
+
+	if (index_state == NULL || index_state->shared == NULL)
+		return;
+
+	total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
+	total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
+
+	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
+
+	xlog_state = GenericXLogStart(index);
+	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
+	mp		   = (TpIndexMetaPage)PageGetContents(mpage);
+
+	mp->total_docs = total_docs;
+	mp->total_len  = total_len;
+
+	GenericXLogFinish(xlog_state);
+	UnlockReleaseBuffer(mbuf);
+}
+
+/*
  * Add a document ID to the docid pages for crash recovery
  * This appends the ctid to the chain of docid pages
  *

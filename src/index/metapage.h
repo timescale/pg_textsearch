@@ -70,6 +70,16 @@ typedef struct TpDocidPageHeader
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
+
+/*
+ * Copy the live total_docs/total_len from the shared-memory atomics
+ * into the metapage.  Callers must hold LW_EXCLUSIVE on the per-index
+ * lock.  This is needed after a memtable spill drains the docid chain:
+ * the recovery path on the next server start reads metap->total_docs
+ * as authoritative, so it has to reflect reality at spill time.
+ */
+extern void
+tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state);
 /*
  * Document ID operations for crash recovery
  */
