@@ -1189,20 +1189,21 @@ tp_rebuild_posting_lists_from_docids(
 				text *document_text = DatumGetTextPP(idx_values[0]);
 				int32 doc_length;
 
-				if (tp_process_document_text(
-							document_text,
-							ctid,
-							metap->text_config_oid,
-							local_state,
-							NULL,
-							&doc_length))
-				{
-					/* Update corpus statistics */
-					pg_atomic_fetch_add_u32(
-							&local_state->shared->total_docs, 1);
-					pg_atomic_fetch_add_u64(
-							&local_state->shared->total_len, doc_length);
-				}
+				/*
+				 * tp_process_document_text → tp_add_document_terms
+				 * already increments total_docs / total_len, so we
+				 * don't do it here. The final values are overwritten
+				 * from the metapage by the caller (the authoritative
+				 * source), but updating the running count during the
+				 * rebuild keeps the INFO log accurate.
+				 */
+				(void)tp_process_document_text(
+						document_text,
+						ctid,
+						metap->text_config_oid,
+						local_state,
+						NULL,
+						&doc_length);
 			}
 
 			ExecClearTuple(eval_slot);

@@ -812,12 +812,28 @@ tp_bulkdelete(
 IndexBulkDeleteResult *
 tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	TpIndexMetaPage metap;
+	TpIndexMetaPage	   metap;
+	TpLocalIndexState *index_state;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
 				sizeof(IndexBulkDeleteResult));
+
+	/*
+	 * Spill any un-spilled memtable contents to an L0 segment. On
+	 * insert-only workloads ambulkdelete is skipped (no dead tuples),
+	 * which previously left the docid-page chain growing unbounded and
+	 * made the first query after a server restart slow (the chain is
+	 * walked and every referenced heap tuple re-tokenized to rebuild
+	 * the memtable). Doing the spill here ensures every VACUUM — and
+	 * by extension periodic autovacuum, including the insert-triggered
+	 * path — shrinks the recovery cost to near-zero. A no-op if the
+	 * memtable is already empty (e.g. when ambulkdelete just ran).
+	 */
+	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
+	if (index_state != NULL)
+		tp_vacuum_spill_memtable(info->index, index_state);
 
 	/* Get current index statistics from metapage */
 	metap = tp_get_metapage(info->index);

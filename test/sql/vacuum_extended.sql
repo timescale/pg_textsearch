@@ -210,5 +210,54 @@ SELECT count(*) AS final_count FROM (
 RESET pg_textsearch.memtable_spill_threshold;
 DROP TABLE bulk_memtable_test;
 
+-- =============================================================================
+-- Test 7: VACUUM spills un-spilled memtable on insert-only tables (issue #333)
+--
+-- On insert-only workloads ambulkdelete is skipped (no dead tuples), so the
+-- memtable spill that used to live only there never ran.  The docid-page
+-- chain then grew unbounded and the first query after a server restart had
+-- to re-tokenize every referenced heap tuple.  This test exercises the
+-- amvacuumcleanup path that now performs the spill.
+-- =============================================================================
+
+CREATE TABLE vacuum_insert_only_test (
+    id serial PRIMARY KEY,
+    content text
+);
+CREATE INDEX vacuum_insert_only_idx
+    ON vacuum_insert_only_test USING bm25(content)
+    WITH (text_config='english');
+
+-- Populate the docid chain without tripping bulk-load auto-spill
+-- (200 docs * ~4 terms each is well under pg_textsearch.bulk_load_threshold).
+INSERT INTO vacuum_insert_only_test (content)
+SELECT 'insert only document number ' || i
+FROM generate_series(1, 200) AS i;
+
+-- Chain should be populated before VACUUM.  End-anchor to avoid
+-- matching "docids: 2000" if a regression accidentally grows the
+-- insert count.
+SELECT bm25_summarize_index('vacuum_insert_only_idx')
+        ~ E'docids: 200\n'
+    AS chain_populated_before_vacuum;
+
+-- No dead tuples here, so ambulkdelete is not invoked; only
+-- amvacuumcleanup runs.  It must still drain the docid chain.
+VACUUM vacuum_insert_only_test;
+
+-- Chain must be fully drained and the memtable contents spilled to a segment.
+SELECT bm25_summarize_index('vacuum_insert_only_idx')
+        ~ E'docids: 0\n'
+    AS chain_empty_after_vacuum;
+
+-- Search still finds all 200 docs.
+SELECT count(*) AS post_vacuum_count FROM (
+    SELECT 1 FROM vacuum_insert_only_test
+    ORDER BY content
+        <@> to_bm25query('document', 'vacuum_insert_only_idx')
+) sub;
+
+DROP TABLE vacuum_insert_only_test;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
