@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776756219490,
+  "lastUpdate": 1776756519037,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -27671,6 +27671,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin - Index Build Time",
             "value": 36.833,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin - Index Size",
+            "value": 0.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "da18d486a5c5a09f75d4c441821d2488e7a7d4b2",
+          "message": "chore: bump version to 1.1.0-dev (#332)\n\n## Summary\nPost-1.0.0 release bump — we forgot to do this after the 1.0.0 release.\n\n- Rename `pg_textsearch--1.0.0-dev.sql` → `pg_textsearch--1.1.0-dev.sql`\n- Rename upgrade script `pg_textsearch--1.0.0--1.0.0-dev.sql` →\n`pg_textsearch--1.0.0--1.1.0-dev.sql`\n- Update version strings in `pg_textsearch.control`, `src/mod.c`,\n`CLAUDE.md`, `Makefile`, test scripts, and expected outputs\n- Drop the `timescaledb-docker-ha` step from `RELEASING.md`; that part\nof the release procedure now lives in internal docs\n\n## Testing\n- `make test` passes\n- `make format-check` clean",
+          "timestamp": "2026-04-21T02:51:41Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/da18d486a5c5a09f75d4c441821d2488e7a7d4b2"
+        },
+        "date": 1776756512368,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin - Index Build Time",
+            "value": 36.877,
             "unit": "ms"
           },
           {
