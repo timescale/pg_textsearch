@@ -122,6 +122,8 @@ tp_buildphasename(int64 phase)
 /*
  * Spill the current index's memtable to a disk segment.
  * Returns true if a segment was written.
+ *
+ * Caller must already hold LW_EXCLUSIVE on the per-index lock.
  */
 static bool
 tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
@@ -135,6 +137,7 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 	tp_clear_memtable(index_state);
 	tp_clear_docid_pages(index_rel);
 	tp_link_l0_chain_head(index_rel, root);
+	tp_sync_metapage_stats(index_rel, index_state);
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -491,8 +494,8 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		tp_clear_memtable(index_state);
 		tp_clear_docid_pages(index_rel);
-
 		tp_link_l0_chain_head(index_rel, segment_root);
+		tp_sync_metapage_stats(index_rel, index_state);
 
 		/* Check if L0 needs compaction */
 		tp_maybe_compact_level(index_rel, 0);

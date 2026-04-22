@@ -169,6 +169,23 @@ VACUUM stats_vacuum;
 SELECT reltuples BETWEEN 40 AND 60 AS index_tuples_after_vacuum
 FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
 
+-- Second delete + vacuum; reltuples must continue tracking the
+-- live count (regression test: reporting metap->total_docs - only
+-- this-round deaths would leave reltuples stuck at the first
+-- round's value).
+DELETE FROM stats_vacuum WHERE id > 25;
+VACUUM stats_vacuum;
+
+SELECT reltuples BETWEEN 15 AND 35 AS index_tuples_after_second_vacuum
+FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+
+-- No-deletes maintenance round; reltuples must stay at the live
+-- count, not reset to the cumulative insert count.
+VACUUM stats_vacuum;
+
+SELECT reltuples BETWEEN 15 AND 35 AS index_tuples_after_noop_vacuum
+FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+
 DROP TABLE stats_vacuum CASCADE;
 
 -- ============================================================

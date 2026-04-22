@@ -1042,9 +1042,17 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Dictionary immediately follows header */
 	header.dictionary_offset = sizeof(TpSegmentHeader);
 
-	/* Get corpus statistics from shared state */
-	header.num_docs		= pg_atomic_read_u32(&state->shared->total_docs);
-	header.total_tokens = pg_atomic_read_u64(&state->shared->total_len);
+	/*
+	 * Placeholder per-segment counts; header.num_docs and
+	 * header.total_tokens are overwritten below with the docmap's
+	 * per-segment values (Σ raw doc_length) before the final on-disk
+	 * patch.  Build-context writes use the same raw sum; merge uses
+	 * source headers plus a dead-only fieldnorm correction so all
+	 * three paths produce raw-equivalent totals for the common case
+	 * of all-live sources.
+	 */
+	header.num_docs		= 0;
+	header.total_tokens = 0;
 
 	/* Write placeholder header */
 	tp_segment_writer_write(&writer, &header, sizeof(TpSegmentHeader));
@@ -1288,8 +1296,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		pfree(bitset_data);
 	}
 
-	/* Update num_docs to actual count from this segment */
-	header.num_docs = docmap->num_docs;
+	/* Update num_docs and total_tokens to per-segment values */
+	header.num_docs		= docmap->num_docs;
+	header.total_tokens = docmap->total_tokens;
 
 	/* Write page index */
 	tp_segment_writer_flush(&writer);
@@ -1442,6 +1451,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	existing_header->alive_bitset_offset = header.alive_bitset_offset;
 	existing_header->alive_count		 = header.alive_count;
 	existing_header->num_docs			 = header.num_docs;
+	existing_header->total_tokens		 = header.total_tokens;
 	existing_header->data_size			 = header.data_size;
 	existing_header->num_pages			 = header.num_pages;
 	existing_header->page_index			 = header.page_index;

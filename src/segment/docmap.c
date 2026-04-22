@@ -67,6 +67,7 @@ tp_docmap_create(void)
 	builder->ctid_pages	  = NULL;
 	builder->ctid_offsets = NULL;
 	builder->fieldnorms	  = NULL;
+	builder->total_tokens = 0;
 
 	return builder;
 }
@@ -100,6 +101,7 @@ tp_docmap_add(TpDocMapBuilder *builder, ItemPointer ctid, uint32 doc_length)
 	entry->doc_id	  = builder->num_docs;
 	entry->doc_length = doc_length;
 	builder->num_docs++;
+	builder->total_tokens += doc_length;
 
 	return entry->doc_id;
 }

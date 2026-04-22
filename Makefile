@@ -120,6 +120,7 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./docid_chain_recovery.sh
+	@cd test/scripts && ./shutdown_spill.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."

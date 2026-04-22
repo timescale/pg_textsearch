@@ -31,18 +31,48 @@ typedef struct TpLocalIndexState TpLocalIndexState;
  */
 typedef struct TpIndexMetaPageData
 {
-	uint32		magic;				 /* Magic number for validation */
-	uint32		version;			 /* Index format version */
-	Oid			text_config_oid;	 /* Text search configuration OID */
-	uint64		total_docs;			 /* Total number of documents */
-	uint64		_unused_total_terms; /* Unused, retained for on-disk compat */
-	uint64		total_len;			 /* Total length of all documents */
-	float4		k1;					 /* BM25 k1 parameter */
-	float4		b;					 /* BM25 b parameter */
-	BlockNumber root_blkno;			 /* Root page of the index tree */
-	BlockNumber term_stats_root;	 /* Root page of term statistics B-tree */
-	BlockNumber first_docid_page;	 /* First page of docid chain for crash
-									  * recovery */
+	uint32 magic;			/* Magic number for validation */
+	uint32 version;			/* Index format version */
+	Oid	   text_config_oid; /* Text search configuration OID */
+	/*
+	 * Corpus size for BM25 scoring.  Satisfies the exact invariant
+	 *
+	 *     total_docs = Σ segment.num_docs
+	 *
+	 * where the sum is over all on-disk segments reachable from
+	 * level_heads[] and num_docs is the segment header field (fixed
+	 * at segment creation).  VACUUM keeps the invariant by
+	 * decrementing total_docs whenever a segment's num_docs changes
+	 * or the segment leaves the chain: pre-V5 rebuild shrinks
+	 * num_docs from old to docs_added; a V5 segment dropped because
+	 * all docs are dead contributes zero.  V5 bitset flips that
+	 * leave survivors are invisible here — they shrink alive_count,
+	 * not num_docs.
+	 *
+	 * Per-segment dictionary doc_freq(t) ≤ segment.num_docs by
+	 * construction, so
+	 *
+	 *     total_docs = Σ segment.num_docs
+	 *              ≥ Σ segment.doc_freq(t)
+	 *              = doc_freq(t) globally
+	 *
+	 * and BM25's N ≥ df(t) precondition for tp_calculate_idf holds.
+	 *
+	 * The shared-memory atomic additionally counts unflushed
+	 * memtable docs and is the source persisted at every spill;
+	 * this disk copy therefore lags between spills but is still in
+	 * sync with Σ segment.num_docs at spill/sync boundaries.
+	 */
+	uint64 total_docs;
+	uint64 _unused_total_terms;	  /* Unused, retained for on-disk compat */
+	uint64 total_len;			  /* Σ segment.total_len, same frame as
+									 total_docs */
+	float4		k1;				  /* BM25 k1 parameter */
+	float4		b;				  /* BM25 b parameter */
+	BlockNumber root_blkno;		  /* Root page of the index tree */
+	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
+	BlockNumber first_docid_page; /* First page of docid chain for crash
+								   * recovery */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
@@ -70,6 +100,14 @@ typedef struct TpDocidPageHeader
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
+
+/*
+ * Persist the shared-memory atomic into the metapage.  Called at
+ * every spill site; caller must hold LW_EXCLUSIVE on the per-index
+ * lock.
+ */
+extern void
+tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state);
 /*
  * Document ID operations for crash recovery
  */

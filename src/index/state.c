@@ -22,6 +22,7 @@
 #include <storage/bufmgr.h>
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
+#include <storage/ipc.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
@@ -49,6 +50,93 @@ typedef struct LocalStateCacheEntry
 	TpLocalIndexState *local_state; /* Cached local state */
 } LocalStateCacheEntry;
 
+/* Registered with before_shmem_exit at most once per backend */
+static bool shutdown_hook_registered = false;
+
+/*
+ * Spill one cache entry, catching and swallowing any error so the
+ * outer loop can continue with the remaining entries.  Split out of
+ * tp_shutdown_spill_callback so its PG_TRY doesn't nest in the same
+ * lexical scope (which would shadow the outer PG_TRY's locals and
+ * trip -Werror=shadow=compatible-local).
+ */
+static void
+tp_shutdown_spill_one(LocalStateCacheEntry *entry)
+{
+	Relation index_rel = NULL;
+
+	if (entry->local_state == NULL)
+		return;
+
+	PG_TRY();
+	{
+		index_rel = try_index_open(entry->index_oid, RowExclusiveLock);
+		if (index_rel != NULL)
+		{
+			tp_spill_memtable_if_needed(
+					index_rel, entry->local_state, TP_MIN_SPILL_POSTINGS);
+			index_close(index_rel, RowExclusiveLock);
+			index_rel = NULL;
+		}
+	}
+	PG_CATCH();
+	{
+		/* Don't leak the per-index LWLock to racing shutdown hooks */
+		tp_release_index_lock(entry->local_state);
+		FlushErrorState();
+		if (index_rel != NULL)
+			index_close(index_rel, RowExclusiveLock);
+	}
+	PG_END_TRY();
+}
+
+/*
+ * before_shmem_exit hook: spill the memtable of every index this
+ * backend has touched, so the docid chain doesn't have to be
+ * replayed from heap on the next server start.  Skipped on clean
+ * client exit (code == 0); fires on any FATAL (cluster shutdown,
+ * pg_terminate_backend, etc.).
+ */
+static void
+tp_shutdown_spill_callback(int code, Datum arg pg_attribute_unused())
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+	bool				  started_txn = false;
+
+	if (local_state_cache == NULL || code == 0)
+		return;
+
+	/* catalog access needs a non-aborted transaction */
+	if (IsAbortedTransactionBlockState())
+		return;
+
+	PG_TRY();
+	{
+		if (!IsTransactionState())
+		{
+			StartTransactionCommand();
+			started_txn = true;
+		}
+
+		hash_seq_init(&status, local_state_cache);
+		while ((entry = (LocalStateCacheEntry *)hash_seq_search(&status)) !=
+			   NULL)
+			tp_shutdown_spill_one(entry);
+
+		if (started_txn)
+			CommitTransactionCommand();
+	}
+	PG_CATCH();
+	{
+		/* proc_exit still has to complete; swallow and move on */
+		if (IsTransactionState())
+			AbortCurrentTransaction();
+		FlushErrorState();
+	}
+	PG_END_TRY();
+}
+
 /*
  * Initialize the local state cache
  */
@@ -70,6 +158,12 @@ init_local_state_cache(void)
 			8, /* initial size */
 			&ctl,
 			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	if (!shutdown_hook_registered)
+	{
+		before_shmem_exit(tp_shutdown_spill_callback, (Datum)0);
+		shutdown_hook_registered = true;
+	}
 }
 
 /*
@@ -1189,20 +1283,14 @@ tp_rebuild_posting_lists_from_docids(
 				text *document_text = DatumGetTextPP(idx_values[0]);
 				int32 doc_length;
 
-				if (tp_process_document_text(
-							document_text,
-							ctid,
-							metap->text_config_oid,
-							local_state,
-							NULL,
-							&doc_length))
-				{
-					/* Update corpus statistics */
-					pg_atomic_fetch_add_u32(
-							&local_state->shared->total_docs, 1);
-					pg_atomic_fetch_add_u64(
-							&local_state->shared->total_len, doc_length);
-				}
+				/* tp_add_document_terms already increments the atomic */
+				(void)tp_process_document_text(
+						document_text,
+						ctid,
+						metap->text_config_oid,
+						local_state,
+						NULL,
+						&doc_length);
 			}
 
 			ExecClearTuple(eval_slot);
@@ -1553,6 +1641,7 @@ tp_bulk_load_spill_check(void)
 			tp_clear_memtable(local_state);
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
+			tp_sync_metapage_stats(index_rel, local_state);
 
 			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);

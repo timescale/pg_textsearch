@@ -152,6 +152,13 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 char *tp_buildphasename(int64 phase);
 
 /*
+ * Spill a memtable to an L0 segment.  Skips when
+ * total_postings < min_postings.  Acquires LW_EXCLUSIVE internally.
+ */
+void tp_spill_memtable_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint64 min_postings);
+
+/*
  * Handler functions (am/handler.c)
  */
 bytea *tp_options(Datum reloptions, bool validate);

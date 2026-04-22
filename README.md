@@ -449,6 +449,10 @@ To check current memory usage:
 SELECT * FROM bm25_memory_usage();
 ```
 
+VACUUM (including autovacuum's insert-threshold path) also spills the
+memtable when it runs, so the amount of un-spilled state between
+`CREATE INDEX` and the next server restart stays bounded.
+
 **Crash recovery**: The memtable is rebuilt from the heap on startup, so no
 data is lost if Postgres crashes before spilling to disk.
 
