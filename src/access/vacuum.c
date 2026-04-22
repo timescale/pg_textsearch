@@ -47,7 +47,8 @@ typedef struct TpVacuumSegmentInfo
 	BlockNumber root_block;
 	BlockNumber next_segment;
 	uint32		level;
-	uint32		num_docs;
+	uint32		num_docs;	  /* segment header num_docs */
+	uint64		total_tokens; /* segment header total_tokens */
 	uint32	   *dead_doc_ids; /* Array of dead doc_ids */
 	uint32		dead_count;
 	bool		affected;
@@ -56,9 +57,10 @@ typedef struct TpVacuumSegmentInfo
 
 /*
  * Sum segment.alive_count across all on-disk segments.  Used by
- * tp_vacuumcleanup to set stats->num_index_tuples; avoids the
- * drift that would come from subtracting only new-this-round
- * deletes from the (never-decremented) metap->total_docs.
+ * tp_vacuumcleanup to set stats->num_index_tuples: reltuples must
+ * reflect the live-doc count, which may be strictly less than
+ * metap->total_docs (that tracks Σ segment.num_docs, which for V5
+ * segments includes bitset-dead docs).
  *
  * For V5 segments the count is in the header; pre-V5 segments
  * have no alive-bitset so their alive count equals num_docs.
@@ -91,6 +93,57 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 		}
 	}
 	return alive;
+}
+
+/*
+ * Apply the invariant total_docs = Σ segment.num_docs (and its
+ * total_len counterpart) after Phase 3 has rebuilt or dropped
+ * segments.  Decrements both the shared-memory atomic and the
+ * on-disk metapage so no subsequent sync re-inflates the metapage
+ * from a stale atomic.  See TpIndexMetaPageData.total_docs in
+ * metapage.h for the invariant.
+ */
+static void
+tp_apply_vacuum_shrinkage(
+		Relation		   index,
+		TpLocalIndexState *index_state,
+		uint64			   docs_shrinkage,
+		uint64			   tokens_shrinkage)
+{
+	Buffer			  mbuf;
+	GenericXLogState *xlog_state;
+	Page			  mpage;
+	TpIndexMetaPage	  mp;
+
+	if (docs_shrinkage == 0 && tokens_shrinkage == 0)
+		return;
+
+	if (index_state != NULL && index_state->shared != NULL)
+	{
+		if (docs_shrinkage > 0)
+			pg_atomic_fetch_sub_u32(
+					&index_state->shared->total_docs, (uint32)docs_shrinkage);
+		if (tokens_shrinkage > 0)
+			pg_atomic_fetch_sub_u64(
+					&index_state->shared->total_len, tokens_shrinkage);
+	}
+
+	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
+
+	xlog_state = GenericXLogStart(index);
+	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
+	mp		   = (TpIndexMetaPage)PageGetContents(mpage);
+
+	mp->total_docs = (mp->total_docs >= docs_shrinkage)
+						   ? mp->total_docs - docs_shrinkage
+						   : 0;
+	mp->total_len  = (mp->total_len >= tokens_shrinkage)
+						   ? mp->total_len - tokens_shrinkage
+						   : 0;
+
+	GenericXLogFinish(xlog_state);
+	UnlockReleaseBuffer(mbuf);
 }
 
 /*
@@ -220,6 +273,7 @@ tp_vacuum_identify_affected(
 				segments[count].next_segment = reader->header->next_segment;
 				segments[count].level		 = level;
 				segments[count].num_docs	 = reader->header->num_docs;
+				segments[count].total_tokens = reader->header->total_tokens;
 				segments[count].dead_doc_ids = dead_ids;
 				segments[count].dead_count	 = seg_dead;
 				segments[count].affected	 = (seg_dead > 0);
@@ -712,8 +766,17 @@ tp_bulkdelete(
 		 (long long)total_dead,
 		 num_segments);
 
-	/* Phase 3: Mark dead docs or rebuild affected segments */
+	/*
+	 * Phase 3: Mark dead docs or rebuild affected segments.  Track
+	 * segment-header shrinkage so we can restore the invariant
+	 * total_docs = Σ segment.num_docs (see metapage.h).  V5 bitset
+	 * flips that leave survivors do not change the segment header's
+	 * num_docs / total_tokens, so they contribute zero shrinkage.
+	 */
 	{
+		uint64 docs_shrinkage	= 0;
+		uint64 tokens_shrinkage = 0;
+
 		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			BlockNumber prev = InvalidBlockNumber;
@@ -748,6 +811,8 @@ tp_bulkdelete(
 									segments[i].root_block,
 									InvalidBlockNumber,
 									prev);
+							docs_shrinkage += segments[i].num_docs;
+							tokens_shrinkage += segments[i].total_tokens;
 							/* prev stays the same */
 						}
 						else
@@ -761,7 +826,8 @@ tp_bulkdelete(
 						 * Pre-V5 segment: rebuild into V5.
 						 */
 						BlockNumber new_root;
-						uint64		seg_docs;
+						uint64		new_docs   = 0;
+						uint64		new_tokens = 0;
 
 						new_root = tp_vacuum_rebuild_segment(
 								info->index,
@@ -770,8 +836,8 @@ tp_bulkdelete(
 								level,
 								callback,
 								callback_state,
-								&seg_docs,
-								NULL);
+								&new_docs,
+								&new_tokens);
 
 						tp_vacuum_replace_segment(
 								info->index,
@@ -779,6 +845,10 @@ tp_bulkdelete(
 								segments[i].root_block,
 								new_root,
 								prev);
+
+						docs_shrinkage += segments[i].num_docs - new_docs;
+						tokens_shrinkage += segments[i].total_tokens -
+											new_tokens;
 
 						if (new_root != InvalidBlockNumber)
 							prev = new_root;
@@ -791,10 +861,8 @@ tp_bulkdelete(
 			}
 		}
 
-		/*
-		 * No metapage decrement here — see
-		 * TpIndexMetaPageData.total_docs in metapage.h for why.
-		 */
+		tp_apply_vacuum_shrinkage(
+				info->index, index_state, docs_shrinkage, tokens_shrinkage);
 	}
 
 	/*
@@ -850,11 +918,12 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	{
 		stats->num_pages = 1;
 		/*
-		 * Recompute live count from segments so pg_class.reltuples
-		 * reflects actual alive docs, not the (never-decremented)
-		 * metap->total_docs.  Works regardless of whether
-		 * tp_bulkdelete ran or this is a no-deletes maintenance
-		 * round.
+		 * reltuples tracks live docs, which can be less than
+		 * metap->total_docs because V5 bitset flips with survivors
+		 * reduce alive_count without changing segment.num_docs.  Sum
+		 * alive_count across segments for an accurate live count
+		 * regardless of whether tp_bulkdelete ran or this is a
+		 * no-deletes maintenance round.
 		 */
 		stats->num_index_tuples = (double)
 				tp_count_live_docs(info->index, metap);

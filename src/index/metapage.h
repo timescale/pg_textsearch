@@ -35,32 +35,33 @@ typedef struct TpIndexMetaPageData
 	uint32 version;			/* Index format version */
 	Oid	   text_config_oid; /* Text search configuration OID */
 	/*
-	 * Running count of docs inserted into this index incarnation.
-	 * Upper-bounds the per-segment sum:
+	 * Corpus size for BM25 scoring.  Satisfies the exact invariant
 	 *
-	 *     total_docs ≥ Σ segment.num_docs
+	 *     total_docs = Σ segment.num_docs
 	 *
-	 * over all on-disk segments reachable from level_heads[], with
-	 * equality right after CREATE INDEX / REINDEX.  Slack appears
-	 * when VACUUM rebuilds a pre-V5 segment into a V5 segment
-	 * containing only alive docs: Σ segment.num_docs drops but
-	 * total_docs is never decremented.  (V5 segments aren't
-	 * rebuilt — VACUUM only flips alive bits, leaving num_docs
-	 * fixed.  The live shared-memory atomic additionally counts
-	 * memtable docs; this disk copy lags between spills.)
+	 * where the sum is over all on-disk segments reachable from
+	 * level_heads[] and num_docs is the segment header field (fixed
+	 * at segment creation).  VACUUM keeps the invariant by
+	 * decrementing total_docs whenever a segment's num_docs changes
+	 * or the segment leaves the chain: pre-V5 rebuild shrinks
+	 * num_docs from old to docs_added; a V5 segment dropped because
+	 * all docs are dead contributes zero.  V5 bitset flips that
+	 * leave survivors are invisible here — they shrink alive_count,
+	 * not num_docs.
 	 *
-	 * Per-segment dictionary doc_freq values likewise stay at
-	 * their segment-creation values; doc_freq(t) ≤ num_docs holds
-	 * within every segment by construction.  Chained together:
+	 * Per-segment dictionary doc_freq(t) ≤ segment.num_docs by
+	 * construction, so
 	 *
-	 *     total_docs ≥ Σ segment.num_docs
+	 *     total_docs = Σ segment.num_docs
 	 *              ≥ Σ segment.doc_freq(t)
 	 *              = doc_freq(t) globally
 	 *
-	 * so BM25's N ≥ df(t) invariant — which tp_calculate_idf
-	 * relies on (violating it yields negative IDF) — is preserved.
-	 * REINDEX rebuilds from the heap and resets total_docs to the
-	 * live count.
+	 * and BM25's N ≥ df(t) precondition for tp_calculate_idf holds.
+	 *
+	 * The shared-memory atomic additionally counts unflushed
+	 * memtable docs and is the source persisted at every spill;
+	 * this disk copy therefore lags between spills but is still in
+	 * sync with Σ segment.num_docs at spill/sync boundaries.
 	 */
 	uint64 total_docs;
 	uint64 _unused_total_terms;	  /* Unused, retained for on-disk compat */
