@@ -170,6 +170,12 @@ tp_get_metapage(Relation index)
 /*
  * Persist the shared-memory atomic into the metapage.  See
  * TpIndexMetaPageData.total_docs in metapage.h for semantics.
+ *
+ * Read the atomic only after taking the metapage buffer exclusive
+ * lock so a concurrent VACUUM shrinkage (which also holds this lock
+ * during its atomic sub + metap write) cannot slip in between our
+ * read and our write and have its decrement clobbered by a stale
+ * atomic snapshot.
  */
 void
 tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state)
@@ -184,11 +190,11 @@ tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state)
 	if (index_state == NULL || index_state->shared == NULL)
 		return;
 
-	total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
-	total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
-
 	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
+
+	total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
+	total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
 
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);

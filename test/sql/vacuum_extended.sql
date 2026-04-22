@@ -284,5 +284,156 @@ SELECT bm25_summarize_index('vacuum_tiny_idx')
 
 DROP TABLE vacuum_tiny_test;
 
+-- =============================================================================
+-- Test 9: dropping a memtable-spilled L0 segment keeps total_len sane
+-- =============================================================================
+--
+-- Regression test.  tp_write_segment used to leave header.total_tokens
+-- at the cumulative shared-atomic value instead of the per-segment
+-- sum.  When VACUUM later dropped that segment (all docs dead) the
+-- inflated header.total_tokens was subtracted from metap->total_len
+-- and the atomic, clamping them to 0 (or wrapping the atomic) and
+-- breaking avgdl in BM25 scoring for the surviving docs.
+--
+-- We populate two L0 segments with distinct id ranges, delete every
+-- row that landed in the second one, and then run VACUUM.  Afterwards
+-- a search over the surviving corpus must return real matches.
+
+CREATE TABLE l0_total_len_test (id serial PRIMARY KEY, content text);
+CREATE INDEX l0_total_len_idx ON l0_total_len_test USING bm25(content)
+    WITH (text_config='english');
+
+-- Segment 1: ids 1..50 (the survivors).
+INSERT INTO l0_total_len_test (content)
+SELECT 'alpha common term doc ' || i FROM generate_series(1, 50) AS i;
+SELECT bm25_spill_index('l0_total_len_idx');
+
+-- Segment 2: ids 51..100 (to be fully deleted).
+INSERT INTO l0_total_len_test (content)
+SELECT 'beta common term doc ' || i FROM generate_series(51, 100) AS i;
+SELECT bm25_spill_index('l0_total_len_idx');
+
+-- Wipe every row that went into segment 2, then VACUUM to drop it.
+DELETE FROM l0_total_len_test WHERE id > 50;
+VACUUM l0_total_len_test;
+
+-- total_len must reflect only the surviving segment's tokens.  The
+-- pre-fix path inflated header.total_tokens to the cumulative atomic
+-- so the subtraction clamped total_len to 0.  A healthy avg_doc_len
+-- is the sharpest regression signal.
+SELECT bm25_summarize_index('l0_total_len_idx') ~ E'total_len: 250\n'
+    AS total_len_matches_survivors,
+       bm25_summarize_index('l0_total_len_idx') ~ E'avg_doc_len: 5\\.00\n'
+    AS avgdl_sane;
+
+DROP TABLE l0_total_len_test;
+
+-- =============================================================================
+-- Test 10: merged segments carry raw total_tokens (long docs + VACUUM)
+-- =============================================================================
+--
+-- Regression test.  merge.c used to recompute header.total_tokens as
+-- Σ decode_fieldnorm(fieldnorms[d]), which is exponentially quantized
+-- for doc_length > 39 (e.g. 100→96).  metap->total_len stayed raw
+-- (set from the atomic), so the drift was latent until a VACUUM drop
+-- of the merged segment fed the quantized header value back into
+-- metap via tp_apply_vacuum_shrinkage, leaving phantom tokens.
+--
+-- Fix: merge starts from Σ source.header.total_tokens (raw) minus a
+-- dead-only fieldnorm approximation.  For all-live sources the merged
+-- total_tokens is exact, so the VACUUM subtraction cancels to zero.
+
+SET pg_textsearch.segments_per_level = 2;
+
+CREATE TABLE merge_long_docs (id serial PRIMARY KEY, content text);
+CREATE INDEX merge_long_idx ON merge_long_docs USING bm25(content)
+    WITH (text_config='english');
+
+-- Each doc has 100 unique tokens.  decode(encode(100)) = 96.
+INSERT INTO merge_long_docs (content)
+SELECT string_agg('term' || (j + i*1000), ' ')
+FROM generate_series(1, 30) i,
+     generate_series(1, 100) j
+GROUP BY i;
+SELECT bm25_spill_index('merge_long_idx');
+
+INSERT INTO merge_long_docs (content)
+SELECT string_agg('other' || (j + i*1000), ' ')
+FROM generate_series(1, 30) i,
+     generate_series(1, 100) j
+GROUP BY i;
+SELECT bm25_spill_index('merge_long_idx');
+
+-- Sanity: both batches merged into a single L1 segment.
+SELECT bm25_summarize_index('merge_long_idx') ~ E'L1 Segment'
+    AS has_l1_segment;
+
+-- Delete every row so VACUUM drops the merged segment.  With the fix
+-- the L1 header carries raw 6000 tokens; subtracting that from the
+-- atomic/metapage total_len (also 6000) leaves 0.  Pre-fix the L1
+-- header was 60 × 96 = 5760 (quantized), leaving 240 phantom tokens
+-- that would bias avg_doc_len for any surviving docs and persist
+-- across the next tp_sync_metapage_stats.
+DELETE FROM merge_long_docs;
+VACUUM merge_long_docs;
+
+SELECT bm25_summarize_index('merge_long_idx') ~ E'total_len: 0\n'
+    AS total_len_zero_after_drop,
+       bm25_summarize_index('merge_long_idx') ~ E'total_docs: 0\n'
+    AS total_docs_zero_after_drop;
+
+RESET pg_textsearch.segments_per_level;
+DROP TABLE merge_long_docs;
+
+-- =============================================================================
+-- Test 11: merge drops V5-bitset-dead docs and applies shrinkage
+-- =============================================================================
+--
+-- Regression test.  tp_merge_level_segments used to update
+-- level_heads/level_counts but leave metap->total_docs / total_len
+-- at the pre-merge value when the merged segment dropped docs that
+-- VACUUM had previously marked dead in the source bitsets.  After
+-- the merge, Σ segment.num_docs (= live count) was strictly less
+-- than metap->total_docs, violating the primary invariant.
+--
+-- Setup: two L0 spills below segments_per_level so no compaction
+-- fires yet, VACUUM to flip dead bits, then a third spill that
+-- triggers an L0→L1 compaction.  The merged L1 segment excludes the
+-- dead docs; metap must shrink to match.
+
+SET pg_textsearch.segments_per_level = 3;
+
+CREATE TABLE merge_drop_dead (id serial PRIMARY KEY, content text);
+CREATE INDEX merge_drop_idx ON merge_drop_dead USING bm25(content)
+    WITH (text_config='english');
+
+-- Spills 1 and 2.
+INSERT INTO merge_drop_dead (content)
+SELECT 'one alpha common term doc ' || i FROM generate_series(1, 30) AS i;
+SELECT bm25_spill_index('merge_drop_idx');
+
+INSERT INTO merge_drop_dead (content)
+SELECT 'two beta common term doc ' || i FROM generate_series(31, 60) AS i;
+SELECT bm25_spill_index('merge_drop_idx');
+
+-- Delete half the rows and VACUUM to flip dead bits in the two L0s.
+DELETE FROM merge_drop_dead WHERE id % 2 = 0;
+VACUUM merge_drop_dead;
+
+-- Third spill triggers compaction (segments_per_level=3); merge
+-- drops the bitset-dead docs.
+INSERT INTO merge_drop_dead (content)
+SELECT 'three gamma common term doc ' || i FROM generate_series(61, 90) AS i;
+SELECT bm25_spill_index('merge_drop_idx');
+
+-- 30 + 30 + 30 = 90 inserted; 30 deleted; 60 live.  Pre-fix merge
+-- would leave metap->total_docs at 90 (summed sources' num_docs
+-- unchanged), which violates total_docs = Σ segment.num_docs.
+SELECT bm25_summarize_index('merge_drop_idx') ~ E'total_docs: 60\n'
+    AS metap_matches_live_count;
+
+RESET pg_textsearch.segments_per_level;
+DROP TABLE merge_drop_dead;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;

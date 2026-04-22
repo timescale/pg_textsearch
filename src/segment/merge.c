@@ -16,6 +16,7 @@
 
 #include "constants.h"
 #include "index/metapage.h"
+#include "index/state.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
@@ -826,6 +827,35 @@ build_merged_docmap(
 	docmap->ctid_offsets = out_offsets;
 	docmap->fieldnorms	 = out_fieldnorms;
 
+	/*
+	 * Compute merged total_tokens as Σ source.header.total_tokens
+	 * minus a fieldnorm-decoded approximation of dead-doc tokens.
+	 * For all-live sources the result is exact (matches the raw sum
+	 * maintained by the spill and build-context paths); for sources
+	 * with some dead docs the quantization error is bounded by the
+	 * dead contribution only, not by the whole segment.
+	 */
+	{
+		uint64 merged_total_tokens = 0;
+
+		for (i = 0; i < num_sources; i++)
+		{
+			TpDocmapMergeSource *ms = &msources[i];
+			uint64 src_total		= sources[i].reader->header->total_tokens;
+			uint64 dead_tokens		= 0;
+
+			for (uint32 d = 0; d < ms->num_docs; d++)
+			{
+				if (!tp_segment_is_alive(sources[i].reader, d))
+					dead_tokens += decode_fieldnorm(ms->fieldnorms[d]);
+			}
+			merged_total_tokens += (src_total > dead_tokens)
+										 ? (src_total - dead_tokens)
+										 : 0;
+		}
+		docmap->total_tokens = merged_total_tokens;
+	}
+
 	/* Free per-source arrays we allocated */
 	for (i = 0; i < num_sources; i++)
 	{
@@ -968,14 +998,13 @@ write_merged_segment_to_sink(
 	docmap = build_merged_docmap(
 			sources, num_sources, &doc_mapping, disjoint_sources);
 
-	/* Recompute total_tokens from live docs' fieldnorms */
-	{
-		uint64 live_tokens = 0;
-
-		for (uint32 d = 0; d < docmap->num_docs; d++)
-			live_tokens += decode_fieldnorm(docmap->fieldnorms[d]);
-		total_tokens = live_tokens;
-	}
+	/*
+	 * build_merged_docmap sets docmap->total_tokens from source
+	 * header.total_tokens minus dead-doc fieldnorm approximations;
+	 * see its comment for the exact-vs-approximate trade-off.  The
+	 * caller's total_tokens parameter is ignored.
+	 */
+	total_tokens = docmap->total_tokens;
 
 	/*
 	 * If all docs are dead, nothing to write. Clean up and return.
@@ -1386,6 +1415,7 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	uint32			num_merged_terms = 0;
 	uint32			merged_capacity	 = 0;
 	uint64			total_tokens	 = 0;
+	uint64			src_num_docs_sum = 0; /* Σ source header.num_docs */
 	BlockNumber		new_segment;
 	MemoryContext	merge_ctx;
 	MemoryContext	old_ctx;
@@ -1495,6 +1525,8 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				if (merge_source_init(&sources[num_sources], index, current))
 				{
 					total_tokens += seg_tokens;
+					src_num_docs_sum +=
+							sources[num_sources].reader->header->num_docs;
 					num_sources++;
 				}
 
@@ -1700,18 +1732,73 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	}
 
 	/*
-	 * Update metapage: clear source level, add to target level.
-	 * Use GenericXLog to WAL-log the metapage and (optionally)
-	 * the new segment header atomically.
+	 * Update metapage: clear source level, add to target level, and
+	 * apply shrinkage if the merged segment dropped V5-bitset-dead
+	 * docs.  See TpIndexMetaPageData.total_docs in metapage.h for
+	 * the invariant total_docs = Σ segment.num_docs.
 	 */
 	{
-		GenericXLogState *xlog_state;
-		Page			  meta_copy;
-		TpIndexMetaPage	  meta_ptr;
-		Buffer			  seg_buf = InvalidBuffer;
+		GenericXLogState  *xlog_state;
+		Page			   meta_copy;
+		TpIndexMetaPage	   meta_ptr;
+		Buffer			   seg_buf		 = InvalidBuffer;
+		uint32			   merged_docs	 = 0;
+		uint64			   merged_tokens = 0;
+		uint64			   docs_shrinkage;
+		uint64			   tokens_shrinkage;
+		TpLocalIndexState *st;
+
+		/* Read merged segment header for its num_docs / total_tokens. */
+		{
+			Buffer			 b = ReadBuffer(index, new_segment);
+			Page			 p;
+			TpSegmentHeader *h;
+
+			LockBuffer(b, BUFFER_LOCK_SHARE);
+			p			  = BufferGetPage(b);
+			h			  = (TpSegmentHeader *)PageGetContents(p);
+			merged_docs	  = h->num_docs;
+			merged_tokens = h->total_tokens;
+			UnlockReleaseBuffer(b);
+		}
+
+		docs_shrinkage	 = (src_num_docs_sum > (uint64)merged_docs)
+								 ? src_num_docs_sum - (uint64)merged_docs
+								 : 0;
+		tokens_shrinkage = (total_tokens > merged_tokens)
+								 ? total_tokens - merged_tokens
+								 : 0;
+
+		st = tp_get_local_index_state(RelationGetRelid(index));
 
 		metabuf = ReadBuffer(index, 0);
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * Clamp atomic subs symmetrically with the metapage sub
+		 * below.  tp_sync_metapage_stats reads the atomic under the
+		 * same metapage lock, so this serializes against it.
+		 */
+		if (st != NULL && st->shared != NULL)
+		{
+			if (docs_shrinkage > 0)
+			{
+				uint32 cur = pg_atomic_read_u32(&st->shared->total_docs);
+				uint32 sub = (docs_shrinkage > (uint64)cur)
+								   ? cur
+								   : (uint32)docs_shrinkage;
+				if (sub > 0)
+					pg_atomic_fetch_sub_u32(&st->shared->total_docs, sub);
+			}
+			if (tokens_shrinkage > 0)
+			{
+				uint64 cur = pg_atomic_read_u64(&st->shared->total_len);
+				uint64 sub = Min(cur, tokens_shrinkage);
+
+				if (sub > 0)
+					pg_atomic_fetch_sub_u64(&st->shared->total_len, sub);
+			}
+		}
 
 		xlog_state = GenericXLogStart(index);
 		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
@@ -1741,6 +1828,14 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		meta_ptr->level_heads[level + 1] = new_segment;
 		meta_ptr->level_counts[level + 1]++;
+
+		/* Apply the same shrinkage to the on-disk copy. */
+		meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
+									 ? meta_ptr->total_docs - docs_shrinkage
+									 : 0;
+		meta_ptr->total_len	 = (meta_ptr->total_len >= tokens_shrinkage)
+									 ? meta_ptr->total_len - tokens_shrinkage
+									 : 0;
 
 		GenericXLogFinish(xlog_state);
 		if (BufferIsValid(seg_buf))
