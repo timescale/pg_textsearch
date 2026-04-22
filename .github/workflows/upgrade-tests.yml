@@ -396,6 +396,35 @@ jobs:
             RAISE NOTICE 'PASS: extension version %', ver;
           END $$;
 
+          -- Phase 6: 1.1.0 features (text[] indexes, bm25_memory_usage).
+          -- Catches upgrade scripts that forget new SQL objects added
+          -- during a release cycle.
+          CREATE TABLE upgrade_textarr (id serial, tags text[]);
+          INSERT INTO upgrade_textarr (tags) VALUES (ARRAY['hello', 'world']);
+          CREATE INDEX idx_upgrade_textarr ON upgrade_textarr
+            USING bm25 (tags) WITH (text_config = 'english');
+          DO $$
+          DECLARE rec record;
+          BEGIN
+            SET LOCAL enable_seqscan = off;
+            SELECT * INTO rec FROM upgrade_textarr
+            ORDER BY tags <@> to_bm25query('hello', 'idx_upgrade_textarr')
+            LIMIT 1;
+            IF rec.id IS NULL THEN
+              RAISE EXCEPTION 'FAIL: text[] index returned no results';
+            END IF;
+            RAISE NOTICE 'PASS: text[] BM25 index works, id=%', rec.id;
+          END $$;
+          DO $$
+          DECLARE bytes int8;
+          BEGIN
+            SELECT dsa_total_bytes INTO bytes FROM bm25_memory_usage();
+            IF bytes IS NULL THEN
+              RAISE EXCEPTION 'FAIL: bm25_memory_usage returned NULL';
+            END IF;
+            RAISE NOTICE 'PASS: bm25_memory_usage works, bytes=%', bytes;
+          END $$;
+
           SELECT 'All compat-tier upgrade tests passed!' AS status;
         SQL
 
@@ -490,6 +519,35 @@ jobs:
                 score_val;
             END IF;
             RAISE NOTICE 'PASS: new index works, score=%', score_val;
+          END $$;
+
+          -- Test 7: 1.1.0 features (text[] indexes, bm25_memory_usage).
+          -- Catches upgrade scripts that forget new SQL objects added
+          -- during a release cycle.
+          CREATE TABLE upgrade_textarr (id serial, tags text[]);
+          INSERT INTO upgrade_textarr (tags) VALUES (ARRAY['hello', 'world']);
+          CREATE INDEX idx_upgrade_textarr ON upgrade_textarr
+            USING bm25 (tags) WITH (text_config = 'english');
+          DO $$
+          DECLARE rec record;
+          BEGIN
+            SET LOCAL enable_seqscan = off;
+            SELECT * INTO rec FROM upgrade_textarr
+            ORDER BY tags <@> to_bm25query('hello', 'idx_upgrade_textarr')
+            LIMIT 1;
+            IF rec.id IS NULL THEN
+              RAISE EXCEPTION 'FAIL: text[] index returned no results';
+            END IF;
+            RAISE NOTICE 'PASS: text[] BM25 index works, id=%', rec.id;
+          END $$;
+          DO $$
+          DECLARE bytes int8;
+          BEGIN
+            SELECT dsa_total_bytes INTO bytes FROM bm25_memory_usage();
+            IF bytes IS NULL THEN
+              RAISE EXCEPTION 'FAIL: bm25_memory_usage returned NULL';
+            END IF;
+            RAISE NOTICE 'PASS: bm25_memory_usage works, bytes=%', bytes;
           END $$;
 
           SELECT 'All legacy-tier upgrade tests passed!' AS status;
