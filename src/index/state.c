@@ -54,11 +54,11 @@ typedef struct LocalStateCacheEntry
 static bool shutdown_hook_registered = false;
 
 /*
- * Spill one cache entry's memtable if we can open the index.  Split
- * out from the loop so its PG_TRY doesn't nest inside the outer
- * PG_TRY in tp_shutdown_spill_callback — nested PG_TRYs in the same
- * lexical scope shadow each other's locals and trip
- * -Werror=shadow=compatible-local on CI.
+ * Spill one cache entry, catching and swallowing any error so the
+ * outer loop can continue with the remaining entries.  Split out of
+ * tp_shutdown_spill_callback so its PG_TRY doesn't nest in the same
+ * lexical scope (which would shadow the outer PG_TRY's locals and
+ * trip -Werror=shadow=compatible-local).
  */
 static void
 tp_shutdown_spill_one(LocalStateCacheEntry *entry)
@@ -80,13 +80,7 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 	}
 	PG_CATCH();
 	{
-		/*
-		 * Release the per-index LWLock here; otherwise a mid-spill
-		 * ERROR would leave it held until CommitTransactionCommand
-		 * → tp_release_all_index_locks fires at the end of the
-		 * loop, and any other backend's shutdown hook racing for
-		 * the same index would stall in the meantime.
-		 */
+		/* Don't leak the per-index LWLock to racing shutdown hooks */
 		tp_release_index_lock(entry->local_state);
 		FlushErrorState();
 		if (index_rel != NULL)
@@ -96,24 +90,11 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 }
 
 /*
- * Backend-exit hook: spill every index this backend has touched.
- *
- * On a clean server shutdown Postgres exits backends before running
- * the final checkpoint.  Draining the memtable here means next
- * startup's first query doesn't have to walk the docid-page chain
- * and re-tokenize every un-spilled tuple from the heap.
- *
- * The hook runs for *any* non-zero proc_exit code, which includes
- * cluster shutdown (SIGTERM → FATAL → proc_exit(1)) but also any
- * other FATAL (e.g., assertion failure, OOM, pg_terminate_backend).
- * Running on those paths is fine: the per-index LW_EXCLUSIVE inside
- * tp_spill_memtable_if_needed serializes us against other backends,
- * and a no-op is cheap when there's nothing un-spilled.
- *
- * Everything in this function is best-effort.  The body is wrapped
- * in a PG_TRY so that any escape from StartTransactionCommand, the
- * hash loop, or CommitTransactionCommand aborts cleanly without
- * derailing the rest of proc_exit.
+ * before_shmem_exit hook: spill the memtable of every index this
+ * backend has touched, so the docid chain doesn't have to be
+ * replayed from heap on the next server start.  Skipped on clean
+ * client exit (code == 0); fires on any FATAL (cluster shutdown,
+ * pg_terminate_backend, etc.).
  */
 static void
 tp_shutdown_spill_callback(int code, Datum arg pg_attribute_unused())
@@ -122,35 +103,15 @@ tp_shutdown_spill_callback(int code, Datum arg pg_attribute_unused())
 	LocalStateCacheEntry *entry;
 	bool				  started_txn = false;
 
-	if (local_state_cache == NULL)
+	if (local_state_cache == NULL || code == 0)
 		return;
 
-	/*
-	 * Skip clean backend exits (code == 0, e.g. psql `\q`).  Spilling
-	 * on every disconnect would produce spurious segment writes and
-	 * break scripts that rely on the memtable persisting across psql
-	 * invocations.  code != 0 is broader than "cluster shutdown" —
-	 * it catches any FATAL exit — but a spill in those cases is
-	 * still correct, just occasionally redundant.
-	 */
-	if (code == 0)
-		return;
-
-	/*
-	 * A dying backend may reach us mid-abort.  Catalog access
-	 * requires a healthy transaction state; bail out if we can't
-	 * safely get one.
-	 */
+	/* catalog access needs a non-aborted transaction */
 	if (IsAbortedTransactionBlockState())
 		return;
 
 	PG_TRY();
 	{
-		/*
-		 * try_index_open → catcache lookup needs an active
-		 * transaction.  Normal FATAL exit leaves us with no
-		 * transaction; start one.
-		 */
 		if (!IsTransactionState())
 		{
 			StartTransactionCommand();
@@ -167,13 +128,7 @@ tp_shutdown_spill_callback(int code, Datum arg pg_attribute_unused())
 	}
 	PG_CATCH();
 	{
-		/*
-		 * Last-ditch cleanup if StartTransactionCommand,
-		 * hash_seq_init / hash_seq_search, or CommitTransactionCommand
-		 * itself throws.  At this point proc_exit still needs to
-		 * complete, so swallow the error, abort any half-started
-		 * transaction, and return.
-		 */
+		/* proc_exit still has to complete; swallow and move on */
 		if (IsTransactionState())
 			AbortCurrentTransaction();
 		FlushErrorState();
@@ -1327,17 +1282,7 @@ tp_rebuild_posting_lists_from_docids(
 				text *document_text = DatumGetTextPP(idx_values[0]);
 				int32 doc_length;
 
-				/*
-				 * The atomic counters are incremented inside
-				 * tp_add_document_terms (called from
-				 * tp_process_document_text), so we don't double-count
-				 * them here.  The caller subsequently overwrites the
-				 * atomics from the metapage (state.c ~1105), making
-				 * that the authoritative source; the transient
-				 * increments exist only to make the INFO log at the
-				 * end of this function report the real restored
-				 * count.
-				 */
+				/* tp_add_document_terms already increments the atomic */
 				(void)tp_process_document_text(
 						document_text,
 						ctid,

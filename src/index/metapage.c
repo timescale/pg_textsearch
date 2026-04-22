@@ -168,16 +168,8 @@ tp_get_metapage(Relation index)
 }
 
 /*
- * Copy the live total_docs / total_len from the shared-memory atomics
- * into the metapage.  Callers must already hold LW_EXCLUSIVE on the
- * per-index lock.
- *
- * This needs to run on every successful spill (VACUUM, shutdown
- * hook, bm25_spill_index, auto-spill): the crash-recovery path in
- * tp_rebuild_index_from_disk reads metap->total_docs as authoritative
- * and overwrites the shared-memory atomic with it, so un-synced
- * post-build inserts would otherwise be forgotten across a restart
- * and BM25 scoring would degrade.
+ * Persist the shared-memory atomic into the metapage.  See
+ * TpIndexMetaPageData.total_docs in metapage.h for semantics.
  */
 void
 tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state)
