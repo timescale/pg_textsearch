@@ -826,6 +826,35 @@ build_merged_docmap(
 	docmap->ctid_offsets = out_offsets;
 	docmap->fieldnorms	 = out_fieldnorms;
 
+	/*
+	 * Compute merged total_tokens as Σ source.header.total_tokens
+	 * minus a fieldnorm-decoded approximation of dead-doc tokens.
+	 * For all-live sources the result is exact (matches the raw sum
+	 * maintained by the spill and build-context paths); for sources
+	 * with some dead docs the quantization error is bounded by the
+	 * dead contribution only, not by the whole segment.
+	 */
+	{
+		uint64 merged_total_tokens = 0;
+
+		for (i = 0; i < num_sources; i++)
+		{
+			TpDocmapMergeSource *ms = &msources[i];
+			uint64 src_total		= sources[i].reader->header->total_tokens;
+			uint64 dead_tokens		= 0;
+
+			for (uint32 d = 0; d < ms->num_docs; d++)
+			{
+				if (!tp_segment_is_alive(sources[i].reader, d))
+					dead_tokens += decode_fieldnorm(ms->fieldnorms[d]);
+			}
+			merged_total_tokens += (src_total > dead_tokens)
+										 ? (src_total - dead_tokens)
+										 : 0;
+		}
+		docmap->total_tokens = merged_total_tokens;
+	}
+
 	/* Free per-source arrays we allocated */
 	for (i = 0; i < num_sources; i++)
 	{
@@ -968,14 +997,13 @@ write_merged_segment_to_sink(
 	docmap = build_merged_docmap(
 			sources, num_sources, &doc_mapping, disjoint_sources);
 
-	/* Recompute total_tokens from live docs' fieldnorms */
-	{
-		uint64 live_tokens = 0;
-
-		for (uint32 d = 0; d < docmap->num_docs; d++)
-			live_tokens += decode_fieldnorm(docmap->fieldnorms[d]);
-		total_tokens = live_tokens;
-	}
+	/*
+	 * build_merged_docmap sets docmap->total_tokens from source
+	 * header.total_tokens minus dead-doc fieldnorm approximations;
+	 * see its comment for the exact-vs-approximate trade-off.  The
+	 * caller's total_tokens parameter is ignored.
+	 */
+	total_tokens = docmap->total_tokens;
 
 	/*
 	 * If all docs are dead, nothing to write. Clean up and return.

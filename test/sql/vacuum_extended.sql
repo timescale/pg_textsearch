@@ -328,5 +328,62 @@ SELECT bm25_summarize_index('l0_total_len_idx') ~ E'total_len: 250\n'
 
 DROP TABLE l0_total_len_test;
 
+-- =============================================================================
+-- Test 10: merged segments carry raw total_tokens (long docs + VACUUM)
+-- =============================================================================
+--
+-- Regression test.  merge.c used to recompute header.total_tokens as
+-- Σ decode_fieldnorm(fieldnorms[d]), which is exponentially quantized
+-- for doc_length > 39 (e.g. 100→96).  metap->total_len stayed raw
+-- (set from the atomic), so the drift was latent until a VACUUM drop
+-- of the merged segment fed the quantized header value back into
+-- metap via tp_apply_vacuum_shrinkage, leaving phantom tokens.
+--
+-- Fix: merge starts from Σ source.header.total_tokens (raw) minus a
+-- dead-only fieldnorm approximation.  For all-live sources the merged
+-- total_tokens is exact, so the VACUUM subtraction cancels to zero.
+
+SET pg_textsearch.segments_per_level = 2;
+
+CREATE TABLE merge_long_docs (id serial PRIMARY KEY, content text);
+CREATE INDEX merge_long_idx ON merge_long_docs USING bm25(content)
+    WITH (text_config='english');
+
+-- Each doc has 100 unique tokens.  decode(encode(100)) = 96.
+INSERT INTO merge_long_docs (content)
+SELECT string_agg('term' || (j + i*1000), ' ')
+FROM generate_series(1, 30) i,
+     generate_series(1, 100) j
+GROUP BY i;
+SELECT bm25_spill_index('merge_long_idx');
+
+INSERT INTO merge_long_docs (content)
+SELECT string_agg('other' || (j + i*1000), ' ')
+FROM generate_series(1, 30) i,
+     generate_series(1, 100) j
+GROUP BY i;
+SELECT bm25_spill_index('merge_long_idx');
+
+-- Sanity: both batches merged into a single L1 segment.
+SELECT bm25_summarize_index('merge_long_idx') ~ E'L1 Segment'
+    AS has_l1_segment;
+
+-- Delete every row so VACUUM drops the merged segment.  With the fix
+-- the L1 header carries raw 6000 tokens; subtracting that from the
+-- atomic/metapage total_len (also 6000) leaves 0.  Pre-fix the L1
+-- header was 60 × 96 = 5760 (quantized), leaving 240 phantom tokens
+-- that would bias avg_doc_len for any surviving docs and persist
+-- across the next tp_sync_metapage_stats.
+DELETE FROM merge_long_docs;
+VACUUM merge_long_docs;
+
+SELECT bm25_summarize_index('merge_long_idx') ~ E'total_len: 0\n'
+    AS total_len_zero_after_drop,
+       bm25_summarize_index('merge_long_idx') ~ E'total_docs: 0\n'
+    AS total_docs_zero_after_drop;
+
+RESET pg_textsearch.segments_per_level;
+DROP TABLE merge_long_docs;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
