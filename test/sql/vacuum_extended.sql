@@ -284,5 +284,49 @@ SELECT bm25_summarize_index('vacuum_tiny_idx')
 
 DROP TABLE vacuum_tiny_test;
 
+-- =============================================================================
+-- Test 9: dropping a memtable-spilled L0 segment keeps total_len sane
+-- =============================================================================
+--
+-- Regression test.  tp_write_segment used to leave header.total_tokens
+-- at the cumulative shared-atomic value instead of the per-segment
+-- sum.  When VACUUM later dropped that segment (all docs dead) the
+-- inflated header.total_tokens was subtracted from metap->total_len
+-- and the atomic, clamping them to 0 (or wrapping the atomic) and
+-- breaking avgdl in BM25 scoring for the surviving docs.
+--
+-- We populate two L0 segments with distinct id ranges, delete every
+-- row that landed in the second one, and then run VACUUM.  Afterwards
+-- a search over the surviving corpus must return real matches.
+
+CREATE TABLE l0_total_len_test (id serial PRIMARY KEY, content text);
+CREATE INDEX l0_total_len_idx ON l0_total_len_test USING bm25(content)
+    WITH (text_config='english');
+
+-- Segment 1: ids 1..50 (the survivors).
+INSERT INTO l0_total_len_test (content)
+SELECT 'alpha common term doc ' || i FROM generate_series(1, 50) AS i;
+SELECT bm25_spill_index('l0_total_len_idx');
+
+-- Segment 2: ids 51..100 (to be fully deleted).
+INSERT INTO l0_total_len_test (content)
+SELECT 'beta common term doc ' || i FROM generate_series(51, 100) AS i;
+SELECT bm25_spill_index('l0_total_len_idx');
+
+-- Wipe every row that went into segment 2, then VACUUM to drop it.
+DELETE FROM l0_total_len_test WHERE id > 50;
+VACUUM l0_total_len_test;
+
+-- total_len must reflect only the surviving segment's tokens.  The
+-- pre-fix path inflated header.total_tokens to the cumulative atomic
+-- so the subtraction clamped total_len to 0.  A healthy avg_doc_len
+-- is the sharpest regression signal.
+SELECT bm25_summarize_index('l0_total_len_idx') ~ E'total_len: 250\n'
+    AS total_len_matches_survivors,
+       bm25_summarize_index('l0_total_len_idx') ~ E'avg_doc_len: 5\\.00\n'
+    AS avgdl_sane;
+
+DROP TABLE l0_total_len_test;
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;

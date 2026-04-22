@@ -47,6 +47,9 @@ typedef struct TpDocMapBuilder
 	BlockNumber	 *ctid_pages;	/* doc_id → page number (4 bytes) */
 	OffsetNumber *ctid_offsets; /* doc_id → tuple offset (2 bytes) */
 	uint8		 *fieldnorms;	/* doc_id → encoded length (1 byte) */
+
+	/* Sum of per-doc token counts; used for segment.total_tokens. */
+	uint64 total_tokens;
 } TpDocMapBuilder;
 
 /*

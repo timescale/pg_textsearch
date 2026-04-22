@@ -99,9 +99,11 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
  * Apply the invariant total_docs = Σ segment.num_docs (and its
  * total_len counterpart) after Phase 3 has rebuilt or dropped
  * segments.  Decrements both the shared-memory atomic and the
- * on-disk metapage so no subsequent sync re-inflates the metapage
- * from a stale atomic.  See TpIndexMetaPageData.total_docs in
- * metapage.h for the invariant.
+ * on-disk metapage under the metapage buffer exclusive lock so a
+ * concurrent tp_sync_metapage_stats (which acquires the same lock)
+ * cannot observe a half-applied state or re-inflate the metapage
+ * from the atomic between the two decrements.  See
+ * TpIndexMetaPageData.total_docs in metapage.h for the invariant.
  */
 static void
 tp_apply_vacuum_shrinkage(
@@ -118,6 +120,9 @@ tp_apply_vacuum_shrinkage(
 	if (docs_shrinkage == 0 && tokens_shrinkage == 0)
 		return;
 
+	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
+
 	if (index_state != NULL && index_state->shared != NULL)
 	{
 		if (docs_shrinkage > 0)
@@ -127,9 +132,6 @@ tp_apply_vacuum_shrinkage(
 			pg_atomic_fetch_sub_u64(
 					&index_state->shared->total_len, tokens_shrinkage);
 	}
-
-	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
 
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
