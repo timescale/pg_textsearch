@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776757861239,
+  "lastUpdate": 1776844179451,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -1121,6 +1121,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.631,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "da18d486a5c5a09f75d4c441821d2488e7a7d4b2",
+          "message": "chore: bump version to 1.1.0-dev (#332)\n\n## Summary\nPost-1.0.0 release bump — we forgot to do this after the 1.0.0 release.\n\n- Rename `pg_textsearch--1.0.0-dev.sql` → `pg_textsearch--1.1.0-dev.sql`\n- Rename upgrade script `pg_textsearch--1.0.0--1.0.0-dev.sql` →\n`pg_textsearch--1.0.0--1.1.0-dev.sql`\n- Update version strings in `pg_textsearch.control`, `src/mod.c`,\n`CLAUDE.md`, `Makefile`, test scripts, and expected outputs\n- Drop the `timescaledb-docker-ha` step from `RELEASING.md`; that part\nof the release procedure now lives in internal docs\n\n## Testing\n- `make test` passes\n- `make format-check` clean",
+          "timestamp": "2026-04-21T02:51:41Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/da18d486a5c5a09f75d4c441821d2488e7a7d4b2"
+        },
+        "date": 1776844175776,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2449.932202,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.408,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4604.615229,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.434,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7426.832482,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.539,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 11593.488008,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.69,
             "unit": "ms"
           }
         ]
