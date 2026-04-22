@@ -1045,10 +1045,11 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/*
 	 * Placeholder per-segment counts; header.num_docs and
 	 * header.total_tokens are overwritten below with the docmap's
-	 * per-segment values before the final on-disk patch, so the
-	 * invariant header.total_tokens = Σ per-doc fieldnorm holds for
-	 * L0 segments just as it does for merged / build-context
-	 * segments.
+	 * per-segment values (Σ raw doc_length) before the final on-disk
+	 * patch.  Build-context writes use the same raw sum; merge
+	 * recomputes from decoded fieldnorms and is therefore quantized,
+	 * which is a pre-existing lossy approximation — see
+	 * merge.c:975 — not something this write path should replicate.
 	 */
 	header.num_docs		= 0;
 	header.total_tokens = 0;
