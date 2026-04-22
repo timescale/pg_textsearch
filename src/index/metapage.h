@@ -35,19 +35,43 @@ typedef struct TpIndexMetaPageData
 	uint32 version;			/* Index format version */
 	Oid	   text_config_oid; /* Text search configuration OID */
 	/*
-	 * Persisted snapshot of the shared-memory atomic.  Updated at
-	 * each memtable spill; loaded back into the atomic on restart
-	 * via tp_rebuild_index_from_disk.
+	 * Running count of docs inserted into this index incarnation.
+	 * Upper-bounds the per-segment sum:
+	 *
+	 *     total_docs ≥ Σ segment.num_docs
+	 *
+	 * over all on-disk segments reachable from level_heads[], with
+	 * equality right after CREATE INDEX / REINDEX.  Slack appears
+	 * when VACUUM rebuilds a pre-V5 segment into a V5 segment
+	 * containing only alive docs: Σ segment.num_docs drops but
+	 * total_docs is never decremented.  (V5 segments aren't
+	 * rebuilt — VACUUM only flips alive bits, leaving num_docs
+	 * fixed.  The live shared-memory atomic additionally counts
+	 * memtable docs; this disk copy lags between spills.)
+	 *
+	 * Per-segment dictionary doc_freq values likewise stay at
+	 * their segment-creation values; doc_freq(t) ≤ num_docs holds
+	 * within every segment by construction.  Chained together:
+	 *
+	 *     total_docs ≥ Σ segment.num_docs
+	 *              ≥ Σ segment.doc_freq(t)
+	 *              = doc_freq(t) globally
+	 *
+	 * so BM25's N ≥ df(t) invariant — which tp_calculate_idf
+	 * relies on (violating it yields negative IDF) — is preserved.
+	 * REINDEX rebuilds from the heap and resets total_docs to the
+	 * live count.
 	 */
-	uint64		total_docs;
-	uint64		_unused_total_terms; /* Unused, retained for on-disk compat */
-	uint64		total_len;			 /* Analogous snapshot of total doc len */
-	float4		k1;					 /* BM25 k1 parameter */
-	float4		b;					 /* BM25 b parameter */
-	BlockNumber root_blkno;			 /* Root page of the index tree */
-	BlockNumber term_stats_root;	 /* Root page of term statistics B-tree */
-	BlockNumber first_docid_page;	 /* First page of docid chain for crash
-									  * recovery */
+	uint64 total_docs;
+	uint64 _unused_total_terms;	  /* Unused, retained for on-disk compat */
+	uint64 total_len;			  /* Σ segment.total_len, same frame as
+									 total_docs */
+	float4		k1;				  /* BM25 k1 parameter */
+	float4		b;				  /* BM25 b parameter */
+	BlockNumber root_blkno;		  /* Root page of the index tree */
+	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
+	BlockNumber first_docid_page; /* First page of docid chain for crash
+								   * recovery */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level

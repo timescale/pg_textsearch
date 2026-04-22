@@ -55,6 +55,45 @@ typedef struct TpVacuumSegmentInfo
 } TpVacuumSegmentInfo;
 
 /*
+ * Sum segment.alive_count across all on-disk segments.  Used by
+ * tp_vacuumcleanup to set stats->num_index_tuples; avoids the
+ * drift that would come from subtracting only new-this-round
+ * deletes from the (never-decremented) metap->total_docs.
+ *
+ * For V5 segments the count is in the header; pre-V5 segments
+ * have no alive-bitset so their alive count equals num_docs.
+ */
+static uint64
+tp_count_live_docs(Relation index, TpIndexMetaPage metap)
+{
+	uint64 alive = 0;
+
+	for (int level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber seg = metap->level_heads[level];
+
+		while (seg != InvalidBlockNumber)
+		{
+			TpSegmentReader *reader = tp_segment_open(index, seg);
+
+			if (!reader || !reader->header)
+			{
+				if (reader)
+					tp_segment_close(reader);
+				break;
+			}
+
+			alive += (reader->header->alive_bitset_offset > 0)
+						   ? reader->header->alive_count
+						   : reader->header->num_docs;
+			seg = reader->header->next_segment;
+			tp_segment_close(reader);
+		}
+	}
+	return alive;
+}
+
+/*
  * Spill memtable to an L0 segment.  Caller passes a minimum posting
  * count below which the spill is a no-op — used by VACUUM cleanup
  * and the shutdown hook to avoid producing runt L0 segments on
@@ -675,8 +714,6 @@ tp_bulkdelete(
 
 	/* Phase 3: Mark dead docs or rebuild affected segments */
 	{
-		uint64 new_total_docs = 0;
-
 		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			BlockNumber prev = InvalidBlockNumber;
@@ -715,7 +752,6 @@ tp_bulkdelete(
 						}
 						else
 						{
-							new_total_docs += alive;
 							prev = segments[i].root_block;
 						}
 					}
@@ -744,57 +780,30 @@ tp_bulkdelete(
 								new_root,
 								prev);
 
-						new_total_docs += seg_docs;
-
 						if (new_root != InvalidBlockNumber)
 							prev = new_root;
 					}
 				}
 				else
 				{
-					new_total_docs += segments[i].num_docs;
 					prev = segments[i].root_block;
 				}
 			}
 		}
 
-		/* Phase 4: Update metapage statistics */
-		{
-			Buffer			  mbuf;
-			GenericXLogState *xlog_state;
-			Page			  mpage;
-			TpIndexMetaPage	  mp;
-
-			mbuf = ReadBuffer(info->index, TP_METAPAGE_BLKNO);
-			LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-
-			xlog_state = GenericXLogStart(info->index);
-			mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
-			mp		   = (TpIndexMetaPage)PageGetContents(mpage);
-
-			if (mp->total_docs >= (uint64)total_dead)
-				mp->total_docs -= total_dead;
-			else
-				mp->total_docs = new_total_docs;
-
-			GenericXLogFinish(xlog_state);
-			UnlockReleaseBuffer(mbuf);
-		}
+		/*
+		 * No metapage decrement here — see
+		 * TpIndexMetaPageData.total_docs in metapage.h for why.
+		 */
 	}
 
-	/* Fill in return stats */
-	{
-		TpIndexMetaPage mp = tp_get_metapage(info->index);
-
-		if (mp)
-		{
-			stats->num_pages		= 1;
-			stats->num_index_tuples = (double)mp->total_docs;
-			stats->tuples_removed	= (double)total_dead;
-			stats->pages_deleted	= 0;
-			pfree(mp);
-		}
-	}
+	/*
+	 * tp_vacuumcleanup will set num_index_tuples to the actual live
+	 * count; only tuples_removed needs to carry through from here.
+	 */
+	stats->num_pages	  = 1;
+	stats->tuples_removed = (double)total_dead;
+	stats->pages_deleted  = 0;
 
 	pfree(metap);
 	for (int i = 0; i < num_segments; i++)
@@ -839,15 +848,19 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	metap = tp_get_metapage(info->index);
 	if (metap)
 	{
-		/* Update statistics with current values */
-		stats->num_pages		= 1;
-		stats->num_index_tuples = (double)metap->total_docs;
+		stats->num_pages = 1;
+		/*
+		 * Recompute live count from segments so pg_class.reltuples
+		 * reflects actual alive docs, not the (never-decremented)
+		 * metap->total_docs.  Works regardless of whether
+		 * tp_bulkdelete ran or this is a no-deletes maintenance
+		 * round.
+		 */
+		stats->num_index_tuples = (double)
+				tp_count_live_docs(info->index, metap);
 
-		/* Report current usage statistics */
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0)
-		{
 			stats->pages_free = 0;
-		}
 
 		pfree(metap);
 	}
