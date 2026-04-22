@@ -872,9 +872,24 @@ tp_bulkdelete(
 								new_root,
 								prev);
 
-						docs_shrinkage += segments[i].num_docs - new_docs;
-						tokens_shrinkage += segments[i].total_tokens -
-											new_tokens;
+						/*
+						 * Clamp to zero: new_tokens is a raw
+						 * re-tokenization sum, while
+						 * segments[i].total_tokens comes from a
+						 * pre-V5 header that may have been written
+						 * with a quantized (merge) or cumulative
+						 * (pre-fix L0 spill) value.  Underflow here
+						 * would wrap into a huge positive shrinkage
+						 * before the tp_apply_vacuum_shrinkage clamp
+						 * sees it.  num_docs has no comparable
+						 * corruption path, but clamping both keeps
+						 * the code symmetric.
+						 */
+						if (segments[i].num_docs > new_docs)
+							docs_shrinkage += segments[i].num_docs - new_docs;
+						if (segments[i].total_tokens > new_tokens)
+							tokens_shrinkage += segments[i].total_tokens -
+												new_tokens;
 
 						if (new_root != InvalidBlockNumber)
 							prev = new_root;
@@ -950,9 +965,19 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * alive_count across segments for an accurate live count
 		 * regardless of whether tp_bulkdelete ran or this is a
 		 * no-deletes maintenance round.
+		 *
+		 * Hold the per-index LWLock in shared mode across the walk
+		 * so concurrent spills / compactions (which take
+		 * LW_EXCLUSIVE to mutate level_heads and free segment
+		 * pages via the FSM) can't recycle a page we're about to
+		 * tp_segment_open.
 		 */
+		if (index_state != NULL)
+			tp_acquire_index_lock(index_state, LW_SHARED);
 		stats->num_index_tuples = (double)
 				tp_count_live_docs(info->index, metap);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
 
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0)
 			stats->pages_free = 0;
