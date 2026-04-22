@@ -228,17 +228,16 @@ CREATE INDEX vacuum_insert_only_idx
     ON vacuum_insert_only_test USING bm25(content)
     WITH (text_config='english');
 
--- Populate the docid chain without tripping bulk-load auto-spill
--- (200 docs * ~4 terms each is well under pg_textsearch.bulk_load_threshold).
+-- Populate the docid chain above TP_MIN_SPILL_POSTINGS (1000) but
+-- below pg_textsearch.bulk_load_threshold so the spill only happens
+-- via amvacuumcleanup.  2000 docs * ~4 terms each ≈ 8000 postings.
 INSERT INTO vacuum_insert_only_test (content)
 SELECT 'insert only document number ' || i
-FROM generate_series(1, 200) AS i;
+FROM generate_series(1, 2000) AS i;
 
--- Chain should be populated before VACUUM.  End-anchor to avoid
--- matching "docids: 2000" if a regression accidentally grows the
--- insert count.
+-- Chain should be populated before VACUUM.
 SELECT bm25_summarize_index('vacuum_insert_only_idx')
-        ~ E'docids: 200\n'
+        ~ E'docids: 2000\n'
     AS chain_populated_before_vacuum;
 
 -- No dead tuples here, so ambulkdelete is not invoked; only
@@ -250,7 +249,7 @@ SELECT bm25_summarize_index('vacuum_insert_only_idx')
         ~ E'docids: 0\n'
     AS chain_empty_after_vacuum;
 
--- Search still finds all 200 docs.
+-- Search still finds all 2000 docs.
 SELECT count(*) AS post_vacuum_count FROM (
     SELECT 1 FROM vacuum_insert_only_test
     ORDER BY content
@@ -258,6 +257,32 @@ SELECT count(*) AS post_vacuum_count FROM (
 ) sub;
 
 DROP TABLE vacuum_insert_only_test;
+
+-- =============================================================================
+-- Test 8: tiny memtable stays un-spilled across VACUUM (issue #333 guard)
+-- =============================================================================
+--
+-- Below TP_MIN_SPILL_POSTINGS the VACUUM-cleanup spill is a no-op,
+-- because writing a runt L0 segment would cost more in subsequent
+-- compaction than chain replay saves.
+
+CREATE TABLE vacuum_tiny_test (id serial PRIMARY KEY, content text);
+CREATE INDEX vacuum_tiny_idx
+    ON vacuum_tiny_test USING bm25(content)
+    WITH (text_config='english');
+
+-- ~50 docs * ~4 terms = ~200 postings, well below the guard.
+INSERT INTO vacuum_tiny_test (content)
+SELECT 'tiny doc ' || i FROM generate_series(1, 50) AS i;
+
+VACUUM vacuum_tiny_test;
+
+-- Chain is still present; no runt L0 segment was produced.
+SELECT bm25_summarize_index('vacuum_tiny_idx')
+        ~ E'docids: 50\n'
+    AS chain_preserved_after_vacuum;
+
+DROP TABLE vacuum_tiny_test;
 
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;

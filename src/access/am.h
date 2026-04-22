@@ -152,12 +152,11 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 char *tp_buildphasename(int64 phase);
 
 /*
- * Spill a memtable to an L0 segment if non-empty.  Used by VACUUM and
- * by the backend-exit shutdown hook.  Acquires its own LW_EXCLUSIVE
- * on the per-index lock.
+ * Spill a memtable to an L0 segment.  Skips when
+ * total_postings < min_postings.  Acquires LW_EXCLUSIVE internally.
  */
-void
-tp_spill_memtable_if_needed(Relation index, TpLocalIndexState *index_state);
+void tp_spill_memtable_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint64 min_postings);
 
 /*
  * Handler functions (am/handler.c)

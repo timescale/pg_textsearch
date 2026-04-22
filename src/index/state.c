@@ -73,7 +73,8 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 		index_rel = try_index_open(entry->index_oid, RowExclusiveLock);
 		if (index_rel != NULL)
 		{
-			tp_spill_memtable_if_needed(index_rel, entry->local_state);
+			tp_spill_memtable_if_needed(
+					index_rel, entry->local_state, TP_MIN_SPILL_POSTINGS);
 			index_close(index_rel, RowExclusiveLock);
 			index_rel = NULL;
 		}

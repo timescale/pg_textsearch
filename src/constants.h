@@ -43,6 +43,15 @@
 #define TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD \
 	32000000 /* posting entries to trigger spill (~1M docs/segment) */
 
+/*
+ * Lower bound on postings for VACUUM-cleanup and shutdown-hook
+ * spills.  Below this, re-tokenizing the docid chain from heap on
+ * the next server start is fast enough that writing a runt L0
+ * segment isn't worthwhile — LSM compaction would spend more work
+ * consolidating tiny segments than the chain replay costs.
+ */
+#define TP_MIN_SPILL_POSTINGS 1000
+
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
 #define TP_POSTING_LIST_HASH_INITIAL_SIZE 32

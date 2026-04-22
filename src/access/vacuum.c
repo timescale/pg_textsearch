@@ -55,21 +55,16 @@ typedef struct TpVacuumSegmentInfo
 } TpVacuumSegmentInfo;
 
 /*
- * Spill memtable to an L0 segment if non-empty.
- *
- * Used both by VACUUM (to force all data into segments for uniform
- * processing) and by the backend-exit shutdown hook (to drain the
- * docid-page chain before the next server start).  No-op if the
- * memtable is empty.
- *
- * The memtable lives in DSA and is pinned for the lifetime of the
- * shared index state, so it can't be freed by another backend.  The
- * pre-lock read of total_postings is a fast bailout; if it races with
- * an insert, the worst case is we enter tp_write_segment with an
- * empty memtable, which is a harmless no-op.
+ * Spill memtable to an L0 segment.  Caller passes a minimum posting
+ * count below which the spill is a no-op — used by VACUUM cleanup
+ * and the shutdown hook to avoid producing runt L0 segments on
+ * lightly-loaded indexes.  The pre-lock read is a fast bailout; if
+ * it races with an insert, the worst case is a harmless no-op
+ * inside tp_write_segment.
  */
 void
-tp_spill_memtable_if_needed(Relation index, TpLocalIndexState *index_state)
+tp_spill_memtable_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint64 min_postings)
 {
 	TpMemtable *memtable;
 	BlockNumber segment_root;
@@ -78,7 +73,8 @@ tp_spill_memtable_if_needed(Relation index, TpLocalIndexState *index_state)
 		return;
 
 	memtable = get_memtable(index_state);
-	if (!memtable || pg_atomic_read_u64(&memtable->total_postings) == 0)
+	if (!memtable ||
+		pg_atomic_read_u64(&memtable->total_postings) < min_postings)
 		return;
 
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
@@ -631,10 +627,14 @@ tp_bulkdelete(
 		return stats;
 	}
 
-	/* Phase 1: Spill memtable so all data is in segments */
+	/*
+	 * Phase 1: Spill memtable so all data is in segments.  Pass
+	 * min_postings=1 to preserve existing "spill anything non-empty"
+	 * behavior for the bulkdelete path.
+	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state);
+		tp_spill_memtable_if_needed(info->index, index_state, 1);
 
 	/* Re-read metapage after spill */
 	pfree(metap);
@@ -779,29 +779,6 @@ tp_bulkdelete(
 
 			GenericXLogFinish(xlog_state);
 			UnlockReleaseBuffer(mbuf);
-
-			/*
-			 * Intentionally do NOT update the shared-memory atomic
-			 * here.  Segment-level doc_freq metadata (written at
-			 * segment creation time) reflects the original insert
-			 * count, not the post-VACUUM alive count.  Leaving the
-			 * atomic at "cumulative inserts" keeps BM25 IDF's N and
-			 * per-term df in the same reference frame; reducing N
-			 * to "alive count" while df stays at "cumulative" makes
-			 * N < df for common terms, producing negative IDF.
-			 *
-			 * The consequence is that tp_sync_metapage_stats in any
-			 * post-Phase-4 spill (e.g. tp_vacuumcleanup) will
-			 * overwrite the decremented metapage with the un-adjusted
-			 * atomic, effectively rolling back Phase 4.  That is
-			 * acceptable for now — it restores the pre-PR behavior
-			 * where VACUUM's metapage adjustment was only observable
-			 * until the next spill/restart, which is the same
-			 * frame-of-reference the segment doc_freqs sit in.  A
-			 * proper fix requires also updating per-segment
-			 * doc_freq counts on VACUUM, which is out of scope for
-			 * issue #333.
-			 */
 		}
 	}
 
@@ -845,19 +822,18 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				sizeof(IndexBulkDeleteResult));
 
 	/*
-	 * Spill any un-spilled memtable contents to an L0 segment. On
-	 * insert-only workloads ambulkdelete is skipped (no dead tuples),
-	 * which previously left the docid-page chain growing unbounded and
-	 * made the first query after a server restart slow (the chain is
-	 * walked and every referenced heap tuple re-tokenized to rebuild
-	 * the memtable). Doing the spill here ensures every VACUUM — and
-	 * by extension periodic autovacuum, including the insert-triggered
-	 * path — shrinks the recovery cost to near-zero. A no-op if the
-	 * memtable is already empty (e.g. when ambulkdelete just ran).
+	 * Spill the memtable so the docid chain doesn't outlive a
+	 * server restart.  Insert-only tables skip ambulkdelete (no
+	 * dead tuples), so without this call nothing would spill and
+	 * the first query after the next start would be slow.  Skip
+	 * under TP_MIN_SPILL_POSTINGS — that few docs is faster to
+	 * replay from heap on restart than a runt L0 segment would be
+	 * to compact away.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state);
+		tp_spill_memtable_if_needed(
+				info->index, index_state, TP_MIN_SPILL_POSTINGS);
 
 	/* Get current index statistics from metapage */
 	metap = tp_get_metapage(info->index);
