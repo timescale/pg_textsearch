@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776926876463,
+  "lastUpdate": 1776926879528,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -26299,6 +26299,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
             "value": 0.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Index Size",
+            "value": 38.74,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "35a2dc6345805037e8d48071adb7d746a2e193da",
+          "message": "Release v1.1.0 (#334)\n\n## Summary\n- Bump version from `1.1.0-dev` to `1.1.0` across control, `mod.c`,\n`Makefile`,\n`README.md`, `CLAUDE.md`, `RELEASING.md`, and hardcoded version strings\nin\n  `test/scripts/*.sh`\n- Rename SQL files (`pg_textsearch--1.1.0-dev.sql` →\n`pg_textsearch--1.1.0.sql`\nand `pg_textsearch--1.0.0--1.1.0-dev.sql` →\n`pg_textsearch--1.0.0--1.1.0.sql`)\n  and update internal version strings / `RAISE INFO` messages\n- Swap in new v1.1.0 banner image; drop the v1.0.0 banner\n- Update README status line to \"v1.1.0 - Production ready\"\n- Regenerate expected test output for the new version string (including\n  alternative `*_1.out` files)\n\n## Notes\n- Segment format was bumped v4 → v5 during the dev cycle (alive bitset,\n#317). Read paths remain backward-compatible with v3/v4 segments;\nupgrade\ntests (#327) cover this. No additional version constants bumped for the\n  release itself.\n\n## Testing\n- `make test` — 58/58 passed against pg17\n- `make format-check` — passed",
+          "timestamp": "2026-04-22T22:58:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/35a2dc6345805037e8d48071adb7d746a2e193da"
+        },
+        "date": 1776926878866,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia (99.9K docs) - Index Build Time",
+            "value": 11791.457,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 1 Token Query (p50)",
+            "value": 0.13,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 2 Token Query (p50)",
+            "value": 0.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 3 Token Query (p50)",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 4 Token Query (p50)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 5 Token Query (p50)",
+            "value": 0.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 6 Token Query (p50)",
+            "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 7 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - 8+ Token Query (p50)",
+            "value": 0.51,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Latency (p50, ms)",
+            "value": 0.25,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia (99.9K docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.27,
             "unit": "ms"
           },
           {
