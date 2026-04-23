@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776928937258,
+  "lastUpdate": 1776928939749,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -69899,6 +69899,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 10.31,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tj@timescale.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "35a2dc6345805037e8d48071adb7d746a2e193da",
+          "message": "Release v1.1.0 (#334)\n\n## Summary\n- Bump version from `1.1.0-dev` to `1.1.0` across control, `mod.c`,\n`Makefile`,\n`README.md`, `CLAUDE.md`, `RELEASING.md`, and hardcoded version strings\nin\n  `test/scripts/*.sh`\n- Rename SQL files (`pg_textsearch--1.1.0-dev.sql` →\n`pg_textsearch--1.1.0.sql`\nand `pg_textsearch--1.0.0--1.1.0-dev.sql` →\n`pg_textsearch--1.0.0--1.1.0.sql`)\n  and update internal version strings / `RAISE INFO` messages\n- Swap in new v1.1.0 banner image; drop the v1.0.0 banner\n- Update README status line to \"v1.1.0 - Production ready\"\n- Regenerate expected test output for the new version string (including\n  alternative `*_1.out` files)\n\n## Notes\n- Segment format was bumped v4 → v5 during the dev cycle (alive bitset,\n#317). Read paths remain backward-compatible with v3/v4 segments;\nupgrade\ntests (#327) cover this. No additional version constants bumped for the\n  release itself.\n\n## Testing\n- `make test` — 58/58 passed against pg17\n- `make format-check` — passed",
+          "timestamp": "2026-04-22T22:58:52Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/35a2dc6345805037e8d48071adb7d746a2e193da"
+        },
+        "date": 1776928939308,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.296,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 1.704,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 1548389.119737,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 1.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 2.25,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 3.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 5.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 9.08,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 12.19,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 17.19,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 25.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 5.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.03,
             "unit": "ms"
           }
         ]
