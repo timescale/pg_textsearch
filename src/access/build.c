@@ -649,17 +649,22 @@ tp_build_init_metapage(
 /*
  * Extract terms and frequencies from a TSVector
  * Returns the document length (sum of all term frequencies)
+ *
+ * If positions_out is non-NULL, also extracts per-term position
+ * arrays from TSVector's WordEntryPos data (for V6 phrase queries).
  */
 int
 tp_extract_terms_from_tsvector(
-		TSVector tsvector,
-		char  ***terms_out,
-		int32  **frequencies_out,
-		int		*term_count_out)
+		TSVector  tsvector,
+		char	***terms_out,
+		int32	 **frequencies_out,
+		uint16 ***positions_out,
+		int		  *term_count_out)
 {
 	int		   term_count = tsvector->size;
 	char	 **terms;
 	int32	  *frequencies;
+	uint16	**positions = NULL;
 	int		   doc_length = 0;
 	int		   i;
 	WordEntry *we;
@@ -670,6 +675,8 @@ tp_extract_terms_from_tsvector(
 	{
 		*terms_out		 = NULL;
 		*frequencies_out = NULL;
+		if (positions_out)
+			*positions_out = NULL;
 		return 0;
 	}
 
@@ -677,6 +684,8 @@ tp_extract_terms_from_tsvector(
 
 	terms		= palloc(term_count * sizeof(char *));
 	frequencies = palloc(term_count * sizeof(int32));
+	if (positions_out)
+		positions = palloc(term_count * sizeof(uint16 *));
 
 	for (i = 0; i < term_count; i++)
 	{
@@ -693,15 +702,37 @@ tp_extract_terms_from_tsvector(
 
 		/* Get frequency from TSVector - count positions or default to 1 */
 		if (we[i].haspos)
-			frequencies[i] = (int32)POSDATALEN(tsvector, &we[i]);
+		{
+			int32 npos = (int32)POSDATALEN(tsvector, &we[i]);
+			frequencies[i] = npos;
+
+			/* Extract position values if requested */
+			if (positions)
+			{
+				WordEntryPos *posdata = POSDATAPTR(tsvector, &we[i]);
+				uint16		 *pos_arr = palloc(npos * sizeof(uint16));
+				int			  j;
+
+				for (j = 0; j < npos; j++)
+					pos_arr[j] = WEP_GETPOS(posdata[j]);
+
+				positions[i] = pos_arr;
+			}
+		}
 		else
+		{
 			frequencies[i] = 1;
+			if (positions)
+				positions[i] = NULL; /* No position data */
+		}
 
 		doc_length += frequencies[i];
 	}
 
 	*terms_out		 = terms;
 	*frequencies_out = frequencies;
+	if (positions_out)
+		*positions_out = positions;
 
 	return doc_length;
 }
@@ -772,7 +803,7 @@ tp_process_document_text(
 
 	/* Extract lexemes and frequencies from TSVector */
 	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+			tsvector, &terms, &frequencies, NULL, &term_count);
 
 	if (term_count > 0)
 	{
@@ -841,6 +872,7 @@ tp_build_callback(
 	TSVector			  tsvector;
 	char				**terms;
 	int32				 *frequencies;
+	uint16				**positions;
 	int					  term_count;
 	int					  doc_length;
 	MemoryContext		  oldctx;
@@ -876,7 +908,7 @@ tp_build_callback(
 	tsvector = DatumGetTSVector(tsvector_datum);
 
 	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+			tsvector, &terms, &frequencies, &positions, &term_count);
 
 	MemoryContextSwitchTo(oldctx);
 
@@ -886,6 +918,7 @@ tp_build_callback(
 				bs->build_ctx,
 				terms,
 				frequencies,
+				positions,
 				term_count,
 				doc_length,
 				ctid);

@@ -1334,6 +1334,13 @@ write_merged_segment_to_sink(
 		merge_sink_write(sink, bitset_data, bitset_size);
 		pfree(bitset_data);
 	}
+	/*
+	 * V6 position data — merged segment inherits no positions.
+	 * When source segments have real position data, this will
+	 * read and re-encode positions with remapped doc IDs.
+	 */
+	header.position_index_offset = 0;
+	header.position_data_size    = 0;
 
 	/* Finalize data_size */
 	header.data_size = sink->current_offset;

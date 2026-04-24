@@ -18,18 +18,6 @@
 #include "segment/io.h"
 
 /*
- * In-memory alive bitset, used during VACUUM to batch-update
- * the on-disk bitset.  Not used during scoring — scoring reads
- * bitset bytes directly from segment pages via paged I/O.
- */
-typedef struct TpAliveBitset
-{
-	uint8 *bits;		/* Bitset data (1=alive, 0=dead) */
-	uint32 num_docs;	/* Total doc count (bitset capacity) */
-	uint32 alive_count; /* Number of alive docs */
-} TpAliveBitset;
-
-/*
  * Byte size of bitset data for a given doc count.
  */
 static inline uint32
@@ -67,34 +55,19 @@ tp_segment_is_alive(TpSegmentReader *reader, uint32 doc_id)
 extern void tp_alive_bitset_init_data(uint8 *buf, uint32 num_docs);
 
 /*
- * Create an in-memory bitset with all docs alive.
- * Used during VACUUM to load, modify, and write back.
+ * Mark dead docs directly on segment pages in-place using
+ * GenericXLog.  Only touches pages containing dead docs.
+ * Updates alive_count in the segment header atomically with
+ * the final bitset page modification.
+ *
+ * dead_doc_ids need not be sorted; the function sorts them
+ * internally to group page accesses.
+ *
+ * Returns the new alive_count, or 0 if all docs are now dead
+ * (caller should drop the segment).
  */
-extern TpAliveBitset *tp_alive_bitset_create(uint32 num_docs);
-
-/*
- * Load the alive bitset from a segment into memory.
- * Returns NULL if the segment has no bitset (pre-V5).
- */
-extern TpAliveBitset *tp_alive_bitset_load(TpSegmentReader *reader);
-
-/*
- * Mark a doc as dead.  Returns true if it was alive
- * (i.e., the alive_count was decremented).
- */
-extern bool tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id);
-
-/*
- * Write the in-memory bitset back to segment pages and
- * update the segment header's alive_count.  Uses
- * GenericXLog for crash safety.  The header update is
- * batched into the final bitset page's GenericXLog
- * transaction for atomicity.
- */
-extern void tp_alive_bitset_write(
-		TpAliveBitset *bitset, TpSegmentReader *reader, Relation index);
-
-/*
- * Free an in-memory bitset.
- */
-extern void tp_alive_bitset_free(TpAliveBitset *bitset);
+extern uint32 tp_alive_bitset_mark_dead_inplace(
+		Relation index,
+		TpSegmentReader *reader,
+		uint32 *dead_doc_ids,
+		uint32 dead_count);

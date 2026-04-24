@@ -37,8 +37,9 @@ typedef struct TpScanOpaqueData
 	bool		eof_reached;   /* End of scan flag */
 
 	/* LIMIT optimization */
-	int limit;			  /* Query LIMIT value, -1 if none */
-	int max_results_used; /* Internal limit used for current batch */
+	int  limit;			   /* Query LIMIT value, -1 if none */
+	int  max_results_used; /* Internal limit used for current batch */
+	bool is_phrase;		   /* True if query is a quoted phrase */
 } TpScanOpaqueData;
 
 typedef TpScanOpaqueData *TpScanOpaque;
@@ -115,12 +116,13 @@ bool tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out);
 
-/* Extract terms and frequencies from a TSVector */
+/* Extract terms, frequencies, and positions from a TSVector */
 int tp_extract_terms_from_tsvector(
-		TSVector tsvector,
-		char  ***terms_out,
-		int32  **frequencies_out,
-		int		*term_count_out);
+		TSVector  tsvector,
+		char	***terms_out,
+		int32	 **frequencies_out,
+		uint16 ***positions_out,
+		int		  *term_count_out);
 
 /* Build progress tracking for partitioned tables */
 void tp_build_progress_begin(void);

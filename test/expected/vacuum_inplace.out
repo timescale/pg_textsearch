@@ -1,0 +1,419 @@
+-- Test in-place alive bitset modification during VACUUM
+-- Exercises the new tp_alive_bitset_mark_dead_inplace() code path
+-- that modifies bitset pages directly instead of bulk load/store.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+INFO:  pg_textsearch v1.1.0
+-- =============================================================
+-- Test 1: Single dead doc (one page touched)
+-- =============================================================
+CREATE TABLE vi_single (id serial PRIMARY KEY, content text);
+INSERT INTO vi_single (content)
+SELECT 'vacuum inplace single test document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vi_single_idx ON vi_single
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_single_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=6.00
+-- Delete exactly one row
+DELETE FROM vi_single WHERE id = 25;
+VACUUM vi_single;
+-- Should return 49 live docs
+SELECT count(*) FROM (
+    SELECT id FROM vi_single
+    ORDER BY content <@> to_bm25query('vacuum', 'vi_single_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    49
+(1 row)
+
+-- Deleted row should not appear
+SELECT count(*) FROM (
+    SELECT id FROM vi_single
+    ORDER BY content <@> to_bm25query('vacuum', 'vi_single_idx')
+    LIMIT 1000
+) q WHERE id = 25;
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE vi_single;
+-- =============================================================
+-- Test 2: Multiple dead docs on the same bitset page
+-- Doc IDs 0-7 share bitset byte 0, all on same page.
+-- =============================================================
+CREATE TABLE vi_samepage (id serial PRIMARY KEY, content text);
+INSERT INTO vi_samepage (content)
+SELECT 'samepage test document ' || i || ' with keyword'
+FROM generate_series(1, 100) i;
+CREATE INDEX vi_samepage_idx ON vi_samepage
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_samepage_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 100 documents, avg_length=6.00
+-- Delete ids 1-8 (these map to doc_ids 0-7, same bitset byte)
+DELETE FROM vi_samepage WHERE id <= 8;
+VACUUM vi_samepage;
+-- Should return 92 live docs
+SELECT count(*) FROM (
+    SELECT id FROM vi_samepage
+    ORDER BY content <@> to_bm25query('keyword', 'vi_samepage_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    92
+(1 row)
+
+DROP TABLE vi_samepage;
+-- =============================================================
+-- Test 3: Dead docs spread across multiple bitset pages
+-- With BLCKSZ=8192 and SizeOfPageHeaderData=24, each page holds
+-- ~8168 bitset bytes = ~65344 doc bits. We need >65344 docs to
+-- span pages, but we can test with docs spread far apart.
+-- =============================================================
+CREATE TABLE vi_spread (id serial PRIMARY KEY, content text);
+INSERT INTO vi_spread (content)
+SELECT 'spread test doc ' || i || ' searchword'
+FROM generate_series(1, 200) i;
+CREATE INDEX vi_spread_idx ON vi_spread
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_spread_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 200 documents, avg_length=5.00
+-- Delete docs at beginning, middle, and end
+DELETE FROM vi_spread WHERE id IN (1, 50, 100, 150, 200);
+VACUUM vi_spread;
+SELECT count(*) FROM (
+    SELECT id FROM vi_spread
+    ORDER BY content <@> to_bm25query('searchword', 'vi_spread_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+   195
+(1 row)
+
+-- Verify none of the deleted IDs appear
+SELECT count(*) FROM (
+    SELECT id FROM vi_spread
+    ORDER BY content <@> to_bm25query('searchword', 'vi_spread_idx')
+    LIMIT 1000
+) q WHERE id IN (1, 50, 100, 150, 200);
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE vi_spread;
+-- =============================================================
+-- Test 4: All docs dead — segment should be dropped
+-- =============================================================
+CREATE TABLE vi_alldead (id serial PRIMARY KEY, content text);
+INSERT INTO vi_alldead (content)
+SELECT 'alldead inplace doc ' || i
+FROM generate_series(1, 30) i;
+CREATE INDEX vi_alldead_idx ON vi_alldead
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_alldead_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 30 documents, avg_length=4.00
+DELETE FROM vi_alldead;
+VACUUM vi_alldead;
+-- Should return 0 results
+SELECT count(*) FROM (
+    SELECT id FROM vi_alldead
+    ORDER BY content <@> to_bm25query('alldead', 'vi_alldead_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     0
+(1 row)
+
+-- Index should still work after inserting new rows
+INSERT INTO vi_alldead (content) VALUES ('fresh data after total wipe');
+SELECT count(*) FROM (
+    SELECT id FROM vi_alldead
+    ORDER BY content <@> to_bm25query('fresh', 'vi_alldead_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE vi_alldead;
+-- =============================================================
+-- Test 5: Repeated VACUUM — idempotency
+-- Marking already-dead docs should not decrement alive_count
+-- =============================================================
+CREATE TABLE vi_idem (id serial PRIMARY KEY, content text);
+INSERT INTO vi_idem (content)
+SELECT 'idempotent vacuum test doc ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vi_idem_idx ON vi_idem
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_idem_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=5.00
+DELETE FROM vi_idem WHERE id <= 10;
+VACUUM vi_idem;
+-- First VACUUM: 40 alive
+SELECT count(*) FROM (
+    SELECT id FROM vi_idem
+    ORDER BY content <@> to_bm25query('idempotent', 'vi_idem_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    40
+(1 row)
+
+-- Second VACUUM — should be a no-op, still 40
+VACUUM vi_idem;
+SELECT count(*) FROM (
+    SELECT id FROM vi_idem
+    ORDER BY content <@> to_bm25query('idempotent', 'vi_idem_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    40
+(1 row)
+
+DROP TABLE vi_idem;
+-- =============================================================
+-- Test 6: Interleaved inserts, deletes, and VACUUMs
+-- =============================================================
+CREATE TABLE vi_inter (id serial PRIMARY KEY, content text);
+INSERT INTO vi_inter (content)
+SELECT 'interleaved batch1 doc ' || i
+FROM generate_series(1, 30) i;
+CREATE INDEX vi_inter_idx ON vi_inter
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_inter_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 30 documents, avg_length=4.00
+-- First delete + vacuum cycle
+DELETE FROM vi_inter WHERE id <= 10;
+VACUUM vi_inter;
+-- Insert more data
+INSERT INTO vi_inter (content)
+SELECT 'interleaved batch2 doc ' || i
+FROM generate_series(1, 30) i;
+-- Second delete + vacuum cycle
+DELETE FROM vi_inter WHERE id > 30 AND id <= 40;
+VACUUM vi_inter;
+-- batch1 survivors (11-30) + batch2 survivors (41-60) = 30
+SELECT count(*) FROM (
+    SELECT id FROM vi_inter
+    ORDER BY content <@> to_bm25query('interleaved', 'vi_inter_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    30
+(1 row)
+
+DROP TABLE vi_inter;
+-- =============================================================
+-- Test 7: Delete last doc only (edge case — bit at end)
+-- =============================================================
+CREATE TABLE vi_lastdoc (id serial PRIMARY KEY, content text);
+INSERT INTO vi_lastdoc (content)
+SELECT 'lastdoc test document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vi_lastdoc_idx ON vi_lastdoc
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_lastdoc_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=4.00
+-- Delete only the last inserted row
+DELETE FROM vi_lastdoc WHERE id = 50;
+VACUUM vi_lastdoc;
+SELECT count(*) FROM (
+    SELECT id FROM vi_lastdoc
+    ORDER BY content <@> to_bm25query('lastdoc', 'vi_lastdoc_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    49
+(1 row)
+
+DROP TABLE vi_lastdoc;
+-- =============================================================
+-- Test 8: Delete first doc only (edge case — bit at start)
+-- =============================================================
+CREATE TABLE vi_firstdoc (id serial PRIMARY KEY, content text);
+INSERT INTO vi_firstdoc (content)
+SELECT 'firstdoc test document ' || i
+FROM generate_series(1, 50) i;
+CREATE INDEX vi_firstdoc_idx ON vi_firstdoc
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_firstdoc_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 50 documents, avg_length=4.00
+DELETE FROM vi_firstdoc WHERE id = 1;
+VACUUM vi_firstdoc;
+SELECT count(*) FROM (
+    SELECT id FROM vi_firstdoc
+    ORDER BY content <@> to_bm25query('firstdoc', 'vi_firstdoc_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    49
+(1 row)
+
+-- Deleted doc should not appear
+SELECT count(*) FROM (
+    SELECT id FROM vi_firstdoc
+    ORDER BY content <@> to_bm25query('firstdoc', 'vi_firstdoc_idx')
+    LIMIT 1000
+) q WHERE id = 1;
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE vi_firstdoc;
+-- =============================================================
+-- Test 9: Large batch delete (exercises qsort + multi-page)
+-- =============================================================
+CREATE TABLE vi_large (id serial PRIMARY KEY, content text);
+INSERT INTO vi_large (content)
+SELECT 'large batch delete test ' || i || ' findme'
+FROM generate_series(1, 500) i;
+CREATE INDEX vi_large_idx ON vi_large
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_large_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 500 documents, avg_length=6.00
+-- Delete 400 of 500 docs
+DELETE FROM vi_large WHERE id <= 400;
+VACUUM vi_large;
+-- Should return exactly 100
+SELECT count(*) FROM (
+    SELECT id FROM vi_large
+    ORDER BY content <@> to_bm25query('findme', 'vi_large_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+   100
+(1 row)
+
+-- Force merge after vacuum
+SELECT bm25_force_merge('vi_large_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+-- Still 100 after merge
+SELECT count(*) FROM (
+    SELECT id FROM vi_large
+    ORDER BY content <@> to_bm25query('findme', 'vi_large_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+   100
+(1 row)
+
+DROP TABLE vi_large;
+-- =============================================================
+-- Test 10: Verify scores are correct after in-place delete
+-- BM25 corpus stats (avg doc length, doc count) must reflect
+-- only live docs.
+-- =============================================================
+CREATE TABLE vi_scores (id serial PRIMARY KEY, content text);
+INSERT INTO vi_scores (content) VALUES
+    ('database performance tuning optimization'),
+    ('database indexing strategies'),
+    ('delete this row about nothing'),
+    ('also delete irrelevant content'),
+    ('query optimization techniques for databases'),
+    ('advanced systems programming');
+CREATE INDEX vi_scores_idx ON vi_scores
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_scores_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 6 documents, avg_length=3.83
+-- Delete the filler rows
+DELETE FROM vi_scores WHERE content LIKE '%delete%';
+VACUUM vi_scores;
+-- Scores should be deterministic and exclude dead docs
+SELECT id,
+       content <@> to_bm25query('database', 'vi_scores_idx') AS score
+FROM vi_scores
+ORDER BY content <@> to_bm25query('database', 'vi_scores_idx')
+LIMIT 5;
+ id |        score        
+----+---------------------
+  2 |  -0.693147182464599
+  1 |  -0.693147182464599
+  5 | -0.5753641724586487
+(3 rows)
+
+DROP TABLE vi_scores;
+-- =============================================================
+-- Test 11: Multi-segment with in-place delete on each
+-- =============================================================
+CREATE TABLE vi_multiseg (id serial PRIMARY KEY, content text);
+INSERT INTO vi_multiseg (content)
+SELECT 'segment1 doc ' || i || ' multiterm'
+FROM generate_series(1, 40) i;
+CREATE INDEX vi_multiseg_idx ON vi_multiseg
+    USING bm25 (content) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation vi_multiseg_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 40 documents, avg_length=4.00
+SELECT bm25_spill_index('vi_multiseg_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+INSERT INTO vi_multiseg (content)
+SELECT 'segment2 doc ' || i || ' multiterm'
+FROM generate_series(1, 40) i;
+SELECT bm25_spill_index('vi_multiseg_idx');
+ bm25_spill_index 
+------------------
+                 
+(1 row)
+
+-- Delete 5 from each segment
+DELETE FROM vi_multiseg WHERE id <= 5;
+DELETE FROM vi_multiseg WHERE id > 40 AND id <= 45;
+VACUUM vi_multiseg;
+-- 80 total - 10 deleted = 70 live
+SELECT count(*) FROM (
+    SELECT id FROM vi_multiseg
+    ORDER BY content <@> to_bm25query('multiterm', 'vi_multiseg_idx')
+    LIMIT 1000
+) q;
+ count 
+-------
+    70
+(1 row)
+
+DROP TABLE vi_multiseg;
+DROP EXTENSION pg_textsearch;

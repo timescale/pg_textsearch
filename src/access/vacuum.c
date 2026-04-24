@@ -408,6 +408,7 @@ tp_vacuum_rebuild_segment(
 		TSVector		tsvector;
 		char		  **terms;
 		int32		   *frequencies;
+		uint16		  **positions;
 		int				term_count;
 		int				doc_length;
 
@@ -465,7 +466,7 @@ tp_vacuum_rebuild_segment(
 		tsvector = DatumGetTSVector(tsvector_datum);
 
 		doc_length = tp_extract_terms_from_tsvector(
-				tsvector, &terms, &frequencies, &term_count);
+				tsvector, &terms, &frequencies, &positions, &term_count);
 
 		MemoryContextSwitchTo(old_ctx);
 
@@ -475,6 +476,7 @@ tp_vacuum_rebuild_segment(
 					build_ctx,
 					terms,
 					frequencies,
+					positions,
 					term_count,
 					doc_length,
 					&ctid);
@@ -645,11 +647,12 @@ tp_vacuum_replace_segment(
 }
 
 /*
- * Apply dead doc marks to a V5 segment's alive bitset.
+ * Apply dead doc marks to a V5 segment's alive bitset in-place.
  *
- * Loads the bitset, marks dead docs, writes back via
- * GenericXLog.  Returns the new alive_count, or 0 if all
- * docs are dead (caller should drop the segment).
+ * Modifies bitset pages directly via GenericXLog — only pages
+ * containing dead docs are read and written.  No bulk allocation.
+ * Returns the new alive_count, or 0 if all docs are dead
+ * (caller should drop the segment).
  */
 static uint32
 tp_vacuum_mark_dead(
@@ -659,7 +662,6 @@ tp_vacuum_mark_dead(
 		uint32		dead_count)
 {
 	TpSegmentReader *reader;
-	TpAliveBitset	*bitset;
 	uint32			 alive;
 
 	reader = tp_segment_open_ex(index, root_block, false);
@@ -670,22 +672,9 @@ tp_vacuum_mark_dead(
 		return 0;
 	}
 
-	bitset = tp_alive_bitset_load(reader);
-	if (!bitset)
-	{
-		tp_segment_close(reader);
-		return 0;
-	}
+	alive = tp_alive_bitset_mark_dead_inplace(
+			index, reader, dead_doc_ids, dead_count);
 
-	for (uint32 i = 0; i < dead_count; i++)
-		tp_alive_bitset_mark_dead(bitset, dead_doc_ids[i]);
-
-	alive = bitset->alive_count;
-
-	if (alive > 0)
-		tp_alive_bitset_write(bitset, reader, index);
-
-	tp_alive_bitset_free(bitset);
 	tp_segment_close(reader);
 
 	return alive;
