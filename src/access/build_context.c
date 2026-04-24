@@ -24,6 +24,7 @@
 #include "segment/io.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
+#include "segment/varint.h"
 
 /* Forward declarations for hash table support */
 static uint32 build_term_hash(const void *key, Size keysize);
@@ -60,6 +61,16 @@ tp_build_context_create(Size budget)
 			 16384, /* initial size */
 			 &info,
 			 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+
+	/* Create position hash table: (term_ptr, doc_id) -> arena positions */
+	memset(&info, 0, sizeof(info));
+	info.keysize   = sizeof(TpBuildPosKey);
+	info.entrysize = sizeof(TpBuildPosEntry);
+	ctx->positions_ht = hash_create(
+			 "build_positions",
+			 16384,
+			 &info,
+			 HASH_ELEM | HASH_BLOBS);
 
 	/* Allocate flat arrays for documents */
 	ctx->docs_capacity = TP_BUILD_INITIAL_DOCS;
@@ -118,6 +129,7 @@ tp_build_context_add_document(
 		TpBuildContext *ctx,
 		char		  **terms,
 		int32		   *frequencies,
+		uint16		  **positions,
 		int				term_count,
 		int32			doc_length,
 		ItemPointer		ctid)
@@ -155,11 +167,6 @@ tp_build_context_add_document(
 		bool			  found;
 		char			 *term_key;
 
-		/*
-		 * Look up or create the term entry. The hash table key
-		 * is a char* pointer. For new entries, we copy the term
-		 * string into the arena so it persists.
-		 */
 		term_key = terms[i];
 		entry	 = hash_search(ctx->terms_ht, &term_key, HASH_ENTER, &found);
 
@@ -169,12 +176,10 @@ tp_build_context_add_document(
 			char	 *arena_str;
 			uint32	  len = strlen(terms[i]);
 
-			/* Copy term string into arena */
 			str_addr  = tp_arena_alloc(ctx->arena, len + 1);
 			arena_str = tp_arena_get_ptr(ctx->arena, str_addr);
 			memcpy(arena_str, terms[i], len + 1);
 
-			/* Update entry to point to arena copy */
 			entry->term		= arena_str;
 			entry->term_len = len;
 			tp_expull_init(&entry->expull);
@@ -187,6 +192,38 @@ tp_build_context_add_document(
 				doc_id,
 				(uint16)frequencies[i],
 				norm);
+
+		/*
+		 * Store position data in arena + position hash table.
+		 * Available when caller extracted positions from TSVector.
+		 */
+		if (positions && positions[i] && frequencies[i] > 0 &&
+			ctx->positions_ht)
+		{
+			TpBuildPosKey	 key;
+			TpBuildPosEntry *pos_entry;
+			bool			 pos_found;
+			uint16			 npos = (uint16)frequencies[i];
+			ArenaAddr		 pos_addr;
+			uint16			*arena_pos;
+
+			key.term   = entry->term;
+			key.doc_id = doc_id;
+
+			pos_entry = hash_search(
+					ctx->positions_ht, &key, HASH_ENTER, &pos_found);
+
+			if (!pos_found)
+			{
+				pos_addr  = tp_arena_alloc(
+						ctx->arena, npos * sizeof(uint16));
+				arena_pos = tp_arena_get_ptr(ctx->arena, pos_addr);
+				memcpy(arena_pos, positions[i], npos * sizeof(uint16));
+
+				pos_entry->positions_addr = pos_addr;
+				pos_entry->count		  = npos;
+			}
+		}
 	}
 
 	return doc_id;
@@ -528,6 +565,90 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		pfree(bitset_data);
 	}
 
+	/*
+	 * V6 position data.
+	 *
+	 * For each term (in sorted order), iterate its EXPULL posting
+	 * list and look up per-doc positions from the position hash
+	 * table. Each document's position list is encoded as:
+	 *   [count:varint] [pos0:varint] [delta1:varint] ...
+	 *
+	 * If no positions are available for a (term, doc) pair,
+	 * write count=0 so the reader can skip gracefully.
+	 */
+	header.position_index_offset = writer.current_offset;
+	{
+		uint64 pos_start = writer.current_offset;
+
+		for (i = 0; i < num_terms; i++)
+		{
+			TpExpullReader pos_reader;
+			TpExpullEntry  pos_entries[TP_BLOCK_SIZE];
+			uint32		   remaining;
+
+			if (terms[i].doc_freq == 0)
+				continue;
+
+			tp_expull_reader_init(&pos_reader, ctx->arena, terms[i].expull);
+			remaining = terms[i].expull->num_entries;
+
+			while (remaining > 0)
+			{
+				uint32 nread;
+				uint32 j;
+
+				nread = tp_expull_reader_read(
+						&pos_reader, pos_entries, TP_BLOCK_SIZE);
+				if (nread == 0)
+					break;
+
+				for (j = 0; j < nread; j++)
+				{
+					TpBuildPosKey	 key;
+					TpBuildPosEntry *pos_entry;
+					uint8			 vbuf[TP_VARINT_MAX_BYTES];
+					uint32			 vlen;
+
+					key.term   = terms[i].term;
+					key.doc_id = pos_entries[j].doc_id;
+
+					pos_entry = hash_search(
+							ctx->positions_ht, &key, HASH_FIND, NULL);
+
+					if (pos_entry && pos_entry->count > 0)
+					{
+						uint16 *pos_arr = tp_arena_get_ptr(
+								ctx->arena, pos_entry->positions_addr);
+						uint16	prev = 0;
+						uint16	k;
+
+						/* Write count */
+						vlen = tp_encode_varint(pos_entry->count, vbuf);
+						tp_segment_writer_write(&writer, vbuf, vlen);
+
+						/* Write delta-encoded positions */
+						for (k = 0; k < pos_entry->count; k++)
+						{
+							uint16 delta = pos_arr[k] - prev;
+							vlen = tp_encode_varint(delta, vbuf);
+							tp_segment_writer_write(&writer, vbuf, vlen);
+							prev = pos_arr[k];
+						}
+					}
+					else
+					{
+						/* No positions: write count=0 */
+						uint8 zero = 0;
+						tp_segment_writer_write(&writer, &zero, 1);
+					}
+				}
+				remaining -= nread;
+			}
+		}
+
+		header.position_data_size = writer.current_offset - pos_start;
+	}
+
 	/* Flush remaining buffered data */
 	tp_segment_writer_flush(&writer);
 
@@ -666,11 +787,13 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		hdr->ctid_pages_offset	 = header.ctid_pages_offset;
 		hdr->ctid_offsets_offset = header.ctid_offsets_offset;
 		hdr->alive_bitset_offset = header.alive_bitset_offset;
-		hdr->alive_count		 = header.alive_count;
-		hdr->num_docs			 = header.num_docs;
-		hdr->data_size			 = header.data_size;
-		hdr->num_pages			 = header.num_pages;
-		hdr->page_index			 = header.page_index;
+		hdr->alive_count			= header.alive_count;
+		hdr->num_docs				= header.num_docs;
+		hdr->data_size				= header.data_size;
+		hdr->num_pages				= header.num_pages;
+		hdr->page_index				= header.page_index;
+		hdr->position_index_offset	= header.position_index_offset;
+		hdr->position_data_size		= header.position_data_size;
 	}
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
@@ -955,6 +1078,80 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		pfree(ctid_offsets);
 	}
 
+	/* V6 position data (same logic as segment writer path) */
+	header.position_index_offset = current_offset;
+	{
+		uint64 pos_start = current_offset;
+
+		for (i = 0; i < num_terms; i++)
+		{
+			TpExpullReader pos_reader;
+			TpExpullEntry  pos_entries[TP_BLOCK_SIZE];
+			uint32		   remaining;
+
+			if (terms[i].doc_freq == 0)
+				continue;
+
+			tp_expull_reader_init(&pos_reader, ctx->arena, terms[i].expull);
+			remaining = terms[i].expull->num_entries;
+
+			while (remaining > 0)
+			{
+				uint32 nread;
+				uint32 j;
+
+				nread = tp_expull_reader_read(
+						&pos_reader, pos_entries, TP_BLOCK_SIZE);
+				if (nread == 0)
+					break;
+
+				for (j = 0; j < nread; j++)
+				{
+					TpBuildPosKey	 key;
+					TpBuildPosEntry *pos_entry;
+					uint8			 vbuf[TP_VARINT_MAX_BYTES];
+					uint32			 vlen;
+
+					key.term   = terms[i].term;
+					key.doc_id = pos_entries[j].doc_id;
+
+					pos_entry = hash_search(
+							ctx->positions_ht, &key, HASH_FIND, NULL);
+
+					if (pos_entry && pos_entry->count > 0)
+					{
+						uint16 *pos_arr = tp_arena_get_ptr(
+								ctx->arena, pos_entry->positions_addr);
+						uint16	prev = 0;
+						uint16	k;
+
+						vlen = tp_encode_varint(pos_entry->count, vbuf);
+						BufFileWrite(file, vbuf, vlen);
+						current_offset += vlen;
+
+						for (k = 0; k < pos_entry->count; k++)
+						{
+							uint16 delta = pos_arr[k] - prev;
+							vlen = tp_encode_varint(delta, vbuf);
+							BufFileWrite(file, vbuf, vlen);
+							current_offset += vlen;
+							prev = pos_arr[k];
+						}
+					}
+					else
+					{
+						uint8 zero = 0;
+						BufFileWrite(file, &zero, 1);
+						current_offset++;
+					}
+				}
+				remaining -= nread;
+			}
+		}
+
+		header.position_data_size = current_offset - pos_start;
+	}
+
 	/* Final data_size */
 	header.data_size = current_offset;
 
@@ -1033,6 +1230,7 @@ tp_build_context_reset(TpBuildContext *ctx)
 
 	/* Destroy and recreate hash table */
 	hash_destroy(ctx->terms_ht);
+	hash_destroy(ctx->positions_ht);
 	{
 		HASHCTL info;
 
@@ -1046,6 +1244,15 @@ tp_build_context_reset(TpBuildContext *ctx)
 				 16384,
 				 &info,
 				 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+
+		memset(&info, 0, sizeof(info));
+		info.keysize   = sizeof(TpBuildPosKey);
+		info.entrysize = sizeof(TpBuildPosEntry);
+		ctx->positions_ht = hash_create(
+				 "build_positions",
+				 16384,
+				 &info,
+				 HASH_ELEM | HASH_BLOBS);
 	}
 
 	/* Reset document arrays (keep allocated memory) */
@@ -1064,6 +1271,7 @@ tp_build_context_destroy(TpBuildContext *ctx)
 
 	tp_arena_destroy(ctx->arena);
 	hash_destroy(ctx->terms_ht);
+	hash_destroy(ctx->positions_ht);
 	pfree(ctx->fieldnorms);
 	pfree(ctx->ctids);
 	pfree(ctx);

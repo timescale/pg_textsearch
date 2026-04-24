@@ -1,0 +1,63 @@
+# Dockerfile for pg_textsearch development and testing
+# Usage:
+#   docker build -t pg_textsearch-dev .
+#   docker run --rm pg_textsearch-dev
+#
+# For interactive use:
+#   docker run --rm -it pg_textsearch-dev bash
+
+FROM postgres:17-bookworm
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    postgresql-server-dev-17 \
+    clang-format \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy extension source
+WORKDIR /build/pg_textsearch
+COPY . .
+
+# Build and install the extension
+RUN make -j$(nproc) && make install
+
+# Create expected output directories for test framework
+RUN mkdir -p test/results
+
+# Switch to postgres user for testing
+USER postgres
+
+# Initialize a test database cluster
+RUN initdb -D /tmp/pgdata --auth-local=trust --auth-host=trust
+
+# Configure for extension testing
+RUN echo "shared_preload_libraries = 'pg_textsearch'" >> /tmp/pgdata/postgresql.conf && \
+    echo "shared_buffers = 256MB" >> /tmp/pgdata/postgresql.conf && \
+    echo "max_connections = 20" >> /tmp/pgdata/postgresql.conf && \
+    echo "log_statement = 'none'" >> /tmp/pgdata/postgresql.conf
+
+# Start PG, create test DB, run tests, stop PG
+CMD pg_ctl start -D /tmp/pgdata -l /tmp/pgdata/logfile -w && \
+    createdb contrib_regression && \
+    cd /build/pg_textsearch && \
+    make REGRESS="vacuum_inplace phrase" installcheck REGRESS_OPTS="--use-existing --inputdir=test --outputdir=test --dbname=contrib_regression" ; \
+    TEST_EXIT=$? ; \
+    echo "===== TEST RESULTS =====" ; \
+    if [ $TEST_EXIT -eq 0 ]; then \
+        echo "ALL TESTS PASSED" ; \
+    else \
+        echo "TESTS FAILED - showing diffs:" ; \
+        for f in test/results/*.out; do \
+            base=$(basename "$f" .out); \
+            if [ -f "test/expected/${base}.out" ]; then \
+                diff -u "test/expected/${base}.out" "$f" 2>/dev/null || true; \
+            else \
+                echo "--- No expected file for ${base}, showing output:" ; \
+                cat "$f" ; \
+            fi ; \
+        done ; \
+    fi ; \
+    pg_ctl stop -D /tmp/pgdata ; \
+    exit $TEST_EXIT

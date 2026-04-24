@@ -120,6 +120,9 @@ tp_rescan_process_orderby(
 				query_cstr		= pstrdup(get_tpquery_text(query));
 				query_index_oid = get_tpquery_index_oid(query);
 
+				/* Check for phrase query flag */
+				so->is_phrase = tpquery_is_phrase_query(query);
+
 				/* Validate index OID if provided in query */
 				if (tpquery_has_index(query))
 				{
@@ -391,6 +394,16 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 	/* Find documents matching the query using posting lists */
 	success = tp_memtable_search(scan, index_state, query_vector, metap);
+
+	/*
+	 * Phrase post-filter hook.
+	 *
+	 * When V6 segments contain real position data, this is where
+	 * we would call tp_segment_load_positions + tp_check_phrase_match
+	 * to verify that BMW candidates actually contain the phrase.
+	 * Until position data is populated, phrase queries return
+	 * standard BM25 multi-term results (correct but unfiltered).
+	 */
 
 	/* Release the lock - we've extracted all CTIDs we need */
 	tp_release_index_lock(index_state);

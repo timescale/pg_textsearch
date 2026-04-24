@@ -283,6 +283,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		TSVector	tsvector;
 		char	  **terms;
 		int32	   *frequencies;
+		uint16	  **positions;
 		int			term_count;
 		int			doc_length;
 
@@ -322,7 +323,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		tsvector = DatumGetTSVector(tsvector_datum);
 
 		doc_length = tp_extract_terms_from_tsvector(
-				tsvector, &terms, &frequencies, &term_count);
+				tsvector, &terms, &frequencies, &positions, &term_count);
 
 		MemoryContextSwitchTo(oldctx);
 
@@ -332,6 +333,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 					build_ctx,
 					terms,
 					frequencies,
+					positions,
 					term_count,
 					doc_length,
 					ctid);

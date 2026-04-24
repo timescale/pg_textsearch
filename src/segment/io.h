@@ -209,3 +209,33 @@ extern bool tp_segment_posting_iterator_seek(
 /* Get current doc ID from iterator (for WAND pivot selection) */
 extern uint32
 tp_segment_posting_iterator_current_doc_id(TpSegmentPostingIterator *iter);
+
+/*
+ * Read a V6 dictionary entry (with position_data_offset).
+ * For V5 and earlier segments, position_data_offset is set to 0.
+ */
+extern void tp_segment_read_dict_entry_v6(
+		TpSegmentReader *reader,
+		TpSegmentHeader *header,
+		uint32			 index,
+		TpDictEntryV6	*entry_v6);
+
+/*
+ * Load term positions for a document from the V6 position index.
+ *
+ * position_data_offset: from TpDictEntryV6.position_data_offset
+ * doc_ordinal: 0-based index of the document in the term's posting
+ *              list (NOT the segment-local doc_id). The caller must
+ *              track which ordinal the target doc is at while
+ *              iterating the posting list.
+ *
+ * Returns palloc'd array of positions; caller must pfree.
+ * Sets *count_out to the number of positions returned.
+ * Returns NULL if the segment has no position index (pre-V6).
+ */
+extern uint32 *tp_segment_load_positions(
+		TpSegmentReader *reader,
+		uint64			 position_data_offset,
+		uint32			 doc_ordinal,
+		uint32			*count_out);
+

@@ -24,6 +24,7 @@
  * Flags for TpQuery
  */
 #define TPQUERY_FLAG_EXPLICIT_INDEX 0x01 /* Index was explicitly specified */
+#define TPQUERY_FLAG_PHRASE_QUERY   0x02 /* Query is a quoted phrase */
 
 /*
  * tpquery data type structure
@@ -73,3 +74,4 @@ Oid	  get_tpquery_index_oid(TpQuery *tpquery);
 char *get_tpquery_text(TpQuery *tpquery);
 bool  tpquery_has_index(TpQuery *tpquery);
 bool  tpquery_is_explicit_index(TpQuery *tpquery);
+bool  tpquery_is_phrase_query(TpQuery *tpquery);

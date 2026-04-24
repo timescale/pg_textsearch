@@ -1080,6 +1080,19 @@ create_tpquery_explicit(
 	result->index_oid	   = index_oid;
 	result->query_text_len = query_text_len;
 
+	/*
+	 * Detect phrase queries: text wrapped in double quotes.
+	 * E.g., '"full text search"' → phrase mode with inner text
+	 * "full text search".  The flag is checked by the BMW scorer
+	 * to apply positional post-filtering.
+	 */
+	if (query_text_len >= 3 &&
+		query_text[0] == '"' &&
+		query_text[query_text_len - 1] == '"')
+	{
+		result->flags |= TPQUERY_FLAG_PHRASE_QUERY;
+	}
+
 	/* Copy query text */
 	memcpy(result->data, query_text, query_text_len);
 	result->data[query_text_len] = '\0';
@@ -1165,6 +1178,19 @@ tpquery_is_explicit_index(TpQuery *tpquery)
 	if (tpquery->version < 2)
 		return false;
 	return (tpquery->flags & TPQUERY_FLAG_EXPLICIT_INDEX) != 0;
+}
+
+/*
+ * Check if tpquery is a phrase query (quoted text).
+ * Returns true if the query was created with text wrapped in double
+ * quotes, indicating positional phrase matching is required.
+ */
+bool
+tpquery_is_phrase_query(TpQuery *tpquery)
+{
+	if (tpquery->version < 2)
+		return false;
+	return (tpquery->flags & TPQUERY_FLAG_PHRASE_QUERY) != 0;
 }
 
 /*

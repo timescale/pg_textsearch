@@ -41,7 +41,8 @@ typedef struct TpPageIndexSpecial
  */
 #define TP_SEGMENT_FORMAT_VERSION_3 3 /* Legacy: uint32 offsets */
 #define TP_SEGMENT_FORMAT_VERSION_4 4 /* Legacy: no alive bitset */
-#define TP_SEGMENT_FORMAT_VERSION	5 /* Current: alive bitset */
+#define TP_SEGMENT_FORMAT_VERSION_5 5 /* V5: alive bitset */
+#define TP_SEGMENT_FORMAT_VERSION	6 /* Current: position index */
 
 /*
  * V3 legacy segment header - preserved for reading old segments.
@@ -136,6 +137,16 @@ typedef struct TpSegmentHeader
 
 	/* Page index reference */
 	BlockNumber page_index; /* First page of the page index */
+
+	/* Position index for phrase queries (V6+)
+	 *
+	 * IMPORTANT: These fields MUST remain at the END of the struct
+	 * so that sizeof(V5 header) == offsetof(position_index_offset).
+	 * This ensures reading a V5 segment header into this struct
+	 * does not corrupt the shared fields above.
+	 */
+	uint64 position_index_offset; /* Offset to position data section */
+	uint64 position_data_size;	  /* Total bytes of position data */
 } TpSegmentHeader;
 
 /*
@@ -201,6 +212,21 @@ typedef struct TpDictEntry
 	uint32 block_count;		  /* Number of blocks (and skip entries) */
 	uint32 doc_freq;		  /* Document frequency for IDF */
 } __attribute__((aligned(8))) TpDictEntry;
+
+/*
+ * V6 dictionary entry - 24 bytes (extends V5 with position offset)
+ *
+ * Adds position_data_offset pointing to delta-varint-encoded
+ * position lists for this term.  The position data contains
+ * one position list per document in posting-list order.
+ */
+typedef struct TpDictEntryV6
+{
+	uint64 skip_index_offset;	 /* Same as TpDictEntry */
+	uint32 block_count;			 /* Same as TpDictEntry */
+	uint32 doc_freq;			 /* Same as TpDictEntry */
+	uint64 position_data_offset; /* Offset to position data for term */
+} __attribute__((aligned(8))) TpDictEntryV6;
 
 /*
  * Block storage constants

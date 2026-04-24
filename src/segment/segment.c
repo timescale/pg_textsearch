@@ -225,9 +225,30 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 			header->alive_bitset_offset = 0;
 			header->alive_count			= header->num_docs;
 		}
+		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION_5)
+		{
+			/*
+			 * V5: header is smaller than V6 (no position fields).
+			 * Zero-init first to ensure position_index_offset and
+			 * position_data_size are 0, then read the V5 portion.
+			 *
+			 * V5 header ends at alive_count, before the V6 position
+			 * fields.  We compute the V5 size as the offset of the
+			 * first V6-only field (position_index_offset).
+			 */
+			memset(reader->header, 0, sizeof(TpSegmentHeader));
+			memcpy(reader->header,
+				   PageGetContents(header_page),
+				   offsetof(TpSegmentHeader, position_index_offset));
+			header = reader->header;
+
+			/* Explicitly zero V6 fields for safety */
+			header->position_index_offset = 0;
+			header->position_data_size	  = 0;
+		}
 		else if (raw_version <= TP_SEGMENT_FORMAT_VERSION)
 		{
-			/* V5+: full header */
+			/* V6+: full header including position index fields */
 			memcpy(reader->header,
 				   PageGetContents(header_page),
 				   sizeof(TpSegmentHeader));

@@ -38,6 +38,23 @@ typedef struct TpBuildTermEntry
 } TpBuildTermEntry;
 
 /*
+ * Position hash table entry: maps (term, doc_id) to an
+ * arena-stored position array for V6 phrase queries.
+ */
+typedef struct TpBuildPosKey
+{
+	const char *term;  /* Pointer to arena-stored term string */
+	uint32		doc_id; /* Sequential document ID */
+} TpBuildPosKey;
+
+typedef struct TpBuildPosEntry
+{
+	TpBuildPosKey key;
+	ArenaAddr	  positions_addr; /* Arena offset to uint16[] array */
+	uint16		  count;		  /* Number of positions stored */
+} TpBuildPosEntry;
+
+/*
  * Initial and growth sizes for flat arrays.
  */
 #define TP_BUILD_INITIAL_DOCS 4096
@@ -48,11 +65,14 @@ typedef struct TpBuildTermEntry
  */
 typedef struct TpBuildContext
 {
-	/* Arena for EXPULL blocks and term strings */
+	/* Arena for EXPULL blocks, term strings, and position data */
 	TpArena *arena;
 
 	/* Local hash table: term string -> TpBuildTermEntry */
 	HTAB *terms_ht;
+
+	/* Position hash table: (term, doc_id) -> position array in arena */
+	HTAB *positions_ht;
 
 	/* Flat arrays indexed by doc_id (sequential assignment) */
 	uint8			*fieldnorms; /* Encoded fieldnorm per doc */
@@ -89,6 +109,7 @@ extern uint32 tp_build_context_add_document(
 		TpBuildContext *ctx,
 		char		  **terms,
 		int32		   *frequencies,
+		uint16		  **positions,
 		int				term_count,
 		int32			doc_length,
 		ItemPointer		ctid);

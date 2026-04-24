@@ -16,6 +16,11 @@
 /*
  * Individual document occurrence within a posting list.
  * Doc IDs are assigned at segment write time via docmap lookup.
+ *
+ * NOTE: This struct is stored in DSA shared memory. Do NOT add
+ * process-local pointers (e.g. palloc'd buffers) here — they
+ * are invalid in other backends.  Term positions for V6 phrase
+ * queries are stored separately in the build_context arena.
  */
 typedef struct TpPostingEntry
 {
