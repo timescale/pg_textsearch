@@ -18,7 +18,7 @@ Modern ranked text search for Postgres.
 
 🚀 **Status**: v1.2.0-dev - Production ready.
 
-![Tapir and Friends](images/tapir_and_friends_v1.2.0-dev.png)
+![Tapir and Friends](images/tapir_and_friends_v1.1.0.png)
 
 ## Historical note
 

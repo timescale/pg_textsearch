@@ -78,9 +78,8 @@ if [[ $MODE == dev ]]; then
         exit 2
     fi
 
-    # Rename the base SQL file and rewrite version strings inside.
+    # Rename the base SQL file. Body substitution happens below.
     git mv "$SRC_MAIN" "$DST_MAIN"
-    perl -i -pe "s/\Q$OLD\E/$NEW/g" "$DST_MAIN"
 
     # Create the upgrade-script stub. Authors append feature DDL as
     # work lands; release-time audit verifies completeness.
@@ -104,8 +103,10 @@ END \$\$;
 EOF
     git add "$NEW_UPGRADE"
 
-    # Makefile: rename the base-file entry and append the new
-    # upgrade entry as a continuation line.
+    # Makefile: rename the base-file DATA entry, then append the new
+    # upgrade entry. Use a targeted regex (`pg_textsearch--OLD.sql`)
+    # rather than a broad `OLD.sql` to avoid corrupting legacy
+    # upgrade-chain entries like `pg_textsearch--A--OLD.sql`.
     perl -i -pe "s|pg_textsearch--\Q$OLD\E\.sql|pg_textsearch--$NEW.sql|g" Makefile
     perl -i -pe '
         if (/^(\s+sql\/pg_textsearch--[0-9].*\.sql)$/) {
@@ -127,9 +128,27 @@ elif [[ $MODE == release ]]; then
     SRC_UPGRADE=${upgrades[0]}
     DST_UPGRADE=${SRC_UPGRADE//$OLD.sql/$NEW.sql}
 
+    # Extract PREV (last released version) from the upgrade filename
+    # `sql/pg_textsearch--PREV--OLD.sql`. Used for the README image-ref
+    # rewrite (the dev-cycle README points at the PREV banner image).
+    PREV=${SRC_UPGRADE#sql/pg_textsearch--}
+    PREV=${PREV%%--*}
+
     git mv "$SRC_MAIN" "$DST_MAIN"
     git mv "$SRC_UPGRADE" "$DST_UPGRADE"
+
+    # Makefile: update both DATA entries (main install + current upgrade
+    # file). Safe to use the broader `--OLD.sql` regex here because in
+    # release mode OLD=X.Y.Z-dev only appears in the current cycle's
+    # entries, never in legacy upgrade-chain filenames.
+    perl -i -pe "s|--\Q$OLD\E\.sql|--$NEW.sql|g" Makefile
 fi
+
+# Body substitutions for the renamed SQL files (both modes need these:
+# version-equality block in the main install file, version comments in
+# the upgrade file).
+perl -i -pe "s/\Q$OLD\E/$NEW/g" "$DST_MAIN"
+[[ $MODE == release ]] && perl -i -pe "s/\Q$OLD\E/$NEW/g" "$DST_UPGRADE"
 
 # --- common text substitutions -------------------------------------
 
@@ -137,7 +156,6 @@ fi
 common_files=(
     pg_textsearch.control
     src/mod.c
-    README.md
     CLAUDE.md
     test/scripts/memory_accounting.sh
     test/scripts/multi_index.sh
@@ -151,19 +169,42 @@ for f in "${common_files[@]}"; do
     fi
 done
 
+# README needs mode-aware handling for the banner-image ref.
+#
+# Dev mode skips the image line so README keeps pointing at the
+# last-released banner: dev cycles don't ship banner images, and
+# rewriting the line would 404 the README on GitHub for the entire
+# cycle.
+#
+# Release mode rewrites the image ref from PREV (the last-released
+# banner the dev cycle was pointing at) to NEW. The human drops in
+# the new image file as a follow-up; release-mode next-steps
+# reminds them.
+if [[ $MODE == release ]]; then
+    perl -i -pe "s/\Q$OLD\E/$NEW/g" README.md
+    perl -i -pe "s|tapir_and_friends_v\Q$PREV\E\.png|tapir_and_friends_v$NEW.png|g" README.md
+else
+    perl -i -pe "s/\Q$OLD\E/$NEW/g unless m{tapir_and_friends}" README.md
+fi
+
 # --- straggler check -----------------------------------------------
 
 # Find any remaining references to OLD outside known-safe locations.
 # Excluded: this script, expected outputs, older upgrade SQL files,
 # RELEASING.md (carries the historical upgrade chain), the
-# upgrade-tests workflow (carries phase-history comments).
-stragglers=$(git grep -l --fixed-strings "$OLD" -- \
+# upgrade-tests workflow (carries phase-history comments). The
+# `grep -v` drops the README banner-image line, which legitimately
+# retains OLD in dev mode (the dev cycle keeps pointing at the
+# last-released banner; release mode rewrites it via PREV above).
+stragglers=$(git grep --fixed-strings "$OLD" -- \
     ':!scripts/bump-version.sh' \
     ':!test/expected/' \
     ':!sql/pg_textsearch--*--*.sql' \
     ':!RELEASING.md' \
     ':!.github/workflows/upgrade-tests.yml' \
     ':!docs/' \
+    | grep -v "tapir_and_friends_v${OLD}\.png" \
+    | cut -d: -f1 | sort -u \
     || true)
 
 if [[ -n $stragglers ]]; then
@@ -179,12 +220,13 @@ echo "Version bump $OLD → $NEW complete."
 echo
 
 if [[ $MODE == release ]]; then
-    PREV=${SRC_UPGRADE#sql/pg_textsearch--}
-    PREV=${PREV%%--*}
     cat <<EOF
 Next steps (release):
   1. Add the new banner image at images/tapir_and_friends_v$NEW.png
-     and remove images/tapir_and_friends_v$OLD.png.
+     and remove images/tapir_and_friends_v$PREV.png. (The dev cycle
+     left the README pointing at v$PREV.png; the rename above
+     repointed it to v$NEW.png, but the file itself doesn't exist
+     yet.)
   2. Add $OLD to the old_version matrix in
      .github/workflows/upgrade-tests.yml.
   3. Audit sql/pg_textsearch--$PREV--$NEW.sql against the diff:
