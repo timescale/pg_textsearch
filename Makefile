@@ -144,6 +144,16 @@ test-logical-replication:
 	@echo "Running logical replication tests..."
 	@cd test/scripts && ./logical_replication.sh
 
+test-replication-extended:
+	@echo "Running extended physical replication tests..."
+	@cd test/scripts && ./replication.sh
+	@cd test/scripts && ./replication_correctness.sh
+	@cd test/scripts && ./replication_concurrency.sh
+	@cd test/scripts && ./replication_failover.sh
+	@cd test/scripts && ./replication_compat.sh
+	@cd test/scripts && ./replication_cascading.sh
+	@cd test/scripts && ./replication_pitr.sh
+
 test-memory:
 	@echo "Running memory accounting tests..."
 	@cd test/scripts && ./memory_accounting.sh
@@ -330,4 +340,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-logical-replication test-memory test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-memory test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
