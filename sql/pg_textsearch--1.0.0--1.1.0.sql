@@ -1,21 +1,16 @@
 -- Upgrade from 1.0.0 to 1.1.0
 
--- Verify loaded library matches this SQL script version
+-- Verify the library is loaded. The version-equality check belongs in
+-- the *latest* upgrade script only; intermediate scripts (this one
+-- becomes intermediate after a future bump) must accept any loaded
+-- version because the chain ends at default_version, not here.
 DO $$
-DECLARE
-    lib_ver text;
 BEGIN
-    lib_ver := pg_catalog.current_setting('pg_textsearch.library_version', true);
-    IF lib_ver IS NULL THEN
+    IF pg_catalog.current_setting('pg_textsearch.library_version', true)
+       IS NULL THEN
         RAISE EXCEPTION
             'pg_textsearch library not loaded. '
             'Add pg_textsearch to shared_preload_libraries and restart.';
-    END IF;
-    IF lib_ver OPERATOR(pg_catalog.<>) '1.1.0' THEN
-        RAISE EXCEPTION
-            'pg_textsearch library version mismatch: loaded=%, expected=%. '
-            'Restart the server after installing the new binary.',
-            lib_ver, '1.1.0';
     END IF;
 END $$;
 
