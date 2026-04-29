@@ -1,4 +1,4 @@
--- pg_textsearch extension version 1.1.0
+-- pg_textsearch extension version 1.2.0-dev
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -14,11 +14,11 @@ BEGIN
             'pg_textsearch library not loaded. '
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
-    IF lib_ver OPERATOR(pg_catalog.<>) '1.1.0' THEN
+    IF lib_ver OPERATOR(pg_catalog.<>) '1.2.0-dev' THEN
         RAISE EXCEPTION
             'pg_textsearch library version mismatch: loaded=%, expected=%. '
             'Restart the server after installing the new binary.',
-            lib_ver, '1.1.0';
+            lib_ver, '1.2.0-dev';
     END IF;
 END $$;
 
