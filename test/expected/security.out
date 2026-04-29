@@ -1,6 +1,5 @@
 -- Test security restrictions on debug and admin functions
 CREATE EXTENSION pg_textsearch;
-INFO:  pg_textsearch v1.1.0
 -- Create test data
 CREATE TABLE security_test (id serial, content text);
 INSERT INTO security_test (content) VALUES ('test document');

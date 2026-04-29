@@ -12,7 +12,6 @@
 -- (exponential backoff: 2x, 4x, ...) until enough rows are found.
 SET log_duration = off;
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0
 SET client_min_messages = NOTICE;
 SET enable_seqscan = false;
 ------------------------------------------------------------------------

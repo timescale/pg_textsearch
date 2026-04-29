@@ -1,7 +1,6 @@
 -- Test that BM25 indexes report correct catalog statistics
 -- (pg_class.reltuples, pg_class.relpages, pg_stat_user_indexes)
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0
 -- ============================================================
 -- heap_tuples vs index_tuples for partial indexes
 --

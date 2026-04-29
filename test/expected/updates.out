@@ -2,7 +2,6 @@
 -- This test reproduces the NULL index_state crash reported in production
 -- Install the extension if not already installed
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-INFO:  pg_textsearch v1.1.0
 -- Test basic UPDATE operations
 CREATE TABLE update_test (
     id SERIAL PRIMARY KEY,

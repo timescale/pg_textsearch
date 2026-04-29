@@ -68,9 +68,3 @@ CREATE FUNCTION bm25_memory_usage(
 )
 AS 'MODULE_PATHNAME', 'tp_memory_usage'
 LANGUAGE C VOLATILE;
-
-DO $$
-BEGIN
-    RAISE INFO 'pg_textsearch v1.1.0';
-END
-$$;

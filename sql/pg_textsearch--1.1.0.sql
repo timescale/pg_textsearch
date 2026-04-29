@@ -228,13 +228,6 @@ CREATE FUNCTION @extschema@.bm25_dump_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_dump_index'
     LANGUAGE C STRICT STABLE;
 
--- Display version info
-DO $$
-BEGIN
-    RAISE INFO 'pg_textsearch v1.1.0';
-END
-$$;
-
 -- Function to force segment write (spill memtable to disk)
 CREATE FUNCTION @extschema@.bm25_spill_index(index_name text)
 RETURNS int4
