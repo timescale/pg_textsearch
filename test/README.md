@@ -36,6 +36,13 @@ test/
 - **recovery.sh** - Actual crash simulation with SIGKILL and recovery verification
 - **concurrency.sh** - Multi-session concurrency and string interning safety tests
 - **memory_limits.sh** - Memory budget enforcement stress testing with capacity limits
+- **replication.sh** - Physical streaming replication smoke tests + long-lived backend staleness reproducer
+- **replication_correctness.sh** - 10 long-lived-backend correctness tests across schema variations
+- **replication_concurrency.sh** - Multiple concurrent standby readers under primary write load
+- **replication_failover.sh** - Standby promotion under various pre-promotion states
+- **replication_compat.sh** - Logical+physical coexistence, TimescaleDB hypertables, basebackup contents
+- **replication_cascading.sh** - Three-node cascading replication (primary → standby → standby2)
+- **replication_pitr.sh** - Recovery-target-LSN test (PITR)
 
 ### 3. Concurrency Testing
 
@@ -109,6 +116,63 @@ Tests verify:
 - ✅ Per-index budgets work independently
 - ✅ Graceful transaction abort on capacity exceeded
 
+### 6. Replication Tests
+
+Physical streaming replication, cascading replication, failover, and PITR
+coverage. Most tests use **persistent psql sessions** (FIFO-managed
+backends) to expose bugs that reset on every fresh connection. Run via
+`make test-replication-extended`.
+
+The test harness is shared via `replication_lib.sh`, which provides
+two/three-node setup helpers and FIFO-based long-lived psql session
+helpers (`long_lived_open`, `long_lived_query`, `long_lived_close`,
+`long_lived_before_after`).
+
+#### Files (24 tests across 7 scripts)
+
+- **replication.sh** (5 tests) — basic standby queries, ongoing
+  replication, segment replication, long-lived backend staleness,
+  standby promotion.
+- **replication_correctness.sh** (10 tests) — long-lived-backend
+  correctness across spill/merge/UPDATE/DELETE+VACUUM/partitioned/
+  expression/partial/array/multi-index variations.
+- **replication_concurrency.sh** (3 tests) — 8 concurrent standby
+  readers under a primary insert; drain under burst; no deadlock
+  under spam load.
+- **replication_failover.sh** (3 tests) — promotion under write
+  load, with unspilled memtable, post-promotion writes+search.
+- **replication_compat.sh** (3 tests) — logical+physical coexistence,
+  TimescaleDB hypertables (skipped today unless timescaledb is in
+  shared_preload_libraries), pg_basebackup includes index files.
+- **replication_cascading.sh** (3 tests) — primary→standby→standby2
+  basic query, long-lived staleness propagating two hops, promotion
+  chain with `recovery_target_timeline=latest`.
+- **replication_pitr.sh** (1 test) — recover to mid-burst LSN and
+  verify count matches the cutoff.
+
+#### Predicted outcomes today
+
+15 tests FAIL with `BUG (expected): ...` messages, 8 PASS, 1 SKIPS
+(`replication_compat.sh` F2 — TimescaleDB skip). The failures
+document three distinct bug classes:
+
+1. **Memtable staleness** on long-lived standby backends — primary
+   inserts via WAL never update the in-memory inverted index that a
+   long-lived backend rebuilt once on first scan.
+2. **WAL-replayed segments unreadable** on long-lived standby
+   backends and even on promoted standbys — segments created via
+   spill/merge while the standby is already running are not
+   enumerable on the standby, even by fresh psql connections after
+   promotion.
+3. **Corpus statistics not replayed** via WAL — `total_docs` and
+   `total_len` counters stay 0 after PITR recovery, so BM25 IDF
+   returns 0 results until REINDEX.
+
+The companion implementation plan `docs/superpowers/plans/
+2026-04-28-physical-replication.md` will flip these failing tests
+to passing via a custom rmgr with `INSERT_TID`/`SPILL` records
+plus a bounded shared-memory pending list drained on `tp_beginscan`.
+
 ## Running Tests
 
 ### All Tests
@@ -126,11 +190,13 @@ make installcheck REGRESS=limits
 ### Shell Scripts
 ```bash
 # Individual shell script targets
-make test-concurrency      # Multi-session concurrency safety
-make test-recovery         # Crash recovery testing
-make test-stress           # Long-running stress tests
-make test-shell            # All shell scripts (concurrency + recovery + memory limits)
-make test-all              # Complete test suite (SQL + shell scripts)
+make test-concurrency             # Multi-session concurrency safety
+make test-recovery                # Crash recovery testing
+make test-stress                  # Long-running stress tests
+make test-shell                   # All shell scripts (concurrency + recovery + memory limits)
+make test-replication             # Basic physical replication smoke test
+make test-replication-extended    # 24 replication tests (correctness, concurrency, failover, compat, cascading, PITR)
+make test-all                     # Complete test suite (SQL + shell scripts)
 
 # Direct execution
 cd test/scripts
