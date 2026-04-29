@@ -239,6 +239,70 @@ ${post_insert_count}"
     log "Test 4 PASSED: Standby promotion works"
 }
 
+# ---------------------------------------------------------------
+# Test 5: Long-lived standby backend sees new primary inserts
+#
+# This test exposes the memtable-staleness bug: a backend that
+# stays alive across primary inserts rebuilds its memtable once
+# (on first scan) and then never updates it because WAL replay
+# does not call into our aminsert path.
+# ---------------------------------------------------------------
+test_long_lived_backend_staleness() {
+    log "=== Test 5: Long-lived backend staleness ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS staleness_docs CASCADE;
+        CREATE TABLE staleness_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        INSERT INTO staleness_docs (content) VALUES
+            ('initial document about quantum mechanics'),
+            ('initial document about general relativity');
+        CREATE INDEX staleness_idx ON staleness_docs USING bm25(content)
+            WITH (text_config='english');
+    " >/dev/null
+
+    wait_for_standby_catchup
+
+    local query="
+        SELECT count(*) FROM (
+            SELECT id FROM staleness_docs
+            ORDER BY content <@> to_bm25query('quantum',
+                'staleness_idx')
+            LIMIT 100
+        ) t;
+    "
+
+    long_lived_before_after "${STANDBY_PORT}" "${query}" \
+        "primary_sql \"
+            INSERT INTO staleness_docs (content) VALUES
+                ('quantum entanglement and bell inequalities');
+        \" >/dev/null
+        wait_for_standby_catchup"
+
+    log "Initial standby count: ${LL_BEFORE}"
+    log "Standby count after primary insert: ${LL_AFTER}"
+
+    if [ "${LL_BEFORE}" != "2" ]; then
+        error "Expected initial count=2, got '${LL_BEFORE}'"
+    fi
+
+    # The bug manifests in two ways:
+    #   1. Silent staleness: LL_AFTER == LL_BEFORE (memtable not updated).
+    #   2. Segment-block invalidation: LL_AFTER contains 'ERROR'
+    #      (long-lived backend has a stale view of segment storage).
+    # Once fixed, LL_AFTER should be LL_BEFORE + 1 (the new doc is visible).
+    if [[ "${LL_AFTER}" == *ERROR* ]] || \
+       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
+         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+        error "BUG (expected): long-lived standby backend did not see \
+new primary insert (before=${LL_BEFORE}, after=${LL_AFTER})"
+    fi
+
+    log "Test 5 PASSED: Long-lived backend sees new primary inserts"
+}
+
 main() {
     log "Starting pg_textsearch physical replication test..."
 
@@ -252,6 +316,7 @@ main() {
     test_basic_standby_queries
     test_ongoing_replication
     test_segment_replication
+    test_long_lived_backend_staleness
     test_standby_promotion
 
     log "All physical replication tests passed!"
