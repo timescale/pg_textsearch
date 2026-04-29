@@ -4,162 +4,129 @@ This document describes the release process for pg_textsearch.
 
 ## Version Scheme
 
-We use semantic versioning: `MAJOR.MINOR.PATCH`
+We use semantic versioning: `MAJOR.MINOR.PATCH`.
 
-- Development versions use `-dev` suffix (e.g., `0.3.0-dev`)
-- Release versions drop the suffix (e.g., `0.3.0`)
+- Development versions use `-dev` suffix (e.g., `1.2.0-dev`).
+- Release versions drop the suffix (e.g., `1.2.0`).
 
-## Release Checklist
+## Cutting a Release
 
-### 1. Update Version References
+### 1. Audit the upgrade SQL script
 
-Change version from `X.Y.Z-dev` to `X.Y.Z` in these files:
+This is the only piece of the release that cannot be automated, and the
+piece most likely to be wrong. Skim it carefully.
 
-| File | What to update |
-|------|----------------|
-| `pg_textsearch.control` | `default_version` |
-| `mod.c` | `.version` in `PG_MODULE_MAGIC_EXT` |
-| `Makefile` | `DATA` list (SQL filenames) |
-| `README.md` | Status line, image reference |
-| `CLAUDE.md` | `Current Version` |
-
-### 2. Update SQL Files
-
-**Rename the main SQL file:**
-```sh
-git mv sql/pg_textsearch--X.Y.Z-dev.sql sql/pg_textsearch--X.Y.Z.sql
-```
-
-**Rename the upgrade script:**
-```sh
-git mv sql/pg_textsearch--W.V.U--X.Y.Z-dev.sql sql/pg_textsearch--W.V.U--X.Y.Z.sql
-```
-
-**Update SQL file contents:**
-- In the main SQL file, update the version comment at the top
-- Update the `RAISE INFO` message (remove prerelease warnings for releases)
-
-### 3. Update Makefile DATA List
-
-Add the new upgrade script to the `DATA` list:
-```makefile
-DATA = sql/pg_textsearch--X.Y.Z.sql \
-       ... \
-       sql/pg_textsearch--W.V.U--X.Y.Z.sql
-```
-
-### 4. Rename Release Banner Image
+The upgrade script `sql/pg_textsearch--PREV--CURRENT-dev.sql` must
+recreate, for an installation still on `PREV`, every catalog object
+that exists in the current main SQL file but not in the previous
+release's main SQL file. To enumerate what the upgrade script must
+cover, diff the two main SQL files:
 
 ```sh
-git mv images/tapir_and_friends_vX.Y.Z-dev.png images/tapir_and_friends_vX.Y.Z.png
+git show vPREV:sql/pg_textsearch--PREV.sql > /tmp/prev.sql
+diff /tmp/prev.sql sql/pg_textsearch--CURRENT-dev.sql
 ```
 
-Update the image reference in README.md.
+For every statement that is new in the current main file, verify
+the upgrade script has a matching statement:
 
-### 5. Update README Status
+| New in main file              | Required in upgrade script        |
+|-------------------------------|-----------------------------------|
+| `CREATE FUNCTION`             | `CREATE FUNCTION`                 |
+| `CREATE OPERATOR`             | `CREATE OPERATOR`                 |
+| `CREATE OPERATOR CLASS`       | `CREATE OPERATOR CLASS`           |
+| `CREATE TYPE`                 | `CREATE TYPE`                     |
+| `CREATE CAST`                 | `CREATE CAST`                     |
+| `ALTER OPERATOR FAMILY`       | `ALTER OPERATOR FAMILY`           |
+| Catalog `UPDATE pg_catalog.*` | Same `UPDATE`                     |
 
-Update the status line with the new version number:
+Renamed, signature-changed, or removed objects need matching `DROP` /
+`ALTER` statements in the upgrade script.
 
-```markdown
-🚀 **Status**: vX.Y.Z - Production ready.
-```
+The `upgrade-tests` CI workflow exercises the upgrade against every
+version in its `old_version` matrix and is the primary safety net for
+gaps — but it can only catch what the regression suite touches. A new
+operator that has no test coverage will pass CI and ship broken. The
+audit catches what the workflow can't.
 
-### 6. Verify Paged Data Structure Versions
-
-If any on-disk format changed during this release cycle, bump the corresponding
-version constant in `src/constants.h`:
-
-| Constant | Purpose |
-|----------|---------|
-| `TP_METAPAGE_VERSION` | Index metapage format |
-| `TP_DOCID_PAGE_VERSION` | Document ID page format |
-| `TP_PAGE_INDEX_VERSION` | Page index format |
-| `TP_SEGMENT_FORMAT_VERSION` | Segment block storage format (in `segment.h`) |
-
-Also check `TPQUERY_VERSION` in `src/types/query.h` if bm25query format changed.
-
-**Important**: Version bumps break upgrade compatibility. If you bump a version,
-update the upgrade test workflow to exclude incompatible old versions, and
-document the breaking change in release notes.
-
-### 7. Run Tests and Update Expected Output
+### 2. Run the bump script
 
 ```sh
-make clean && make && make install
-make test
+./scripts/bump-version.sh CURRENT-dev CURRENT
 ```
 
-If INFO messages changed, regenerate expected outputs:
-```sh
-make expected
-```
+This renames the SQL files and updates every version reference across
+the tree. The script reports what's left for the human to do.
 
-Don't forget alternative expected files (`*_1.out`) which need manual updates.
+### 3. Update the release banner image
 
-Verify all tests pass:
-```sh
-make test  # Should show "All N tests passed"
-```
+Replace `images/tapir_and_friends_vCURRENT-dev.png` with the new
+release banner at `images/tapir_and_friends_vCURRENT.png`. (The
+README reference is already updated by the bump script.)
 
-### 8. Create PR
+### 4. Add the previous release to the upgrade-tests matrix
 
-```sh
-git checkout -b release-X.Y.Z
-git add -A
-git commit -m "Release vX.Y.Z"
-git push -u origin release-X.Y.Z
-gh pr create --title "Release vX.Y.Z" --body "## Summary
-- Update version from X.Y.Z-dev to X.Y.Z
-- [other changes]
-
-## Testing
-- \`make test\` passes
-- \`make format-check\` passes"
-```
-
-### 9. After PR Merges
-
-The release workflow (`release.yml`) triggers automatically when a PR with title
-starting "Release v" merges to main. It:
-
-1. Creates a git tag
-2. Builds release artifacts for PG17/PG18 on Linux/macOS (amd64/arm64)
-3. Creates a GitHub release with the artifacts
-
-### 10. Post-Release: Bump to Next Dev Version
-
-After the release is published, create a PR to bump to the next dev version:
-
-```sh
-# Example: after releasing 0.3.0, bump to 0.4.0-dev
-git checkout main && git pull
-git checkout -b bump-to-0.4.0-dev
-```
-
-Update files with `0.4.0-dev`, create new SQL files, etc.
-
-**Don't forget**: Add the just-released version to the `old_version` matrix in
-`.github/workflows/upgrade-tests.yml` so future releases are tested for upgrade
+In `.github/workflows/upgrade-tests.yml`, add `PREV` to the
+`old_version` matrix so future releases are tested for upgrade
 compatibility from this version.
+
+### 5. Open the PR
+
+```sh
+git checkout -b release-CURRENT
+git add -A
+git commit -m "Release vCURRENT"
+gh pr create --draft --title "Release vCURRENT"
+```
+
+CI runs the full test suite, including upgrade-tests against every
+matrix version.
+
+### 6. After PR merges
+
+The `release.yml` workflow triggers on merge of any PR titled
+`Release v*`. It tags the commit, builds release artifacts for
+PG17/PG18 on Linux/macOS (amd64/arm64), and publishes a GitHub
+release.
+
+## Bumping to the Next Dev Version
+
+After a release is published, open a follow-up PR:
+
+```sh
+git checkout main && git pull
+git checkout -b bump-to-NEXT-dev
+./scripts/bump-version.sh CURRENT NEXT-dev
+git add -A
+git commit -m "chore: bump version to NEXT-dev"
+gh pr create --draft --title "chore: bump version to NEXT-dev"
+```
+
+The script creates the new main SQL file (renamed from the previous
+release's), creates a stub upgrade file `sql/pg_textsearch--CURRENT--NEXT-dev.sql`
+containing only the library-version check, and updates every other
+version reference. Contributors then append to the upgrade file as
+features land in the dev cycle.
 
 ## SQL Upgrade Path Requirements
 
-**Upgrade scripts must form a single linear chain.** Every version connects
-to exactly one next version — no shortcuts that skip intermediate steps.
-This keeps the number of upgrade scripts minimal and the path predictable.
+**Upgrade scripts must form a single linear chain.** Every version
+connects to exactly one next version — no shortcuts that skip
+intermediate steps. This keeps the number of upgrade scripts minimal
+and the path predictable.
 
 ```
 ... → 0.5.0 → 0.5.1 → 0.6.0 → 0.6.1 → 1.0.0 → 1.1.0
 ```
 
-Every release must have an upgrade path from the previous stable release
-(e.g., `0.2.0--0.3.0.sql`). Dev versions are not supported for direct upgrades;
-users on dev versions should reinstall the extension.
+Every release must have an upgrade path from the previous stable
+release (e.g., `1.0.0--1.1.0.sql`). Dev versions are not supported for
+direct upgrades; users on dev versions should reinstall the extension.
 
 ## Upgrade Compatibility
 
-Not all version upgrades are compatible with `ALTER EXTENSION UPDATE`. Breaking
-changes that require index recreation or server restart:
+Not all version upgrades are compatible with `ALTER EXTENSION UPDATE`.
+Breaking changes that require index recreation or server restart:
 
 | Change Type | Impact | User Action Required |
 |-------------|--------|---------------------|
@@ -179,9 +146,27 @@ changes that require index recreation or server restart:
 | < 0.1.0 | 0.3.0 | ❌ No | Multiple breaking changes |
 
 When releasing a version with breaking changes:
-1. Update `.github/workflows/upgrade-tests.yml` to exclude incompatible versions
-2. Document in release notes that users must recreate indexes
-3. Consider providing a migration guide for major version bumps
+
+1. Update `.github/workflows/upgrade-tests.yml` to exclude incompatible versions.
+2. Document in release notes that users must recreate indexes.
+3. Consider providing a migration guide for major version bumps.
+
+## On-disk Format Versions
+
+If any on-disk format changed during a release cycle, bump the
+corresponding version constant:
+
+| Constant | Header | Purpose |
+|----------|--------|---------|
+| `TP_METAPAGE_VERSION` | `src/constants.h` | Index metapage format |
+| `TP_DOCID_PAGE_VERSION` | `src/constants.h` | Document ID page format |
+| `TP_PAGE_INDEX_VERSION` | `src/constants.h` | Page index format |
+| `TP_SEGMENT_FORMAT_VERSION` | `src/segment/segment.h` | Segment block storage format |
+| `TPQUERY_VERSION` | `src/types/query.h` | bm25query binary format |
+
+Version bumps break upgrade compatibility — exclude incompatible old
+versions from the upgrade-tests matrix and document the breaking
+change in release notes.
 
 ## Automated Workflows
 
@@ -194,14 +179,16 @@ When releasing a version with breaking changes:
 
 ## Troubleshooting
 
-### Old SQL files in Postgres share directory
+### Old SQL files in the Postgres share directory
 
 If tests fail with old version messages, check for stale files:
+
 ```sh
 ls ~/pg18/share/postgresql/extension/pg_textsearch*
 ```
 
 Remove old dev versions that shouldn't be installed:
+
 ```sh
 rm ~/pg18/share/postgresql/extension/pg_textsearch--X.Y.Z-dev.sql
 ```
@@ -209,6 +196,7 @@ rm ~/pg18/share/postgresql/extension/pg_textsearch--X.Y.Z-dev.sql
 ### Extension won't upgrade
 
 If `ALTER EXTENSION pg_textsearch UPDATE` fails, verify:
-1. The upgrade SQL file exists in the share directory
-2. The control file has the correct `default_version`
-3. The upgrade path exists (check `pg_extension_update_paths('pg_textsearch')`)
+
+1. The upgrade SQL file exists in the share directory.
+2. The control file has the correct `default_version`.
+3. The upgrade path exists (check `pg_extension_update_paths('pg_textsearch')`).
