@@ -879,13 +879,13 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 		for (j = 0; j < entries_to_write; j++)
 			page_data[j] = pages[start_idx + j];
 
-		MarkBufferDirty(buffer);
 		/*
 		 * Issue #342: WAL-log the page-index page so it reaches the
 		 * standby. Prior code wrote these pages via MarkBufferDirty
-		 * alone, bypassing WAL — the post-hoc FULL_IMAGE pass in
-		 * tp_write_segment_from_build_ctx and tp_write_segment
-		 * iterates writer.pages, which excludes page-index blocks.
+		 * alone, bypassing WAL — the post-hoc FULL_IMAGE pass over
+		 * writer.pages in the segment write paths excludes page-index
+		 * blocks, since these are allocated via allocate_segment_page
+		 * rather than tp_segment_writer_allocate_page.
 		 *
 		 * page_std=false because pd_lower on this page does not cover
 		 * the data area — the page-index entries are written between
@@ -893,8 +893,16 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 		 * REGBUF_STANDARD would treat that as a hole and zero it on
 		 * replay, dropping the actual page-index contents. With
 		 * page_std=false we log the entire BLCKSZ.
+		 *
+		 * log_newpage_buffer asserts CritSectionCount > 0; the
+		 * MarkBufferDirty + WAL-log pair must be inside a critical
+		 * section so a failure between them PANICs rather than
+		 * leaving a dirty page un-WAL-logged.
 		 */
+		START_CRIT_SECTION();
+		MarkBufferDirty(buffer);
 		log_newpage_buffer(buffer, false);
+		END_CRIT_SECTION();
 		UnlockReleaseBuffer(buffer);
 
 		prev_block = index_pages[i];

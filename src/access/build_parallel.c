@@ -787,6 +787,44 @@ tp_build_parallel(
 					true /* disjoint_sources */);
 
 			/*
+			 * Issue #342: WAL-log all merged segment data pages via
+			 * GenericXLog FULL_IMAGE so they reach the standby.
+			 * Mirrors the equivalent pass in segment_merge.c's
+			 * tp_merge_level_segments. Page-index pages are covered
+			 * separately by log_newpage_buffer inside
+			 * write_page_index_internal.
+			 */
+			{
+				uint32 pg_idx = 0;
+
+				while (pg_idx < sink.writer.pages_allocated)
+				{
+					GenericXLogState *xstate;
+					Buffer			  xbufs[MAX_GENERIC_XLOG_PAGES];
+					uint32			  xn = 0, xj;
+
+					xstate = GenericXLogStart(index);
+
+					for (xj = 0; xj < MAX_GENERIC_XLOG_PAGES &&
+								 pg_idx < sink.writer.pages_allocated;
+						 xj++, pg_idx++)
+					{
+						xbufs[xn] =
+								ReadBuffer(index, sink.writer.pages[pg_idx]);
+						LockBuffer(xbufs[xn], BUFFER_LOCK_EXCLUSIVE);
+						GenericXLogRegisterBuffer(
+								xstate, xbufs[xn], GENERIC_XLOG_FULL_IMAGE);
+						xn++;
+					}
+
+					GenericXLogFinish(xstate);
+
+					for (xj = 0; xj < xn; xj++)
+						UnlockReleaseBuffer(xbufs[xj]);
+				}
+			}
+
+			/*
 			 * Flush dirty buffers before updating the metapage,
 			 * ensuring merged segment data is durable first.
 			 */
