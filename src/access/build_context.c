@@ -8,6 +8,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <common/hashfn.h>
 #include <inttypes.h>
 #include <storage/buffile.h>
@@ -674,6 +675,45 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	}
 	MarkBufferDirty(header_buf);
 	UnlockReleaseBuffer(header_buf);
+
+	/*
+	 * WAL-log all segment content pages via GenericXLog FULL_IMAGE so
+	 * they reach the standby. (Issue #342: prior code wrote these
+	 * pages via MarkBufferDirty alone. Page-index pages are covered
+	 * by log_newpage_buffer inside write_page_index_internal.)
+	 *
+	 * Mirrors the equivalent post-hoc pass in segment.c's
+	 * tp_write_segment.
+	 */
+	{
+		uint32 pg_idx = 0;
+
+		while (pg_idx < writer.pages_allocated)
+		{
+			GenericXLogState *state;
+			Buffer			  bufs[MAX_GENERIC_XLOG_PAGES];
+			uint32			  n = 0;
+			uint32			  j;
+
+			state = GenericXLogStart(index);
+
+			for (j = 0;
+				 j < MAX_GENERIC_XLOG_PAGES && pg_idx < writer.pages_allocated;
+				 j++, pg_idx++)
+			{
+				bufs[n] = ReadBuffer(index, writer.pages[pg_idx]);
+				LockBuffer(bufs[n], BUFFER_LOCK_EXCLUSIVE);
+				GenericXLogRegisterBuffer(
+						state, bufs[n], GENERIC_XLOG_FULL_IMAGE);
+				n++;
+			}
+
+			GenericXLogFinish(state);
+
+			for (j = 0; j < n; j++)
+				UnlockReleaseBuffer(bufs[j]);
+		}
+	}
 
 	FlushRelationBuffers(index);
 

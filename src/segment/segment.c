@@ -10,6 +10,7 @@
 #include <access/generic_xlog.h>
 #include <access/hash.h>
 #include <access/table.h>
+#include <access/xloginsert.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
 #include <inttypes.h>
@@ -879,6 +880,21 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 			page_data[j] = pages[start_idx + j];
 
 		MarkBufferDirty(buffer);
+		/*
+		 * Issue #342: WAL-log the page-index page so it reaches the
+		 * standby. Prior code wrote these pages via MarkBufferDirty
+		 * alone, bypassing WAL — the post-hoc FULL_IMAGE pass in
+		 * tp_write_segment_from_build_ctx and tp_write_segment
+		 * iterates writer.pages, which excludes page-index blocks.
+		 *
+		 * page_std=false because pd_lower on this page does not cover
+		 * the data area — the page-index entries are written between
+		 * pd_lower (= SizeOfPageHeaderData) and pd_upper (= pd_special).
+		 * REGBUF_STANDARD would treat that as a hole and zero it on
+		 * replay, dropping the actual page-index contents. With
+		 * page_std=false we log the entire BLCKSZ.
+		 */
+		log_newpage_buffer(buffer, false);
 		UnlockReleaseBuffer(buffer);
 
 		prev_block = index_pages[i];
