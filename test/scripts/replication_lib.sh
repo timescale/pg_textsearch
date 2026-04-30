@@ -101,18 +101,21 @@ node_sql_quiet() {
 
 # Count search results using the index-scan pattern (CLAUDE.md says
 # WHERE-with-<@>-<-0 is an anti-pattern; ORDER BY ... LIMIT is right).
+# Optional 6th arg overrides the LIMIT (default 10000) for tests that
+# need to count more than 10K matching docs.
 search_count() {
     local port=$1
     local table=$2
     local column=$3
     local query=$4
     local index=$5
+    local limit=${6:-10000}
     psql -p "${port}" -d "${TEST_DB}" -tA -c "
         SELECT count(*) FROM (
             SELECT id FROM ${table}
             ORDER BY ${column} <@> to_bm25query('${query}',
                 '${index}')
-            LIMIT 100
+            LIMIT ${limit}
         ) t;" 2>/dev/null
 }
 

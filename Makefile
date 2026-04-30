@@ -147,6 +147,7 @@ test-logical-replication:
 test-replication-extended:
 	@echo "Running extended physical replication tests..."
 	@cd test/scripts && ./replication.sh
+	@cd test/scripts && ./replication_issue_342.sh
 	@cd test/scripts && ./replication_correctness.sh
 	@cd test/scripts && ./replication_concurrency.sh
 	@cd test/scripts && ./replication_failover.sh
