@@ -102,8 +102,8 @@ tp_expull_append(
 	}
 	else
 	{
-		uint32 page = arena_addr_page(expull->tail);
-		uint32 off  = arena_addr_offset(expull->tail);
+		uint32 page	 = arena_addr_page(expull->tail);
+		uint32 off	 = arena_addr_offset(expull->tail);
 		expull->tail = arena_addr_make(page, off + TP_EXPULL_ENTRY_SIZE);
 	}
 	expull->num_entries++;
