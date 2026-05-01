@@ -352,8 +352,8 @@ test_long_lived_partitioned_table() {
 
     log "before=${LL_BEFORE}, after=${LL_AFTER}"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "E1 BUG (expected): standby long-lived backend missed \
 partition insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
@@ -393,8 +393,8 @@ test_long_lived_expression_index() {
 
     log "before=${LL_BEFORE} (expect 1), after=${LL_AFTER} (expect 2)"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "E2 BUG (expected): expression-index standby long-lived \
 backend missed insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
@@ -437,8 +437,8 @@ test_long_lived_partial_index() {
 
     log "before=${LL_BEFORE} (expect 1), after=${LL_AFTER} (expect 2)"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "E3 BUG (expected): partial-index standby long-lived \
 backend missed insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
@@ -477,8 +477,8 @@ test_long_lived_text_array() {
 
     log "before=${LL_BEFORE} (expect 1), after=${LL_AFTER} (expect 2)"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "E4 BUG (expected): text[]-index standby long-lived \
 backend missed insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
@@ -540,10 +540,10 @@ test_long_lived_multiple_indexes_same_table() {
     log "body:  before=${body_before}, after=${body_after}"
     if [[ "${title_after}" == *ERROR* ]] || \
        [[ "${body_after}" == *ERROR* ]] || \
-       { [[ "${title_after}" =~ ^[0-9]+$ ]] && \
-         [[ "${body_after}" =~ ^[0-9]+$ ]] && \
-         { [ "${title_after}" -le "${title_before}" ] || \
-           [ "${body_after}" -le "${body_before}" ]; }; }; then
+       ! [[ "${title_after}" =~ ^[0-9]+$ ]] || \
+       ! [[ "${body_after}" =~ ^[0-9]+$ ]] || \
+       [ "${title_after}" -le "${title_before}" ] || \
+       [ "${body_after}" -le "${body_before}" ]; then
         error "E5 BUG (expected): standby long-lived backend missed \
 inserts on one or both indexes (title=${title_after}, body=${body_after})"
     fi

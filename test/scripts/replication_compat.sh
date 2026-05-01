@@ -20,13 +20,19 @@ LOGICAL_SUB_DIR="${SCRIPT_DIR}/../tmp_repl_compat_subscriber"
 source "${SCRIPT_DIR}/replication_lib.sh"
 
 # Custom cleanup that also handles the logical-subscriber instance.
+# Capture $? on entry: the wrapper runs commands before delegating
+# to repl_cleanup, which destroys the original exit code. Restore it
+# (via a subshell `exit`) so repl_cleanup's `local exit_code=$?`
+# captures the script's real exit status, not `rm -rf`'s.
 compat_cleanup() {
+    local rc=$?
     if [ -n "${LOGICAL_SUB_DIR:-}" ] && \
        [ -f "${LOGICAL_SUB_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${LOGICAL_SUB_DIR}" -m fast 2>/dev/null \
             || true
     fi
     rm -rf "${LOGICAL_SUB_DIR:-}"
+    (exit "$rc")
     repl_cleanup
 }
 trap compat_cleanup EXIT INT TERM
@@ -196,8 +202,8 @@ test, add timescaledb to shared_preload_libraries in setup_primary \
 
     log "  before=${LL_BEFORE}, after=${LL_AFTER}"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "F2 BUG (expected): hypertable standby long-lived \
 backend missed primary insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi

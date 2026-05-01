@@ -81,8 +81,8 @@ test_cascading_long_lived_staleness() {
 
     log "  before=${LL_BEFORE}, after=${LL_AFTER}"
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "C2 BUG (expected): standby2 long-lived backend missed \
 primary insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
@@ -131,7 +131,8 @@ EOF
     if [[ "${count}" == *ERROR* ]] || \
        ! [[ "${count}" =~ ^[0-9]+$ ]] || \
        [ "${count}" -lt 2 ]; then
-        warn "C3: standby2 may not have caught up yet (got ${count})"
+        error "C3: standby2 not caught up after chain promotion \
+(got ${count}, expected >= 2)"
     fi
     log "C3 PASSED"
 }

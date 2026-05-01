@@ -146,15 +146,29 @@ test-logical-replication:
 
 test-replication-extended:
 	@echo "Running extended physical replication tests..."
-	@cd test/scripts && ./replication.sh
-	@cd test/scripts && ./replication_issue_342.sh
-	@cd test/scripts && ./replication_parallel_build.sh
-	@cd test/scripts && ./replication_correctness.sh
-	@cd test/scripts && ./replication_concurrency.sh
-	@cd test/scripts && ./replication_failover.sh
-	@cd test/scripts && ./replication_compat.sh
-	@cd test/scripts && ./replication_cascading.sh
-	@cd test/scripts && ./replication_pitr.sh
+	@scripts="\
+	    replication.sh \
+	    replication_issue_342.sh \
+	    replication_parallel_build.sh \
+	    replication_correctness.sh \
+	    replication_concurrency.sh \
+	    replication_failover.sh \
+	    replication_compat.sh \
+	    replication_cascading.sh \
+	    replication_pitr.sh"; \
+	failed=""; \
+	for s in $$scripts; do \
+	    echo ""; \
+	    echo "==> $$s"; \
+	    if ! (cd test/scripts && "./$$s"); then \
+	        failed="$$failed $$s"; \
+	    fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+	    echo ""; \
+	    echo "Failed scripts:$$failed"; \
+	    exit 1; \
+	fi
 
 test-memory:
 	@echo "Running memory accounting tests..."

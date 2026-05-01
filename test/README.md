@@ -130,7 +130,7 @@ two/three-node setup helpers and FIFO-based long-lived psql session
 helpers (`long_lived_open`, `long_lived_query`, `long_lived_close`,
 `long_lived_before_after`).
 
-#### Files (25 tests across 8 scripts)
+#### Files (30 tests across 9 scripts)
 
 - **replication.sh** (5 tests) — basic standby queries, ongoing
   replication, segment replication, long-lived backend staleness,
@@ -202,7 +202,7 @@ make test-recovery                # Crash recovery testing
 make test-stress                  # Long-running stress tests
 make test-shell                   # All shell scripts (concurrency + recovery + memory limits)
 make test-replication             # Basic physical replication smoke test
-make test-replication-extended    # 24 replication tests (correctness, concurrency, failover, compat, cascading, PITR)
+make test-replication-extended    # 30 replication tests (correctness, concurrency, failover, compat, cascading, PITR, parallel build)
 make test-all                     # Complete test suite (SQL + shell scripts)
 
 # Direct execution

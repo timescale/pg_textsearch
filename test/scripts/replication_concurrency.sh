@@ -88,8 +88,8 @@ test_concurrent_standby_readers() {
         read -r before after < "${results_dir}/r_${i}"
         log "  reader ${i}: before=${before}, after=${after}"
         if [[ "${after}" == *ERROR* ]] || \
-           { [[ "${after}" =~ ^[0-9]+$ ]] && \
-             [ "${after}" -le "${before}" ]; }; then
+           ! [[ "${after}" =~ ^[0-9]+$ ]] || \
+           [ "${after}" -le "${before}" ]; then
             fail_count=$((fail_count + 1))
         fi
     done

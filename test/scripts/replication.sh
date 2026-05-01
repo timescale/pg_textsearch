@@ -294,8 +294,8 @@ test_long_lived_backend_staleness() {
     #      (long-lived backend has a stale view of segment storage).
     # Once fixed, LL_AFTER should be LL_BEFORE + 1 (the new doc is visible).
     if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       { [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] && \
-         [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; }; then
+       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
+       [ "${LL_AFTER}" -le "${LL_BEFORE}" ]; then
         error "BUG (expected): long-lived standby backend did not see \
 new primary insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     fi
