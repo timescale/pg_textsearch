@@ -37,6 +37,8 @@ test/
 - **concurrency.sh** - Multi-session concurrency and string interning safety tests
 - **memory_limits.sh** - Memory budget enforcement stress testing with capacity limits
 - **replication.sh** - Physical streaming replication smoke tests + long-lived backend staleness reproducer
+- **replication_issue_342.sh** - Targeted #342 reproducer (memtable spill standby visibility)
+- **replication_parallel_build.sh** - 150K-row parallel CREATE INDEX with standby streaming
 - **replication_correctness.sh** - 10 long-lived-backend correctness tests across schema variations
 - **replication_concurrency.sh** - Multiple concurrent standby readers under primary write load
 - **replication_failover.sh** - Standby promotion under various pre-promotion states
@@ -128,11 +130,16 @@ two/three-node setup helpers and FIFO-based long-lived psql session
 helpers (`long_lived_open`, `long_lived_query`, `long_lived_close`,
 `long_lived_before_after`).
 
-#### Files (24 tests across 7 scripts)
+#### Files (25 tests across 8 scripts)
 
 - **replication.sh** (5 tests) — basic standby queries, ongoing
   replication, segment replication, long-lived backend staleness,
   standby promotion.
+- **replication_issue_342.sh** (1 test) — targeted #342 reproducer
+  (memtable spill standby visibility).
+- **replication_parallel_build.sh** (1 test) — 150K-row parallel
+  CREATE INDEX with standby streaming (exercises the
+  `build_parallel.c` WAL pass added in PR #343).
 - **replication_correctness.sh** (10 tests) — long-lived-backend
   correctness across spill/merge/UPDATE/DELETE+VACUUM/partitioned/
   expression/partial/array/multi-index variations.
