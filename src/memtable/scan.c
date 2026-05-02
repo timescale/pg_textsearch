@@ -65,19 +65,20 @@ tp_memtable_search(
 	ptr = (char *)entries_ptr;
 	for (int i = 0; i < entry_count; i++)
 	{
-		TpVectorEntry *entry = (TpVectorEntry *)ptr;
-		char		  *term_str;
+		TpVectorEntry	 *entry = (TpVectorEntry *)ptr;
+		TpVectorEntryView v;
+		char			 *term_str;
 
-		/* Allocate on heap for query terms array */
-		term_str = palloc(entry->lexeme_len + 1);
-		memcpy(term_str, entry->lexeme, entry->lexeme_len);
-		term_str[entry->lexeme_len] = '\0';
+		tpvector_entry_decode(entry, &v);
 
-		/* Store the term string directly in query terms array */
+		term_str = palloc(v.lexeme_len + 1);
+		memcpy(term_str, v.lexeme, v.lexeme_len);
+		term_str[v.lexeme_len] = '\0';
+
 		query_terms[i]		 = term_str;
-		query_frequencies[i] = entry->frequency;
+		query_frequencies[i] = (int32)v.frequency;
 
-		ptr += sizeof(TpVectorEntry) + MAXALIGN(entry->lexeme_len);
+		ptr = (char *)get_tpvector_next_entry(entry);
 	}
 
 	/* Allocate result arrays in scan context */

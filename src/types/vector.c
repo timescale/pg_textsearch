@@ -31,16 +31,102 @@
 #include "memtable/posting.h"
 #include "types/vector.h"
 
-/* Local helper functions */
+/* ---------------------------------------------------------------------
+ * Legacy v1 layout — accepted by readers, never written.
+ * ---------------------------------------------------------------------
+ */
 
-/* Helper structure for sorting lexemes */
+typedef struct TpVectorEntry_v1
+{
+	int32 frequency;
+	int32 lexeme_len;
+	char  lexeme[FLEXIBLE_ARRAY_MEMBER];
+} TpVectorEntry_v1;
+
+typedef struct TpVector_v1
+{
+	int32 vl_len_;
+	int32 index_name_len;
+	int32 entry_count;
+	char  data[FLEXIBLE_ARRAY_MEMBER];
+} TpVector_v1;
+
+#define TPVECTOR_V1_INDEX_NAME_PTR(x) (((TpVector_v1 *)(x))->data)
+#define TPVECTOR_V1_ENTRIES_PTR(x)                     \
+	((TpVectorEntry_v1 *)(((TpVector_v1 *)(x))->data + \
+						  MAXALIGN(                    \
+								  ((TpVector_v1 *)(x))->index_name_len + 1)))
+
+/* ---------------------------------------------------------------------
+ * Varint helpers (LEB128 base-128 little-endian)
+ * ---------------------------------------------------------------------
+ */
+
+size_t
+tpvector_varint_encode(uint32 v, uint8 *out)
+{
+	size_t n = 0;
+
+	while (v >= 0x80)
+	{
+		out[n++] = (uint8)(v | 0x80);
+		v >>= 7;
+	}
+	out[n++] = (uint8)v;
+	return n;
+}
+
+uint32
+tpvector_varint_decode(const uint8 **cursor, const uint8 *end)
+{
+	uint32		 result = 0;
+	int			 shift	= 0;
+	const uint8 *p		= *cursor;
+
+	while (p < end && (*p & 0x80) != 0)
+	{
+		result |= ((uint32)(*p & 0x7F)) << shift;
+		shift += 7;
+		p++;
+		if (shift >= 32)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("bm25vector varint exceeds 32 bits")));
+	}
+	if (p >= end)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector varint truncated")));
+	result |= ((uint32)*p) << shift;
+	p++;
+	*cursor = p;
+	return result;
+}
+
+size_t
+tpvector_varint_size(uint32 v)
+{
+	size_t n = 1;
+
+	while (v >= 0x80)
+	{
+		v >>= 7;
+		n++;
+	}
+	return n;
+}
+
+/* ---------------------------------------------------------------------
+ * Local helpers
+ * ---------------------------------------------------------------------
+ */
+
 typedef struct
 {
 	const char *lexeme;
 	int32		frequency;
 } LexemeFreqPair;
 
-/* Helper function for qsort comparison of lexemes */
 static int
 strcmp_wrapper(const void *a, const void *b)
 {
@@ -50,7 +136,6 @@ strcmp_wrapper(const void *a, const void *b)
 	return strcmp(pair_a->lexeme, pair_b->lexeme);
 }
 
-/* Helper macros and functions */
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #endif
@@ -62,11 +147,175 @@ PG_FUNCTION_INFO_V1(tpvector_send);
 PG_FUNCTION_INFO_V1(tpvector_eq);
 PG_FUNCTION_INFO_V1(to_tpvector);
 
-/*
- * tpvector input function
- * Format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
- * Example: "my_index:{database:2,system:1,query:4}"
+/* ---------------------------------------------------------------------
+ * Format detection and v1 → v2 conversion
+ * ---------------------------------------------------------------------
  */
+
+bool
+tpvector_is_v2(const void *raw)
+{
+	const char *bytes = (const char *)raw;
+
+	if (raw == NULL || VARSIZE(raw) < (Size)(sizeof(int32) + 4))
+		return false;
+
+	bytes += sizeof(int32); /* skip vl_len_ */
+	return bytes[0] == TPVECTOR_V2_MAGIC0 && bytes[1] == TPVECTOR_V2_MAGIC1 &&
+		   bytes[2] == TPVECTOR_V2_MAGIC2 && bytes[3] == TPVECTOR_V2_MAGIC3;
+}
+
+static TpVector *
+tpvector_v1_to_v2(TpVector_v1 *src)
+{
+	int				  i;
+	int				  index_name_len;
+	int				  entry_count;
+	Size			  v2_size;
+	TpVector		 *dst;
+	const char		 *src_end;
+	TpVectorEntry_v1 *src_entry;
+	uint8			 *dst_entry_ptr;
+
+	if (VARSIZE(src) < sizeof(TpVector_v1))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid tpvector v1 size: %u", VARSIZE(src))));
+
+	index_name_len = src->index_name_len;
+	entry_count	   = src->entry_count;
+
+	if (index_name_len < 0 || index_name_len > TP_MAX_INDEX_NAME_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid index name length in v1 tpvector: %d",
+						index_name_len)));
+
+	if (entry_count < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid entry count in v1 tpvector: %d",
+						entry_count)));
+
+	v2_size	  = MAXALIGN(sizeof(TpVector)) + MAXALIGN(index_name_len + 1);
+	src_entry = TPVECTOR_V1_ENTRIES_PTR(src);
+	src_end	  = (const char *)src + VARSIZE(src);
+	for (i = 0; i < entry_count; i++)
+	{
+		uint32 freq;
+		uint32 lex_len;
+
+		if ((const char *)src_entry + sizeof(TpVectorEntry_v1) > src_end ||
+			src_entry->lexeme_len < 0 ||
+			(const char *)src_entry->lexeme + src_entry->lexeme_len > src_end)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("v1 tpvector entry %d extends beyond bounds", i)));
+
+		freq	= (uint32)Max(src_entry->frequency, 0);
+		lex_len = (uint32)src_entry->lexeme_len;
+		v2_size += tpvector_varint_size(freq) + tpvector_varint_size(lex_len) +
+				   lex_len;
+
+		src_entry = (TpVectorEntry_v1 *)((char *)src_entry +
+										 MAXALIGN(
+												 sizeof(TpVectorEntry_v1) +
+												 src_entry->lexeme_len));
+	}
+
+	dst = (TpVector *)palloc0(v2_size);
+	SET_VARSIZE(dst, v2_size);
+	dst->magic[0]		= TPVECTOR_V2_MAGIC0;
+	dst->magic[1]		= TPVECTOR_V2_MAGIC1;
+	dst->magic[2]		= TPVECTOR_V2_MAGIC2;
+	dst->magic[3]		= TPVECTOR_V2_MAGIC3;
+	dst->version		= TPVECTOR_VERSION;
+	dst->index_name_len = index_name_len;
+	dst->entry_count	= entry_count;
+
+	memcpy(TPVECTOR_INDEX_NAME_PTR(dst),
+		   TPVECTOR_V1_INDEX_NAME_PTR(src),
+		   index_name_len);
+	*((char *)TPVECTOR_INDEX_NAME_PTR(dst) + index_name_len) = '\0';
+
+	src_entry	  = TPVECTOR_V1_ENTRIES_PTR(src);
+	dst_entry_ptr = (uint8 *)TPVECTOR_ENTRIES_PTR(dst);
+	for (i = 0; i < entry_count; i++)
+	{
+		uint32 freq	   = (uint32)Max(src_entry->frequency, 0);
+		uint32 lex_len = (uint32)src_entry->lexeme_len;
+
+		dst_entry_ptr += tpvector_varint_encode(freq, dst_entry_ptr);
+		dst_entry_ptr += tpvector_varint_encode(lex_len, dst_entry_ptr);
+		memcpy(dst_entry_ptr, src_entry->lexeme, lex_len);
+		dst_entry_ptr += lex_len;
+
+		src_entry = (TpVectorEntry_v1 *)((char *)src_entry +
+										 MAXALIGN(
+												 sizeof(TpVectorEntry_v1) +
+												 src_entry->lexeme_len));
+	}
+
+	return dst;
+}
+
+TpVector *
+tpvector_canonicalize(TpVector *raw)
+{
+	if (raw == NULL)
+		return NULL;
+	if (tpvector_is_v2(raw))
+		return raw;
+	return tpvector_v1_to_v2((TpVector_v1 *)raw);
+}
+
+/* ---------------------------------------------------------------------
+ * Entry iteration (v2)
+ * ---------------------------------------------------------------------
+ */
+
+void
+tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out)
+{
+	const uint8 *cursor = (const uint8 *)entry;
+	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+
+	out->frequency	= tpvector_varint_decode(&cursor, end);
+	out->lexeme_len = tpvector_varint_decode(&cursor, end);
+	out->lexeme		= (const char *)cursor;
+}
+
+TpVectorEntry *
+get_tpvector_first_entry(TpVector *vec)
+{
+	if (!vec || vec->entry_count == 0)
+		return NULL;
+	return TPVECTOR_ENTRIES_PTR(vec);
+}
+
+TpVectorEntry *
+get_tpvector_next_entry(TpVectorEntry *current)
+{
+	const uint8 *cursor;
+	uint32		 freq;
+	uint32		 lex_len;
+
+	if (!current)
+		return NULL;
+
+	cursor	= (const uint8 *)current;
+	freq	= tpvector_varint_decode(&cursor, cursor + UINT32_MAX);
+	lex_len = tpvector_varint_decode(&cursor, cursor + UINT32_MAX);
+	(void)freq;
+	cursor += lex_len;
+	return (TpVectorEntry *)cursor;
+}
+
+/* ---------------------------------------------------------------------
+ * tpvector_in: text input
+ * ---------------------------------------------------------------------
+ */
+
 Datum
 tpvector_in(PG_FUNCTION_ARGS)
 {
@@ -83,7 +332,6 @@ tpvector_in(PG_FUNCTION_ARGS)
 	char	 *end_ptr;
 	int		  i = 0;
 
-	/* Find the colon separator */
 	colon_pos = strchr(str, ':');
 	if (colon_pos == NULL)
 		ereport(ERROR,
@@ -92,16 +340,13 @@ tpvector_in(PG_FUNCTION_ARGS)
 				 errhint("Expected format: "
 						 "\"index_name:{lexeme:freq,...}\"")));
 
-	/* Extract index name */
 	index_name_len = colon_pos - str;
 	index_name	   = palloc(index_name_len + 1);
 	memcpy(index_name, str, index_name_len);
 	index_name[index_name_len] = '\0';
 
-	/* Parse entries part */
 	entries_str = colon_pos + 1;
 
-	/* Validate entries_str starts with '{' and ends with '}' */
 	if (!entries_str || strlen(entries_str) < 2 || entries_str[0] != '{' ||
 		entries_str[strlen(entries_str) - 1] != '}')
 		ereport(ERROR,
@@ -110,12 +355,10 @@ tpvector_in(PG_FUNCTION_ARGS)
 				 errhint("Entries must be enclosed in braces: "
 						 "{lexeme:freq,...}")));
 
-	/* Skip braces */
 	entries_str++;
 	end_ptr	 = entries_str + strlen(entries_str) - 1;
 	*end_ptr = '\0';
 
-	/* Count entries first */
 	if (strlen(entries_str) > 0)
 	{
 		entry_count = 1;
@@ -126,13 +369,11 @@ tpvector_in(PG_FUNCTION_ARGS)
 		}
 	}
 
-	/* Allocate arrays for lexemes and frequencies */
 	if (entry_count > 0)
 	{
 		lexemes		= palloc(entry_count * sizeof(char *));
 		frequencies = palloc(entry_count * sizeof(int32));
 
-		/* Parse each entry */
 		ptr = entries_str;
 		for (i = 0; i < entry_count; i++)
 		{
@@ -148,14 +389,12 @@ tpvector_in(PG_FUNCTION_ARGS)
 						 errmsg("invalid entry format in tpvector: \"%s\"",
 								ptr)));
 
-			/* Extract lexeme */
 			lexeme_len = entry_colon_pos - ptr;
 			lexeme	   = palloc(lexeme_len + 1);
 			memcpy(lexeme, ptr, lexeme_len);
 			lexeme[lexeme_len] = '\0';
 			lexemes[i]		   = lexeme;
 
-			/* Extract frequency */
 			freq_str = entry_colon_pos + 1;
 			if (comma_pos)
 			{
@@ -173,11 +412,9 @@ tpvector_in(PG_FUNCTION_ARGS)
 		}
 	}
 
-	/* Create tpvector */
 	result = create_tpvector_from_strings(
 			index_name, entry_count, (const char **)lexemes, frequencies);
 
-	/* Cleanup */
 	pfree(index_name);
 	if (lexemes)
 	{
@@ -191,10 +428,11 @@ tpvector_in(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(result);
 }
 
-/*
- * tpvector output function
- * Outputs in format: "index_name:{lexeme1:freq1,lexeme2:freq2,...}"
+/* ---------------------------------------------------------------------
+ * tpvector_out: text output (canonicalized)
+ * ---------------------------------------------------------------------
  */
+
 Datum
 tpvector_out(PG_FUNCTION_ARGS)
 {
@@ -204,80 +442,47 @@ tpvector_out(PG_FUNCTION_ARGS)
 	TpVectorEntry *entry;
 	int			   i;
 
-	tpvec = (TpVector *)PG_GETARG_POINTER(0);
-
-	/* Basic validation */
+	tpvec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
 	if (!tpvec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 				 errmsg("null tpvector passed to tpvector_out")));
 
-	/* Detoast the input if necessary */
-	tpvec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	tpvec = tpvector_canonicalize(tpvec);
 
-	/* Additional validation after detoasting */
-	if (!tpvec || VARSIZE(tpvec) < sizeof(TpVector))
+	if (VARSIZE(tpvec) < sizeof(TpVector))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid tpvector structure")));
 
-	/* Get index name component */
 	index_name = get_tpvector_index_name(tpvec);
-	if (!index_name)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("failed to extract index name from tpvector")));
 
-	/* Build output string */
 	initStringInfo(&result);
 	appendStringInfo(&result, "%s:{", index_name);
 
-	/* Add each entry - use stored strings directly */
 	entry = TPVECTOR_ENTRIES_PTR(tpvec);
 	for (i = 0; i < tpvec->entry_count; i++)
 	{
-		char *lexeme;
-		bool  use_heap = false;
+		TpVectorEntryView v;
+		char			 *lexeme;
+		bool			  use_heap;
 
-		/* Validate entry stays within the varlena bounds */
-		if ((char *)entry + sizeof(TpVectorEntry) >
-			(char *)tpvec + VARSIZE(tpvec))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("bm25vector entry %d extends beyond "
-							"allocated bounds",
-							i)));
-
-		/* Validate lexeme_len and lexeme data within bounds */
-		if (entry->lexeme_len < 0 ||
-			(char *)entry->lexeme + entry->lexeme_len >
-					(char *)tpvec + VARSIZE(tpvec))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("invalid lexeme length %d in bm25vector "
-							"entry %d",
-							entry->lexeme_len,
-							i)));
+		tpvector_entry_decode(entry, &v);
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
-		if (entry->lexeme_len < 256)
-		{
-			lexeme = alloca(entry->lexeme_len + 1);
-		}
+		use_heap = v.lexeme_len >= 256;
+		if (use_heap)
+			lexeme = palloc(v.lexeme_len + 1);
 		else
-		{
-			lexeme	 = palloc(entry->lexeme_len + 1);
-			use_heap = true;
-		}
+			lexeme = alloca(v.lexeme_len + 1);
 
-		memcpy(lexeme, entry->lexeme, entry->lexeme_len);
-		lexeme[entry->lexeme_len] = '\0';
+		memcpy(lexeme, v.lexeme, v.lexeme_len);
+		lexeme[v.lexeme_len] = '\0';
 
-		appendStringInfo(&result, "%s:%d", lexeme, entry->frequency);
+		appendStringInfo(&result, "%s:%u", lexeme, v.frequency);
 
-		/* Free only if we used heap allocation */
 		if (use_heap)
 			pfree(lexeme);
 
@@ -286,15 +491,16 @@ tpvector_out(PG_FUNCTION_ARGS)
 
 	appendStringInfoChar(&result, '}');
 
-	/* Clean up allocated memory */
 	pfree(index_name);
 
 	PG_RETURN_CSTRING(result.data);
 }
 
-/*
- * tpvector binary receive function
+/* ---------------------------------------------------------------------
+ * tpvector_recv: binary receive (accepts v1 + v2)
+ * ---------------------------------------------------------------------
  */
+
 Datum
 tpvector_recv(PG_FUNCTION_ARGS)
 {
@@ -302,79 +508,130 @@ tpvector_recv(PG_FUNCTION_ARGS)
 	int		   total_size;
 	TpVector  *result;
 
-	/* Read total size */
 	total_size = pq_getmsgint(buf, 4);
 
-	/* Validate total_size to prevent undersized or huge allocations */
-	if (total_size < (int)sizeof(TpVector) || (Size)total_size > MaxAllocSize)
+	if (total_size < (int)sizeof(TpVector_v1) ||
+		(Size)total_size > MaxAllocSize)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("invalid bm25vector binary size: %d", total_size)));
 
-	/* Allocate and read the entire structure */
 	result = (TpVector *)palloc(total_size);
 	SET_VARSIZE(result, total_size);
 
-	/* Read the rest of the structure after varlena header */
 	pq_copymsgbytes(
 			buf, (char *)result + sizeof(int32), total_size - sizeof(int32));
 
-	/* Validate deserialized fields */
-	if (result->index_name_len < 0 ||
-		result->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-				 errmsg("invalid index name length in bm25vector: %d",
-						result->index_name_len)));
-
-	if (result->entry_count < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-				 errmsg("invalid entry count in bm25vector: %d",
-						result->entry_count)));
-
-	/* Cross-field validation: ensure total_size is consistent */
+	if (!tpvector_is_v2(result))
 	{
-		Size min_payload = sizeof(TpVector) +
-						   MAXALIGN(result->index_name_len + 1) +
-						   (Size)result->entry_count * sizeof(TpVectorEntry);
-		if (min_payload > (Size)total_size)
+		TpVector_v1 *v1 = (TpVector_v1 *)result;
+
+		if (v1->index_name_len < 0 ||
+			v1->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("bm25vector binary data too small "
-							"for %d entries",
-							result->entry_count)));
-	}
+					 errmsg("invalid index name length in bm25vector: %d",
+							v1->index_name_len)));
 
-	/* Validate each entry's lexeme data fits within the buffer */
+		if (v1->entry_count < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("invalid entry count in bm25vector: %d",
+							v1->entry_count)));
+
+		{
+			TpVectorEntry_v1 *entry	  = TPVECTOR_V1_ENTRIES_PTR(v1);
+			char			 *buf_end = (char *)v1 + total_size;
+
+			for (int i = 0; i < v1->entry_count; i++)
+			{
+				if ((char *)entry + sizeof(TpVectorEntry_v1) > buf_end)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+							 errmsg("bm25vector entry %d header "
+									"extends beyond buffer",
+									i)));
+				if (entry->lexeme_len < 0 ||
+					(char *)entry->lexeme + entry->lexeme_len > buf_end)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+							 errmsg("bm25vector entry %d lexeme "
+									"extends beyond buffer",
+									i)));
+				entry = (TpVectorEntry_v1 *)((char *)entry +
+											 MAXALIGN(
+													 sizeof(TpVectorEntry_v1) +
+													 entry->lexeme_len));
+			}
+		}
+
+		result = tpvector_v1_to_v2(v1);
+		pfree(v1);
+	}
+	else
 	{
-		TpVectorEntry *entry   = TPVECTOR_ENTRIES_PTR(result);
-		char		  *buf_end = (char *)result + total_size;
+		const uint8 *cursor;
+		const uint8 *end;
+
+		if (total_size < (int)sizeof(TpVector))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("v2 bm25vector binary too small: %d",
+							total_size)));
+
+		if (result->version != TPVECTOR_VERSION)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("unsupported bm25vector version: %u",
+							result->version)));
+
+		if (result->index_name_len < 0 ||
+			result->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("invalid index name length in bm25vector: %d",
+							result->index_name_len)));
+
+		if (result->entry_count < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+					 errmsg("invalid entry count in bm25vector: %d",
+							result->entry_count)));
+
+		cursor = (const uint8 *)TPVECTOR_ENTRIES_PTR(result);
+		end	   = (const uint8 *)result + total_size;
 		for (int i = 0; i < result->entry_count; i++)
 		{
-			if ((char *)entry + sizeof(TpVectorEntry) > buf_end)
+			uint32 freq;
+			uint32 lex_len;
+
+			if (cursor >= end)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-						 errmsg("bm25vector entry %d header "
-								"extends beyond buffer",
-								i)));
-			if (entry->lexeme_len < 0 ||
-				(char *)entry->lexeme + entry->lexeme_len > buf_end)
+						 errmsg("v2 bm25vector entry %d truncated", i)));
+
+			freq	= tpvector_varint_decode(&cursor, end);
+			lex_len = tpvector_varint_decode(&cursor, end);
+			(void)freq;
+
+			if (cursor + lex_len > end)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-						 errmsg("bm25vector entry %d lexeme "
+						 errmsg("v2 bm25vector entry %d lexeme "
 								"extends beyond buffer",
 								i)));
-			entry = get_tpvector_next_entry(entry);
+			cursor += lex_len;
 		}
 	}
 
 	PG_RETURN_POINTER(result);
 }
 
-/*
- * tpvector binary send function
+/* ---------------------------------------------------------------------
+ * tpvector_send: binary send (always emits v2)
+ * ---------------------------------------------------------------------
  */
+
 Datum
 tpvector_send(PG_FUNCTION_ARGS)
 {
@@ -383,23 +640,23 @@ tpvector_send(PG_FUNCTION_ARGS)
 	int			   total_size;
 
 	tpvec = (TpVector *)PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	tpvec = tpvector_canonicalize(tpvec);
 
 	pq_begintypsend(&buf);
 
-	/* Send total size */
 	total_size = VARSIZE(tpvec);
 	pq_sendint32(&buf, total_size);
-
-	/* Send the entire structure after varlena header */
 	pq_sendbytes(
 			&buf, (char *)tpvec + sizeof(int32), total_size - sizeof(int32));
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
-/*
- * Equality function: tpvector = tpvector → boolean
+/* ---------------------------------------------------------------------
+ * tpvector_eq: equality
+ * ---------------------------------------------------------------------
  */
+
 Datum
 tpvector_eq(PG_FUNCTION_ARGS)
 {
@@ -410,7 +667,9 @@ tpvector_eq(PG_FUNCTION_ARGS)
 	bool	  result = true;
 	int		  i;
 
-	/* Compare index names first */
+	vec1 = tpvector_canonicalize(vec1);
+	vec2 = tpvector_canonicalize(vec2);
+
 	index_name1 = get_tpvector_index_name(vec1);
 	index_name2 = get_tpvector_index_name(vec2);
 
@@ -421,7 +680,6 @@ tpvector_eq(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(false);
 	}
 
-	/* Compare entry counts */
 	if (vec1->entry_count != vec2->entry_count)
 	{
 		pfree(index_name1);
@@ -429,41 +687,37 @@ tpvector_eq(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(false);
 	}
 
-	/*
-	 * For proper equality comparison, we need to check that both vectors
-	 * contain the same terms with the same frequencies, regardless of order.
-	 * We'll do this by checking each term in vec1 exists in vec2.
-	 */
-
-	/* Compare entries - we need to iterate through variable-length entries */
 	{
-		TpVectorEntry *entry1 = get_tpvector_first_entry(vec1);
+		TpVectorEntry *e1 = get_tpvector_first_entry(vec1);
 
-		for (i = 0; i < vec1->entry_count && result && entry1; i++)
+		for (i = 0; i < vec1->entry_count && result && e1; i++)
 		{
-			bool		   found_match = false;
-			TpVectorEntry *entry2	   = get_tpvector_first_entry(vec2);
-			int			   j;
+			TpVectorEntryView v1;
+			TpVectorEntry	 *e2		  = get_tpvector_first_entry(vec2);
+			bool			  found_match = false;
+			int				  j;
 
-			/* Look for this term in vec2 */
-			for (j = 0; j < vec2->entry_count && entry2; j++)
+			tpvector_entry_decode(e1, &v1);
+
+			for (j = 0; j < vec2->entry_count && e2; j++)
 			{
-				if (entry1->lexeme_len == entry2->lexeme_len &&
-					entry1->frequency == entry2->frequency &&
-					memcmp(entry1->lexeme,
-						   entry2->lexeme,
-						   entry1->lexeme_len) == 0)
+				TpVectorEntryView v2;
+
+				tpvector_entry_decode(e2, &v2);
+				if (v1.lexeme_len == v2.lexeme_len &&
+					v1.frequency == v2.frequency &&
+					memcmp(v1.lexeme, v2.lexeme, v1.lexeme_len) == 0)
 				{
 					found_match = true;
 					break;
 				}
-				entry2 = get_tpvector_next_entry(entry2);
+				e2 = get_tpvector_next_entry(e2);
 			}
 
 			if (!found_match)
 				result = false;
 
-			entry1 = get_tpvector_next_entry(entry1);
+			e1 = get_tpvector_next_entry(e1);
 		}
 	}
 
@@ -472,9 +726,11 @@ tpvector_eq(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(result);
 }
 
-/*
- * Utility function to extract index name from tpvector
+/* ---------------------------------------------------------------------
+ * Accessors
+ * ---------------------------------------------------------------------
  */
+
 char *
 get_tpvector_index_name(TpVector *tpvec)
 {
@@ -483,13 +739,11 @@ get_tpvector_index_name(TpVector *tpvec)
 	char		*name_ptr;
 	unsigned int vector_total_size;
 
-	/* Validate input */
 	if (!tpvec)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 				 errmsg("null tpvector passed to get_tpvector_index_name")));
 
-	/* Validate vector structure size */
 	vector_total_size = VARSIZE(tpvec);
 	if (vector_total_size < sizeof(TpVector))
 		ereport(ERROR,
@@ -498,13 +752,11 @@ get_tpvector_index_name(TpVector *tpvec)
 
 	name_len = tpvec->index_name_len;
 
-	/* Validate name length */
 	if (name_len < 0 || name_len > TP_MAX_INDEX_NAME_LENGTH)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("invalid index name length: %d", name_len)));
 
-	/* Validate that name pointer is within vector bounds */
 	name_ptr = TPVECTOR_INDEX_NAME_PTR(tpvec);
 	if (name_ptr < (char *)tpvec ||
 		name_ptr + name_len > (char *)tpvec + vector_total_size)
@@ -519,9 +771,6 @@ get_tpvector_index_name(TpVector *tpvec)
 	return index_name;
 }
 
-/*
- * Utility function to create a tpvector from string lexemes
- */
 TpVector *
 create_tpvector_from_strings(
 		const char	*index_name,
@@ -529,12 +778,12 @@ create_tpvector_from_strings(
 		const char **lexemes,
 		const int32 *frequencies)
 {
-	int		  index_name_len;
-	int		  total_size;
-	int		  i;
-	TpVector *result;
+	int				index_name_len;
+	int				total_size;
+	int				i;
+	TpVector	   *result;
+	LexemeFreqPair *pairs = NULL;
 
-	/* Validate inputs */
 	if (!index_name)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
@@ -546,64 +795,63 @@ create_tpvector_from_strings(
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("empty index name in create_tpvector_from_strings")));
 
-	/* Calculate total size needed - entries are variable length */
-	total_size = MAXALIGN(sizeof(TpVector)) + MAXALIGN(index_name_len + 1);
-
-	/* Add space for each variable-length entry */
-	for (i = 0; i < entry_count; i++)
+	if (entry_count > 0 && lexemes && frequencies)
 	{
-		if (lexemes && lexemes[i])
-		{
-			int lexeme_len = strlen(lexemes[i]);
-
-			total_size += MAXALIGN(sizeof(TpVectorEntry) + lexeme_len);
-		}
-	}
-
-	/* Allocate and initialize */
-	result = (TpVector *)palloc0(total_size);
-	SET_VARSIZE(result, total_size);
-	result->index_name_len = index_name_len;
-	result->entry_count	   = entry_count;
-
-	/* Copy index name */
-	memcpy(TPVECTOR_INDEX_NAME_PTR(result), index_name, index_name_len);
-	*((char *)TPVECTOR_INDEX_NAME_PTR(result) + index_name_len) = '\0';
-
-	/* Sort entries by lexeme for consistent ordering */
-	if (lexemes && frequencies && entry_count > 0)
-	{
-		/* Create temporary array for sorting */
-		LexemeFreqPair *pairs = palloc(entry_count * sizeof(LexemeFreqPair));
-		char		   *entry_ptr;
-
-		/* Copy to temporary array */
+		pairs = palloc(entry_count * sizeof(LexemeFreqPair));
 		for (i = 0; i < entry_count; i++)
 		{
 			pairs[i].lexeme	   = lexemes[i];
 			pairs[i].frequency = frequencies[i];
 		}
-
-		/* Sort by lexeme string */
 		if (entry_count > 1)
-		{
 			qsort(pairs, entry_count, sizeof(LexemeFreqPair), strcmp_wrapper);
-		}
+	}
 
-		/* Store sorted entries */
-		entry_ptr = (char *)TPVECTOR_ENTRIES_PTR(result);
+	total_size = MAXALIGN(sizeof(TpVector)) + MAXALIGN(index_name_len + 1);
+	for (i = 0; i < entry_count; i++)
+	{
+		const char *lex	 = pairs ? pairs[i].lexeme
+								 : (lexemes ? lexemes[i] : NULL);
+		int32		freq = pairs ? pairs[i].frequency
+								 : (frequencies ? frequencies[i] : 0);
+		int			lex_len;
+
+		if (!lex)
+			continue;
+
+		lex_len = strlen(lex);
+		total_size += tpvector_varint_size((uint32)Max(freq, 0)) +
+					  tpvector_varint_size((uint32)lex_len) + lex_len;
+	}
+
+	result = (TpVector *)palloc0(total_size);
+	SET_VARSIZE(result, total_size);
+
+	result->magic[0] = TPVECTOR_V2_MAGIC0;
+	result->magic[1] = TPVECTOR_V2_MAGIC1;
+	result->magic[2] = TPVECTOR_V2_MAGIC2;
+	result->magic[3] = TPVECTOR_V2_MAGIC3;
+	result->version	 = TPVECTOR_VERSION;
+
+	result->index_name_len = index_name_len;
+	result->entry_count	   = entry_count;
+
+	memcpy(TPVECTOR_INDEX_NAME_PTR(result), index_name, index_name_len);
+	*((char *)TPVECTOR_INDEX_NAME_PTR(result) + index_name_len) = '\0';
+
+	if (pairs)
+	{
+		uint8 *entry_ptr = (uint8 *)TPVECTOR_ENTRIES_PTR(result);
+
 		for (i = 0; i < entry_count; i++)
 		{
-			TpVectorEntry *entry	  = (TpVectorEntry *)entry_ptr;
-			int			   lexeme_len = strlen(pairs[i].lexeme);
+			uint32 freq	   = (uint32)Max(pairs[i].frequency, 0);
+			int	   lex_len = strlen(pairs[i].lexeme);
 
-			entry->frequency  = pairs[i].frequency;
-			entry->lexeme_len = lexeme_len;
-			memcpy(entry->lexeme, pairs[i].lexeme, lexeme_len);
-			/* No null terminator needed - we store the length */
-
-			/* Move to next entry position */
-			entry_ptr += MAXALIGN(sizeof(TpVectorEntry) + lexeme_len);
+			entry_ptr += tpvector_varint_encode(freq, entry_ptr);
+			entry_ptr += tpvector_varint_encode((uint32)lex_len, entry_ptr);
+			memcpy(entry_ptr, pairs[i].lexeme, lex_len);
+			entry_ptr += lex_len;
 		}
 
 		pfree(pairs);
@@ -612,36 +860,11 @@ create_tpvector_from_strings(
 	return result;
 }
 
-/*
- * Helper function to get first entry from tpvector
+/* ---------------------------------------------------------------------
+ * to_tpvector: build a v2 vector from text + index name
+ * ---------------------------------------------------------------------
  */
-TpVectorEntry *
-get_tpvector_first_entry(TpVector *vec)
-{
-	if (!vec || vec->entry_count == 0)
-		return NULL;
-	return TPVECTOR_ENTRIES_PTR(vec);
-}
 
-/*
- * Helper function to iterate through tpvector entries (variable length)
- */
-TpVectorEntry *
-get_tpvector_next_entry(TpVectorEntry *current)
-{
-	if (!current)
-		return NULL;
-
-	/* Move to next entry - entries are variable length */
-	return (TpVectorEntry *)((char *)current + MAXALIGN(
-													   sizeof(TpVectorEntry) +
-													   current->lexeme_len));
-}
-
-/*
- * to_tpvector(text, index_name) - Create a tpvector from text using index's
- * config
- */
 Datum
 to_tpvector(PG_FUNCTION_ARGS)
 {
@@ -662,37 +885,27 @@ to_tpvector(PG_FUNCTION_ARGS)
 	int				entry_count;
 	TpVector	   *result;
 
-	/* Extract index name */
 	index_name = text_to_cstring(index_name_text);
 
-	/* Look up index OID */
 	index_oid = tp_resolve_index_name_shared(index_name);
 
 	if (!OidIsValid(index_oid))
-	{
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
 				 errmsg("index \"%s\" not found", index_name)));
-	}
 
-	/* Open the index relation to get metadata */
 	index_rel = index_open(index_oid, AccessShareLock);
 	if (!RelationIsValid(index_rel))
-	{
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
 				 errmsg("could not open index \"%s\"", index_name)));
-	}
 
-	/* Get the metapage to extract text_config_oid */
 	metap = tp_get_metapage(index_rel);
 
-	/* Get the text config OID and name */
 	text_config_oid = metap->text_config_oid;
 
 	if (OidIsValid(text_config_oid))
 	{
-		/* Use the stored text config OID - convert to regconfig text */
 		char *config_cstr = DatumGetCString(DirectFunctionCall1(
 				regconfigout, ObjectIdGetDatum(text_config_oid)));
 
@@ -701,47 +914,32 @@ to_tpvector(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		/* No configuration found, use default */
 		config_text		= cstring_to_text("english");
 		text_config_oid = InvalidOid;
 	}
 
-	/* Clean up index relation and metapage */
 	pfree(metap);
 	index_close(index_rel, AccessShareLock);
 
-	/* Use to_tsvector to process the text */
-
-	/*
-	 * Call to_tsvector with config OID - use to_tsvector_byid for direct OID
-	 * call
-	 */
 	if (OidIsValid(text_config_oid))
-	{
-		/* Use the OID directly */
 		tsvector_datum = DirectFunctionCall2(
 				to_tsvector_byid,
 				ObjectIdGetDatum(text_config_oid),
 				PointerGetDatum(input_text));
-	}
 	else
-	{
-		/* Fallback to using text config name */
 		tsvector_datum = DirectFunctionCall2(
 				to_tsvector,
 				PointerGetDatum(config_text),
 				PointerGetDatum(input_text));
-	}
+
 	tsvector = DatumGetTSVector(tsvector_datum);
 
-	/* Count entries and allocate arrays */
 	entry_count = tsvector->size;
 	if (entry_count > 0)
 	{
 		lexemes		= palloc(entry_count * sizeof(char *));
 		frequencies = palloc(entry_count * sizeof(int32));
 
-		/* Extract lexemes and frequencies from tsvector */
 		we = ARRPTR(tsvector);
 		for (i = 0; i < entry_count; i++)
 		{
@@ -752,7 +950,6 @@ to_tpvector(PG_FUNCTION_ARGS)
 			memcpy(lexemes[i], lexeme_start, lexeme_len);
 			lexemes[i][lexeme_len] = '\0';
 
-			/* Count positions as frequency (or 1 if no positions) */
 			if (we[i].haspos)
 				frequencies[i] = POSDATALEN(tsvector, &we[i]);
 			else
@@ -765,11 +962,9 @@ to_tpvector(PG_FUNCTION_ARGS)
 		frequencies = NULL;
 	}
 
-	/* Create the tpvector */
 	result = create_tpvector_from_strings(
 			index_name, entry_count, (const char **)lexemes, frequencies);
 
-	/* Cleanup */
 	if (lexemes)
 	{
 		for (i = 0; i < entry_count; i++)
@@ -779,7 +974,6 @@ to_tpvector(PG_FUNCTION_ARGS)
 	if (frequencies)
 		pfree(frequencies);
 	pfree(index_name);
-	/* Don't free StringInfo data - it's managed by memory context */
 
 	PG_RETURN_POINTER(result);
 }

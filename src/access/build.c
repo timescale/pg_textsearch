@@ -1481,15 +1481,18 @@ tp_insert(
 		vector_entry = TPVECTOR_ENTRIES_PTR(tpvec);
 		for (i = 0; i < term_count; i++)
 		{
-			char *lexeme;
+			TpVectorEntryView v;
+			char			 *lexeme;
 
-			lexeme = palloc(vector_entry->lexeme_len + 1);
-			memcpy(lexeme, vector_entry->lexeme, vector_entry->lexeme_len);
-			lexeme[vector_entry->lexeme_len] = '\0';
+			tpvector_entry_decode(vector_entry, &v);
+
+			lexeme = palloc(v.lexeme_len + 1);
+			memcpy(lexeme, v.lexeme, v.lexeme_len);
+			lexeme[v.lexeme_len] = '\0';
 
 			terms[i]	   = lexeme;
-			frequencies[i] = vector_entry->frequency;
-			doc_length += vector_entry->frequency;
+			frequencies[i] = (int32)v.frequency;
+			doc_length += v.frequency;
 
 			vector_entry = get_tpvector_next_entry(vector_entry);
 		}
