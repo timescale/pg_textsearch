@@ -1,10 +1,19 @@
 #!/bin/bash
 #
-# replication_pitr.sh — recovery-target-LSN test.
+# replication_pitr.sh — point-in-time-recovery test.
 #
-# Replays WAL up to a target LSN partway through an insert burst,
-# then queries. Validates that bm25 index state at any LSN is
-# coherent (not just at the tail).
+# Sets up a primary, takes a basebackup, runs an insert burst on the
+# primary, captures an LSN partway through the burst, runs more
+# inserts, then brings up a SECOND Postgres instance from the
+# basebackup with recovery_target_lsn = that captured LSN. The
+# recovered instance replays archived WAL up to the target and is
+# promoted; queries run against it.
+#
+# The bm25 index on the PITR-recovered instance should return
+# exactly the rows that were inserted before the recovery target —
+# i.e., the index's view must agree with the heap's view at that
+# LSN. Today it does not: see PITR-1's failure note for the
+# corpus-stats-not-WAL-replayed root cause.
 
 set -e
 
