@@ -84,14 +84,28 @@ tp_expull_append(
 	entry_ptr->frequency = frequency;
 	entry_ptr->fieldnorm = fieldnorm;
 
-	/* Advance tail */
+	/*
+	 * Advance tail pointer and decrement remaining capacity.
+	 *
+	 * When remaining_cap would become 0 (block exhausted), we must avoid
+	 * creating a potentially invalid ArenaAddr. This can happen when a
+	 * block is placed at the very end of an arena page and filled
+	 * completely -- the "next" tail offset would equal ARENA_PAGE_SIZE,
+	 * violating the arena addressing invariant. Instead, set tail to
+	 * ARENA_ADDR_INVALID to indicate the block is exhausted. The next
+	 * append will allocate a fresh block and reset the tail.
+	 */
+	expull->remaining_cap -= TP_EXPULL_ENTRY_SIZE;
+	if (expull->remaining_cap < TP_EXPULL_ENTRY_SIZE)
 	{
-		uint32 page = arena_addr_page(expull->tail);
-		uint32 off	= arena_addr_offset(expull->tail);
-
+		expull->tail = ARENA_ADDR_INVALID;
+	}
+	else
+	{
+		uint32 page	 = arena_addr_page(expull->tail);
+		uint32 off	 = arena_addr_offset(expull->tail);
 		expull->tail = arena_addr_make(page, off + TP_EXPULL_ENTRY_SIZE);
 	}
-	expull->remaining_cap -= TP_EXPULL_ENTRY_SIZE;
 	expull->num_entries++;
 }
 
