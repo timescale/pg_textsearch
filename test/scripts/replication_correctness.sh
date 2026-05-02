@@ -5,16 +5,23 @@
 # variations and primary write events (insert/update/delete/spill/
 # merge).
 #
-# Most tests in this file FAIL on current (un-fixed) code. Two bugs
-# are documented:
-#   1. Memtable staleness: long-lived standby backends miss new
-#      primary inserts because aminsert is never called on standby.
-#   2. WAL-replayed segments unreadable: long-lived standby backends
-#      error on segment reads when the segments were created via
-#      WAL replay (rather than included in the initial basebackup).
+# Failure mode tracked here: long-lived standby backend staleness
+# (#345). A standby backend that stays alive across primary inserts
+# rebuilds its in-memory view once on first scan and is never
+# invalidated by WAL replay; subsequent primary inserts and segment
+# merges are invisible to it. Surfaces in this file as "0 results"
+# (or undercount) for documents that ARE visible on disk to the
+# standby.
 #
-# A1 PASSES today — it reads segments that existed before basebackup.
-# All other tests FAIL today and document one of the two bug classes.
+# Before PR #343 there was a second surface here — long-lived
+# standby backends erroring on segment reads when the segments
+# arrived via WAL replay. That was #342 (page-index pages weren't
+# WAL-logged at all), fixed by PR #343. The remaining failures in
+# this file all map to #345.
+#
+# A1 PASSES today — it reads segments that existed in the initial
+# basebackup, so the long-lived backend's stale view is still
+# correct. All other tests FAIL today against #345.
 
 set -e
 

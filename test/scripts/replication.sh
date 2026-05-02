@@ -1,12 +1,25 @@
 #!/bin/bash
 #
-# Physical (streaming) replication test for pg_textsearch
+# replication.sh — physical (streaming) replication smoke test for
+# pg_textsearch. Sets up a primary + hot-standby pair via
+# pg_basebackup, exercises the index across the basic write/replay
+# cycle, and asserts the standby sees the same results as the
+# primary.
 #
 # Tests:
-#   1. Standby starts up with replicated bm25 index
-#   2. BM25 search queries work on hot standby
-#   3. Inserts on primary replicate and become searchable on standby
-#   4. Standby promotion preserves index functionality
+#   1. Standby starts up with replicated bm25 index (basebackup
+#      includes the index file).
+#   2. BM25 search queries work on the hot standby (read-side
+#      smoke test).
+#   3. Primary inserts replicate via WAL and a primary-side spill
+#      reaches the standby (exercises the #342 fix in this PR via
+#      the memtable-spill path).
+#   4. Standby can be promoted; index still works on the new
+#      primary.
+#   5. Long-lived standby backend sees primary inserts that arrive
+#      via WAL replay during the backend's lifetime. Currently
+#      FAILS — see #345 (per-backend cache not invalidated by WAL
+#      replay).
 #
 
 set -e

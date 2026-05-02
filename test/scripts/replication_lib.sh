@@ -2,10 +2,15 @@
 #
 # replication_lib.sh — shared helpers for physical-replication tests.
 #
-# Sourced by test/scripts/replication*.sh files. Provides two-node
-# setup primitives, query helpers, catchup waits, and long-lived
-# (persistent) psql session management used to expose the standby
-# memtable-staleness bug.
+# Sourced by test/scripts/replication*.sh files. Provides:
+#   - two- and three-node setup primitives (initdb + pg_basebackup),
+#   - one-shot SQL helpers against either node by port,
+#   - LSN-based catchup waits,
+#   - a FIFO-managed persistent psql session ("long-lived backend"),
+#     used to reproduce #345 — the bug only manifests when the same
+#     standby backend stays alive across primary inserts, since a
+#     fresh connection rebuilds its in-memory cache from current
+#     on-disk state on first scan.
 #
 # Required environment variables (set by the sourcing script BEFORE
 # this file is sourced):

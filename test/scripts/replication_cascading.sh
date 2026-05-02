@@ -1,7 +1,20 @@
 #!/bin/bash
 #
 # replication_cascading.sh — three-node cascading replication.
-# primary -> standby1 -> standby2.
+# primary -> standby1 -> standby2 (standby2 is built via
+# pg_basebackup from standby1, not from the primary). Validates that
+# pg_textsearch behaves correctly when WAL flows through an
+# intermediate hop.
+#
+# Tests:
+#   C1: standby2 sees primary's data via standby1 — basic two-hop
+#       read.
+#   C2: Long-lived standby2 backend should see primary inserts that
+#       arrive over the two-hop WAL chain. Currently FAILS — the
+#       #345 staleness bug propagates two hops just like one.
+#   C3: Promotion chain — promote standby1 to primary; standby2
+#       (configured with recovery_target_timeline = latest) follows
+#       the new timeline and remains queryable.
 
 set -e
 

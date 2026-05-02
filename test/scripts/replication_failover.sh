@@ -1,7 +1,20 @@
 #!/bin/bash
 #
-# replication_failover.sh — standby-promotion tests under various
-# pre-promotion states.
+# replication_failover.sh — standby-promotion tests. Brings up a
+# primary + streaming standby pair, leaves the standby in some
+# specific pre-promotion state, then promotes the standby and
+# checks the (new) primary still works.
+#
+# Tests:
+#   D1: Promotion under active primary write load — primary is
+#       still inserting when the standby is promoted. Post-
+#       promotion the new primary should accept reads + writes.
+#   D2: Promotion with an unspilled memtable on the primary — the
+#       standby's view of the index includes WAL-replayed memtable
+#       posting entries that have never been spilled to a segment.
+#       Post-promotion this state must still be queryable.
+#   D3: Post-promotion writes + searches — the new primary takes
+#       fresh inserts, search returns them.
 
 set -e
 

@@ -1,7 +1,22 @@
 #!/bin/bash
 #
 # replication_concurrency.sh — concurrency tests for physical
-# replication. Multiple standby readers under primary write load.
+# replication. Each test holds N persistent psql sessions open
+# against the standby (long-lived backends), drives a write
+# workload on the primary, and asserts that all standby sessions
+# converge on the right answer.
+#
+# Tests:
+#   B1: 8 concurrent long-lived standby readers each take a
+#       before/after reading around a single primary insert.
+#       Currently FAILS — exposes #345 in the multi-reader case.
+#   B2: 4 long-lived standby readers query repeatedly during and
+#       after a 5000-doc primary insert burst. All should converge
+#       on 5000. Currently FAILS — same root cause as B1.
+#   B3: Many standby readers under a primary spam-insert + spam-
+#       spill workload. Validates no crashes, no deadlocks, no
+#       errors in the standby log. PASSES today (vacuously — the
+#       drain code that this would guard doesn't exist yet).
 
 set -e
 
