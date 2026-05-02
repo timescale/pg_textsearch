@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777622411418,
+  "lastUpdate": 1777708129595,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -1740,6 +1740,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.773,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7f7bd41a8914b480dc30c0e275e6a1ab04facc33",
+          "message": "fix(replication): WAL-log segment writes (#342) + 24-test physical replication suite (#343)\n\n## Summary\n\nFixes #342 — pg_textsearch's segment writes weren't reaching streaming\nstandbys, so replica queries errored with `invalid page index at block\nN`. Three code paths needed to emit WAL; this PR adds it. Bundled with a\nphysical-replication test suite that pinned down the bug, surfaced two\nof the three affected paths, and verifies the fix end-to-end.\n\n## The fix\n\nThree previously WAL-silent paths now emit WAL:\n\n| File / function | WAL added |\n|---|---|\n| `src/segment/segment.c` `write_page_index_internal` (covers serial\nCREATE INDEX, parallel-build leader, memtable spill, level merge — all\nflow through `write_page_index`) | `log_newpage_buffer(buf, false)`\ninside `START_CRIT_SECTION()`. `page_std=false` because page-index\nentries live in the pd_lower/pd_upper \"hole\" — `REGBUF_STANDARD` would\nzero them on replay. |\n| `src/access/build_context.c` `tp_write_segment_from_build_ctx` (serial\nCREATE INDEX data pages) | Post-hoc `GenericXLog FULL_IMAGE` pass over\n`writer.pages`, mirroring the existing pass in `tp_write_segment`. |\n| `src/access/build_parallel.c` `tp_build_parallel` (parallel CREATE\nINDEX merged data pages — caught by @upirr's review) | Same `GenericXLog\nFULL_IMAGE` pass over `sink.writer.pages`. |\n\n## Verification\n\n| Script | Path exercised | Before fix → After fix |\n|---|---|---|\n| `test/scripts/replication_issue_342.sh` | 3000-doc memtable spill →\n`write_page_index_internal` | standby `could not read blocks` →\n3000/3000 |\n| `test/scripts/replication_parallel_build.sh` | 150K rows + 4 parallel\nworkers → `tp_build_parallel` | standby `invalid segment header at block\n1` → 150000/150000 |\n\nBoth verified locally by reverting the corresponding fix and re-running.\n\n## Suite\n\n30 tests across 9 scripts (`make test-replication-extended`). After this\nPR: **18 pass, 11 fail, 1 skip**. All 11 failures map to a separate bug\n— long-lived standby backend staleness — tracked in **#345**; the PITR\ntest fails on a third issue (corpus stats not WAL-replayed). Out of\nscope here.",
+          "timestamp": "2026-05-02T03:02:47Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7f7bd41a8914b480dc30c0e275e6a1ab04facc33"
+        },
+        "date": 1777708123976,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2768.231201,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.361,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 5347.278423,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.374,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 8888.732424,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 13454.276825,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.595,
             "unit": "ms"
           }
         ]
