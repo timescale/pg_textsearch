@@ -149,10 +149,16 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 	 * this record, a long-lived standby backend's memtable view
 	 * would still contain entries that have been migrated to the new
 	 * segment, producing duplicate hits.
+	 *
+	 * Skip for UNLOGGED / TEMP indexes: their data is not replicated
+	 * anyway, so the record would just be wire and disk overhead.
 	 */
-	START_CRIT_SECTION();
-	tp_xlog_spill(RelationGetRelid(index_rel));
-	END_CRIT_SECTION();
+	if (RelationNeedsWAL(index_rel))
+	{
+		START_CRIT_SECTION();
+		tp_xlog_spill(RelationGetRelid(index_rel));
+		END_CRIT_SECTION();
+	}
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -515,11 +521,15 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 		/*
 		 * Emit SPILL WAL so a streaming standby's long-lived
 		 * backends drop their now-stale memtable view (see the
-		 * matching comment in tp_do_spill).
+		 * matching comment in tp_do_spill). UNLOGGED / TEMP
+		 * indexes don't replicate, so skip.
 		 */
-		START_CRIT_SECTION();
-		tp_xlog_spill(RelationGetRelid(index_rel));
-		END_CRIT_SECTION();
+		if (RelationNeedsWAL(index_rel))
+		{
+			START_CRIT_SECTION();
+			tp_xlog_spill(RelationGetRelid(index_rel));
+			END_CRIT_SECTION();
+		}
 
 		/* Check if L0 needs compaction */
 		tp_maybe_compact_level(index_rel, 0);
@@ -1605,10 +1615,17 @@ tp_insert(
 			 * still hold the per-index lock so the order of
 			 * memtable mutations is consistent across primary
 			 * and standby.
+			 *
+			 * Skip for UNLOGGED / TEMP indexes — their data is
+			 * not replicated, so the record would just be wire
+			 * and disk overhead.
 			 */
-			START_CRIT_SECTION();
-			tp_xlog_insert_terms(RelationGetRelid(index), ht_ctid, tpvec);
-			END_CRIT_SECTION();
+			if (RelationNeedsWAL(index))
+			{
+				START_CRIT_SECTION();
+				tp_xlog_insert_terms(RelationGetRelid(index), ht_ctid, tpvec);
+				END_CRIT_SECTION();
+			}
 
 			/*
 			 * Docid pages under LW_SHARED — spill clears

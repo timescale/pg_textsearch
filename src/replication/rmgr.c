@@ -94,9 +94,21 @@ tp_redo_apply_insert_terms(XLogReaderState *record)
 	int					doc_length = 0;
 	int					i;
 
+	/*
+	 * Validate header length first — reading hdr->vector_size before
+	 * confirming the record contains a full header would dereference
+	 * past the validated WAL buffer for a degenerate < sizeof(*hdr)
+	 * record. Practically unreachable (CRC + single emitter), but
+	 * the check is here, so make it actually correct.
+	 */
+	if (XLogRecGetDataLen(record) < sizeof(*hdr))
+		elog(PANIC,
+			 "INSERT_TERMS header truncated: got %u, need %zu",
+			 XLogRecGetDataLen(record),
+			 sizeof(*hdr));
 	if (XLogRecGetDataLen(record) < sizeof(*hdr) + hdr->vector_size)
 		elog(PANIC,
-			 "INSERT_TERMS record truncated: declared %u, got %u",
+			 "INSERT_TERMS vector truncated: declared %u, got %u",
 			 hdr->vector_size,
 			 (uint32)(XLogRecGetDataLen(record) - sizeof(*hdr)));
 
@@ -305,12 +317,18 @@ tp_rmgr_identify(uint8 info)
 XLogRecPtr
 tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec)
 {
-	xl_tp_insert_terms hdr;
-	Size			   vec_size = VARSIZE(vec);
-
-	hdr.index_oid	= index_oid;
-	hdr.ctid		= *ctid;
-	hdr.vector_size = (uint32)vec_size;
+	Size vec_size = VARSIZE(vec);
+	/*
+	 * Designated initializer zeros padding (C99 §6.7.8/21), so the
+	 * 2 bytes of compiler-inserted padding between ctid and
+	 * vector_size aren't shipped to standbys with stale stack
+	 * contents and the WAL bytes are deterministic across runs.
+	 */
+	xl_tp_insert_terms hdr = {
+			.index_oid	 = index_oid,
+			.ctid		 = *ctid,
+			.vector_size = (uint32)vec_size,
+	};
 
 	XLogBeginInsert();
 	XLogRegisterData((char *)&hdr, sizeof(hdr));
@@ -321,9 +339,7 @@ tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec)
 XLogRecPtr
 tp_xlog_spill(Oid index_oid)
 {
-	xl_tp_spill hdr;
-
-	hdr.index_oid = index_oid;
+	xl_tp_spill hdr = {.index_oid = index_oid};
 
 	XLogBeginInsert();
 	XLogRegisterData((char *)&hdr, sizeof(hdr));

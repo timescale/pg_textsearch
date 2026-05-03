@@ -210,11 +210,15 @@ tp_spill_memtable_if_needed(
 		/*
 		 * Emit SPILL WAL so a streaming standby's long-lived
 		 * backends drop their now-stale memtable view (see the
-		 * matching comment in tp_do_spill).
+		 * matching comment in tp_do_spill). UNLOGGED / TEMP
+		 * indexes don't replicate, so skip.
 		 */
-		START_CRIT_SECTION();
-		tp_xlog_spill(RelationGetRelid(index));
-		END_CRIT_SECTION();
+		if (RelationNeedsWAL(index))
+		{
+			START_CRIT_SECTION();
+			tp_xlog_spill(RelationGetRelid(index));
+			END_CRIT_SECTION();
+		}
 
 		tp_maybe_compact_level(index, 0);
 	}

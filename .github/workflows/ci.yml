@@ -131,6 +131,18 @@ jobs:
           echo "✗ Segment tests failed"
           exit 1
         fi
+        # replication.sh exercises the WAL rmgr redo paths
+        # (INSERT_TERMS, SPILL) on a primary+standby pair. Strict
+        # failure detection here so a regression in the rmgr code
+        # actually fails CI; the tolerant invocation in the
+        # coverage job is just for gcda flushing.
+        echo "Running replication tests..."
+        if (cd test/scripts && ./replication.sh); then
+          echo "✓ Replication tests passed"
+        else
+          echo "✗ Replication tests failed"
+          exit 1
+        fi
 
         # hypertable.sh needs a PostgreSQL instance with TimescaleDB preloaded
         echo "Running hypertable tests..."

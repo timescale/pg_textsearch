@@ -836,11 +836,15 @@ tp_evict_largest_memtable(Oid caller_oid)
 			/*
 			 * Emit SPILL WAL so a streaming standby's long-lived
 			 * backends drop their now-stale memtable view (see
-			 * the matching comment in tp_do_spill).
+			 * the matching comment in tp_do_spill). UNLOGGED /
+			 * TEMP indexes don't replicate, so skip.
 			 */
-			START_CRIT_SECTION();
-			tp_xlog_spill(RelationGetRelid(index_rel));
-			END_CRIT_SECTION();
+			if (RelationNeedsWAL(index_rel))
+			{
+				START_CRIT_SECTION();
+				tp_xlog_spill(RelationGetRelid(index_rel));
+				END_CRIT_SECTION();
+			}
 
 			tp_maybe_compact_level(index_rel, 0);
 
