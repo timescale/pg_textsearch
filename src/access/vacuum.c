@@ -32,6 +32,7 @@
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"
@@ -204,6 +205,16 @@ tp_spill_memtable_if_needed(
 		tp_clear_docid_pages(index);
 		tp_link_l0_chain_head(index, segment_root);
 		tp_sync_metapage_stats(index, index_state);
+
+		/*
+		 * Emit SPILL WAL so a streaming standby's long-lived
+		 * backends drop their now-stale memtable view (see the
+		 * matching comment in tp_do_spill).
+		 */
+		START_CRIT_SECTION();
+		tp_xlog_spill(RelationGetRelid(index));
+		END_CRIT_SECTION();
+
 		tp_maybe_compact_level(index, 0);
 	}
 

@@ -24,6 +24,7 @@
 #include "access/am.h"
 #include "index/metapage.h"
 #include "index/registry.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -831,6 +832,16 @@ tp_evict_largest_memtable(Oid caller_oid)
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, target_state);
+
+			/*
+			 * Emit SPILL WAL so a streaming standby's long-lived
+			 * backends drop their now-stale memtable view (see
+			 * the matching comment in tp_do_spill).
+			 */
+			START_CRIT_SECTION();
+			tp_xlog_spill(RelationGetRelid(index_rel));
+			END_CRIT_SECTION();
+
 			tp_maybe_compact_level(index_rel, 0);
 
 			elog(LOG,

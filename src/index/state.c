@@ -37,6 +37,7 @@
 #include "index/state.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -1642,6 +1643,15 @@ tp_bulk_load_spill_check(void)
 			tp_clear_docid_pages(index_rel);
 			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, local_state);
+
+			/*
+			 * Emit SPILL WAL so a streaming standby's long-lived
+			 * backends drop their now-stale memtable view (see
+			 * the matching comment in tp_do_spill).
+			 */
+			START_CRIT_SECTION();
+			tp_xlog_spill(RelationGetRelid(index_rel));
+			END_CRIT_SECTION();
 
 			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);
