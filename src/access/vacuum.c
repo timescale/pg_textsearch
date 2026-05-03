@@ -16,6 +16,7 @@
 #include <executor/executor.h>
 #include <fmgr.h>
 #include <lib/dshash.h>
+#include <miscadmin.h>
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
