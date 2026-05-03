@@ -4,10 +4,27 @@
  *
  * rmgr.c - Custom WAL resource manager for pg_textsearch
  *
- * Skeleton in this revision: registration + describe/identify
- * callbacks + emission stubs. Redo callbacks are stubs that are
- * filled in by subsequent tasks (INSERT_TERMS in Task 2.3, SPILL
- * in Task 2.4).
+ * Implements the rmgr (ID 145) callbacks for streaming-replication
+ * and crash-recovery replay of memtable mutations:
+ *
+ *   - tp_redo_apply_insert_terms: re-applies a doc's term list to
+ *     the in-shared-memory memtable on the standby / recovering
+ *     primary.
+ *   - tp_redo_apply_spill: clears the in-shared-memory memtable so
+ *     the standby's view matches the primary post-spill (the
+ *     segment data itself replicates via GenericXLog records emitted
+ *     by segment.c).
+ *   - tp_rmgr_desc / tp_rmgr_identify: pg_waldump support.
+ *   - tp_xlog_insert_terms / tp_xlog_spill: emission helpers,
+ *     called from the primary's insert and spill paths inside a
+ *     critical section.
+ *
+ * Redo runs in the startup process, which has no transaction
+ * state and so cannot use tp_get_local_index_state (that path
+ * opens the index relation). Instead the redo helpers look up
+ * the per-index shared state directly via tp_registry_lookup
+ * and construct a minimal stack-local TpLocalIndexState carrying
+ * the {dsa, shared} pair the memtable mutation primitives read.
  */
 #include <postgres.h>
 
@@ -282,9 +299,8 @@ tp_rmgr_identify(uint8 info)
 }
 
 /*
- * Emission helpers — stubs, replaced in Tasks 2.3 / 2.4. The stubs
- * intentionally do nothing so that this scaffolding commit is a
- * pure no-behavior-change addition.
+ * Emission helpers — called from the primary's insert and spill
+ * paths inside a critical section.
  */
 XLogRecPtr
 tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec)
