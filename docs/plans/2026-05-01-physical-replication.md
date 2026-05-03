@@ -471,7 +471,11 @@ PR title: `fix: WAL-replicate memtable mutations (closes #345)`. Body: link #345
 
 # PR 3: Remove docid-page machinery
 
-**Goal:** Drop `tp_add_docid_to_pages`, `tp_clear_docid_pages`, `tp_rebuild_posting_lists_from_docids`, and the `first_docid_page` field on the metapage. WAL replay (added in PR 2) is now the sole mechanism for memtable durability across restarts. Reduces per-insert WAL volume by removing the redundant `GenericXLog` docid-page records.
+**Goal:** Drop `tp_add_docid_to_pages`, `tp_clear_docid_pages`, `tp_rebuild_posting_lists_from_docids`, and the `first_docid_page` field on the metapage. Reduces per-insert WAL volume by removing the redundant `GenericXLog` docid-page records.
+
+**Why this isn't just "WAL is now durable enough":** Postgres only retains WAL since the last checkpoint, so `INSERT_TERMS` records age out at every checkpoint. Today that's fine because docid pages are the durable on-disk record of what's in the memtable; on cold start, `tp_rebuild_posting_lists_from_docids` walks them and rebuilds. Once the docid pages are gone, *something else* has to make the memtable's pre-checkpoint contents recoverable. The cleanest answer is **spill-at-checkpoint**: ensure the memtable is empty at every checkpoint boundary, so WAL replay since the last checkpoint is sufficient by construction. PR 3 is therefore not just "delete the docid path" — it is "delete the docid path *and* introduce the durability mechanism that replaces it."
+
+**Side benefit:** removing the rebuild path also closes a known race left in PR 2 between `tp_create_shared_index_state` (registers in dshash) and `tp_rebuild_posting_lists_from_docids` (walks docid pages). On a hot standby with concurrent primary inserts, the standby's startup process can replay an `INSERT_TERMS` record into the just-registered memtable while the rebuild also re-adds the same doc from docid pages, producing duplicate posting entries until the next SPILL. The race is flagged as `XXX` in `tp_rebuild_index_from_disk` in PR 2 and goes away as soon as PR 3 removes the rebuild entirely.
 
 **Files:**
 - Modify: `src/index/metapage.h` — drop `first_docid_page`; bump metapage version.
@@ -483,7 +487,37 @@ PR title: `fix: WAL-replicate memtable mutations (closes #345)`. Body: link #345
 
 **Closes nothing externally.** Pure cleanup + WAL volume reduction.
 
-## Task 3.1: Bump metapage version, gate docid-page reads
+## Task 3.1: Implement spill-at-checkpoint (or equivalent) durability
+
+This task is a **design-then-implement** step and must land before the docid-page deletions in 3.4 so we never have a window where the memtable's pre-checkpoint contents are unrecoverable.
+
+- [ ] **Step 1: Pick a mechanism**
+
+There is no extension hook for "before checkpoint" in Postgres 17 / 18, so we can't directly piggyback on the checkpointer. Three viable shapes:
+
+  1. **Background worker, timer + WAL-volume heuristic.** A dedicated bgworker started from `_PG_init` wakes on a timer (e.g. once per `checkpoint_timeout / 4`) and on `LATCH` after a configurable number of WAL bytes since the last spill, and forces a spill on every index whose memtable is non-empty. Approximates spill-at-checkpoint without coordinating with the checkpointer; the trade-off is an extra spill / segment per cycle even on idle indexes.
+  2. **Per-backend pre-commit auto-spill, sized by retained-WAL distance.** On `XactCallback` PRE_COMMIT, if `pg_current_wal_lsn() - shared->last_spill_lsn` exceeds a threshold derived from `max_wal_size`, the committing backend spills before returning. No bgworker; cost is paid by the writer that crossed the threshold. Trade-off: large transactions can be hit with a big spill at commit time.
+  3. **Loosen the "memtable must survive checkpoint" requirement.** If the memtable can be lost on cold start as long as the segments + WAL-since-spill are intact, then no new mechanism is needed — first-access just builds an empty memtable and starts replaying WAL. This requires that segments+SPILL are emitted often enough that a memtable rebuild from scratch is bounded in time. In practice that's also a heuristic-driven spill, just one that runs whenever the memtable is "big enough" rather than "checkpoint is near."
+
+Recommend (3) as the default and (1) as a fallback if (3) leaves recovery-time unbounded under realistic workloads. Either way, the spill itself is already a single function call (`tp_do_spill`) — the new code is the trigger logic, not the spill.
+
+- [ ] **Step 2: Wire the chosen trigger**
+
+Whichever mechanism is chosen, the trigger calls `tp_do_spill` (which in PR 2 emits the SPILL WAL record and clears the memtable). No new WAL record types are needed.
+
+- [ ] **Step 3: Crash-recovery test**
+
+Add a test that:
+1. Inserts N docs (enough that a spill would normally occur).
+2. Issues `CHECKPOINT`.
+3. Inserts M more docs without spilling.
+4. `kill -9` the postmaster.
+5. Restarts.
+6. Verifies all N+M docs are queryable.
+
+Without this task, that test would fail under PR 3 because the first N docs would be lost (gone from WAL after the checkpoint, no docid pages to rebuild from).
+
+## Task 3.2: Bump metapage version, gate docid-page reads
 
 - [ ] **Step 1: Define metapage v2**
 
@@ -498,7 +532,7 @@ The metapage already has a version field (verify by reading current `TpIndexMeta
 
 For storage compactness, the `first_docid_page` field can stay in the struct but is unused on v2 metapages (always `InvalidBlockNumber`). Or it can be removed and the field repurposed. Implementer's call based on `pg_upgrade` semantics — leaving the field in place is friendlier to anyone with a v1 metapage on disk.
 
-## Task 3.2: In-place v1 → v2 metapage upgrade
+## Task 3.3: In-place v1 → v2 metapage upgrade
 
 - [ ] **Step 1: Upgrade on first open of a legacy index**
 
@@ -523,7 +557,7 @@ After this point, the index is v2 and never touches the docid-page code path aga
 
 In `test/scripts/upgrade_*.sh` (or a new one), build a v1 index using a pre-PR-3 binary, upgrade the extension, open the index, query it, verify results match. The project already runs upgrade tests against historical versions in CI (`test-upgrades` workflow).
 
-## Task 3.3: Remove `tp_add_docid_to_pages` from insert path
+## Task 3.4: Remove `tp_add_docid_to_pages` from insert path
 
 - [ ] **Step 1: `tp_insert` no longer calls `tp_add_docid_to_pages`**
 
@@ -558,7 +592,7 @@ All should pass. The 10 #345-class tests remain passing (memtable still populate
 git commit -m "refactor: drop docid-page writes from insert and spill paths"
 ```
 
-## Task 3.4: Remove now-dead code
+## Task 3.5: Remove now-dead code
 
 - [ ] **Step 1: Delete the dead functions**
 
@@ -605,8 +639,10 @@ PR title: `refactor: remove docid-page machinery; metapage v2`. Body: explain th
 - ✅ bm25vector v2 compaction (PR 1).
 - ✅ Custom rmgr with `INSERT_TERMS` and `SPILL` records (PR 2).
 - ✅ Direct memtable mutation in redo — no pending list, no drain on read path, no stale flag (PR 2).
-- ✅ Docid-page chain removed; primary crash recovery uses WAL replay (PR 3).
+- ✅ Docid-page chain removed; primary crash recovery uses spill-at-checkpoint + WAL replay (PR 3).
 - ✅ Backward compat for legacy v1 metapage indexes via in-place upgrade on first open (PR 3).
+- ✅ Pre-checkpoint memtable durability without docid pages — covered by Task 3.1 (PR 3).
+- ✅ Closes the rebuild-vs-redo race documented as `XXX` in PR 2 by removing the rebuild path entirely (PR 3).
 - ✅ Baseline-then-verify test methodology (PR 2 Task 2.1, 2.4).
 - ✅ Documentation in each PR.
 
@@ -616,7 +652,7 @@ PR title: `refactor: remove docid-page machinery; metapage v2`. Body: explain th
 - **Address the `bm25vector.index_name` field.** Kept as-is. Removing it would simplify the type but break the `<@>` operator semantics that depend on the vector knowing its index. Worth revisiting separately.
 
 **Open implementation questions:**
-1. **`tp_redo_apply_insert` / `tp_redo_clear_memtable` exact bodies.** The startup process can do DSA allocation, but the implementer should verify by writing a smoke test: create a fresh index on the primary, crash the primary mid-insert, confirm recovery completes without errors. If DSA allocation from the startup process turns out to be unsupported, fall back to a deferred-apply: redo writes records to a small per-index ring buffer in static shared memory, and the first backend access drains the ring into the DSA memtable. (This is what the prior plan revision called the "pending list", repurposed here as a recovery-bootstrap fallback only.)
+1. **Spill-at-checkpoint mechanism (PR 3 Task 3.1).** No public extension hook exists for "before checkpoint" in PG17/18, so the trigger has to be approximated. Three candidate shapes are sketched in Task 3.1; recommend trying the loosest one first ("memtable can be empty on cold start; first-access just starts replaying WAL since the most recent SPILL"), and only adding a bgworker-driven forced spill if recovery time becomes unbounded. This question must be settled before deleting the docid-page rebuild.
 2. **PR 1 → PR 2 → PR 3 sequencing.** The PRs must land in order. PR 2 depends on PR 1's v2 vector (the WAL records carry it). PR 3 depends on PR 2 (removes WAL paths whose redundant copies PR 2 introduced). If PR 2 reveals issues during review, PR 3 stays as a follow-up; PR 2 is correct on its own (just emits redundant docid-page records).
 3. **WAL volume tracking.** Each PR should report bytes-per-insert from a controlled benchmark. PR 1 should be neutral (type format change, no WAL records). PR 2 should show ~2× WAL volume vs main (docid pages + INSERT_TERMS). PR 3 should bring it back down to ~1× of main, possibly slightly below. If PR 2's 2× is unacceptable for review, accelerate PR 3 or land them as a single combined PR — but try the staged path first.
 4. **Coexistence with PR #343 WAL changes.** PR #343 added `log_newpage_buffer` for page-index pages and `GenericXLog FULL_IMAGE` passes for segment data pages. Those records remain — they cover on-disk segment state on the standby, which is orthogonal to the memtable state this plan covers. After PR 2 lands, run `pg_waldump -r pg_textsearch | sort -u` and confirm that all four record types coexist without duplication or conflict.
