@@ -31,6 +31,16 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
+- **Physical replication**: Memtable mutations are WAL-logged via a
+  custom resource manager (rmgr ID 145, records `INSERT_TERMS` and
+  `SPILL`). On a streaming standby — and during primary crash
+  recovery — redo applies the records directly to the
+  in-shared-memory memtable via `tp_add_document_terms` /
+  `tp_clear_memtable`. The startup process can't open relations
+  (no transaction state), so redo bypasses `tp_get_local_index_state`
+  and constructs a minimal `TpLocalIndexState` on the stack from
+  the registry's shared state plus the global DSA. Closes #345.
+
 ## Core Architecture
 
 ### Storage Architecture
