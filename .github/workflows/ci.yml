@@ -553,6 +553,9 @@ jobs:
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./memory_accounting.sh) || true
+        # replication.sh exercises the WAL rmgr redo paths
+        # (INSERT_TERMS, SPILL) on the standby's startup process.
+        (cd test/scripts && ./replication.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
       run: |
