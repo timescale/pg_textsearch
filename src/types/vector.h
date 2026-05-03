@@ -4,32 +4,36 @@
  *
  * vector.h - bm25vector data type interface
  *
- * Wire / on-disk format (v2 as of pg_textsearch 1.2.0).
+ * Wire / on-disk format (v2, introduced in pg_textsearch 1.2.0).
  *
  * Each value carries a 4-byte ASCII magic ("BM25") immediately
  * after the varlena header, then a 1-byte version + 3 reserved
- * bytes, then the existing index_name + entries payload. The magic
- * is unambiguously not a valid v1 `index_name_len` value, so
- * readers can distinguish v2 from the legacy v1 format.
+ * bytes, then the index_name and entries payload. Per-entry data
+ * is variable-length (varint freq + varint lexeme_len + raw
+ * lexeme bytes); typical entries are ~8 bytes for an English
+ * stemmed lexeme with frequency 1.
  *
- * v1 (legacy) layout, accepted by readers, never written:
- *   int32 vl_len_, int32 index_name_len, int32 entry_count, data...
- *   per-entry: int32 frequency, int32 lexeme_len, char lex[]
- *   entries MAXALIGN'd; ~16 bytes per 6-char lexeme
- *
- * v2 (current) layout:
+ * v2 layout:
  *   int32 vl_len_, char magic[4], uint8 version, uint8 reserved[3],
  *   int32 index_name_len, int32 entry_count, data...
  *   per-entry (variable-length, no padding):
  *     varint frequency       (1 byte for freq <= 127)
  *     varint lexeme_len      (1 byte for lex_len <= 127)
  *     char lexeme[lexeme_len]
- *   ~8 bytes per 6-char lexeme + freq=1
  *
- * Internal code only ever sees v2: operator entry points
- * (tpvector_recv, tpvector_eq, tpvector_send, tpvector_out)
- * canonicalize via tpvector_canonicalize() at the boundary,
- * converting v1 to v2 in palloc'd memory if needed.
+ * Legacy (pre-1.2.0) values use a different layout. They are
+ * detected via the absence of the v2 magic and rejected by
+ * tpvector_canonicalize() with a clear REINDEX-or-recompute
+ * error, rather than silently misinterpreted. bm25vector values
+ * are almost always transient — the storage path through user
+ * tables was uncommon — so the cost of converting legacy values
+ * isn't worth carrying. Users with persisted v1 data must
+ * recompute via to_bm25vector() from the source text.
+ *
+ * Internal code only ever sees validated v2 values: operator
+ * entry points (tpvector_recv, tpvector_eq, tpvector_send,
+ * tpvector_out) canonicalize at the boundary, which both checks
+ * the magic and bounds-validates the entry stream.
  *
  * Entry access pattern: entries are byte streams, so the legacy
  * `entry->frequency` / `entry->lexeme_len` / `entry->lexeme` field

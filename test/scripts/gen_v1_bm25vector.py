@@ -2,16 +2,13 @@
 #
 # gen_v1_bm25vector.py — emit a COPY BINARY frame containing a row
 # with a hand-encoded legacy v1 bm25vector. Used by
-# test/sql/vector_format_compat.sql to exercise tpvector_recv's
-# v1 read-compat path (tpvector_v1_to_v2).
+# test/sql/vector_v1_rejected.sql to verify that v1 inputs are
+# detected and rejected with a clear error (rather than silently
+# misinterpreted as v2).
 #
 # Output (to stdout): COPY BINARY framing + 1 row [int4 id, v1
 # bm25vector]. Hard-coded payload: id=42, index='compat_idx',
 # entries=[(freq=1, lex='alpha'), (freq=2, lex='bravo')].
-#
-# Why this is a separate file: psql's \! runs single-line shell
-# commands and doesn't support heredocs, so the generator script
-# can't be inlined into the .sql test.
 
 import struct
 import sys
@@ -41,9 +38,7 @@ total = hdr_size + idx_block + sum(maxalign(8 + len(lex)) for _, lex in entries)
 
 # tpvector_send writes the first 4 bytes via pq_sendint32 (big-
 # endian), then pq_sendbytes the rest of the value as raw bytes
-# (which on the wire is host-byte-order — the existing format is
-# not cross-platform-binary-compatible, but matches what the
-# recv path expects).
+# (which on the wire is host-byte-order).
 v1 = struct.pack(">I", total)
 v1 += struct.pack("=ii", inl, len(entries))
 v1 += idx_name + b"\x00" + b"\x00" * (idx_block - inl - 1)

@@ -32,30 +32,18 @@
 #include "types/vector.h"
 
 /* ---------------------------------------------------------------------
- * Legacy v1 layout — accepted by readers, never written.
+ * Legacy v1 detection
+ *
+ * pg_textsearch < 1.2.0 used a different on-disk bm25vector layout
+ * (no magic, int32 freq + int32 lexeme_len per entry, MAXALIGN
+ * padding). Storing bm25vector values in user tables was always
+ * uncommon — the type is overwhelmingly used transiently for
+ * query/insert paths — so we no longer support reading legacy v1
+ * values. Detection of a non-v2 value produces a clear
+ * REINDEX-or-recompute error instead of silently misinterpreting
+ * the bytes.
  * ---------------------------------------------------------------------
  */
-
-typedef struct TpVectorEntry_v1
-{
-	int32 frequency;
-	int32 lexeme_len;
-	char  lexeme[FLEXIBLE_ARRAY_MEMBER];
-} TpVectorEntry_v1;
-
-typedef struct TpVector_v1
-{
-	int32 vl_len_;
-	int32 index_name_len;
-	int32 entry_count;
-	char  data[FLEXIBLE_ARRAY_MEMBER];
-} TpVector_v1;
-
-#define TPVECTOR_V1_INDEX_NAME_PTR(x) (((TpVector_v1 *)(x))->data)
-#define TPVECTOR_V1_ENTRIES_PTR(x)                     \
-	((TpVectorEntry_v1 *)(((TpVector_v1 *)(x))->data + \
-						  MAXALIGN(                    \
-								  ((TpVector_v1 *)(x))->index_name_len + 1)))
 
 /* ---------------------------------------------------------------------
  * Varint helpers (LEB128 base-128 little-endian)
@@ -238,111 +226,24 @@ tpvector_validate_v2(TpVector *v)
 	}
 }
 
-static TpVector *
-tpvector_v1_to_v2(TpVector_v1 *src)
-{
-	int				  i;
-	int				  index_name_len;
-	int				  entry_count;
-	Size			  v2_size;
-	TpVector		 *dst;
-	const char		 *src_end;
-	TpVectorEntry_v1 *src_entry;
-	uint8			 *dst_entry_ptr;
-
-	if (VARSIZE(src) < sizeof(TpVector_v1))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid tpvector v1 size: %u", VARSIZE(src))));
-
-	index_name_len = src->index_name_len;
-	entry_count	   = src->entry_count;
-
-	if (index_name_len < 0 || index_name_len > TP_MAX_INDEX_NAME_LENGTH)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid index name length in v1 tpvector: %d",
-						index_name_len)));
-
-	if (entry_count < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid entry count in v1 tpvector: %d",
-						entry_count)));
-
-	v2_size	  = MAXALIGN(sizeof(TpVector)) + MAXALIGN(index_name_len + 1);
-	src_entry = TPVECTOR_V1_ENTRIES_PTR(src);
-	src_end	  = (const char *)src + VARSIZE(src);
-	for (i = 0; i < entry_count; i++)
-	{
-		uint32 freq;
-		uint32 lex_len;
-
-		if ((const char *)src_entry + sizeof(TpVectorEntry_v1) > src_end ||
-			src_entry->lexeme_len < 0 ||
-			(const char *)src_entry->lexeme + src_entry->lexeme_len > src_end)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("v1 tpvector entry %d extends beyond bounds", i)));
-
-		freq	= (uint32)Max(src_entry->frequency, 0);
-		lex_len = (uint32)src_entry->lexeme_len;
-		v2_size += tpvector_varint_size(freq) + tpvector_varint_size(lex_len) +
-				   lex_len;
-
-		src_entry = (TpVectorEntry_v1 *)((char *)src_entry +
-										 MAXALIGN(
-												 sizeof(TpVectorEntry_v1) +
-												 src_entry->lexeme_len));
-	}
-
-	dst = (TpVector *)palloc0(v2_size);
-	SET_VARSIZE(dst, v2_size);
-	dst->magic[0]		= TPVECTOR_V2_MAGIC0;
-	dst->magic[1]		= TPVECTOR_V2_MAGIC1;
-	dst->magic[2]		= TPVECTOR_V2_MAGIC2;
-	dst->magic[3]		= TPVECTOR_V2_MAGIC3;
-	dst->version		= TPVECTOR_VERSION;
-	dst->index_name_len = index_name_len;
-	dst->entry_count	= entry_count;
-
-	memcpy(TPVECTOR_INDEX_NAME_PTR(dst),
-		   TPVECTOR_V1_INDEX_NAME_PTR(src),
-		   index_name_len);
-	*((char *)TPVECTOR_INDEX_NAME_PTR(dst) + index_name_len) = '\0';
-
-	src_entry	  = TPVECTOR_V1_ENTRIES_PTR(src);
-	dst_entry_ptr = (uint8 *)TPVECTOR_ENTRIES_PTR(dst);
-	for (i = 0; i < entry_count; i++)
-	{
-		uint32 freq	   = (uint32)Max(src_entry->frequency, 0);
-		uint32 lex_len = (uint32)src_entry->lexeme_len;
-
-		dst_entry_ptr += tpvector_varint_encode(freq, dst_entry_ptr);
-		dst_entry_ptr += tpvector_varint_encode(lex_len, dst_entry_ptr);
-		memcpy(dst_entry_ptr, src_entry->lexeme, lex_len);
-		dst_entry_ptr += lex_len;
-
-		src_entry = (TpVectorEntry_v1 *)((char *)src_entry +
-										 MAXALIGN(
-												 sizeof(TpVectorEntry_v1) +
-												 src_entry->lexeme_len));
-	}
-
-	return dst;
-}
-
 TpVector *
 tpvector_canonicalize(TpVector *raw)
 {
 	if (raw == NULL)
 		return NULL;
-	if (tpvector_is_v2(raw))
-	{
-		tpvector_validate_v2(raw);
-		return raw;
-	}
-	return tpvector_v1_to_v2((TpVector_v1 *)raw);
+	if (!tpvector_is_v2(raw))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("bm25vector value uses unsupported legacy format"),
+				 errdetail(
+						 "Persisted bm25vector values from "
+						 "pg_textsearch versions prior to 1.2.0 cannot "
+						 "be read by this version."),
+				 errhint("Recompute the value via "
+						 "to_bm25vector(text, 'index_name') from the "
+						 "source text, or DROP and recreate the column.")));
+	tpvector_validate_v2(raw);
+	return raw;
 }
 
 /* ---------------------------------------------------------------------
@@ -599,8 +500,7 @@ tpvector_recv(PG_FUNCTION_ARGS)
 
 	total_size = pq_getmsgint(buf, 4);
 
-	if (total_size < (int)sizeof(TpVector_v1) ||
-		(Size)total_size > MaxAllocSize)
+	if (total_size < (int)sizeof(TpVector) || (Size)total_size > MaxAllocSize)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("invalid bm25vector binary size: %d", total_size)));
@@ -612,12 +512,10 @@ tpvector_recv(PG_FUNCTION_ARGS)
 			buf, (char *)result + sizeof(int32), total_size - sizeof(int32));
 
 	/*
-	 * Defer to tpvector_canonicalize for validation + v1→v2
-	 * conversion. The canonicalize path validates v2 input via
-	 * tpvector_validate_v2 (bounds-checking each varint-encoded
-	 * entry against VARSIZE) and validates v1 input as part of
-	 * tpvector_v1_to_v2's conversion pass. Either way, the
-	 * returned TpVector is a fully-validated v2 value.
+	 * Defer to tpvector_canonicalize for magic-check + validation.
+	 * Legacy v1 inputs (no magic, pre-1.2.0) are rejected with a
+	 * clear error; v2 inputs have their entry stream bounds-checked
+	 * via tpvector_validate_v2.
 	 */
 	PG_RETURN_POINTER(tpvector_canonicalize(result));
 }
