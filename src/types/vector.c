@@ -165,6 +165,79 @@ tpvector_is_v2(const void *raw)
 		   bytes[2] == TPVECTOR_V2_MAGIC2 && bytes[3] == TPVECTOR_V2_MAGIC3;
 }
 
+/*
+ * Validate a v2 TpVector's entry stream against the varlena's
+ * declared length. Walks each entry, decoding varint freq + lex_len
+ * and ensuring the lexeme bytes stay in bounds. Errors on any
+ * inconsistency.
+ *
+ * Called from tpvector_canonicalize for every v2 input so that
+ * operator entry points (tpvector_out, tpvector_eq, etc.) can
+ * iterate entries without re-checking bounds at every read. The
+ * pre-v2 code had per-entry checks scattered throughout each
+ * operator; this centralizes them.
+ */
+static void
+tpvector_validate_v2(TpVector *v)
+{
+	const uint8 *cursor;
+	const uint8 *end;
+	int			 i;
+
+	if (VARSIZE(v) < sizeof(TpVector))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("v2 bm25vector too small: %u", VARSIZE(v))));
+
+	if (v->version != TPVECTOR_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("unsupported bm25vector version: %u", v->version)));
+
+	if (v->index_name_len < 0 || v->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid index name length in bm25vector: %d",
+						v->index_name_len)));
+
+	if (v->entry_count < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid entry count in bm25vector: %d",
+						v->entry_count)));
+
+	cursor = (const uint8 *)TPVECTOR_ENTRIES_PTR(v);
+	end	   = (const uint8 *)v + VARSIZE(v);
+
+	if ((const char *)cursor > (const char *)end)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector header overruns varlena")));
+
+	for (i = 0; i < v->entry_count; i++)
+	{
+		uint32 freq;
+		uint32 lex_len;
+
+		if (cursor >= end)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("v2 bm25vector entry %d truncated", i)));
+
+		freq	= tpvector_varint_decode(&cursor, end);
+		lex_len = tpvector_varint_decode(&cursor, end);
+		(void)freq;
+
+		if (cursor + lex_len > end)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("v2 bm25vector entry %d lexeme "
+							"extends beyond buffer",
+							i)));
+		cursor += lex_len;
+	}
+}
+
 static TpVector *
 tpvector_v1_to_v2(TpVector_v1 *src)
 {
@@ -265,7 +338,10 @@ tpvector_canonicalize(TpVector *raw)
 	if (raw == NULL)
 		return NULL;
 	if (tpvector_is_v2(raw))
+	{
+		tpvector_validate_v2(raw);
 		return raw;
+	}
 	return tpvector_v1_to_v2((TpVector_v1 *)raw);
 }
 
@@ -409,6 +485,19 @@ tpvector_in(PG_FUNCTION_ARGS)
 			{
 				frequencies[i] = pg_strtoint32(freq_str);
 			}
+
+			/*
+			 * v2 stores frequency as an unsigned varint; negative
+			 * input is meaningless for BM25 and would silently
+			 * clamp to zero. Reject explicitly so callers see a
+			 * parse error rather than a silent normalization.
+			 */
+			if (frequencies[i] < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("negative frequency in tpvector entry: "
+								"%d",
+								frequencies[i])));
 		}
 	}
 
@@ -522,109 +611,15 @@ tpvector_recv(PG_FUNCTION_ARGS)
 	pq_copymsgbytes(
 			buf, (char *)result + sizeof(int32), total_size - sizeof(int32));
 
-	if (!tpvector_is_v2(result))
-	{
-		TpVector_v1 *v1 = (TpVector_v1 *)result;
-
-		if (v1->index_name_len < 0 ||
-			v1->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("invalid index name length in bm25vector: %d",
-							v1->index_name_len)));
-
-		if (v1->entry_count < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("invalid entry count in bm25vector: %d",
-							v1->entry_count)));
-
-		{
-			TpVectorEntry_v1 *entry	  = TPVECTOR_V1_ENTRIES_PTR(v1);
-			char			 *buf_end = (char *)v1 + total_size;
-
-			for (int i = 0; i < v1->entry_count; i++)
-			{
-				if ((char *)entry + sizeof(TpVectorEntry_v1) > buf_end)
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-							 errmsg("bm25vector entry %d header "
-									"extends beyond buffer",
-									i)));
-				if (entry->lexeme_len < 0 ||
-					(char *)entry->lexeme + entry->lexeme_len > buf_end)
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-							 errmsg("bm25vector entry %d lexeme "
-									"extends beyond buffer",
-									i)));
-				entry = (TpVectorEntry_v1 *)((char *)entry +
-											 MAXALIGN(
-													 sizeof(TpVectorEntry_v1) +
-													 entry->lexeme_len));
-			}
-		}
-
-		result = tpvector_v1_to_v2(v1);
-		pfree(v1);
-	}
-	else
-	{
-		const uint8 *cursor;
-		const uint8 *end;
-
-		if (total_size < (int)sizeof(TpVector))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("v2 bm25vector binary too small: %d",
-							total_size)));
-
-		if (result->version != TPVECTOR_VERSION)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("unsupported bm25vector version: %u",
-							result->version)));
-
-		if (result->index_name_len < 0 ||
-			result->index_name_len > TP_MAX_INDEX_NAME_LENGTH)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("invalid index name length in bm25vector: %d",
-							result->index_name_len)));
-
-		if (result->entry_count < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-					 errmsg("invalid entry count in bm25vector: %d",
-							result->entry_count)));
-
-		cursor = (const uint8 *)TPVECTOR_ENTRIES_PTR(result);
-		end	   = (const uint8 *)result + total_size;
-		for (int i = 0; i < result->entry_count; i++)
-		{
-			uint32 freq;
-			uint32 lex_len;
-
-			if (cursor >= end)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-						 errmsg("v2 bm25vector entry %d truncated", i)));
-
-			freq	= tpvector_varint_decode(&cursor, end);
-			lex_len = tpvector_varint_decode(&cursor, end);
-			(void)freq;
-
-			if (cursor + lex_len > end)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-						 errmsg("v2 bm25vector entry %d lexeme "
-								"extends beyond buffer",
-								i)));
-			cursor += lex_len;
-		}
-	}
-
-	PG_RETURN_POINTER(result);
+	/*
+	 * Defer to tpvector_canonicalize for validation + v1→v2
+	 * conversion. The canonicalize path validates v2 input via
+	 * tpvector_validate_v2 (bounds-checking each varint-encoded
+	 * entry against VARSIZE) and validates v1 input as part of
+	 * tpvector_v1_to_v2's conversion pass. Either way, the
+	 * returned TpVector is a fully-validated v2 value.
+	 */
+	PG_RETURN_POINTER(tpvector_canonicalize(result));
 }
 
 /* ---------------------------------------------------------------------
