@@ -972,6 +972,21 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 /*
  * Rebuild index state from disk after PostgreSQL restart
  * This recreates the DSA area and shared state from docid pages
+ *
+ * XXX Known race with INSERT_TERMS WAL replay on a hot standby: this
+ * function calls tp_create_shared_index_state (which registers in the
+ * dshash registry) BEFORE walking docid pages. Between registration
+ * and the docid walk, the standby's startup process can replay an
+ * INSERT_TERMS record whose registry lookup now succeeds, adding the
+ * doc to the memtable; the docid walk then re-adds the same doc
+ * (because docid-page WAL is ordered after INSERT_TERMS WAL for any
+ * given insert), producing duplicate posting entries and inflated
+ * total_docs until the next SPILL clears the memtable. The window is
+ * narrow and only opens on a backend's *first* open of an index on a
+ * standby with concurrent primary inserts. The whole rebuild path is
+ * scheduled for removal in the follow-up PR that switches to a
+ * spill-at-checkpoint durability model, which closes this race by
+ * construction.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
