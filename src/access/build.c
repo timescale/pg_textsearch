@@ -35,6 +35,7 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -138,6 +139,20 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 	tp_clear_docid_pages(index_rel);
 	tp_link_l0_chain_head(index_rel, root);
 	tp_sync_metapage_stats(index_rel, index_state);
+
+	/*
+	 * Emit SPILL WAL after the segment-write GenericXLog records, the
+	 * docid-clear records, and the metapage update have all been
+	 * issued. Standby redo applies in order: segment data lands on
+	 * disk → docid pages cleared → metapage points at the new chain
+	 * head → SPILL clears the standby's in-memory memtable. Without
+	 * this record, a long-lived standby backend's memtable view
+	 * would still contain entries that have been migrated to the new
+	 * segment, producing duplicate hits.
+	 */
+	START_CRIT_SECTION();
+	tp_xlog_spill(RelationGetRelid(index_rel));
+	END_CRIT_SECTION();
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -1572,6 +1587,19 @@ tp_insert(
 					frequencies,
 					term_count,
 					doc_length);
+
+			/*
+			 * Emit INSERT_TERMS WAL so a streaming standby (and
+			 * primary crash recovery) can apply the same term
+			 * list to its memtable. Critical section is required
+			 * by XLogInsert; the WAL must be issued while we
+			 * still hold the per-index lock so the order of
+			 * memtable mutations is consistent across primary
+			 * and standby.
+			 */
+			START_CRIT_SECTION();
+			tp_xlog_insert_terms(RelationGetRelid(index), ht_ctid, tpvec);
+			END_CRIT_SECTION();
 
 			/*
 			 * Docid pages under LW_SHARED — spill clears
