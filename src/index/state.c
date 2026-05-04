@@ -14,11 +14,14 @@
 #include <access/heapam.h>
 #include <access/relation.h>
 #include <access/xact.h>
+#include <access/xlog.h>
+#include <access/xlogrecovery.h>
 #include <catalog/index.h>
 #include <executor/executor.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <nodes/execnodes.h>
+#include <replication/walreceiver.h>
 #include <storage/bufmgr.h>
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
@@ -303,22 +306,9 @@ tp_get_local_index_state(Oid index_oid)
  *
  * This is called during CREATE INDEX to set up the initial shared state
  * and return a ready-to-use local state to avoid double DSA attachment.
- *
- * If `start_locked` is true the per-index LWLock is acquired EXCLUSIVE
- * before the registry entry becomes visible to other backends. The
- * caller is tp_rebuild_index_from_disk: it needs the registry entry
- * published before walking docid pages (so subsequent backends find
- * it), but it also can't let the standby's startup process apply
- * INSERT_TERMS into a half-built memtable while the docid walk is
- * still running — that would race the docid scan and double-count
- * any doc whose docid-page WAL has already replayed. Holding the
- * lock across the walk makes the standby's single-threaded WAL
- * replay block on the lock for the duration of the rebuild; once
- * we release, replay resumes via the normal redo path against the
- * now-populated memtable.
  */
 TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
+tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 {
 	TpSharedIndexState	 *shared_state;
 	TpLocalIndexState	 *local_state;
@@ -364,14 +354,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
-	/*
-	 * Acquire EXCLUSIVE *before* tp_registry_register makes the
-	 * entry visible to redo. shared_state isn't reachable from any
-	 * other backend yet, so this acquire is uncontended.
-	 */
-	if (start_locked)
-		LWLockAcquire(&shared_state->lock, LW_EXCLUSIVE);
-
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -409,16 +391,11 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared		   = shared_state;
-	local_state->dsa		   = dsa;
-	local_state->is_build_mode = false; /* Runtime mode */
-	/*
-	 * Reflect the EXCLUSIVE lock acquired above (if any) on the
-	 * local state so tp_release_index_lock works the way the caller
-	 * expects.
-	 */
-	local_state->lock_held				 = start_locked;
-	local_state->lock_mode				 = start_locked ? LW_EXCLUSIVE : 0;
+	local_state->shared					 = shared_state;
+	local_state->dsa					 = dsa;
+	local_state->is_build_mode			 = false; /* Runtime mode */
+	local_state->lock_held				 = false;
+	local_state->lock_mode				 = 0;
 	local_state->terms_added_this_xact	 = 0;
 	local_state->docs_since_global_check = 0;
 	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
@@ -1083,8 +1060,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		pfree(metap);
 
 		/* Create fresh shared state for the index */
-		return tp_create_shared_index_state(
-				index_oid, heap_oid, /* start_locked */ false);
+		return tp_create_shared_index_state(index_oid, heap_oid);
 	}
 
 	/* Check if there's actually anything to recover */
@@ -1098,18 +1074,52 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 		/* Still create the shared state for the empty index */
 		return tp_create_shared_index_state(
-				index_oid,
-				index_rel->rd_index->indrelid,
-				/* start_locked */ false);
+				index_oid, index_rel->rd_index->indrelid);
 	}
 
 	local_state = tp_create_shared_index_state(
-			index_oid,
-			index_rel->rd_index->indrelid,
-			/* start_locked */ true);
+			index_oid, index_rel->rd_index->indrelid);
 
 	if (local_state != NULL)
 	{
+		/*
+		 * Drain WAL replay before walking docid pages.
+		 *
+		 * On a hot standby, the docid pages we are about to scan
+		 * are kept in sync with the primary's docid-page WAL by
+		 * the startup process. WAL ordering is INSERT_TERMS first,
+		 * then docid-page update — but with two concurrent writers
+		 * the records can interleave on disk, so a docid-page
+		 * update for doc D can land *after* the INSERT_TERMS for
+		 * an earlier doc D'. If we registered the shared state and
+		 * walked immediately, we could observe a docid page that
+		 * does not yet contain D' (its docid-page WAL hasn't
+		 * replayed) while the INSERT_TERMS for D' has either
+		 * already replayed (skipped — registry was empty at the
+		 * time) or is about to replay against our partially-built
+		 * memtable. Either way D' would be visible on disk shortly
+		 * after the walk finishes but missing from the memtable.
+		 *
+		 * Waiting for replay to catch up to the receive LSN gives
+		 * us a snapshot in which every docid-page update for any
+		 * INSERT_TERMS that has been emitted is visible on disk.
+		 * Combined with the idempotency gate in
+		 * tp_add_document_terms, concurrent replay during the walk
+		 * can no longer cause double-add or miss.
+		 */
+		if (RecoveryInProgress())
+		{
+			XLogRecPtr target = GetWalRcvFlushRecPtr(NULL, NULL);
+			if (target == InvalidXLogRecPtr)
+				target = GetXLogReplayRecPtr(NULL);
+			while (GetXLogReplayRecPtr(NULL) < target)
+			{
+				CHECK_FOR_INTERRUPTS();
+				pg_usleep(1000L);
+			}
+		}
+
+		tp_acquire_index_lock(local_state, LW_SHARED);
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 
 		/*

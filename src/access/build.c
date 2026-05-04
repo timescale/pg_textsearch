@@ -1176,9 +1176,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				TpIndexMetaPage	   metap;
 
 				pstate = tp_create_shared_index_state(
-						RelationGetRelid(index),
-						RelationGetRelid(heap),
-						/* start_locked */ false);
+						RelationGetRelid(index), RelationGetRelid(heap));
 
 				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 				LockBuffer(metabuf, BUFFER_LOCK_SHARE);

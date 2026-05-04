@@ -48,8 +48,13 @@ extern void tp_add_document_to_posting_list(
 /* Document length hash table tranche ID */
 #define TP_DOCLENGTH_HASH_TRANCHE_ID (LWTRANCHE_FIRST_USER_DEFINED + 1)
 
-/* Document length hash table operations */
-extern void tp_store_document_length(
+/*
+ * Reserve a doc-length slot for `ctid`. Returns true if newly
+ * inserted, false if an entry for `ctid` was already present. Acts
+ * as the idempotency gate in tp_add_document_terms for the
+ * primary-insert / docid-rebuild / WAL-redo paths.
+ */
+extern bool tp_store_document_length(
 		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length);
 
 extern int32 tp_get_document_length(

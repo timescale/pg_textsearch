@@ -511,6 +511,14 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 /*
  * Add terms from a document to the posting lists
  * This coordinates between string table and posting list management
+ *
+ * Idempotent by CTID: tp_store_document_length is the single
+ * check-and-add gate. If the CTID is already present (a concurrent
+ * caller — typically WAL redo on a standby vs. a backend rebuilding
+ * from docid pages — beat us to it) we return without touching the
+ * posting lists or the corpus counters. Without this gate the two
+ * paths can race during the rebuild window and double-add the same
+ * doc; see the comment on tp_rebuild_index_from_disk.
  */
 void
 tp_add_document_terms(
@@ -522,6 +530,9 @@ tp_add_document_terms(
 		int32			   doc_length)
 {
 	int i;
+
+	if (!tp_store_document_length(local_state, ctid, doc_length))
+		return;
 
 	for (i = 0; i < term_count; i++)
 	{
@@ -535,9 +546,6 @@ tp_add_document_terms(
 		tp_add_document_to_posting_list(
 				local_state, posting_list, ctid, frequency);
 	}
-
-	/* Store document length in the document length table */
-	tp_store_document_length(local_state, ctid, doc_length);
 
 	/*
 	 * Update corpus statistics.

@@ -32,6 +32,7 @@
 #include <access/xlog_internal.h>
 #include <access/xloginsert.h>
 #include <access/xlogreader.h>
+#include <access/xlogutils.h>
 #include <lib/stringinfo.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>

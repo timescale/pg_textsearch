@@ -137,15 +137,10 @@ typedef struct TpLocalIndexState
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 /*
  * Allocate the per-index shared state, register it in the global
- * registry, and return a local-state handle. If start_locked is true
- * the per-index LWLock is acquired EXCLUSIVE before the registry
- * entry becomes visible — used by tp_rebuild_index_from_disk to keep
- * the standby's startup process from racing redo against the docid
- * scan. The caller is then responsible for releasing the lock once
- * the rebuild is done.
+ * registry, and return a local-state handle.
  */
 extern TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked);
+tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
 extern TpLocalIndexState			 *
 tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);

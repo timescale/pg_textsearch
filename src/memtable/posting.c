@@ -287,9 +287,18 @@ tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
 }
 
 /*
- * Store document length in the document length hash table
+ * Reserve the doc-length slot for `ctid` in the document length hash
+ * table. Returns true if the entry is newly inserted (caller now
+ * owns the addition of this doc to the memtable), false if an entry
+ * for `ctid` was already present.
+ *
+ * Used as the idempotency gate in tp_add_document_terms so that a
+ * standby's docid-page rebuild and concurrent INSERT_TERMS redo
+ * cannot double-add the same CTID. The doc-length table is the gate
+ * (rather than a separate "seen" set) so we get insert + dedup in a
+ * single dshash op under the partition lock.
  */
-void
+bool
 tp_store_document_length(
 		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length)
 {
@@ -318,14 +327,18 @@ tp_store_document_length(
 				local_state->dsa, memtable->doc_lengths_handle);
 	}
 
-	/* Insert or update the document length */
 	entry = (TpDocLengthEntry *)
 			dshash_find_or_insert(doclength_table, ctid, &found);
-	entry->ctid		  = *ctid;
-	entry->doc_length = doc_length;
+	if (!found)
+	{
+		entry->ctid		  = *ctid;
+		entry->doc_length = doc_length;
+	}
 
 	dshash_release_lock(doclength_table, entry);
 	dshash_detach(doclength_table);
+
+	return !found;
 }
 
 /*
