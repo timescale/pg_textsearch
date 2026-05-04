@@ -122,6 +122,21 @@ int tp_extract_terms_from_tsvector(
 		int32  **frequencies_out,
 		int		*term_count_out);
 
+/*
+ * Tokenize a document into terms and frequencies. Handles documents whose
+ * lexeme volume would otherwise exceed Postgres's tsvector 1 MB cap by
+ * splitting on whitespace and merging per-chunk results.
+ *
+ * Output arrays are palloc'd in the current memory context. Returns
+ * doc_length (sum of frequencies).
+ */
+int tp_tokenize_text(
+		text   *document_text,
+		Oid		text_config_oid,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out);
+
 /* Build progress tracking for partitioned tables */
 void tp_build_progress_begin(void);
 void tp_build_progress_end(void);

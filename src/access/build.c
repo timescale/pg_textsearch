@@ -724,6 +724,60 @@ tp_free_terms_array(char **terms, int term_count)
 }
 
 /*
+ * Maximum input bytes per to_tsvector call. Postgres's tsvector caps the
+ * lexeme dictionary at 1 MB (MAXSTRPOS). 256 KB leaves comfortable
+ * headroom for stemming/case-fold expansion.
+ */
+#define TP_TSVECTOR_CHUNK_BYTES (256 * 1024)
+
+/*
+ * Tokenize a single chunk via to_tsvector_byid and extract terms.
+ * Caller owns the returned arrays. doc_length is returned.
+ */
+static int
+tp_tokenize_chunk(
+		const char *chunk,
+		int			chunk_len,
+		Oid			text_config_oid,
+		char	 ***terms_out,
+		int32	  **frequencies_out,
+		int		   *term_count_out)
+{
+	text	*chunk_text;
+	Datum	 tsvector_datum;
+	TSVector tsvector;
+
+	chunk_text = cstring_to_text_with_len(chunk, chunk_len);
+
+	tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid,
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(chunk_text));
+	tsvector = DatumGetTSVector(tsvector_datum);
+
+	return tp_extract_terms_from_tsvector(
+			tsvector, terms_out, frequencies_out, term_count_out);
+}
+
+int
+tp_tokenize_text(
+		text   *document_text,
+		Oid		text_config_oid,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out)
+{
+	const char *data = VARDATA_ANY(document_text);
+	int			len	 = VARSIZE_ANY_EXHDR(document_text);
+
+	/* Single-chunk fast path */
+	return tp_tokenize_chunk(
+			data, len, text_config_oid,
+			terms_out, frequencies_out, term_count_out);
+}
+
+/*
  * Core document processing: convert text to terms and add to posting lists
  * This is shared between index building and docid recovery.
  *
