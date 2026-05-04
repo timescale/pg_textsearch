@@ -239,6 +239,12 @@ test_memory_pressure_eviction_replication() {
         if [ "${primary_count}" != "${standby_count}" ] || \
            [ -z "${primary_count}" ] || \
            [ "${primary_count}" -lt 1500 ]; then
+            log "  --- ${tbl} primary summary ---"
+            primary_sql_quiet "SELECT bm25_summarize_index('${tbl}_idx');" \
+                | while IFS= read -r line; do log "    P| ${line}"; done
+            log "  --- ${tbl} standby summary ---"
+            standby_sql_quiet "SELECT bm25_summarize_index('${tbl}_idx');" \
+                | while IFS= read -r line; do log "    S| ${line}"; done
             error "Test 2: ${tbl} did not converge"
         fi
     done
