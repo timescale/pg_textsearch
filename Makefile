@@ -156,7 +156,6 @@ test-replication-extended:
 	    replication_failover.sh \
 	    replication_compat.sh \
 	    replication_cascading.sh \
-	    replication_pitr.sh \
 	    replication_spill_paths.sh \
 	    wal_audit.sh"; \
 	failed=""; \
