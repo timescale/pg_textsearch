@@ -73,13 +73,15 @@ test_bulk_load_spill_replication() {
         ) t;
     "
 
-    # GUCs are USERSET — set per-session in the same psql -c that
-    # runs the INSERT so PRE_COMMIT sees them.
+    # bulk_load_threshold and memtable_spill_threshold are SUSET —
+    # set per-session in the same psql -c that runs the INSERT so
+    # PRE_COMMIT sees them. memory_limit is SIGHUP and stays at
+    # its default 2 GB, which is well above the ~140 KB this
+    # transaction needs.
     long_lived_before_after "${STANDBY_PORT}" "${query}" \
         "primary_sql \"
             SET pg_textsearch.bulk_load_threshold = 500;
             SET pg_textsearch.memtable_spill_threshold = 0;
-            SET pg_textsearch.memory_limit = 2147483647;
             BEGIN;
             INSERT INTO bulk_docs (content)
                 SELECT 'alpha bravo charlie delta echo ' ||
@@ -242,9 +244,20 @@ main() {
     setup_standby
     wait_for_standby_catchup
 
-    test_bulk_load_spill_replication
-    test_memory_pressure_eviction_replication
+    # Run each subtest in a subshell so a failure in one doesn't
+    # short-circuit the others. Useful for the verify-coverage
+    # workflow (deliberate bug-reverts) — every test should still
+    # report independently. Track failures and exit non-zero at
+    # the end if any failed.
+    local failures=""
+    ( test_bulk_load_spill_replication ) || \
+        failures="${failures} test_bulk_load_spill_replication"
+    ( test_memory_pressure_eviction_replication ) || \
+        failures="${failures} test_memory_pressure_eviction_replication"
 
+    if [ -n "${failures}" ]; then
+        error "Spill-paths failures:${failures}"
+    fi
     log "All spill-paths replication tests passed!"
     exit 0
 }

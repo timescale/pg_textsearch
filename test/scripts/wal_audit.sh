@@ -247,10 +247,20 @@ main() {
     command -v initdb >/dev/null 2>&1 || error "initdb not found"
 
     setup_node
-    test_unlogged_emits_no_records
-    test_logged_records_described_by_name
-    test_crash_replay
 
+    # Subshell each test so one failure doesn't short-circuit the
+    # rest — verify-coverage workflow needs every test to report.
+    local failures=""
+    ( test_unlogged_emits_no_records ) || \
+        failures="${failures} test_unlogged_emits_no_records"
+    ( test_logged_records_described_by_name ) || \
+        failures="${failures} test_logged_records_described_by_name"
+    ( test_crash_replay ) || \
+        failures="${failures} test_crash_replay"
+
+    if [ -n "${failures}" ]; then
+        error "wal_audit failures:${failures}"
+    fi
     log "All wal-audit tests passed!"
     exit 0
 }
