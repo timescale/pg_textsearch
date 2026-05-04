@@ -171,16 +171,18 @@ post-spill, got '${standby_segment_docs}'"
 test_memory_pressure_eviction_replication() {
     log "=== Test 2: memory-pressure eviction replication ==="
 
-    # memory_limit is PGC_SUSET; needs ALTER SYSTEM + reload, then
-    # the inserts below pick it up because they run in fresh psql
-    # sessions opened by primary_sql.
-    primary_sql "
-        ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;
-        ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;
-        ALTER SYSTEM SET pg_textsearch.memory_limit = 1048576;
-        SELECT pg_reload_conf();
-        SELECT pg_sleep(0.5);
-    " >/dev/null
+    # memory_limit is PGC_SIGHUP — needs ALTER SYSTEM + reload.
+    # ALTER SYSTEM can't run inside a transaction, so each one
+    # has to be its own psql -c (psql wraps multi-statement -c
+    # in an implicit transaction).
+    primary_sql "ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;" \
+        >/dev/null
+    primary_sql "ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;" \
+        >/dev/null
+    primary_sql "ALTER SYSTEM SET pg_textsearch.memory_limit = 1048576;" \
+        >/dev/null
+    primary_sql "SELECT pg_reload_conf();" >/dev/null
+    primary_sql "SELECT pg_sleep(0.5);" >/dev/null
 
     primary_sql "
         DROP TABLE IF EXISTS mp_a CASCADE;
