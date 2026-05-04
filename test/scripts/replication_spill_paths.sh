@@ -202,6 +202,13 @@ test_vacuum_spill_replication() {
 
     wait_for_standby_catchup
 
+    # Diagnostic: primary state right after VACUUM. If the bulkdelete
+    # spill fired, primary memtable will be empty and a segment will
+    # exist.
+    log "  --- primary summary after VACUUM ---"
+    primary_sql_quiet "SELECT bm25_summarize_index('vac_docs_idx');" \
+        | while IFS= read -r line; do log "    P| ${line}"; done
+
     local standby_summary
     standby_summary=$(standby_sql_quiet "
         SELECT bm25_summarize_index('vac_docs_idx');")
