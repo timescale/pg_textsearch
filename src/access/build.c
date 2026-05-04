@@ -146,14 +146,19 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 
 	tp_clear_memtable(index_state);
 	tp_clear_docid_pages(index_rel);
-	tp_link_l0_chain_head(index_rel, root);
 	tp_sync_metapage_stats(index_rel, index_state);
 
 	if (RelationNeedsWAL(index_rel))
 	{
 		START_CRIT_SECTION();
-		tp_xlog_spill(RelationGetRelid(index_rel));
+		tp_xlog_spill(index_rel, root);
 		END_CRIT_SECTION();
+	}
+	else
+	{
+		/* Unlogged / TEMP: no SPILL WAL means we still need
+		 * the chain-link metapage update to happen here. */
+		tp_link_l0_chain_head(index_rel, root);
 	}
 
 	pgstat_progress_update_param(
@@ -518,14 +523,17 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		tp_clear_memtable(index_state);
 		tp_clear_docid_pages(index_rel);
-		tp_link_l0_chain_head(index_rel, segment_root);
 		tp_sync_metapage_stats(index_rel, index_state);
 
 		if (RelationNeedsWAL(index_rel))
 		{
 			START_CRIT_SECTION();
-			tp_xlog_spill(RelationGetRelid(index_rel));
+			tp_xlog_spill(index_rel, segment_root);
 			END_CRIT_SECTION();
+		}
+		else
+		{
+			tp_link_l0_chain_head(index_rel, segment_root);
 		}
 
 		tp_maybe_compact_level(index_rel, 0);

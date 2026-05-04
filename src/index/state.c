@@ -1688,14 +1688,17 @@ tp_bulk_load_spill_check(void)
 		{
 			tp_clear_memtable(local_state);
 			tp_clear_docid_pages(index_rel);
-			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, local_state);
 
 			if (RelationNeedsWAL(index_rel))
 			{
 				START_CRIT_SECTION();
-				tp_xlog_spill(RelationGetRelid(index_rel));
+				tp_xlog_spill(index_rel, segment_root);
 				END_CRIT_SECTION();
+			}
+			else
+			{
+				tp_link_l0_chain_head(index_rel, segment_root);
 			}
 
 			tp_maybe_compact_level(index_rel, 0);

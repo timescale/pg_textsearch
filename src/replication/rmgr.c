@@ -33,14 +33,18 @@
 #include <access/xloginsert.h>
 #include <access/xlogreader.h>
 #include <lib/stringinfo.h>
+#include <storage/bufmgr.h>
+#include <storage/bufpage.h>
 #include <storage/lwlock.h>
 #include <varatt.h>
 
+#include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/stringtable.h"
 #include "replication/replication.h"
+#include "segment/segment.h"
 #include "types/vector.h"
 
 static const RmgrData tp_rmgr_data = {
@@ -205,48 +209,109 @@ tp_redo_apply_insert_terms(XLogReaderState *record)
 }
 
 /*
- * Apply a SPILL record on a standby: clear the in-shared-memory
- * memtable for the index. The corresponding segment data and
- * metapage updates have already been replayed via GenericXLog
- * records emitted by segment.c / metapage.c during the primary's
- * tp_do_spill, so the standby's on-disk state is now in sync.
+ * Apply a SPILL record on a standby: atomically link the new L0
+ * segment into the chain head, clear the in-shared-memory
+ * memtable, and (if appropriate) update the previous chain head's
+ * next_segment pointer — all while holding the per-index
+ * LW_EXCLUSIVE.
  *
- * If no registry entry yet exists for the index, skip — first
- * backend access will rebuild from the (now updated) docid pages
- * and metapage.
+ * Doing the chain-link metapage update here (rather than via a
+ * separate GenericXLog record) is what closes the duplicate-doc
+ * window on the standby: GenericXLog redo only takes buffer
+ * locks, so a standby backend could otherwise hold LW_SHARED
+ * between chain-link replay (segment becomes queryable) and
+ * SPILL replay (memtable cleared) and see each spilled doc twice.
+ *
+ * If no registry entry yet exists for the index we still apply
+ * the buffer changes (the on-disk metapage / segment header must
+ * stay in sync with the primary regardless of whether any backend
+ * has populated this standby's registry); the memtable clear is
+ * skipped because there's no memtable to clear.
  */
 static void
 tp_redo_apply_spill(XLogReaderState *record)
 {
-	xl_tp_spill		   *hdr = (xl_tp_spill *)XLogRecGetData(record);
-	TpSharedIndexState *shared;
-	dsa_area		   *dsa;
+	xl_tp_spill		   *hdr	   = (xl_tp_spill *)XLogRecGetData(record);
+	TpSharedIndexState *shared = NULL;
+	dsa_area		   *dsa	   = NULL;
 	TpLocalIndexState	stack_local;
+	XLogRedoAction		action;
+	Buffer				metabuf = InvalidBuffer;
+	Buffer				segbuf	= InvalidBuffer;
+	bool				registry_hit;
 
+	/*
+	 * Find shared state (if registered). We need the lock-and-clear
+	 * to happen before the buffer modifications become visible to
+	 * scanners, so registry lookup happens first.
+	 */
 	{
 		TpSharedIndexState *raw = tp_registry_lookup(hdr->index_oid);
-		dsa_pointer			shared_dp;
 
-		if (raw == NULL)
-			return;
+		registry_hit = (raw != NULL);
+		if (registry_hit)
+		{
+			dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)raw;
 
-		shared_dp = (dsa_pointer)(uintptr_t)raw;
-		dsa		  = tp_registry_get_dsa();
-		if (dsa == NULL)
-			return;
-		shared = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+			dsa = tp_registry_get_dsa();
+			if (dsa == NULL)
+				registry_hit = false;
+			else
+				shared = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+		}
 	}
 
-	memset(&stack_local, 0, sizeof(stack_local));
-	stack_local.shared		  = shared;
-	stack_local.dsa			  = dsa;
-	stack_local.is_build_mode = false;
-	stack_local.lock_held	  = false;
-	stack_local.lock_mode	  = LW_SHARED;
+	if (registry_hit)
+	{
+		memset(&stack_local, 0, sizeof(stack_local));
+		stack_local.shared		  = shared;
+		stack_local.dsa			  = dsa;
+		stack_local.is_build_mode = false;
+		stack_local.lock_held	  = false;
+		stack_local.lock_mode	  = LW_SHARED;
+		tp_acquire_index_lock(&stack_local, LW_EXCLUSIVE);
+	}
 
-	tp_acquire_index_lock(&stack_local, LW_EXCLUSIVE);
-	tp_clear_memtable(&stack_local);
-	tp_release_index_lock(&stack_local);
+	/* Apply chain-link update to the metapage. */
+	action = XLogReadBufferForRedo(record, 0, &metabuf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page			page  = BufferGetPage(metabuf);
+		TpIndexMetaPage metap = (TpIndexMetaPage)PageGetContents(page);
+
+		metap->level_heads[0] = hdr->new_segment_root;
+		metap->level_counts[0]++;
+
+		PageSetLSN(page, record->EndRecPtr);
+		MarkBufferDirty(metabuf);
+	}
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+
+	/* Apply next_segment update to the new segment header (if linking). */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		action = XLogReadBufferForRedo(record, 1, &segbuf);
+		if (action == BLK_NEEDS_REDO)
+		{
+			Page			 page		= BufferGetPage(segbuf);
+			TpSegmentHeader *seg_header = (TpSegmentHeader *)PageGetContents(
+					page);
+
+			seg_header->next_segment = hdr->prev_chain_head;
+
+			PageSetLSN(page, record->EndRecPtr);
+			MarkBufferDirty(segbuf);
+		}
+		if (BufferIsValid(segbuf))
+			UnlockReleaseBuffer(segbuf);
+	}
+
+	if (registry_hit)
+	{
+		tp_clear_memtable(&stack_local);
+		tp_release_index_lock(&stack_local);
+	}
 }
 
 void
@@ -289,7 +354,12 @@ tp_rmgr_desc(StringInfo buf, XLogReaderState *record)
 	case XLOG_TP_SPILL:
 	{
 		xl_tp_spill *r = (xl_tp_spill *)XLogRecGetData(record);
-		appendStringInfo(buf, "index_oid %u", r->index_oid);
+		appendStringInfo(
+				buf,
+				"index_oid %u, new_seg %u, prev_head %u",
+				r->index_oid,
+				r->new_segment_root,
+				r->prev_chain_head);
 		break;
 	}
 	default:
@@ -336,12 +406,71 @@ tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec)
 	return XLogInsert(TP_RMGR_ID, XLOG_TP_INSERT_TERMS);
 }
 
+/*
+ * Apply the chain-link metapage update on the primary AND emit a
+ * SPILL record carrying enough information for the standby's redo
+ * to do the same update atomically with the memtable clear. This
+ * function replaces the separate tp_link_l0_chain_head GenericXLog
+ * call inside the spill recipes (tp_link_l0_chain_head's standalone
+ * use during CREATE INDEX completion still uses GenericXLog).
+ *
+ * Caller must already hold the per-index LW_EXCLUSIVE.
+ */
 XLogRecPtr
-tp_xlog_spill(Oid index_oid)
+tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 {
-	xl_tp_spill hdr = {.index_oid = index_oid};
+	xl_tp_spill		 hdr;
+	XLogRecPtr		 lsn;
+	Buffer			 metabuf;
+	Buffer			 segbuf	  = InvalidBuffer;
+	Page			 metapage = NULL;
+	Page			 segpage  = NULL;
+	TpIndexMetaPage	 metap;
+	TpSegmentHeader *seg_header;
+	BlockNumber		 prev_chain_head;
+
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	prev_chain_head = metap->level_heads[0];
+
+	if (prev_chain_head != InvalidBlockNumber)
+	{
+		segbuf = ReadBuffer(index, new_segment_root);
+		LockBuffer(segbuf, BUFFER_LOCK_EXCLUSIVE);
+		segpage = BufferGetPage(segbuf);
+		/* Ensure pd_lower covers the contents (matches the
+		 * GenericXLog path tp_link_l0_chain_head used to take). */
+		((PageHeader)segpage)->pd_lower = BLCKSZ;
+		seg_header				 = (TpSegmentHeader *)PageGetContents(segpage);
+		seg_header->next_segment = prev_chain_head;
+	}
+
+	metap->level_heads[0] = new_segment_root;
+	metap->level_counts[0]++;
+
+	hdr.index_oid		 = RelationGetRelid(index);
+	hdr.new_segment_root = new_segment_root;
+	hdr.prev_chain_head	 = prev_chain_head;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *)&hdr, sizeof(hdr));
-	return XLogInsert(TP_RMGR_ID, XLOG_TP_SPILL);
+	XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
+	if (BufferIsValid(segbuf))
+		XLogRegisterBuffer(1, segbuf, REGBUF_STANDARD);
+	lsn = XLogInsert(TP_RMGR_ID, XLOG_TP_SPILL);
+
+	PageSetLSN(metapage, lsn);
+	MarkBufferDirty(metabuf);
+	if (BufferIsValid(segbuf))
+	{
+		PageSetLSN(segpage, lsn);
+		MarkBufferDirty(segbuf);
+		UnlockReleaseBuffer(segbuf);
+	}
+	UnlockReleaseBuffer(metabuf);
+
+	return lsn;
 }

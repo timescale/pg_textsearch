@@ -47,10 +47,29 @@ typedef struct xl_tp_insert_terms
 	uint32			vector_size; /* bytes of v2 bm25vector following */
 } xl_tp_insert_terms;
 
-/* SPILL payload. */
+/*
+ * SPILL payload.
+ *
+ * SPILL carries the L0 chain-link metapage update so the standby
+ * applies it atomically with the memtable clear, all under the
+ * per-index LW_EXCLUSIVE held by tp_redo_apply_spill. The previous
+ * approach of using a separate GenericXLog record for the chain
+ * link left a window on the standby (between chain-link replay and
+ * SPILL replay) where the new segment was queryable while the
+ * memtable still held the same docs — backends could see each
+ * spilled doc twice.
+ *
+ * Block 0 references the metapage; block 1 references the new
+ * segment's header page (only present when prev_chain_head is
+ * valid, i.e., when the new segment links to an existing chain).
+ */
 typedef struct xl_tp_spill
 {
-	Oid index_oid;
+	Oid			index_oid;
+	BlockNumber new_segment_root; /* L0 head after the spill */
+	BlockNumber prev_chain_head;  /* prior level_heads[0]; Invalid
+								   * if the new segment is the
+								   * first in level 0 */
 } xl_tp_spill;
 
 /* Registration — called once from _PG_init. */
@@ -68,6 +87,15 @@ extern const char *tp_rmgr_identify(uint8 info);
  */
 extern XLogRecPtr
 tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec);
-extern XLogRecPtr tp_xlog_spill(Oid index_oid);
+/*
+ * Emit a SPILL record AND apply the L0 chain-link metapage update
+ * in the same WAL action. Caller must already hold the per-index
+ * LW_EXCLUSIVE; this function takes the metapage and (if linking
+ * to an existing chain) new-segment buffer locks internally and
+ * releases them before returning. Replaces the
+ * tp_link_l0_chain_head call that the spill recipes used to emit
+ * separately via GenericXLog.
+ */
+extern XLogRecPtr tp_xlog_spill(Relation index, BlockNumber new_segment_root);
 
 #endif /* PG_TEXTSEARCH_REPLICATION_H */
