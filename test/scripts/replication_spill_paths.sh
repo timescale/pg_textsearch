@@ -96,10 +96,16 @@ test_bulk_load_spill_replication() {
     if [ "${LL_BEFORE}" != "0" ]; then
         error "Test 1: expected initial 0, got '${LL_BEFORE}'"
     fi
-    if [[ "${LL_AFTER}" == *ERROR* ]] || \
-       ! [[ "${LL_AFTER}" =~ ^[0-9]+$ ]] || \
-       [ "${LL_AFTER}" -lt 2000 ]; then
-        error "Test 1: expected 2000+, got '${LL_AFTER}'"
+    # Exactly 2000, not "at least". If tp_xlog_spill is missing from
+    # tp_bulk_load_spill_check, the standby would still get the 2000
+    # docs via INSERT_TERMS and via the replicated segment, but
+    # nothing would clear its memtable — so the long-lived backend
+    # would see each doc once in the memtable and once in the
+    # segment, returning ~4000.
+    if [ "${LL_AFTER}" != "2000" ]; then
+        error "Test 1: expected exactly 2000, got '${LL_AFTER}' \
+(>2000 means SPILL WAL did not clear the standby memtable, so the \
+docs are double-counted between memtable and segment)"
     fi
 
     # Confirm a spill actually happened on the primary side, not
