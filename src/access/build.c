@@ -734,6 +734,13 @@ tp_free_terms_array(char **terms, int term_count)
 /*
  * Tokenize a single chunk via to_tsvector_byid and extract terms.
  * Caller owns the returned arrays. doc_length is returned.
+ *
+ * Frees the per-chunk `text` wrapper and the tsvector backing before
+ * returning, so callers running many chunks in a row (the chunked path
+ * in tp_tokenize_text) do not retain ~256 KB + tsvector backing per
+ * chunk in CurrentMemoryContext. The output term strings have already
+ * been copied into freshly palloc'd buffers by
+ * tp_extract_terms_from_tsvector, so they survive the frees.
  */
 static int
 tp_tokenize_chunk(
@@ -747,6 +754,7 @@ tp_tokenize_chunk(
 	text	*chunk_text;
 	Datum	 tsvector_datum;
 	TSVector tsvector;
+	int		 doc_length;
 
 	chunk_text = cstring_to_text_with_len(chunk, chunk_len);
 
@@ -757,8 +765,13 @@ tp_tokenize_chunk(
 			PointerGetDatum(chunk_text));
 	tsvector = DatumGetTSVector(tsvector_datum);
 
-	return tp_extract_terms_from_tsvector(
+	doc_length = tp_extract_terms_from_tsvector(
 			tsvector, terms_out, frequencies_out, term_count_out);
+
+	pfree(chunk_text);
+	pfree(tsvector);
+
+	return doc_length;
 }
 
 /*
@@ -894,15 +907,25 @@ tp_tokenize_text(
 	int			 used;
 	TpTermEntry *acc;
 
-	/* Single-chunk fast path */
+	/*
+	 * Single-chunk fast path: pass document_text straight into
+	 * to_tsvector_byid. Avoids the cstring_to_text_with_len memcpy that
+	 * tp_tokenize_chunk would otherwise do on every small document.
+	 */
 	if (len <= TP_TSVECTOR_CHUNK_BYTES)
-		return tp_tokenize_chunk(
-				data,
-				len,
-				text_config_oid,
-				terms_out,
-				frequencies_out,
-				term_count_out);
+	{
+		Datum	 tsvector_datum;
+		TSVector tsvector;
+
+		tsvector_datum = DirectFunctionCall2Coll(
+				to_tsvector_byid,
+				InvalidOid,
+				ObjectIdGetDatum(text_config_oid),
+				PointerGetDatum(document_text));
+		tsvector = DatumGetTSVector(tsvector_datum);
+		return tp_extract_terms_from_tsvector(
+				tsvector, terms_out, frequencies_out, term_count_out);
+	}
 
 	/* Chunked path: accumulate per-chunk (term, freq) into acc[]. */
 	cap	 = 1024;
