@@ -179,7 +179,8 @@ test_memory_pressure_eviction_replication() {
         >/dev/null
     primary_sql "ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;" \
         >/dev/null
-    primary_sql "ALTER SYSTEM SET pg_textsearch.memory_limit = 1048576;" \
+    # memory_limit is in KB (GUC_UNIT_KB). 1024 = 1 MB.
+    primary_sql "ALTER SYSTEM SET pg_textsearch.memory_limit = 1024;" \
         >/dev/null
     primary_sql "SELECT pg_reload_conf();" >/dev/null
     primary_sql "SELECT pg_sleep(0.5);" >/dev/null
