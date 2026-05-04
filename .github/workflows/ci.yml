@@ -138,6 +138,20 @@ jobs:
           echo "✗ Replication tests failed"
           exit 1
         fi
+        echo "Running spill-paths replication tests..."
+        if (cd test/scripts && ./replication_spill_paths.sh); then
+          echo "✓ Spill-paths replication tests passed"
+        else
+          echo "✗ Spill-paths replication tests failed"
+          exit 1
+        fi
+        echo "Running WAL audit tests..."
+        if (cd test/scripts && ./wal_audit.sh); then
+          echo "✓ WAL audit tests passed"
+        else
+          echo "✗ WAL audit tests failed"
+          exit 1
+        fi
 
         # hypertable.sh needs a PostgreSQL instance with TimescaleDB preloaded
         echo "Running hypertable tests..."
@@ -561,6 +575,8 @@ jobs:
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./memory_accounting.sh) || true
         (cd test/scripts && ./replication.sh) || true
+        (cd test/scripts && ./replication_spill_paths.sh) || true
+        (cd test/scripts && ./wal_audit.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
       run: |
