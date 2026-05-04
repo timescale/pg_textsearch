@@ -793,15 +793,14 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 	text_config_oid = metap->text_config_oid;
 	if (!OidIsValid(text_config_oid))
-		text_config_oid = DatumGetObjectId(DirectFunctionCall1(
-				regconfigin, CStringGetDatum("english")));
+		text_config_oid = DatumGetObjectId(
+				DirectFunctionCall1(regconfigin, CStringGetDatum("english")));
 
 	pfree(metap);
 	index_close(index_rel, AccessShareLock);
 
 	(void)tp_tokenize_text(
-			input_text, text_config_oid,
-			&lexemes, &frequencies, &entry_count);
+			input_text, text_config_oid, &lexemes, &frequencies, &entry_count);
 
 	result = create_tpvector_from_strings(
 			index_name, entry_count, (const char **)lexemes, frequencies);

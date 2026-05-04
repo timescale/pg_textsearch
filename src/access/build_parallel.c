@@ -313,8 +313,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			document_text = DatumGetTextPP(idx_values[0]);
 
 		doc_length = tp_tokenize_text(
-				document_text, shared->text_config_oid,
-				&terms, &frequencies, &term_count);
+				document_text,
+				shared->text_config_oid,
+				&terms,
+				&frequencies,
+				&term_count);
 
 		MemoryContextSwitchTo(oldctx);
 

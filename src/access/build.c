@@ -806,8 +806,8 @@ tp_find_chunk_boundary(const char *data, int target)
 
 typedef struct TpTermEntry
 {
-	char  *term;
-	int32  freq;
+	char *term;
+	int32 freq;
 } TpTermEntry;
 
 static int
@@ -830,12 +830,12 @@ tp_merge_term_entries(
 		int			 entry_count,
 		char	  ***terms_out,
 		int32	   **frequencies_out,
-		int		   *term_count_out)
+		int			*term_count_out)
 {
-	int		out;
-	int		i;
-	char  **terms;
-	int32  *freqs;
+	int	   out;
+	int	   i;
+	char **terms;
+	int32 *freqs;
 
 	if (entry_count == 0)
 	{
@@ -886,8 +886,8 @@ tp_tokenize_text(
 		int32 **frequencies_out,
 		int	   *term_count_out)
 {
-	const char	*data	   = VARDATA_ANY(document_text);
-	int			 len	   = VARSIZE_ANY_EXHDR(document_text);
+	const char	*data		= VARDATA_ANY(document_text);
+	int			 len		= VARSIZE_ANY_EXHDR(document_text);
 	int			 doc_length = 0;
 	int			 offset;
 	int			 cap;
@@ -897,8 +897,12 @@ tp_tokenize_text(
 	/* Single-chunk fast path */
 	if (len <= TP_TSVECTOR_CHUNK_BYTES)
 		return tp_tokenize_chunk(
-				data, len, text_config_oid,
-				terms_out, frequencies_out, term_count_out);
+				data,
+				len,
+				text_config_oid,
+				terms_out,
+				frequencies_out,
+				term_count_out);
 
 	/* Chunked path: accumulate per-chunk (term, freq) into acc[]. */
 	cap	 = 1024;
@@ -908,19 +912,23 @@ tp_tokenize_text(
 	offset = 0;
 	while (offset < len)
 	{
-		int		 remaining = len - offset;
-		int		 take	   = remaining <= TP_TSVECTOR_CHUNK_BYTES
-							 ? remaining
-							 : tp_find_chunk_boundary(
-									 data + offset, TP_TSVECTOR_CHUNK_BYTES);
-		char   **chunk_terms;
-		int32   *chunk_freqs;
-		int		 chunk_term_count;
-		int		 i;
+		int	   remaining = len - offset;
+		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
+								 ? remaining
+								 : tp_find_chunk_boundary(
+								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
+		char **chunk_terms;
+		int32 *chunk_freqs;
+		int	   chunk_term_count;
+		int	   i;
 
 		doc_length += tp_tokenize_chunk(
-				data + offset, take, text_config_oid,
-				&chunk_terms, &chunk_freqs, &chunk_term_count);
+				data + offset,
+				take,
+				text_config_oid,
+				&chunk_terms,
+				&chunk_freqs,
+				&chunk_term_count);
 
 		if (used + chunk_term_count > cap)
 		{
@@ -963,11 +971,11 @@ tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out)
 {
-	char	*document_str;
-	char   **terms;
-	int32	*frequencies;
-	int		 term_count;
-	int		 doc_length;
+	char  *document_str;
+	char **terms;
+	int32 *frequencies;
+	int	   term_count;
+	int	   doc_length;
 
 	if (!document_text || !index_state)
 		return false;
@@ -985,8 +993,7 @@ tp_process_document_text(
 
 	/* Tokenize document (chunks oversized inputs to fit tsvector cap) */
 	doc_length = tp_tokenize_text(
-			document_text, text_config_oid,
-			&terms, &frequencies, &term_count);
+			document_text, text_config_oid, &terms, &frequencies, &term_count);
 
 	if (term_count > 0)
 	{
@@ -1081,8 +1088,11 @@ tp_build_callback(
 		document_text = DatumGetTextPP(values[0]);
 
 	doc_length = tp_tokenize_text(
-			document_text, bs->text_config_oid,
-			&terms, &frequencies, &term_count);
+			document_text,
+			bs->text_config_oid,
+			&terms,
+			&frequencies,
+			&term_count);
 
 	MemoryContextSwitchTo(oldctx);
 

@@ -456,8 +456,11 @@ tp_vacuum_rebuild_segment(
 		document_text = DatumGetTextPP(idx_values[0]);
 
 		doc_length = tp_tokenize_text(
-				document_text, text_config_oid,
-				&terms, &frequencies, &term_count);
+				document_text,
+				text_config_oid,
+				&terms,
+				&frequencies,
+				&term_count);
 
 		MemoryContextSwitchTo(old_ctx);
 

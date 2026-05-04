@@ -600,10 +600,10 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
  */
 static float4
 find_term_frequency_in_arrays(
-		char  **doc_terms,
-		int32  *doc_frequencies,
-		int		doc_term_count,
-		char   *query_lexeme)
+		char **doc_terms,
+		int32 *doc_frequencies,
+		int	   doc_term_count,
+		char  *query_lexeme)
 {
 	int i;
 
@@ -672,9 +672,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	Oid				   text_config_oid;
-	char			 **doc_terms		= NULL;
-	int32			  *doc_frequencies	= NULL;
-	int				   doc_term_count	= 0;
+	char			 **doc_terms	   = NULL;
+	int32			  *doc_frequencies = NULL;
+	int				   doc_term_count  = 0;
 	int				   raw_doc_length;
 	Datum			   query_tsvector_datum;
 	TSVector		   query_tsvector;
@@ -860,8 +860,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 * larger than the tsvector dictionary cap are chunked + merged.
 		 */
 		raw_doc_length = tp_tokenize_text(
-				text_arg, text_config_oid,
-				&doc_terms, &doc_frequencies, &doc_term_count);
+				text_arg,
+				text_config_oid,
+				&doc_terms,
+				&doc_frequencies,
+				&doc_term_count);
 
 		/* Tokenize the query text to get query terms (always small) */
 		query_tsvector_datum = DirectFunctionCall2Coll(
@@ -910,8 +913,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 
 			/* Find term frequency in the document */
 			tf = find_term_frequency_in_arrays(
-					doc_terms, doc_frequencies, doc_term_count,
-					query_lexeme);
+					doc_terms, doc_frequencies, doc_term_count, query_lexeme);
 
 			if (tf == 0.0f)
 			{
