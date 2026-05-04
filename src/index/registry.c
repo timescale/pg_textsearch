@@ -765,6 +765,10 @@ tp_evict_largest_memtable(Oid caller_oid)
 	int					num_candidates;
 	int					i;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return false;
+
 	num_candidates =
 			find_eviction_candidates(candidates, TP_MAX_EVICTION_CANDIDATES);
 

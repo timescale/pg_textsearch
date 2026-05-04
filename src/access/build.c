@@ -131,6 +131,15 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 {
 	BlockNumber root;
 
+	/*
+	 * Standby is read-only; spill is primary-only. Standby's
+	 * memtable changes only via WAL redo (INSERT_TERMS adds, SPILL
+	 * clears). If a spill ran here it would diverge standby state
+	 * from primary.
+	 */
+	if (RecoveryInProgress())
+		return false;
+
 	root = tp_write_segment(index_state, index_rel);
 	if (root == InvalidBlockNumber)
 		return false;
@@ -464,6 +473,13 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	TpLocalIndexState *index_state;
 	BlockNumber		   segment_root;
 	RangeVar		  *rv;
+
+	/* Replica is read-only; spill is primary-only. Standby's
+	 * memtable changes only via WAL redo. */
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("bm25_spill_index() cannot run during recovery")));
 
 	/* Parse index name (supports schema.index notation) */
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));

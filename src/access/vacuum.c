@@ -189,6 +189,10 @@ tp_spill_memtable_if_needed(
 	TpMemtable *memtable;
 	BlockNumber segment_root;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return;
+
 	if (!index_state || !index_state->shared)
 		return;
 

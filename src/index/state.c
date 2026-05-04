@@ -1627,6 +1627,10 @@ tp_bulk_load_spill_check(void)
 	HASH_SEQ_STATUS		  status;
 	LocalStateCacheEntry *entry;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return;
+
 	/* Nothing to do if cache not initialized or threshold disabled */
 	if (local_state_cache == NULL)
 		return;
