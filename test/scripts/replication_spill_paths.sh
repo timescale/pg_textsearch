@@ -179,70 +179,79 @@ test_vacuum_spill_replication() {
         );
         CREATE INDEX vac_docs_idx ON vac_docs USING bm25(content)
             WITH (text_config='english');
-        INSERT INTO vac_docs (content)
-            SELECT 'gamma delta epsilon zeta eta ' || md5(g::text)
-            FROM generate_series(1, 200) g;
     " >/dev/null
 
     wait_for_standby_catchup
 
-    # Sanity check — primary memtable should hold the docs at
-    # this point (no spill yet because we're well under bulk-load
-    # and per-index limits).
-    local primary_memtable_pre
-    primary_memtable_pre=$(primary_sql_quiet "
-        SELECT bm25_summarize_index('vac_docs_idx');" \
-        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
-    log "  primary memtable docs before VACUUM: ${primary_memtable_pre} (expect 200)"
+    # Open a long-lived backend on the standby BEFORE inserts so
+    # the standby's registry gets populated and INSERT_TERMS redo
+    # actually applies records to the memtable. Without this, the
+    # standby's first access happens after VACUUM has already
+    # cleared docid pages on the primary, so the rebuild walks an
+    # empty docid chain and the memtable winds up empty
+    # vacuously — independent of whether SPILL replicated.
+    long_lived_open "${STANDBY_PORT}"
+    # Initial query forces tp_rebuild_index_from_disk on this
+    # backend, which registers the empty index.
+    long_lived_query "SELECT bm25_summarize_index('vac_docs_idx');" \
+        >/dev/null
 
-    # VACUUM can't run in a transaction block; psql -c with multiple
-    # statements wraps in one — split.
+    primary_sql "
+        INSERT INTO vac_docs (content)
+            SELECT 'gamma delta epsilon zeta eta ' || md5(g::text)
+            FROM generate_series(1, 200) g;
+    " >/dev/null
+    wait_for_standby_catchup
+
+    # Sanity: standby memtable now populated via INSERT_TERMS replay.
+    local pre_vacuum_summary pre_vacuum_memtable
+    pre_vacuum_summary=$(long_lived_query \
+        "SELECT bm25_summarize_index('vac_docs_idx');")
+    pre_vacuum_memtable=$(echo "${pre_vacuum_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    log "  standby memtable docs pre-VACUUM: ${pre_vacuum_memtable:-<none>} (expect 200)"
+    if [ "${pre_vacuum_memtable:-0}" != "200" ]; then
+        long_lived_close
+        error "Test 2: standby memtable did not populate via \
+INSERT_TERMS replay (got '${pre_vacuum_memtable}'); test setup \
+broken."
+    fi
+
     primary_sql "DELETE FROM vac_docs WHERE id <= 100;" >/dev/null
     primary_sql "VACUUM vac_docs;" >/dev/null
     # Force a checkpoint after VACUUM so all VACUUM-generated WAL
-    # is flushed to disk on the primary. Without this, the
-    # following wait_for_standby_catchup can return before the
-    # metapage GenericXLog records reach the standby's buffer
-    # pool, causing the standby to read the pre-VACUUM metapage.
+    # is flushed to disk before we wait for standby catchup.
     primary_sql "CHECKPOINT;" >/dev/null
-
     wait_for_standby_catchup
 
-    # Diagnostic: primary state right after VACUUM. If the bulkdelete
-    # spill fired, primary memtable will be empty and a segment will
-    # exist.
-    log "  --- primary summary after VACUUM ---"
-    primary_sql_quiet "SELECT bm25_summarize_index('vac_docs_idx');" \
-        | while IFS= read -r line; do log "    P| ${line}"; done
-
-    local standby_summary
-    standby_summary=$(standby_sql_quiet "
-        SELECT bm25_summarize_index('vac_docs_idx');")
-    local standby_memtable_docs
-    local standby_segment_docs
-    standby_memtable_docs=$(echo "${standby_summary}" \
+    local post_vacuum_summary post_vacuum_memtable post_vacuum_segments
+    post_vacuum_summary=$(long_lived_query \
+        "SELECT bm25_summarize_index('vac_docs_idx');")
+    post_vacuum_memtable=$(echo "${post_vacuum_summary}" \
         | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
-    standby_segment_docs=$(echo "${standby_summary}" \
+    post_vacuum_segments=$(echo "${post_vacuum_summary}" \
         | awk '/^Segments:/{f=1;next} \
                f && /Total:/{ \
                  for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $(i+1) ~ /docs/){print $i; exit} \
                }')
-    log "  standby memtable docs after VACUUM: ${standby_memtable_docs:-<none>} (expect 0)"
-    log "  standby segment docs after VACUUM:  ${standby_segment_docs:-<none>} (expect 200)"
+    log "  standby memtable docs post-VACUUM: ${post_vacuum_memtable:-<none>} (expect 0)"
+    log "  standby segment docs post-VACUUM:  ${post_vacuum_segments:-<none>} (expect 200)"
 
-    if [ "${standby_memtable_docs:-x}" != "0" ]; then
-        log "  --- standby summary (for diagnosis) ---"
-        echo "${standby_summary}" | while IFS= read -r line; do
+    long_lived_close
+
+    if [ "${post_vacuum_memtable:-x}" != "0" ]; then
+        log "  --- post-VACUUM standby summary ---"
+        echo "${post_vacuum_summary}" | while IFS= read -r line; do
             log "    S| ${line}"
         done
         error "Test 2: standby memtable should be empty after \
-VACUUM-triggered spill replicates (got '${standby_memtable_docs}'). \
+VACUUM-triggered spill replicates (got '${post_vacuum_memtable}'). \
 SPILL WAL is not being emitted from tp_spill_memtable_if_needed, \
 or its redo is not clearing the standby memtable."
     fi
-    if [ "${standby_segment_docs:-0}" != "200" ]; then
+    if [ "${post_vacuum_segments:-0}" != "200" ]; then
         error "Test 2: standby segment should hold all 200 docs \
-post-VACUUM, got '${standby_segment_docs}'"
+post-VACUUM, got '${post_vacuum_segments}'"
     fi
 
     log "Test 2 PASSED: VACUUM-triggered spill replicates"
