@@ -39,7 +39,14 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   `tp_clear_memtable`. The startup process can't open relations
   (no transaction state), so redo bypasses `tp_get_local_index_state`
   and constructs a minimal `TpLocalIndexState` on the stack from
-  the registry's shared state plus the global DSA. Closes #345.
+  the registry's shared state plus the global DSA. WAL emission
+  is gated on `RelationNeedsWAL(rel)` so UNLOGGED / TEMP indexes
+  don't pay for records that can't apply on the standby. Docid
+  pages remain the durable on-disk record of what's in the
+  memtable; the rebuild path in `tp_rebuild_index_from_disk`
+  registers its shared state with the per-index LWLock already
+  held EXCLUSIVE so a concurrent standby redo can't race the
+  docid walk. Closes #345.
 
 ## Core Architecture
 
