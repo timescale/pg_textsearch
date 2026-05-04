@@ -608,6 +608,26 @@ This behavior is similar to other search engines:
 - Elasticsearch: Truncates tokens (configurable via `truncate` filter, default 10 chars)
 - Tantivy: Truncates to 255 bytes by default
 
+### Large Documents and Chunked Tokenization
+
+pg_textsearch calls Postgres's `to_tsvector` to tokenize document text.
+Postgres caps a single `tsvector`'s lexeme dictionary at 1 MB
+(`MAXSTRPOS`). Documents whose unique-token volume would exceed that cap
+are split into chunks (currently 256 KB) before tokenization, then the
+per-chunk term frequencies are merged.
+
+Chunk boundaries are chosen at the last ASCII whitespace inside each
+window. This is correct for whitespace-delimited scripts (Latin,
+Cyrillic, Greek, Arabic, etc.). For non-whitespace-delimited scripts
+(CJK, Thai, Lao, Khmer), oversize documents are still indexed, but the
+chunk boundary may fall in the middle of what a language-aware tokenizer
+would treat as a word. In practice this is acceptable because Postgres's
+default text-search parser does not emit per-word tokens for those
+scripts anyway. If you use a custom text search configuration with a
+parser that produces word-level tokens for one of these scripts, very
+large documents may produce slightly different lexeme counts than a
+single-shot tokenization would.
+
 ### PL/pgSQL and Stored Procedures
 
 The implicit `text <@> 'query'` syntax relies on planner hooks to automatically
