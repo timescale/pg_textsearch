@@ -793,8 +793,10 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 	text_config_oid = metap->text_config_oid;
 	if (!OidIsValid(text_config_oid))
-		text_config_oid = DatumGetObjectId(
-				DirectFunctionCall1(regconfigin, CStringGetDatum("english")));
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("index \"%s\" has no text search configuration",
+						index_name)));
 
 	pfree(metap);
 	index_close(index_rel, AccessShareLock);
