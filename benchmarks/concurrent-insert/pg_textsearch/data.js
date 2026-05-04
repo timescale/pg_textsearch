@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1777794671426,
+  "lastUpdate": 1777882325662,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -1864,6 +1864,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.691,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5886b94f61767c0c06b31ec9d5de9b4b4d1094b8",
+          "message": "feat: compact bm25vector v2 wire format (#346)\n\nFirst PR of a three-PR series fixing #345 (long-lived standby backend\nstaleness). Design doc lands here as\n`docs/plans/2026-05-01-physical-replication.md`; PR 3 deletes it.\n\n## Summary\n\nTighten the `bm25vector` per-entry encoding before the WAL work for #345\nlands. v1 used `int32 frequency + int32 lexeme_len + MAXALIGN padding`\nper entry — ~16 bytes for a 6-char lexeme. v2 packs entries as varint\n(LEB128) frequency + varint lexeme_len + lexeme bytes — ~8 bytes for the\nsame entry, with no padding waste.\n\nPer-entry size, English-stem typical case (lexeme ≈ 6 chars, freq = 1):\n\n| | Bytes |\n|---|---|\n| v1 | ~16 |\n| v2 (this PR) | **~8** |\n\nFor a 100-token doc with 70 unique stems, ~570 bytes of vector payload\nafter this PR (vs ~1150 in v1). The compaction applies everywhere\n`bm25vector` is materialized — not just in the upcoming #345 WAL\nrecords.\n\n## Format detection\n\nEach v2 value carries a 4-byte ASCII `\"BM25\"` magic immediately after\nthe varlena header, plus a 1-byte version field and 3 reserved bytes.\nThe magic is unambiguously not a valid v1 `index_name_len` value, so\nreaders sniff the first 4 bytes after `vl_len_` and dispatch to v1 or v2\nparsers.\n\n## Backward compatibility\n\n- `tpvector_recv` accepts both v1 and v2 binary input; v1 is converted\nto v2 in palloc'd memory before returning.\n- `tpvector_canonicalize()` runs at every operator boundary\n(`tpvector_eq`, `tpvector_send`, `tpvector_out`) on `PG_DETOAST_DATUM`\noutput, so any persisted v1 value is upgraded on first read.\n- Writers always emit v2; `tpvector_send` always emits v2 wire bytes.\n- Internal walkers and storage paths only ever see v2.\n\n`bm25vector` columns persisted in user tables (uncommon — the type is\nnormally transient) continue to work; the value is upgraded on first\nread.\n\n## API change\n\n`TpVectorEntry` is now opaque (variable-length byte stream). Internal\ncallers (`tp_insert` in `build.c`, the memtable scan path in\n`memtable/scan.c`) decode entries via `tpvector_entry_decode()` into a\n`TpVectorEntryView` struct.\n\n## Files\n\n- `src/types/vector.{c,h}` — v2 layout, varint helpers, v1→v2 converter,\ncanonicalize wrapper.\n- `src/access/build.c`, `src/memtable/scan.c` — internal callers updated\nto use the decoded view.\n- `docs/plans/2026-05-01-physical-replication.md` — three-PR design doc\nanchoring this work; deleted in PR 3.\n\n## Testing\n\n- All 58 SQL regression tests pass on PG17 (debug build).\n- All shell tests pass.\n- Format check passes.\n\n## Lifecycle\n\nThis PR is purely preparatory. PR 2 will use the v2 layout to carry\n`INSERT_TERMS` WAL record payloads. PR 3 removes the now-redundant\ndocid-page machinery.",
+          "timestamp": "2026-05-03T16:08:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5886b94f61767c0c06b31ec9d5de9b4b4d1094b8"
+        },
+        "date": 1777882320513,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2859.546067,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 5511.280453,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.363,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 8947.928267,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.447,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 9992.151818,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.801,
             "unit": "ms"
           }
         ]
