@@ -17,10 +17,6 @@
  *                  memtable; the segment data itself replicates via
  *                  the existing GenericXLog records emitted by
  *                  segment.c.
- *
- * Custom rmgr ID 145 is chosen from the extension range [128, 255].
- * For wider distribution (multi-extension deployments) this should
- * be registered at the Postgres custom rmgr wiki to avoid collisions.
  */
 #ifndef PG_TEXTSEARCH_REPLICATION_H
 #define PG_TEXTSEARCH_REPLICATION_H
@@ -33,7 +29,7 @@
 
 #include "types/vector.h"
 
-#define TP_RMGR_ID	 145
+#define TP_RMGR_ID	 149
 #define TP_RMGR_NAME "pg_textsearch"
 
 /* Record info bits (XLOG_TP_*) — distinguish the two record types. */

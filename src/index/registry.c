@@ -833,12 +833,6 @@ tp_evict_largest_memtable(Oid caller_oid)
 			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, target_state);
 
-			/*
-			 * Emit SPILL WAL so a streaming standby's long-lived
-			 * backends drop their now-stale memtable view (see
-			 * the matching comment in tp_do_spill). UNLOGGED /
-			 * TEMP indexes don't replicate, so skip.
-			 */
 			if (RelationNeedsWAL(index_rel))
 			{
 				START_CRIT_SECTION();

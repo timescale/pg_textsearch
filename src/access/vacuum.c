@@ -207,12 +207,6 @@ tp_spill_memtable_if_needed(
 		tp_link_l0_chain_head(index, segment_root);
 		tp_sync_metapage_stats(index, index_state);
 
-		/*
-		 * Emit SPILL WAL so a streaming standby's long-lived
-		 * backends drop their now-stale memtable view (see the
-		 * matching comment in tp_do_spill). UNLOGGED / TEMP
-		 * indexes don't replicate, so skip.
-		 */
 		if (RelationNeedsWAL(index))
 		{
 			START_CRIT_SECTION();

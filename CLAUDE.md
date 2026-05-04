@@ -32,7 +32,7 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   still needs to be investigated and fixed, not ignored.
 
 - **Physical replication**: Memtable mutations are WAL-logged via a
-  custom resource manager (rmgr ID 145, records `INSERT_TERMS` and
+  custom resource manager (rmgr ID 149, records `INSERT_TERMS` and
   `SPILL`). On a streaming standby — and during primary crash
   recovery — redo applies the records directly to the
   in-shared-memory memtable via `tp_add_document_terms` /

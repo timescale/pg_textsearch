@@ -140,19 +140,6 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 	tp_link_l0_chain_head(index_rel, root);
 	tp_sync_metapage_stats(index_rel, index_state);
 
-	/*
-	 * Emit SPILL WAL after the segment-write GenericXLog records, the
-	 * docid-clear records, and the metapage update have all been
-	 * issued. Standby redo applies in order: segment data lands on
-	 * disk → docid pages cleared → metapage points at the new chain
-	 * head → SPILL clears the standby's in-memory memtable. Without
-	 * this record, a long-lived standby backend's memtable view
-	 * would still contain entries that have been migrated to the new
-	 * segment, producing duplicate hits.
-	 *
-	 * Skip for UNLOGGED / TEMP indexes: their data is not replicated
-	 * anyway, so the record would just be wire and disk overhead.
-	 */
 	if (RelationNeedsWAL(index_rel))
 	{
 		START_CRIT_SECTION();
@@ -518,12 +505,6 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 		tp_link_l0_chain_head(index_rel, segment_root);
 		tp_sync_metapage_stats(index_rel, index_state);
 
-		/*
-		 * Emit SPILL WAL so a streaming standby's long-lived
-		 * backends drop their now-stale memtable view (see the
-		 * matching comment in tp_do_spill). UNLOGGED / TEMP
-		 * indexes don't replicate, so skip.
-		 */
 		if (RelationNeedsWAL(index_rel))
 		{
 			START_CRIT_SECTION();
@@ -531,7 +512,6 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 			END_CRIT_SECTION();
 		}
 
-		/* Check if L0 needs compaction */
 		tp_maybe_compact_level(index_rel, 0);
 	}
 
@@ -1609,19 +1589,6 @@ tp_insert(
 					term_count,
 					doc_length);
 
-			/*
-			 * Emit INSERT_TERMS WAL so a streaming standby (and
-			 * primary crash recovery) can apply the same term
-			 * list to its memtable. Critical section is required
-			 * by XLogInsert; the WAL must be issued while we
-			 * still hold the per-index lock so the order of
-			 * memtable mutations is consistent across primary
-			 * and standby.
-			 *
-			 * Skip for UNLOGGED / TEMP indexes — their data is
-			 * not replicated, so the record would just be wire
-			 * and disk overhead.
-			 */
 			if (RelationNeedsWAL(index))
 			{
 				START_CRIT_SECTION();

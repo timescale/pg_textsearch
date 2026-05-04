@@ -306,17 +306,16 @@ tp_get_local_index_state(Oid index_oid)
  *
  * If `start_locked` is true the per-index LWLock is acquired EXCLUSIVE
  * before the registry entry becomes visible to other backends. The
- * cold-start docid-rebuild path passes true so that the standby's
- * startup process — which would otherwise see the just-published
- * registry entry, find a successful lookup in tp_redo_apply_insert_terms,
- * and start applying INSERT_TERMS records into the half-built memtable
- * while the rebuilder is still walking docid pages — instead blocks on
- * the per-index lock until the rebuild releases. WAL replay is
- * single-threaded in the startup process, so the block simply stalls
- * replay for the duration of the docid walk; once we release, replay
- * resumes and applies subsequent records via the normal path. The
- * docid scan happened under the same lock, so the rebuild and redo
- * never both add the same doc.
+ * caller is tp_rebuild_index_from_disk: it needs the registry entry
+ * published before walking docid pages (so subsequent backends find
+ * it), but it also can't let the standby's startup process apply
+ * INSERT_TERMS into a half-built memtable while the docid walk is
+ * still running — that would race the docid scan and double-count
+ * any doc whose docid-page WAL has already replayed. Holding the
+ * lock across the walk makes the standby's single-threaded WAL
+ * replay block on the lock for the duration of the rebuild; once
+ * we release, replay resumes via the normal redo path against the
+ * now-populated memtable.
  */
 TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
@@ -366,11 +365,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/*
-	 * If the caller asked us to start locked (cold-start docid
-	 * rebuild), grab the per-index lock EXCLUSIVE *before*
-	 * tp_registry_register makes the entry visible to redo. The
-	 * shared_state isn't reachable from any other backend yet —
-	 * this acquire is uncontended.
+	 * Acquire EXCLUSIVE *before* tp_registry_register makes the
+	 * entry visible to redo. shared_state isn't reachable from any
+	 * other backend yet, so this acquire is uncontended.
 	 */
 	if (start_locked)
 		LWLockAcquire(&shared_state->lock, LW_EXCLUSIVE);
@@ -1106,13 +1103,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 				/* start_locked */ false);
 	}
 
-	/*
-	 * Create fresh state with the per-index lock held EXCLUSIVE so
-	 * the docid walk below can't race redo on a hot standby (see the
-	 * `start_locked` block in tp_create_shared_index_state for the
-	 * full reasoning). We release the lock as soon as the rebuild is
-	 * complete; on error, the resource owner releases for us.
-	 */
 	local_state = tp_create_shared_index_state(
 			index_oid,
 			index_rel->rd_index->indrelid,
@@ -1120,7 +1110,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	if (local_state != NULL)
 	{
-		/* Rebuild posting lists from docid pages (if any) */
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 
 		/*
@@ -1134,12 +1123,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 				&local_state->shared->total_docs, metap->total_docs);
 		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
 
-		/*
-		 * Rebuild done — release the EXCLUSIVE lock acquired
-		 * inside tp_create_shared_index_state. Any standby redo
-		 * that was blocked on this lock now resumes and applies
-		 * subsequent INSERT_TERMS records the normal way.
-		 */
 		tp_release_index_lock(local_state);
 	}
 
@@ -1704,12 +1687,6 @@ tp_bulk_load_spill_check(void)
 			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, local_state);
 
-			/*
-			 * Emit SPILL WAL so a streaming standby's long-lived
-			 * backends drop their now-stale memtable view (see
-			 * the matching comment in tp_do_spill). UNLOGGED /
-			 * TEMP indexes don't replicate, so skip.
-			 */
 			if (RelationNeedsWAL(index_rel))
 			{
 				START_CRIT_SECTION();
@@ -1717,7 +1694,6 @@ tp_bulk_load_spill_check(void)
 				END_CRIT_SECTION();
 			}
 
-			/* Check if L0 needs compaction */
 			tp_maybe_compact_level(index_rel, 0);
 		}
 

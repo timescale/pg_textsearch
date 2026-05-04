@@ -139,10 +139,10 @@ extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
  * Allocate the per-index shared state, register it in the global
  * registry, and return a local-state handle. If start_locked is true
  * the per-index LWLock is acquired EXCLUSIVE before the registry
- * entry becomes visible — used by the cold-start docid-rebuild path
- * to keep the standby's startup process from racing redo against the
- * docid scan. The caller in that case is responsible for releasing
- * the lock once the rebuild is done.
+ * entry becomes visible — used by tp_rebuild_index_from_disk to keep
+ * the standby's startup process from racing redo against the docid
+ * scan. The caller is then responsible for releasing the lock once
+ * the rebuild is done.
  */
 extern TpLocalIndexState *
 tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked);

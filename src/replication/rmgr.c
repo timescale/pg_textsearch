@@ -4,7 +4,7 @@
  *
  * rmgr.c - Custom WAL resource manager for pg_textsearch
  *
- * Implements the rmgr (ID 145) callbacks for streaming-replication
+ * Implements the rmgr (ID 149) callbacks for streaming-replication
  * and crash-recovery replay of memtable mutations:
  *
  *   - tp_redo_apply_insert_terms: re-applies a doc's term list to

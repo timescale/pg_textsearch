@@ -227,7 +227,7 @@ After PR 2 lands, the first 10 should flip to PASS. PITR-1 will still FAIL.
 
 #include "../types/vector.h"
 
-#define TP_RMGR_ID 145
+#define TP_RMGR_ID 149
 #define TP_RMGR_NAME "pg_textsearch"
 
 #define XLOG_TP_INSERT_TERMS 0x10
