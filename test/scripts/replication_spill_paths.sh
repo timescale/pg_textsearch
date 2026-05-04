@@ -96,13 +96,15 @@ test_bulk_load_spill_replication() {
     log "  post-bulk-insert count:   ${LL_AFTER} (expect 2000)"
 
     # Diagnostic: dump primary + standby summaries so we can see
-    # where the docs ended up if the assertion fires.
+    # where the docs ended up if the assertion fires. Print the
+    # full summary (segment listing comes after the memtable
+    # block, so a small head -N would miss it).
     log "  --- primary summary ---"
     primary_sql_quiet "SELECT bm25_summarize_index('bulk_docs_idx');" \
-        | head -20 | while read -r line; do log "    P| ${line}"; done
+        | while IFS= read -r line; do log "    P| ${line}"; done
     log "  --- standby summary ---"
     standby_sql_quiet "SELECT bm25_summarize_index('bulk_docs_idx');" \
-        | head -20 | while read -r line; do log "    S| ${line}"; done
+        | while IFS= read -r line; do log "    S| ${line}"; done
 
     if [ "${LL_BEFORE}" != "0" ]; then
         error "Test 1: expected initial 0, got '${LL_BEFORE}'"
