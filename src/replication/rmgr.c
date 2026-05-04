@@ -456,6 +456,16 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 	hdr.new_segment_root = new_segment_root;
 	hdr.prev_chain_head	 = prev_chain_head;
 
+	/*
+	 * XLogRegisterBuffer asserts that each registered buffer is
+	 * already EXCLUSIVE-locked and dirty, so mark the buffers dirty
+	 * before registration and emission. PageSetLSN happens after
+	 * XLogInsert returns the LSN.
+	 */
+	MarkBufferDirty(metabuf);
+	if (BufferIsValid(segbuf))
+		MarkBufferDirty(segbuf);
+
 	XLogBeginInsert();
 	XLogRegisterData((char *)&hdr, sizeof(hdr));
 	XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
@@ -464,11 +474,9 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 	lsn = XLogInsert(TP_RMGR_ID, XLOG_TP_SPILL);
 
 	PageSetLSN(metapage, lsn);
-	MarkBufferDirty(metabuf);
 	if (BufferIsValid(segbuf))
 	{
 		PageSetLSN(segpage, lsn);
-		MarkBufferDirty(segbuf);
 		UnlockReleaseBuffer(segbuf);
 	}
 	UnlockReleaseBuffer(metabuf);
