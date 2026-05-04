@@ -302,10 +302,24 @@ tp_get_local_index_state(Oid index_oid)
  * Create a new shared index state and return local state
  *
  * This is called during CREATE INDEX to set up the initial shared state
- * and return a ready-to-use local state to avoid double DSA attachment
+ * and return a ready-to-use local state to avoid double DSA attachment.
+ *
+ * If `start_locked` is true the per-index LWLock is acquired EXCLUSIVE
+ * before the registry entry becomes visible to other backends. The
+ * cold-start docid-rebuild path passes true so that the standby's
+ * startup process — which would otherwise see the just-published
+ * registry entry, find a successful lookup in tp_redo_apply_insert_terms,
+ * and start applying INSERT_TERMS records into the half-built memtable
+ * while the rebuilder is still walking docid pages — instead blocks on
+ * the per-index lock until the rebuild releases. WAL replay is
+ * single-threaded in the startup process, so the block simply stalls
+ * replay for the duration of the docid walk; once we release, replay
+ * resumes and applies subsequent records via the normal path. The
+ * docid scan happened under the same lock, so the rebuild and redo
+ * never both add the same doc.
  */
 TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
+tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool start_locked)
 {
 	TpSharedIndexState	 *shared_state;
 	TpLocalIndexState	 *local_state;
@@ -351,6 +365,16 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
+	/*
+	 * If the caller asked us to start locked (cold-start docid
+	 * rebuild), grab the per-index lock EXCLUSIVE *before*
+	 * tp_registry_register makes the entry visible to redo. The
+	 * shared_state isn't reachable from any other backend yet —
+	 * this acquire is uncontended.
+	 */
+	if (start_locked)
+		LWLockAcquire(&shared_state->lock, LW_EXCLUSIVE);
+
 	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -388,11 +412,16 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 	/* Create local state for the creating backend */
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared					 = shared_state;
-	local_state->dsa					 = dsa;
-	local_state->is_build_mode			 = false; /* Runtime mode */
-	local_state->lock_held				 = false;
-	local_state->lock_mode				 = 0;
+	local_state->shared		   = shared_state;
+	local_state->dsa		   = dsa;
+	local_state->is_build_mode = false; /* Runtime mode */
+	/*
+	 * Reflect the EXCLUSIVE lock acquired above (if any) on the
+	 * local state so tp_release_index_lock works the way the caller
+	 * expects.
+	 */
+	local_state->lock_held				 = start_locked;
+	local_state->lock_mode				 = start_locked ? LW_EXCLUSIVE : 0;
 	local_state->terms_added_this_xact	 = 0;
 	local_state->docs_since_global_check = 0;
 	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
@@ -971,22 +1000,20 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 /*
  * Rebuild index state from disk after PostgreSQL restart
- * This recreates the DSA area and shared state from docid pages
+ * This recreates the DSA area and shared state from docid pages.
  *
- * XXX Known race with INSERT_TERMS WAL replay on a hot standby: this
- * function calls tp_create_shared_index_state (which registers in the
- * dshash registry) BEFORE walking docid pages. Between registration
- * and the docid walk, the standby's startup process can replay an
- * INSERT_TERMS record whose registry lookup now succeeds, adding the
- * doc to the memtable; the docid walk then re-adds the same doc
- * (because docid-page WAL is ordered after INSERT_TERMS WAL for any
- * given insert), producing duplicate posting entries and inflated
- * total_docs until the next SPILL clears the memtable. The window is
- * narrow and only opens on a backend's *first* open of an index on a
- * standby with concurrent primary inserts. The whole rebuild path is
- * scheduled for removal in the follow-up PR that switches to a
- * spill-at-checkpoint durability model, which closes this race by
- * construction.
+ * On a hot standby this can race the startup process: redo of an
+ * INSERT_TERMS record looks up the registry, and once we register
+ * the new shared state, redo would otherwise start writing into the
+ * same memtable we are still rebuilding from docid pages — and
+ * because docid-page WAL is ordered after INSERT_TERMS WAL for any
+ * given insert, redo and the rebuild would both add the same doc
+ * (duplicate posting entries, inflated total_docs). To prevent
+ * that, we ask tp_create_shared_index_state to register the entry
+ * with the per-index LWLock already held EXCLUSIVE; the standby's
+ * single-threaded WAL replay simply blocks on that lock until the
+ * docid walk finishes and we release it, then proceeds with the
+ * normal redo path against the now-populated memtable.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
@@ -1059,7 +1086,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		pfree(metap);
 
 		/* Create fresh shared state for the index */
-		return tp_create_shared_index_state(index_oid, heap_oid);
+		return tp_create_shared_index_state(
+				index_oid, heap_oid, /* start_locked */ false);
 	}
 
 	/* Check if there's actually anything to recover */
@@ -1073,13 +1101,22 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 		/* Still create the shared state for the empty index */
 		return tp_create_shared_index_state(
-				index_oid, index_rel->rd_index->indrelid);
+				index_oid,
+				index_rel->rd_index->indrelid,
+				/* start_locked */ false);
 	}
 
-	/* Create fresh state first */
-	/* Creating fresh state for restart recovery */
+	/*
+	 * Create fresh state with the per-index lock held EXCLUSIVE so
+	 * the docid walk below can't race redo on a hot standby (see the
+	 * `start_locked` block in tp_create_shared_index_state for the
+	 * full reasoning). We release the lock as soon as the rebuild is
+	 * complete; on error, the resource owner releases for us.
+	 */
 	local_state = tp_create_shared_index_state(
-			index_oid, index_rel->rd_index->indrelid);
+			index_oid,
+			index_rel->rd_index->indrelid,
+			/* start_locked */ true);
 
 	if (local_state != NULL)
 	{
@@ -1096,6 +1133,14 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		pg_atomic_write_u32(
 				&local_state->shared->total_docs, metap->total_docs);
 		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
+
+		/*
+		 * Rebuild done — release the EXCLUSIVE lock acquired
+		 * inside tp_create_shared_index_state. Any standby redo
+		 * that was blocked on this lock now resumes and applies
+		 * subsequent INSERT_TERMS records the normal way.
+		 */
+		tp_release_index_lock(local_state);
 	}
 
 	/* Clean up */

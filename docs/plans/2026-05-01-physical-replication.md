@@ -475,7 +475,7 @@ PR title: `fix: WAL-replicate memtable mutations (closes #345)`. Body: link #345
 
 **Why this isn't just "WAL is now durable enough":** Postgres only retains WAL since the last checkpoint, so `INSERT_TERMS` records age out at every checkpoint. Today that's fine because docid pages are the durable on-disk record of what's in the memtable; on cold start, `tp_rebuild_posting_lists_from_docids` walks them and rebuilds. Once the docid pages are gone, *something else* has to make the memtable's pre-checkpoint contents recoverable. The cleanest answer is **spill-at-checkpoint**: ensure the memtable is empty at every checkpoint boundary, so WAL replay since the last checkpoint is sufficient by construction. PR 3 is therefore not just "delete the docid path" — it is "delete the docid path *and* introduce the durability mechanism that replaces it."
 
-**Side benefit:** removing the rebuild path also closes a known race left in PR 2 between `tp_create_shared_index_state` (registers in dshash) and `tp_rebuild_posting_lists_from_docids` (walks docid pages). On a hot standby with concurrent primary inserts, the standby's startup process can replay an `INSERT_TERMS` record into the just-registered memtable while the rebuild also re-adds the same doc from docid pages, producing duplicate posting entries until the next SPILL. The race is flagged as `XXX` in `tp_rebuild_index_from_disk` in PR 2 and goes away as soon as PR 3 removes the rebuild entirely.
+**No longer load-bearing for the docid-rebuild race.** Earlier drafts of this plan listed the rebuild-vs-redo race on a hot standby as a side benefit of removing the rebuild. PR 2 closes that race in place: `tp_create_shared_index_state` now takes a `start_locked` flag that acquires the per-index LWLock EXCLUSIVE before the registry entry becomes visible, and the cold-start rebuild path holds the lock across the docid walk. Standby redo blocks on the lock for the duration of the walk and then proceeds against the populated memtable, so PR 3 inherits a clean baseline.
 
 **Files:**
 - Modify: `src/index/metapage.h` — drop `first_docid_page`; bump metapage version.
@@ -642,7 +642,7 @@ PR title: `refactor: remove docid-page machinery; metapage v2`. Body: explain th
 - ✅ Docid-page chain removed; primary crash recovery uses spill-at-checkpoint + WAL replay (PR 3).
 - ✅ Backward compat for legacy v1 metapage indexes via in-place upgrade on first open (PR 3).
 - ✅ Pre-checkpoint memtable durability without docid pages — covered by Task 3.1 (PR 3).
-- ✅ Closes the rebuild-vs-redo race documented as `XXX` in PR 2 by removing the rebuild path entirely (PR 3).
+- ✅ Rebuild-vs-redo race on a hot standby — closed in PR 2 via the `start_locked` flag on `tp_create_shared_index_state`. PR 3 inherits a clean baseline.
 - ✅ Baseline-then-verify test methodology (PR 2 Task 2.1, 2.4).
 - ✅ Documentation in each PR.
 
