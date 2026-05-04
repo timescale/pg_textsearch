@@ -195,10 +195,10 @@ test_vacuum_spill_replication() {
         | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
     log "  primary memtable docs before VACUUM: ${primary_memtable_pre} (expect 200)"
 
-    primary_sql "
-        DELETE FROM vac_docs WHERE id <= 100;
-        VACUUM vac_docs;
-    " >/dev/null
+    # VACUUM can't run in a transaction block; psql -c with multiple
+    # statements wraps in one — split.
+    primary_sql "DELETE FROM vac_docs WHERE id <= 100;" >/dev/null
+    primary_sql "VACUUM vac_docs;" >/dev/null
 
     wait_for_standby_catchup
 
