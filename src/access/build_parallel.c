@@ -279,8 +279,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	{
 		text	   *document_text;
 		ItemPointer ctid;
-		Datum		tsvector_datum;
-		TSVector	tsvector;
 		char	  **terms;
 		int32	   *frequencies;
 		int			term_count;
@@ -314,15 +312,9 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		else
 			document_text = DatumGetTextPP(idx_values[0]);
 
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid,
-				ObjectIdGetDatum(shared->text_config_oid),
-				PointerGetDatum(document_text));
-		tsvector = DatumGetTSVector(tsvector_datum);
-
-		doc_length = tp_extract_terms_from_tsvector(
-				tsvector, &terms, &frequencies, &term_count);
+		doc_length = tp_tokenize_text(
+				document_text, shared->text_config_oid,
+				&terms, &frequencies, &term_count);
 
 		MemoryContextSwitchTo(oldctx);
 

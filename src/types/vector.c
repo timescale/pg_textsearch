@@ -768,10 +768,6 @@ to_tpvector(PG_FUNCTION_ARGS)
 	Oid				text_config_oid;
 	Relation		index_rel = NULL;
 	TpIndexMetaPage metap	  = NULL;
-	text		   *config_text;
-	Datum			tsvector_datum;
-	TSVector		tsvector;
-	WordEntry	   *we;
 	int				i;
 	char		  **lexemes;
 	int32		   *frequencies;
@@ -796,64 +792,16 @@ to_tpvector(PG_FUNCTION_ARGS)
 	metap = tp_get_metapage(index_rel);
 
 	text_config_oid = metap->text_config_oid;
-
-	if (OidIsValid(text_config_oid))
-	{
-		char *config_cstr = DatumGetCString(DirectFunctionCall1(
-				regconfigout, ObjectIdGetDatum(text_config_oid)));
-
-		config_text = cstring_to_text(config_cstr);
-		pfree(config_cstr);
-	}
-	else
-	{
-		config_text		= cstring_to_text("english");
-		text_config_oid = InvalidOid;
-	}
+	if (!OidIsValid(text_config_oid))
+		text_config_oid = DatumGetObjectId(DirectFunctionCall1(
+				regconfigin, CStringGetDatum("english")));
 
 	pfree(metap);
 	index_close(index_rel, AccessShareLock);
 
-	if (OidIsValid(text_config_oid))
-		tsvector_datum = DirectFunctionCall2(
-				to_tsvector_byid,
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(input_text));
-	else
-		tsvector_datum = DirectFunctionCall2(
-				to_tsvector,
-				PointerGetDatum(config_text),
-				PointerGetDatum(input_text));
-
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	entry_count = tsvector->size;
-	if (entry_count > 0)
-	{
-		lexemes		= palloc(entry_count * sizeof(char *));
-		frequencies = palloc(entry_count * sizeof(int32));
-
-		we = ARRPTR(tsvector);
-		for (i = 0; i < entry_count; i++)
-		{
-			char *lexeme_start = STRPTR(tsvector) + we[i].pos;
-			int	  lexeme_len   = we[i].len;
-
-			lexemes[i] = palloc(lexeme_len + 1);
-			memcpy(lexemes[i], lexeme_start, lexeme_len);
-			lexemes[i][lexeme_len] = '\0';
-
-			if (we[i].haspos)
-				frequencies[i] = POSDATALEN(tsvector, &we[i]);
-			else
-				frequencies[i] = 1;
-		}
-	}
-	else
-	{
-		lexemes		= NULL;
-		frequencies = NULL;
-	}
+	(void)tp_tokenize_text(
+			input_text, text_config_oid,
+			&lexemes, &frequencies, &entry_count);
 
 	result = create_tpvector_from_strings(
 			index_name, entry_count, (const char **)lexemes, frequencies);

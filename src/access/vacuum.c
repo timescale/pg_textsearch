@@ -404,8 +404,6 @@ tp_vacuum_rebuild_segment(
 		Buffer			heap_buf = InvalidBuffer;
 		bool			valid;
 		text		   *document_text;
-		Datum			tsvector_datum;
-		TSVector		tsvector;
 		char		  **terms;
 		int32		   *frequencies;
 		int				term_count;
@@ -457,15 +455,9 @@ tp_vacuum_rebuild_segment(
 
 		document_text = DatumGetTextPP(idx_values[0]);
 
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid,
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(document_text));
-		tsvector = DatumGetTSVector(tsvector_datum);
-
-		doc_length = tp_extract_terms_from_tsvector(
-				tsvector, &terms, &frequencies, &term_count);
+		doc_length = tp_tokenize_text(
+				document_text, text_config_oid,
+				&terms, &frequencies, &term_count);
 
 		MemoryContextSwitchTo(old_ctx);
 

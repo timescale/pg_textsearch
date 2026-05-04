@@ -794,8 +794,6 @@ tp_process_document_text(
 		int32			  *doc_length_out)
 {
 	char	*document_str;
-	Datum	 tsvector_datum;
-	TSVector tsvector;
 	char   **terms;
 	int32	*frequencies;
 	int		 term_count;
@@ -815,18 +813,10 @@ tp_process_document_text(
 		return false;
 	}
 
-	/* Vectorize the document using text configuration */
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid, /* collation */
-			ObjectIdGetDatum(text_config_oid),
-			PointerGetDatum(document_text));
-
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	/* Extract lexemes and frequencies from TSVector */
-	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+	/* Tokenize document (chunks oversized inputs to fit tsvector cap) */
+	doc_length = tp_tokenize_text(
+			document_text, text_config_oid,
+			&terms, &frequencies, &term_count);
 
 	if (term_count > 0)
 	{
@@ -891,8 +881,6 @@ tp_build_callback(
 {
 	TpBuildCallbackState *bs = (TpBuildCallbackState *)state;
 	text				 *document_text;
-	Datum				  tsvector_datum;
-	TSVector			  tsvector;
 	char				**terms;
 	int32				 *frequencies;
 	int					  term_count;
@@ -922,15 +910,9 @@ tp_build_callback(
 	else
 		document_text = DatumGetTextPP(values[0]);
 
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid,
-			ObjectIdGetDatum(bs->text_config_oid),
-			PointerGetDatum(document_text));
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+	doc_length = tp_tokenize_text(
+			document_text, bs->text_config_oid,
+			&terms, &frequencies, &term_count);
 
 	MemoryContextSwitchTo(oldctx);
 
