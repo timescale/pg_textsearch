@@ -7,20 +7,21 @@
 #   1. tp_bulk_load_spill_check (PRE_COMMIT bulk-load threshold)
 #      A fat single-transaction insert crosses bulk_load_threshold;
 #      PRE_COMMIT triggers a spill on the primary. The standby's
-#      long-lived backend must see the docs after catchup, with
-#      a non-empty L0 segment.
+#      memtable must be empty afterwards (cleared by SPILL redo);
+#      the segment must hold all the docs.
 #
-#   2. tp_evict_largest_memtable (global memory-pressure eviction)
-#      A low memory_limit + a heavy load on multiple indexes pushes
-#      the global estimate past the soft limit, triggering an
-#      eviction-driven spill. The standby's long-lived backend must
-#      see the converged state.
+#   2. tp_spill_memtable_if_needed (VACUUM bulkdelete)
+#      INSERT then DELETE then VACUUM. VACUUM's bulkdelete phase
+#      always spills any non-empty memtable. The standby's memtable
+#      must be empty afterwards; the segment holds the docs (with
+#      half marked dead by the alive-bitset update).
 #
-# Both tests would silently pass before PR #347 added tp_xlog_spill
-# to these spill paths — the standby would fall back to docid-page
-# rebuild on a fresh connection (which masked the bug). They use a
-# long-lived connection per replication_lib.sh's helpers so the
-# bug class would actually manifest.
+# Both tests assert directly against bm25_summarize_index on the
+# standby (BMW query results turn out to mask memtable+segment
+# overlap in some cases). The bug they catch is "primary spill
+# replicates segment data + metapage but not the memtable-clear
+# signal" — visible only as a memtable+segment doc-count
+# divergence on the standby.
 
 set -e
 
@@ -153,119 +154,85 @@ post-spill, got '${standby_segment_docs}'"
 }
 
 # ---------------------------------------------------------------
-# Test 2: memory-pressure eviction replication
+# Test 2: VACUUM-triggered spill replication
 #
-# Sets memory_limit to a small value, creates several bm25 indexes,
-# loads enough into each that the global estimate crosses the soft
-# limit (memory_limit / 2). The amortized check inside
-# tp_auto_spill_if_needed (every ~100 docs per backend) calls
-# tp_evict_largest_memtable, which does a regular spill on the
-# largest unsplit memtable — and now also emits SPILL WAL.
+# VACUUM's bulkdelete phase always calls tp_spill_memtable_if_needed
+# with min_postings=1 (vacuum.c:766) — i.e., spills any non-empty
+# memtable so the bulkdelete pass operates on segment storage only.
+# This is one of the spill paths PR 2 added tp_xlog_spill to.
 #
-# We can't trigger this deterministically without internal hooks,
-# but with these settings the eviction path fires reliably in
-# practice. We assert convergence on the standby and look for the
-# distinctive primary log line as a positive signal that the
-# eviction path was the one that ran.
+# The test inserts a small number of docs (well under the bulk-load
+# threshold), DELETEs some, then VACUUMs. The VACUUM's bulkdelete
+# spill fires deterministically. With SPILL WAL emitted, redo
+# clears the standby's memtable; the standby's bm25_summarize_index
+# memtable count drops to 0. Without the WAL emit, the standby's
+# memtable retains all the inserted docs.
 # ---------------------------------------------------------------
-test_memory_pressure_eviction_replication() {
-    log "=== Test 2: memory-pressure eviction replication ==="
-
-    # memory_limit is PGC_SIGHUP — needs ALTER SYSTEM + reload.
-    # ALTER SYSTEM can't run inside a transaction, so each one
-    # has to be its own psql -c (psql wraps multi-statement -c
-    # in an implicit transaction).
-    primary_sql "ALTER SYSTEM SET pg_textsearch.bulk_load_threshold = 0;" \
-        >/dev/null
-    primary_sql "ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = 0;" \
-        >/dev/null
-    # memory_limit is in KB (GUC_UNIT_KB). 1024 = 1 MB.
-    primary_sql "ALTER SYSTEM SET pg_textsearch.memory_limit = 1024;" \
-        >/dev/null
-    primary_sql "SELECT pg_reload_conf();" >/dev/null
-    primary_sql "SELECT pg_sleep(0.5);" >/dev/null
+test_vacuum_spill_replication() {
+    log "=== Test 2: VACUUM-triggered spill replication ==="
 
     primary_sql "
-        DROP TABLE IF EXISTS mp_a CASCADE;
-        DROP TABLE IF EXISTS mp_b CASCADE;
-        DROP TABLE IF EXISTS mp_c CASCADE;
-        CREATE TABLE mp_a (id SERIAL PRIMARY KEY, content TEXT NOT NULL);
-        CREATE TABLE mp_b (id SERIAL PRIMARY KEY, content TEXT NOT NULL);
-        CREATE TABLE mp_c (id SERIAL PRIMARY KEY, content TEXT NOT NULL);
-        CREATE INDEX mp_a_idx ON mp_a USING bm25(content)
+        DROP TABLE IF EXISTS vac_docs CASCADE;
+        CREATE TABLE vac_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        CREATE INDEX vac_docs_idx ON vac_docs USING bm25(content)
             WITH (text_config='english');
-        CREATE INDEX mp_b_idx ON mp_b USING bm25(content)
-            WITH (text_config='english');
-        CREATE INDEX mp_c_idx ON mp_c USING bm25(content)
-            WITH (text_config='english');
+        INSERT INTO vac_docs (content)
+            SELECT 'gamma delta epsilon zeta eta ' || md5(g::text)
+            FROM generate_series(1, 200) g;
     " >/dev/null
 
     wait_for_standby_catchup
 
-    # Push each index past its share of the global limit. Amount
-    # picked empirically — large enough to cross the soft limit
-    # in every supported PG version, small enough to keep test
-    # latency reasonable.
-    for tbl in mp_a mp_b mp_c; do
-        primary_sql "
-            INSERT INTO ${tbl} (content)
-                SELECT 'lorem ipsum dolor sit amet ' ||
-                       repeat(md5(g::text), 16)
-                FROM generate_series(1, 1500) g;
-        " >/dev/null
-    done
+    # Sanity check — primary memtable should hold the docs at
+    # this point (no spill yet because we're well under bulk-load
+    # and per-index limits).
+    local primary_memtable_pre
+    primary_memtable_pre=$(primary_sql_quiet "
+        SELECT bm25_summarize_index('vac_docs_idx');" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    log "  primary memtable docs before VACUUM: ${primary_memtable_pre} (expect 200)"
+
+    primary_sql "
+        DELETE FROM vac_docs WHERE id <= 100;
+        VACUUM vac_docs;
+    " >/dev/null
 
     wait_for_standby_catchup
 
-    # Convergence check on each index — the standby must see the
-    # full row count whether or not eviction was the spill trigger.
-    for tbl in mp_a mp_b mp_c; do
-        local primary_count
-        local standby_count
-        primary_count=$(primary_sql_quiet "
-            SELECT count(*) FROM (
-                SELECT id FROM ${tbl}
-                ORDER BY content <@> to_bm25query('lorem',
-                    '${tbl}_idx')
-                LIMIT 100000
-            ) t;")
-        standby_count=$(standby_sql_quiet "
-            SELECT count(*) FROM (
-                SELECT id FROM ${tbl}
-                ORDER BY content <@> to_bm25query('lorem',
-                    '${tbl}_idx')
-                LIMIT 100000
-            ) t;")
-        log "  ${tbl}: primary=${primary_count} standby=${standby_count}"
-        if [ "${primary_count}" != "${standby_count}" ] || \
-           [ -z "${primary_count}" ] || \
-           [ "${primary_count}" -lt 1500 ]; then
-            log "  --- ${tbl} primary summary ---"
-            primary_sql_quiet "SELECT bm25_summarize_index('${tbl}_idx');" \
-                | while IFS= read -r line; do log "    P| ${line}"; done
-            log "  --- ${tbl} standby summary ---"
-            standby_sql_quiet "SELECT bm25_summarize_index('${tbl}_idx');" \
-                | while IFS= read -r line; do log "    S| ${line}"; done
-            error "Test 2: ${tbl} did not converge"
-        fi
-    done
+    local standby_summary
+    standby_summary=$(standby_sql_quiet "
+        SELECT bm25_summarize_index('vac_docs_idx');")
+    local standby_memtable_docs
+    local standby_segment_docs
+    standby_memtable_docs=$(echo "${standby_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    standby_segment_docs=$(echo "${standby_summary}" \
+        | awk '/^Segments:/{f=1;next} \
+               f && /Total:/{ \
+                 for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $(i+1) ~ /docs/){print $i; exit} \
+               }')
+    log "  standby memtable docs after VACUUM: ${standby_memtable_docs:-<none>} (expect 0)"
+    log "  standby segment docs after VACUUM:  ${standby_segment_docs:-<none>} (expect 200)"
 
-    # Positive signal that tp_evict_largest_memtable specifically
-    # was the one that fired (vs. a per-row spill). The log message
-    # is unique to this code path. Soft assertion — if the message
-    # didn't appear under this load, the test still proves
-    # convergence but the eviction-replication path may not have
-    # been the one exercised.
-    if grep -q "memory pressure, spilled memtable for index" \
-            "${PRIMARY_DIR}/log/postgres.log" 2>/dev/null; then
-        log "  primary log shows eviction-spill fired"
-    else
-        warn "  primary log shows no eviction-spill — convergence \
-proved but the eviction path may not have triggered under this \
-load. Adjust the volume or memory_limit if this becomes important."
+    if [ "${standby_memtable_docs:-x}" != "0" ]; then
+        log "  --- standby summary (for diagnosis) ---"
+        echo "${standby_summary}" | while IFS= read -r line; do
+            log "    S| ${line}"
+        done
+        error "Test 2: standby memtable should be empty after \
+VACUUM-triggered spill replicates (got '${standby_memtable_docs}'). \
+SPILL WAL is not being emitted from tp_spill_memtable_if_needed, \
+or its redo is not clearing the standby memtable."
+    fi
+    if [ "${standby_segment_docs:-0}" != "200" ]; then
+        error "Test 2: standby segment should hold all 200 docs \
+post-VACUUM, got '${standby_segment_docs}'"
     fi
 
-    log "Test 2 PASSED: memory-pressure eviction replicates"
+    log "Test 2 PASSED: VACUUM-triggered spill replicates"
 }
 
 main() {
@@ -284,8 +251,8 @@ main() {
     local failures=""
     ( test_bulk_load_spill_replication ) || \
         failures="${failures} test_bulk_load_spill_replication"
-    ( test_memory_pressure_eviction_replication ) || \
-        failures="${failures} test_memory_pressure_eviction_replication"
+    ( test_vacuum_spill_replication ) || \
+        failures="${failures} test_vacuum_spill_replication"
 
     if [ -n "${failures}" ]; then
         error "Spill-paths failures:${failures}"
