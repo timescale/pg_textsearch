@@ -92,49 +92,61 @@ test_bulk_load_spill_replication() {
         \" >/dev/null
         wait_for_standby_catchup"
 
-    log "  initial standby count:    ${LL_BEFORE}"
-    log "  post-bulk-insert count:   ${LL_AFTER} (expect 2000)"
-
-    # Diagnostic: dump primary + standby summaries so we can see
-    # where the docs ended up if the assertion fires. Print the
-    # full summary (segment listing comes after the memtable
-    # block, so a small head -N would miss it).
-    log "  --- primary summary ---"
-    primary_sql_quiet "SELECT bm25_summarize_index('bulk_docs_idx');" \
-        | while IFS= read -r line; do log "    P| ${line}"; done
-    log "  --- standby summary ---"
-    standby_sql_quiet "SELECT bm25_summarize_index('bulk_docs_idx');" \
-        | while IFS= read -r line; do log "    S| ${line}"; done
+    log "  initial standby count: ${LL_BEFORE}"
+    log "  post-insert count:     ${LL_AFTER}"
 
     if [ "${LL_BEFORE}" != "0" ]; then
         error "Test 1: expected initial 0, got '${LL_BEFORE}'"
     fi
-    # Exactly 2000, not "at least". If tp_xlog_spill is missing from
-    # tp_bulk_load_spill_check, the standby would still get the 2000
-    # docs via INSERT_TERMS and via the replicated segment, but
-    # nothing would clear its memtable — so the long-lived backend
-    # would see each doc once in the memtable and once in the
-    # segment, returning ~4000.
+    # Long-lived backend must see all 2000 docs (this fails before
+    # PR 2 — INSERT_TERMS not replicated to the cached memtable).
     if [ "${LL_AFTER}" != "2000" ]; then
-        error "Test 1: expected exactly 2000, got '${LL_AFTER}' \
-(>2000 means SPILL WAL did not clear the standby memtable, so the \
-docs are double-counted between memtable and segment)"
+        error "Test 1: expected post-insert count 2000, \
+got '${LL_AFTER}'"
     fi
 
-    # Confirm a spill actually happened on the primary side, not
-    # that we just rode INSERT_TERMS replay all the way through.
-    # bm25_summarize_index includes a "Total: N segments" line
-    # once anything has been spilled.
-    local primary_segments
-    primary_segments=$(primary_sql_quiet "
-        SELECT bm25_summarize_index('bulk_docs_idx');
-    " | grep -oE 'Total:[[:space:]]+[0-9]+[[:space:]]+segments' \
-      | grep -oE '[0-9]+' | head -1 || echo 0)
-    log "  primary L0 segment count: ${primary_segments}"
-    if [ "${primary_segments:-0}" -lt 1 ]; then
-        error "Test 1: PRE_COMMIT spill did not fire on primary \
-(no L0 segment); the bulk-load WAL emission would also not have \
-fired"
+    # Direct check on standby state via bm25_summarize_index. The
+    # bulk-load PRE_COMMIT spill on the primary should have written
+    # the SPILL WAL record, whose redo on the standby clears the
+    # standby's memtable. Replay independently lands the segment on
+    # the standby's disk via GenericXLog. Final state on the
+    # standby must be: memtable empty (cleared by SPILL redo),
+    # segment populated (received via segment-data WAL).
+    #
+    # Without the SPILL WAL emit (the bug this test catches),
+    # nothing would clear the standby memtable; it would retain
+    # all 2000 docs from INSERT_TERMS replay, AND the segment
+    # would also have 2000 — visible as a memtable+segment overlap
+    # in bm25_summarize_index even though the BMW query happens to
+    # mask the duplication elsewhere.
+    local standby_summary
+    standby_summary=$(standby_sql_quiet "
+        SELECT bm25_summarize_index('bulk_docs_idx');")
+    local standby_memtable_docs
+    local standby_segment_docs
+    standby_memtable_docs=$(echo "${standby_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    standby_segment_docs=$(echo "${standby_summary}" \
+        | awk '/^Segments:/{f=1;next} \
+               f && /Total:/{ \
+                 for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $(i+1) ~ /docs/){print $i; exit} \
+               }')
+    log "  standby memtable docs: ${standby_memtable_docs:-<none>} (expect 0)"
+    log "  standby segment docs:  ${standby_segment_docs:-<none>} (expect 2000)"
+
+    if [ "${standby_memtable_docs:-x}" != "0" ]; then
+        log "  --- standby summary (for diagnosis) ---"
+        echo "${standby_summary}" | while IFS= read -r line; do
+            log "    S| ${line}"
+        done
+        error "Test 1: standby memtable should be empty after \
+PRE_COMMIT spill replicates (got '${standby_memtable_docs}'). \
+SPILL WAL is not being emitted from tp_bulk_load_spill_check, \
+or its redo is not clearing the standby memtable."
+    fi
+    if [ "${standby_segment_docs:-0}" != "2000" ]; then
+        error "Test 1: standby segment should hold all 2000 docs \
+post-spill, got '${standby_segment_docs}'"
     fi
 
     log "Test 1 PASSED: bulk-load PRE_COMMIT spill replicates"
