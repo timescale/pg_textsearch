@@ -199,6 +199,12 @@ test_vacuum_spill_replication() {
     # statements wraps in one — split.
     primary_sql "DELETE FROM vac_docs WHERE id <= 100;" >/dev/null
     primary_sql "VACUUM vac_docs;" >/dev/null
+    # Force a checkpoint after VACUUM so all VACUUM-generated WAL
+    # is flushed to disk on the primary. Without this, the
+    # following wait_for_standby_catchup can return before the
+    # metapage GenericXLog records reach the standby's buffer
+    # pool, causing the standby to read the pre-VACUUM metapage.
+    primary_sql "CHECKPOINT;" >/dev/null
 
     wait_for_standby_catchup
 
