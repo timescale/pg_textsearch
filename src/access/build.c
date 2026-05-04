@@ -13,6 +13,7 @@
 #include <commands/progress.h>
 #include <executor/spi.h>
 #include <math.h>
+#include <mb/pg_wchar.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
@@ -760,6 +761,123 @@ tp_tokenize_chunk(
 			tsvector, terms_out, frequencies_out, term_count_out);
 }
 
+/*
+ * Find a chunk boundary inside the first `target` bytes of `data`.
+ *
+ * Prefers the byte index just past the last ASCII whitespace at or
+ * before `target`. If no whitespace is found, returns the largest
+ * UTF-8/multibyte codepoint boundary <= target (and never less than one
+ * full character).
+ *
+ * `data` must be at least `target` bytes long. Returns 1..target.
+ */
+static int
+tp_find_chunk_boundary(const char *data, int target)
+{
+	int i;
+	int pos;
+
+	for (i = target; i > 0; i--)
+	{
+		char c = data[i - 1];
+		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
+			return i;
+	}
+
+	pos = 0;
+	while (pos < target)
+	{
+		int mblen = pg_mblen(data + pos);
+		if (mblen <= 0)
+			mblen = 1;
+		if (pos + mblen > target)
+			break;
+		pos += mblen;
+	}
+	if (pos == 0)
+	{
+		/* Single character is larger than target; emit it anyway. */
+		pos = pg_mblen(data);
+		if (pos <= 0)
+			pos = 1;
+	}
+	return pos;
+}
+
+typedef struct TpTermEntry
+{
+	char  *term;
+	int32  freq;
+} TpTermEntry;
+
+static int
+tp_term_entry_cmp(const void *a, const void *b)
+{
+	const TpTermEntry *ea = (const TpTermEntry *)a;
+	const TpTermEntry *eb = (const TpTermEntry *)b;
+	return strcmp(ea->term, eb->term);
+}
+
+/*
+ * Merge accumulated (term, freq) entries by sorting then collapsing
+ * adjacent duplicates. Output arrays are palloc'd in the current
+ * memory context. Frees `entries` itself; per-entry term strings are
+ * either reassigned into the output or pfree'd as duplicates.
+ */
+static void
+tp_merge_term_entries(
+		TpTermEntry *entries,
+		int			 entry_count,
+		char	  ***terms_out,
+		int32	   **frequencies_out,
+		int		   *term_count_out)
+{
+	int		out;
+	int		i;
+	char  **terms;
+	int32  *freqs;
+
+	if (entry_count == 0)
+	{
+		*terms_out		 = NULL;
+		*frequencies_out = NULL;
+		*term_count_out	 = 0;
+		if (entries != NULL)
+			pfree(entries);
+		return;
+	}
+
+	qsort(entries, entry_count, sizeof(TpTermEntry), tp_term_entry_cmp);
+
+	terms = palloc(entry_count * sizeof(char *));
+	freqs = palloc(entry_count * sizeof(int32));
+
+	out		   = 0;
+	terms[out] = entries[0].term;
+	freqs[out] = entries[0].freq;
+	for (i = 1; i < entry_count; i++)
+	{
+		if (strcmp(entries[i].term, terms[out]) == 0)
+		{
+			freqs[out] += entries[i].freq;
+			pfree(entries[i].term);
+		}
+		else
+		{
+			out++;
+			terms[out] = entries[i].term;
+			freqs[out] = entries[i].freq;
+		}
+	}
+	out++;
+
+	pfree(entries);
+
+	*terms_out		 = terms;
+	*frequencies_out = freqs;
+	*term_count_out	 = out;
+}
+
 int
 tp_tokenize_text(
 		text   *document_text,
@@ -768,13 +886,65 @@ tp_tokenize_text(
 		int32 **frequencies_out,
 		int	   *term_count_out)
 {
-	const char *data = VARDATA_ANY(document_text);
-	int			len	 = VARSIZE_ANY_EXHDR(document_text);
+	const char	*data	   = VARDATA_ANY(document_text);
+	int			 len	   = VARSIZE_ANY_EXHDR(document_text);
+	int			 doc_length = 0;
+	int			 offset;
+	int			 cap;
+	int			 used;
+	TpTermEntry *acc;
 
 	/* Single-chunk fast path */
-	return tp_tokenize_chunk(
-			data, len, text_config_oid,
-			terms_out, frequencies_out, term_count_out);
+	if (len <= TP_TSVECTOR_CHUNK_BYTES)
+		return tp_tokenize_chunk(
+				data, len, text_config_oid,
+				terms_out, frequencies_out, term_count_out);
+
+	/* Chunked path: accumulate per-chunk (term, freq) into acc[]. */
+	cap	 = 1024;
+	used = 0;
+	acc	 = palloc(cap * sizeof(TpTermEntry));
+
+	offset = 0;
+	while (offset < len)
+	{
+		int		 remaining = len - offset;
+		int		 take	   = remaining <= TP_TSVECTOR_CHUNK_BYTES
+							 ? remaining
+							 : tp_find_chunk_boundary(
+									 data + offset, TP_TSVECTOR_CHUNK_BYTES);
+		char   **chunk_terms;
+		int32   *chunk_freqs;
+		int		 chunk_term_count;
+		int		 i;
+
+		doc_length += tp_tokenize_chunk(
+				data + offset, take, text_config_oid,
+				&chunk_terms, &chunk_freqs, &chunk_term_count);
+
+		if (used + chunk_term_count > cap)
+		{
+			while (used + chunk_term_count > cap)
+				cap *= 2;
+			acc = repalloc(acc, cap * sizeof(TpTermEntry));
+		}
+		for (i = 0; i < chunk_term_count; i++)
+		{
+			acc[used].term = chunk_terms[i]; /* takes ownership */
+			acc[used].freq = chunk_freqs[i];
+			used++;
+		}
+		if (chunk_terms != NULL)
+			pfree(chunk_terms);
+		if (chunk_freqs != NULL)
+			pfree(chunk_freqs);
+
+		offset += take;
+	}
+
+	tp_merge_term_entries(
+			acc, used, terms_out, frequencies_out, term_count_out);
+	return doc_length;
 }
 
 /*

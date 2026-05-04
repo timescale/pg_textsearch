@@ -595,52 +595,22 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 }
 
 /*
- * Helper: Calculate document length from tsvector
+ * Helper: Find term frequency in document by linear scan of the
+ * (terms, frequencies) arrays returned by tp_tokenize_text.
  */
 static float4
-calculate_doc_length(TSVector tsvector)
+find_term_frequency_in_arrays(
+		char  **doc_terms,
+		int32  *doc_frequencies,
+		int		doc_term_count,
+		char   *query_lexeme)
 {
-	WordEntry *entries		  = ARRPTR(tsvector);
-	int		   doc_term_count = tsvector->size;
-	float4	   doc_length	  = 0.0f;
-	int		   i;
+	int i;
 
 	for (i = 0; i < doc_term_count; i++)
 	{
-		int term_freq;
-		if (entries[i].haspos)
-			term_freq = (int32)POSDATALEN(tsvector, &entries[i]);
-		else
-			term_freq = 1;
-		doc_length += term_freq;
-	}
-
-	return doc_length;
-}
-
-/*
- * Helper: Find term frequency in document
- */
-static float4
-find_term_frequency(
-		TSVector tsvector, WordEntry *query_entry, char *query_lexeme)
-{
-	WordEntry *entries		  = ARRPTR(tsvector);
-	char	  *lexemes_start  = STRPTR(tsvector);
-	int		   doc_term_count = tsvector->size;
-	int		   i;
-
-	for (i = 0; i < doc_term_count; i++)
-	{
-		char *doc_lexeme = lexemes_start + entries[i].pos;
-		if (entries[i].len == query_entry->len &&
-			memcmp(doc_lexeme, query_lexeme, entries[i].len) == 0)
-		{
-			if (entries[i].haspos)
-				return (int32)POSDATALEN(tsvector, &entries[i]);
-			else
-				return 1;
-		}
+		if (strcmp(doc_terms[i], query_lexeme) == 0)
+			return (float4)doc_frequencies[i];
 	}
 
 	return 0.0f; /* Term not found */
@@ -702,8 +672,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	Oid				   text_config_oid;
-	Datum			   tsvector_datum;
-	TSVector		   tsvector;
+	char			 **doc_terms		= NULL;
+	int32			  *doc_frequencies	= NULL;
+	int				   doc_term_count	= 0;
+	int				   raw_doc_length;
 	Datum			   query_tsvector_datum;
 	TSVector		   query_tsvector;
 	WordEntry		  *query_entries;
@@ -883,16 +855,15 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			fcinfo->flinfo->fn_extra = cache;
 		}
 
-		/* Tokenize the document text using the index's text configuration */
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid, /* collation */
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(text_arg));
+		/*
+		 * Tokenize the document. Uses tp_tokenize_text so that documents
+		 * larger than the tsvector dictionary cap are chunked + merged.
+		 */
+		raw_doc_length = tp_tokenize_text(
+				text_arg, text_config_oid,
+				&doc_terms, &doc_frequencies, &doc_term_count);
 
-		tsvector = DatumGetTSVector(tsvector_datum);
-
-		/* Tokenize the query text to get query terms */
+		/* Tokenize the query text to get query terms (always small) */
 		query_tsvector_datum = DirectFunctionCall2Coll(
 				to_tsvector_byid,
 				InvalidOid,
@@ -910,7 +881,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 * a deliberate approximation following Lucene's SmallFloat scheme.
 		 */
 		doc_length = (float4)decode_fieldnorm(
-				encode_fieldnorm((int32)calculate_doc_length(tsvector)));
+				encode_fieldnorm(raw_doc_length));
 		query_term_count = query_tsvector->size;
 
 		/* Calculate BM25 score for each query term */
@@ -938,8 +909,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				query_freq = 1;
 
 			/* Find term frequency in the document */
-			tf = find_term_frequency(
-					tsvector, &query_entries[q_i], query_lexeme);
+			tf = find_term_frequency_in_arrays(
+					doc_terms, doc_frequencies, doc_term_count,
+					query_lexeme);
 
 			if (tf == 0.0f)
 			{
