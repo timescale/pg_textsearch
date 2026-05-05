@@ -302,13 +302,21 @@ tp_get_local_index_state(Oid index_oid)
 }
 
 /*
- * Create a new shared index state and return local state
+ * Create a new shared index state and return local state.
  *
- * This is called during CREATE INDEX to set up the initial shared state
- * and return a ready-to-use local state to avoid double DSA attachment.
+ * If `reuse_if_exists` is true and a registry entry for this OID
+ * already exists when we go to insert, the just-allocated DSA is
+ * freed and we attach to the existing entry instead. This is the
+ * mode the cold-start bootstrap path uses, so concurrent rebuilds
+ * resolve to the same shared state instead of racing each other.
+ *
+ * If false, an existing entry is unregistered and replaced — used
+ * by the parallel-build completion path on the assumption that any
+ * pre-existing entry would be stale (e.g. left behind by a crashed
+ * earlier CREATE INDEX with the same OID).
  */
 TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
+tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 {
 	TpSharedIndexState	 *shared_state;
 	TpLocalIndexState	 *local_state;
@@ -368,23 +376,43 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	shared_state->memtable_dp = memtable_dp;
 
-	/* Check if index is already registered (rebuild case) */
-	if (tp_registry_lookup(index_oid) != NULL)
+	if (reuse_if_exists)
 	{
-		/* This is a rebuild (e.g., VACUUM FULL) - unregister old index first
+		/*
+		 * Atomic register-or-attach. If a concurrent backend
+		 * registered first, free our just-allocated DSA and attach
+		 * to its shared state instead — second arrival's bootstrap
+		 * still runs (under the per-index LW_EXCLUSIVE), but the
+		 * idempotency gate dedups and the atomic-write yields the
+		 * same answer.
 		 */
-		tp_registry_unregister(index_oid);
-	}
+		dsa_pointer existing_dp = InvalidDsaPointer;
 
-	/* Register in global registry */
-	if (!tp_registry_register(index_oid, shared_state, shared_dp))
-	{
-		tp_registry_shmem_startup();
-		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		if (!tp_registry_register_if_absent(
+					index_oid, shared_dp, &existing_dp))
 		{
 			dsa_free(dsa, memtable_dp);
 			dsa_free(dsa, shared_dp);
-			elog(ERROR, "Failed to register index %u", index_oid);
+			shared_dp	 = existing_dp;
+			shared_state = (TpSharedIndexState *)
+					dsa_get_address(dsa, existing_dp);
+		}
+	}
+	else
+	{
+		/* Replace any stale entry (e.g. left by a crashed CREATE INDEX). */
+		if (tp_registry_lookup(index_oid) != NULL)
+			tp_registry_unregister(index_oid);
+
+		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		{
+			tp_registry_shmem_startup();
+			if (!tp_registry_register(index_oid, shared_state, shared_dp))
+			{
+				dsa_free(dsa, memtable_dp);
+				dsa_free(dsa, shared_dp);
+				elog(ERROR, "Failed to register index %u", index_oid);
+			}
 		}
 	}
 
@@ -1059,7 +1087,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * though the docid-page WAL was queued, silently losing the
 	 * cohort whose docid-page records were still pending.
 	 */
-	local_state = tp_create_shared_index_state(index_oid, heap_oid);
+	local_state = tp_create_shared_index_state(
+			index_oid, heap_oid, /* reuse_if_exists */ true);
 	if (local_state == NULL)
 	{
 		index_close(index_rel, AccessShareLock);

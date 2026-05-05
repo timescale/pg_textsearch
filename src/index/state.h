@@ -138,9 +138,20 @@ extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 /*
  * Allocate the per-index shared state, register it in the global
  * registry, and return a local-state handle.
+ *
+ * If `reuse_if_exists` is true and an entry for `index_oid` is
+ * already registered when we go to insert, the just-allocated
+ * DSA is freed and we attach to the existing entry — this is
+ * what the cold-start bootstrap path uses, so concurrent
+ * rebuilds from two backends don't unregister each other.
+ *
+ * If false, an existing entry is unregistered and replaced; the
+ * parallel-build completion path uses this on the assumption
+ * that any pre-existing entry is stale (left by a crashed
+ * earlier CREATE INDEX).
  */
-extern TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid);
+extern TpLocalIndexState *tp_create_shared_index_state(
+		Oid index_oid, Oid heap_oid, bool reuse_if_exists);
 extern TpLocalIndexState			 *
 tp_create_build_index_state(Oid index_oid, Oid heap_oid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);

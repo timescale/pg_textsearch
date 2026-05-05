@@ -297,6 +297,53 @@ tp_registry_register(
 }
 
 /*
+ * Atomic register-if-absent. Returns true if we created a fresh
+ * entry (caller's shared_dp is now in the registry); false if an
+ * entry already existed (in which case *existing_dp is set to its
+ * shared_state_dp and the caller should free its own allocation).
+ */
+bool
+tp_registry_register_if_absent(
+		Oid index_oid, dsa_pointer shared_dp, dsa_pointer *existing_dp)
+{
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	bool			 found;
+
+	tp_registry_get_dsa();
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+	{
+		elog(ERROR,
+			 "Failed to initialize Tapir registry for index %u",
+			 index_oid);
+	}
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		elog(ERROR, "Failed to attach to registry hash table");
+
+	entry = (TpRegistryEntry *)
+			dshash_find_or_insert(registry_hash, &index_oid, &found);
+	if (found)
+	{
+		if (existing_dp)
+			*existing_dp = entry->shared_state_dp;
+	}
+	else
+	{
+		entry->index_oid	   = index_oid;
+		entry->shared_state_dp = shared_dp;
+	}
+	dshash_release_lock(registry_hash, entry);
+	dshash_detach(registry_hash);
+
+	return !found;
+}
+
+/*
  * Look up an index in the registry
  * Returns the shared state pointer (as DSA pointer cast) or NULL if not found
  */

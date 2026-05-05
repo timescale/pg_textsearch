@@ -47,11 +47,16 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   `RelationNeedsWAL(rel)` so UNLOGGED / TEMP indexes don't pay
   for records that can't apply on the standby. Docid pages
   remain the durable on-disk record of what's in the memtable;
-  the rebuild path in `tp_rebuild_index_from_disk` drains WAL
-  replay, acquires `LW_EXCLUSIVE`, re-reads the metapage from
-  disk, walks docid pages, then `fetch_add`s metap corpus stats
-  to the walked totals. `tp_add_document_terms` is idempotent
-  by CTID. Closes #345, #349, #350.
+  on a fresh standby backend the rebuild path in
+  `tp_rebuild_index_from_disk` drains WAL replay, acquires
+  `LW_EXCLUSIVE`, re-reads the metapage from disk, walks docid
+  pages, then atomic-writes corpus stats as
+  `metap_total + memtable_count`. `tp_add_document_terms` is
+  idempotent by CTID. **The bootstrap path's invariants and the
+  scenarios it has to handle are spec'd at
+  [`docs/replication/CORRECTNESS.md`](docs/replication/CORRECTNESS.md);
+  read it before changing the rebuild flow.** Closes #345, #349,
+  #350.
 
 ## Core Architecture
 
