@@ -315,6 +315,141 @@ tp_redo_apply_spill(XLogReaderState *record)
 	}
 }
 
+/*
+ * Apply a MERGE_LINKAGE record on a standby: under
+ * LW_EXCLUSIVE on the per-index lock, update the metapage to
+ * unlink the merged source segments from level N and link the
+ * new segment as the head of level N+1, splice the old level+1
+ * head onto the new segment's next_segment if any, shrink
+ * metap.total_docs/total_len, and shrink the in-memory atomics
+ * by the same amounts the primary subtracted.
+ *
+ * The lock matters: standby backends scanning the index hold
+ * LW_SHARED across the full scan (read metap → walk segment
+ * chain). Without taking LW_EXCLUSIVE here, redo would replay
+ * the metap unlink mid-walk and a subsequent FSM-recycle of
+ * the old segment pages would clobber the buffers a scan was
+ * still following. Taking LW_EXCLUSIVE in redo blocks until
+ * any in-flight scan releases LW_SHARED, then applies the
+ * unlink atomically.
+ *
+ * If no registry entry yet exists for the index we still apply
+ * the buffer mutations (the on-disk metapage / segment header
+ * must stay in sync with the primary regardless of whether any
+ * backend has populated this standby's registry); the atomic
+ * shrinkage is skipped because there's no shared state to
+ * shrink.
+ */
+static void
+tp_redo_apply_merge_linkage(XLogReaderState *record)
+{
+	xl_tp_merge_linkage *hdr = (xl_tp_merge_linkage *)XLogRecGetData(record);
+	TpSharedIndexState	*shared = NULL;
+	dsa_area			*dsa	= NULL;
+	TpLocalIndexState	 stack_local;
+	XLogRedoAction		 action;
+	Buffer				 metabuf = InvalidBuffer;
+	Buffer				 segbuf	 = InvalidBuffer;
+	bool				 registry_hit;
+
+	{
+		TpSharedIndexState *raw = tp_registry_lookup(hdr->index_oid);
+
+		registry_hit = (raw != NULL);
+		if (registry_hit)
+		{
+			dsa_pointer shared_dp = (dsa_pointer)(uintptr_t)raw;
+
+			dsa = tp_registry_get_dsa();
+			if (dsa == NULL)
+				registry_hit = false;
+			else
+				shared = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+		}
+	}
+
+	if (registry_hit)
+	{
+		memset(&stack_local, 0, sizeof(stack_local));
+		stack_local.shared		  = shared;
+		stack_local.dsa			  = dsa;
+		stack_local.is_build_mode = false;
+		stack_local.lock_held	  = false;
+		stack_local.lock_mode	  = LW_SHARED;
+		tp_acquire_index_lock(&stack_local, LW_EXCLUSIVE);
+
+		/*
+		 * Match the primary's atomic shrinkage subtraction (clamped
+		 * to current value to handle a stale atomic snapshot). The
+		 * lock above serializes against any concurrent scanner.
+		 */
+		if (hdr->docs_shrinkage > 0)
+		{
+			uint32 cur = pg_atomic_read_u32(&shared->total_docs);
+			uint32 sub = (hdr->docs_shrinkage > (uint64)cur)
+							   ? cur
+							   : (uint32)hdr->docs_shrinkage;
+			if (sub > 0)
+				pg_atomic_fetch_sub_u32(&shared->total_docs, sub);
+		}
+		if (hdr->tokens_shrinkage > 0)
+		{
+			uint64 cur = pg_atomic_read_u64(&shared->total_len);
+			uint64 sub = Min(cur, hdr->tokens_shrinkage);
+
+			if (sub > 0)
+				pg_atomic_fetch_sub_u64(&shared->total_len, sub);
+		}
+	}
+
+	/* Apply linkage update to the metapage. */
+	action = XLogReadBufferForRedo(record, 0, &metabuf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page			page  = BufferGetPage(metabuf);
+		TpIndexMetaPage metap = (TpIndexMetaPage)PageGetContents(page);
+
+		metap->level_heads[hdr->level]	= hdr->remainder_head;
+		metap->level_counts[hdr->level] = hdr->total_at_level -
+										  hdr->segment_count;
+		metap->level_heads[hdr->level + 1] = hdr->new_segment;
+		metap->level_counts[hdr->level + 1]++;
+		metap->total_docs = (metap->total_docs >= hdr->docs_shrinkage)
+								  ? metap->total_docs - hdr->docs_shrinkage
+								  : 0;
+		metap->total_len  = (metap->total_len >= hdr->tokens_shrinkage)
+								  ? metap->total_len - hdr->tokens_shrinkage
+								  : 0;
+
+		PageSetLSN(page, record->EndRecPtr);
+		MarkBufferDirty(metabuf);
+	}
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+
+	/* Apply next_segment splice on the new merged segment (if any). */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		action = XLogReadBufferForRedo(record, 1, &segbuf);
+		if (action == BLK_NEEDS_REDO)
+		{
+			Page			 page		= BufferGetPage(segbuf);
+			TpSegmentHeader *seg_header = (TpSegmentHeader *)PageGetContents(
+					page);
+
+			seg_header->next_segment = hdr->prev_target_head;
+
+			PageSetLSN(page, record->EndRecPtr);
+			MarkBufferDirty(segbuf);
+		}
+		if (BufferIsValid(segbuf))
+			UnlockReleaseBuffer(segbuf);
+	}
+
+	if (registry_hit)
+		tp_release_index_lock(&stack_local);
+}
+
 void
 tp_rmgr_redo(XLogReaderState *record)
 {
@@ -327,6 +462,9 @@ tp_rmgr_redo(XLogReaderState *record)
 		break;
 	case XLOG_TP_SPILL:
 		tp_redo_apply_spill(record);
+		break;
+	case XLOG_TP_MERGE_LINKAGE:
+		tp_redo_apply_merge_linkage(record);
 		break;
 	default:
 		elog(PANIC, "tp_rmgr_redo: unknown record type %u", info);
@@ -363,6 +501,24 @@ tp_rmgr_desc(StringInfo buf, XLogReaderState *record)
 				r->prev_chain_head);
 		break;
 	}
+	case XLOG_TP_MERGE_LINKAGE:
+	{
+		xl_tp_merge_linkage *r = (xl_tp_merge_linkage *)XLogRecGetData(record);
+		appendStringInfo(
+				buf,
+				"index_oid %u, level %u, segs %u, "
+				"remainder %u, new_seg %u, prev_l1 %u, "
+				"docs_shrink " UINT64_FORMAT ", tokens_shrink " UINT64_FORMAT,
+				r->index_oid,
+				r->level,
+				r->segment_count,
+				r->remainder_head,
+				r->new_segment,
+				r->prev_target_head,
+				r->docs_shrinkage,
+				r->tokens_shrinkage);
+		break;
+	}
 	default:
 		appendStringInfo(buf, "UNKNOWN info %u", info);
 	}
@@ -377,6 +533,8 @@ tp_rmgr_identify(uint8 info)
 		return "INSERT_TERMS";
 	case XLOG_TP_SPILL:
 		return "SPILL";
+	case XLOG_TP_MERGE_LINKAGE:
+		return "MERGE_LINKAGE";
 	}
 	return NULL;
 }
@@ -472,6 +630,128 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 	if (BufferIsValid(segbuf))
 		XLogRegisterBuffer(1, segbuf, REGBUF_STANDARD);
 	lsn = XLogInsert(TP_RMGR_ID, XLOG_TP_SPILL);
+
+	PageSetLSN(metapage, lsn);
+	if (BufferIsValid(segbuf))
+	{
+		PageSetLSN(segpage, lsn);
+		UnlockReleaseBuffer(segbuf);
+	}
+	UnlockReleaseBuffer(metabuf);
+
+	return lsn;
+}
+
+/*
+ * Apply the metap unlink/link + optional new-segment next_segment
+ * splice + atomic shrinkage on the primary AND emit a MERGE_LINKAGE
+ * record so the standby's redo applies the same mutations under
+ * LW_EXCLUSIVE on the per-index lock — see tp_redo_apply_merge_linkage
+ * for the lock invariant. Replaces the GenericXLog block at the tail
+ * of tp_merge_level_segments.
+ *
+ * Caller must already hold the per-index LW_EXCLUSIVE.
+ */
+XLogRecPtr
+tp_xlog_merge_linkage(
+		Relation		   index,
+		uint32			   level,
+		uint32			   segment_count,
+		uint32			   total_at_level,
+		BlockNumber		   remainder_head,
+		BlockNumber		   new_segment,
+		uint64			   docs_shrinkage,
+		uint64			   tokens_shrinkage,
+		TpLocalIndexState *index_state)
+{
+	xl_tp_merge_linkage hdr;
+	XLogRecPtr			lsn;
+	Buffer				metabuf;
+	Buffer				segbuf	 = InvalidBuffer;
+	Page				metapage = NULL;
+	Page				segpage	 = NULL;
+	TpIndexMetaPage		metap;
+	TpSegmentHeader	   *seg_header;
+	BlockNumber			prev_target_head;
+
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	prev_target_head = metap->level_heads[level + 1];
+
+	if (prev_target_head != InvalidBlockNumber)
+	{
+		segbuf = ReadBuffer(index, new_segment);
+		LockBuffer(segbuf, BUFFER_LOCK_EXCLUSIVE);
+		segpage = BufferGetPage(segbuf);
+		/* Ensure pd_lower covers the contents (matches the
+		 * GenericXLog path the legacy linkage block took). */
+		((PageHeader)segpage)->pd_lower = BLCKSZ;
+		seg_header				 = (TpSegmentHeader *)PageGetContents(segpage);
+		seg_header->next_segment = prev_target_head;
+	}
+
+	/*
+	 * Atomic shrinkage subtraction (clamped). The redo will repeat
+	 * this on the standby under the same per-index lock. Caller
+	 * already holds LW_EXCLUSIVE on the primary, so no contention
+	 * here.
+	 */
+	if (index_state != NULL && index_state->shared != NULL)
+	{
+		if (docs_shrinkage > 0)
+		{
+			uint32 cur = pg_atomic_read_u32(&index_state->shared->total_docs);
+			uint32 sub = (docs_shrinkage > (uint64)cur)
+							   ? cur
+							   : (uint32)docs_shrinkage;
+			if (sub > 0)
+				pg_atomic_fetch_sub_u32(&index_state->shared->total_docs, sub);
+		}
+		if (tokens_shrinkage > 0)
+		{
+			uint64 cur = pg_atomic_read_u64(&index_state->shared->total_len);
+			uint64 sub = Min(cur, tokens_shrinkage);
+
+			if (sub > 0)
+				pg_atomic_fetch_sub_u64(&index_state->shared->total_len, sub);
+		}
+	}
+
+	/* metap mutations */
+	metap->level_heads[level]	  = remainder_head;
+	metap->level_counts[level]	  = total_at_level - segment_count;
+	metap->level_heads[level + 1] = new_segment;
+	metap->level_counts[level + 1]++;
+	metap->total_docs = (metap->total_docs >= docs_shrinkage)
+							  ? metap->total_docs - docs_shrinkage
+							  : 0;
+	metap->total_len  = (metap->total_len >= tokens_shrinkage)
+							  ? metap->total_len - tokens_shrinkage
+							  : 0;
+
+	hdr.index_oid		 = RelationGetRelid(index);
+	hdr.level			 = level;
+	hdr.segment_count	 = segment_count;
+	hdr.total_at_level	 = total_at_level;
+	hdr.remainder_head	 = remainder_head;
+	hdr.new_segment		 = new_segment;
+	hdr.prev_target_head = prev_target_head;
+	hdr.docs_shrinkage	 = docs_shrinkage;
+	hdr.tokens_shrinkage = tokens_shrinkage;
+
+	MarkBufferDirty(metabuf);
+	if (BufferIsValid(segbuf))
+		MarkBufferDirty(segbuf);
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&hdr, sizeof(hdr));
+	XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
+	if (BufferIsValid(segbuf))
+		XLogRegisterBuffer(1, segbuf, REGBUF_STANDARD);
+	lsn = XLogInsert(TP_RMGR_ID, XLOG_TP_MERGE_LINKAGE);
 
 	PageSetLSN(metapage, lsn);
 	if (BufferIsValid(segbuf))

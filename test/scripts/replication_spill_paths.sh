@@ -341,6 +341,111 @@ count with stale metap->total_docs (no spill -> metap=0)."
     log "Test 3 PASSED: cold-start corpus stats reconstructed correctly"
 }
 
+# ---------------------------------------------------------------
+# Test 4: long-lived standby read across primary segment merge (#349)
+#
+# Exercise the MERGE_LINKAGE end-to-end path: drive enough spills
+# on the primary (segments_per_level=8 → 9th spill triggers L0
+# compaction), then a 10th, while a long-lived standby backend
+# queries before and after. Asserts both reads return the
+# expected counts.
+#
+# Caveat: the original #349 race (a backend mid-walk on the L0
+# chain when redo unlinks the source segments) is timing-sensitive
+# and cannot be reliably triggered in CI by sequential queries —
+# the walk completes in microseconds and wait_for_standby_catchup
+# always lets redo finish before the next query begins. The fix
+# is structural: merge linkage now goes through a custom rmgr
+# record whose redo holds LW_EXCLUSIVE on the per-index lock,
+# blocking against concurrent scans (LW_SHARED) until they
+# release. This test exists to catch regressions in the
+# happy-path replication of a merge — if MERGE_LINKAGE is wrong
+# (forgets a metap field, miscounts shrinkage, etc.) the post-
+# merge query count diverges.
+# ---------------------------------------------------------------
+test_long_lived_read_after_segment_merge() {
+    log "=== Test 4: long-lived read after segment merge (#349) ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS sm_docs CASCADE;
+        CREATE TABLE sm_docs (id SERIAL PRIMARY KEY, content TEXT);
+        CREATE INDEX sm_idx ON sm_docs USING bm25(content)
+            WITH (text_config='simple');
+    " >/dev/null
+
+    # Force several level-0 spills. With segments_per_level=8
+    # (default) we need at least 9 to trigger compaction on the
+    # 9th spill.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9; do
+        primary_sql "
+            INSERT INTO sm_docs (content)
+                SELECT 'merge doc ' || j || ' alpha bravo'
+                FROM generate_series(1,100) j;
+            SELECT bm25_spill_index('sm_idx');
+        " >/dev/null
+    done
+    wait_for_standby_catchup
+
+    local primary_total
+    primary_total=$(primary_sql_quiet "SELECT count(*) FROM sm_docs;")
+    if [ "${primary_total}" != "900" ]; then
+        error "Test 4: primary expected 900 docs, got ${primary_total}"
+    fi
+
+    # Open the long-lived standby backend now — registers the
+    # index in the standby's registry so subsequent INSERT_TERMS
+    # redo applies, and so the backend caches a metap snapshot
+    # straddling the upcoming merge.
+    long_lived_open "${STANDBY_PORT}"
+
+    local raw before
+    raw=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM sm_docs
+            ORDER BY content <@> to_bm25query('alpha', 'sm_idx')
+            LIMIT 10000
+        ) t;")
+    before=$(printf '%s\n' "${raw}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+
+    # Trigger a level-0 compaction by adding more segments past
+    # the threshold.
+    primary_sql "
+        INSERT INTO sm_docs (content)
+            SELECT 'merge doc extra ' || j || ' alpha'
+            FROM generate_series(1,50) j;
+        SELECT bm25_spill_index('sm_idx');
+    " >/dev/null
+    wait_for_standby_catchup
+
+    local raw_after after
+    raw_after=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM sm_docs
+            ORDER BY content <@> to_bm25query('alpha', 'sm_idx')
+            LIMIT 10000
+        ) t;")
+    after=$(printf '%s\n' "${raw_after}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+
+    long_lived_close
+
+    log "  long-lived count before merge: ${before} (expect 900)"
+    log "  long-lived count after merge:  ${after} (expect 950)"
+
+    if [ "${before}" != "900" ]; then
+        error "Test 4 (#349): pre-merge long-lived count ${before}, \
+expected 900"
+    fi
+    if [ "${after}" != "950" ]; then
+        error "Test 4 (#349): post-merge long-lived count ${after}, \
+expected 950. The MERGE_LINKAGE redo on the standby is not \
+serializing against in-flight scans (LW_EXCLUSIVE not held), or \
+the linkage isn't being WAL-emitted as a custom record."
+    fi
+
+    log "Test 4 PASSED: long-lived read after merge stays consistent"
+}
+
 main() {
     log "Starting spill-paths replication test..."
     check_required_tools
@@ -361,6 +466,8 @@ main() {
         failures="${failures} test_vacuum_spill_replication"
     ( test_cold_start_corpus_stats ) || \
         failures="${failures} test_cold_start_corpus_stats"
+    ( test_long_lived_read_after_segment_merge ) || \
+        failures="${failures} test_long_lived_read_after_segment_merge"
 
     if [ -n "${failures}" ]; then
         error "Spill-paths failures:${failures}"

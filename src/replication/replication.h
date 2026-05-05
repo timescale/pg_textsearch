@@ -27,14 +27,16 @@
 #include <storage/itemptr.h>
 #include <utils/relcache.h>
 
+#include "index/state.h"
 #include "types/vector.h"
 
 #define TP_RMGR_ID	 149
 #define TP_RMGR_NAME "pg_textsearch"
 
-/* Record info bits (XLOG_TP_*) — distinguish the two record types. */
-#define XLOG_TP_INSERT_TERMS 0x10
-#define XLOG_TP_SPILL		 0x20
+/* Record info bits (XLOG_TP_*) — distinguish the record types. */
+#define XLOG_TP_INSERT_TERMS  0x10
+#define XLOG_TP_SPILL		  0x20
+#define XLOG_TP_MERGE_LINKAGE 0x30
 
 /*
  * INSERT_TERMS payload (followed by `vector_size` bytes of v2
@@ -72,6 +74,52 @@ typedef struct xl_tp_spill
 								   * first in level 0 */
 } xl_tp_spill;
 
+/*
+ * MERGE_LINKAGE payload.
+ *
+ * Emitted at the end of a level-N → level-(N+1) merge to (a)
+ * unlink the merged source segments from level N, (b) link the
+ * new merged segment as the head of level N+1, (c) optionally
+ * splice the old level-(N+1) head onto the new segment's
+ * next_segment, and (d) shrink the metap corpus stats and the
+ * per-index atomics by however many docs/tokens the merge
+ * dropped (V5 alive-bitset deads).
+ *
+ * Reason for being a custom record: standby backends scanning
+ * the index hold LW_SHARED on the per-index lock and walk a
+ * snapshot of the segment chain. If the linkage replayed via
+ * GenericXLog (which only takes buffer locks), the standby's
+ * scan could be mid-walk on the OLD source-segment chain when
+ * redo unlinks them and the FSM later recycles their pages —
+ * the next_segment pointer they're following becomes stale and
+ * the walk hits zeroed/recycled blocks. Custom redo takes
+ * LW_EXCLUSIVE on the per-index lock so it blocks until any
+ * in-flight scan releases LW_SHARED, then applies all four
+ * mutations atomically.
+ *
+ * Block 0 references the metapage; block 1 references the new
+ * segment's header page (only present when the prior level+1
+ * head is valid, i.e. the new segment is being spliced onto an
+ * existing level+1 chain).
+ */
+typedef struct xl_tp_merge_linkage
+{
+	Oid	   index_oid;
+	uint32 level;				  /* source level being drained */
+	uint32 segment_count;		  /* how many were merged */
+	uint32 total_at_level;		  /* prior level_counts[level]
+								   * (pre-merge); the new value is
+								   * total_at_level - segment_count */
+	BlockNumber remainder_head;	  /* new level_heads[level] */
+	BlockNumber new_segment;	  /* new level_heads[level+1] */
+	BlockNumber prev_target_head; /* prior level_heads[level+1];
+								   * InvalidBlockNumber if the new
+								   * segment is the first at
+								   * level+1 (block 1 then absent) */
+	uint64 docs_shrinkage;		  /* docs the merge dropped */
+	uint64 tokens_shrinkage;	  /* tokens the merge dropped */
+} xl_tp_merge_linkage;
+
 /* Registration — called once from _PG_init. */
 extern void tp_register_rmgr(void);
 
@@ -97,5 +145,25 @@ tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec);
  * separately via GenericXLog.
  */
 extern XLogRecPtr tp_xlog_spill(Relation index, BlockNumber new_segment_root);
+/*
+ * Emit a MERGE_LINKAGE record AND apply the metap unlink/link +
+ * optional new-segment next_segment splice in the same WAL action.
+ * Caller must already hold the per-index LW_EXCLUSIVE; this
+ * function takes the metapage and (if linking onto an existing
+ * level+1 chain) new-segment buffer locks internally and releases
+ * them before returning. Replaces the GenericXLog block at the
+ * tail of tp_merge_level_segments. Closes the standby cache
+ * staleness window (see #349).
+ */
+extern XLogRecPtr tp_xlog_merge_linkage(
+		Relation		   index,
+		uint32			   level,
+		uint32			   segment_count,
+		uint32			   total_at_level,
+		BlockNumber		   remainder_head,
+		BlockNumber		   new_segment,
+		uint64			   docs_shrinkage,
+		uint64			   tokens_shrinkage,
+		TpLocalIndexState *index_state);
 
 #endif /* PG_TEXTSEARCH_REPLICATION_H */
