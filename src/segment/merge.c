@@ -1776,7 +1776,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		if (RelationNeedsWAL(index))
 		{
-			START_CRIT_SECTION();
 			tp_xlog_merge_linkage(
 					index,
 					level,
@@ -1787,7 +1786,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 					docs_shrinkage,
 					tokens_shrinkage,
 					st);
-			END_CRIT_SECTION();
 		}
 		else
 		{

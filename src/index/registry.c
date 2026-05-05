@@ -837,15 +837,9 @@ tp_evict_largest_memtable(Oid caller_oid)
 			tp_sync_metapage_stats(index_rel, target_state);
 
 			if (RelationNeedsWAL(index_rel))
-			{
-				START_CRIT_SECTION();
 				tp_xlog_spill(index_rel, segment_root);
-				END_CRIT_SECTION();
-			}
 			else
-			{
 				tp_link_l0_chain_head(index_rel, segment_root);
-			}
 
 			tp_maybe_compact_level(index_rel, 0);
 

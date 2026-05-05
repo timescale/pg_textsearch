@@ -129,31 +129,28 @@ extern void		   tp_rmgr_desc(StringInfo buf, XLogReaderState *record);
 extern const char *tp_rmgr_identify(uint8 info);
 
 /*
- * Emission helpers — called from primary insert/spill paths.
- * Return the LSN of the emitted record. The caller is responsible
- * for being inside a critical section.
+ * Emission helpers — called from the primary's insert/spill/merge
+ * paths. Return the LSN of the emitted record. The caller MUST
+ * already hold the per-index LW_EXCLUSIVE; the helpers manage
+ * their own buffer locks and critical section internally
+ * (acquiring buffers outside the CS so ReadBuffer ERROR doesn't
+ * escalate to PANIC).
  */
 extern XLogRecPtr
 tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec);
 /*
  * Emit a SPILL record AND apply the L0 chain-link metapage update
- * in the same WAL action. Caller must already hold the per-index
- * LW_EXCLUSIVE; this function takes the metapage and (if linking
- * to an existing chain) new-segment buffer locks internally and
- * releases them before returning. Replaces the
- * tp_link_l0_chain_head call that the spill recipes used to emit
- * separately via GenericXLog.
+ * in the same WAL action. Replaces the tp_link_l0_chain_head
+ * call that the spill recipes used to emit separately via
+ * GenericXLog.
  */
 extern XLogRecPtr tp_xlog_spill(Relation index, BlockNumber new_segment_root);
 /*
  * Emit a MERGE_LINKAGE record AND apply the metap unlink/link +
- * optional new-segment next_segment splice in the same WAL action.
- * Caller must already hold the per-index LW_EXCLUSIVE; this
- * function takes the metapage and (if linking onto an existing
- * level+1 chain) new-segment buffer locks internally and releases
- * them before returning. Replaces the GenericXLog block at the
- * tail of tp_merge_level_segments. Closes the standby cache
- * staleness window (see #349).
+ * optional new-segment next_segment splice + atomic shrinkage in
+ * the same WAL action. Replaces the GenericXLog block at the tail
+ * of tp_merge_level_segments. Closes the standby cache staleness
+ * window (see #349).
  */
 extern XLogRecPtr tp_xlog_merge_linkage(
 		Relation		   index,

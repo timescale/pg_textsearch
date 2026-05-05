@@ -150,9 +150,7 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 
 	if (RelationNeedsWAL(index_rel))
 	{
-		START_CRIT_SECTION();
 		tp_xlog_spill(index_rel, root);
-		END_CRIT_SECTION();
 	}
 	else
 	{
@@ -527,9 +525,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 		if (RelationNeedsWAL(index_rel))
 		{
-			START_CRIT_SECTION();
 			tp_xlog_spill(index_rel, segment_root);
-			END_CRIT_SECTION();
 		}
 		else
 		{

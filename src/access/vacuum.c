@@ -211,15 +211,9 @@ tp_spill_memtable_if_needed(
 		tp_sync_metapage_stats(index, index_state);
 
 		if (RelationNeedsWAL(index))
-		{
-			START_CRIT_SECTION();
 			tp_xlog_spill(index, segment_root);
-			END_CRIT_SECTION();
-		}
 		else
-		{
 			tp_link_l0_chain_head(index, segment_root);
-		}
 
 		tp_maybe_compact_level(index, 0);
 	}

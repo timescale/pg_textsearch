@@ -1082,6 +1082,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	if (local_state != NULL)
 	{
+		TpIndexMetaPage fresh_metap;
+
 		/*
 		 * Drain WAL replay before walking docid pages.
 		 *
@@ -1119,18 +1121,55 @@ tp_rebuild_index_from_disk(Oid index_oid)
 			}
 		}
 
-		tp_acquire_index_lock(local_state, LW_SHARED);
-		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
+		/*
+		 * Hold LW_EXCLUSIVE across the rebuild. Three reasons:
+		 *
+		 *   1. tp_ensure_string_table_initialized (called via
+		 *      tp_rebuild_posting_lists_from_docids) requires
+		 *      LW_EXCLUSIVE per its contract — the cold-path
+		 *      hash-table init must not race with the
+		 *      LW_SHARED hot path in tp_get_or_create_posting_list.
+		 *
+		 *   2. INSERT_TERMS / SPILL / MERGE_LINKAGE redo records
+		 *      that arrive after the drain target block on this
+		 *      lock, so the metap snapshot we re-read below stays
+		 *      consistent with the docid pages we walk.
+		 *
+		 *   3. Concurrent backend scans hold LW_SHARED, so they
+		 *      block until the rebuild releases — no scan ever
+		 *      sees a half-rebuilt memtable.
+		 *
+		 * The early metap read above (used for magic / heap-empty
+		 * validation) is now stale relative to anything replay
+		 * applied during the drain. Re-read fresh so first_docid_page
+		 * and total_docs reflect current on-disk state.
+		 */
+		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
+
+		fresh_metap = tp_get_metapage(index_rel);
+		if (fresh_metap == NULL)
+		{
+			tp_release_index_lock(local_state);
+			elog(WARNING,
+				 "Could not re-read metapage for index %u after drain",
+				 index_oid);
+			pfree(metap);
+			index_close(index_rel, AccessShareLock);
+			return local_state;
+		}
+
+		tp_rebuild_posting_lists_from_docids(
+				index_rel, local_state, fresh_metap);
 
 		/*
 		 * Add the metapage corpus stats to whatever the docid walk
 		 * recovered. Each source covers a disjoint slice of the index:
 		 *
-		 *   - metap->total_docs / total_len reflect docs that have
-		 *     been spilled into segments (tp_sync_metapage_stats runs
-		 *     inside the spill paths). Docid pages for those docs are
-		 *     cleared at spill time, so the walk above contributes
-		 *     zero from them.
+		 *   - fresh_metap->total_docs / total_len reflect docs that
+		 *     have been spilled into segments (tp_sync_metapage_stats
+		 *     runs inside the spill paths). Docid pages for those
+		 *     docs are cleared at spill time, so the walk above
+		 *     contributes zero from them.
 		 *
 		 *   - the docid walk increments shared->total_docs/total_len
 		 *     once per memtable doc it replays from disk — i.e. docs
@@ -1144,10 +1183,11 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		 * after PITR to a between-spills LSN. See #350.
 		 */
 		pg_atomic_fetch_add_u32(
-				&local_state->shared->total_docs, metap->total_docs);
+				&local_state->shared->total_docs, fresh_metap->total_docs);
 		pg_atomic_fetch_add_u64(
-				&local_state->shared->total_len, metap->total_len);
+				&local_state->shared->total_len, fresh_metap->total_len);
 
+		pfree(fresh_metap);
 		tp_release_index_lock(local_state);
 	}
 
@@ -1200,10 +1240,11 @@ tp_rebuild_posting_lists_from_docids(
 
 	/*
 	 * Ensure the string hash table is initialized before
-	 * rebuilding posting lists. Recovery is single-threaded
-	 * so no lock is needed, but
-	 * tp_get_or_create_posting_list requires the table to
-	 * exist when not in build mode.
+	 * rebuilding posting lists. The caller (tp_rebuild_index_from_disk)
+	 * holds LW_EXCLUSIVE on the per-index lock, which
+	 * tp_ensure_string_table_initialized requires (cold-path init
+	 * must not race with the LW_SHARED hot path in
+	 * tp_get_or_create_posting_list).
 	 */
 	tp_ensure_string_table_initialized(local_state);
 
@@ -1716,15 +1757,9 @@ tp_bulk_load_spill_check(void)
 			tp_sync_metapage_stats(index_rel, local_state);
 
 			if (RelationNeedsWAL(index_rel))
-			{
-				START_CRIT_SECTION();
 				tp_xlog_spill(index_rel, segment_root);
-				END_CRIT_SECTION();
-			}
 			else
-			{
 				tp_link_l0_chain_head(index_rel, segment_root);
-			}
 
 			tp_maybe_compact_level(index_rel, 0);
 		}

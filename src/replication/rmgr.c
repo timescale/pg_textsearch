@@ -34,6 +34,7 @@
 #include <access/xlogreader.h>
 #include <access/xlogutils.h>
 #include <lib/stringinfo.h>
+#include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <storage/lwlock.h>
@@ -588,6 +589,14 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 	TpSegmentHeader *seg_header;
 	BlockNumber		 prev_chain_head;
 
+	/*
+	 * Acquire all buffers BEFORE entering the critical section.
+	 * ReadBuffer can elog(ERROR) on smgr/IO failure, and ERROR
+	 * inside a CS escalates to PANIC. Standard PG pattern (see
+	 * heap_insert / _bt_insertonpg). Reading prev_chain_head from
+	 * the metapage to decide whether we need the seg buffer also
+	 * happens outside the CS.
+	 */
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
@@ -600,6 +609,18 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 		segbuf = ReadBuffer(index, new_segment_root);
 		LockBuffer(segbuf, BUFFER_LOCK_EXCLUSIVE);
 		segpage = BufferGetPage(segbuf);
+	}
+
+	hdr = (xl_tp_spill){
+			.index_oid		  = RelationGetRelid(index),
+			.new_segment_root = new_segment_root,
+			.prev_chain_head  = prev_chain_head,
+	};
+
+	START_CRIT_SECTION();
+
+	if (BufferIsValid(segbuf))
+	{
 		/* Ensure pd_lower covers the contents (matches the
 		 * GenericXLog path tp_link_l0_chain_head used to take). */
 		((PageHeader)segpage)->pd_lower = BLCKSZ;
@@ -610,15 +631,11 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 	metap->level_heads[0] = new_segment_root;
 	metap->level_counts[0]++;
 
-	hdr.index_oid		 = RelationGetRelid(index);
-	hdr.new_segment_root = new_segment_root;
-	hdr.prev_chain_head	 = prev_chain_head;
-
 	/*
-	 * XLogRegisterBuffer asserts that each registered buffer is
-	 * already EXCLUSIVE-locked and dirty, so mark the buffers dirty
-	 * before registration and emission. PageSetLSN happens after
-	 * XLogInsert returns the LSN.
+	 * XLogRegisterBuffer asserts each registered buffer is already
+	 * EXCLUSIVE-locked and dirty, so MarkBufferDirty before
+	 * registration. PageSetLSN happens after XLogInsert returns
+	 * the LSN.
 	 */
 	MarkBufferDirty(metabuf);
 	if (BufferIsValid(segbuf))
@@ -633,10 +650,12 @@ tp_xlog_spill(Relation index, BlockNumber new_segment_root)
 
 	PageSetLSN(metapage, lsn);
 	if (BufferIsValid(segbuf))
-	{
 		PageSetLSN(segpage, lsn);
+
+	END_CRIT_SECTION();
+
+	if (BufferIsValid(segbuf))
 		UnlockReleaseBuffer(segbuf);
-	}
 	UnlockReleaseBuffer(metabuf);
 
 	return lsn;
@@ -686,6 +705,31 @@ tp_xlog_merge_linkage(
 		segbuf = ReadBuffer(index, new_segment);
 		LockBuffer(segbuf, BUFFER_LOCK_EXCLUSIVE);
 		segpage = BufferGetPage(segbuf);
+	}
+
+	/*
+	 * Designated initializer zeros the 4 bytes of compiler padding
+	 * between prev_target_head and docs_shrinkage (C99 §6.7.8/21),
+	 * so the WAL record bytes don't ship uninitialized stack
+	 * contents to standbys / archives and stay deterministic across
+	 * runs. Same pattern as tp_xlog_insert_terms / tp_xlog_spill.
+	 */
+	hdr = (xl_tp_merge_linkage){
+			.index_oid		  = RelationGetRelid(index),
+			.level			  = level,
+			.segment_count	  = segment_count,
+			.total_at_level	  = total_at_level,
+			.remainder_head	  = remainder_head,
+			.new_segment	  = new_segment,
+			.prev_target_head = prev_target_head,
+			.docs_shrinkage	  = docs_shrinkage,
+			.tokens_shrinkage = tokens_shrinkage,
+	};
+
+	START_CRIT_SECTION();
+
+	if (BufferIsValid(segbuf))
+	{
 		/* Ensure pd_lower covers the contents (matches the
 		 * GenericXLog path the legacy linkage block took). */
 		((PageHeader)segpage)->pd_lower = BLCKSZ;
@@ -732,16 +776,6 @@ tp_xlog_merge_linkage(
 							  ? metap->total_len - tokens_shrinkage
 							  : 0;
 
-	hdr.index_oid		 = RelationGetRelid(index);
-	hdr.level			 = level;
-	hdr.segment_count	 = segment_count;
-	hdr.total_at_level	 = total_at_level;
-	hdr.remainder_head	 = remainder_head;
-	hdr.new_segment		 = new_segment;
-	hdr.prev_target_head = prev_target_head;
-	hdr.docs_shrinkage	 = docs_shrinkage;
-	hdr.tokens_shrinkage = tokens_shrinkage;
-
 	MarkBufferDirty(metabuf);
 	if (BufferIsValid(segbuf))
 		MarkBufferDirty(segbuf);
@@ -755,10 +789,12 @@ tp_xlog_merge_linkage(
 
 	PageSetLSN(metapage, lsn);
 	if (BufferIsValid(segbuf))
-	{
 		PageSetLSN(segpage, lsn);
+
+	END_CRIT_SECTION();
+
+	if (BufferIsValid(segbuf))
 		UnlockReleaseBuffer(segbuf);
-	}
 	UnlockReleaseBuffer(metabuf);
 
 	return lsn;
