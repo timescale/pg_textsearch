@@ -257,6 +257,90 @@ post-VACUUM, got '${post_vacuum_segments}'"
     log "Test 2 PASSED: VACUUM-triggered spill replicates"
 }
 
+# ---------------------------------------------------------------
+# Test 3: cold-start corpus stats after no-spill inserts (#350)
+#
+# Standby cold-start path: a fresh backend opens an index whose
+# registry slot is empty (no other backend has touched this index
+# yet), so tp_get_local_index_state -> tp_rebuild_index_from_disk
+# walks the docid pages to repopulate the in-memory memtable.
+#
+# Pre-#350 fix the rebuild path overwrote shared->total_docs with
+# metap->total_docs unconditionally. metap is only synced inside
+# the spill paths, so for a no-spill index it sits at 0 and the
+# overwrite zeroed the count we just walked. BM25 and BMW both
+# require total_docs > 0 to score, so every query returned no
+# rows — the externally visible PITR-into-mid-burst symptom from
+# #350.
+#
+# The reproducer is simpler than full PITR: just insert without
+# spilling and let a *new* standby backend rebuild from docid
+# pages. The bug is in the rebuild's overwrite, not in PITR per
+# se.
+# ---------------------------------------------------------------
+test_cold_start_corpus_stats() {
+    log "=== Test 3: cold-start corpus stats (no-spill rebuild) ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS cs_docs CASCADE;
+        CREATE TABLE cs_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        CREATE INDEX cs_docs_idx ON cs_docs USING bm25(content)
+            WITH (text_config='english');
+        -- Insert without spilling. The default
+        -- bulk_load_threshold (100k terms) and per-index soft
+        -- limit (memory_limit / 8) are nowhere near 200 docs of
+        -- 6 words each, so this stays purely in the memtable.
+        INSERT INTO cs_docs (content)
+            SELECT 'iota kappa lambda mu nu ' || md5(g::text)
+            FROM generate_series(1, 200) g;
+    " >/dev/null
+    wait_for_standby_catchup
+
+    # Confirm primary has the docs (sanity).
+    local primary_total
+    primary_total=$(primary_sql_quiet \
+        "SELECT count(*) FROM cs_docs;")
+    if [ "${primary_total}" != "200" ]; then
+        error "Test 3: primary didn't get 200 docs (got \
+${primary_total})"
+    fi
+
+    # Open a *new* standby backend — the registry on the standby
+    # is empty for this index (no prior touch), so the very first
+    # query in this session goes through tp_rebuild_index_from_disk.
+    # The rebuild emits an INFO ("Recovering pg_textsearch index
+    # ... from disk") that PostgreSQL always ships to the client
+    # regardless of client_min_messages, so the long_lived_query
+    # output may include both the INFO line and the numeric count.
+    # Extract the last numeric line.
+    long_lived_open "${STANDBY_PORT}"
+
+    local raw
+    raw=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM cs_docs
+            ORDER BY content <@> to_bm25query('iota',
+                'cs_docs_idx')
+            LIMIT 10000
+        ) t;")
+    local count
+    count=$(printf '%s\n' "${raw}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+    log "  standby cold-start query count: ${count} (expect 200)"
+
+    long_lived_close
+
+    if [ "${count}" != "200" ]; then
+        error "Test 3 (#350): standby cold-start query returned \
+${count}, expected 200. The rebuild path overwrote the docid-walk \
+count with stale metap->total_docs (no spill -> metap=0)."
+    fi
+
+    log "Test 3 PASSED: cold-start corpus stats reconstructed correctly"
+}
+
 main() {
     log "Starting spill-paths replication test..."
     check_required_tools
@@ -275,6 +359,8 @@ main() {
         failures="${failures} test_bulk_load_spill_replication"
     ( test_vacuum_spill_replication ) || \
         failures="${failures} test_vacuum_spill_replication"
+    ( test_cold_start_corpus_stats ) || \
+        failures="${failures} test_cold_start_corpus_stats"
 
     if [ -n "${failures}" ]; then
         error "Spill-paths failures:${failures}"

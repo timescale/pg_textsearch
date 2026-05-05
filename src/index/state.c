@@ -1123,15 +1123,30 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
 
 		/*
-		 * Load corpus statistics from metapage. This is needed for indexes
-		 * built with parallel workers (which write directly to segments
-		 * without docid pages) or if docid recovery didn't fully restore
-		 * the stats. The metapage is the authoritative source for total_docs
-		 * and total_len.
+		 * Add the metapage corpus stats to whatever the docid walk
+		 * recovered. Each source covers a disjoint slice of the index:
+		 *
+		 *   - metap->total_docs / total_len reflect docs that have
+		 *     been spilled into segments (tp_sync_metapage_stats runs
+		 *     inside the spill paths). Docid pages for those docs are
+		 *     cleared at spill time, so the walk above contributes
+		 *     zero from them.
+		 *
+		 *   - the docid walk increments shared->total_docs/total_len
+		 *     once per memtable doc it replays from disk — i.e. docs
+		 *     inserted since the last spill (or, for an index that
+		 *     has never spilled, every doc).
+		 *
+		 * Sum is the running total; an unconditional overwrite from
+		 * metap (the prior code) loses post-spill memtable inserts on
+		 * a cold start with stale metap stats — the externally
+		 * visible symptom is "every BM25 query returns zero results"
+		 * after PITR to a between-spills LSN. See #350.
 		 */
-		pg_atomic_write_u32(
+		pg_atomic_fetch_add_u32(
 				&local_state->shared->total_docs, metap->total_docs);
-		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
+		pg_atomic_fetch_add_u64(
+				&local_state->shared->total_len, metap->total_len);
 
 		tp_release_index_lock(local_state);
 	}
