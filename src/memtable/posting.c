@@ -342,6 +342,59 @@ tp_store_document_length(
 }
 
 /*
+ * Walk the doc-length hash table and return (count, sum_lengths).
+ *
+ * Used by tp_rebuild_index_from_disk to compute the post-drain
+ * memtable size as ground truth for the corpus-stat write — see
+ * the comment in tp_rebuild_index_from_disk for why a single
+ * atomic_write is needed instead of fetch_add (review #11
+ * scenario where INSERT_TERMS replay during the drain ALSO ends
+ * up in fresh_metap.total_docs via SPILL's
+ * tp_sync_metapage_stats, and fetch_add would double-count).
+ *
+ * Caller must hold the per-index LWLock (any mode); we take the
+ * dshash partition locks via dshash_seq_init.
+ */
+void
+tp_doclength_summary(
+		TpLocalIndexState *local_state, uint32 *count, uint64 *sum_lengths)
+{
+	TpMemtable		 *memtable;
+	dshash_table	 *doclength_table;
+	dshash_seq_status status;
+	TpDocLengthEntry *entry;
+	uint32			  c = 0;
+	uint64			  s = 0;
+
+	Assert(local_state != NULL);
+	Assert(count != NULL);
+	Assert(sum_lengths != NULL);
+
+	memtable = get_memtable(local_state);
+	if (!memtable || memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+	{
+		*count		 = 0;
+		*sum_lengths = 0;
+		return;
+	}
+
+	doclength_table = tp_doclength_table_attach(
+			local_state->dsa, memtable->doc_lengths_handle);
+
+	dshash_seq_init(&status, doclength_table, false);
+	while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) != NULL)
+	{
+		c++;
+		s += (uint32)entry->doc_length;
+	}
+	dshash_seq_term(&status);
+	dshash_detach(doclength_table);
+
+	*count		 = c;
+	*sum_lengths = s;
+}
+
+/*
  * Get document length using a pre-attached doclength table.
  * This is the optimized version for bulk lookups - avoids repeated
  * dshash_attach/detach overhead.

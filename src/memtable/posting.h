@@ -61,6 +61,13 @@ extern int32 tp_get_document_length(
 		TpLocalIndexState *local_state, Relation index, ItemPointer ctid);
 
 /*
+ * Walk the doc-length hash table and return (count, sum_lengths).
+ * Caller must hold the per-index LWLock in any mode.
+ */
+extern void tp_doclength_summary(
+		TpLocalIndexState *local_state, uint32 *count, uint64 *sum_lengths);
+
+/*
  * Get document length using a pre-attached doclength table.
  * This avoids repeated dshash_attach/detach overhead when looking up
  * multiple document lengths.
