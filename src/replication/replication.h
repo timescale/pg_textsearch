@@ -5,18 +5,30 @@
  * replication.h - Custom WAL resource manager for pg_textsearch
  *
  * pg_textsearch's memtable lives in DSA shared memory and is
- * not directly WAL-logged by Postgres. This rmgr emits two record
- * types so that physical-replication standbys (and primary crash
- * recovery) can apply memtable mutations:
+ * not directly WAL-logged by Postgres. This rmgr emits three
+ * record types so that physical-replication standbys (and primary
+ * crash recovery) can apply memtable mutations and segment merges
+ * atomically against backend scans:
  *
- *   INSERT_TERMS — appends a tokenized term list (v2 bm25vector
- *                  payload) for one document's worth of postings.
- *                  Carries: index_oid, ctid, vector bytes.
- *   SPILL        — signals that the primary spilled the memtable
- *                  to a segment. Standby redo clears the in-memory
- *                  memtable; the segment data itself replicates via
- *                  the existing GenericXLog records emitted by
- *                  segment.c.
+ *   INSERT_TERMS    — appends a tokenized term list (v2 bm25vector
+ *                     payload) for one document's worth of
+ *                     postings. Carries: index_oid, ctid, vector
+ *                     bytes.
+ *   SPILL           — signals that the primary spilled the
+ *                     memtable to a segment. Standby redo applies
+ *                     the L0 chain-link metapage update and clears
+ *                     the in-memory memtable atomically under the
+ *                     per-index LW_EXCLUSIVE.
+ *   MERGE_LINKAGE   — signals that the primary merged level-N
+ *                     segments into level-(N+1). Standby redo
+ *                     applies the metapage unlink/link, optional
+ *                     new-segment next_segment splice, and atomic
+ *                     corpus-stat shrinkage all under the per-index
+ *                     LW_EXCLUSIVE so concurrent backend scans
+ *                     (which hold LW_SHARED) can't race the unlink.
+ *
+ * TP_RMGR_ID = 149 is registered on the PostgreSQL custom rmgr
+ * registry: https://wiki.postgresql.org/wiki/CustomWALResourceManagers
  */
 #ifndef PG_TEXTSEARCH_REPLICATION_H
 #define PG_TEXTSEARCH_REPLICATION_H
