@@ -40,6 +40,7 @@
 #include <storage/lwlock.h>
 #include <varatt.h>
 
+#include "constants.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -352,6 +353,20 @@ tp_redo_apply_merge_linkage(XLogReaderState *record)
 	Buffer				 metabuf = InvalidBuffer;
 	Buffer				 segbuf	 = InvalidBuffer;
 	bool				 registry_hit;
+
+	/*
+	 * Bounds-check level before any mutation. Redo writes
+	 * level_heads[level] and level_heads[level+1], so level+1 must
+	 * fit. The primary validates this before emitting (merge.c gates
+	 * on TP_MAX_LEVELS - 1) but redo must independently validate —
+	 * a corrupted/old/incompatible WAL record could otherwise smash
+	 * the metapage past the level_heads/level_counts arrays.
+	 */
+	if (hdr->level >= TP_MAX_LEVELS - 1)
+		elog(PANIC,
+			 "MERGE_LINKAGE level %u exceeds TP_MAX_LEVELS-1 (%u)",
+			 hdr->level,
+			 TP_MAX_LEVELS - 1);
 
 	{
 		TpSharedIndexState *raw = tp_registry_lookup(hdr->index_oid);

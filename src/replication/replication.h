@@ -141,12 +141,14 @@ extern void		   tp_rmgr_desc(StringInfo buf, XLogReaderState *record);
 extern const char *tp_rmgr_identify(uint8 info);
 
 /*
- * Emission helpers — called from the primary's insert/spill/merge
- * paths. Return the LSN of the emitted record. The caller MUST
- * already hold the per-index LW_EXCLUSIVE; the helpers manage
- * their own buffer locks and critical section internally
- * (acquiring buffers outside the CS so ReadBuffer ERROR doesn't
- * escalate to PANIC).
+ * Emit an INSERT_TERMS record. Caller is the primary's tp_insert
+ * hot path, which holds the per-index lock in either LW_SHARED
+ * (steady-state) or LW_EXCLUSIVE (cold-path, when the memtable's
+ * dshash tables still need to be initialized). The helper itself
+ * doesn't read or mutate per-index shared state, so either mode
+ * is fine — the lock matters for correctness only in the SPILL
+ * and MERGE_LINKAGE helpers below. Manages its own critical
+ * section internally.
  */
 extern XLogRecPtr
 tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec);
@@ -155,6 +157,12 @@ tp_xlog_insert_terms(Oid index_oid, ItemPointer ctid, const TpVector *vec);
  * in the same WAL action. Replaces the tp_link_l0_chain_head
  * call that the spill recipes used to emit separately via
  * GenericXLog.
+ *
+ * Caller MUST already hold the per-index LW_EXCLUSIVE so the
+ * standby's redo (which also takes LW_EXCLUSIVE) replays
+ * atomically against backend scans. Manages its own buffer
+ * locks and critical section internally (buffers acquired
+ * outside the CS so ReadBuffer ERROR doesn't escalate to PANIC).
  */
 extern XLogRecPtr tp_xlog_spill(Relation index, BlockNumber new_segment_root);
 /*
@@ -163,6 +171,10 @@ extern XLogRecPtr tp_xlog_spill(Relation index, BlockNumber new_segment_root);
  * the same WAL action. Replaces the GenericXLog block at the tail
  * of tp_merge_level_segments. Closes the standby cache staleness
  * window (see #349).
+ *
+ * Caller MUST already hold the per-index LW_EXCLUSIVE — same
+ * reasoning as tp_xlog_spill. Manages its own buffer locks and
+ * critical section internally.
  */
 extern XLogRecPtr tp_xlog_merge_linkage(
 		Relation		   index,

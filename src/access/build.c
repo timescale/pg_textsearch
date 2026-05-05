@@ -583,8 +583,32 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, index_name);
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
-	tp_force_merge_all(index_rel);
-	tp_truncate_dead_pages(index_rel);
+
+	/*
+	 * Take the per-index LW_EXCLUSIVE before driving merges. The
+	 * merge linkage helper (tp_xlog_merge_linkage) requires the
+	 * caller to hold this lock so the standby's redo can serialize
+	 * against backend scans (#349). Concurrent backend scans hold
+	 * LW_SHARED; they block here for the duration of the
+	 * force-merge, which is fine — bm25_force_merge is an
+	 * administrative operation with no expectation of concurrent
+	 * read throughput.
+	 */
+	{
+		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
+
+		if (index_state == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not get index state for "
+							"\"%s\"",
+							index_name)));
+
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		tp_force_merge_all(index_rel);
+		tp_truncate_dead_pages(index_rel);
+		tp_release_index_lock(index_state);
+	}
 
 	index_close(index_rel, RowExclusiveLock);
 

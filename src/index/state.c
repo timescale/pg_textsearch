@@ -1001,21 +1001,32 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 }
 
 /*
- * Rebuild index state from disk after PostgreSQL restart
- * This recreates the DSA area and shared state from docid pages.
+ * Rebuild index state from disk on the first backend access of an
+ * index whose registry entry is empty (server restart, hot
+ * standby cold start, PITR-recovered cluster).
  *
- * On a hot standby this can race the startup process: redo of an
- * INSERT_TERMS record looks up the registry, and once we register
- * the new shared state, redo would otherwise start writing into the
- * same memtable we are still rebuilding from docid pages — and
- * because docid-page WAL is ordered after INSERT_TERMS WAL for any
- * given insert, redo and the rebuild would both add the same doc
- * (duplicate posting entries, inflated total_docs). To prevent
- * that, we ask tp_create_shared_index_state to register the entry
- * with the per-index LWLock already held EXCLUSIVE; the standby's
- * single-threaded WAL replay simply blocks on that lock until the
- * docid walk finishes and we release it, then proceeds with the
- * normal redo path against the now-populated memtable.
+ * Invariants and the scenarios this path has to handle are
+ * specified in docs/replication/CORRECTNESS.md — read it before
+ * changing this function. The flow at a high level:
+ *
+ *   1. validate metapage magic (early metap snapshot, pre-register)
+ *   2. tp_create_shared_index_state with reuse_if_exists=true
+ *      (atomic register-or-attach; concurrent rebuilds resolve
+ *      to the same shared state)
+ *   3. drain WAL replay to the wal-receiver flush LSN
+ *   4. acquire per-index LW_EXCLUSIVE
+ *   5. re-read metap under the lock (decisions are made off the
+ *      fresh snapshot, not the early one)
+ *   6. branch on heap-empty / empty-index / non-empty
+ *   7. for non-empty: walk docid pages, then atomic_write
+ *      total_docs = fresh_metap.total + memtable_count
+ *   8. release the lock
+ *
+ * Race-safety against concurrent INSERT_TERMS / SPILL /
+ * MERGE_LINKAGE redo comes from (a) the LW_EXCLUSIVE lock
+ * blocking custom-rmgr redo for the duration of the walk, and
+ * (b) the per-CTID idempotency gate in tp_store_document_length
+ * deduping any add applied by redo before our walk got there.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)

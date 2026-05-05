@@ -226,11 +226,8 @@ post-checkpoint pre-crash WAL window, got '${crashed_count}'"
 
     # Index must be functional post-recovery — first-access
     # rebuild walks docid pages and populates the memtable. Verify
-    # via bm25_summarize_index rather than a BMW query (the BMW
-    # path checks shared->total_docs, which the rebuild path
-    # overwrites with a stale metap->total_docs of 0 when no spill
-    # has synced the metapage — orthogonal issue, see CLAUDE.md
-    # note).
+    # via bm25_summarize_index since we want a direct memtable-size
+    # assertion independent of BMW corner cases.
     local summary memtable_docs
     summary=$(sql "SELECT bm25_summarize_index('c_docs_idx');" 2>/dev/null)
     memtable_docs=$(echo "${summary}" \
