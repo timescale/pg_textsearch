@@ -13,6 +13,7 @@
 #include <commands/progress.h>
 #include <executor/spi.h>
 #include <math.h>
+#include <mb/pg_wchar.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
@@ -782,6 +783,260 @@ tp_free_terms_array(char **terms, int term_count)
 }
 
 /*
+ * Maximum input bytes per to_tsvector call. Postgres's tsvector caps the
+ * lexeme dictionary at 1 MB (MAXSTRPOS). 256 KB leaves comfortable
+ * headroom for stemming/case-fold expansion.
+ */
+#define TP_TSVECTOR_CHUNK_BYTES (256 * 1024)
+
+/*
+ * Tokenize a single chunk via to_tsvector_byid and extract terms.
+ * Caller owns the returned arrays. doc_length is returned.
+ *
+ * Frees the per-chunk `text` wrapper and the tsvector backing before
+ * returning, so callers running many chunks in a row (the chunked path
+ * in tp_tokenize_text) do not retain ~256 KB + tsvector backing per
+ * chunk in CurrentMemoryContext. The output term strings have already
+ * been copied into freshly palloc'd buffers by
+ * tp_extract_terms_from_tsvector, so they survive the frees.
+ */
+static int
+tp_tokenize_chunk(
+		const char *chunk,
+		int			chunk_len,
+		Oid			text_config_oid,
+		char	 ***terms_out,
+		int32	  **frequencies_out,
+		int		   *term_count_out)
+{
+	text	*chunk_text;
+	Datum	 tsvector_datum;
+	TSVector tsvector;
+	int		 doc_length;
+
+	chunk_text = cstring_to_text_with_len(chunk, chunk_len);
+
+	tsvector_datum = DirectFunctionCall2Coll(
+			to_tsvector_byid,
+			InvalidOid,
+			ObjectIdGetDatum(text_config_oid),
+			PointerGetDatum(chunk_text));
+	tsvector = DatumGetTSVector(tsvector_datum);
+
+	doc_length = tp_extract_terms_from_tsvector(
+			tsvector, terms_out, frequencies_out, term_count_out);
+
+	pfree(chunk_text);
+	pfree(tsvector);
+
+	return doc_length;
+}
+
+/*
+ * Find a chunk boundary inside the first `target` bytes of `data`.
+ *
+ * Prefers the byte index just past the last ASCII whitespace at or
+ * before `target`. If no whitespace is found, returns the largest
+ * UTF-8/multibyte codepoint boundary <= target (and never less than one
+ * full character).
+ *
+ * `data` must be at least `target` bytes long. Returns 1..target.
+ */
+static int
+tp_find_chunk_boundary(const char *data, int target)
+{
+	int i;
+	int pos;
+
+	for (i = target; i > 0; i--)
+	{
+		char c = data[i - 1];
+		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
+			return i;
+	}
+
+	pos = 0;
+	while (pos < target)
+	{
+		int mblen = pg_mblen(data + pos);
+		if (mblen <= 0)
+			mblen = 1;
+		if (pos + mblen > target)
+			break;
+		pos += mblen;
+	}
+	if (pos == 0)
+	{
+		/* Single character is larger than target; emit it anyway. */
+		pos = pg_mblen(data);
+		if (pos <= 0)
+			pos = 1;
+	}
+	return pos;
+}
+
+typedef struct TpTermEntry
+{
+	char *term;
+	int32 freq;
+} TpTermEntry;
+
+static int
+tp_term_entry_cmp(const void *a, const void *b)
+{
+	const TpTermEntry *ea = (const TpTermEntry *)a;
+	const TpTermEntry *eb = (const TpTermEntry *)b;
+	return strcmp(ea->term, eb->term);
+}
+
+/*
+ * Merge accumulated (term, freq) entries by sorting then collapsing
+ * adjacent duplicates. Output arrays are palloc'd in the current
+ * memory context. Frees `entries` itself; per-entry term strings are
+ * either reassigned into the output or pfree'd as duplicates.
+ */
+static void
+tp_merge_term_entries(
+		TpTermEntry *entries,
+		int			 entry_count,
+		char	  ***terms_out,
+		int32	   **frequencies_out,
+		int			*term_count_out)
+{
+	int	   out;
+	int	   i;
+	char **terms;
+	int32 *freqs;
+
+	if (entry_count == 0)
+	{
+		*terms_out		 = NULL;
+		*frequencies_out = NULL;
+		*term_count_out	 = 0;
+		if (entries != NULL)
+			pfree(entries);
+		return;
+	}
+
+	qsort(entries, entry_count, sizeof(TpTermEntry), tp_term_entry_cmp);
+
+	terms = palloc(entry_count * sizeof(char *));
+	freqs = palloc(entry_count * sizeof(int32));
+
+	out		   = 0;
+	terms[out] = entries[0].term;
+	freqs[out] = entries[0].freq;
+	for (i = 1; i < entry_count; i++)
+	{
+		if (strcmp(entries[i].term, terms[out]) == 0)
+		{
+			freqs[out] += entries[i].freq;
+			pfree(entries[i].term);
+		}
+		else
+		{
+			out++;
+			terms[out] = entries[i].term;
+			freqs[out] = entries[i].freq;
+		}
+	}
+	out++;
+
+	pfree(entries);
+
+	*terms_out		 = terms;
+	*frequencies_out = freqs;
+	*term_count_out	 = out;
+}
+
+int
+tp_tokenize_text(
+		text   *document_text,
+		Oid		text_config_oid,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out)
+{
+	const char	*data		= VARDATA_ANY(document_text);
+	int			 len		= VARSIZE_ANY_EXHDR(document_text);
+	int			 doc_length = 0;
+	int			 offset;
+	int			 cap;
+	int			 used;
+	TpTermEntry *acc;
+
+	/*
+	 * Single-chunk fast path: pass document_text straight into
+	 * to_tsvector_byid. Avoids the cstring_to_text_with_len memcpy that
+	 * tp_tokenize_chunk would otherwise do on every small document.
+	 */
+	if (len <= TP_TSVECTOR_CHUNK_BYTES)
+	{
+		Datum	 tsvector_datum;
+		TSVector tsvector;
+
+		tsvector_datum = DirectFunctionCall2Coll(
+				to_tsvector_byid,
+				InvalidOid,
+				ObjectIdGetDatum(text_config_oid),
+				PointerGetDatum(document_text));
+		tsvector = DatumGetTSVector(tsvector_datum);
+		return tp_extract_terms_from_tsvector(
+				tsvector, terms_out, frequencies_out, term_count_out);
+	}
+
+	/* Chunked path: accumulate per-chunk (term, freq) into acc[]. */
+	cap	 = 1024;
+	used = 0;
+	acc	 = palloc(cap * sizeof(TpTermEntry));
+
+	offset = 0;
+	while (offset < len)
+	{
+		int	   remaining = len - offset;
+		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
+								 ? remaining
+								 : tp_find_chunk_boundary(
+								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
+		char **chunk_terms;
+		int32 *chunk_freqs;
+		int	   chunk_term_count;
+		int	   i;
+
+		doc_length += tp_tokenize_chunk(
+				data + offset,
+				take,
+				text_config_oid,
+				&chunk_terms,
+				&chunk_freqs,
+				&chunk_term_count);
+
+		if (used + chunk_term_count > cap)
+		{
+			while (used + chunk_term_count > cap)
+				cap *= 2;
+			acc = repalloc(acc, cap * sizeof(TpTermEntry));
+		}
+		for (i = 0; i < chunk_term_count; i++)
+		{
+			acc[used].term = chunk_terms[i]; /* takes ownership */
+			acc[used].freq = chunk_freqs[i];
+			used++;
+		}
+		if (chunk_terms != NULL)
+			pfree(chunk_terms);
+		if (chunk_freqs != NULL)
+			pfree(chunk_freqs);
+
+		offset += take;
+	}
+
+	tp_merge_term_entries(
+			acc, used, terms_out, frequencies_out, term_count_out);
+	return doc_length;
+}
+
+/*
  * Core document processing: convert text to terms and add to posting lists
  * This is shared between index building and docid recovery.
  *
@@ -797,13 +1052,11 @@ tp_process_document_text(
 		Relation		   index_rel,
 		int32			  *doc_length_out)
 {
-	char	*document_str;
-	Datum	 tsvector_datum;
-	TSVector tsvector;
-	char   **terms;
-	int32	*frequencies;
-	int		 term_count;
-	int		 doc_length;
+	char  *document_str;
+	char **terms;
+	int32 *frequencies;
+	int	   term_count;
+	int	   doc_length;
 
 	if (!document_text || !index_state)
 		return false;
@@ -819,18 +1072,9 @@ tp_process_document_text(
 		return false;
 	}
 
-	/* Vectorize the document using text configuration */
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid, /* collation */
-			ObjectIdGetDatum(text_config_oid),
-			PointerGetDatum(document_text));
-
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	/* Extract lexemes and frequencies from TSVector */
-	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+	/* Tokenize document (chunks oversized inputs to fit tsvector cap) */
+	doc_length = tp_tokenize_text(
+			document_text, text_config_oid, &terms, &frequencies, &term_count);
 
 	if (term_count > 0)
 	{
@@ -895,8 +1139,6 @@ tp_build_callback(
 {
 	TpBuildCallbackState *bs = (TpBuildCallbackState *)state;
 	text				 *document_text;
-	Datum				  tsvector_datum;
-	TSVector			  tsvector;
 	char				**terms;
 	int32				 *frequencies;
 	int					  term_count;
@@ -926,15 +1168,12 @@ tp_build_callback(
 	else
 		document_text = DatumGetTextPP(values[0]);
 
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid,
-			ObjectIdGetDatum(bs->text_config_oid),
-			PointerGetDatum(document_text));
-	tsvector = DatumGetTSVector(tsvector_datum);
-
-	doc_length = tp_extract_terms_from_tsvector(
-			tsvector, &terms, &frequencies, &term_count);
+	doc_length = tp_tokenize_text(
+			document_text,
+			bs->text_config_oid,
+			&terms,
+			&frequencies,
+			&term_count);
 
 	MemoryContextSwitchTo(oldctx);
 
