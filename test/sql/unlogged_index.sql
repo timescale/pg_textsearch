@@ -84,7 +84,59 @@ FROM (
 
 RESET pg_textsearch.segments_per_level;
 
+-- ----------------------------------------------------------------
+-- Coverage for shrinkage in the GenericXLog merge fallback
+--
+-- The else-branch of merge.c also has to subtract dead-doc count
+-- and total_tokens from the in-memory atomics and the on-disk
+-- metapage when V5 alive-bitset shrinkage drops docs at merge
+-- time. Without a delete+vacuum sequence the shrinkage values
+-- are zero and the `if (docs_shrinkage > 0)` / `if
+-- (tokens_shrinkage > 0)` branches stay uncovered. Drive a
+-- clean delete + VACUUM + force-merge here to exercise them.
+--
+-- Run with the default segments_per_level (= 8) so the L0 spills
+-- here don't auto-compact: we want the merge to run only via the
+-- explicit force-merge call after the alive-bitset bits have been
+-- flipped dead by VACUUM.
+-- ----------------------------------------------------------------
+CREATE UNLOGGED TABLE unlogged_shrink (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE INDEX unlogged_shrink_idx ON unlogged_shrink USING bm25(content)
+    WITH (text_config='english');
+
+-- Two segments at L0 with disjoint content.
+INSERT INTO unlogged_shrink (content)
+    SELECT 'foo doc ' || i FROM generate_series(1, 100) i;
+SELECT bm25_spill_index('unlogged_shrink_idx') > 0 AS s1_wrote;
+
+INSERT INTO unlogged_shrink (content)
+    SELECT 'bar doc ' || i FROM generate_series(101, 200) i;
+SELECT bm25_spill_index('unlogged_shrink_idx') > 0 AS s2_wrote;
+
+-- Delete half the docs. VACUUM marks the alive-bitset bits dead
+-- in each segment. The merge below then drops them, producing
+-- non-zero docs_shrinkage and tokens_shrinkage.
+DELETE FROM unlogged_shrink WHERE id <= 50 OR (id > 100 AND id <= 150);
+VACUUM unlogged_shrink;
+
+-- Force-merge: combines the two L0 segments and drops the
+-- alive-bitset-dead docs. This is the GenericXLog else-branch
+-- since the index is UNLOGGED, and shrinkage > 0, so the
+-- atomic-sub and metapage-sub branches both fire.
+SELECT bm25_force_merge('unlogged_shrink_idx');
+
+-- Survivor count should be 100 (half of 200). The shrinkage
+-- math is right when this matches; if the metapage sub
+-- underflowed or the atomic sub miscounted, the corpus stats
+-- would diverge from the actual survivors.
+SELECT bm25_summarize_index('unlogged_shrink_idx') ~ 'total_docs: 100'
+    AS total_docs_correct;
+
 -- Cleanup
+DROP TABLE unlogged_shrink;
 DROP TABLE unlogged_merge;
 DROP TABLE unlogged_test;
 DROP EXTENSION pg_textsearch CASCADE;
