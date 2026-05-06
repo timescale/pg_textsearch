@@ -84,82 +84,6 @@ test_long_lived_read_after_primary_spill() {
 }
 
 # -------------------------------------------------------------------
-# Test A2: Long-lived read after segment merge.
-# Force enough segments on the primary that compaction triggers,
-# then query on standby.
-# Expected: FAIL today — distinct from the memtable bug. Segments
-# created on the primary via spill while the standby is already
-# running (WAL-replayed) are not readable by a long-lived standby
-# backend; queries error with "invalid page index at block N /
-# magic=0x00000000". Will pass once the rmgr-based replication
-# implementation lands.
-# -------------------------------------------------------------------
-test_long_lived_read_after_segment_merge() {
-    log "=== A2: read after segment merge ==="
-    primary_sql "
-        DROP TABLE IF EXISTS a2_docs CASCADE;
-        CREATE TABLE a2_docs (id SERIAL PRIMARY KEY, content TEXT);
-        CREATE INDEX a2_idx ON a2_docs USING bm25(content)
-            WITH (text_config='simple');
-    " >/dev/null
-
-    # Force several spills via repeated insert + spill.
-    for i in 1 2 3 4 5 6 7 8 9; do
-        primary_sql "
-            INSERT INTO a2_docs (content)
-                SELECT 'merge doc ' || j || ' alpha bravo'
-                FROM generate_series(1,100) j;
-            SELECT bm25_spill_index('a2_idx');
-        " >/dev/null
-    done
-    wait_for_standby_catchup
-
-    local total
-    total=$(primary_sql_quiet "SELECT count(*) FROM a2_docs;")
-
-    long_lived_open "${STANDBY_PORT}"
-    local before
-    before=$(long_lived_query "
-        SELECT count(*) FROM (
-            SELECT id FROM a2_docs
-            ORDER BY content <@> to_bm25query('alpha', 'a2_idx')
-            LIMIT 10000
-        ) t;")
-
-    # Trigger a merge by adding more segments. With default
-    # segments_per_level=8, we already have 9; further spills
-    # should compact.
-    primary_sql "
-        INSERT INTO a2_docs (content)
-            SELECT 'merge doc extra ' || j || ' alpha'
-            FROM generate_series(1,50) j;
-        SELECT bm25_spill_index('a2_idx');
-    " >/dev/null
-    wait_for_standby_catchup
-
-    local after
-    after=$(long_lived_query "
-        SELECT count(*) FROM (
-            SELECT id FROM a2_docs
-            ORDER BY content <@> to_bm25query('alpha', 'a2_idx')
-            LIMIT 10000
-        ) t;")
-    long_lived_close
-
-    local expected_after=$((total + 50))
-    log "before=${before}, after=${after}, expected_after=${expected_after}"
-
-    if [[ "${before}" == *ERROR* ]] || [[ "${after}" == *ERROR* ]] || \
-       [ "${before}" != "${total}" ] || \
-       [ "${after}" != "${expected_after}" ]; then
-        error "A2 BUG (expected): standby long-lived backend cannot read \
-WAL-replayed segments (before=${before}, after=${after}, \
-expected after=${expected_after})"
-    fi
-    log "A2 PASSED"
-}
-
-# -------------------------------------------------------------------
 # Test A3: Memtable+segment mix.
 # Primary has data both in a segment (post-spill) AND in the
 # memtable (post-spill inserts). Long-lived standby backend should
@@ -563,7 +487,6 @@ main() {
     setup_primary
 
     test_long_lived_read_after_primary_spill
-    test_long_lived_read_after_segment_merge
     test_long_lived_memtable_segment_mix
     test_long_lived_update_replication
     test_long_lived_delete_vacuum

@@ -16,6 +16,7 @@
 #include <executor/executor.h>
 #include <fmgr.h>
 #include <lib/dshash.h>
+#include <miscadmin.h>
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -32,6 +33,7 @@
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
+#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"
@@ -187,6 +189,10 @@ tp_spill_memtable_if_needed(
 	TpMemtable *memtable;
 	BlockNumber segment_root;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return;
+
 	if (!index_state || !index_state->shared)
 		return;
 
@@ -202,8 +208,13 @@ tp_spill_memtable_if_needed(
 	{
 		tp_clear_memtable(index_state);
 		tp_clear_docid_pages(index);
-		tp_link_l0_chain_head(index, segment_root);
 		tp_sync_metapage_stats(index, index_state);
+
+		if (RelationNeedsWAL(index))
+			tp_xlog_spill(index, segment_root);
+		else
+			tp_link_l0_chain_head(index, segment_root);
+
 		tp_maybe_compact_level(index, 0);
 	}
 

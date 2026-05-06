@@ -31,6 +31,33 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
+- **Physical replication**: Memtable mutations and segment merges
+  are WAL-logged via a custom resource manager (rmgr ID 149,
+  registered at https://wiki.postgresql.org/wiki/CustomWALResourceManagers,
+  records `INSERT_TERMS` / `SPILL` / `MERGE_LINKAGE`). On a
+  streaming standby — and during primary crash recovery — redo
+  applies the records directly to the in-shared-memory memtable
+  and to the metapage. SPILL and MERGE_LINKAGE redo hold the
+  per-index `LW_EXCLUSIVE` so concurrent backend scans
+  (`LW_SHARED`) block until the redo completes. The startup
+  process can't open relations (no transaction state), so redo
+  bypasses `tp_get_local_index_state` and constructs a minimal
+  `TpLocalIndexState` on the stack from the registry's shared
+  state plus the global DSA. WAL emission is gated on
+  `RelationNeedsWAL(rel)` so UNLOGGED / TEMP indexes don't pay
+  for records that can't apply on the standby. Docid pages
+  remain the durable on-disk record of what's in the memtable;
+  on a fresh standby backend the rebuild path in
+  `tp_rebuild_index_from_disk` drains WAL replay, acquires
+  `LW_EXCLUSIVE`, re-reads the metapage from disk, walks docid
+  pages, then atomic-writes corpus stats as
+  `metap_total + memtable_count`. `tp_add_document_terms` is
+  idempotent by CTID. **The bootstrap path's invariants and the
+  scenarios it has to handle are spec'd at
+  [`docs/replication/CORRECTNESS.md`](docs/replication/CORRECTNESS.md);
+  read it before changing the rebuild flow.** Closes #345, #349,
+  #350.
+
 ## Core Architecture
 
 ### Storage Architecture

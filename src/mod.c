@@ -29,6 +29,7 @@
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "planner/hooks.h"
+#include "replication/replication.h"
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -309,6 +310,9 @@ _PG_init(void)
 	/* Install object access hook for DROP INDEX detection */
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
+
+	/* Register the custom WAL resource manager (memtable replication). */
+	tp_register_rmgr();
 
 	/* Register transaction callback to release index locks at transaction end
 	 */

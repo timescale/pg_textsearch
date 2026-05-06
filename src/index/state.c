@@ -14,11 +14,14 @@
 #include <access/heapam.h>
 #include <access/relation.h>
 #include <access/xact.h>
+#include <access/xlog.h>
+#include <access/xlogrecovery.h>
 #include <catalog/index.h>
 #include <executor/executor.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
 #include <nodes/execnodes.h>
+#include <replication/walreceiver.h>
 #include <storage/bufmgr.h>
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
@@ -37,6 +40,7 @@
 #include "index/state.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -298,13 +302,21 @@ tp_get_local_index_state(Oid index_oid)
 }
 
 /*
- * Create a new shared index state and return local state
+ * Create a new shared index state and return local state.
  *
- * This is called during CREATE INDEX to set up the initial shared state
- * and return a ready-to-use local state to avoid double DSA attachment
+ * If `reuse_if_exists` is true and a registry entry for this OID
+ * already exists when we go to insert, the just-allocated DSA is
+ * freed and we attach to the existing entry instead. This is the
+ * mode the cold-start bootstrap path uses, so concurrent rebuilds
+ * resolve to the same shared state instead of racing each other.
+ *
+ * If false, an existing entry is unregistered and replaced — used
+ * by the parallel-build completion path on the assumption that any
+ * pre-existing entry would be stale (e.g. left behind by a crashed
+ * earlier CREATE INDEX with the same OID).
  */
 TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
+tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 {
 	TpSharedIndexState	 *shared_state;
 	TpLocalIndexState	 *local_state;
@@ -364,23 +376,43 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid)
 
 	shared_state->memtable_dp = memtable_dp;
 
-	/* Check if index is already registered (rebuild case) */
-	if (tp_registry_lookup(index_oid) != NULL)
+	if (reuse_if_exists)
 	{
-		/* This is a rebuild (e.g., VACUUM FULL) - unregister old index first
+		/*
+		 * Atomic register-or-attach. If a concurrent backend
+		 * registered first, free our just-allocated DSA and attach
+		 * to its shared state instead — second arrival's bootstrap
+		 * still runs (under the per-index LW_EXCLUSIVE), but the
+		 * idempotency gate dedups and the atomic-write yields the
+		 * same answer.
 		 */
-		tp_registry_unregister(index_oid);
-	}
+		dsa_pointer existing_dp = InvalidDsaPointer;
 
-	/* Register in global registry */
-	if (!tp_registry_register(index_oid, shared_state, shared_dp))
-	{
-		tp_registry_shmem_startup();
-		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		if (!tp_registry_register_if_absent(
+					index_oid, shared_dp, &existing_dp))
 		{
 			dsa_free(dsa, memtable_dp);
 			dsa_free(dsa, shared_dp);
-			elog(ERROR, "Failed to register index %u", index_oid);
+			shared_dp	 = existing_dp;
+			shared_state = (TpSharedIndexState *)
+					dsa_get_address(dsa, existing_dp);
+		}
+	}
+	else
+	{
+		/* Replace any stale entry (e.g. left by a crashed CREATE INDEX). */
+		if (tp_registry_lookup(index_oid) != NULL)
+			tp_registry_unregister(index_oid);
+
+		if (!tp_registry_register(index_oid, shared_state, shared_dp))
+		{
+			tp_registry_shmem_startup();
+			if (!tp_registry_register(index_oid, shared_state, shared_dp))
+			{
+				dsa_free(dsa, memtable_dp);
+				dsa_free(dsa, shared_dp);
+				elog(ERROR, "Failed to register index %u", index_oid);
+			}
 		}
 	}
 
@@ -969,17 +1001,45 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 }
 
 /*
- * Rebuild index state from disk after PostgreSQL restart
- * This recreates the DSA area and shared state from docid pages
+ * Rebuild index state from disk on the first backend access of an
+ * index whose registry entry is empty (server restart, hot
+ * standby cold start, PITR-recovered cluster).
+ *
+ * Invariants and the scenarios this path has to handle are
+ * specified in docs/replication/CORRECTNESS.md — read it before
+ * changing this function. The flow at a high level:
+ *
+ *   1. validate metapage magic (early metap snapshot, pre-register)
+ *   2. tp_create_shared_index_state with reuse_if_exists=true
+ *      (atomic register-or-attach; concurrent rebuilds resolve
+ *      to the same shared state)
+ *   3. drain WAL replay to the wal-receiver flush LSN
+ *   4. acquire per-index LW_EXCLUSIVE
+ *   5. re-read metap under the lock (decisions are made off the
+ *      fresh snapshot, not the early one)
+ *   6. branch on heap-empty / empty-index / non-empty
+ *   7. for non-empty: walk docid pages, then atomic_write
+ *      total_docs = fresh_metap.total + memtable_count
+ *   8. release the lock
+ *
+ * Race-safety against concurrent INSERT_TERMS / SPILL /
+ * MERGE_LINKAGE redo comes from (a) the LW_EXCLUSIVE lock
+ * blocking custom-rmgr redo for the duration of the walk, and
+ * (b) the per-CTID idempotency gate in tp_store_document_length
+ * deduping any add applied by redo before our walk got there.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
 {
 	Relation		   index_rel;
-	TpIndexMetaPage	   metap;
+	TpIndexMetaPage	   early_metap;
+	TpIndexMetaPage	   fresh_metap;
 	TpLocalIndexState *local_state;
 	Relation		   heap_rel;
 	BlockNumber		   heap_blocks;
+	Oid				   heap_oid;
+	uint32			   memtable_count;
+	uint64			   memtable_total_len;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -989,22 +1049,29 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return NULL;
 	}
 
-	/* Get metapage */
-	metap = tp_get_metapage(index_rel);
-	if (metap == NULL)
+	heap_oid = index_rel->rd_index->indrelid;
+
+	/*
+	 * Read the metapage early so we can validate the magic before
+	 * registering shared state. Magic is set at index creation and
+	 * never changes, so this check is stable across replay. The
+	 * other metap fields (total_docs, first_docid_page, level_heads)
+	 * we read again post-drain — see below.
+	 */
+	early_metap = tp_get_metapage(index_rel);
+	if (early_metap == NULL)
 	{
 		index_close(index_rel, AccessShareLock);
 		elog(WARNING, "Could not read metapage for index %u", index_oid);
 		return NULL;
 	}
 
-	/* Validate that this is actually our metapage and not stale data */
-	if (metap->magic != TP_METAPAGE_MAGIC)
+	if (early_metap->magic != TP_METAPAGE_MAGIC)
 	{
-		uint32 found_magic = metap->magic;
+		uint32 found_magic = early_metap->magic;
 
 		index_close(index_rel, AccessShareLock);
-		pfree(metap);
+		pfree(early_metap);
 		elog(WARNING,
 			 "Invalid magic number in metapage for index %u: "
 			 "expected 0x%08X, found 0x%08X",
@@ -1013,78 +1080,153 @@ tp_rebuild_index_from_disk(Oid index_oid)
 			 found_magic);
 		return NULL;
 	}
+	pfree(early_metap);
 
 	/*
-	 * Additional validation: Check if the heap relation has been truncated
-	 * or recreated since the index was built. If the heap is empty but the
-	 * metapage shows documents, this is stale data.
-	 *
-	 * This check is necessary to handle cases where:
-	 * - The table was TRUNCATEd but the index wasn't properly cleaned
-	 * - The index is out of sync due to an incomplete operation
-	 * - Data corruption occurred
-	 * Without this check, we could attempt to scan non-existent heap tuples.
+	 * Register shared state up front. From this point on, redo of
+	 * INSERT_TERMS / SPILL / MERGE_LINKAGE records hits the
+	 * registry and applies to our shared state instead of being
+	 * silently skipped. We still need to drain WAL replay so docid
+	 * pages reflect everything that has been emitted (with
+	 * concurrent writers, INSERT_TERMS and the paired docid-page
+	 * GenericXLog can interleave). After the drain we acquire
+	 * LW_EXCLUSIVE and re-read the metapage, then make the
+	 * empty-index / stale-heap decisions and walk docid pages
+	 * against fresh data — the prior code decided based on the
+	 * pre-drain snapshot, which on a hot standby in mid-replay
+	 * could see total_docs=0 / first_docid_page=Invalid even
+	 * though the docid-page WAL was queued, silently losing the
+	 * cohort whose docid-page records were still pending.
 	 */
-	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
+	local_state = tp_create_shared_index_state(
+			index_oid, heap_oid, /* reuse_if_exists */ true);
+	if (local_state == NULL)
+	{
+		index_close(index_rel, AccessShareLock);
+		return NULL;
+	}
+
+	/*
+	 * Drain WAL replay before reading metap or walking docid pages.
+	 * Waiting for replay to catch up to the receive LSN gives us a
+	 * snapshot in which every WAL record emitted by the primary up
+	 * to drain start is visible on disk. Combined with the
+	 * LW_EXCLUSIVE acquired below and the idempotency gate in
+	 * tp_add_document_terms, concurrent replay can no longer cause
+	 * double-add or miss.
+	 */
+	if (RecoveryInProgress())
+	{
+		XLogRecPtr target = GetWalRcvFlushRecPtr(NULL, NULL);
+		if (target == InvalidXLogRecPtr)
+			target = GetXLogReplayRecPtr(NULL);
+		while (GetXLogReplayRecPtr(NULL) < target)
+		{
+			CHECK_FOR_INTERRUPTS();
+			pg_usleep(1000L);
+		}
+	}
+
+	/*
+	 * Hold LW_EXCLUSIVE across the rebuild. Three reasons:
+	 *
+	 *   1. tp_ensure_string_table_initialized (called via
+	 *      tp_rebuild_posting_lists_from_docids) requires
+	 *      LW_EXCLUSIVE per its contract — the cold-path
+	 *      hash-table init must not race with the LW_SHARED
+	 *      hot path in tp_get_or_create_posting_list.
+	 *
+	 *   2. INSERT_TERMS / SPILL / MERGE_LINKAGE redo records
+	 *      that arrive after the drain target block on this
+	 *      lock, so the metap re-read and docid walk see a
+	 *      consistent state.
+	 *
+	 *   3. Concurrent backend scans hold LW_SHARED, so they
+	 *      block until the rebuild releases — no scan ever
+	 *      sees a half-rebuilt memtable.
+	 */
+	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
+
+	fresh_metap = tp_get_metapage(index_rel);
+	if (fresh_metap == NULL)
+	{
+		elog(WARNING,
+			 "Could not re-read metapage for index %u after drain",
+			 index_oid);
+		tp_release_index_lock(local_state);
+		index_close(index_rel, AccessShareLock);
+		return local_state;
+	}
+
+	/*
+	 * Heap-empty stale-data check (after drain so heap_blocks
+	 * reflects post-replay state). If the heap was TRUNCATEd or
+	 * recreated since the index was built but metap still claims
+	 * docs, log a warning and return the empty shared state we
+	 * already registered.
+	 */
+	heap_rel	= relation_open(heap_oid, AccessShareLock);
 	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
 	relation_close(heap_rel, AccessShareLock);
 
-	if (heap_blocks == 0 && metap->total_docs > 0)
+	if (heap_blocks == 0 && fresh_metap->total_docs > 0)
 	{
-		Oid heap_oid = index_rel->rd_index->indrelid;
-
-		/* Heap is empty but metapage shows documents - stale data */
 		elog(WARNING,
 			 "Index %u metapage shows %lu documents but heap is "
 			 "empty - ignoring stale data",
 			 index_oid,
-			 (unsigned long)metap->total_docs);
+			 (unsigned long)fresh_metap->total_docs);
+		pfree(fresh_metap);
+		tp_release_index_lock(local_state);
 		index_close(index_rel, AccessShareLock);
-		pfree(metap);
-
-		/* Create fresh shared state for the index */
-		return tp_create_shared_index_state(index_oid, heap_oid);
+		return local_state;
 	}
 
-	/* Check if there's actually anything to recover */
-	if (metap->total_docs == 0 &&
-		metap->first_docid_page == InvalidBlockNumber &&
-		metap->level_heads[0] == InvalidBlockNumber)
+	/*
+	 * Empty-index check on fresh metap. Decided post-drain so we
+	 * don't return early on a standby whose docid-page WAL is
+	 * still queued behind us — that was the silent miss flagged
+	 * in review.
+	 */
+	if (fresh_metap->total_docs == 0 &&
+		fresh_metap->first_docid_page == InvalidBlockNumber &&
+		fresh_metap->level_heads[0] == InvalidBlockNumber)
 	{
-		/* Empty index - nothing to recover */
+		pfree(fresh_metap);
+		tp_release_index_lock(local_state);
 		index_close(index_rel, AccessShareLock);
-		pfree(metap);
-
-		/* Still create the shared state for the empty index */
-		return tp_create_shared_index_state(
-				index_oid, index_rel->rd_index->indrelid);
+		return local_state;
 	}
 
-	/* Create fresh state first */
-	/* Creating fresh state for restart recovery */
-	local_state = tp_create_shared_index_state(
-			index_oid, index_rel->rd_index->indrelid);
+	tp_rebuild_posting_lists_from_docids(index_rel, local_state, fresh_metap);
 
-	if (local_state != NULL)
-	{
-		/* Rebuild posting lists from docid pages (if any) */
-		tp_rebuild_posting_lists_from_docids(index_rel, local_state, metap);
+	/*
+	 * Set corpus stats as ground truth. fresh_metap covers the
+	 * spilled-segment slice; the doc-length table covers the
+	 * memtable slice (whatever the docid walk added plus
+	 * anything INSERT_TERMS redo applied to our registered
+	 * state during the drain — both routed through the same
+	 * idempotency gate, so each CTID counts exactly once).
+	 *
+	 * pg_atomic_write (not fetch_add): we are setting absolute
+	 * truth here under LW_EXCLUSIVE, not adding a delta. fetch_add
+	 * would double-count any cohort whose INSERT_TERMS hit the
+	 * registered shared state during the drain AND whose
+	 * post-spill total ended up in fresh_metap.total_docs via
+	 * SPILL's tp_sync_metapage_stats — the standby would then
+	 * report total_docs higher than the primary, skewing BM25 IDF
+	 * until backend restart.
+	 */
+	tp_doclength_summary(local_state, &memtable_count, &memtable_total_len);
+	pg_atomic_write_u32(
+			&local_state->shared->total_docs,
+			fresh_metap->total_docs + memtable_count);
+	pg_atomic_write_u64(
+			&local_state->shared->total_len,
+			fresh_metap->total_len + memtable_total_len);
 
-		/*
-		 * Load corpus statistics from metapage. This is needed for indexes
-		 * built with parallel workers (which write directly to segments
-		 * without docid pages) or if docid recovery didn't fully restore
-		 * the stats. The metapage is the authoritative source for total_docs
-		 * and total_len.
-		 */
-		pg_atomic_write_u32(
-				&local_state->shared->total_docs, metap->total_docs);
-		pg_atomic_write_u64(&local_state->shared->total_len, metap->total_len);
-	}
-
-	/* Clean up */
-	if (metap)
-		pfree(metap);
+	pfree(fresh_metap);
+	tp_release_index_lock(local_state);
 	index_close(index_rel, AccessShareLock);
 
 	return local_state;
@@ -1131,10 +1273,11 @@ tp_rebuild_posting_lists_from_docids(
 
 	/*
 	 * Ensure the string hash table is initialized before
-	 * rebuilding posting lists. Recovery is single-threaded
-	 * so no lock is needed, but
-	 * tp_get_or_create_posting_list requires the table to
-	 * exist when not in build mode.
+	 * rebuilding posting lists. The caller (tp_rebuild_index_from_disk)
+	 * holds LW_EXCLUSIVE on the per-index lock, which
+	 * tp_ensure_string_table_initialized requires (cold-path init
+	 * must not race with the LW_SHARED hot path in
+	 * tp_get_or_create_posting_list).
 	 */
 	tp_ensure_string_table_initialized(local_state);
 
@@ -1583,6 +1726,10 @@ tp_bulk_load_spill_check(void)
 	HASH_SEQ_STATUS		  status;
 	LocalStateCacheEntry *entry;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return;
+
 	/* Nothing to do if cache not initialized or threshold disabled */
 	if (local_state_cache == NULL)
 		return;
@@ -1640,10 +1787,13 @@ tp_bulk_load_spill_check(void)
 		{
 			tp_clear_memtable(local_state);
 			tp_clear_docid_pages(index_rel);
-			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, local_state);
 
-			/* Check if L0 needs compaction */
+			if (RelationNeedsWAL(index_rel))
+				tp_xlog_spill(index_rel, segment_root);
+			else
+				tp_link_l0_chain_head(index_rel, segment_root);
+
 			tp_maybe_compact_level(index_rel, 0);
 		}
 

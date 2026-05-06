@@ -36,6 +36,7 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -131,14 +132,33 @@ tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
 {
 	BlockNumber root;
 
+	/*
+	 * Standby is read-only; spill is primary-only. Standby's
+	 * memtable changes only via WAL redo (INSERT_TERMS adds, SPILL
+	 * clears). If a spill ran here it would diverge standby state
+	 * from primary.
+	 */
+	if (RecoveryInProgress())
+		return false;
+
 	root = tp_write_segment(index_state, index_rel);
 	if (root == InvalidBlockNumber)
 		return false;
 
 	tp_clear_memtable(index_state);
 	tp_clear_docid_pages(index_rel);
-	tp_link_l0_chain_head(index_rel, root);
 	tp_sync_metapage_stats(index_rel, index_state);
+
+	if (RelationNeedsWAL(index_rel))
+	{
+		tp_xlog_spill(index_rel, root);
+	}
+	else
+	{
+		/* Unlogged / TEMP: no SPILL WAL means we still need
+		 * the chain-link metapage update to happen here. */
+		tp_link_l0_chain_head(index_rel, root);
+	}
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -458,6 +478,13 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	BlockNumber		   segment_root;
 	RangeVar		  *rv;
 
+	/* Replica is read-only; spill is primary-only. Standby's
+	 * memtable changes only via WAL redo. */
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("bm25_spill_index() cannot run during recovery")));
+
 	/* Parse index name (supports schema.index notation) */
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
@@ -495,10 +522,17 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		tp_clear_memtable(index_state);
 		tp_clear_docid_pages(index_rel);
-		tp_link_l0_chain_head(index_rel, segment_root);
 		tp_sync_metapage_stats(index_rel, index_state);
 
-		/* Check if L0 needs compaction */
+		if (RelationNeedsWAL(index_rel))
+		{
+			tp_xlog_spill(index_rel, segment_root);
+		}
+		else
+		{
+			tp_link_l0_chain_head(index_rel, segment_root);
+		}
+
 		tp_maybe_compact_level(index_rel, 0);
 	}
 
@@ -550,8 +584,32 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, index_name);
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
-	tp_force_merge_all(index_rel);
-	tp_truncate_dead_pages(index_rel);
+
+	/*
+	 * Take the per-index LW_EXCLUSIVE before driving merges. The
+	 * merge linkage helper (tp_xlog_merge_linkage) requires the
+	 * caller to hold this lock so the standby's redo can serialize
+	 * against backend scans (#349). Concurrent backend scans hold
+	 * LW_SHARED; they block here for the duration of the
+	 * force-merge, which is fine — bm25_force_merge is an
+	 * administrative operation with no expectation of concurrent
+	 * read throughput.
+	 */
+	{
+		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
+
+		if (index_state == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not get index state for "
+							"\"%s\"",
+							index_name)));
+
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		tp_force_merge_all(index_rel);
+		tp_truncate_dead_pages(index_rel);
+		tp_release_index_lock(index_state);
+	}
 
 	index_close(index_rel, RowExclusiveLock);
 
@@ -1377,7 +1435,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				TpIndexMetaPage	   metap;
 
 				pstate = tp_create_shared_index_state(
-						RelationGetRelid(index), RelationGetRelid(heap));
+						RelationGetRelid(index),
+						RelationGetRelid(heap),
+						/* reuse_if_exists */ false);
 
 				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
@@ -1811,6 +1871,13 @@ tp_insert(
 					frequencies,
 					term_count,
 					doc_length);
+
+			if (RelationNeedsWAL(index))
+			{
+				START_CRIT_SECTION();
+				tp_xlog_insert_terms(RelationGetRelid(index), ht_ctid, tpvec);
+				END_CRIT_SECTION();
+			}
 
 			/*
 			 * Docid pages under LW_SHARED — spill clears

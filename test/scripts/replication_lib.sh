@@ -29,6 +29,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Route all psql / pg_basebackup connections through a writable
+# socket directory. The Ubuntu apt postgresql package's default
+# unix_socket_directories (/var/run/postgresql) is owned by the
+# postgres user, so a non-root CI runner cannot create sockets
+# there. /tmp is writable for any user and is also the default
+# psql socket dir on macOS, so this works on every platform.
+export PGHOST=/tmp
+
 log() {
     echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}"
 }
@@ -175,6 +183,7 @@ setup_primary() {
 
     cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
 port = ${PRIMARY_PORT}
+unix_socket_directories = '/tmp'
 shared_buffers = 128MB
 max_connections = 30
 log_min_messages = notice
@@ -208,6 +217,7 @@ setup_standby() {
 
     cat >> "${STANDBY_DIR}/postgresql.conf" <<EOF
 port = ${STANDBY_PORT}
+unix_socket_directories = '/tmp'
 EOF
 
     pg_ctl start -D "${STANDBY_DIR}" \
@@ -233,6 +243,7 @@ setup_standby2() {
 
     cat >> "${STANDBY2_DIR}/postgresql.conf" <<EOF
 port = ${STANDBY2_PORT}
+unix_socket_directories = '/tmp'
 EOF
 
     pg_ctl start -D "${STANDBY2_DIR}" \

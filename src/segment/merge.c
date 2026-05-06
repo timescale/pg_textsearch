@@ -17,6 +17,7 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/state.h"
+#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
@@ -1736,12 +1737,14 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	 * apply shrinkage if the merged segment dropped V5-bitset-dead
 	 * docs.  See TpIndexMetaPageData.total_docs in metapage.h for
 	 * the invariant total_docs = Σ segment.num_docs.
+	 *
+	 * For WAL-logged indexes we route the linkage through
+	 * tp_xlog_merge_linkage so the standby's redo can take the
+	 * per-index LW_EXCLUSIVE and serialize against in-flight
+	 * scans (#349). For UNLOGGED / TEMP indexes we fall back to
+	 * the local GenericXLog path — there is no standby to confuse.
 	 */
 	{
-		GenericXLogState  *xlog_state;
-		Page			   meta_copy;
-		TpIndexMetaPage	   meta_ptr;
-		Buffer			   seg_buf		 = InvalidBuffer;
 		uint32			   merged_docs	 = 0;
 		uint64			   merged_tokens = 0;
 		uint64			   docs_shrinkage;
@@ -1771,76 +1774,92 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		st = tp_get_local_index_state(RelationGetRelid(index));
 
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-
-		/*
-		 * Clamp atomic subs symmetrically with the metapage sub
-		 * below.  tp_sync_metapage_stats reads the atomic under the
-		 * same metapage lock, so this serializes against it.
-		 */
-		if (st != NULL && st->shared != NULL)
+		if (RelationNeedsWAL(index))
 		{
-			if (docs_shrinkage > 0)
-			{
-				uint32 cur = pg_atomic_read_u32(&st->shared->total_docs);
-				uint32 sub = (docs_shrinkage > (uint64)cur)
-								   ? cur
-								   : (uint32)docs_shrinkage;
-				if (sub > 0)
-					pg_atomic_fetch_sub_u32(&st->shared->total_docs, sub);
-			}
-			if (tokens_shrinkage > 0)
-			{
-				uint64 cur = pg_atomic_read_u64(&st->shared->total_len);
-				uint64 sub = Min(cur, tokens_shrinkage);
-
-				if (sub > 0)
-					pg_atomic_fetch_sub_u64(&st->shared->total_len, sub);
-			}
+			tp_xlog_merge_linkage(
+					index,
+					level,
+					segment_count,
+					total_at_level,
+					remainder_head,
+					new_segment,
+					docs_shrinkage,
+					tokens_shrinkage,
+					st);
 		}
-
-		xlog_state = GenericXLogStart(index);
-		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-		meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
-
-		/*
-		 * Update source level: keep any unmerged remainder
-		 * segments.  If we merged all, the level is now empty.
-		 */
-		meta_ptr->level_heads[level]  = remainder_head;
-		meta_ptr->level_counts[level] = total_at_level - segment_count;
-
-		/* Add merged segment to target level */
-		if (meta_ptr->level_heads[level + 1] != InvalidBlockNumber)
+		else
 		{
-			Page			 seg_page;
-			TpSegmentHeader *seg_header;
+			GenericXLogState *xlog_state;
+			Page			  meta_copy;
+			TpIndexMetaPage	  meta_ptr;
+			Buffer			  seg_buf = InvalidBuffer;
 
-			seg_buf = ReadBuffer(index, new_segment);
-			LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-			seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
-			/* Ensure pd_lower covers content for GenericXLog */
-			((PageHeader)seg_page)->pd_lower = BLCKSZ;
-			seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-			seg_header->next_segment = meta_ptr->level_heads[level + 1];
+			metabuf = ReadBuffer(index, 0);
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * Clamp atomic subs symmetrically with the metapage sub
+			 * below.  tp_sync_metapage_stats reads the atomic under
+			 * the same metapage lock, so this serializes against it.
+			 */
+			if (st != NULL && st->shared != NULL)
+			{
+				if (docs_shrinkage > 0)
+				{
+					uint32 cur = pg_atomic_read_u32(&st->shared->total_docs);
+					uint32 sub = (docs_shrinkage > (uint64)cur)
+									   ? cur
+									   : (uint32)docs_shrinkage;
+					if (sub > 0)
+						pg_atomic_fetch_sub_u32(&st->shared->total_docs, sub);
+				}
+				if (tokens_shrinkage > 0)
+				{
+					uint64 cur = pg_atomic_read_u64(&st->shared->total_len);
+					uint64 sub = Min(cur, tokens_shrinkage);
+
+					if (sub > 0)
+						pg_atomic_fetch_sub_u64(&st->shared->total_len, sub);
+				}
+			}
+
+			xlog_state = GenericXLogStart(index);
+			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+			meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
+
+			meta_ptr->level_heads[level]  = remainder_head;
+			meta_ptr->level_counts[level] = total_at_level - segment_count;
+
+			if (meta_ptr->level_heads[level + 1] != InvalidBlockNumber)
+			{
+				Page			 seg_page;
+				TpSegmentHeader *seg_header;
+
+				seg_buf = ReadBuffer(index, new_segment);
+				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+				seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
+				((PageHeader)seg_page)->pd_lower = BLCKSZ;
+				seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
+				seg_header->next_segment = meta_ptr->level_heads[level + 1];
+			}
+
+			meta_ptr->level_heads[level + 1] = new_segment;
+			meta_ptr->level_counts[level + 1]++;
+
+			meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
+										 ? meta_ptr->total_docs -
+												   docs_shrinkage
+										 : 0;
+			meta_ptr->total_len	 = (meta_ptr->total_len >= tokens_shrinkage)
+										 ? meta_ptr->total_len -
+												   tokens_shrinkage
+										 : 0;
+
+			GenericXLogFinish(xlog_state);
+			if (BufferIsValid(seg_buf))
+				UnlockReleaseBuffer(seg_buf);
+			UnlockReleaseBuffer(metabuf);
 		}
-
-		meta_ptr->level_heads[level + 1] = new_segment;
-		meta_ptr->level_counts[level + 1]++;
-
-		/* Apply the same shrinkage to the on-disk copy. */
-		meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
-									 ? meta_ptr->total_docs - docs_shrinkage
-									 : 0;
-		meta_ptr->total_len	 = (meta_ptr->total_len >= tokens_shrinkage)
-									 ? meta_ptr->total_len - tokens_shrinkage
-									 : 0;
-
-		GenericXLogFinish(xlog_state);
-		if (BufferIsValid(seg_buf))
-			UnlockReleaseBuffer(seg_buf);
-		UnlockReleaseBuffer(metabuf);
 	}
 
 	/*

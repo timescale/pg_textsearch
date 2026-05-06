@@ -272,6 +272,64 @@ EOF
     log "Sample results: $(echo "$REBUILD_RESULTS" | head -2 | tr '\n' '; ')..."
 }
 
+# Cover the bootstrap path's empty-index branch: an index with no
+# docs (no segments, no docid pages, metap.total_docs=0) opened on
+# the first backend access after a server restart fires
+# tp_rebuild_index_from_disk's empty-index branch
+# (state.c). This is otherwise hard to reach from SQL because
+# CREATE INDEX populates the registry — only a server restart
+# (or fresh standby) leaves the registry empty and the index
+# non-empty-on-disk-but-also-totally-empty.
+test_empty_index_rebuild() {
+    log "Running empty-index rebuild test..."
+
+    # Phase 1: create an empty index (table has no rows).
+    log "Phase 1: create empty bm25 index"
+    run_sql "DROP TABLE IF EXISTS empty_rebuild_test CASCADE;" >/dev/null
+    run_sql "CREATE TABLE empty_rebuild_test (id SERIAL PRIMARY KEY, content TEXT);" >/dev/null
+    run_sql "CREATE INDEX empty_rebuild_idx ON empty_rebuild_test USING bm25(content) WITH (text_config='english');" >/dev/null
+
+    # Phase 2: clean restart. Stop drops the per-backend registry;
+    # the next backend's first access has to bootstrap.
+    log "Phase 2: restart server"
+    pg_ctl stop -D "${DATA_DIR}" -m fast >/dev/null 2>&1
+    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null 2>&1
+    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
+
+    # Phase 3: first query against the empty index — drives
+    # bootstrap. Empty-index branch should leave shared state
+    # registered with total_docs=0.
+    log "Phase 3: first query post-restart fires bootstrap"
+    local count
+    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+        SELECT count(*) FROM (
+            SELECT id FROM empty_rebuild_test
+            ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')
+            LIMIT 100
+        ) t;")
+    if [ "${count}" != "0" ]; then
+        error "Empty-index query returned '${count}', expected 0"
+    fi
+
+    # Phase 4: verify the index is functional post-bootstrap. An
+    # insert should be queryable via the same backend's now-warm
+    # local state.
+    log "Phase 4: post-bootstrap insert + query"
+    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c \
+        "INSERT INTO empty_rebuild_test (content) VALUES ('alpha bravo charlie');" >/dev/null
+    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+        SELECT count(*) FROM (
+            SELECT id FROM empty_rebuild_test
+            ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')
+            LIMIT 100
+        ) t;")
+    if [ "${count}" != "1" ]; then
+        error "Post-bootstrap query returned '${count}', expected 1"
+    fi
+
+    log "Empty-index rebuild test passed"
+}
+
 main() {
     log "Starting Tapir crash recovery test..."
 
@@ -283,6 +341,7 @@ main() {
 
     # Run the test
     setup_test_db
+    test_empty_index_rebuild
     test_crash_recovery
 
     log "✅ All crash recovery tests passed!"

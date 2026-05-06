@@ -1,0 +1,481 @@
+#!/bin/bash
+#
+# replication_spill_paths.sh — verify that the SPILL WAL records
+# emitted from the non-`tp_do_spill` spill paths actually replicate
+# end-to-end. Two tests:
+#
+#   1. tp_bulk_load_spill_check (PRE_COMMIT bulk-load threshold)
+#      A fat single-transaction insert crosses bulk_load_threshold;
+#      PRE_COMMIT triggers a spill on the primary. The standby's
+#      memtable must be empty afterwards (cleared by SPILL redo);
+#      the segment must hold all the docs.
+#
+#   2. tp_spill_memtable_if_needed (VACUUM bulkdelete)
+#      INSERT then DELETE then VACUUM. VACUUM's bulkdelete phase
+#      always spills any non-empty memtable. The standby's memtable
+#      must be empty afterwards; the segment holds the docs (with
+#      half marked dead by the alive-bitset update).
+#
+# Both tests assert directly against bm25_summarize_index on the
+# standby (BMW query results turn out to mask memtable+segment
+# overlap in some cases). The bug they catch is "primary spill
+# replicates segment data + metapage but not the memtable-clear
+# signal" — visible only as a memtable+segment doc-count
+# divergence on the standby.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PRIMARY_PORT=55460
+STANDBY_PORT=55461
+TEST_DB=replication_spill_paths
+PRIMARY_DIR="${SCRIPT_DIR}/../tmp_repl_spill_paths_primary"
+STANDBY_DIR="${SCRIPT_DIR}/../tmp_repl_spill_paths_standby"
+
+# shellcheck source=replication_lib.sh
+source "${SCRIPT_DIR}/replication_lib.sh"
+
+trap repl_cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------
+# Test 1: bulk-load PRE_COMMIT spill replication
+#
+# Tunes the GUCs so the only spill trigger that fires is the
+# bulk-load PRE_COMMIT path:
+#   - bulk_load_threshold = 500 terms (low, easy to cross)
+#   - memtable_spill_threshold = 0 (disabled)
+#   - memory_limit very high (per-row check won't fire)
+# Then runs a 2000-row INSERT in a single transaction. Each row
+# carries enough unique terms that terms_added_this_xact crosses
+# the threshold by COMMIT time, so tp_bulk_load_spill_check fires
+# at PRE_COMMIT.
+# ---------------------------------------------------------------
+test_bulk_load_spill_replication() {
+    log "=== Test 1: bulk-load PRE_COMMIT spill replication ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS bulk_docs CASCADE;
+        CREATE TABLE bulk_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        CREATE INDEX bulk_docs_idx ON bulk_docs USING bm25(content)
+            WITH (text_config='english');
+    " >/dev/null
+
+    wait_for_standby_catchup
+
+    local query="
+        SELECT count(*) FROM (
+            SELECT id FROM bulk_docs
+            ORDER BY content <@> to_bm25query('alpha',
+                'bulk_docs_idx')
+            LIMIT 100000
+        ) t;
+    "
+
+    # bulk_load_threshold and memtable_spill_threshold are SUSET —
+    # set per-session in the same psql -c that runs the INSERT so
+    # PRE_COMMIT sees them. memory_limit is SIGHUP and stays at
+    # its default 2 GB, which is well above the ~140 KB this
+    # transaction needs.
+    long_lived_before_after "${STANDBY_PORT}" "${query}" \
+        "primary_sql \"
+            SET pg_textsearch.bulk_load_threshold = 500;
+            SET pg_textsearch.memtable_spill_threshold = 0;
+            BEGIN;
+            INSERT INTO bulk_docs (content)
+                SELECT 'alpha bravo charlie delta echo ' ||
+                       'foxtrot golf hotel india juliet ' ||
+                       md5(g::text) || ' doc_' || g
+                FROM generate_series(1, 2000) g;
+            COMMIT;
+        \" >/dev/null
+        wait_for_standby_catchup"
+
+    log "  initial standby count: ${LL_BEFORE}"
+    log "  post-insert count:     ${LL_AFTER}"
+
+    if [ "${LL_BEFORE}" != "0" ]; then
+        error "Test 1: expected initial 0, got '${LL_BEFORE}'"
+    fi
+    # Long-lived backend must see all 2000 docs (this fails before
+    # PR 2 — INSERT_TERMS not replicated to the cached memtable).
+    if [ "${LL_AFTER}" != "2000" ]; then
+        error "Test 1: expected post-insert count 2000, \
+got '${LL_AFTER}'"
+    fi
+
+    # Direct check on standby state via bm25_summarize_index. The
+    # bulk-load PRE_COMMIT spill on the primary should have written
+    # the SPILL WAL record, whose redo on the standby clears the
+    # standby's memtable. Replay independently lands the segment on
+    # the standby's disk via GenericXLog. Final state on the
+    # standby must be: memtable empty (cleared by SPILL redo),
+    # segment populated (received via segment-data WAL).
+    #
+    # Without the SPILL WAL emit (the bug this test catches),
+    # nothing would clear the standby memtable; it would retain
+    # all 2000 docs from INSERT_TERMS replay, AND the segment
+    # would also have 2000 — visible as a memtable+segment overlap
+    # in bm25_summarize_index even though the BMW query happens to
+    # mask the duplication elsewhere.
+    local standby_summary
+    standby_summary=$(standby_sql_quiet "
+        SELECT bm25_summarize_index('bulk_docs_idx');")
+    local standby_memtable_docs
+    local standby_segment_docs
+    standby_memtable_docs=$(echo "${standby_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    standby_segment_docs=$(echo "${standby_summary}" \
+        | awk '/^Segments:/{f=1;next} \
+               f && /Total:/{ \
+                 for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $(i+1) ~ /docs/){print $i; exit} \
+               }')
+    log "  standby memtable docs: ${standby_memtable_docs:-<none>} (expect 0)"
+    log "  standby segment docs:  ${standby_segment_docs:-<none>} (expect 2000)"
+
+    if [ "${standby_memtable_docs:-x}" != "0" ]; then
+        log "  --- standby summary (for diagnosis) ---"
+        echo "${standby_summary}" | while IFS= read -r line; do
+            log "    S| ${line}"
+        done
+        error "Test 1: standby memtable should be empty after \
+PRE_COMMIT spill replicates (got '${standby_memtable_docs}'). \
+SPILL WAL is not being emitted from tp_bulk_load_spill_check, \
+or its redo is not clearing the standby memtable."
+    fi
+    if [ "${standby_segment_docs:-0}" != "2000" ]; then
+        error "Test 1: standby segment should hold all 2000 docs \
+post-spill, got '${standby_segment_docs}'"
+    fi
+
+    log "Test 1 PASSED: bulk-load PRE_COMMIT spill replicates"
+}
+
+# ---------------------------------------------------------------
+# Test 2: VACUUM-triggered spill replication
+#
+# VACUUM's bulkdelete phase always calls tp_spill_memtable_if_needed
+# with min_postings=1 (vacuum.c:766) — i.e., spills any non-empty
+# memtable so the bulkdelete pass operates on segment storage only.
+# This is one of the spill paths PR 2 added tp_xlog_spill to.
+#
+# The test inserts a small number of docs (well under the bulk-load
+# threshold), DELETEs some, then VACUUMs. The VACUUM's bulkdelete
+# spill fires deterministically. With SPILL WAL emitted, redo
+# clears the standby's memtable; the standby's bm25_summarize_index
+# memtable count drops to 0. Without the WAL emit, the standby's
+# memtable retains all the inserted docs.
+# ---------------------------------------------------------------
+test_vacuum_spill_replication() {
+    log "=== Test 2: VACUUM-triggered spill replication ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS vac_docs CASCADE;
+        CREATE TABLE vac_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        CREATE INDEX vac_docs_idx ON vac_docs USING bm25(content)
+            WITH (text_config='english');
+    " >/dev/null
+
+    wait_for_standby_catchup
+
+    # Open a long-lived backend on the standby BEFORE inserts so
+    # the standby's registry gets populated and INSERT_TERMS redo
+    # actually applies records to the memtable. Without this, the
+    # standby's first access happens after VACUUM has already
+    # cleared docid pages on the primary, so the rebuild walks an
+    # empty docid chain and the memtable winds up empty
+    # vacuously — independent of whether SPILL replicated.
+    long_lived_open "${STANDBY_PORT}"
+    # Initial query forces tp_rebuild_index_from_disk on this
+    # backend, which registers the empty index.
+    long_lived_query "SELECT bm25_summarize_index('vac_docs_idx');" \
+        >/dev/null
+
+    primary_sql "
+        INSERT INTO vac_docs (content)
+            SELECT 'gamma delta epsilon zeta eta ' || md5(g::text)
+            FROM generate_series(1, 200) g;
+    " >/dev/null
+    wait_for_standby_catchup
+
+    # Sanity: standby memtable now populated via INSERT_TERMS replay.
+    local pre_vacuum_summary pre_vacuum_memtable
+    pre_vacuum_summary=$(long_lived_query \
+        "SELECT bm25_summarize_index('vac_docs_idx');")
+    pre_vacuum_memtable=$(echo "${pre_vacuum_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    log "  standby memtable docs pre-VACUUM: ${pre_vacuum_memtable:-<none>} (expect 200)"
+    if [ "${pre_vacuum_memtable:-0}" != "200" ]; then
+        long_lived_close
+        error "Test 2: standby memtable did not populate via \
+INSERT_TERMS replay (got '${pre_vacuum_memtable}'); test setup \
+broken."
+    fi
+
+    primary_sql "DELETE FROM vac_docs WHERE id <= 100;" >/dev/null
+    primary_sql "VACUUM vac_docs;" >/dev/null
+    # Force a checkpoint after VACUUM so all VACUUM-generated WAL
+    # is flushed to disk before we wait for standby catchup.
+    primary_sql "CHECKPOINT;" >/dev/null
+    wait_for_standby_catchup
+
+    local post_vacuum_summary post_vacuum_memtable post_vacuum_segments
+    post_vacuum_summary=$(long_lived_query \
+        "SELECT bm25_summarize_index('vac_docs_idx');")
+    post_vacuum_memtable=$(echo "${post_vacuum_summary}" \
+        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
+    post_vacuum_segments=$(echo "${post_vacuum_summary}" \
+        | awk '/^Segments:/{f=1;next} \
+               f && /Total:/{ \
+                 for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $(i+1) ~ /docs/){print $i; exit} \
+               }')
+    log "  standby memtable docs post-VACUUM: ${post_vacuum_memtable:-<none>} (expect 0)"
+    log "  standby segment docs post-VACUUM:  ${post_vacuum_segments:-<none>} (expect 200)"
+
+    long_lived_close
+
+    if [ "${post_vacuum_memtable:-x}" != "0" ]; then
+        log "  --- post-VACUUM standby summary ---"
+        echo "${post_vacuum_summary}" | while IFS= read -r line; do
+            log "    S| ${line}"
+        done
+        error "Test 2: standby memtable should be empty after \
+VACUUM-triggered spill replicates (got '${post_vacuum_memtable}'). \
+SPILL WAL is not being emitted from tp_spill_memtable_if_needed, \
+or its redo is not clearing the standby memtable."
+    fi
+    if [ "${post_vacuum_segments:-0}" != "200" ]; then
+        error "Test 2: standby segment should hold all 200 docs \
+post-VACUUM, got '${post_vacuum_segments}'"
+    fi
+
+    log "Test 2 PASSED: VACUUM-triggered spill replicates"
+}
+
+# ---------------------------------------------------------------
+# Test 3: cold-start corpus stats after no-spill inserts (#350)
+#
+# Standby cold-start path: a fresh backend opens an index whose
+# registry slot is empty (no other backend has touched this index
+# yet), so tp_get_local_index_state -> tp_rebuild_index_from_disk
+# walks the docid pages to repopulate the in-memory memtable.
+#
+# Pre-#350 fix the rebuild path overwrote shared->total_docs with
+# metap->total_docs unconditionally. metap is only synced inside
+# the spill paths, so for a no-spill index it sits at 0 and the
+# overwrite zeroed the count we just walked. BM25 and BMW both
+# require total_docs > 0 to score, so every query returned no
+# rows — the externally visible PITR-into-mid-burst symptom from
+# #350.
+#
+# The reproducer is simpler than full PITR: just insert without
+# spilling and let a *new* standby backend rebuild from docid
+# pages. The bug is in the rebuild's overwrite, not in PITR per
+# se.
+# ---------------------------------------------------------------
+test_cold_start_corpus_stats() {
+    log "=== Test 3: cold-start corpus stats (no-spill rebuild) ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS cs_docs CASCADE;
+        CREATE TABLE cs_docs (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL
+        );
+        CREATE INDEX cs_docs_idx ON cs_docs USING bm25(content)
+            WITH (text_config='english');
+        -- Insert without spilling. The default
+        -- bulk_load_threshold (100k terms) and per-index soft
+        -- limit (memory_limit / 8) are nowhere near 200 docs of
+        -- 6 words each, so this stays purely in the memtable.
+        INSERT INTO cs_docs (content)
+            SELECT 'iota kappa lambda mu nu ' || md5(g::text)
+            FROM generate_series(1, 200) g;
+    " >/dev/null
+    wait_for_standby_catchup
+
+    # Confirm primary has the docs (sanity).
+    local primary_total
+    primary_total=$(primary_sql_quiet \
+        "SELECT count(*) FROM cs_docs;")
+    if [ "${primary_total}" != "200" ]; then
+        error "Test 3: primary didn't get 200 docs (got \
+${primary_total})"
+    fi
+
+    # Open a *new* standby backend — the registry on the standby
+    # is empty for this index (no prior touch), so the very first
+    # query in this session goes through tp_rebuild_index_from_disk.
+    # The rebuild emits an INFO ("Recovering pg_textsearch index
+    # ... from disk") that PostgreSQL always ships to the client
+    # regardless of client_min_messages, so the long_lived_query
+    # output may include both the INFO line and the numeric count.
+    # Extract the last numeric line.
+    long_lived_open "${STANDBY_PORT}"
+
+    local raw
+    raw=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM cs_docs
+            ORDER BY content <@> to_bm25query('iota',
+                'cs_docs_idx')
+            LIMIT 10000
+        ) t;")
+    local count
+    count=$(printf '%s\n' "${raw}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+    log "  standby cold-start query count: ${count} (expect 200)"
+
+    long_lived_close
+
+    if [ "${count}" != "200" ]; then
+        error "Test 3 (#350): standby cold-start query returned \
+${count}, expected 200. The rebuild path overwrote the docid-walk \
+count with stale metap->total_docs (no spill -> metap=0)."
+    fi
+
+    log "Test 3 PASSED: cold-start corpus stats reconstructed correctly"
+}
+
+# ---------------------------------------------------------------
+# Test 4: long-lived standby read across primary segment merge (#349)
+#
+# Exercise the MERGE_LINKAGE end-to-end path: drive enough spills
+# on the primary (segments_per_level=8 → 9th spill triggers L0
+# compaction), then a 10th, while a long-lived standby backend
+# queries before and after. Asserts both reads return the
+# expected counts.
+#
+# Caveat: the original #349 race (a backend mid-walk on the L0
+# chain when redo unlinks the source segments) is timing-sensitive
+# and cannot be reliably triggered in CI by sequential queries —
+# the walk completes in microseconds and wait_for_standby_catchup
+# always lets redo finish before the next query begins. The fix
+# is structural: merge linkage now goes through a custom rmgr
+# record whose redo holds LW_EXCLUSIVE on the per-index lock,
+# blocking against concurrent scans (LW_SHARED) until they
+# release. This test exists to catch regressions in the
+# happy-path replication of a merge — if MERGE_LINKAGE is wrong
+# (forgets a metap field, miscounts shrinkage, etc.) the post-
+# merge query count diverges.
+# ---------------------------------------------------------------
+test_long_lived_read_after_segment_merge() {
+    log "=== Test 4: long-lived read after segment merge (#349) ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS sm_docs CASCADE;
+        CREATE TABLE sm_docs (id SERIAL PRIMARY KEY, content TEXT);
+        CREATE INDEX sm_idx ON sm_docs USING bm25(content)
+            WITH (text_config='simple');
+    " >/dev/null
+
+    # Force several level-0 spills. With segments_per_level=8
+    # (default) we need at least 9 to trigger compaction on the
+    # 9th spill.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9; do
+        primary_sql "
+            INSERT INTO sm_docs (content)
+                SELECT 'merge doc ' || j || ' alpha bravo'
+                FROM generate_series(1,100) j;
+            SELECT bm25_spill_index('sm_idx');
+        " >/dev/null
+    done
+    wait_for_standby_catchup
+
+    local primary_total
+    primary_total=$(primary_sql_quiet "SELECT count(*) FROM sm_docs;")
+    if [ "${primary_total}" != "900" ]; then
+        error "Test 4: primary expected 900 docs, got ${primary_total}"
+    fi
+
+    # Open the long-lived standby backend now — registers the
+    # index in the standby's registry so subsequent INSERT_TERMS
+    # redo applies, and so the backend caches a metap snapshot
+    # straddling the upcoming merge.
+    long_lived_open "${STANDBY_PORT}"
+
+    local raw before
+    raw=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM sm_docs
+            ORDER BY content <@> to_bm25query('alpha', 'sm_idx')
+            LIMIT 10000
+        ) t;")
+    before=$(printf '%s\n' "${raw}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+
+    # Trigger a level-0 compaction by adding more segments past
+    # the threshold.
+    primary_sql "
+        INSERT INTO sm_docs (content)
+            SELECT 'merge doc extra ' || j || ' alpha'
+            FROM generate_series(1,50) j;
+        SELECT bm25_spill_index('sm_idx');
+    " >/dev/null
+    wait_for_standby_catchup
+
+    local raw_after after
+    raw_after=$(long_lived_query "
+        SELECT count(*) FROM (
+            SELECT id FROM sm_docs
+            ORDER BY content <@> to_bm25query('alpha', 'sm_idx')
+            LIMIT 10000
+        ) t;")
+    after=$(printf '%s\n' "${raw_after}" | awk '/^[0-9]+$/ {n=$0} END {print n}')
+
+    long_lived_close
+
+    log "  long-lived count before merge: ${before} (expect 900)"
+    log "  long-lived count after merge:  ${after} (expect 950)"
+
+    if [ "${before}" != "900" ]; then
+        error "Test 4 (#349): pre-merge long-lived count ${before}, \
+expected 900"
+    fi
+    if [ "${after}" != "950" ]; then
+        error "Test 4 (#349): post-merge long-lived count ${after}, \
+expected 950. The MERGE_LINKAGE redo on the standby is not \
+serializing against in-flight scans (LW_EXCLUSIVE not held), or \
+the linkage isn't being WAL-emitted as a custom record."
+    fi
+
+    log "Test 4 PASSED: long-lived read after merge stays consistent"
+}
+
+main() {
+    log "Starting spill-paths replication test..."
+    check_required_tools
+
+    setup_primary
+    setup_standby
+    wait_for_standby_catchup
+
+    # Run each subtest in a subshell so a failure in one doesn't
+    # short-circuit the others. Useful for the verify-coverage
+    # workflow (deliberate bug-reverts) — every test should still
+    # report independently. Track failures and exit non-zero at
+    # the end if any failed.
+    local failures=""
+    ( test_bulk_load_spill_replication ) || \
+        failures="${failures} test_bulk_load_spill_replication"
+    ( test_vacuum_spill_replication ) || \
+        failures="${failures} test_vacuum_spill_replication"
+    ( test_cold_start_corpus_stats ) || \
+        failures="${failures} test_cold_start_corpus_stats"
+    ( test_long_lived_read_after_segment_merge ) || \
+        failures="${failures} test_long_lived_read_after_segment_merge"
+
+    if [ -n "${failures}" ]; then
+        error "Spill-paths failures:${failures}"
+    fi
+    log "All spill-paths replication tests passed!"
+    exit 0
+}
+
+if [ "${BASH_SOURCE[0]}" == "${0}" ]; then
+    main "$@"
+fi

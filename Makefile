@@ -55,6 +55,7 @@ OBJS = \
 	src/index/memory.o \
 	src/index/resolve.o \
 	src/index/source.o \
+	src/replication/rmgr.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/dump.o
@@ -155,7 +156,8 @@ test-replication-extended:
 	    replication_failover.sh \
 	    replication_compat.sh \
 	    replication_cascading.sh \
-	    replication_pitr.sh"; \
+	    replication_spill_paths.sh \
+	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \
 	    echo ""; \

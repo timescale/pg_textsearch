@@ -24,6 +24,7 @@
 #include "access/am.h"
 #include "index/metapage.h"
 #include "index/registry.h"
+#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -293,6 +294,53 @@ tp_registry_register(
 	dshash_detach(registry_hash);
 
 	return true;
+}
+
+/*
+ * Atomic register-if-absent. Returns true if we created a fresh
+ * entry (caller's shared_dp is now in the registry); false if an
+ * entry already existed (in which case *existing_dp is set to its
+ * shared_state_dp and the caller should free its own allocation).
+ */
+bool
+tp_registry_register_if_absent(
+		Oid index_oid, dsa_pointer shared_dp, dsa_pointer *existing_dp)
+{
+	dshash_table	*registry_hash;
+	TpRegistryEntry *entry;
+	bool			 found;
+
+	tp_registry_get_dsa();
+
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+	{
+		elog(ERROR,
+			 "Failed to initialize Tapir registry for index %u",
+			 index_oid);
+	}
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		elog(ERROR, "Failed to attach to registry hash table");
+
+	entry = (TpRegistryEntry *)
+			dshash_find_or_insert(registry_hash, &index_oid, &found);
+	if (found)
+	{
+		if (existing_dp)
+			*existing_dp = entry->shared_state_dp;
+	}
+	else
+	{
+		entry->index_oid	   = index_oid;
+		entry->shared_state_dp = shared_dp;
+	}
+	dshash_release_lock(registry_hash, entry);
+	dshash_detach(registry_hash);
+
+	return !found;
 }
 
 /*
@@ -764,6 +812,10 @@ tp_evict_largest_memtable(Oid caller_oid)
 	int					num_candidates;
 	int					i;
 
+	/* Standby is read-only; spill is primary-only. */
+	if (RecoveryInProgress())
+		return false;
+
 	num_candidates =
 			find_eviction_candidates(candidates, TP_MAX_EVICTION_CANDIDATES);
 
@@ -829,8 +881,13 @@ tp_evict_largest_memtable(Oid caller_oid)
 		{
 			tp_clear_memtable(target_state);
 			tp_clear_docid_pages(index_rel);
-			tp_link_l0_chain_head(index_rel, segment_root);
 			tp_sync_metapage_stats(index_rel, target_state);
+
+			if (RelationNeedsWAL(index_rel))
+				tp_xlog_spill(index_rel, segment_root);
+			else
+				tp_link_l0_chain_head(index_rel, segment_root);
+
 			tp_maybe_compact_level(index_rel, 0);
 
 			elog(LOG,
