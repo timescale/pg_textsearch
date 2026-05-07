@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778054549383,
+  "lastUpdate": 1778141347469,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -2050,6 +2050,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.619,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bdd3b317af4007bfca6d1b43ff8446fb55d0e2ae",
+          "message": "fix: replicate memtable mutations via custom rmgr (#347)\n\nCloses #345, #349, #350.\n\n## What was broken\n\n`pg_textsearch` keeps the working set of recent docs in a DSA\nshared-memory memtable (one per index, shared across backends). Pre-PR,\nthe memtable on a streaming standby was populated only by the standby's\nown first-access rebuild. After that, primary writes did not propagate:\nthey updated docid pages on disk via GenericXLog but never touched the\nstandby's in-memory memtable. Three bugs followed.\n\n- **#345**: a long-lived standby backend's BM25 query results were\nfrozen at the time of its first index access. Subsequent primary inserts\nwere invisible until the backend reconnected.\n- **#349**: when the primary compacted L0 segments into L1, the standby\nreceived the metapage unlink/link via GenericXLog (buffer locks only),\nbut a backend mid-walk on the L0 chain followed `next_segment` pointers\ninto pages that the FSM had since recycled. Symptoms ranged from wrong\ncounts to `ERROR: invalid page index at block N / magic=0x00000000`.\n- **#350**: `total_docs` and `total_len` (the BM25 corpus stats that\ndrive IDF and BMW) were never WAL-logged. After PITR to a between-spills\nLSN, the recovered cluster's metapage held the last spill's snapshot,\nthe in-memory atomics started at zero, and the standard query path\nreturned zero results until a `REINDEX`.\n\n## Summary\n\nA custom WAL resource manager (rmgr ID 149,\n[registered](https://wiki.postgresql.org/wiki/CustomWALResourceManagers))\nemits three record types so streaming-replication standbys and primary\ncrash recovery keep their in-shared-memory memtable in sync with the\nsegment chain on disk.\n\n| Record | Standby redo |\n|---|---|\n| `INSERT_TERMS` | Apply the v2 bm25vector to the memtable (idempotent\nby CTID). |\n| `SPILL` | Apply the L0 chain-link, optional new-segment splice, and\nmemtable clear, atomically under per-index `LW_EXCLUSIVE`. |\n| `MERGE_LINKAGE` | Apply the metap unlink/link, optional new-segment\nsplice, and corpus-stat shrinkage, atomically under `LW_EXCLUSIVE`. |\n\n`SPILL` is emitted from all five spill recipes (auto-spill,\n`bm25_spill_index`, VACUUM bulkdelete, PRE_COMMIT bulk-load,\nglobal-memory eviction). Each spill entry point also has a\n`RecoveryInProgress()` guard so a standby never autonomously spills.\nEmission is gated on `RelationNeedsWAL(rel)` so UNLOGGED and TEMP\nindexes do not ship records that cannot apply on a standby.\n\nThe full invariants and scenario-by-scenario verification of the\ncold-start bootstrap path are spec'd at\n[`docs/replication/CORRECTNESS.md`](docs/replication/CORRECTNESS.md).\nRead that before changing `tp_rebuild_index_from_disk`.\n\n## Notes on the tricky parts\n\n- **Corpus stats.** The bootstrap writes `total_docs = metap.total +\nmemtable_count` via `pg_atomic_write` under the per-index exclusive\nlock, not `fetch_add`. The two halves are disjoint by construction\n(segments versus the memtable), so the write is unambiguous; `fetch_add`\nwould double-count any cohort that redo applied during the WAL-replay\ndrain and that a subsequent SPILL also folded into `metap.total_docs`.\nThe PITR \"BM25 returns zero\" symptom in #350 was the pre-fix\nunconditional-overwrite case.\n\n- **Concurrent bootstrap.** Two backends arriving at the same empty\nregistry slot resolve to the same shared state via\n`tp_registry_register_if_absent` (atomic register-or-attach), not to a\nunregister/re-register race.\n\n- **Defensive WAL decoding.** Header-length checks before any field\nderef; bounds check on `MERGE_LINKAGE.level` before mutating\n`metap.level_heads/level_counts`; designated initializers on all\nemission headers so compiler padding is zeroed.\n\n- **`bm25_force_merge` locking.** `tp_xlog_merge_linkage` requires the\ncaller to hold the per-index `LW_EXCLUSIVE`; this serializes the\nstandby's redo against in-flight scans (#349). All other call paths take\nthat lock first, but `bm25_force_merge` was a pre-existing exception: it\nheld only `RowExclusiveLock` on the relation and called the merge helper\ndirectly. The SQL function now wraps the force-merge body in\n`tp_acquire_index_lock(LW_EXCLUSIVE)` / `tp_release_index_lock`.\n\n## Testing\n\n| Suite | New coverage |\n|---|---|\n| `replication_spill_paths.sh` | 4 tests: `tp_xlog_spill` from each\nspill recipe, cold-start corpus stats (#350), `MERGE_LINKAGE` round-trip\n(#349) |\n| `wal_audit.sh` | 3 tests: `RelationNeedsWAL` guard, `tp_rmgr_identify`\nnames, `INSERT_TERMS` records present in WAL window |\n| `recovery.sh` | `test_empty_index_rebuild`: empty index + restart\nfires the bootstrap empty-index branch |\n| `unlogged_index.sql` | UNLOGGED merge through `merge.c` GenericXLog\nfallback; delete + VACUUM + force-merge to drive shrinkage on that path\n|\n\nExisting replication suite (`replication.sh`,\n`replication_correctness.sh`, `replication_concurrency.sh`,\n`replication_failover.sh`, `replication_cascading.sh`,\n`replication_compat.sh`, `replication_parallel_build.sh`,\n`replication_issue_342.sh`) all pass.",
+          "timestamp": "2026-05-06T02:20:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/bdd3b317af4007bfca6d1b43ff8446fb55d0e2ae"
+        },
+        "date": 1778141341528,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2683.183045,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.373,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5038.507162,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.397,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8397.702379,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.476,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 12732.622478,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.628,
             "unit": "ms"
           }
         ]
