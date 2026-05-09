@@ -103,8 +103,8 @@ details):
 make                   # build extension
 make install           # install to Postgres
 make test              # run SQL regression tests only
-make installcheck      # run all tests (SQL + shell scripts)
-make test-all          # same as installcheck
+make installcheck      # run SQL regression tests
+make test-all          # run all tests (SQL + shell scripts)
 
 # Run a single test
 $(pg_config --pgxs | xargs dirname)/../../src/test/regress/pg_regress \
@@ -335,12 +335,12 @@ tables.
 
 **ALWAYS complete these steps before committing changes:**
 1. `make` - Compile the extension
-2. `make installcheck` - Run all tests
+2. `make installcheck` - Run SQL regression tests
 3. **Check test/regression.diffs** - Examine diffs to ensure your changes
    didn't introduce failures
 4. If you modified error messages, update corresponding test/expected/*.out
 5. `make format-check` - Verify code formatting
-6. Re-run `make installcheck` after fixing any test expectation files
+6. Re-run `make installcheck` after fixing any SQL test expectation files
 
 ### Git Workflow
 

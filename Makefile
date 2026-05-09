@@ -186,11 +186,6 @@ test-shell: test-concurrency test-recovery test-segment test-cic test-memory tes
 test-all: test test-shell
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
-# Override installcheck to run all tests (SQL regression + shell scripts)
-installcheck:
-	@$(MAKE) test
-	@$(MAKE) test-shell
-
 # Generate expected output files from current test results
 expected:
 	@echo "Generating expected output files from current results..."
@@ -326,7 +321,7 @@ help:
 	@echo ""
 	@echo "Testing targets:"
 	@echo "  make test         - Run SQL regression tests only"
-	@echo "  make installcheck - Run all tests (SQL + shell scripts)"
+	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
 	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"

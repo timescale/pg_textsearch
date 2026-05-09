@@ -182,9 +182,14 @@ plus a bounded shared-memory pending list drained on `tp_beginscan`.
 
 ## Running Tests
 
-### All Tests
+### SQL Regression Tests
 ```bash
 make installcheck
+```
+
+### All Local Tests
+```bash
+make test-all
 ```
 
 ### Individual Tests
