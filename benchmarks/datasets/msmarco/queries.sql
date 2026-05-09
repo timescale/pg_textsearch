@@ -5,6 +5,15 @@
 \set ON_ERROR_STOP on
 \timing on
 
+-- Soft cap on per-statement runtime so a pathological query fails fast
+-- instead of hanging the benchmark for hours. Each LATENCY_BUCKET_n
+-- INSERT runs `benchmark_bucket(n)` which loops 100 sub-queries, so
+-- this is sized to comfortably accommodate a slow but healthy bucket.
+-- NOTE: statement_timeout cannot interrupt scans hung in pg_textsearch's
+-- BMW C-loop (no CHECK_FOR_INTERRUPTS) — for that case the workflow
+-- relies on a step-level timeout in benchmark.yml.
+SET statement_timeout = '5min';
+
 \echo '=== MS MARCO Query Benchmarks ==='
 \echo ''
 

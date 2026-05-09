@@ -5,6 +5,10 @@
 \set ON_ERROR_STOP on
 \timing on
 
+-- Soft cap on per-statement runtime so a pathological query fails fast
+-- instead of hanging the benchmark. See msmarco/queries.sql for context.
+SET statement_timeout = '5min';
+
 \echo '=== Wikipedia Query Benchmarks ==='
 \echo ''
 
