@@ -180,6 +180,54 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        echo "Running docid chain recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./docid_chain_recovery.sh
+        "
+
+        echo "Running shutdown spill tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./shutdown_spill.sh
+        "
+
+        echo "Running multi-backend segment tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./segment.sh
+        "
+
+        echo "Running CREATE INDEX CONCURRENTLY tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./cic.sh
+        "
+
+        echo "Running memory accounting tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./memory_accounting.sh
+        "
+
+        echo "Running multi-index / multi-user / multi-schema tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./multi_index.sh
+        "
+
         # Clean up
         pg_ctl stop -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile
 
