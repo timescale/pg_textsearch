@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778226454379,
+  "lastUpdate": 1778312971732,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -2174,6 +2174,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.827,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "67af30f909398eb5ce88981b8faa92c59eefbc47",
+          "message": "Restore standard installcheck behavior (#353)\n\n## Summary\n- remove the custom `installcheck` override so PGXS owns the target\nagain\n- keep SQL regression coverage available through `make installcheck` /\n`make test`\n- keep shell-script coverage available through `make test-shell` and\n`make test-all`\n- update Makefile help, CLAUDE.md, and test README to describe the\ntarget split\n\n## Motivation\nDownstream consumers expect PGXS `installcheck` to run SQL regression\ntests without triggering extension-specific shell scripts. The previous\noverride made `installcheck` run both SQL regression and shell tests,\nwhich forced downstream harnesses to avoid the standard target.\n\nUpstream shell-script coverage remains explicit through local targets\nand existing GitHub Actions steps.\n\n## Validation\n- `git diff --check`\n- `make -n installcheck` shows PGXS pg_regress only\n- `make -n test-all` shows SQL regression plus shell-script targets\n- searched for stale docs claiming `installcheck` runs all tests\n- code review + re-review",
+          "timestamp": "2026-05-09T01:17:00Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/67af30f909398eb5ce88981b8faa92c59eefbc47"
+        },
+        "date": 1778312966497,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2505.576963,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.399,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4717.839179,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.424,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7586.840596,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.527,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 11991.887467,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.667,
             "unit": "ms"
           }
         ]
