@@ -1985,36 +1985,58 @@ jobs:
     # If anything above failed (e.g. a step-level timeout), capture
     # diagnostics so we can root-cause hangs from the artifact alone.
     # Runs only on failure to avoid noise on successful runs.
+    #
+    # `timeout-minutes` here is critical: without it, a hanging gdb attach
+    # or unresponsive psql could consume the remaining job budget, the
+    # job would be CANCELLED (not failed), and `if: always()` upload
+    # would be skipped — defeating the entire point of this PR.
     - name: Capture diagnostics on failure
       if: failure()
+      timeout-minutes: 5
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # Bound each sub-tool individually so one stuck call can't burn
+        # the whole 5-minute budget.
+        export PGCONNECT_TIMEOUT=5
         echo "=== Failure diagnostics @ $(date -Iseconds) ===" \
             | tee diagnostics.log
         # pg_stat_activity: which queries are running, for how long, are
-        # they waiting on a lock?
-        psql -P pager=off -c "
-            SELECT pid, backend_type, state, wait_event_type, wait_event,
-                   xact_start, query_start,
-                   now() - query_start AS query_runtime,
-                   left(query, 200) AS query
-              FROM pg_stat_activity
-             WHERE datname = current_database()
-                OR backend_type IS NOT NULL
-             ORDER BY query_start NULLS LAST;" \
-            >> diagnostics.log 2>&1 || true
+        # they waiting on a lock? `datname IS NULL` includes background
+        # workers (checkpointer / walwriter / autovacuum launcher /
+        # logical replication launcher / parallel workers) which have
+        # NULL datname; we deliberately scope to the bench_test database
+        # plus those bgworkers rather than dumping every database.
+        timeout 30 psql -P pager=off \
+            -v ON_ERROR_STOP=0 \
+            -c "SET statement_timeout = '10s';
+                SELECT pid, backend_type, state,
+                       wait_event_type, wait_event,
+                       xact_start, query_start,
+                       now() - query_start AS query_runtime,
+                       left(query, 200) AS query
+                  FROM pg_stat_activity
+                 WHERE datname = current_database()
+                    OR datname IS NULL
+                 ORDER BY query_start NULLS LAST;" \
+            >> diagnostics.log 2>&1 || \
+            echo "(pg_stat_activity dump failed/timed out)" \
+                >> diagnostics.log
         # pg_locks: blockers / waiters
-        psql -P pager=off -c "
-            SELECT locktype, relation::regclass, mode, granted,
-                   pid, fastpath
-              FROM pg_locks
-             WHERE NOT granted
-                OR locktype IN ('relation', 'extend', 'page', 'tuple')
-             ORDER BY granted, pid;" \
-            >> diagnostics.log 2>&1 || true
-        # postgres.log tail (full file is uploaded too, but tail makes the
-        # GitHub UI summary readable without downloading the artifact)
+        timeout 30 psql -P pager=off \
+            -v ON_ERROR_STOP=0 \
+            -c "SET statement_timeout = '10s';
+                SELECT locktype, relation::regclass, mode, granted,
+                       pid, fastpath
+                  FROM pg_locks
+                 WHERE NOT granted
+                    OR locktype IN ('relation', 'extend', 'page', 'tuple')
+                 ORDER BY granted, pid;" \
+            >> diagnostics.log 2>&1 || \
+            echo "(pg_locks dump failed/timed out)" >> diagnostics.log
+        # postgres.log tail (full file is uploaded too, but tail makes
+        # the GitHub UI summary readable without downloading the
+        # artifact).
         echo "" >> diagnostics.log
         echo "=== tmp_bench/postgres.log (last 500 lines) ===" \
             >> diagnostics.log
@@ -2023,19 +2045,27 @@ jobs:
         else
             echo "(no postgres.log found)" >> diagnostics.log
         fi
-        # Stack traces from any postgres backends still running. Useful
+        # Stack traces from any postgres processes still running. Useful
         # when the BMW scan loop is hung in C code (no
         # CHECK_FOR_INTERRUPTS) and statement_timeout cannot abort it.
+        # `pgrep -x postgres` matches by exact process name, so it
+        # captures the postmaster, all backends, and aux processes
+        # (walwriter / checkpointer / bgwriter / autovacuum / parallel
+        # workers) — not just user backends whose proc title contains
+        # the database name.
         if command -v gdb >/dev/null && command -v pgrep >/dev/null; then
             echo "" >> diagnostics.log
             echo "=== Backend stack traces ===" >> diagnostics.log
-            for pid in $(pgrep -f "postgres.*bench_test" || true); do
+            for pid in $(pgrep -x postgres || true); do
                 echo "--- pid $pid ---" >> diagnostics.log
-                sudo gdb -p "$pid" -batch \
+                # Bound each gdb attach so a stuck process can't stall
+                # the whole diagnostic capture.
+                timeout 30 sudo gdb -p "$pid" -batch \
                     -ex "set pagination off" \
                     -ex "thread apply all bt 30" 2>/dev/null \
                     >> diagnostics.log || \
-                    echo "(gdb attach failed)" >> diagnostics.log
+                    echo "(gdb attach failed or timed out)" \
+                        >> diagnostics.log
             done
         fi
         echo "Diagnostics captured: $(wc -l < diagnostics.log) lines"
