@@ -5,6 +5,16 @@
 \set ON_ERROR_STOP on
 \timing on
 
+-- Soft cap on per-statement runtime so a top-level psql query (e.g. the
+-- warmup DO block) can't hang forever. The benchmark loop functions
+-- (`benchmark_bucket`, `benchmark_throughput`) opt out of this cap
+-- locally so a slow-but-healthy run can complete and emit results;
+-- the workflow's step-level timeout-minutes is the real hang backstop.
+-- NOTE: statement_timeout cannot interrupt scans hung in pg_textsearch's
+-- BMW C-loop (no CHECK_FOR_INTERRUPTS) — for that case the workflow
+-- relies on a step-level timeout in benchmark.yml.
+SET statement_timeout = '5min';
+
 \echo '=== MS MARCO Query Benchmarks ==='
 \echo ''
 
@@ -65,6 +75,14 @@ DECLARE
     result_count bigint;
     results_sum bigint := 0;
 BEGIN
+    -- The script-level statement_timeout caps a *single* outer
+    -- statement; inside this function's loop it would cap the cumulative
+    -- runtime of the whole bucket and abort partway through, throwing
+    -- away every per-query timing already collected. Disable it locally
+    -- so a slow-but-healthy bucket can finish; the workflow's
+    -- step-level timeout-minutes is the real backstop for hangs.
+    PERFORM set_config('statement_timeout', '0', true);
+
     times := ARRAY[]::numeric[];
 
     FOR q IN SELECT query_text FROM benchmark_queries WHERE token_bucket = bucket ORDER BY query_id LOOP
@@ -189,6 +207,14 @@ DECLARE
     sorted_times numeric[];
     query_count int;
 BEGIN
+    -- Throughput runs ~3,200 sub-queries inside one outer SELECT
+    -- (800 warmup + 3 × 800 timed by default). The script-level
+    -- statement_timeout would cap that cumulative runtime, aborting the
+    -- benchmark before THROUGHPUT_RESULT is emitted — a regression
+    -- that's slow-but-healthy still loses all signal. Opt out locally;
+    -- the workflow's step-level timeout-minutes is the real backstop.
+    PERFORM set_config('statement_timeout', '0', true);
+
     SELECT COUNT(*) INTO query_count FROM benchmark_queries;
 
     -- Warmup: run all queries once

@@ -1727,8 +1727,14 @@ jobs:
         ./download.sh ${{ steps.datasets.outputs.wiki_size }}
 
     # Phase 1: Single-transaction inserts
+    #
+    # NOTE: Each long-running step has a step-level `timeout-minutes` so a
+    # hang fails the step rather than cancelling the whole job. Cancellation
+    # skips `if: always()` cleanup/upload steps, so we lose artifacts; a
+    # step failure does not. See PR adding these timeouts for context.
     - name: Run Cranfield insert benchmark
       if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 10
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1746,6 +1752,7 @@ jobs:
 
     - name: Run MS MARCO insert benchmark
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 45
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1763,6 +1770,7 @@ jobs:
 
     - name: Validate MS MARCO insert results
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1791,6 +1799,7 @@ jobs:
 
     - name: Run Wikipedia insert benchmark
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 30
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1810,6 +1819,7 @@ jobs:
       if: |
         (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
         steps.datasets.outputs.wiki_size == '100K'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1829,6 +1839,7 @@ jobs:
     # Phase 2: Concurrent inserts (pgbench)
     - name: Run Cranfield concurrent insert
       if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1855,6 +1866,7 @@ jobs:
 
     - name: Run Cranfield concurrent insert queries
       if: steps.datasets.outputs.dataset == 'cranfield' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1864,6 +1876,7 @@ jobs:
 
     - name: Run MS MARCO concurrent insert
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 60
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1887,8 +1900,15 @@ jobs:
         echo "CONCURRENT_INSERT_TIME: ${MS}ms" | tee -a insert_results.txt
         echo "End: $(date)" | tee -a insert_results.txt
 
+    # NOTE: This step has historically been the most common hang (bucket-7
+    # MS MARCO queries hang indefinitely on certain segment topologies, and
+    # the BMW scan loop has no CHECK_FOR_INTERRUPTS so neither
+    # statement_timeout nor pg_cancel_backend can stop it). The 30-minute
+    # step timeout lets GitHub Actions kill the runner cleanly so the
+    # diagnostic / upload steps below still run with `if: always()`.
     - name: Run MS MARCO concurrent insert queries
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 30
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1897,6 +1917,7 @@ jobs:
 
     - name: Validate MS MARCO concurrent results
       if: steps.datasets.outputs.dataset == 'msmarco' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1911,6 +1932,7 @@ jobs:
 
     - name: Run Wikipedia concurrent insert
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 30
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1936,6 +1958,7 @@ jobs:
 
     - name: Run Wikipedia concurrent insert queries
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
+      timeout-minutes: 30
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1946,6 +1969,7 @@ jobs:
       if: |
         (steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all') &&
         steps.datasets.outputs.wiki_size == '100K'
+      timeout-minutes: 15
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
@@ -1957,6 +1981,94 @@ jobs:
             echo "ERROR: Wikipedia concurrent validation FAILED!" | tee -a insert_results.txt
             exit 1
         fi
+
+    # If anything above failed (e.g. a step-level timeout), capture
+    # diagnostics so we can root-cause hangs from the artifact alone.
+    # Runs only on failure to avoid noise on successful runs.
+    #
+    # `timeout-minutes` here is critical: without it, a hanging gdb attach
+    # or unresponsive psql could consume the remaining job budget, the
+    # job would be CANCELLED (not failed), and `if: always()` upload
+    # would be skipped — defeating the entire point of this PR.
+    - name: Capture diagnostics on failure
+      if: failure()
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        export PGDATABASE=bench_test
+        # Bound each sub-tool individually so one stuck call can't burn
+        # the whole 5-minute budget.
+        export PGCONNECT_TIMEOUT=5
+        echo "=== Failure diagnostics @ $(date -Iseconds) ===" \
+            | tee diagnostics.log
+        # pg_stat_activity: which queries are running, for how long, are
+        # they waiting on a lock? `datname IS NULL` includes background
+        # workers (checkpointer / walwriter / autovacuum launcher /
+        # logical replication launcher / parallel workers) which have
+        # NULL datname; we deliberately scope to the bench_test database
+        # plus those bgworkers rather than dumping every database.
+        timeout 30 psql -P pager=off \
+            -v ON_ERROR_STOP=0 \
+            -c "SET statement_timeout = '10s';
+                SELECT pid, backend_type, state,
+                       wait_event_type, wait_event,
+                       xact_start, query_start,
+                       now() - query_start AS query_runtime,
+                       left(query, 200) AS query
+                  FROM pg_stat_activity
+                 WHERE datname = current_database()
+                    OR datname IS NULL
+                 ORDER BY query_start NULLS LAST;" \
+            >> diagnostics.log 2>&1 || \
+            echo "(pg_stat_activity dump failed/timed out)" \
+                >> diagnostics.log
+        # pg_locks: blockers / waiters
+        timeout 30 psql -P pager=off \
+            -v ON_ERROR_STOP=0 \
+            -c "SET statement_timeout = '10s';
+                SELECT locktype, relation::regclass, mode, granted,
+                       pid, fastpath
+                  FROM pg_locks
+                 WHERE NOT granted
+                    OR locktype IN ('relation', 'extend', 'page', 'tuple')
+                 ORDER BY granted, pid;" \
+            >> diagnostics.log 2>&1 || \
+            echo "(pg_locks dump failed/timed out)" >> diagnostics.log
+        # postgres.log tail (full file is uploaded too, but tail makes
+        # the GitHub UI summary readable without downloading the
+        # artifact).
+        echo "" >> diagnostics.log
+        echo "=== tmp_bench/postgres.log (last 500 lines) ===" \
+            >> diagnostics.log
+        if [ -f tmp_bench/postgres.log ]; then
+            tail -n 500 tmp_bench/postgres.log >> diagnostics.log
+        else
+            echo "(no postgres.log found)" >> diagnostics.log
+        fi
+        # Stack traces from any postgres processes still running. Useful
+        # when the BMW scan loop is hung in C code (no
+        # CHECK_FOR_INTERRUPTS) and statement_timeout cannot abort it.
+        # `pgrep -x postgres` matches by exact process name, so it
+        # captures the postmaster, all backends, and aux processes
+        # (walwriter / checkpointer / bgwriter / autovacuum / parallel
+        # workers) — not just user backends whose proc title contains
+        # the database name.
+        if command -v gdb >/dev/null && command -v pgrep >/dev/null; then
+            echo "" >> diagnostics.log
+            echo "=== Backend stack traces ===" >> diagnostics.log
+            for pid in $(pgrep -x postgres || true); do
+                echo "--- pid $pid ---" >> diagnostics.log
+                # Bound each gdb attach so a stuck process can't stall
+                # the whole diagnostic capture.
+                timeout 30 sudo gdb -p "$pid" -batch \
+                    -ex "set pagination off" \
+                    -ex "thread apply all bt 30" 2>/dev/null \
+                    >> diagnostics.log || \
+                    echo "(gdb attach failed or timed out)" \
+                        >> diagnostics.log
+            done
+        fi
+        echo "Diagnostics captured: $(wc -l < diagnostics.log) lines"
 
     - name: Extract insert metrics
       if: always()
@@ -1991,19 +2103,9 @@ jobs:
               ${DATASET}_concurrent_metrics.json "${DATASET}_concurrent" "${DD} Concurrent" || true
         fi
 
-    - name: Upload insert benchmark results
-      uses: actions/upload-artifact@v4
-      with:
-        name: insert-benchmark-results-${{ github.run_id }}
-        path: |
-          insert_results.txt
-          *_insert_metrics.json
-          *_concurrent_metrics.json
-          *_action.json
-          *_validation.log
-          tmp_bench/postgres.log
-        retention-days: 90
-
+    # Format runs BEFORE Upload so generated *_action.json files are
+    # included in the artifact. (Was previously after Upload, which meant
+    # the *_action.json files were never archived.)
     - name: Format insert metrics
       if: always()
       run: |
@@ -2014,6 +2116,25 @@ jobs:
             ./benchmarks/runner/format_for_action.sh "$f" "${base}_action.json"
           fi
         done
+
+    # `if: always()` is critical: when a step above times out (or fails)
+    # we still need postgres.log + diagnostics.log to root-cause the hang.
+    # Without it, GitHub Actions skips this step and we lose all evidence.
+    - name: Upload insert benchmark results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: insert-benchmark-results-${{ github.run_id }}
+        path: |
+          insert_results.txt
+          *_insert_metrics.json
+          *_concurrent_metrics.json
+          *_action.json
+          *_validation.log
+          diagnostics.log
+          tmp_bench/postgres.log
+        retention-days: 90
+        if-no-files-found: warn
 
     - name: Publish Cranfield insert benchmark
       if: always() && hashFiles('cranfield_insert_action.json') != '' && github.event.inputs.dry_run != 'true'
