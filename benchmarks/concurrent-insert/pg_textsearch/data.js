@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778312971732,
+  "lastUpdate": 1778399770726,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -2236,6 +2236,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.667,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "29d7438717689bbb7796d27e09c1b03e77cfb88a",
+          "message": "ci(benchmark): add step timeouts + diagnostic capture so hangs are debuggable (#354)\n\n## Problem\n\nThe nightly **Benchmarks** workflow has been failing intermittently for\nweeks, all hanging on the same step (`Run MS MARCO concurrent insert\nqueries`) on **bucket-7 (7-token) MS MARCO queries**:\n\n| Date | SHA | Result |\n|---|---|---|\n| 2026-04-27 | `35a2dc63` | ❌ cancelled (pre-rmgr) |\n| 2026-05-01 | `142b32d8` | ❌ cancelled (pre-rmgr) |\n| 2026-05-02–03 | `7f7bd41a` | ❌ × 2 |\n| 2026-05-06 | `bdd3b317` | ✅ |\n| 2026-05-07–08 | `bdd3b317` | ❌ × 2 |\n| 2026-05-09 | `67af30f9` | ❌ |\n\nEach run waited the full **6-hour job-level timeout**, was then\ncancelled by GitHub Actions, and because cancellation skips `if:\nalways()` cleanup/upload steps, **no `postgres.log`, `pg_stat_activity`,\nor `pg_locks` was ever uploaded**. We have zero diagnostic data to\nroot-cause the underlying hang.\n\n## What this PR changes\n\nThis PR makes the workflow fail fast on hangs and preserve evidence so\nthe next failure tells us exactly what is stuck.\n\n### 1. Step-level `timeout-minutes` on all long-running insert-benchmark\nsteps\n\nSized at **~2–3× observed durations** from the last successful run (May\n6):\n\n| Step | Observed | Timeout | Headroom |\n|---|---|---|---|\n| Run MS MARCO insert benchmark | 13 min | 45 min | 3.4× |\n| Run MS MARCO concurrent insert | 26 min | 60 min | 2.3× |\n| **Run MS MARCO concurrent insert queries** (the hang-prone step) | 37\ns | 30 min | huge |\n| Run Wikipedia insert / concurrent | <1 min ea. | 30 min | huge |\n| Validate / Cranfield steps | <1 min ea. | 10–15 min | huge |\n\nWhen a step hits its timeout it **FAILS** (rather than the whole job\nbeing cancelled), which lets subsequent `if: always()` steps run.\n\n### 2. New `Capture diagnostics on failure` step (`if: failure()`)\n\nDumps `pg_stat_activity`, `pg_locks`, `tail -n 500\ntmp_bench/postgres.log`, and **gdb stack traces of any still-running\nbackends** to `diagnostics.log`. The gdb stacks are especially important\nhere because pg_textsearch's BMW scan loop currently has no\n`CHECK_FOR_INTERRUPTS`, so `statement_timeout` / `pg_cancel_backend()`\ncannot interrupt a hung scan — gdb is the only way to see where it's\nstuck.\n\n### 3. Reorder `Format insert metrics` before `Upload insert benchmark\nresults`\n\nThe generated `*_action.json` files were previously listed in the upload\n`path:` but produced *after* the upload step ran, so they were never\nactually archived. Pure bug.\n\n### 4. Add `if: always()` to the upload step\n\n**The single most important change for next-time debuggability.**\nWithout it, GitHub Actions skips this step on cancellation/failure and\nwe lose `postgres.log` + `diagnostics.log`.\n\n### 5. Add `SET statement_timeout = 5min` to query SQL files\n\nDefense in depth in\n`benchmarks/datasets/{msmarco,wikipedia}/queries.sql` and\n`benchmarks/sql/cranfield/02-queries.sql`. Note: this **cannot**\ninterrupt a C-loop hang in BMW (no `CHECK_FOR_INTERRUPTS` there) but\ndoes catch plpgsql / planner-side runaways.\n\n## What this PR explicitly does **not** fix\n\nThe underlying bucket-7 BMW hang itself. That bug:\n- **Pre-dates** the rmgr/replication work (pre-rmgr commits `35a2dc63`,\n`7f7bd41a` cancelled in the same step before any WAL/replication PR\nlanded).\n- Is intermittent / data-dependent (same SHA `bdd3b317` succeeded once\nand hung twice on subsequent runs).\n- Cannot be debugged from current run logs because we have no artifact.\n\nI will file a tracking issue documenting the symptom and the missing\n`CHECK_FOR_INTERRUPTS` in `src/access/scan.c` / `src/scoring/bmw.c`\n(which is the reason hangs are uninterruptible — likely worth a separate\nsmall PR independently of root-causing the bucket-7 case).\n\n## Verification\n\n- [x] `actionlint .github/workflows/benchmark.yml` — clean.\n- [x] `python3 -c \"import yaml; yaml.safe_load(...)\"` — parses.\n- [x] All `timeout-minutes` values comfortably fit within the 6h job\ntimeout (sum ≈ 5h 25min worst case).\n- [x] Step ordering verified: extract → format → upload → publish.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-05-10T04:43:51Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/29d7438717689bbb7796d27e09c1b03e77cfb88a"
+        },
+        "date": 1778399765343,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2615.908454,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.382,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4889.912304,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.409,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7794.429926,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.513,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8869.816133,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.902,
             "unit": "ms"
           }
         ]
