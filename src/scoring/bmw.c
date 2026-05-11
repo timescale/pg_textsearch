@@ -944,6 +944,18 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 	 */
 	for (;;)
 	{
+		/*
+		 * Cancelability: each iteration of the outer loop calls
+		 * tp_segment_posting_iterator_load_block, which performs disk
+		 * I/O and possibly block decompression. Under the cache-
+		 * inconsistency scenario this function defends against, the
+		 * loop can iterate across many blocks. Without this CHECK,
+		 * statement_timeout / pg_cancel_backend cannot abort the
+		 * scan, and seek_to_pivot's CHECK_FOR_INTERRUPTS one level up
+		 * never fires because we never return from this function.
+		 */
+		CHECK_FOR_INTERRUPTS();
+
 		while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
 		{
 			uint32 doc_id =
