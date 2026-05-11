@@ -245,6 +245,15 @@ CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
+-- TEMPORARY DIAGNOSTIC (PR #360 follow-up): check segment skip-data
+-- consistency for the MS MARCO bucket-8 hang investigation. Iterates
+-- every block of every term in every segment and verifies that cached
+-- skip data matches actual on-disk block contents. Should be removed
+-- once the underlying skip-data corruption is found and fixed.
+CREATE FUNCTION @extschema@.bm25_check_segment_consistency(text) RETURNS text
+    AS 'MODULE_PATHNAME', 'tp_check_segment_consistency'
+    LANGUAGE C STRICT STABLE;
+
 -- Memory usage visibility function.
 -- Intentionally accessible to all users (monitoring/ops use case).
 -- Only exposes aggregate DSA byte counts and configured limits,
@@ -264,3 +273,4 @@ LANGUAGE C VOLATILE;
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_check_segment_consistency(text) FROM PUBLIC;

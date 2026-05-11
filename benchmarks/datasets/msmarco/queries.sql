@@ -151,6 +151,12 @@ SELECT 'LATENCY_BUCKET_7: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms
 FROM bucket_results WHERE bucket = 7;
 
 \echo ''
+\echo '=== TEMPORARY DIAGNOSTIC: segment skip-data consistency check ==='
+\echo '(PR #360 follow-up: investigating MS MARCO bucket-8 hang)'
+\echo ''
+SELECT bm25_check_segment_consistency('msmarco_bm25_idx');
+
+\echo ''
 \echo 'Token bucket 8 (8+ search tokens):'
 INSERT INTO bucket_results SELECT 8, * FROM benchmark_bucket(8);
 SELECT 'LATENCY_BUCKET_8: p50=' || round(p50_ms, 2) || 'ms p95=' || round(p95_ms, 2) || 'ms p99=' || round(p99_ms, 2) || 'ms avg=' || round(avg_ms, 2) || 'ms (n=' || num_queries || ', results=' || total_results || ')' as result
