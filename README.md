@@ -633,13 +633,20 @@ documents:** split the document into smaller pieces in the application
 layer and index a `text[]` column instead of `text`. pg_textsearch
 indexes arrays element-by-element and BM25 scores match what you'd get
 from concatenating the elements into a single `text` value, so you keep
-ranking quality while controlling where chunk boundaries fall. For
-example:
+ranking quality while controlling where chunk boundaries fall. Pair
+this with a CJK-aware text search configuration from an extension such
+as [zhparser](https://github.com/amutu/zhparser) (Chinese) so that each
+chunk gets word-level tokenization:
 
 ```sql
+CREATE EXTENSION zhparser;
+CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION chinese_zh
+    ADD MAPPING FOR n,v,a,i,e,l WITH simple;
+
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text[]);
 CREATE INDEX docs_bm25 ON docs USING bm25(content)
-    WITH (text_config='simple');
+    WITH (text_config='chinese_zh');
 ```
 
 ### PL/pgSQL and Stored Procedures
