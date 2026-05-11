@@ -147,5 +147,6 @@ window.BRANCH_INFO = {
   "bdd3b317af4007bfca6d1b43ff8446fb55d0e2ae": "main",
   "67af30f909398eb5ce88981b8faa92c59eefbc47": "main",
   "29d7438717689bbb7796d27e09c1b03e77cfb88a": "main",
-  "be2f453d1c62bfb3a0c87f8886b5a002758ba9dc": "main"
+  "be2f453d1c62bfb3a0c87f8886b5a002758ba9dc": "main",
+  "531b8014e04f5f799952311e4ac14772991a9a75": "greentodd/bmw-seek-to-pivot-hang"
 };
