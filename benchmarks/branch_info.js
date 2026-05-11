@@ -151,5 +151,6 @@ window.BRANCH_INFO = {
   "531b8014e04f5f799952311e4ac14772991a9a75": "greentodd/bmw-seek-to-pivot-hang",
   "315f1c2eb06e897c4c339b618ff42142b6e6a58f": "greentodd/bmw-seek-to-pivot-hang",
   "dbbd2bb82dfb5505f660eab88acc1477d8315531": "greentodd/bmw-seek-to-pivot-hang",
-  "609bb315390e4c37ce44a44e492327a7d3084d72": "greentodd/bmw-seek-to-pivot-hang"
+  "609bb315390e4c37ce44a44e492327a7d3084d72": "greentodd/bmw-seek-to-pivot-hang",
+  "5bbf31634e854b293444ee6ea1c767d4adff8da0": "greentodd/bmw-seek-to-pivot-hang"
 };
