@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778399770726,
+  "lastUpdate": 1778487979698,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -2298,6 +2298,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.902,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "be2f453d1c62bfb3a0c87f8886b5a002758ba9dc",
+          "message": "fix: chunked tokenization for oversized documents (#348)\n\n## Summary\n- Documents whose unique-token volume exceeds Postgres's `tsvector` 1 MB\nlexeme-dictionary cap (`MAXSTRPOS`) previously failed `CREATE INDEX`,\n`INSERT` (aminsert), `VACUUM` rebuild, `to_tpvector`, and standalone\n`<@>` scoring with `ERROR: string is too long for tsvector (N bytes, max\n1048575 bytes)`.\n- New `tp_tokenize_text` helper splits inputs >256 KB on ASCII\nwhitespace (UTF-8-safe byte fallback when no whitespace is present),\ntokenizes each chunk via `to_tsvector_byid`, and merges per-chunk\n`(term, freq)` arrays via sort + collapse. Single-chunk fast path is\nunchanged.\n- All five tokenization sites (`build.c` ×2, `build_parallel.c`,\n`vacuum.c`, `types/vector.c::to_tpvector`) route through the helper. The\nstandalone scoring path in `bm25_text_bm25query_score` was also\nrefactored to use the helper plus a sorted-array term lookup, since\n`find_term_frequency` previously walked the tsvector directly and would\nhave re-hit the same 1 MB cap on seq-scan rows.\n- Whitespace splitting is correct for whitespace-delimited scripts\n(Latin, Cyrillic, Greek, Arabic). Non-whitespace-delimited scripts (CJK,\nThai) get byte/codepoint splits — acceptable because Postgres's default\ntext-search parser doesn't emit per-word tokens for those scripts.\nDocumented in README.\n\n## Trigger\nThe bug requires *unique-token volume*, not raw byte size:\n`repeat('hello world ', 100000)` is 1.2 MB but only 2 lexemes and\nindexes fine. The repro and tests use ~250 K distinct tokens (~1.9 MB\nraw text).\n\n## Testing\n- New \\`test/sql/large_documents.sql\\` covers \\`CREATE INDEX\\`,\n\\`INSERT\\`, index-scan query, seq-scan / standalone-scoring query, and\n\\`VACUUM\\` on a 2 MB+ many-unique-token document.\n- Full \\`make installcheck\\` (60 tests) passes locally on PG 17.",
+          "timestamp": "2026-05-11T02:44:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/be2f453d1c62bfb3a0c87f8886b5a002758ba9dc"
+        },
+        "date": 1778487974386,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2375.221218,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.421,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4581.750969,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.437,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7744.386187,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.517,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 11947.611912,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.67,
             "unit": "ms"
           }
         ]
