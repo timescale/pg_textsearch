@@ -790,7 +790,7 @@ tp_dump_index(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to dump index")));
 
-		/* Check for optional filename parameter */
+	/* Check for optional filename parameter */
 #ifdef DEBUG_DUMP_INDEX
 	if (PG_NARGS() > 1 && !PG_ARGISNULL(1))
 	{
