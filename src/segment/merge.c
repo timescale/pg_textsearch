@@ -67,7 +67,12 @@ merge_sink_write(TpMergeSink *sink, const void *data, uint32 size)
 
 /*
  * Positioned write for backpatching (dict entries, header).
- * For pages backend, reads/writes through buffer manager.
+ *
+ * Each per-page chunk is logged as a small GenericXLog delta against the
+ * page that the writer flush already wrote.  This keeps backpatch WAL
+ * traffic proportional to the number of bytes actually changed (a few
+ * dict entries or the segment header struct), rather than emitting a
+ * full-page image for every visited page.
  */
 static void
 merge_sink_write_at(
@@ -79,22 +84,24 @@ merge_sink_write_at(
 
 	while (remaining > 0)
 	{
-		uint32		logical_pg = tp_logical_page(pos);
-		uint32		pg_off	   = tp_page_offset(pos);
-		uint32		avail	   = SEGMENT_DATA_PER_PAGE - pg_off;
-		uint32		chunk	   = Min(remaining, avail);
-		BlockNumber physical_block;
-		Buffer		buf;
-		Page		page;
+		uint32			  logical_pg = tp_logical_page(pos);
+		uint32			  pg_off	 = tp_page_offset(pos);
+		uint32			  avail		 = SEGMENT_DATA_PER_PAGE - pg_off;
+		uint32			  chunk		 = Min(remaining, avail);
+		BlockNumber		  physical_block;
+		Buffer			  buf;
+		Page			  page;
+		GenericXLogState *xlog_state;
 
 		Assert(logical_pg < sink->writer.pages_allocated);
 		physical_block = sink->writer.pages[logical_pg];
 
 		buf = ReadBuffer(sink->index, physical_block);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		page = BufferGetPage(buf);
+		xlog_state = GenericXLogStart(sink->index);
+		page	   = GenericXLogRegisterBuffer(xlog_state, buf, 0);
 		memcpy((char *)page + SizeOfPageHeaderData + pg_off, src, chunk);
-		MarkBufferDirty(buf);
+		GenericXLogFinish(xlog_state);
 		UnlockReleaseBuffer(buf);
 
 		src += chunk;
@@ -1651,36 +1658,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				level + 1,
 				total_tokens,
 				false);
-
-		/* WAL-log all merged segment pages */
-		{
-			uint32 pg_idx = 0;
-
-			while (pg_idx < sink.writer.pages_allocated)
-			{
-				GenericXLogState *xstate;
-				Buffer			  xbufs[MAX_GENERIC_XLOG_PAGES];
-				uint32			  xn = 0, xj;
-
-				xstate = GenericXLogStart(index);
-
-				for (xj = 0; xj < MAX_GENERIC_XLOG_PAGES &&
-							 pg_idx < sink.writer.pages_allocated;
-					 xj++, pg_idx++)
-				{
-					xbufs[xn] = ReadBuffer(index, sink.writer.pages[pg_idx]);
-					LockBuffer(xbufs[xn], BUFFER_LOCK_EXCLUSIVE);
-					GenericXLogRegisterBuffer(
-							xstate, xbufs[xn], GENERIC_XLOG_FULL_IMAGE);
-					xn++;
-				}
-
-				GenericXLogFinish(xstate);
-
-				for (xj = 0; xj < xn; xj++)
-					UnlockReleaseBuffer(xbufs[xj]);
-			}
-		}
 
 		/* Free writer pages array */
 		if (sink.writer.pages)

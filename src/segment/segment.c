@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
+#include <utils/rel.h>
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
@@ -43,6 +44,16 @@
 
 /* External: compression GUC from mod.c */
 extern bool tp_compress_segments;
+
+void
+tp_segment_log_dirty_buffer(Relation index, Buffer buffer)
+{
+	START_CRIT_SECTION();
+	MarkBufferDirty(buffer);
+	if (RelationNeedsWAL(index))
+		log_newpage_buffer(buffer, false);
+	END_CRIT_SECTION();
+}
 
 /*
  * Note: We previously had a global page map cache here, but it was removed
@@ -735,6 +746,19 @@ tp_segment_release_direct(TpSegmentDirectAccess *access)
 /*
  * Allocate a single page for segment.
  * Checks FSM for recycled pages first, then extends the relation if needed.
+ *
+ * The returned page is intentionally left uninitialized and unlogged.  The
+ * first writer to populate the page (tp_segment_writer_flush or
+ * write_page_index_internal) is responsible for PageInit, laying out the
+ * segment-specific header fields (e.g. pd_lower = BLCKSZ for content pages),
+ * marking the buffer dirty, and emitting a WAL record for the new contents.
+ *
+ * Doing the page setup at content-write time — rather than here — avoids a
+ * redundant alloc-time WAL image for every newly extended or recycled page.
+ * Pages that are reached only by code that never writes them (e.g. an error
+ * path that bails out before flushing) remain unmodified on disk; that is
+ * safe because we never reference such pages from any persisted segment
+ * structure.
  */
 static BlockNumber
 allocate_segment_page(Relation index)
@@ -745,25 +769,16 @@ allocate_segment_page(Relation index)
 	/* Try to get a free page from FSM (recycled from compaction) */
 	block = GetFreeIndexPage(index);
 	if (block != InvalidBlockNumber)
-	{
-		buffer = ReadBuffer(index, block);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-		/* Ensure pd_lower covers content for GenericXLog */
-		((PageHeader)BufferGetPage(buffer))->pd_lower = BLCKSZ;
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
 		return block;
-	}
 
-	/* No free pages available, extend the relation */
+	/*
+	 * No free pages available, extend the relation.  RBM_ZERO_AND_LOCK
+	 * gives us a zero-filled page; the first content writer will overwrite
+	 * the header and content area before logging it.
+	 */
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
 	block = BufferGetBlockNumber(buffer);
-	PageInit(BufferGetPage(buffer), BLCKSZ, 0);
-	/* Ensure pd_lower covers content for GenericXLog */
-	((PageHeader)BufferGetPage(buffer))->pd_lower = BLCKSZ;
-	MarkBufferDirty(buffer);
 	UnlockReleaseBuffer(buffer);
 	return block;
 }
@@ -879,30 +894,7 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 		for (j = 0; j < entries_to_write; j++)
 			page_data[j] = pages[start_idx + j];
 
-		/*
-		 * Issue #342: WAL-log the page-index page so it reaches the
-		 * standby. Prior code wrote these pages via MarkBufferDirty
-		 * alone, bypassing WAL — the post-hoc FULL_IMAGE pass over
-		 * writer.pages in the segment write paths excludes page-index
-		 * blocks, since these are allocated via allocate_segment_page
-		 * rather than tp_segment_writer_allocate_page.
-		 *
-		 * page_std=false because pd_lower on this page does not cover
-		 * the data area — the page-index entries are written between
-		 * pd_lower (= SizeOfPageHeaderData) and pd_upper (= pd_special).
-		 * REGBUF_STANDARD would treat that as a hole and zero it on
-		 * replay, dropping the actual page-index contents. With
-		 * page_std=false we log the entire BLCKSZ.
-		 *
-		 * log_newpage_buffer asserts CritSectionCount > 0; the
-		 * MarkBufferDirty + WAL-log pair must be inside a critical
-		 * section so a failure between them PANICs rather than
-		 * leaving a dirty page un-WAL-logged.
-		 */
-		START_CRIT_SECTION();
-		MarkBufferDirty(buffer);
-		log_newpage_buffer(buffer, false);
-		END_CRIT_SECTION();
+		tp_segment_log_dirty_buffer(index, buffer);
 		UnlockReleaseBuffer(buffer);
 
 		prev_block = index_pages[i];
@@ -1344,11 +1336,18 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/*
 	 * Now write the dictionary entries with correct skip_index_offset values.
 	 * Do this BEFORE tp_segment_writer_finish so writer.pages is still valid.
+	 *
+	 * Each per-page batch of patches is logged as a GenericXLog delta record
+	 * against the page that the writer flush already wrote, so we don't pay
+	 * the cost of a full-page WAL image for what amounts to a small number
+	 * of 16-byte dict-entry updates per page.
 	 */
 	{
-		Buffer dict_buf = InvalidBuffer;
-		uint32 entry_logical_page;
-		uint32 current_page = UINT32_MAX;
+		Buffer			  dict_buf	 = InvalidBuffer;
+		Page			  dict_page	 = NULL;
+		GenericXLogState *xlog_state = NULL;
+		uint32			  entry_logical_page;
+		uint32			  current_page = UINT32_MAX;
 
 		for (i = 0; i < num_terms; i++)
 		{
@@ -1387,17 +1386,19 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			{
 				if (current_page != UINT32_MAX)
 				{
-					MarkBufferDirty(dict_buf);
+					GenericXLogFinish(xlog_state);
 					UnlockReleaseBuffer(dict_buf);
 				}
 
 				physical_block = writer.pages[entry_logical_page];
 				dict_buf	   = ReadBuffer(index, physical_block);
 				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				xlog_state = GenericXLogStart(index);
+				dict_page = GenericXLogRegisterBuffer(xlog_state, dict_buf, 0);
 				current_page = entry_logical_page;
 			}
 
-			/* Write entry to page - handle page boundary spanning */
+			/* Write entry to working copy - handle page boundary spanning */
 			{
 				uint32 bytes_on_this_page = SEGMENT_DATA_PER_PAGE -
 											page_offset;
@@ -1405,24 +1406,22 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 				if (bytes_on_this_page >= sizeof(TpDictEntry))
 				{
 					/* Entry fits entirely on this page */
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
+					char *dest = (char *)dict_page + SizeOfPageHeaderData +
 								 page_offset;
 					memcpy(dest, &entry, sizeof(TpDictEntry));
 				}
 				else
 				{
 					/* Entry spans two pages */
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
+					char *dest = (char *)dict_page + SizeOfPageHeaderData +
 								 page_offset;
 					char *src = (char *)&entry;
 
-					/* Write first part to current page */
+					/* Write first part to current working copy */
 					memcpy(dest, src, bytes_on_this_page);
 
-					/* Move to next page */
-					MarkBufferDirty(dict_buf);
+					/* Commit current page's delta and move to next page */
+					GenericXLogFinish(xlog_state);
 					UnlockReleaseBuffer(dict_buf);
 
 					entry_logical_page++;
@@ -1434,11 +1433,13 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 					physical_block = writer.pages[entry_logical_page];
 					dict_buf	   = ReadBuffer(index, physical_block);
 					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					xlog_state = GenericXLogStart(index);
+					dict_page =
+							GenericXLogRegisterBuffer(xlog_state, dict_buf, 0);
 					current_page = entry_logical_page;
 
-					/* Write remaining part to next page */
-					page = BufferGetPage(dict_buf);
-					dest = (char *)page + SizeOfPageHeaderData;
+					/* Write remaining part to next page's working copy */
+					dest = (char *)dict_page + SizeOfPageHeaderData;
 					memcpy(dest,
 						   src + bytes_on_this_page,
 						   sizeof(TpDictEntry) - bytes_on_this_page);
@@ -1449,7 +1450,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		/* Release last buffer */
 		if (current_page != UINT32_MAX)
 		{
-			MarkBufferDirty(dict_buf);
+			GenericXLogFinish(xlog_state);
 			UnlockReleaseBuffer(dict_buf);
 		}
 	}
@@ -1459,68 +1460,39 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Flush to disk */
 	FlushRelationBuffers(index);
 
-	/* Update header on disk */
-	header_buf = ReadBuffer(index, header_block);
-	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-	header_page = BufferGetPage(header_buf);
-
-	existing_header = (TpSegmentHeader *)PageGetContents(header_page);
-	existing_header->strings_offset		 = header.strings_offset;
-	existing_header->entries_offset		 = header.entries_offset;
-	existing_header->postings_offset	 = header.postings_offset;
-	existing_header->skip_index_offset	 = header.skip_index_offset;
-	existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
-	existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
-	existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-	existing_header->alive_bitset_offset = header.alive_bitset_offset;
-	existing_header->alive_count		 = header.alive_count;
-	existing_header->num_docs			 = header.num_docs;
-	existing_header->total_tokens		 = header.total_tokens;
-	existing_header->data_size			 = header.data_size;
-	existing_header->num_pages			 = header.num_pages;
-	existing_header->page_index			 = header.page_index;
-
-	/* Ensure pd_lower covers content for GenericXLog */
-	((PageHeader)header_page)->pd_lower = BLCKSZ;
-
-	MarkBufferDirty(header_buf);
-	UnlockReleaseBuffer(header_buf);
-
 	/*
-	 * WAL-log all segment content pages via GenericXLog
-	 * FULL_IMAGE.  All modifications (content, dictionary
-	 * patches, header) have already been applied to the real
-	 * buffer pages above.  This pass generates WAL records so
-	 * the pages survive crash recovery.
+	 * Update header on disk.  The header page was already written and
+	 * WAL-logged in full during the writer flush above; this final patch
+	 * touches only the small TpSegmentHeader struct, so we use a
+	 * GenericXLog delta to avoid emitting another full-page image.
 	 */
 	{
-		uint32 pg_idx = 0;
+		GenericXLogState *xlog_state;
 
-		while (pg_idx < writer.pages_allocated)
-		{
-			GenericXLogState *state;
-			Buffer			  bufs[MAX_GENERIC_XLOG_PAGES];
-			uint32			  n = 0;
-			uint32			  j;
+		header_buf = ReadBuffer(index, header_block);
+		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 
-			state = GenericXLogStart(index);
+		xlog_state	= GenericXLogStart(index);
+		header_page = GenericXLogRegisterBuffer(xlog_state, header_buf, 0);
 
-			for (j = 0;
-				 j < MAX_GENERIC_XLOG_PAGES && pg_idx < writer.pages_allocated;
-				 j++, pg_idx++)
-			{
-				bufs[n] = ReadBuffer(index, writer.pages[pg_idx]);
-				LockBuffer(bufs[n], BUFFER_LOCK_EXCLUSIVE);
-				GenericXLogRegisterBuffer(
-						state, bufs[n], GENERIC_XLOG_FULL_IMAGE);
-				n++;
-			}
+		existing_header = (TpSegmentHeader *)PageGetContents(header_page);
+		existing_header->strings_offset		 = header.strings_offset;
+		existing_header->entries_offset		 = header.entries_offset;
+		existing_header->postings_offset	 = header.postings_offset;
+		existing_header->skip_index_offset	 = header.skip_index_offset;
+		existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+		existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+		existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+		existing_header->alive_bitset_offset = header.alive_bitset_offset;
+		existing_header->alive_count		 = header.alive_count;
+		existing_header->num_docs			 = header.num_docs;
+		existing_header->total_tokens		 = header.total_tokens;
+		existing_header->data_size			 = header.data_size;
+		existing_header->num_pages			 = header.num_pages;
+		existing_header->page_index			 = header.page_index;
 
-			GenericXLogFinish(state);
-
-			for (j = 0; j < n; j++)
-				UnlockReleaseBuffer(bufs[j]);
-		}
+		GenericXLogFinish(xlog_state);
+		UnlockReleaseBuffer(header_buf);
 	}
 
 	FlushRelationBuffers(index);
@@ -2165,15 +2137,25 @@ tp_segment_writer_flush(TpSegmentWriter *writer)
 	page = BufferGetPage(buffer);
 
 	/*
-	 * Copy only the data portion of the page, preserving the page header
-	 * that the buffer manager has set up. This avoids corrupting the LSN
-	 * and other buffer manager state.
+	 * Lay out the standard page header before populating the content area.
+	 * allocate_segment_page intentionally returns uninitialized pages, so
+	 * the first writer to touch a buffer is responsible for PageInit and
+	 * for setting pd_lower to cover the custom segment content area.
+	 */
+	PageInit(page, BLCKSZ, 0);
+	((PageHeader)page)->pd_lower = BLCKSZ;
+
+	/*
+	 * Copy only the data portion of the page, leaving the header we just
+	 * laid out in place.  writer->buffer's first SizeOfPageHeaderData
+	 * bytes are scratch and must not overwrite the buffer manager's page
+	 * header on disk.
 	 */
 	memcpy((char *)page + SizeOfPageHeaderData,
 		   (char *)writer->buffer + SizeOfPageHeaderData,
 		   BLCKSZ - SizeOfPageHeaderData);
 
-	MarkBufferDirty(buffer);
+	tp_segment_log_dirty_buffer(writer->index, buffer);
 	UnlockReleaseBuffer(buffer);
 }
 

@@ -551,10 +551,16 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	 * Write dictionary entries with real skip_index_offset
 	 * values. This must happen BEFORE tp_segment_writer_finish
 	 * so writer.pages is still valid.
+	 *
+	 * Logged as GenericXLog deltas (not full-page images) since
+	 * each batch only mutates a handful of 16-byte dict entries
+	 * in pages that the writer flush already WAL-logged in full.
 	 */
 	{
-		Buffer dict_buf		= InvalidBuffer;
-		uint32 current_page = UINT32_MAX;
+		Buffer			  dict_buf	   = InvalidBuffer;
+		Page			  dict_page	   = NULL;
+		GenericXLogState *xlog_state   = NULL;
+		uint32			  current_page = UINT32_MAX;
 
 		for (i = 0; i < num_terms; i++)
 		{
@@ -590,35 +596,35 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			{
 				if (current_page != UINT32_MAX)
 				{
-					MarkBufferDirty(dict_buf);
+					GenericXLogFinish(xlog_state);
 					UnlockReleaseBuffer(dict_buf);
 				}
 				physical_block = writer.pages[logical_page];
 				dict_buf	   = ReadBuffer(index, physical_block);
 				LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+				xlog_state = GenericXLogStart(index);
+				dict_page = GenericXLogRegisterBuffer(xlog_state, dict_buf, 0);
 				current_page = logical_page;
 			}
 
-			/* Write entry — handle page boundary spanning */
+			/* Write entry to working copy - handle page boundary spanning */
 			{
 				uint32 bytes_remaining = SEGMENT_DATA_PER_PAGE - page_offset;
 
 				if (bytes_remaining >= sizeof(TpDictEntry))
 				{
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
+					char *dest = (char *)dict_page + SizeOfPageHeaderData +
 								 page_offset;
 					memcpy(dest, &entry, sizeof(TpDictEntry));
 				}
 				else
 				{
-					Page  page = BufferGetPage(dict_buf);
-					char *dest = (char *)page + SizeOfPageHeaderData +
+					char *dest = (char *)dict_page + SizeOfPageHeaderData +
 								 page_offset;
 					char *src = (char *)&entry;
 
 					memcpy(dest, src, bytes_remaining);
-					MarkBufferDirty(dict_buf);
+					GenericXLogFinish(xlog_state);
 					UnlockReleaseBuffer(dict_buf);
 
 					logical_page++;
@@ -630,10 +636,12 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 					physical_block = writer.pages[logical_page];
 					dict_buf	   = ReadBuffer(index, physical_block);
 					LockBuffer(dict_buf, BUFFER_LOCK_EXCLUSIVE);
+					xlog_state = GenericXLogStart(index);
+					dict_page =
+							GenericXLogRegisterBuffer(xlog_state, dict_buf, 0);
 					current_page = logical_page;
 
-					page = BufferGetPage(dict_buf);
-					dest = (char *)page + SizeOfPageHeaderData;
+					dest = (char *)dict_page + SizeOfPageHeaderData;
 					memcpy(dest,
 						   src + bytes_remaining,
 						   sizeof(TpDictEntry) - bytes_remaining);
@@ -643,7 +651,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 
 		if (current_page != UINT32_MAX)
 		{
-			MarkBufferDirty(dict_buf);
+			GenericXLogFinish(xlog_state);
 			UnlockReleaseBuffer(dict_buf);
 		}
 	}
@@ -653,66 +661,38 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	/* Flush all pages to disk */
 	FlushRelationBuffers(index);
 
-	/* Write final header */
-	header_buf = ReadBuffer(index, header_block);
-	LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
-	header_page = BufferGetPage(header_buf);
-	{
-		TpSegmentHeader *hdr = (TpSegmentHeader *)PageGetContents(header_page);
-		hdr->strings_offset	 = header.strings_offset;
-		hdr->entries_offset	 = header.entries_offset;
-		hdr->postings_offset = header.postings_offset;
-		hdr->skip_index_offset	 = header.skip_index_offset;
-		hdr->fieldnorm_offset	 = header.fieldnorm_offset;
-		hdr->ctid_pages_offset	 = header.ctid_pages_offset;
-		hdr->ctid_offsets_offset = header.ctid_offsets_offset;
-		hdr->alive_bitset_offset = header.alive_bitset_offset;
-		hdr->alive_count		 = header.alive_count;
-		hdr->num_docs			 = header.num_docs;
-		hdr->data_size			 = header.data_size;
-		hdr->num_pages			 = header.num_pages;
-		hdr->page_index			 = header.page_index;
-	}
-	MarkBufferDirty(header_buf);
-	UnlockReleaseBuffer(header_buf);
-
 	/*
-	 * WAL-log all segment content pages via GenericXLog FULL_IMAGE so
-	 * they reach the standby. (Issue #342: prior code wrote these
-	 * pages via MarkBufferDirty alone. Page-index pages are covered
-	 * by log_newpage_buffer inside write_page_index_internal.)
-	 *
-	 * Mirrors the equivalent post-hoc pass in segment.c's
-	 * tp_write_segment.
+	 * Write final header.  The header page already received a full-page
+	 * WAL image during the writer flush, so this final patch is logged
+	 * as a small GenericXLog delta.
 	 */
 	{
-		uint32 pg_idx = 0;
+		GenericXLogState *xlog_state;
 
-		while (pg_idx < writer.pages_allocated)
+		header_buf = ReadBuffer(index, header_block);
+		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
+
+		xlog_state	= GenericXLogStart(index);
+		header_page = GenericXLogRegisterBuffer(xlog_state, header_buf, 0);
 		{
-			GenericXLogState *state;
-			Buffer			  bufs[MAX_GENERIC_XLOG_PAGES];
-			uint32			  n = 0;
-			uint32			  j;
-
-			state = GenericXLogStart(index);
-
-			for (j = 0;
-				 j < MAX_GENERIC_XLOG_PAGES && pg_idx < writer.pages_allocated;
-				 j++, pg_idx++)
-			{
-				bufs[n] = ReadBuffer(index, writer.pages[pg_idx]);
-				LockBuffer(bufs[n], BUFFER_LOCK_EXCLUSIVE);
-				GenericXLogRegisterBuffer(
-						state, bufs[n], GENERIC_XLOG_FULL_IMAGE);
-				n++;
-			}
-
-			GenericXLogFinish(state);
-
-			for (j = 0; j < n; j++)
-				UnlockReleaseBuffer(bufs[j]);
+			TpSegmentHeader *hdr = (TpSegmentHeader *)PageGetContents(
+					header_page);
+			hdr->strings_offset		 = header.strings_offset;
+			hdr->entries_offset		 = header.entries_offset;
+			hdr->postings_offset	 = header.postings_offset;
+			hdr->skip_index_offset	 = header.skip_index_offset;
+			hdr->fieldnorm_offset	 = header.fieldnorm_offset;
+			hdr->ctid_pages_offset	 = header.ctid_pages_offset;
+			hdr->ctid_offsets_offset = header.ctid_offsets_offset;
+			hdr->alive_bitset_offset = header.alive_bitset_offset;
+			hdr->alive_count		 = header.alive_count;
+			hdr->num_docs			 = header.num_docs;
+			hdr->data_size			 = header.data_size;
+			hdr->num_pages			 = header.num_pages;
+			hdr->page_index			 = header.page_index;
 		}
+		GenericXLogFinish(xlog_state);
+		UnlockReleaseBuffer(header_buf);
 	}
 
 	FlushRelationBuffers(index);

@@ -90,3 +90,20 @@ extern void tp_batch_get_segment_doc_freq(
 		char	  **terms,
 		int			term_count,
 		uint32	   *doc_freqs);
+
+/*
+ * Mark a segment buffer dirty and immediately emit a full-page WAL image when
+ * WAL is required for the relation.  Segment pages use custom layouts, so the
+ * full image must not use REGBUF_STANDARD hole compression.
+ *
+ * This helper is intended for callers that have just populated an entire
+ * segment page from scratch (e.g. tp_segment_writer_flush,
+ * write_page_index_internal), where a full-page image is necessary anyway.
+ * For small in-place updates to an already-written segment page (dict-entry
+ * backpatches, header patches), prefer GenericXLog delta logging — it
+ * produces much smaller WAL records.
+ *
+ * Callers must hold an exclusive buffer lock and must not perform any
+ * ERROR-capable work between the final page modification and this call.
+ */
+extern void tp_segment_log_dirty_buffer(Relation index, Buffer buffer);
