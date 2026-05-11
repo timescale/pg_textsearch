@@ -628,6 +628,20 @@ parser that produces word-level tokens for one of these scripts, very
 large documents may produce slightly different lexeme counts than a
 single-shot tokenization would.
 
+**Workaround for large CJK (or other non-whitespace-delimited)
+documents:** split the document into smaller pieces in the application
+layer and index a `text[]` column instead of `text`. pg_textsearch
+indexes arrays element-by-element and BM25 scores match what you'd get
+from concatenating the elements into a single `text` value, so you keep
+ranking quality while controlling where chunk boundaries fall. For
+example:
+
+```sql
+CREATE TABLE docs (id bigserial PRIMARY KEY, content text[]);
+CREATE INDEX docs_bm25 ON docs USING bm25(content)
+    WITH (text_config='simple');
+```
+
 ### PL/pgSQL and Stored Procedures
 
 The implicit `text <@> 'query'` syntax relies on planner hooks to automatically
