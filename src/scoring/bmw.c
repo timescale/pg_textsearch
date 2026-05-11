@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <math.h>
+#include <miscadmin.h>
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
 
@@ -443,6 +444,9 @@ score_memtable_single_term(
 		int32			 doc_len;
 		float4			 score;
 
+		if ((i & 0xFFF) == 0)
+			CHECK_FOR_INTERRUPTS();
+
 		/* Get document length */
 		doc_len = tp_source_get_doc_length(source, ctid);
 		if (doc_len <= 0)
@@ -506,6 +510,8 @@ score_segment_single_term_bmw(
 	{
 		float4 threshold = tp_topk_threshold(heap);
 		float4 block_max = block_max_scores[i];
+
+		CHECK_FOR_INTERRUPTS();
 
 		/* Skip block if it can't beat threshold */
 		if (block_max < threshold)
@@ -611,6 +617,8 @@ tp_score_single_term_bmw(
 		while (seg_head != InvalidBlockNumber)
 		{
 			TpSegmentReader *reader = tp_segment_open(index, seg_head);
+
+			CHECK_FOR_INTERRUPTS();
 
 			score_segment_single_term_bmw(
 					&heap, reader, term, idf, k1, b, avg_doc_len, stats);
@@ -737,6 +745,12 @@ score_memtable_multi_term(
 			float4				term_score;
 			DocumentScoreEntry *entry;
 			bool				found;
+
+			/* CHECK every 4096 postings; this loop can be very long
+			 * when the memtable holds millions of postings -- gating
+			 * amortizes the overhead. */
+			if ((i & 0xFFF) == 0)
+				CHECK_FOR_INTERRUPTS();
 
 			/* Get document length */
 			doc_len = tp_source_get_doc_length(source, ctid);
@@ -1190,12 +1204,17 @@ compute_block_max_at_pivot(TpTermState **terms, int pivot_len)
 /*
  * When block-max upper bound < threshold, advance one scorer.
  *
- * Strategy (following Tantivy):
- * 1. Find the term with highest max_score among pivot terms
- * 2. Find the minimum last_doc_id of current blocks among
- *    pivot terms (next interesting boundary)
- * 3. Seek that term to min(boundary+1, first non-pivot doc)
- * 4. Restore sorted order
+ * We pick the pivot term whose current block ends *soonest*
+ * (min_block_end), because seeking that term to min_block_end+1 is
+ * guaranteed to advance it past its current block boundary, which
+ * guarantees forward progress of the outer WAND loop.
+ *
+ * A previous version picked the pivot term with the highest max_score
+ * and seeked it to min_block_end+1. That term's cur_doc_id could be
+ * greater than min_block_end+1, in which case seek_term_to_doc was a
+ * no-op and the outer WAND loop would spin forever (issue #355).
+ * High-max-score selection is a performance heuristic; forward progress
+ * is the correctness requirement.
  */
 static void
 block_max_skip_advance(
@@ -1205,13 +1224,12 @@ block_max_skip_advance(
 		int			 *active_count,
 		TpBMWStats	 *stats)
 {
-	int	   best_scorer	  = -1;
-	float4 best_max_score = -1.0f;
-	uint32 min_block_end  = UINT32_MAX;
+	int	   seek_term_idx = -1;
+	uint32 min_block_end = UINT32_MAX;
 	uint32 seek_target;
 	int	   i;
 
-	/* Find scorer with highest max_score and minimum block end */
+	/* Find pivot term whose current block ends soonest. */
 	for (i = 0; i < pivot_len; i++)
 	{
 		TpTermState *ts = terms[i];
@@ -1223,28 +1241,33 @@ block_max_skip_advance(
 		if (doc_id == UINT32_MAX)
 			continue;
 
-		if (terms[i]->max_score > best_max_score)
-		{
-			best_max_score = terms[i]->max_score;
-			best_scorer	   = i;
-		}
-
 		block = ts->iter.current_block;
 		if (ts->block_last_doc_ids != NULL &&
 			block < ts->iter.dict_entry.block_count)
 		{
 			block_last = ts->block_last_doc_ids[block];
 			if (block_last < min_block_end)
+			{
 				min_block_end = block_last;
+				seek_term_idx = i;
+			}
+		}
+		else if (seek_term_idx < 0)
+		{
+			/*
+			 * Fallback: term has no cached block_last_doc_ids. Pick
+			 * the first such term so we still make progress.
+			 */
+			seek_term_idx = i;
 		}
 	}
 
-	if (best_scorer < 0)
+	if (seek_term_idx < 0)
 		return;
 
-	/* Seek target: past current blocks, capped by non-pivot */
+	/* Seek target: past the chosen term's current block. */
 	if (min_block_end == UINT32_MAX)
-		seek_target = term_current_doc_id(terms[best_scorer]) + 1;
+		seek_target = term_current_doc_id(terms[seek_term_idx]) + 1;
 	else
 		seek_target = min_block_end + 1;
 
@@ -1256,17 +1279,36 @@ block_max_skip_advance(
 			seek_target = next_doc;
 	}
 
-	/* Seek the best scorer */
-	if (!seek_term_to_doc(terms[best_scorer], seek_target))
-		(*active_count)--;
-
-	restore_ordering(terms, term_count, best_scorer);
-
-	if (stats)
+	/*
+	 * Defense-in-depth: seek_term_to_doc(target <= cur_doc_id) is a
+	 * no-op and would leave us in an infinite loop. The selection
+	 * above guarantees forward progress in the normal case (the
+	 * min-block-end term is by construction at cur_doc_id <=
+	 * min_block_end < seek_target), but the non-pivot cap above can
+	 * pull seek_target back to next_doc, which can equal the chosen
+	 * term's cur_doc_id when pivot_doc_id and next_doc coincide on a
+	 * tie boundary. In that edge case force a single posting
+	 * advance to guarantee progress.
+	 */
+	if (seek_target <= term_current_doc_id(terms[seek_term_idx]))
 	{
-		stats->blocks_skipped++;
-		stats->seeks_performed++;
+		if (!advance_term_iterator(terms[seek_term_idx]))
+			(*active_count)--;
+		if (stats)
+			stats->blocks_skipped++;
 	}
+	else
+	{
+		if (!seek_term_to_doc(terms[seek_term_idx], seek_target))
+			(*active_count)--;
+		if (stats)
+		{
+			stats->blocks_skipped++;
+			stats->seeks_performed++;
+		}
+	}
+
+	restore_ordering(terms, term_count, seek_term_idx);
 }
 
 /*
@@ -1419,6 +1461,8 @@ score_segment_multi_term_bmw(
 		float4 doc_score;
 		int	   i;
 
+		CHECK_FOR_INTERRUPTS();
+
 		threshold = tp_topk_threshold(heap);
 
 		/* Step 1: Find WAND pivot */
@@ -1552,6 +1596,8 @@ tp_score_multi_term_bmw(
 		while (seg_head != InvalidBlockNumber)
 		{
 			TpSegmentReader *reader = tp_segment_open(index, seg_head);
+
+			CHECK_FOR_INTERRUPTS();
 
 			score_segment_multi_term_bmw(
 					&heap,

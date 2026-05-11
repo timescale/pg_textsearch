@@ -1646,7 +1646,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential bc
+        sudo apt-get install -y wget ca-certificates build-essential bc gdb
         pip install wikiextractor
 
         # PostgreSQL
