@@ -1213,6 +1213,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         echo "=== MS MARCO Validation ===" | tee -a benchmark_results.txt
 
@@ -1233,6 +1236,14 @@ jobs:
 
         if grep -q "VALIDATION FAILED" msmarco_validation.log; then
             echo "ERROR: MS MARCO validation FAILED!" | tee -a benchmark_results.txt
+            exit 1
+        fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" msmarco_validation.log; then
+            echo "ERROR: MS MARCO validation did not complete (no PASSED or FAILED marker found)" | tee -a benchmark_results.txt
             exit 1
         fi
 
@@ -1298,6 +1309,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         echo "=== Wikipedia Validation ===" | tee -a benchmark_results.txt
 
@@ -1306,6 +1320,14 @@ jobs:
 
         if grep -q "VALIDATION FAILED" wikipedia_validation.log; then
             echo "ERROR: Wikipedia validation FAILED!" | tee -a benchmark_results.txt
+            exit 1
+        fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" wikipedia_validation.log; then
+            echo "ERROR: Wikipedia validation did not complete (no PASSED or FAILED marker found)" | tee -a benchmark_results.txt
             exit 1
         fi
 
@@ -1774,6 +1796,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         echo "=== MS MARCO Insert Validation ===" | tee -a insert_results.txt
 
@@ -1792,6 +1817,14 @@ jobs:
 
         if grep -q "VALIDATION FAILED" msmarco_insert_validation.log; then
             echo "ERROR: MS MARCO insert validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" msmarco_insert_validation.log; then
+            echo "ERROR: MS MARCO insert validation did not complete (no PASSED or FAILED marker found)" | tee -a insert_results.txt
             exit 1
         fi
 
@@ -1823,6 +1856,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         echo "=== Wikipedia Insert Validation ===" | tee -a insert_results.txt
 
@@ -1831,6 +1867,14 @@ jobs:
 
         if grep -q "VALIDATION FAILED" wikipedia_insert_validation.log; then
             echo "ERROR: Wikipedia insert validation FAILED!" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" wikipedia_insert_validation.log; then
+            echo "ERROR: Wikipedia insert validation did not complete (no PASSED or FAILED marker found)" | tee -a insert_results.txt
             exit 1
         fi
 
@@ -1921,6 +1965,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         psql -f benchmarks/datasets/msmarco/validate_queries.sql 2>&1 | \
             tee msmarco_concurrent_validation.log | tee -a insert_results.txt
@@ -1929,6 +1976,16 @@ jobs:
             echo "ERROR: MS MARCO concurrent validation FAILED!" | tee -a insert_results.txt
             exit 1
         fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" msmarco_concurrent_validation.log; then
+            echo "ERROR: MS MARCO concurrent validation did not complete (no PASSED or FAILED marker found)" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        echo "MS MARCO concurrent validation PASSED" | tee -a insert_results.txt
 
     - name: Run Wikipedia concurrent insert
       if: steps.datasets.outputs.dataset == 'wikipedia' || steps.datasets.outputs.dataset == 'all'
@@ -1973,6 +2030,9 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PGDATABASE=bench_test
+        # pipefail: catch psql ON_ERROR_STOP exits that would otherwise be
+        # masked by the `| tee` chain and let the step silently pass.
+        set -o pipefail
 
         psql -f benchmarks/datasets/wikipedia/validate_queries.sql 2>&1 | \
             tee wikipedia_concurrent_validation.log | tee -a insert_results.txt
@@ -1981,6 +2041,16 @@ jobs:
             echo "ERROR: Wikipedia concurrent validation FAILED!" | tee -a insert_results.txt
             exit 1
         fi
+
+        # Require an explicit PASSED marker -- absent it the script errored
+        # out mid-run (e.g. SQL error in validate_queries.sql) and grep for
+        # FAILED above would silently miss the regression.
+        if ! grep -q "VALIDATION PASSED" wikipedia_concurrent_validation.log; then
+            echo "ERROR: Wikipedia concurrent validation did not complete (no PASSED or FAILED marker found)" | tee -a insert_results.txt
+            exit 1
+        fi
+
+        echo "Wikipedia concurrent validation PASSED" | tee -a insert_results.txt
 
     # If anything above failed (e.g. a step-level timeout), capture
     # diagnostics so we can root-cause hangs from the artifact alone.

@@ -122,7 +122,7 @@ BEGIN
     IF v_missing IS NOT NULL AND array_length(v_missing, 1) > 0 THEN
         -- Get the minimum score at rank-10 boundary
         SELECT MIN(score) INTO v_gt_min_score FROM ground_truth
-        WHERE query_id = p_query_id;
+        WHERE ground_truth.query_id = p_query_id;
         SELECT MIN(score) INTO v_tapir_min_score FROM tapir_results;
         v_boundary_tolerance := GREATEST(p_tolerance, 0.001);
 
