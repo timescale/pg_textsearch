@@ -748,8 +748,9 @@ score_memtable_multi_term(
 			DocumentScoreEntry *entry;
 			bool				found;
 
-			/* Cheap CHECK every iteration is safe; this loop can be
-			 * very long when the memtable holds millions of postings. */
+			/* CHECK every 4096 postings; this loop can be very long
+			 * when the memtable holds millions of postings -- gating
+			 * amortizes the overhead. */
 			if ((i & 0xFFF) == 0)
 				CHECK_FOR_INTERRUPTS();
 
@@ -1295,17 +1296,21 @@ block_max_skip_advance(
 	{
 		if (!advance_term_iterator(terms[seek_term_idx]))
 			(*active_count)--;
+		if (stats)
+			stats->blocks_skipped++;
 	}
-	else if (!seek_term_to_doc(terms[seek_term_idx], seek_target))
-		(*active_count)--;
+	else
+	{
+		if (!seek_term_to_doc(terms[seek_term_idx], seek_target))
+			(*active_count)--;
+		if (stats)
+		{
+			stats->blocks_skipped++;
+			stats->seeks_performed++;
+		}
+	}
 
 	restore_ordering(terms, term_count, seek_term_idx);
-
-	if (stats)
-	{
-		stats->blocks_skipped++;
-		stats->seeks_performed++;
-	}
 }
 
 /*

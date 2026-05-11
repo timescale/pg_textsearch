@@ -82,7 +82,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc \
-            gdb \
             linux-tools-common linux-tools-generic linux-tools-$(uname -r) || true
         # Install FlameGraph for visualization
         git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
@@ -1647,7 +1646,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget ca-certificates build-essential bc
+        sudo apt-get install -y wget ca-certificates build-essential bc gdb
         pip install wikiextractor
 
         # PostgreSQL
