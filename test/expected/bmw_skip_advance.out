@@ -84,5 +84,38 @@ SELECT count(*) AS got_results FROM (
 (1 row)
 
 SET pg_textsearch.log_bmw_stats = off;
+-- Now exercise the *memtable* scoring paths (single-term and
+-- multi-term), where the CHECK_FOR_INTERRUPTS calls added by this
+-- patch sit. Above this point everything was in segments after
+-- CREATE INDEX. Inserting fresh docs here without forcing a spill
+-- leaves them in the memtable, so the next queries traverse both
+-- segments (via BMW skip-advance) and the memtable.
+INSERT INTO bmw_skip_advance (content)
+SELECT 'alpha beta gamma delta extra_memtable_token'
+FROM generate_series(1, 100);
+-- Single-term query against memtable (score_memtable_single_term).
+SELECT count(*) FROM (
+    SELECT id FROM bmw_skip_advance
+    ORDER BY content <@> to_bm25query(
+        'extra_memtable_token', 'bmw_skip_advance_idx')
+    LIMIT 5
+) sub;
+ count 
+-------
+     5
+(1 row)
+
+-- Multi-term query against memtable (score_memtable_multi_term).
+SELECT count(*) FROM (
+    SELECT id FROM bmw_skip_advance
+    ORDER BY content <@> to_bm25query(
+        'alpha extra_memtable_token', 'bmw_skip_advance_idx')
+    LIMIT 5
+) sub;
+ count 
+-------
+     5
+(1 row)
+
 DROP TABLE bmw_skip_advance;
 DROP EXTENSION pg_textsearch CASCADE;

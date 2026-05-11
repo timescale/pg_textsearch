@@ -533,8 +533,6 @@ score_segment_single_term_bmw(
 		{
 			float4 score;
 
-			CHECK_FOR_INTERRUPTS();
-
 			/*
 			 * Break if iterator auto-advanced to next block.
 			 * This ensures we only process block i, allowing the outer
