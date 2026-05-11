@@ -924,6 +924,25 @@ write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
  */
 
 /*
+ * Comparison function for sorting TpBlockPosting by doc_id ascending.
+ * Used by tp_write_segment to sort the per-term posting array before
+ * splitting into TP_BLOCK_SIZE blocks -- the memtable doesn't maintain
+ * sort order under concurrent inserts (see comment at the qsort call).
+ */
+static int
+block_posting_cmp_by_doc_id(const void *a, const void *b)
+{
+	uint32 da = ((const TpBlockPosting *)a)->doc_id;
+	uint32 db = ((const TpBlockPosting *)b)->doc_id;
+
+	if (da < db)
+		return -1;
+	if (da > db)
+		return 1;
+	return 0;
+}
+
+/*
  * Build docmap from memtable's document lengths.
  * Returns the docmap builder which must be freed by caller.
  */
@@ -1188,6 +1207,40 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 				block_postings[j].reserved	= 0;
 			}
 		}
+
+		/*
+		 * Sort block_postings by doc_id.
+		 *
+		 * The memtable's posting list entries are appended in
+		 * insertion order. Under single-writer (CREATE INDEX) this
+		 * happens to match CTID order = doc_id order. But under
+		 * concurrent inserts, multiple backends interleave appends
+		 * to the same posting list in arbitrary thread-scheduling
+		 * order -- entries[] is NOT CTID-sorted, and so the
+		 * block_postings[] we just built is NOT doc_id-sorted
+		 * either. (posting.c sets posting_list->is_sorted = false
+		 * on every insert, but nothing was sorting on the read
+		 * side before this fix.)
+		 *
+		 * Writing unsorted block_postings produces segments that
+		 * silently violate the sorted-block invariant the entire
+		 * BMW machinery (binary search on block_last_doc_ids,
+		 * seek_term_to_doc, find_wand_pivot's smallest-first walk)
+		 * relies on. Symptoms: MS MARCO bucket-8 hangs in
+		 * seek_to_pivot / score_segment_multi_term_bmw (PR #360),
+		 * because every "advance to >= target" returns a doc whose
+		 * actual position in the block may be followed by smaller
+		 * doc_ids that should have been returned first.
+		 *
+		 * Sort here -- doc_id is monotonic with CTID after
+		 * tp_docmap_finalize, so this is equivalent to sorting by
+		 * CTID, which is the invariant the segment format
+		 * documents and the merge / scoring code assumes.
+		 */
+		qsort(block_postings,
+			  doc_count,
+			  sizeof(TpBlockPosting),
+			  block_posting_cmp_by_doc_id);
 
 		/* Write posting blocks and build skip entries */
 		for (block_idx = 0; block_idx < num_blocks; block_idx++)
