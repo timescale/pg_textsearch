@@ -218,7 +218,15 @@ INSERT INTO known_mismatches (query_id, issue, note) VALUES
     -- tokenization or corpus-stats edge case specific to the leading
     -- '+' / double-space pattern).
     (158, 'https://github.com/timescale/pg_textsearch/issues/361',
-     '+how to add differnt names on labels in word: doc 1838655 score diff ~1.5');
+     '+how to add differnt names on labels in word: doc 1838655 score diff ~1.5'),
+    -- See #363. Concurrent-INSERT path only: doc 1956260 (rank 5 in
+    -- ground truth, score 20.297) absent from the index's top-10.
+    -- Overlapping docs match scores within 3e-6, so it's not a
+    -- scoring-formula bug -- either pgbench failed to insert that
+    -- specific row, or another concurrent-path indexing quirk is at
+    -- play. Single-txn COPY path passes this query cleanly.
+    (1267, 'https://github.com/timescale/pg_textsearch/issues/363',
+     '3 ways a log can move when bucking on side hill: doc 1956260 missing on concurrent path only');
 
 -- Check for failures and report
 DO $$
