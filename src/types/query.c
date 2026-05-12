@@ -203,8 +203,16 @@ tpquery_in(PG_FUNCTION_ARGS)
 	{
 		/* Found colon and it's not at the start - extract index name */
 		int	  index_name_len = colon - str;
-		char *index_name	 = palloc(index_name_len + 1);
+		char *index_name;
 		char *query_text	 = colon + 1; /* Skip past : */
+
+		/* Validate index name length before allocation and copy */
+		if (index_name_len >= NAMEDATALEN)
+			ereport(ERROR,
+					(errcode(ERRCODE_NAME_TOO_LONG),
+					 errmsg("index name too long")));
+
+		index_name = palloc(index_name_len + 1);
 
 		/* Copy the index name */
 		memcpy(index_name, str, index_name_len);
@@ -901,6 +909,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			int			   query_freq;
 
 			/* Create properly null-terminated string from tsvector lexeme */
+			if (lexeme_len <= 0 || lexeme_len > MAXSTRLEN)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("lexeme length out of range: %d", lexeme_len)));
 			query_lexeme = palloc(lexeme_len + 1);
 			memcpy(query_lexeme, query_lexeme_raw, lexeme_len);
 			query_lexeme[lexeme_len] = '\0';
