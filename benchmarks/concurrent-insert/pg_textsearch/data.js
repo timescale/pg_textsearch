@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778487979698,
+  "lastUpdate": 1778574806170,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -2360,6 +2360,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.67,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e50c7997d3a6e9403d535c023740b6c8821949e6",
+          "message": "fix: sort posting list when spilling memtable (root-cause MS MARCO bucket-8 hang) (#360)\n\n## Summary\n\nRoot-cause and fix the MS MARCO bucket-8 hang in production benchmarks\n([nightly run\n25648758099](https://github.com/timescale/pg_textsearch/actions/runs/25648758099)),\nplus close the watchdog gap that allowed the underlying corruption to\npersist undetected.\n\n## Root cause: unsorted block_postings in spilled segments\n\n`tp_write_segment` (memtable → segment spill path) iterates a term's\nposting-list entries in array order and writes them as\n`block_postings[]` *without sorting*. This is fine under single-writer\nCOPY/CREATE INDEX, because entries are appended in CTID order, which\nmatches `doc_id` order after `tp_docmap_finalize`. Under **concurrent\ninserts**, multiple backends interleave appends to the same posting list\nin arbitrary thread-scheduling order:\n\n```c\n// src/memtable/posting.c:191\nposting_list->is_sorted = false;  /* New entry may break sort order */\n```\n\nThat `is_sorted` flag is set on every insert but **never set back to\n`true`** anywhere — there's no sort step on the read side. The spilled\nsegment's `block_postings` then violate the sorted-block invariant the\nentire BMW machinery relies on (binary search on `block_last_doc_ids`,\n`seek_term_to_doc` finding \"first doc ≥ target\", `find_wand_pivot`'s\nsmallest-first walk), and merges *propagate* the corruption to higher\nlevels.\n\n### Diagnostic evidence\n\nA temporary debug function (`bm25_check_segment_consistency`, removed in\nthe final commit once root cause was fixed) walked every segment / term\n/ block and compared cached skip-data against actual on-disk\n`block_postings`. Run against the failing benchmark's MS MARCO corpus\nbefore the fix:\n\n```\nChecked 2 segments, 4,080,947 terms, 5,776,365 blocks.\nTotal inconsistencies: 904,174\n```\n\nAll examples were \"not strictly ascending within block\", with delta\nmagnitudes up to ~200,000 doc_ids — genuine out-of-order data, not a\none-byte glitch. (Check #1 — `skip.last_doc_id ≠\npostings[doc_count-1].doc_id` — fired zero times, so the skip *metadata*\nwas always consistent with what got written; what got written was the\nbug.)\n\n## Fix\n\n### 1. Sort posting list by doc_id when spilling memtable to segment\n\n`src/segment/segment.c` — `qsort(block_postings, doc_count, ...,\ncmp_by_doc_id)` after building it in `tp_write_segment`, before\nsplitting into `TP_BLOCK_SIZE` blocks. `doc_id` is monotonic with CTID\nafter `tp_docmap_finalize`, so this is equivalent to sorting by CTID —\nthe invariant the segment format documents and the merge / scoring code\nassumes. `build_context.c` is unaffected (EXPULL streams already-sorted\nentries).\n\n### 2. Harden `seek_term_to_doc` to actually scan multiple blocks\n(defense-in-depth)\n\n`src/scoring/bmw.c` — The old code had two unverified fall-through paths\nthat loaded *one* \"next\" block and returned `true` based purely on\n`!iter.finished`, without verifying that the newly loaded block's first\ndoc actually reached `target_doc_id`. Under correct invariants those\nfall-throughs are unreachable, but with the segment-sort bug they fired\nand `seek_to_pivot`'s `i--; continue;` re-entry spun forever (the\ngdb-observed bucket-8 hang at `bmw.c:1329`).\n\nRestructured so the fast path and binary-search path both just\n*position* the iterator at a candidate starting block, then a single\nblock-advancing scan loop keeps advancing until it finds a posting `>=\ntarget` (returns `true`) or exhausts the iterator. The post-condition\n`cur_doc_id >= target_doc_id` is now guaranteed by control flow.\n\nEven with the segment-sort root cause fixed, this is a worthwhile\ncorrectness improvement — the original `seek_term_to_doc` was latently\nincorrect for *any* skip-data inconsistency.\n\n### 3. `CHECK_FOR_INTERRUPTS` in BMW hot loops\n\n`src/scoring/bmw.c` — Added in two places:\n- Inside the new `for(;;)` block-advancing loop in `seek_term_to_doc`\n(per-iter disk I/O + decompression should be cancelable).\n- Inside `seek_to_pivot`'s `for` loop (the prior PR #355 added CFI only\nto the outer WAND main loop; if `seek_to_pivot` itself spins, we never\nreturn there).\n\n### 4. Validation watchdog actually validates\n\nThe corruption above existed for as long as concurrent inserts have, and\nwe had a validation step (`validate_queries.sql` against\n`ground_truth.tsv`) explicitly designed to catch this class of\ncorrectness regression. **It never fired.** Two latent bugs:\n\n- `validate_queries.sql` had an ambiguous-column reference (`WHERE\nquery_id = p_query_id` where `query_id` shadows a plpgsql variable).\npsql errored out partway through with `ON_ERROR_STOP`.\n- Every `Validate ...` workflow step pipes `psql` through `tee` (no `set\n-o pipefail`), then `grep -q \"VALIDATION FAILED\"` to decide pass/fail.\nWhen the SQL errors before reaching the FAILED marker, psql's non-zero\nexit is swallowed by `tee`, the grep finds nothing, and the step claims\nsuccess.\n\nFixed in `benchmarks/datasets/msmarco/validate_queries.sql` (qualify as\n`ground_truth.query_id`) and in `.github/workflows/benchmark.yml` (6\naffected `Validate ...` steps): each now sets `set -o pipefail` and\nrequires an explicit `VALIDATION PASSED` marker — absence of which fails\nthe step. Future SQL-level errors in validation will fail the run loudly\ninstead of silently passing. (Cranfield has no validation step in the\nworkflow at all; out of scope.)\n\n## Verification\n\n- ✅ Built clean on PG 17 / PG 18 (`-O2 -g`, no new warnings)\n- ✅ All **61** regression tests pass via `pg_regress`\n- ✅ `make format-check` clean\n- ✅ Local stress repro: 8-thread pgbench concurrent inserts of 4000 docs\nover 8 terms → spill → consistency check (during development). Before\nthis fix: thousands of inconsistencies. After: 0.\n- ✅ **First successful end-to-end benchmark run**\n[25689967666](https://github.com/timescale/pg_textsearch/actions/runs/25689967666):\n- `Run MS MARCO insert benchmark` completed in seconds (was 32m+ hang) —\nbucket-8 p99=59ms, n=100, results=1000\n- `Run MS MARCO concurrent insert` (8-thread pgbench, 8.8M passages) ran\nthe full query suite + validation — first time these steps have ever\nreached completion",
+          "timestamp": "2026-05-12T00:19:38Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e50c7997d3a6e9403d535c023740b6c8821949e6"
+        },
+        "date": 1778574799427,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2997.290668,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.334,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 5464.987821,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.366,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 9119.800359,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.439,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 9546.339613,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.838,
             "unit": "ms"
           }
         ]
