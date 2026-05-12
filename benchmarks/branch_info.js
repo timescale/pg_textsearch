@@ -161,5 +161,6 @@ window.BRANCH_INFO = {
   "60a3cc588667fa11926c6d283e8a53e2c6b6270a": "greentodd/validate-queries-limit-pushdown",
   "243b8f92b8481cb25ff492ad071e93b71121745f": "greentodd/bmw-fix-365",
   "e50c7997d3a6e9403d535c023740b6c8821949e6": "main",
-  "6171de0d06705b5a8401274354fb15696021ed1c": "release-1.2.0"
+  "6171de0d06705b5a8401274354fb15696021ed1c": "release-1.2.0",
+  "831a896e8b1fddde2b0b2aff0c525f2db10c60f7": "greentodd/wikipedia-per-rank-validation"
 };
