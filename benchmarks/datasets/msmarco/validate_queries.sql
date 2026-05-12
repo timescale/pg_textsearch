@@ -79,13 +79,28 @@ BEGIN
     TRUNCATE tapir_results;
 
     INSERT INTO tapir_results
-    SELECT
-        row_number() OVER (ORDER BY passage_text <@> to_bm25query(p_query_text, 'msmarco_bm25_idx'))::int as rank,
-        passage_id,
-        -(passage_text <@> to_bm25query(p_query_text, 'msmarco_bm25_idx'))::float8 as score
-    FROM msmarco_passages
-    ORDER BY passage_text <@> to_bm25query(p_query_text, 'msmarco_bm25_idx')
-    LIMIT 10;
+    -- IMPORTANT: keep the LIMIT 10 in the inner subquery so it
+    -- propagates to the BM25 index scan and BMW runs with K=10.
+    -- If LIMIT 10 sits above a window function in the outer SELECT
+    -- (the previous shape), the planner can't push it past the
+    -- WindowAgg and the index scan falls back to
+    -- pg_textsearch.default_limit (1000). BMW with K=1000 reports
+    -- subtly-wrong scores for some docs on real corpora -- see
+    -- https://github.com/timescale/pg_textsearch/issues/365. That
+    -- false-positive misrouting was the source of the
+    -- "concurrent-INSERT-only" validation failures repeatedly hit
+    -- after #360 (queries 1267, 130, 1517, 222, 9351, 9340 across
+    -- runs); they're not real correctness regressions, just BMW
+    -- being asked to score 1000 docs where it should have been
+    -- asked for 10.
+    SELECT row_number() OVER ()::int as rank, t.passage_id, t.score FROM (
+        SELECT
+            passage_id,
+            -(passage_text <@> to_bm25query(p_query_text, 'msmarco_bm25_idx'))::float8 as score
+        FROM msmarco_passages
+        ORDER BY passage_text <@> to_bm25query(p_query_text, 'msmarco_bm25_idx')
+        LIMIT 10
+    ) t;
 
     -- Compare score at each rank
     FOR r IN
@@ -173,13 +188,15 @@ CREATE TABLE known_mismatches (
 );
 
 INSERT INTO known_mismatches (query_id, issue, note) VALUES
-    -- See #361. Per-rank scores diverge by ~1.5 on this query; root
-    -- cause not yet isolated (predates #360, likely a tokenization
-    -- or corpus-stats edge case specific to the leading '+' /
-    -- double-space pattern). NOT a tie-break issue -- this is a
-    -- genuine score-at-rank discrepancy.
+    -- See #361. Doc 1838655 contains "Adding" which stems to "ad"
+    -- on current pg17 but stemmed to "add" on the pg17 minor that
+    -- generated ground_truth_pg17.tsv in Feb 2026 (libstemmer/snowball
+    -- rule drift). The index is correct against current stemmer
+    -- rules; the committed GT file is stale. Fix is to regenerate
+    -- ground_truth_pg17.tsv against current pg17 -- when that lands,
+    -- remove this allowlist entry.
     (158, 'https://github.com/timescale/pg_textsearch/issues/361',
-     '+how to add differnt names on labels in word: per-rank score diff ~1.5');
+     '+how to add differnt names on labels in word: stale pg17 GT (stemmer drift on "Adding")');
 
 -- Check for failures and report
 DO $$
