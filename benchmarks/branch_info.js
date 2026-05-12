@@ -158,5 +158,6 @@ window.BRANCH_INFO = {
   "dd466229e63611a558f0a0595b378fd3d7e878b6": "greentodd/bmw-seek-to-pivot-hang",
   "c68b991b12b1fa16c76290a1055a402253c7a041": "greentodd/bmw-seek-to-pivot-hang",
   "5f41abedc048d20fd9e13aea0e2dd2e774bff73e": "greentodd/score-rank-validation",
-  "60a3cc588667fa11926c6d283e8a53e2c6b6270a": "greentodd/validate-queries-limit-pushdown"
+  "60a3cc588667fa11926c6d283e8a53e2c6b6270a": "greentodd/validate-queries-limit-pushdown",
+  "243b8f92b8481cb25ff492ad071e93b71121745f": "greentodd/bmw-fix-365"
 };
