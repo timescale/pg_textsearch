@@ -839,6 +839,19 @@ advance_term_iterator(TpTermState *ts)
  * Uses pre-loaded block_last_doc_ids for O(log blocks) in-memory binary
  * search, avoiding I/O during the search. Only loads the target block from
  * disk.
+ *
+ * Post-condition on `return true`: ts->cur_doc_id >= target_doc_id.
+ *
+ * Both the in-block linear scan and the binary-search-selected block can
+ * exhaust without finding doc >= target if the cached skip data
+ * (skip_entry.last_doc_id, block_last_doc_ids[]) is inconsistent with
+ * on-disk block_postings -- a condition observed on MS MARCO under
+ * concurrent-insert segment topology. In that case we keep loading
+ * subsequent blocks until we find one whose linear scan succeeds, or we
+ * exhaust the iterator. Without this guarantee, callers like seek_to_pivot
+ * spin forever (gdb stack on the production hang showed
+ * seek_to_pivot:1329 with cur_doc_id < pivot_doc_id after a `return true`
+ * from this function).
  */
 static bool
 seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
@@ -851,12 +864,17 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 		return false;
 
 	/*
-	 * Check if target is in current block - if so, linear scan is faster
-	 * than the seek overhead.
+	 * Fast path: target is in (or before) the current block, per the
+	 * cached last_doc_id. Linear-scan from current_in_block.
+	 *
+	 * If the cached last_doc_id is accurate, the loop below will find a
+	 * doc >= target before exhausting the block. If it is *not* accurate
+	 * (i.e., last_doc_id >= target but no posting in the block is >=
+	 * target), the loop falls through and the block-advancing loop below
+	 * picks up where we left off.
 	 */
 	if (target_doc_id <= ts->iter.skip_entry.last_doc_id)
 	{
-		/* Target is in current block, linear scan within block */
 		while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
 		{
 			uint32 doc_id =
@@ -868,7 +886,88 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 			}
 			ts->iter.current_in_block++;
 		}
-		/* Exhausted current block, fall through to load next */
+		/* Fall through: advance past current block. */
+	}
+	else
+	{
+		/*
+		 * Target is past current block's cached last_doc_id. Binary
+		 * search the per-term skip cache to find the first block whose
+		 * last_doc_id >= target.
+		 */
+		block_count = ts->iter.dict_entry.block_count;
+		left		= ts->iter.current_block + 1;
+		right		= (int)block_count - 1;
+
+		while (left < right)
+		{
+			mid = left + (right - left) / 2;
+			if (ts->block_last_doc_ids[mid] < target_doc_id)
+				left = mid + 1;
+			else
+				right = mid;
+		}
+		target_block = left;
+
+		if (target_block >= block_count)
+		{
+			ts->iter.finished = true;
+			ts->cur_doc_id	  = UINT32_MAX;
+			return false;
+		}
+
+		/* Position at the start of the binary-search-selected block. */
+		ts->iter.current_block	  = target_block;
+		ts->iter.current_in_block = 0;
+		if (!tp_segment_posting_iterator_load_block(&ts->iter))
+		{
+			ts->iter.finished = true;
+			ts->cur_doc_id	  = UINT32_MAX;
+			return false;
+		}
+	}
+
+	/*
+	 * Block-advancing scan loop. Keep loading subsequent blocks until
+	 * we find a posting >= target_doc_id or exhaust the iterator.
+	 *
+	 * This loop is the durable post-condition guarantor: it terminates
+	 * only by finding doc >= target (and returning true) or by
+	 * exhausting all blocks (and returning false). It does not rely on
+	 * cached skip data being consistent with block_postings -- if a
+	 * block's actual postings are all < target despite a cached
+	 * last_doc_id >= target, we simply move on to the next block.
+	 *
+	 * Termination: each iteration of the outer loop strictly increments
+	 * current_block, bounded by dict_entry.block_count. The inner
+	 * while-loop scans a single block, bounded by skip_entry.doc_count.
+	 */
+	for (;;)
+	{
+		/*
+		 * Cancelability: each iteration of the outer loop calls
+		 * tp_segment_posting_iterator_load_block, which performs disk
+		 * I/O and possibly block decompression. Under the cache-
+		 * inconsistency scenario this function defends against, the
+		 * loop can iterate across many blocks. Without this CHECK,
+		 * statement_timeout / pg_cancel_backend cannot abort the
+		 * scan, and seek_to_pivot's CHECK_FOR_INTERRUPTS one level up
+		 * never fires because we never return from this function.
+		 */
+		CHECK_FOR_INTERRUPTS();
+
+		while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
+		{
+			uint32 doc_id =
+					ts->iter.block_postings[ts->iter.current_in_block].doc_id;
+			if (doc_id >= target_doc_id)
+			{
+				ts->cur_doc_id = doc_id;
+				return true;
+			}
+			ts->iter.current_in_block++;
+		}
+
 		ts->iter.current_block++;
 		if (ts->iter.current_block >= ts->iter.dict_entry.block_count)
 		{
@@ -877,77 +976,13 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 			return false;
 		}
 		ts->iter.current_in_block = 0;
-		tp_segment_posting_iterator_load_block(&ts->iter);
-		refresh_cur_doc_id(ts);
-		return !ts->iter.finished;
-	}
-
-	/*
-	 * Target is beyond current block - binary search on cached last_doc_ids.
-	 * This is pure in-memory search, no I/O until we load the target block.
-	 */
-	block_count = ts->iter.dict_entry.block_count;
-
-	/* Binary search: find first block where last_doc_id >= target */
-	left  = ts->iter.current_block + 1; /* Start after current block */
-	right = block_count - 1;
-
-	while (left < right)
-	{
-		mid = left + (right - left) / 2;
-
-		if (ts->block_last_doc_ids[mid] < target_doc_id)
-			left = mid + 1;
-		else
-			right = mid;
-	}
-
-	target_block = left;
-
-	/* Check if target is past all blocks */
-	if (target_block >= block_count)
-	{
-		ts->iter.finished = true;
-		ts->cur_doc_id	  = UINT32_MAX;
-		return false;
-	}
-
-	/* Load the target block */
-	ts->iter.current_block	  = target_block;
-	ts->iter.current_in_block = 0;
-
-	if (!tp_segment_posting_iterator_load_block(&ts->iter))
-	{
-		ts->iter.finished = true;
-		ts->cur_doc_id	  = UINT32_MAX;
-		return false;
-	}
-
-	/* Linear scan within block to find target or first doc >= target */
-	while (ts->iter.current_in_block < ts->iter.skip_entry.doc_count)
-	{
-		uint32 doc_id =
-				ts->iter.block_postings[ts->iter.current_in_block].doc_id;
-		if (doc_id >= target_doc_id)
+		if (!tp_segment_posting_iterator_load_block(&ts->iter))
 		{
-			ts->cur_doc_id = doc_id;
-			return true;
+			ts->iter.finished = true;
+			ts->cur_doc_id	  = UINT32_MAX;
+			return false;
 		}
-		ts->iter.current_in_block++;
 	}
-
-	/* Target not in this block, try next */
-	ts->iter.current_block++;
-	if (ts->iter.current_block >= block_count)
-	{
-		ts->iter.finished = true;
-		ts->cur_doc_id	  = UINT32_MAX;
-		return false;
-	}
-	ts->iter.current_in_block = 0;
-	tp_segment_posting_iterator_load_block(&ts->iter);
-	refresh_cur_doc_id(ts);
-	return !ts->iter.finished;
 }
 
 /*
@@ -1328,7 +1363,22 @@ seek_to_pivot(
 
 	for (i = 0; i < pivot_len; i++)
 	{
-		uint32 doc_id = term_current_doc_id(terms[i]);
+		uint32 doc_id;
+
+		/*
+		 * Cancelability: the for loop's `i--; continue;` re-entry
+		 * pattern, combined with restore_ordering rotating terms
+		 * through slot `i`, was the gdb-observed spin site for the
+		 * MS MARCO bucket-8 hang. The underlying cause (seek_term_to_doc
+		 * returning true without advancing past target) is now fixed at
+		 * the source, but keep this CHECK so any future regression in
+		 * BMW invariants is interruptible from SQL rather than
+		 * requiring SIGKILL. (The outer WAND loop's CFI is too coarse:
+		 * if seek_to_pivot fails to terminate it never returns there.)
+		 */
+		CHECK_FOR_INTERRUPTS();
+
+		doc_id = term_current_doc_id(terms[i]);
 
 		if (doc_id == UINT32_MAX)
 		{
