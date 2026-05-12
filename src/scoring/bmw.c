@@ -1528,14 +1528,49 @@ score_segment_multi_term_bmw(
 		/*
 		 * Step 3: Block-max refinement.
 		 * Check if block-level upper bound still beats threshold.
+		 *
+		 * Correctness note (#365): block_max_skip_advance() advances
+		 * a pivot term past its current block via seek_term_to_doc.
+		 * Docs in the skipped block that exist in *non-pivot* terms'
+		 * posting lists too can still be top-K candidates -- their
+		 * total true score includes non-pivot term contributions
+		 * that the pivot's block_upper alone doesn't capture.
+		 *
+		 * The safe-skip condition is therefore:
+		 *   block_upper(pivot) + max_score_sum(non-pivot) <= threshold
+		 * (an upper bound on a hypothetical doc's score using
+		 * pivot terms' actual block-max plus non-pivot terms' global
+		 * max). Only then can we skip without losing a top-K
+		 * candidate -- or under-scoring one we later see via another
+		 * pivot, after a relevant term already jumped over it.
+		 *
+		 * Previous version used block_upper alone, which let
+		 * block_max_skip_advance jump a term past a doc that other
+		 * pivot iterations would later pick up with one term missing
+		 * from its score sum. Manifests at large K (low heap
+		 * threshold) where the looser check fires for blocks whose
+		 * docs are still top-K when non-pivot contributions count.
 		 */
 		block_upper = compute_block_max_at_pivot(terms, pivot_len);
 
-		if (block_upper <= threshold)
 		{
-			block_max_skip_advance(
-					terms, term_count, pivot_len, &active_count, stats);
-			continue;
+			float4 non_pivot_max = 0.0f;
+			int	   np;
+
+			for (np = pivot_len; np < term_count; np++)
+			{
+				TpTermState *ts = terms[np];
+				if (!ts->found || ts->iter.finished)
+					continue;
+				non_pivot_max += ts->max_score;
+			}
+
+			if ((block_upper + non_pivot_max) <= threshold)
+			{
+				block_max_skip_advance(
+						terms, term_count, pivot_len, &active_count, stats);
+				continue;
+			}
 		}
 
 		if (stats)
