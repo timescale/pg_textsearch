@@ -32,6 +32,7 @@ OBJS = \
 	src/memtable/arena.o \
 	src/memtable/expull.o \
 	src/memtable/memtable.o \
+	src/memtable/page.o \
 	src/memtable/posting.o \
 	src/memtable/stringtable.o \
 	src/memtable/scan.o \
@@ -77,7 +78,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load catalog_stats compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms max_shared_memory memory merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load catalog_stats compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms max_shared_memory memory memtable_page merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config

@@ -14,3 +14,12 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- Internal-only scaffold: exercises the on-disk memtable page format
+-- helpers introduced in Phase 1 of the memtable v2 redesign (issue
+-- #374). Subject to removal once later phases provide end-to-end
+-- coverage of the same code paths.
+CREATE FUNCTION bm25_test_memtable_page(case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
+LANGUAGE C STRICT;

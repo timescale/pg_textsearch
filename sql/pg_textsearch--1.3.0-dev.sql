@@ -264,3 +264,12 @@ LANGUAGE C VOLATILE;
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
+
+-- Internal-only scaffold: exercises the on-disk memtable page format
+-- helpers introduced in Phase 1 of the memtable v2 redesign (issue
+-- #374). Subject to removal once later phases provide end-to-end
+-- coverage of the same code paths.
+CREATE FUNCTION @extschema@.bm25_test_memtable_page(case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
+LANGUAGE C STRICT;

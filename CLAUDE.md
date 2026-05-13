@@ -329,7 +329,6 @@ tables.
 - A memtable is stored in shared memory, but there is one memtable per index.
   Memtables are not shared across indexes, only across backend processes via
   shared memory.
-- Postgres is installed at ~/pgsql
 
 ### Pre-Commit Checklist
 

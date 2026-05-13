@@ -14,6 +14,9 @@
 #define TP_DOCID_PAGE_MAGIC 0x54504944 /* "TPID" - Tapir Docid Page */
 #define TP_SEGMENT_MAGIC	0x54505347 /* "TPSG" - Tapir Segment */
 #define TP_PAGE_INDEX_MAGIC 0x54505049 /* "TPPI" - Tapir Page Index */
+#define TP_MEMTABLE_PAGE_MAGIC                                              \
+	0x5450544D /* "TPTM" - Tapir Memtable (replaces docid pages; introduced \
+				* in the memtable v2 redesign, see issue #374) */
 
 /*
  * Page format versions - bump when on-disk format changes.
@@ -23,6 +26,8 @@
 	6 /* Bumped for BMW block_max_norm fix (min not max) */
 #define TP_DOCID_PAGE_VERSION 1 /* Initial version */
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
+/* Initial version (memtable v2 redesign) */
+#define TP_MEMTABLE_PAGE_VERSION 1
 
 #define TP_METAPAGE_BLKNO 0
 
