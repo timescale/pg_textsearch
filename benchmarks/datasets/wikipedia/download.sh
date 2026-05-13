@@ -140,11 +140,21 @@ else
     esac
 
     # Download Simple English Wikipedia (smaller, ~200K articles)
-    # and truncate to desired size
-    if [ ! -f "simplewiki-latest-pages-articles.xml.bz2" ]; then
-        echo "Downloading Simple English Wikipedia..."
-        wget -q --show-progress \
-            https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
+    # and truncate to desired size.
+    #
+    # IMPORTANT: pin to a specific dump date so doc_ids assigned by
+    # extraction order are stable across CI runs. The committed
+    # ground_truth.tsv is keyed by these doc_ids; using "latest"
+    # makes the ground truth go stale every time Wikimedia publishes
+    # a new dump. When bumping SIMPLE_WIKI_DUMP_DATE, regenerate the
+    # ground truth with precompute_ground_truth.sql in the same PR.
+    SIMPLE_WIKI_DUMP_DATE="${SIMPLE_WIKI_DUMP_DATE:-20260501}"
+    DUMP_FILE="simplewiki-${SIMPLE_WIKI_DUMP_DATE}-pages-articles.xml.bz2"
+    DUMP_URL="https://dumps.wikimedia.org/simplewiki/${SIMPLE_WIKI_DUMP_DATE}/${DUMP_FILE}"
+
+    if [ ! -f "$DUMP_FILE" ]; then
+        echo "Downloading Simple English Wikipedia (dump ${SIMPLE_WIKI_DUMP_DATE})..."
+        wget -q --show-progress -O "$DUMP_FILE" "$DUMP_URL"
     fi
 
     if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
@@ -157,7 +167,7 @@ else
         "$PYTHON_BIN" -m wikiextractor.WikiExtractor \
             --json \
             --output simple_extracted \
-            simplewiki-latest-pages-articles.xml.bz2
+            "$DUMP_FILE"
     fi
 
     echo "Converting to TSV (limiting to $NUM_ARTICLES articles)..."

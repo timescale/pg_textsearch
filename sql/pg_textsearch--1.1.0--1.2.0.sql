@@ -1,4 +1,4 @@
--- Upgrade from 1.1.0 to 1.2.0-dev
+-- Upgrade from 1.1.0 to 1.2.0
 
 -- Verify the library is loaded. The version-equality check lives in
 -- the main install file (pg_textsearch--<default_version>.sql); upgrade

@@ -1,801 +1,801 @@
 query_id	query_text	rank	doc_id	score
-1	algorithm	1	12637	12.652190834464994
-1	algorithm	2	10927	12.404515995003324
-1	algorithm	3	85651	12.329782773128024
-1	algorithm	4	82944	12.31390098249271
-1	algorithm	5	45389	12.250115999519977
-1	algorithm	6	45714	12.139315858891157
-1	algorithm	7	13486	12.044614177757765
-1	algorithm	8	34138	12.043708827481877
-1	algorithm	9	84481	11.928247975728976
-1	algorithm	10	65378	11.918864636399471
-2	history	1	25514	4.49734150460596
-2	history	2	25506	4.496528360148434
-2	history	3	97013	4.42371976961045
-2	history	4	25836	4.363781374179709
-2	history	5	92301	4.355370280495336
-2	history	6	19935	4.336351420446819
-2	history	7	24340	4.318879133765971
-2	history	8	97173	4.279423541420156
-2	history	9	28301	4.217909304783448
-2	history	10	968	4.188135315749311
-3	science	1	14820	6.969669156213647
-3	science	2	1891	6.959596009365499
-3	science	3	48649	6.949313210066774
-3	science	4	13182	6.915233013018424
-3	science	5	26088	6.8379804927583265
-3	science	6	32631	6.781138090431201
-3	science	7	1568	6.778344700519812
-3	science	8	93337	6.73681419325478
-3	science	9	86523	6.713816929977105
-3	science	10	26925	6.665689641297059
-4	computer	1	60	7.402233460477374
-4	computer	2	51993	7.378566390413579
-4	computer	3	35190	7.367026108361855
-4	computer	4	10716	7.341084479706175
-4	computer	5	98779	7.30008096628755
-4	computer	6	7593	7.280863541082151
-4	computer	7	30236	7.268768707740276
-4	computer	8	17425	7.26147860042135
-4	computer	9	86398	7.256959067277189
-4	computer	10	2567	7.229295336273383
-5	biology	1	16769	8.99845050231233
-5	biology	2	10142	8.979459389637952
-5	biology	3	69414	8.867934374941516
-5	biology	4	3508	8.836406250000625
-5	biology	5	54	8.82880301008943
-5	biology	6	19076	8.686334291021263
-5	biology	7	14750	8.60969918876392
-5	biology	8	84037	8.484911977034916
-5	biology	9	52951	8.202573727617832
-5	biology	10	11462	8.166359401251048
-6	mathematics	1	49915	9.145514370117883
-6	mathematics	2	71615	9.050570686014893
-6	mathematics	3	231	8.94914530498381
-6	mathematics	4	50266	8.948557135776296
-6	mathematics	5	50267	8.857418114595044
-6	mathematics	6	50268	8.839558826166238
-6	mathematics	7	32999	8.823385768433043
-6	mathematics	8	72035	8.820442043135573
-6	mathematics	9	45798	8.816165355442719
-6	mathematics	10	240	8.738114034770163
-7	physics	1	49915	7.7273011422608135
-7	physics	2	25541	7.652812342105945
-7	physics	3	14834	7.621023513839571
-7	physics	4	68571	7.56333847145636
-7	physics	5	13997	7.519063226387582
-7	physics	6	11599	7.51437061817813
-7	physics	7	34967	7.497931455453571
-7	physics	8	27938	7.428520386803459
-7	physics	9	1220	7.360382657224706
-7	physics	10	55623	7.328693053818578
-8	chemistry	1	59996	9.823969475820759
-8	chemistry	2	69351	9.8035156983039
-8	chemistry	3	72126	9.801493160915458
-8	chemistry	4	68571	9.74737806629347
-8	chemistry	5	71213	9.72551246503904
-8	chemistry	6	71360	9.641455663817522
-8	chemistry	7	69118	9.480236107826178
-8	chemistry	8	68528	9.471179558934727
-8	chemistry	9	61157	9.446309535099541
-8	chemistry	10	69435	9.329069144064539
-9	geography	1	78870	7.5925832469004595
-9	geography	2	87624	7.246107913207034
-9	geography	3	152	7.132563631119651
-9	geography	4	90934	7.115895886456099
-9	geography	5	64040	6.978030869712367
-9	geography	6	64690	6.950540228669304
-9	geography	7	3422	6.932333155077397
-9	geography	8	1406	6.91278638436998
-9	geography	9	13134	6.896203679163167
-9	geography	10	78181	6.841304790487723
-10	philosophy	1	67945	9.707287882224
-10	philosophy	2	84162	9.608602691877875
-10	philosophy	3	27321	9.584355782875887
-10	philosophy	4	72897	9.517452273866489
-10	philosophy	5	29828	9.424464389758626
-10	philosophy	6	88380	9.355196949126695
-10	philosophy	7	306	9.313705794659226
-10	philosophy	8	72452	9.151807968956163
-10	philosophy	9	96125	8.998168657455512
-10	philosophy	10	15351	8.968554460580993
-101	machine learning	1	79923	12.839326761478743
-101	machine learning	2	1892	12.58935348352098
-101	machine learning	3	10600	12.513306281465674
-101	machine learning	4	95660	11.804144019940358
-101	machine learning	5	7593	11.308002675860276
-101	machine learning	6	96123	11.257364451562317
-101	machine learning	7	94561	10.839697643942447
-101	machine learning	8	58239	10.740443955210003
-101	machine learning	9	11300	10.653090130379242
-101	machine learning	10	6011	10.50204355474791
-102	world war	1	1322	9.157806929992024
-102	world war	2	11342	9.081361032139768
-102	world war	3	16625	9.010820716092589
-102	world war	4	54969	8.886604209529597
-102	world war	5	48070	8.838374617769489
-102	world war	6	24839	8.70461415500146
-102	world war	7	54959	8.638140323492731
-102	world war	8	83185	8.540620074802437
-102	world war	9	45771	8.521025097078223
-102	world war	10	83303	8.443470949979886
-103	climate change	1	99149	12.956455725656792
-103	climate change	2	51862	12.952232921483326
-103	climate change	3	45226	12.812933012712875
-103	climate change	4	36715	12.789198775089137
-103	climate change	5	96686	12.724237673782017
-103	climate change	6	467	12.604633814915921
-103	climate change	7	9115	12.52559627577256
-103	climate change	8	95329	12.521074928770247
-103	climate change	9	20282	12.4481498189817
-103	climate change	10	70700	12.362637107544144
-104	solar system	1	10771	14.998441956953446
-104	solar system	2	65218	14.745273923557487
-104	solar system	3	14855	14.529429274590271
-104	solar system	4	329	14.5076230905721
-104	solar system	5	390	14.395411511061676
-104	solar system	6	15177	14.361146941649345
-104	solar system	7	15166	14.3174828962585
-104	solar system	8	88391	14.01685515342114
-104	solar system	9	98234	13.976908073631918
-104	solar system	10	12556	13.970746229847663
-105	human body	1	181	12.446611307932043
-105	human body	2	34757	11.900927535520207
-105	human body	3	77794	11.48739182844965
-105	human body	4	73453	11.455437003322094
-105	human body	5	30584	11.370096583510977
-105	human body	6	32299	11.314541055040642
-105	human body	7	87962	11.17458327720122
-105	human body	8	35366	11.15698630247717
-105	human body	9	1130	11.142109666614765
-105	human body	10	7527	11.132237824997809
-106	ancient history	1	169	10.728299297923707
-106	ancient history	2	17815	10.691177177868909
-106	ancient history	3	22533	10.487092636881206
-106	ancient history	4	14453	10.226275238629338
-106	ancient history	5	3089	10.135890546325586
-106	ancient history	6	2451	9.994182216296052
-106	ancient history	7	20286	9.891244762281264
-106	ancient history	8	19645	9.788804034718428
-106	ancient history	9	64009	9.786624812768935
-106	ancient history	10	13010	9.711140059036
-107	modern art	1	70874	12.453018817071804
-107	modern art	2	61436	12.401506681940882
-107	modern art	3	72672	12.09326493626174
-107	modern art	4	23119	12.029840638478944
-107	modern art	5	52475	12.024451462265816
-107	modern art	6	24848	11.853481627603058
-107	modern art	7	77903	11.671481850003154
-107	modern art	8	72662	11.663538342636263
-107	modern art	9	77833	11.445575271460289
-107	modern art	10	48199	11.418741015030704
-108	nuclear physics	1	64842	15.801277889854665
-108	nuclear physics	2	11290	15.027350333469236
-108	nuclear physics	3	45515	14.684847437851978
-108	nuclear physics	4	24348	14.680749663370431
-108	nuclear physics	5	55058	14.634600617530598
-108	nuclear physics	6	50495	14.484910754248794
-108	nuclear physics	7	45990	14.42627467913928
-108	nuclear physics	8	52101	14.362269566805317
-108	nuclear physics	9	89304	14.219463206104837
-108	nuclear physics	10	32096	14.149621696044264
-109	organic chemistry	1	59996	15.366980728094031
-109	organic chemistry	2	3011	15.33827183068322
-109	organic chemistry	3	69351	15.219569070957228
-109	organic chemistry	4	68540	14.507274582504259
-109	organic chemistry	5	69435	14.17978774751205
-109	organic chemistry	6	72126	14.150601166746448
-109	organic chemistry	7	2065	14.13680431352308
-109	organic chemistry	8	69121	13.875521456252855
-109	organic chemistry	9	55154	13.871233763045801
-109	organic chemistry	10	71890	13.781510051542966
-110	cell biology	1	48357	16.865526156069212
-110	cell biology	2	52951	16.6422192011324
-110	cell biology	3	19076	16.26528926353339
-110	cell biology	4	90	16.178901302723496
-110	cell biology	5	84252	16.048269443616565
-110	cell biology	6	13088	15.998697617740135
-110	cell biology	7	52950	15.85602399040713
-110	cell biology	8	15662	15.836931534165153
-110	cell biology	9	2564	15.68034107313201
-110	cell biology	10	3508	15.607636933186559
-201	world war two	1	54960	11.283125159018223
-201	world war two	2	97692	10.997166367859519
-201	world war two	3	48070	10.987565399775903
-201	world war two	4	86799	10.933013922683422
-201	world war two	5	17906	10.898243924906819
-201	world war two	6	83382	10.890195065670149
-201	world war two	7	19737	10.791166819412904
-201	world war two	8	98000	10.772174285690895
-201	world war two	9	1060	10.69146849998034
-201	world war two	10	11342	10.63516861342265
-202	machine learning algorithms	1	34242	16.855380832218316
-202	machine learning algorithms	2	57382	16.024051193025052
-202	machine learning algorithms	3	17550	14.829292031021357
-202	machine learning algorithms	4	66008	14.766376502060805
-202	machine learning algorithms	5	58796	14.724387666321293
-202	machine learning algorithms	6	34570	14.540952591300861
-202	machine learning algorithms	7	85790	14.190787583647847
-202	machine learning algorithms	8	55420	14.152057176539296
-202	machine learning algorithms	9	60	13.854391668521123
-202	machine learning algorithms	10	45389	13.706965901107928
-203	climate change effects	1	70565	18.035735263841943
-203	climate change effects	2	45226	17.096624160881632
-203	climate change effects	3	99149	16.500647534276723
-203	climate change effects	4	2160	16.152294616405626
-203	climate change effects	5	26659	16.01283746538719
-203	climate change effects	6	25320	15.298129310902038
-203	climate change effects	7	70163	15.235960517415675
-203	climate change effects	8	2573	14.854997956804954
-203	climate change effects	9	1321	14.522803687580275
-203	climate change effects	10	62330	14.35229239651905
-204	human immune system	1	202	20.399147836621392
-204	human immune system	2	14887	20.129160375072015
-204	human immune system	3	60706	19.46878590252682
-204	human immune system	4	88942	19.004068715374157
-204	human immune system	5	313	18.248557380958403
-204	human immune system	6	80573	18.2434252442667
-204	human immune system	7	45379	17.67162736768052
-204	human immune system	8	4247	17.56750529390384
-204	human immune system	9	50288	17.502105094749542
-204	human immune system	10	59267	17.37466556428366
-205	solar system planets	1	329	23.841835361047345
-205	solar system planets	2	10771	23.705983742439937
-205	solar system planets	3	390	23.42014978316302
-205	solar system planets	4	88391	23.13207246956399
-205	solar system planets	5	1163	22.71958897942676
-205	solar system planets	6	30702	21.980805092042775
-205	solar system planets	7	74670	21.861066151264165
-205	solar system planets	8	49307	21.733323519544243
-205	solar system planets	9	11489	21.435417041911204
-205	solar system planets	10	9982	21.39473312067813
-206	ancient greek philosophy	1	72897	21.7837232503951
-206	ancient greek philosophy	2	49502	20.3288686572824
-206	ancient greek philosophy	3	55476	19.200421123335307
-206	ancient greek philosophy	4	30423	18.551616547699297
-206	ancient greek philosophy	5	84162	18.37037227181903
-206	ancient greek philosophy	6	87388	17.905612844747914
-206	ancient greek philosophy	7	11917	17.8749034040513
-206	ancient greek philosophy	8	13368	17.681659197851737
-206	ancient greek philosophy	9	8581	17.51245181808303
-206	ancient greek philosophy	10	33332	17.401522182144735
-207	modern art movements	1	70874	18.313373368607532
-207	modern art movements	2	82614	17.61763012075246
-207	modern art movements	3	48071	17.44439424884226
-207	modern art movements	4	61955	17.022876030779326
-207	modern art movements	5	61436	16.77190983064328
-207	modern art movements	6	24848	16.584851736231066
-207	modern art movements	7	47549	16.433076099722793
-207	modern art movements	8	61484	16.24410323408494
-207	modern art movements	9	61913	15.521851935187737
-207	modern art movements	10	94468	15.475479002735918
-208	nuclear power plants	1	24711	22.254622669285478
-208	nuclear power plants	2	60203	21.961668342989324
-208	nuclear power plants	3	26770	21.80858728637773
-208	nuclear power plants	4	34947	21.644544479651483
-208	nuclear power plants	5	31991	21.232983289339803
-208	nuclear power plants	6	26758	21.017191812822816
-208	nuclear power plants	7	73783	20.850765608737895
-208	nuclear power plants	8	26757	20.80260507027546
-208	nuclear power plants	9	36852	20.65312469688736
-208	nuclear power plants	10	72600	20.549003694222137
-209	organic chemistry compounds	1	59996	23.856033513773287
-209	organic chemistry compounds	2	3011	22.498108975693327
-209	organic chemistry compounds	3	55154	21.7578275234337
-209	organic chemistry compounds	4	69121	21.74604681198396
-209	organic chemistry compounds	5	1116	20.760222211637352
-209	organic chemistry compounds	6	60612	20.595216317885637
-209	organic chemistry compounds	7	69427	20.275975409633936
-209	organic chemistry compounds	8	68987	20.163317377648546
-209	organic chemistry compounds	9	68540	20.019363171054447
-209	organic chemistry compounds	10	59475	19.77488065882541
-210	cell division process	1	18775	20.485032830757653
-210	cell division process	2	14565	18.92652937975818
-210	cell division process	3	7802	18.063405235062906
-210	cell division process	4	52949	18.05663625780521
-210	cell division process	5	90	18.010293715080586
-210	cell division process	6	52775	17.670484443539728
-210	cell division process	7	14868	17.535920124426283
-210	cell division process	8	9026	17.47036708524802
-210	cell division process	9	22748	16.955614769483372
-210	cell division process	10	8406	16.847947702922905
-301	second world war battles	1	16625	18.203275568287115
-301	second world war battles	2	24883	17.71926495485421
-301	second world war battles	3	65830	17.55832307077268
-301	second world war battles	4	94383	17.163690272289532
-301	second world war battles	5	66234	16.808570250616093
-301	second world war battles	6	19242	16.777556114056217
-301	second world war battles	7	71947	16.673243505366635
-301	second world war battles	8	95393	16.649137387969592
-301	second world war battles	9	69226	16.54207061711136
-301	second world war battles	10	3804	16.460473870186405
-302	deep learning neural networks	1	12041	29.925979504108657
-302	deep learning neural networks	2	79597	25.752700410053215
-302	deep learning neural networks	3	282	19.60343431931882
-302	deep learning neural networks	4	1892	18.264342682449936
-302	deep learning neural networks	5	35094	15.89152873430973
-302	deep learning neural networks	6	58796	15.733704560207089
-302	deep learning neural networks	7	82298	15.455686806860784
-302	deep learning neural networks	8	70544	15.17584646465793
-302	deep learning neural networks	9	84214	14.885945890097592
-302	deep learning neural networks	10	54153	13.36691771385164
-303	global climate change impacts	1	36715	25.360308681546588
-303	global climate change impacts	2	36731	21.97392934287591
-303	global climate change impacts	3	17541	21.470470458246574
-303	global climate change impacts	4	92596	21.380653617065548
-303	global climate change impacts	5	2160	20.169453930544226
-303	global climate change impacts	6	45226	20.08460413980678
-303	global climate change impacts	7	51862	19.812607963856937
-303	global climate change impacts	8	62621	19.51538760469331
-303	global climate change impacts	9	44901	19.292645082877314
-303	global climate change impacts	10	96686	18.832411128936375
-304	human cardiovascular system function	1	27	23.499234569537194
-304	human cardiovascular system function	2	54672	20.40939194586089
-304	human cardiovascular system function	3	69682	20.275341359666037
-304	human cardiovascular system function	4	81671	19.561181797317424
-304	human cardiovascular system function	5	13867	17.85164295326062
-304	human cardiovascular system function	6	13712	17.798814417872624
-304	human cardiovascular system function	7	78951	17.748676892350847
-304	human cardiovascular system function	8	328	16.13220029281928
-304	human cardiovascular system function	9	38431	16.02202009010557
-304	human cardiovascular system function	10	66956	15.45205166439386
-305	outer solar system exploration	1	74670	28.544970448656112
-305	outer solar system exploration	2	9226	25.318321639890073
-305	outer solar system exploration	3	20977	24.73295784595965
-305	outer solar system exploration	4	12556	23.55264908305682
-305	outer solar system exploration	5	560	22.568044475875347
-305	outer solar system exploration	6	17681	20.047882044126414
-305	outer solar system exploration	7	329	19.863631583736446
-305	outer solar system exploration	8	11489	19.828007345679207
-305	outer solar system exploration	9	11798	19.676330183321358
-305	outer solar system exploration	10	51745	19.485552581222798
-306	ancient greek city states	1	33962	18.75834208904714
-306	ancient greek city states	2	2917	18.588605994848272
-306	ancient greek city states	3	4261	17.58909986017771
-306	ancient greek city states	4	3811	17.278976127461064
-306	ancient greek city states	5	85158	16.638126965530986
-306	ancient greek city states	6	65524	15.634780580760234
-306	ancient greek city states	7	47773	15.56424226884243
-306	ancient greek city states	8	5045	15.543033620439928
-306	ancient greek city states	9	7784	15.5150916304443
-306	ancient greek city states	10	70580	15.440933257942072
-307	abstract expressionist art movement	1	61484	31.20001655166301
-307	abstract expressionist art movement	2	61913	30.036453989783606
-307	abstract expressionist art movement	3	20826	26.18737032063285
-307	abstract expressionist art movement	4	61955	23.356716715186913
-307	abstract expressionist art movement	5	73949	23.26279232126583
-307	abstract expressionist art movement	6	95976	21.971734741593963
-307	abstract expressionist art movement	7	2505	20.44991859424171
-307	abstract expressionist art movement	8	86268	20.22249693500881
-307	abstract expressionist art movement	9	34069	19.88897451418848
-307	abstract expressionist art movement	10	34601	19.707622256248563
-308	nuclear fusion energy research	1	6026	31.54193241093855
-308	nuclear fusion energy research	2	73783	28.216438116806568
-308	nuclear fusion energy research	3	8390	27.26226009675593
-308	nuclear fusion energy research	4	15062	26.83418640529731
-308	nuclear fusion energy research	5	11828	26.08469335256763
-308	nuclear fusion energy research	6	11955	25.471816584342577
-308	nuclear fusion energy research	7	14437	25.07226605234031
-308	nuclear fusion energy research	8	27367	23.96680248399451
-308	nuclear fusion energy research	9	12301	23.47570809914778
-308	nuclear fusion energy research	10	77128	23.362696352370172
-309	aromatic organic chemistry reactions	1	87973	31.73683768575029
-309	aromatic organic chemistry reactions	2	3011	27.68071145560146
-309	aromatic organic chemistry reactions	3	69212	25.2518397828717
-309	aromatic organic chemistry reactions	4	22819	24.8166988298004
-309	aromatic organic chemistry reactions	5	68540	24.444320732373058
-309	aromatic organic chemistry reactions	6	69230	22.561903221288524
-309	aromatic organic chemistry reactions	7	85990	22.055617141642767
-309	aromatic organic chemistry reactions	8	68438	21.553503471453354
-309	aromatic organic chemistry reactions	9	86246	20.92239367651377
-309	aromatic organic chemistry reactions	10	69427	20.824675777842657
-310	stem cell research applications	1	81283	30.60575923201381
-310	stem cell research applications	2	46936	22.798031010905568
-310	stem cell research applications	3	81261	20.507473741505343
-310	stem cell research applications	4	17661	19.122574011344135
-310	stem cell research applications	5	63856	19.04290056865095
-310	stem cell research applications	6	64404	19.00837140034934
-310	stem cell research applications	7	555	18.61135707593299
-310	stem cell research applications	8	10982	18.17501919041004
-310	stem cell research applications	9	87958	18.014059763476283
-310	stem cell research applications	10	46484	17.568346278079893
-401	battle of stalingrad world war	1	50950	25.3522783878295
-401	battle of stalingrad world war	2	48138	23.990123619792094
-401	battle of stalingrad world war	3	48257	23.611026712172777
-401	battle of stalingrad world war	4	46280	22.55552762139438
-401	battle of stalingrad world war	5	25322	22.323614815182683
-401	battle of stalingrad world war	6	23286	22.247682472792842
-401	battle of stalingrad world war	7	86492	21.55691897848297
-401	battle of stalingrad world war	8	33885	21.317847202061248
-401	battle of stalingrad world war	9	94609	20.703170627691303
-401	battle of stalingrad world war	10	44803	19.516463923312763
-402	transformer architecture deep learning models	1	59261	16.43032356204052
-402	transformer architecture deep learning models	2	4186	15.426863454248341
-402	transformer architecture deep learning models	3	33120	14.941482531476057
-402	transformer architecture deep learning models	4	99956	14.778554026374515
-402	transformer architecture deep learning models	5	55149	14.114626476985041
-402	transformer architecture deep learning models	6	22775	14.111741495988955
-402	transformer architecture deep learning models	7	35168	13.996807575148626
-402	transformer architecture deep learning models	8	72521	13.985551158519815
-402	transformer architecture deep learning models	9	26832	13.836940158712629
-402	transformer architecture deep learning models	10	32045	13.685969035130885
-403	paris agreement climate change targets	1	564	18.9767679445911
-403	paris agreement climate change targets	2	45226	18.779504092755865
-403	paris agreement climate change targets	3	17740	15.336675482296869
-403	paris agreement climate change targets	4	25320	15.154670703264715
-403	paris agreement climate change targets	5	26219	14.419917076828492
-403	paris agreement climate change targets	6	9468	13.770539108797648
-403	paris agreement climate change targets	7	2160	13.753071145275575
-403	paris agreement climate change targets	8	54344	13.601011133686761
-403	paris agreement climate change targets	9	44401	13.404700860210642
-403	paris agreement climate change targets	10	7088	13.180525249094444
-404	human heart blood circulation system	1	4265	32.54514785292893
-404	human heart blood circulation system	2	11754	28.700108421116592
-404	human heart blood circulation system	3	6807	23.897219288176196
-404	human heart blood circulation system	4	14457	23.221862999728316
-404	human heart blood circulation system	5	18230	21.778123904050158
-404	human heart blood circulation system	6	4254	21.68144095572245
-404	human heart blood circulation system	7	10347	21.665929154594437
-404	human heart blood circulation system	8	4263	21.487189293047194
-404	human heart blood circulation system	9	59267	20.890205669810875
-404	human heart blood circulation system	10	9939	20.569019903990778
-405	voyager probe outer solar system	1	20977	38.96284542818134
-405	voyager probe outer solar system	2	12556	36.32458629451557
-405	voyager probe outer solar system	3	17681	33.88619588993048
-405	voyager probe outer solar system	4	68143	32.372608527570875
-405	voyager probe outer solar system	5	7206	30.649513030436616
-405	voyager probe outer solar system	6	35432	28.041141677136228
-405	voyager probe outer solar system	7	20513	27.244182528811226
-405	voyager probe outer solar system	8	391	26.78285942848634
-405	voyager probe outer solar system	9	20500	26.50996037044976
-405	voyager probe outer solar system	10	17677	25.736644154682473
-406	athenian democracy ancient greek politics	1	61939	27.27706822481846
-406	athenian democracy ancient greek politics	2	22922	27.22679525332667
-406	athenian democracy ancient greek politics	3	17902	26.58221736833755
-406	athenian democracy ancient greek politics	4	69219	26.36509108616874
-406	athenian democracy ancient greek politics	5	25300	26.06418228060648
-406	athenian democracy ancient greek politics	6	4261	25.195964586907454
-406	athenian democracy ancient greek politics	7	30134	24.665193383357618
-406	athenian democracy ancient greek politics	8	76668	24.45522391353426
-406	athenian democracy ancient greek politics	9	93908	24.05644403115872
-406	athenian democracy ancient greek politics	10	8128	23.71097798352431
-407	jackson pollock abstract expressionist paintings	1	61484	41.75744352740837
-407	jackson pollock abstract expressionist paintings	2	61913	36.58264302554447
-407	jackson pollock abstract expressionist paintings	3	4879	34.663626762319865
-407	jackson pollock abstract expressionist paintings	4	2505	26.61938074518728
-407	jackson pollock abstract expressionist paintings	5	73949	23.945335186611665
-407	jackson pollock abstract expressionist paintings	6	95976	23.505932846442093
-407	jackson pollock abstract expressionist paintings	7	62225	21.97595547997989
-407	jackson pollock abstract expressionist paintings	8	20826	20.271735008475193
-407	jackson pollock abstract expressionist paintings	9	34069	20.024161968955116
-407	jackson pollock abstract expressionist paintings	10	61436	19.95348206518446
-408	iter tokamak nuclear fusion reactor	1	73783	48.23591408235129
-408	iter tokamak nuclear fusion reactor	2	12301	27.666882467205177
-408	iter tokamak nuclear fusion reactor	3	14437	27.207739558030838
-408	iter tokamak nuclear fusion reactor	4	64842	26.067221097333167
-408	iter tokamak nuclear fusion reactor	5	45990	25.783053255073515
-408	iter tokamak nuclear fusion reactor	6	8988	22.8703186244476
-408	iter tokamak nuclear fusion reactor	7	16410	22.358728202629557
-408	iter tokamak nuclear fusion reactor	8	24711	22.3479004879038
-408	iter tokamak nuclear fusion reactor	9	9141	21.89802680723032
-408	iter tokamak nuclear fusion reactor	10	7223	21.66988968297732
-409	benzene ring aromatic compound chemistry	1	87973	47.091437375392765
-409	benzene ring aromatic compound chemistry	2	69212	46.89837160964579
-409	benzene ring aromatic compound chemistry	3	8376	44.29868469045756
-409	benzene ring aromatic compound chemistry	4	69230	43.73947989785856
-409	benzene ring aromatic compound chemistry	5	35743	38.52125234499096
-409	benzene ring aromatic compound chemistry	6	2189	37.77244395880163
-409	benzene ring aromatic compound chemistry	7	22819	37.71868635401369
-409	benzene ring aromatic compound chemistry	8	85990	36.06682987571818
-409	benzene ring aromatic compound chemistry	9	68553	31.429865461029014
-409	benzene ring aromatic compound chemistry	10	3011	30.007525551543953
-410	induced pluripotent stem cell research	1	81283	42.88346248923357
-410	induced pluripotent stem cell research	2	81261	31.394091322235468
-410	induced pluripotent stem cell research	3	52950	26.72681409337387
-410	induced pluripotent stem cell research	4	555	24.23444595647082
-410	induced pluripotent stem cell research	5	19112	22.99880057504118
-410	induced pluripotent stem cell research	6	46936	22.798031010905568
-410	induced pluripotent stem cell research	7	52951	19.280462210653784
-410	induced pluripotent stem cell research	8	17661	19.122574011344135
-410	induced pluripotent stem cell research	9	63856	19.04290056865095
-410	induced pluripotent stem cell research	10	64404	19.00837140034934
-501	operation barbarossa german invasion soviet union	1	79189	42.78695875442739
-501	operation barbarossa german invasion soviet union	2	7476	37.8322370293909
-501	operation barbarossa german invasion soviet union	3	46280	36.69906036639161
-501	operation barbarossa german invasion soviet union	4	77158	35.70912863822023
-501	operation barbarossa german invasion soviet union	5	65829	28.898561508554213
-501	operation barbarossa german invasion soviet union	6	44803	27.92374350626785
-501	operation barbarossa german invasion soviet union	7	4924	25.874860459901974
-501	operation barbarossa german invasion soviet union	8	94300	23.748172177446538
-501	operation barbarossa german invasion soviet union	9	53832	23.734967548450435
-501	operation barbarossa german invasion soviet union	10	14170	23.373274580668657
-502	attention mechanism transformer neural network architecture	1	35094	22.40613414127013
-502	attention mechanism transformer neural network architecture	2	79597	21.49451925719084
-502	attention mechanism transformer neural network architecture	3	12041	20.832616117487518
-502	attention mechanism transformer neural network architecture	4	282	19.60343431931882
-502	attention mechanism transformer neural network architecture	5	97914	16.933633456283378
-502	attention mechanism transformer neural network architecture	6	13285	16.831205646095963
-502	attention mechanism transformer neural network architecture	7	17597	16.3780077983884
-502	attention mechanism transformer neural network architecture	8	95684	15.75107710788501
-502	attention mechanism transformer neural network architecture	9	34383	15.587412189733282
-502	attention mechanism transformer neural network architecture	10	94882	14.747641101718166
-503	intergovernmental panel climate change ipcc reports	1	25320	43.79664258673094
-503	intergovernmental panel climate change ipcc reports	2	20282	42.752629922491465
-503	intergovernmental panel climate change ipcc reports	3	45221	35.97266268731155
-503	intergovernmental panel climate change ipcc reports	4	45226	35.42022692584266
-503	intergovernmental panel climate change ipcc reports	5	96686	31.123872206548036
-503	intergovernmental panel climate change ipcc reports	6	17541	27.815568206945404
-503	intergovernmental panel climate change ipcc reports	7	2160	22.169476887772802
-503	intergovernmental panel climate change ipcc reports	8	21347	21.348006401041776
-503	intergovernmental panel climate change ipcc reports	9	5212	18.46753986262034
-503	intergovernmental panel climate change ipcc reports	10	92596	18.251017959554797
-504	sinoatrial node heart electrical conduction system	1	4254	32.44219836337989
-504	sinoatrial node heart electrical conduction system	2	35739	20.875919782268095
-504	sinoatrial node heart electrical conduction system	3	23136	19.235398721298864
-504	sinoatrial node heart electrical conduction system	4	14457	18.869502346705943
-504	sinoatrial node heart electrical conduction system	5	45379	18.688560206588154
-504	sinoatrial node heart electrical conduction system	6	61343	17.500697871278362
-504	sinoatrial node heart electrical conduction system	7	65237	17.47273053902399
-504	sinoatrial node heart electrical conduction system	8	4067	17.105718608407916
-504	sinoatrial node heart electrical conduction system	9	89605	16.991369747311005
-504	sinoatrial node heart electrical conduction system	10	8329	16.717704793049293
-505	new horizons pluto kuiper belt flyby	1	23780	50.19513973038636
-505	new horizons pluto kuiper belt flyby	2	79010	37.337787166800986
-505	new horizons pluto kuiper belt flyby	3	21330	34.30576790741883
-505	new horizons pluto kuiper belt flyby	4	11485	33.98050026912693
-505	new horizons pluto kuiper belt flyby	5	9982	32.95633866482151
-505	new horizons pluto kuiper belt flyby	6	68206	31.43413390013967
-505	new horizons pluto kuiper belt flyby	7	21338	29.73313217049536
-505	new horizons pluto kuiper belt flyby	8	45204	29.57632788805895
-505	new horizons pluto kuiper belt flyby	9	8632	25.720951395614815
-505	new horizons pluto kuiper belt flyby	10	25896	23.904434953854018
-506	pericles funeral oration athenian democracy speech	1	57720	59.136515439699465
-506	pericles funeral oration athenian democracy speech	2	17902	42.589317084150636
-506	pericles funeral oration athenian democracy speech	3	19934	33.08377958437367
-506	pericles funeral oration athenian democracy speech	4	30134	30.47290590025347
-506	pericles funeral oration athenian democracy speech	5	76668	29.844671975068
-506	pericles funeral oration athenian democracy speech	6	19921	25.506930507820464
-506	pericles funeral oration athenian democracy speech	7	22922	23.147764957170622
-506	pericles funeral oration athenian democracy speech	8	76647	22.206004363237348
-506	pericles funeral oration athenian democracy speech	9	89477	21.23853330107802
-506	pericles funeral oration athenian democracy speech	10	69219	19.174136622502623
-507	number one jackson pollock drip painting	1	4879	38.448408561316974
-507	number one jackson pollock drip painting	2	61484	29.375031469832326
-507	number one jackson pollock drip painting	3	63933	19.945405732262667
-507	number one jackson pollock drip painting	4	61913	19.348905658174797
-507	number one jackson pollock drip painting	5	1789	16.364471208144014
-507	number one jackson pollock drip painting	6	61436	15.876954053093396
-507	number one jackson pollock drip painting	7	63256	15.803936184676965
-507	number one jackson pollock drip painting	8	94399	15.663764113033544
-507	number one jackson pollock drip painting	9	34998	15.638510728706795
-507	number one jackson pollock drip painting	10	23119	15.49869574891353
-508	national ignition facility laser fusion experiment	1	75797	23.650103924969745
-508	national ignition facility laser fusion experiment	2	71817	21.33918036743368
-508	national ignition facility laser fusion experiment	3	86549	17.43357794036091
-508	national ignition facility laser fusion experiment	4	45652	17.250291420816687
-508	national ignition facility laser fusion experiment	5	57133	16.81679902027341
-508	national ignition facility laser fusion experiment	6	71832	16.59630732279492
-508	national ignition facility laser fusion experiment	7	71614	16.10919419754856
-508	national ignition facility laser fusion experiment	8	1178	15.444286020308406
-508	national ignition facility laser fusion experiment	9	66205	14.242749921000705
-508	national ignition facility laser fusion experiment	10	6026	14.071651663671442
-509	nucleophilic aromatic substitution organic chemistry mechanism	1	3011	42.088573568443884
-509	nucleophilic aromatic substitution organic chemistry mechanism	2	69194	39.20626365822116
-509	nucleophilic aromatic substitution organic chemistry mechanism	3	86246	36.425532868025684
-509	nucleophilic aromatic substitution organic chemistry mechanism	4	69193	36.24527676041106
-509	nucleophilic aromatic substitution organic chemistry mechanism	5	84280	34.97033111713682
-509	nucleophilic aromatic substitution organic chemistry mechanism	6	9783	27.369502253302947
-509	nucleophilic aromatic substitution organic chemistry mechanism	7	69230	26.92073491234276
-509	nucleophilic aromatic substitution organic chemistry mechanism	8	46606	26.46279002006951
-509	nucleophilic aromatic substitution organic chemistry mechanism	9	69212	26.361625097339218
-509	nucleophilic aromatic substitution organic chemistry mechanism	10	84193	25.498997289365096
-510	shinya yamanaka induced pluripotent stem cells	1	81283	56.99560757076206
-510	shinya yamanaka induced pluripotent stem cells	2	81261	37.8010610127955
-510	shinya yamanaka induced pluripotent stem cells	3	52950	26.72681409337387
-510	shinya yamanaka induced pluripotent stem cells	4	9781	23.157385473631866
-510	shinya yamanaka induced pluripotent stem cells	5	555	21.078861189616077
-510	shinya yamanaka induced pluripotent stem cells	6	19112	20.41400485195249
-510	shinya yamanaka induced pluripotent stem cells	7	46936	20.360220763097118
-510	shinya yamanaka induced pluripotent stem cells	8	52951	19.280462210653784
-510	shinya yamanaka induced pluripotent stem cells	9	77381	18.924140337172766
-510	shinya yamanaka induced pluripotent stem cells	10	10982	18.17501919041004
-601	operation barbarossa largest military invasion in history	1	79189	36.987059720321916
-601	operation barbarossa largest military invasion in history	2	46280	25.565013122413212
-601	operation barbarossa largest military invasion in history	3	6258	24.209953754493515
-601	operation barbarossa largest military invasion in history	4	49496	23.234282518801137
-601	operation barbarossa largest military invasion in history	5	1363	20.994740760152336
-601	operation barbarossa largest military invasion in history	6	89165	20.349862731638062
-601	operation barbarossa largest military invasion in history	7	77158	19.435652590246697
-601	operation barbarossa largest military invasion in history	8	7476	18.937710950063366
-601	operation barbarossa largest military invasion in history	9	62605	18.5057801181977
-601	operation barbarossa largest military invasion in history	10	25282	18.039571340471813
-602	multi head self attention transformer encoder decoder	1	13652	25.28544885157438
-602	multi head self attention transformer encoder decoder	2	70218	20.817013403068678
-602	multi head self attention transformer encoder decoder	3	32040	19.93958037483285
-602	multi head self attention transformer encoder decoder	4	51784	19.494421943702132
-602	multi head self attention transformer encoder decoder	5	25293	19.421158123563252
-602	multi head self attention transformer encoder decoder	6	13953	18.268291085905137
-602	multi head self attention transformer encoder decoder	7	64085	18.020242425004792
-602	multi head self attention transformer encoder decoder	8	22525	17.59770134417916
-602	multi head self attention transformer encoder decoder	9	65395	16.502020645717714
-602	multi head self attention transformer encoder decoder	10	4352	16.132904779395943
-603	ipcc sixth assessment report climate change impacts	1	25320	45.248811947939416
-603	ipcc sixth assessment report climate change impacts	2	20282	33.58395722694589
-603	ipcc sixth assessment report climate change impacts	3	21347	30.164941026095434
-603	ipcc sixth assessment report climate change impacts	4	92596	22.058331576924946
-603	ipcc sixth assessment report climate change impacts	5	17541	20.39364194386928
-603	ipcc sixth assessment report climate change impacts	6	36715	19.164478716406318
-603	ipcc sixth assessment report climate change impacts	7	45221	19.012691798577222
-603	ipcc sixth assessment report climate change impacts	8	45226	18.460256037108334
-603	ipcc sixth assessment report climate change impacts	9	70992	16.938392244365154
-603	ipcc sixth assessment report climate change impacts	10	26642	16.36338366374698
-604	purkinje fibers heart ventricular electrical conduction system	1	4254	48.02555960507605
-604	purkinje fibers heart ventricular electrical conduction system	2	93684	27.597098014399357
-604	purkinje fibers heart ventricular electrical conduction system	3	13214	26.870385725123406
-604	purkinje fibers heart ventricular electrical conduction system	4	6996	23.136940310320842
-604	purkinje fibers heart ventricular electrical conduction system	5	66159	22.597178796275116
-604	purkinje fibers heart ventricular electrical conduction system	6	15724	22.437676311097203
-604	purkinje fibers heart ventricular electrical conduction system	7	13211	22.411034665628655
-604	purkinje fibers heart ventricular electrical conduction system	8	11001	21.10939133653553
-604	purkinje fibers heart ventricular electrical conduction system	9	20918	19.472575194208304
-604	purkinje fibers heart ventricular electrical conduction system	10	35739	18.815514256278565
-605	voyager golden record sounds of earth message	1	70579	33.19536788293081
-605	voyager golden record sounds of earth message	2	12556	28.892108833508736
-605	voyager golden record sounds of earth message	3	17681	26.92021498681168
-605	voyager golden record sounds of earth message	4	48444	20.945794048312365
-605	voyager golden record sounds of earth message	5	13635	18.404178708438856
-605	voyager golden record sounds of earth message	6	17697	17.142002058127456
-605	voyager golden record sounds of earth message	7	11442	16.497802592388933
-605	voyager golden record sounds of earth message	8	1954	15.560956735017449
-605	voyager golden record sounds of earth message	9	15266	15.10431942145599
-605	voyager golden record sounds of earth message	10	87155	14.679900851296246
-606	delian league athenian empire tribute collection system	1	4261	22.967636240110235
-606	delian league athenian empire tribute collection system	2	14418	21.346221823374155
-606	delian league athenian empire tribute collection system	3	17902	21.189138861191072
-606	delian league athenian empire tribute collection system	4	54799	21.06719056104756
-606	delian league athenian empire tribute collection system	5	22922	20.97559566103801
-606	delian league athenian empire tribute collection system	6	19934	17.148728549315855
-606	delian league athenian empire tribute collection system	7	62111	17.00927112321357
-606	delian league athenian empire tribute collection system	8	12949	16.970738093663634
-606	delian league athenian empire tribute collection system	9	5323	16.189051124788705
-606	delian league athenian empire tribute collection system	10	84567	15.319781059833442
-607	autumn rhythm number 30 jackson pollock moma	1	23119	32.05988578559807
-607	autumn rhythm number 30 jackson pollock moma	2	7940	19.320857804898665
-607	autumn rhythm number 30 jackson pollock moma	3	4879	17.637534146463793
-607	autumn rhythm number 30 jackson pollock moma	4	38841	16.759833095670995
-607	autumn rhythm number 30 jackson pollock moma	5	99598	15.651451649882778
-607	autumn rhythm number 30 jackson pollock moma	6	61484	14.915413588131788
-607	autumn rhythm number 30 jackson pollock moma	7	12628	14.685246967502508
-607	autumn rhythm number 30 jackson pollock moma	8	68011	14.648190499322652
-607	autumn rhythm number 30 jackson pollock moma	9	34998	13.5449261601876
-607	autumn rhythm number 30 jackson pollock moma	10	90473	13.457344897489287
-608	lawrence livermore national ignition facility fusion breakthrough	1	98455	27.57565297686269
-608	lawrence livermore national ignition facility fusion breakthrough	2	95120	24.295200974167045
-608	lawrence livermore national ignition facility fusion breakthrough	3	30581	21.18481237202777
-608	lawrence livermore national ignition facility fusion breakthrough	4	18626	19.396494982538453
-608	lawrence livermore national ignition facility fusion breakthrough	5	11990	17.494782249343793
-608	lawrence livermore national ignition facility fusion breakthrough	6	30547	16.263807423070727
-608	lawrence livermore national ignition facility fusion breakthrough	7	26770	16.06338280983734
-608	lawrence livermore national ignition facility fusion breakthrough	8	56495	15.943196364297123
-608	lawrence livermore national ignition facility fusion breakthrough	9	71641	15.54615282299771
-608	lawrence livermore national ignition facility fusion breakthrough	10	83704	15.515670523415233
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	1	69193	33.465251008845456
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	2	69194	31.6975257821523
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	3	85990	29.688739849921912
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	4	71436	28.866396942812624
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	5	69185	26.586764271025938
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	6	3011	25.66933631886042
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	7	86246	25.47005749103935
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	8	68497	21.507781835931635
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	9	69212	20.520000505487875
-609	electrophilic aromatic substitution friedel crafts alkylation mechanism	10	69230	19.440509715433272
-610	takahashi shinya yamanaka nobel prize stem cells	1	81283	51.023229545263646
-610	takahashi shinya yamanaka nobel prize stem cells	2	81261	39.65351003302307
-610	takahashi shinya yamanaka nobel prize stem cells	3	64412	26.680051166223947
-610	takahashi shinya yamanaka nobel prize stem cells	4	61359	25.747249953942532
-610	takahashi shinya yamanaka nobel prize stem cells	5	9781	25.169582129262412
-610	takahashi shinya yamanaka nobel prize stem cells	6	63856	24.44308568733433
-610	takahashi shinya yamanaka nobel prize stem cells	7	69721	22.197949617096526
-610	takahashi shinya yamanaka nobel prize stem cells	8	69722	22.056104748202
-610	takahashi shinya yamanaka nobel prize stem cells	9	39243	21.75733329784177
-610	takahashi shinya yamanaka nobel prize stem cells	10	65900	21.722555655789805
-701	operation barbarossa june 1941 german invasion of soviet union	1	79189	49.432969121145035
-701	operation barbarossa june 1941 german invasion of soviet union	2	7476	44.765074813563906
-701	operation barbarossa june 1941 german invasion of soviet union	3	46280	39.852066273971545
-701	operation barbarossa june 1941 german invasion of soviet union	4	77158	39.33865900520015
-701	operation barbarossa june 1941 german invasion of soviet union	5	44803	35.66981386180604
-701	operation barbarossa june 1941 german invasion of soviet union	6	65829	35.656227885043705
-701	operation barbarossa june 1941 german invasion of soviet union	7	7477	31.74963075623081
-701	operation barbarossa june 1941 german invasion of soviet union	8	4924	31.716788101092313
-701	operation barbarossa june 1941 german invasion of soviet union	9	53832	30.37132275730731
-701	operation barbarossa june 1941 german invasion of soviet union	10	50488	30.01433228031468
-702	scaled dot product attention multi head self attention mechanism	1	96854	22.67590685629755
-702	scaled dot product attention multi head self attention mechanism	2	87025	22.523011831297552
-702	scaled dot product attention multi head self attention mechanism	3	49935	21.900695940534717
-702	scaled dot product attention multi head self attention mechanism	4	86262	20.777398516885818
-702	scaled dot product attention multi head self attention mechanism	5	62029	19.672117602312305
-702	scaled dot product attention multi head self attention mechanism	6	34965	19.119482175651388
-702	scaled dot product attention multi head self attention mechanism	7	59896	19.062915344557005
-702	scaled dot product attention multi head self attention mechanism	8	250	18.51563448915696
-702	scaled dot product attention multi head self attention mechanism	9	47236	17.54902520729008
-702	scaled dot product attention multi head self attention mechanism	10	876	17.548080812284425
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	1	25320	41.613344577363776
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	2	1321	20.29562820988182
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	3	26642	19.20977896770988
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	4	84706	18.96762693963716
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	5	92596	18.95913950319136
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	6	15170	18.61628152423691
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	7	45226	18.48923053382584
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	8	2160	17.947765099919394
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	9	21347	17.766869688392035
-703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	10	17541	17.212210207116065
-704	sinoatrial node atrioventricular node bundle of his conduction	1	4254	37.15236241951405
-704	sinoatrial node atrioventricular node bundle of his conduction	2	86195	27.913386331234452
-704	sinoatrial node atrioventricular node bundle of his conduction	3	65237	27.52634437234678
-704	sinoatrial node atrioventricular node bundle of his conduction	4	45379	26.995486176734303
-704	sinoatrial node atrioventricular node bundle of his conduction	5	19864	25.084284282145884
-704	sinoatrial node atrioventricular node bundle of his conduction	6	19863	24.81307475615944
-704	sinoatrial node atrioventricular node bundle of his conduction	7	66652	24.77388504340825
-704	sinoatrial node atrioventricular node bundle of his conduction	8	89605	23.86090335037728
-704	sinoatrial node atrioventricular node bundle of his conduction	9	166	23.836514518490343
-704	sinoatrial node atrioventricular node bundle of his conduction	10	29703	23.815618166912788
-705	voyager 1 golden record sounds of earth carl sagan	1	70579	50.06082809606513
-705	voyager 1 golden record sounds of earth carl sagan	2	12556	43.78480614533542
-705	voyager 1 golden record sounds of earth carl sagan	3	17681	40.03040353470147
-705	voyager 1 golden record sounds of earth carl sagan	4	48444	30.043870841425637
-705	voyager 1 golden record sounds of earth carl sagan	5	1211	28.43318794848237
-705	voyager 1 golden record sounds of earth carl sagan	6	17677	27.223951009624777
-705	voyager 1 golden record sounds of earth carl sagan	7	70618	22.494328382014377
-705	voyager 1 golden record sounds of earth carl sagan	8	29959	19.5578383429513
-705	voyager 1 golden record sounds of earth carl sagan	9	59444	18.582289741330506
-705	voyager 1 golden record sounds of earth carl sagan	10	20977	16.71553139666749
-706	delian league treasury moved from delos to athens tribute	1	54799	28.290233623814053
-706	delian league treasury moved from delos to athens tribute	2	14418	24.139734671839424
-706	delian league treasury moved from delos to athens tribute	3	22922	21.429178367766113
-706	delian league treasury moved from delos to athens tribute	4	4261	19.012245245505966
-706	delian league treasury moved from delos to athens tribute	5	12949	18.995668408796632
-706	delian league treasury moved from delos to athens tribute	6	76036	18.87818118824906
-706	delian league treasury moved from delos to athens tribute	7	47773	18.709321275772886
-706	delian league treasury moved from delos to athens tribute	8	17902	17.639913000813774
-706	delian league treasury moved from delos to athens tribute	9	76632	16.594935629213428
-706	delian league treasury moved from delos to athens tribute	10	62111	16.17501941961116
-707	autumn rhythm number 30 1950 jackson pollock moma collection	1	23119	32.05988578559807
-707	autumn rhythm number 30 1950 jackson pollock moma collection	2	7940	19.320857804898665
-707	autumn rhythm number 30 1950 jackson pollock moma collection	3	70402	17.89697421475271
-707	autumn rhythm number 30 1950 jackson pollock moma collection	4	4879	17.637534146463793
-707	autumn rhythm number 30 1950 jackson pollock moma collection	5	53481	16.79614162520944
-707	autumn rhythm number 30 1950 jackson pollock moma collection	6	38841	16.759833095670995
-707	autumn rhythm number 30 1950 jackson pollock moma collection	7	25182	16.729400827818775
-707	autumn rhythm number 30 1950 jackson pollock moma collection	8	85752	16.444947478787036
-707	autumn rhythm number 30 1950 jackson pollock moma collection	9	99598	15.651451649882778
-707	autumn rhythm number 30 1950 jackson pollock moma collection	10	68240	15.098313841434386
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	1	98455	27.57565297686269
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	2	95120	24.295200974167045
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	3	30581	21.18481237202777
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	4	18626	19.396494982538453
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	5	11990	17.494782249343793
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	6	30547	16.263807423070727
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	7	26770	16.06338280983734
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	8	71641	15.54615282299771
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	9	83704	15.515670523415233
-708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	10	1178	15.444286020308406
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	1	85990	48.27824444785539
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	2	86246	45.121150339346514
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	3	3011	40.80328107445063
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	4	69212	38.0320512175048
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	5	69193	32.558613285730225
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	6	87973	32.11692752575013
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	7	69194	29.655261412320787
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	8	69230	28.321668895866416
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	9	22819	28.065117735778642
-709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	10	8376	27.243767176194787
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	1	81283	41.15105274363324
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	2	81261	27.109339226730356
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	3	97239	24.96505024952244
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	4	52950	17.799191192329303
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	5	19112	15.6954463298974
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	6	77556	15.22963697367718
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	7	16071	12.962081600243888
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	8	9781	12.915319278812456
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	9	36038	12.62173605783294
-710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	10	555	12.483007513892513
+1	algorithm	1	40284	12.83112893332038
+1	algorithm	2	76616	12.685531519354681
+1	algorithm	3	40505	12.65424814278223
+1	algorithm	4	39931	12.480282433190206
+1	algorithm	5	9390	12.4622219756273
+1	algorithm	6	11725	12.258081190473186
+1	algorithm	7	58387	12.126362665938375
+1	algorithm	8	74827	12.059459336182572
+1	algorithm	9	5813	12.05797390405742
+1	algorithm	10	30280	11.922906015966207
+2	history	1	161	4.533737956822642
+2	history	2	22410	4.49851828130276
+2	history	3	87520	4.4792025850317225
+2	history	4	21385	4.474443648886297
+2	history	5	22671	4.455957159181547
+2	history	6	172	4.4438665936825785
+2	history	7	17685	4.431574976477312
+2	history	8	69872	4.399706566859289
+2	history	9	900	4.376031579526045
+2	history	10	24933	4.348768270557561
+3	science	1	22899	7.487448691808366
+3	science	2	12957	7.479148843326338
+3	science	3	1715	7.464960550461493
+3	science	4	11301	7.279175193476345
+3	science	5	11457	7.252277607212519
+3	science	6	1419	7.248558707804247
+3	science	7	77436	7.212868385245456
+3	science	8	83721	7.139116389859332
+3	science	9	28843	7.104451638356885
+3	science	10	1938	7.053387615484497
+4	computer	1	31303	7.8178464100762115
+4	computer	2	9244	7.81545643399995
+4	computer	3	46076	7.780212894807153
+4	computer	4	30167	7.733286543106764
+4	computer	5	6397	7.733152019639198
+4	computer	6	57	7.697668052062501
+4	computer	7	77317	7.6953099295279515
+4	computer	8	89083	7.6953099295279515
+4	computer	9	26696	7.688839411368012
+4	computer	10	555	7.686178242005987
+5	biology	1	8712	9.4841485871382
+5	biology	2	2843	9.466273966702888
+5	biology	3	14779	9.445660381444945
+5	biology	4	16870	9.3537754998447
+5	biology	5	62231	9.261290751528003
+5	biology	6	91343	9.223027054504255
+5	biology	7	75695	9.071285832740044
+5	biology	8	12891	8.687689395061852
+5	biology	9	53569	8.573084609805303
+5	biology	10	99523	8.53444674845218
+6	mathematics	1	44305	9.415303531286014
+6	mathematics	2	44577	9.19503422640844
+6	mathematics	3	64738	9.186243041971784
+6	mathematics	4	64340	9.185707986556595
+6	mathematics	5	29185	9.161988561919358
+6	mathematics	6	40576	9.123177311747208
+6	mathematics	7	3295	8.922324783522507
+6	mathematics	8	44579	8.87401278557238
+6	mathematics	9	229	8.85654201070714
+6	mathematics	10	14235	8.715076391490403
+7	physics	1	12185	8.031499448381563
+7	physics	2	12971	7.900554481821919
+7	physics	3	31089	7.88658072122865
+7	physics	4	44305	7.8554489458712675
+7	physics	5	24612	7.6969177559957975
+7	physics	6	77300	7.6969177559957975
+7	physics	7	22436	7.600492227392537
+7	physics	8	293	7.515912433434138
+7	physics	9	61412	7.508140374742202
+7	physics	10	54600	7.4814540466818595
+8	chemistry	1	62171	10.543895776044327
+8	chemistry	2	64820	10.473463346687527
+8	chemistry	3	53257	10.450787502354228
+8	chemistry	4	64100	10.375111000237045
+8	chemistry	5	61372	10.196797061203831
+8	chemistry	6	61412	10.087154898274392
+8	chemistry	7	54337	9.88969128963642
+8	chemistry	8	63959	9.78614968500654
+8	chemistry	9	62231	9.769484619110154
+8	chemistry	10	90284	9.64958724729724
+9	geography	1	78476	7.623569478828633
+9	geography	2	145	7.612352702914163
+9	geography	3	81625	7.555320702716882
+9	geography	4	60651	6.943936514726062
+9	geography	5	89395	6.939945657628698
+9	geography	6	90013	6.8498219732218715
+9	geography	7	74807	6.762009013815295
+9	geography	8	36866	6.269255387884092
+9	geography	9	37714	6.269255387884092
+9	geography	10	20467	6.232218692061835
+10	philosophy	1	75811	9.753395493424119
+10	philosophy	2	292	9.700727561786914
+10	philosophy	3	24046	9.643459390375423
+10	philosophy	4	60799	9.624733663585726
+10	philosophy	5	65546	9.581456016860365
+10	philosophy	6	79199	9.469915883571943
+10	philosophy	7	26330	9.182783639003201
+10	philosophy	8	15910	9.161408965766453
+10	philosophy	9	65119	8.954962123393239
+10	philosophy	10	86521	8.838075602869148
+101	machine learning	1	91925	15.177226004959646
+101	machine learning	2	71937	12.80026800502575
+101	machine learning	3	91923	12.56828965829239
+101	machine learning	4	9135	11.774984861591976
+101	machine learning	5	86062	11.569211854274496
+101	machine learning	6	91921	11.263870518301202
+101	machine learning	7	6397	10.878242852989914
+101	machine learning	8	1716	10.876365495861618
+101	machine learning	9	86519	10.821246261515206
+101	machine learning	10	85045	10.39447874799719
+102	world war	1	997	9.38567202553583
+102	world war	2	9759	9.231962906604146
+102	world war	3	12693	8.918113240563098
+102	world war	4	81067	8.90346511530118
+102	world war	5	48791	8.8344111978879
+102	world war	6	42686	8.75613218370095
+102	world war	7	84143	8.690143837312457
+102	world war	8	77697	8.650497155640807
+102	world war	9	75045	8.501320997267666
+102	world war	10	75556	8.459302753387679
+103	climate change	1	89456	12.75094599148225
+103	climate change	2	45954	12.361214707721313
+103	climate change	3	63467	12.135369502869395
+103	climate change	4	442	12.087277982457879
+103	climate change	5	32742	11.92330661603149
+103	climate change	6	40125	11.906951338122834
+103	climate change	7	7749	11.815514262465756
+103	climate change	8	85739	11.691826353120174
+103	climate change	9	87054	11.329326637795727
+103	climate change	10	89386	11.299713631997381
+104	solar system	1	22722	15.716817473674896
+104	solar system	2	9294	14.649836683664653
+104	solar system	3	12990	14.61299199643937
+104	solar system	4	58237	14.612853143578103
+104	solar system	5	13293	14.286968994787092
+104	solar system	6	79208	14.238773201079734
+104	solar system	7	97864	14.17835431968013
+104	solar system	8	21839	14.114713441820738
+104	solar system	9	311	13.925083212819743
+104	solar system	10	17604	13.864139369440089
+105	human body	1	173	12.671699240628485
+105	human body	2	6338	11.818672946401364
+105	human body	3	66074	11.577363787646597
+105	human body	4	69917	11.528783189416366
+105	human body	5	28529	11.24124984270669
+105	human body	6	31468	11.034060915347949
+105	human body	7	77203	10.966234943185682
+105	human body	8	8399	10.82031277670914
+105	human body	9	13090	10.730797905055216
+105	human body	10	69644	10.727194357386539
+106	ancient history	1	6752	11.213996295376699
+106	ancient history	2	161	10.170750848809305
+106	ancient history	3	15903	10.106437963410585
+106	ancient history	4	2201	9.986944356762443
+106	ancient history	5	57096	9.840677549740452
+106	ancient history	6	31702	9.452076998631396
+106	ancient history	7	18021	9.251052570469424
+106	ancient history	8	63585	9.236231621418955
+106	ancient history	9	95431	9.220681135242767
+106	ancient history	10	6625	9.153107670849026
+107	modern art	1	63639	12.802173250714631
+107	modern art	2	54598	12.289657837258437
+107	modern art	3	46521	12.158502405398739
+107	modern art	4	20330	12.142648174118474
+107	modern art	5	65324	11.869321879578722
+107	modern art	6	70022	11.813769087685639
+107	modern art	7	84958	11.569985252174794
+107	modern art	8	54299	11.478217272877696
+107	modern art	9	74657	11.283133574290297
+107	modern art	10	42687	11.164541223642104
+108	nuclear physics	1	57880	16.527307635730416
+108	nuclear physics	2	28329	15.020080711871806
+108	nuclear physics	3	44790	14.789756159603172
+108	nuclear physics	4	18609	13.729659752520135
+108	nuclear physics	5	7059	13.412656672701921
+108	nuclear physics	6	86942	13.364333558635561
+108	nuclear physics	7	85154	13.201177640181886
+108	nuclear physics	8	7277	13.19793095695807
+108	nuclear physics	9	90476	13.072649650451467
+108	nuclear physics	10	28203	12.55133963969611
+109	organic chemistry	1	62171	16.08913312910846
+109	organic chemistry	2	53257	15.799317454400526
+109	organic chemistry	3	64820	14.87790284481757
+109	organic chemistry	4	17036	14.521256536425728
+109	organic chemistry	5	2626	14.192793601956083
+109	organic chemistry	6	64599	13.992555635297872
+109	organic chemistry	7	99839	13.51939114851379
+109	organic chemistry	8	54014	13.463368436332338
+109	organic chemistry	9	61988	13.39020144205919
+109	organic chemistry	10	61945	13.22217362440182
+110	cell biology	1	42955	17.261258095211836
+110	cell biology	2	16870	16.23302250401558
+110	cell biology	3	2843	16.108318322232574
+110	cell biology	4	94283	15.938604103634876
+110	cell biology	5	46957	15.754776756810244
+110	cell biology	6	57463	15.398834755893512
+110	cell biology	7	75897	14.809445828569979
+110	cell biology	8	11368	14.528959083985399
+110	cell biology	9	59359	14.492506747230061
+110	cell biology	10	68282	14.343848798755346
+201	world war two	1	88020	11.310842930411013
+201	world war two	2	997	11.288709171371101
+201	world war two	3	77697	11.207707861832132
+201	world war two	4	42686	10.903292135694375
+201	world war two	5	15778	10.791454005764884
+201	world war two	6	75229	10.649175193894015
+201	world war two	7	9759	10.601237848886875
+201	world war two	8	95014	10.492533195072495
+201	world war two	9	88325	10.417535455506696
+201	world war two	10	981	10.33101157418733
+202	machine learning algorithms	1	39931	19.874765701073606
+202	machine learning algorithms	2	30384	16.82081603251656
+202	machine learning algorithms	3	50934	15.790787498525152
+202	machine learning algorithms	4	91925	15.177226004959646
+202	machine learning algorithms	5	40284	14.708393967942914
+202	machine learning algorithms	6	15449	14.670584957945326
+202	machine learning algorithms	7	49216	14.659252693730554
+202	machine learning algorithms	8	30707	14.281310639998136
+202	machine learning algorithms	9	71937	12.80026800502575
+202	machine learning algorithms	10	76616	12.685531519354681
+203	climate change effects	1	89456	16.884504448210617
+203	climate change effects	2	40125	16.426334258305573
+203	climate change effects	3	63342	16.301236663957084
+203	climate change effects	4	99140	14.925973965453966
+203	climate change effects	5	1964	13.870565288547956
+203	climate change effects	6	63793	13.664746372665329
+203	climate change effects	7	55468	13.442496802787915
+203	climate change effects	8	2310	13.32255511800748
+203	climate change effects	9	80016	13.118398134845858
+203	climate change effects	10	23432	12.630004207235359
+204	human immune system	1	193	20.08461383852788
+204	human immune system	2	13020	19.893044399795897
+204	human immune system	3	53915	19.066094054451707
+204	human immune system	4	79737	18.765063813555063
+204	human immune system	5	52572	17.65905302220905
+204	human immune system	6	63636	17.632344406089356
+204	human immune system	7	298	17.530849800113334
+204	human immune system	8	44598	17.384371143170632
+204	human immune system	9	57219	17.26171102609304
+204	human immune system	10	72546	17.217883779917337
+205	solar system planets	1	22722	23.95929661152069
+205	solar system planets	2	79208	23.77447955884547
+205	solar system planets	3	311	23.62280113984361
+205	solar system planets	4	9294	23.262127746129117
+205	solar system planets	5	43807	21.79716500536165
+205	solar system planets	6	369	21.771241179213384
+205	solar system planets	7	91344	21.652862948407616
+205	solar system planets	8	67132	21.37471299730566
+205	solar system planets	9	31116	21.25214632638599
+205	solar system planets	10	43813	20.93710940764145
+206	ancient greek philosophy	1	65546	21.804485550857024
+206	ancient greek philosophy	2	43953	20.306461632651768
+206	ancient greek philosophy	3	75811	18.170951388224545
+206	ancient greek philosophy	4	29500	17.640480521418716
+206	ancient greek philosophy	5	11623	17.42515132347137
+206	ancient greek philosophy	6	10295	17.26711957047418
+206	ancient greek philosophy	7	24046	17.162360244309
+206	ancient greek philosophy	8	10975	17.08754483336716
+206	ancient greek philosophy	9	32192	16.768641719621293
+206	ancient greek philosophy	10	44879	16.67203808389754
+207	modern art movements	1	63639	17.236771962107028
+207	modern art movements	2	74505	17.001127477148206
+207	modern art movements	3	42687	16.954206655139558
+207	modern art movements	4	54646	15.699346784252779
+207	modern art movements	5	54598	15.67949351335791
+207	modern art movements	6	42181	15.464616110307055
+207	modern art movements	7	84958	15.395880459601752
+207	modern art movements	8	54299	14.888072648429123
+207	modern art movements	9	70578	14.525363873797433
+207	modern art movements	10	20329	14.367892486060892
+208	nuclear power plants	1	21707	22.632404592507456
+208	nuclear power plants	2	53451	22.36410881497936
+208	nuclear power plants	3	23536	22.148002136595895
+208	nuclear power plants	4	31069	21.221259843501016
+208	nuclear power plants	5	23524	21.117209963178844
+208	nuclear power plants	6	28231	21.111612254922946
+208	nuclear power plants	7	66293	21.005730702938536
+208	nuclear power plants	8	32873	20.715611604235143
+208	nuclear power plants	9	10648	20.527189885297545
+208	nuclear power plants	10	31007	20.520447220524524
+209	organic chemistry compounds	1	53257	24.645759840981977
+209	organic chemistry compounds	2	2626	21.624900521846204
+209	organic chemistry compounds	3	61945	21.57261421084859
+209	organic chemistry compounds	4	17036	20.347479737091156
+209	organic chemistry compounds	5	61816	20.053928125660768
+209	organic chemistry compounds	6	59483	19.674207806081583
+209	organic chemistry compounds	7	62243	19.639839947822974
+209	organic chemistry compounds	8	54014	19.39415657803099
+209	organic chemistry compounds	9	78806	19.175168550020544
+209	organic chemistry compounds	10	61382	19.1071380065981
+210	cell division process	1	16582	20.756338242351504
+210	cell division process	2	12716	18.732819106190554
+210	cell division process	3	20000	18.02049608451698
+210	cell division process	4	6559	17.881703131638872
+210	cell division process	5	46955	17.158178741849753
+210	cell division process	6	7664	16.807937113007107
+210	cell division process	7	9965	16.728790459493393
+210	cell division process	8	46793	16.724834003444293
+210	cell division process	9	10683	16.112490834696917
+210	cell division process	10	72406	16.0776701071197
+301	second world war battles	1	59213	17.981783219239986
+301	second world war battles	2	84853	17.959039459343764
+301	second world war battles	3	3104	17.08314278610338
+301	second world war battles	4	84597	17.031086121623826
+301	second world war battles	5	21849	16.993927376731598
+301	second world war battles	6	62047	16.183374941295657
+301	second world war battles	7	58829	16.175105499575047
+301	second world war battles	8	69903	15.61579297716984
+301	second world war battles	9	16190	15.40036929094562
+301	second world war battles	10	64655	15.370155532891438
+302	deep learning neural networks	1	10408	28.847286487301552
+302	deep learning neural networks	2	71630	26.37466151308683
+302	deep learning neural networks	3	52123	15.041171276176865
+302	deep learning neural networks	4	75861	14.815021799976805
+302	deep learning neural networks	5	74197	14.374614003054337
+302	deep learning neural networks	6	1716	13.794696954689423
+302	deep learning neural networks	7	82013	12.87333060301891
+302	deep learning neural networks	8	30385	12.468304231302273
+302	deep learning neural networks	9	54649	12.088794444227815
+302	deep learning neural networks	10	48018	12.087986693984057
+303	global climate change impacts	1	32742	24.01426308688259
+303	global climate change impacts	2	83139	20.44997017664933
+303	global climate change impacts	3	32756	20.14098919693812
+303	global climate change impacts	4	15440	19.82751087660175
+303	global climate change impacts	5	40125	19.542780776735047
+303	global climate change impacts	6	45954	19.477653901659522
+303	global climate change impacts	7	3964	19.31114961891877
+303	global climate change impacts	8	39823	17.516471866955207
+303	global climate change impacts	9	1964	17.05601311245539
+303	global climate change impacts	10	40149	16.730843887510687
+304	human cardiovascular system function	1	27	23.585261834136467
+304	human cardiovascular system function	2	310	16.14587099656464
+304	human cardiovascular system function	3	59890	15.473201987431754
+304	human cardiovascular system function	4	88734	14.435904168896071
+304	human cardiovascular system function	5	173	14.335654021613948
+304	human cardiovascular system function	6	3608	14.041891302959407
+304	human cardiovascular system function	7	23290	14.006619173577736
+304	human cardiovascular system function	8	3643	13.7338565221906
+304	human cardiovascular system function	9	298	13.393025818802325
+304	human cardiovascular system function	10	19939	13.369010968354546
+305	outer solar system exploration	1	22722	23.681881950110963
+305	outer solar system exploration	2	528	21.835601277985973
+305	outer solar system exploration	3	18663	21.17044108994763
+305	outer solar system exploration	4	7853	19.98964541258328
+305	outer solar system exploration	5	67132	19.56659629873711
+305	outer solar system exploration	6	6060	18.34686722916902
+305	outer solar system exploration	7	9895	18.076765753027768
+305	outer solar system exploration	8	369	17.753342764646927
+305	outer solar system exploration	9	41002	16.96634601354414
+305	outer solar system exploration	10	10188	16.931283028436194
+306	ancient greek city states	1	30108	18.096786155778414
+306	ancient greek city states	2	3111	17.049323376958633
+306	ancient greek city states	3	3528	16.808162028526358
+306	ancient greek city states	4	4240	16.096062656902607
+306	ancient greek city states	5	76227	15.997440689443371
+306	ancient greek city states	6	43153	15.531949945747286
+306	ancient greek city states	7	24248	15.387838744254626
+306	ancient greek city states	8	8100	15.333814015880098
+306	ancient greek city states	9	29534	15.185651758760226
+306	ancient greek city states	10	42394	15.168784017267733
+307	abstract expressionist art movement	1	54646	30.298737820323346
+307	abstract expressionist art movement	2	55064	28.076669579157617
+307	abstract expressionist art movement	3	18527	24.581155463725295
+307	abstract expressionist art movement	4	66446	23.083265653231194
+307	abstract expressionist art movement	5	30211	21.931725062299215
+307	abstract expressionist art movement	6	86373	21.77764771301119
+307	abstract expressionist art movement	7	2253	21.58127202823354
+307	abstract expressionist art movement	8	77191	21.15429973775301
+307	abstract expressionist art movement	9	30736	19.44328785962209
+307	abstract expressionist art movement	10	63645	18.96613459132653
+308	nuclear fusion energy research	1	5081	30.56981870577558
+308	nuclear fusion energy research	2	66293	28.22273093537947
+308	nuclear fusion energy research	3	7080	27.246180669976113
+308	nuclear fusion energy research	4	10331	23.482920516620258
+308	nuclear fusion energy research	5	10648	23.3673356479149
+308	nuclear fusion energy research	6	30059	23.188889175120416
+308	nuclear fusion energy research	7	12602	23.076395207150618
+308	nuclear fusion energy research	8	69285	22.509693891203465
+308	nuclear fusion energy research	9	24087	21.29762106633203
+308	nuclear fusion energy research	10	52079	20.88894366828326
+309	aromatic organic chemistry reactions	1	78806	30.958618060633505
+309	aromatic organic chemistry reactions	2	2626	26.21798675238378
+309	aromatic organic chemistry reactions	3	20069	23.03526112689763
+309	aromatic organic chemistry reactions	4	61382	22.96518650085912
+309	aromatic organic chemistry reactions	5	62033	21.61379719724948
+309	aromatic organic chemistry reactions	6	61284	21.321427827902145
+309	aromatic organic chemistry reactions	7	61338	20.939581731378333
+309	aromatic organic chemistry reactions	8	77171	20.724281516422664
+309	aromatic organic chemistry reactions	9	62243	19.86031745534969
+309	aromatic organic chemistry reactions	10	61945	19.583639273451936
+310	stem cell research applications	1	73218	29.261546169831696
+310	stem cell research applications	2	41592	23.95038286243355
+310	stem cell research applications	3	92591	23.328889007883035
+310	stem cell research applications	4	73202	18.864905268817854
+310	stem cell research applications	5	78791	17.91969351354464
+310	stem cell research applications	6	9440	17.903240447047946
+310	stem cell research applications	7	57460	17.876145067062858
+310	stem cell research applications	8	56944	17.764068307500054
+310	stem cell research applications	9	526	17.3086951706847
+310	stem cell research applications	10	41589	17.156577339554975
+401	battle of stalingrad world war	1	45148	27.504883200518854
+401	battle of stalingrad world war	2	42753	24.127677280599812
+401	battle of stalingrad world war	3	93964	24.07840130064461
+401	battle of stalingrad world war	4	42868	23.745375790250066
+401	battle of stalingrad world war	5	40983	22.185675711635202
+401	battle of stalingrad world war	6	85085	20.57760920369618
+401	battle of stalingrad world war	7	77409	20.19795703947472
+401	battle of stalingrad world war	8	22242	19.950532598934164
+401	battle of stalingrad world war	9	30033	19.862522319030024
+401	battle of stalingrad world war	10	85754	18.616393252877174
+402	transformer architecture deep learning models	1	99533	18.948793942723952
+402	transformer architecture deep learning models	2	52566	16.6349164805996
+402	transformer architecture deep learning models	3	29301	15.067844896999809
+402	transformer architecture deep learning models	4	90229	14.471639210846481
+402	transformer architecture deep learning models	5	31282	14.415341924689429
+402	transformer architecture deep learning models	6	65180	13.997694300339408
+402	transformer architecture deep learning models	7	72055	13.490069376817491
+402	transformer architecture deep learning models	8	20027	13.301476290188521
+402	transformer architecture deep learning models	9	98787	13.155138302061669
+402	transformer architecture deep learning models	10	96934	13.14299712659108
+403	paris agreement climate change targets	1	87054	18.520115092177587
+403	paris agreement climate change targets	2	40125	18.18197145356475
+403	paris agreement climate change targets	3	90576	15.842820000533031
+403	paris agreement climate change targets	4	48198	13.648866318182566
+403	paris agreement climate change targets	5	8075	13.295871947290074
+403	paris agreement climate change targets	6	15630	13.276655919122678
+403	paris agreement climate change targets	7	47112	13.230795967850225
+403	paris agreement climate change targets	8	5952	13.174370631610685
+403	paris agreement climate change targets	9	23023	13.111129846225285
+403	paris agreement climate change targets	10	8433	12.793032739825865
+404	human heart blood circulation system	1	3532	31.30591816199625
+404	human heart blood circulation system	2	10144	27.42663592666976
+404	human heart blood circulation system	3	12620	22.06814881130878
+404	human heart blood circulation system	4	3530	21.983956132365453
+404	human heart blood circulation system	5	5711	21.857305260504276
+404	human heart blood circulation system	6	52572	21.690410711979627
+404	human heart blood circulation system	7	18165	20.611805173334076
+404	human heart blood circulation system	8	29777	20.583459374990714
+404	human heart blood circulation system	9	3521	19.8419660772852
+404	human heart blood circulation system	10	4482	19.47592427714768
+405	voyager probe outer solar system	1	18663	37.60863850183168
+405	voyager probe outer solar system	2	15573	33.616367572255726
+405	voyager probe outer solar system	3	60993	31.83343627691962
+405	voyager probe outer solar system	4	6060	30.79349692748741
+405	voyager probe outer solar system	5	10880	27.692527210719124
+405	voyager probe outer solar system	6	31530	24.554282869612276
+405	voyager probe outer solar system	7	22722	23.681881950110963
+405	voyager probe outer solar system	8	370	23.043795499475486
+405	voyager probe outer solar system	9	200	21.87659080087528
+405	voyager probe outer solar system	10	18272	21.44926270212664
+406	athenian democracy ancient greek politics	1	15774	25.080084582438523
+406	athenian democracy ancient greek politics	2	20163	23.027386841626694
+406	athenian democracy ancient greek politics	3	3528	22.738025394809302
+406	athenian democracy ancient greek politics	4	83608	22.36330055411412
+406	athenian democracy ancient greek politics	5	84397	22.189875440408933
+406	athenian democracy ancient greek politics	6	20360	21.428595295239873
+406	athenian democracy ancient greek politics	7	26608	21.14868845428867
+406	athenian democracy ancient greek politics	8	29148	20.843207001038756
+406	athenian democracy ancient greek politics	9	76039	20.616431038587418
+406	athenian democracy ancient greek politics	10	53299	20.260066089549795
+407	jackson pollock abstract expressionist paintings	1	54646	40.44500653898618
+407	jackson pollock abstract expressionist paintings	2	4092	35.48589876773657
+407	jackson pollock abstract expressionist paintings	3	55064	34.44443568077572
+407	jackson pollock abstract expressionist paintings	4	93604	31.354763235598927
+407	jackson pollock abstract expressionist paintings	5	2253	28.07898623717402
+407	jackson pollock abstract expressionist paintings	6	66446	23.764772559345012
+407	jackson pollock abstract expressionist paintings	7	86373	23.027727579436252
+407	jackson pollock abstract expressionist paintings	8	54598	19.50461317154182
+407	jackson pollock abstract expressionist paintings	9	63645	19.4487045446296
+407	jackson pollock abstract expressionist paintings	10	18527	19.327612488940346
+408	iter tokamak nuclear fusion reactor	1	66293	47.51880296972212
+408	iter tokamak nuclear fusion reactor	2	57880	26.59739469052873
+408	iter tokamak nuclear fusion reactor	3	10648	26.385529261920674
+408	iter tokamak nuclear fusion reactor	4	12602	25.767470057270906
+408	iter tokamak nuclear fusion reactor	5	7632	22.971781307962658
+408	iter tokamak nuclear fusion reactor	6	21707	22.74440911532725
+408	iter tokamak nuclear fusion reactor	7	7772	22.142899897161243
+408	iter tokamak nuclear fusion reactor	8	6077	21.697805193152103
+408	iter tokamak nuclear fusion reactor	9	65041	21.53980952537485
+408	iter tokamak nuclear fusion reactor	10	14440	21.364369392461338
+409	benzene ring aromatic compound chemistry	1	78806	46.05825288329221
+409	benzene ring aromatic compound chemistry	2	62033	43.1436216305957
+409	benzene ring aromatic compound chemistry	3	7066	41.67330078422733
+409	benzene ring aromatic compound chemistry	4	62051	39.01397632616984
+409	benzene ring aromatic compound chemistry	5	31825	36.327928831464114
+409	benzene ring aromatic compound chemistry	6	20069	34.922987373139854
+409	benzene ring aromatic compound chemistry	7	1990	34.48305907490565
+409	benzene ring aromatic compound chemistry	8	76935	32.757828757084184
+409	benzene ring aromatic compound chemistry	9	2626	28.92059187768075
+409	benzene ring aromatic compound chemistry	10	62579	25.468301366996414
+410	induced pluripotent stem cell research	1	73218	40.43518072813797
+410	induced pluripotent stem cell research	2	73202	28.438906189632633
+410	induced pluripotent stem cell research	3	46956	25.28297279388378
+410	induced pluripotent stem cell research	4	41592	23.95038286243355
+410	induced pluripotent stem cell research	5	92591	23.328889007883035
+410	induced pluripotent stem cell research	6	526	22.07830586246234
+410	induced pluripotent stem cell research	7	46957	18.86589322051838
+410	induced pluripotent stem cell research	8	78791	17.91969351354464
+410	induced pluripotent stem cell research	9	9440	17.903240447047946
+410	induced pluripotent stem cell research	10	57460	17.876145067062858
+501	operation barbarossa german invasion soviet union	1	71243	41.823093670220146
+501	operation barbarossa german invasion soviet union	2	40983	36.455741784053394
+501	operation barbarossa german invasion soviet union	3	6296	36.42451891673274
+501	operation barbarossa german invasion soviet union	4	69314	32.92362348808891
+501	operation barbarossa german invasion soviet union	5	58828	28.27436798350394
+501	operation barbarossa german invasion soviet union	6	4133	23.91744943507559
+501	operation barbarossa german invasion soviet union	7	84771	23.49043038240819
+501	operation barbarossa german invasion soviet union	8	39729	22.814832213161672
+501	operation barbarossa german invasion soviet union	9	12352	22.154189707658
+501	operation barbarossa german invasion soviet union	10	22242	21.839153488335768
+502	attention mechanism transformer neural network architecture	1	71630	21.84794303805718
+502	attention mechanism transformer neural network architecture	2	10408	20.544754700734636
+502	attention mechanism transformer neural network architecture	3	88241	16.43219389974631
+502	attention mechanism transformer neural network architecture	4	15493	16.065912322041065
+502	attention mechanism transformer neural network architecture	5	99533	14.976124876884121
+502	attention mechanism transformer neural network architecture	6	30570	14.823991999192137
+502	attention mechanism transformer neural network architecture	7	5622	14.227763988638694
+502	attention mechanism transformer neural network architecture	8	31282	13.912416428937284
+502	attention mechanism transformer neural network architecture	9	99149	13.881426718893803
+502	attention mechanism transformer neural network architecture	10	22489	13.420118439082657
+503	intergovernmental panel climate change ipcc reports	1	22240	40.213278901834876
+503	intergovernmental panel climate change ipcc reports	2	40120	30.214754285072956
+503	intergovernmental panel climate change ipcc reports	3	15440	20.493266060974726
+503	intergovernmental panel climate change ipcc reports	4	1964	20.187929592693305
+503	intergovernmental panel climate change ipcc reports	5	40125	17.848606632429497
+503	intergovernmental panel climate change ipcc reports	6	4380	17.35380847914885
+503	intergovernmental panel climate change ipcc reports	7	47262	16.664357191074775
+503	intergovernmental panel climate change ipcc reports	8	64104	16.57828570594334
+503	intergovernmental panel climate change ipcc reports	9	53916	15.25028892260622
+503	intergovernmental panel climate change ipcc reports	10	43781	14.498542816489554
+504	sinoatrial node heart electrical conduction system	1	74588	32.671712124661354
+504	sinoatrial node heart electrical conduction system	2	3521	29.835439933138332
+504	sinoatrial node heart electrical conduction system	3	40274	18.298958482180325
+504	sinoatrial node heart electrical conduction system	4	31821	17.882660454679957
+504	sinoatrial node heart electrical conduction system	5	12620	17.67330468777459
+504	sinoatrial node heart electrical conduction system	6	3340	17.237050244132114
+504	sinoatrial node heart electrical conduction system	7	7022	17.01102466203414
+504	sinoatrial node heart electrical conduction system	8	54508	16.827085280038304
+504	sinoatrial node heart electrical conduction system	9	45557	16.60380304592529
+504	sinoatrial node heart electrical conduction system	10	80364	16.501096418964025
+505	new horizons pluto kuiper belt flyby	1	20931	49.06759596408127
+505	new horizons pluto kuiper belt flyby	2	71068	36.8804362172003
+505	new horizons pluto kuiper belt flyby	3	9891	34.33836275928452
+505	new horizons pluto kuiper belt flyby	4	18955	34.14580104746021
+505	new horizons pluto kuiper belt flyby	5	8562	32.271828896552435
+505	new horizons pluto kuiper belt flyby	6	93779	27.572445422126517
+505	new horizons pluto kuiper belt flyby	7	40105	26.851823121671877
+505	new horizons pluto kuiper belt flyby	8	50484	22.935236631445868
+505	new horizons pluto kuiper belt flyby	9	9214	22.326515286612167
+505	new horizons pluto kuiper belt flyby	10	26494	22.267877060395673
+506	pericles funeral oration athenian democracy speech	1	51230	59.470965116478425
+506	pericles funeral oration athenian democracy speech	2	15774	40.24185468146163
+506	pericles funeral oration athenian democracy speech	3	26608	30.0187803754565
+506	pericles funeral oration athenian democracy speech	4	16092	19.118485139730176
+506	pericles funeral oration athenian democracy speech	5	55089	19.016058820994502
+506	pericles funeral oration athenian democracy speech	6	62040	18.103906332633823
+506	pericles funeral oration athenian democracy speech	7	12484	17.42692312280825
+506	pericles funeral oration athenian democracy speech	8	20163	17.36029435177679
+506	pericles funeral oration athenian democracy speech	9	20360	17.228259181938242
+506	pericles funeral oration athenian democracy speech	10	40040	16.633322048022535
+507	number one jackson pollock drip painting	1	4092	38.27157366033974
+507	number one jackson pollock drip painting	2	54646	27.349208375508987
+507	number one jackson pollock drip painting	3	57020	19.89487916420191
+507	number one jackson pollock drip painting	4	93604	19.346089892945027
+507	number one jackson pollock drip painting	5	20330	18.25463531213042
+507	number one jackson pollock drip painting	6	55064	17.96054747310471
+507	number one jackson pollock drip painting	7	1615	17.16624942172565
+507	number one jackson pollock drip painting	8	31120	16.219123816881602
+507	number one jackson pollock drip painting	9	43439	15.609909949184736
+507	number one jackson pollock drip painting	10	54598	15.186740172145374
+508	national ignition facility laser fusion experiment	1	68156	20.939555911058868
+508	national ignition facility laser fusion experiment	2	66293	19.463862970338774
+508	national ignition facility laser fusion experiment	3	64532	18.518774462557058
+508	national ignition facility laser fusion experiment	4	40452	16.44233713032262
+508	national ignition facility laser fusion experiment	5	64339	16.14720295516298
+508	national ignition facility laser fusion experiment	6	50707	16.05572850099353
+508	national ignition facility laser fusion experiment	7	5081	15.18368932037241
+508	national ignition facility laser fusion experiment	8	1082	13.73222880098465
+508	national ignition facility laser fusion experiment	9	64545	12.996878659138975
+508	national ignition facility laser fusion experiment	10	9988	12.955974050557957
+509	nucleophilic aromatic substitution organic chemistry mechanism	1	2626	39.97453351594669
+509	nucleophilic aromatic substitution organic chemistry mechanism	2	77171	35.55118703843031
+509	nucleophilic aromatic substitution organic chemistry mechanism	3	62015	35.2954400959807
+509	nucleophilic aromatic substitution organic chemistry mechanism	4	75925	33.269587802636366
+509	nucleophilic aromatic substitution organic chemistry mechanism	5	62016	28.898017026122922
+509	nucleophilic aromatic substitution organic chemistry mechanism	6	8379	27.084285349994936
+509	nucleophilic aromatic substitution organic chemistry mechanism	7	75841	24.472093486750666
+509	nucleophilic aromatic substitution organic chemistry mechanism	8	76161	24.10254711384553
+509	nucleophilic aromatic substitution organic chemistry mechanism	9	78806	23.375588455223856
+509	nucleophilic aromatic substitution organic chemistry mechanism	10	75998	23.289127255172602
+510	shinya yamanaka induced pluripotent stem cells	1	73218	55.82567677813995
+510	shinya yamanaka induced pluripotent stem cells	2	73202	34.41154840476033
+510	shinya yamanaka induced pluripotent stem cells	3	46956	25.28297279388378
+510	shinya yamanaka induced pluripotent stem cells	4	8377	23.40209904504175
+510	shinya yamanaka induced pluripotent stem cells	5	41592	20.2852556620589
+510	shinya yamanaka induced pluripotent stem cells	6	526	19.33625881945356
+510	shinya yamanaka induced pluripotent stem cells	7	46957	18.86589322051838
+510	shinya yamanaka induced pluripotent stem cells	8	9440	17.903240447047946
+510	shinya yamanaka induced pluripotent stem cells	9	41589	17.156577339554975
+510	shinya yamanaka induced pluripotent stem cells	10	41167	17.108174913842966
+601	operation barbarossa largest military invasion in history	1	71243	36.12907110799549
+601	operation barbarossa largest military invasion in history	2	5243	23.79710680678129
+601	operation barbarossa largest military invasion in history	3	43949	23.40303169026172
+601	operation barbarossa largest military invasion in history	4	40983	20.822450425127975
+601	operation barbarossa largest military invasion in history	5	6296	17.847411306174514
+601	operation barbarossa largest military invasion in history	6	58826	17.391270181254768
+601	operation barbarossa largest military invasion in history	7	22206	16.814909764135464
+601	operation barbarossa largest military invasion in history	8	94682	16.109040193691637
+601	operation barbarossa largest military invasion in history	9	94095	16.057477333427343
+601	operation barbarossa largest military invasion in history	10	49021	15.939910143519054
+602	multi head self attention transformer encoder decoder	1	11881	24.613087714510563
+602	multi head self attention transformer encoder decoder	2	63010	20.331080181394142
+602	multi head self attention transformer encoder decoder	3	45884	19.50438654790874
+602	multi head self attention transformer encoder decoder	4	22217	19.24592139438813
+602	multi head self attention transformer encoder decoder	5	41278	18.76132166153807
+602	multi head self attention transformer encoder decoder	6	28278	18.2773096893603
+602	multi head self attention transformer encoder decoder	7	19818	17.610489465725994
+602	multi head self attention transformer encoder decoder	8	57165	16.974991488838747
+602	multi head self attention transformer encoder decoder	9	58403	15.851442367567714
+602	multi head self attention transformer encoder decoder	10	18366	15.534168263064984
+603	ipcc sixth assessment report climate change impacts	1	22240	43.36712673763958
+603	ipcc sixth assessment report climate change impacts	2	53020	21.301609504762165
+603	ipcc sixth assessment report climate change impacts	3	32742	18.027040720567534
+603	ipcc sixth assessment report climate change impacts	4	15440	17.99184001055729
+603	ipcc sixth assessment report climate change impacts	5	40125	17.848606632429497
+603	ipcc sixth assessment report climate change impacts	6	63749	16.27534168745709
+603	ipcc sixth assessment report climate change impacts	7	40120	15.910057825451402
+603	ipcc sixth assessment report climate change impacts	8	3964	15.541422237215325
+603	ipcc sixth assessment report climate change impacts	9	4003	14.665548974238018
+603	ipcc sixth assessment report climate change impacts	10	81393	14.567688849234472
+604	purkinje fibers heart ventricular electrical conduction system	1	3521	42.48558435547877
+604	purkinje fibers heart ventricular electrical conduction system	2	84179	25.587497149600118
+604	purkinje fibers heart ventricular electrical conduction system	3	11486	25.166642938767147
+604	purkinje fibers heart ventricular electrical conduction system	4	11483	20.626126332436566
+604	purkinje fibers heart ventricular electrical conduction system	5	9451	20.158280476654397
+604	purkinje fibers heart ventricular electrical conduction system	6	3340	17.237050244132114
+604	purkinje fibers heart ventricular electrical conduction system	7	7022	17.01102466203414
+604	purkinje fibers heart ventricular electrical conduction system	8	54508	16.827085280038304
+604	purkinje fibers heart ventricular electrical conduction system	9	45557	16.60380304592529
+604	purkinje fibers heart ventricular electrical conduction system	10	59142	16.319734225053995
+605	voyager golden record sounds of earth message	1	63354	31.86292551614013
+605	voyager golden record sounds of earth message	2	15573	28.305568073294904
+605	voyager golden record sounds of earth message	3	43041	20.75456753324762
+605	voyager golden record sounds of earth message	4	10880	17.612903796694034
+605	voyager golden record sounds of earth message	5	15589	17.562911984776136
+605	voyager golden record sounds of earth message	6	72098	15.047388676681233
+605	voyager golden record sounds of earth message	7	1776	14.99163819550161
+605	voyager golden record sounds of earth message	8	78036	14.5687853694384
+605	voyager golden record sounds of earth message	9	15646	14.55613356909469
+605	voyager golden record sounds of earth message	10	18663	14.060405482033431
+606	delian league athenian empire tribute collection system	1	15774	25.225929299696798
+606	delian league athenian empire tribute collection system	2	12584	21.376370765318953
+606	delian league athenian empire tribute collection system	3	48627	20.024855705430358
+606	delian league athenian empire tribute collection system	4	3528	19.71892720706321
+606	delian league athenian empire tribute collection system	5	11232	17.717992153203298
+606	delian league athenian empire tribute collection system	6	20163	16.57438329551176
+606	delian league athenian empire tribute collection system	7	76039	15.769533344920493
+606	delian league athenian empire tribute collection system	8	10702	13.450303098152165
+606	delian league athenian empire tribute collection system	9	9369	13.191291046198048
+606	delian league athenian empire tribute collection system	10	55089	13.127666974977625
+607	autumn rhythm number 30 jackson pollock moma	1	20330	31.282593396014036
+607	autumn rhythm number 30 jackson pollock moma	2	6676	18.633734422520522
+607	autumn rhythm number 30 jackson pollock moma	3	4092	18.53062781085533
+607	autumn rhythm number 30 jackson pollock moma	4	32286	16.082250906846483
+607	autumn rhythm number 30 jackson pollock moma	5	97003	16.058629123097838
+607	autumn rhythm number 30 jackson pollock moma	6	97001	15.799090698167454
+607	autumn rhythm number 30 jackson pollock moma	7	84882	15.549999260244016
+607	autumn rhythm number 30 jackson pollock moma	8	84920	15.24008904025414
+607	autumn rhythm number 30 jackson pollock moma	9	31120	14.540380115616742
+607	autumn rhythm number 30 jackson pollock moma	10	54646	14.33938738957755
+608	lawrence livermore national ignition facility fusion breakthrough	1	88770	29.268914179729677
+608	lawrence livermore national ignition facility fusion breakthrough	2	85536	23.519489243179287
+608	lawrence livermore national ignition facility fusion breakthrough	3	27003	22.705502314561247
+608	lawrence livermore national ignition facility fusion breakthrough	4	16437	20.180945270885587
+608	lawrence livermore national ignition facility fusion breakthrough	5	50187	19.34656512338639
+608	lawrence livermore national ignition facility fusion breakthrough	6	10363	17.00943634045197
+608	lawrence livermore national ignition facility fusion breakthrough	7	36659	15.869151251791134
+608	lawrence livermore national ignition facility fusion breakthrough	8	75528	15.804559646100241
+608	lawrence livermore national ignition facility fusion breakthrough	9	64365	14.943721101302607
+608	lawrence livermore national ignition facility fusion breakthrough	10	23536	14.862790318216817
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	1	62015	37.65293831170252
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	2	76935	27.14284877878984
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	3	64174	26.018762526682234
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	4	62016	24.789778495880118
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	5	2626	24.748122954929364
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	6	77171	24.630275322586193
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	7	62008	22.461552894335572
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	8	62051	19.705659368367797
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	9	93323	18.330351545676717
+609	electrophilic aromatic substitution friedel crafts alkylation mechanism	10	61343	17.7104933027265
+610	takahashi shinya yamanaka nobel prize stem cells	1	73218	51.21043629185016
+610	takahashi shinya yamanaka nobel prize stem cells	2	73202	35.31766712292938
+610	takahashi shinya yamanaka nobel prize stem cells	3	8377	25.824661936397035
+610	takahashi shinya yamanaka nobel prize stem cells	4	57468	25.76137338234198
+610	takahashi shinya yamanaka nobel prize stem cells	5	56944	22.87499048203442
+610	takahashi shinya yamanaka nobel prize stem cells	6	54524	22.72767955563861
+610	takahashi shinya yamanaka nobel prize stem cells	7	62526	20.69843516533233
+610	takahashi shinya yamanaka nobel prize stem cells	8	41592	20.2852556620589
+610	takahashi shinya yamanaka nobel prize stem cells	9	62527	20.07893670578158
+610	takahashi shinya yamanaka nobel prize stem cells	10	96225	19.925573528768883
+701	operation barbarossa june 1941 german invasion of soviet union	1	71243	48.18673249483159
+701	operation barbarossa june 1941 german invasion of soviet union	2	6296	42.95657956803483
+701	operation barbarossa june 1941 german invasion of soviet union	3	40983	39.63502861357084
+701	operation barbarossa june 1941 german invasion of soviet union	4	69314	36.27700137377383
+701	operation barbarossa june 1941 german invasion of soviet union	5	58828	33.82112871202272
+701	operation barbarossa june 1941 german invasion of soviet union	6	6297	31.650538710499223
+701	operation barbarossa june 1941 german invasion of soviet union	7	39729	29.797507682738974
+701	operation barbarossa june 1941 german invasion of soviet union	8	4133	29.36802033198252
+701	operation barbarossa june 1941 german invasion of soviet union	9	40549	27.466959516276717
+701	operation barbarossa june 1941 german invasion of soviet union	10	47726	27.240041046467763
+702	scaled dot product attention multi head self attention mechanism	1	44322	20.96916905257727
+702	scaled dot product attention multi head self attention mechanism	2	27919	20.8890038895842
+702	scaled dot product attention multi head self attention mechanism	3	90849	18.98939814443515
+702	scaled dot product attention multi head self attention mechanism	4	77918	18.81125118672342
+702	scaled dot product attention multi head self attention mechanism	5	55177	18.171840650824294
+702	scaled dot product attention multi head self attention mechanism	6	815	17.873413665406645
+702	scaled dot product attention multi head self attention mechanism	7	77185	17.775833677817303
+702	scaled dot product attention multi head self attention mechanism	8	31087	17.321223595643175
+702	scaled dot product attention multi head self attention mechanism	9	239	17.31460032031591
+702	scaled dot product attention multi head self attention mechanism	10	12413	16.79848813524599
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	1	22240	34.36473379660542
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	2	3964	20.669163749831597
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	3	40125	19.358664313791664
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	4	1203	17.663138034242728
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	5	1964	17.076319756889674
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	6	15440	16.576022880267345
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	7	30262	16.126187162330478
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	8	84150	16.03248466213946
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	9	50395	15.621214218794307
+703	ipcc ar6 synthesis report limiting global warming 1.5 degrees	10	71135	15.621214218794307
+704	sinoatrial node atrioventricular node bundle of his conduction	1	3521	33.6019548196289
+704	sinoatrial node atrioventricular node bundle of his conduction	2	89082	28.128365261618885
+704	sinoatrial node atrioventricular node bundle of his conduction	3	58255	27.839104337604763
+704	sinoatrial node atrioventricular node bundle of his conduction	4	77123	27.69918791965967
+704	sinoatrial node atrioventricular node bundle of his conduction	5	40274	26.90266070447189
+704	sinoatrial node atrioventricular node bundle of his conduction	6	74588	26.658594275100036
+704	sinoatrial node atrioventricular node bundle of his conduction	7	17620	25.021175235999827
+704	sinoatrial node atrioventricular node bundle of his conduction	8	59595	24.92618232109624
+704	sinoatrial node atrioventricular node bundle of his conduction	9	26207	24.071060333742526
+704	sinoatrial node atrioventricular node bundle of his conduction	10	159	23.75556506483658
+705	voyager 1 golden record sounds of earth carl sagan	1	63354	48.643927187884806
+705	voyager 1 golden record sounds of earth carl sagan	2	15573	43.74726778113284
+705	voyager 1 golden record sounds of earth carl sagan	3	43041	30.115103533371283
+705	voyager 1 golden record sounds of earth carl sagan	4	15569	29.78595809433194
+705	voyager 1 golden record sounds of earth carl sagan	5	1115	28.493664012733756
+705	voyager 1 golden record sounds of earth carl sagan	6	63390	23.26021457844397
+705	voyager 1 golden record sounds of earth carl sagan	7	10880	22.804443117602986
+705	voyager 1 golden record sounds of earth carl sagan	8	26446	18.509632448437117
+705	voyager 1 golden record sounds of earth carl sagan	9	63353	17.247044936106114
+705	voyager 1 golden record sounds of earth carl sagan	10	18663	17.156390961611887
+706	delian league treasury moved from delos to athens tribute	1	48627	27.29044636096034
+706	delian league treasury moved from delos to athens tribute	2	12584	24.10264614118498
+706	delian league treasury moved from delos to athens tribute	3	15774	20.321561718484077
+706	delian league treasury moved from delos to athens tribute	4	11232	19.73887060969448
+706	delian league treasury moved from delos to athens tribute	5	20163	19.601016471582298
+706	delian league treasury moved from delos to athens tribute	6	42394	17.367040274645895
+706	delian league treasury moved from delos to athens tribute	7	3528	17.34593717425529
+706	delian league treasury moved from delos to athens tribute	8	16770	15.792639859585517
+706	delian league treasury moved from delos to athens tribute	9	31429	14.575300209003153
+706	delian league treasury moved from delos to athens tribute	10	45012	13.824147638842618
+707	autumn rhythm number 30 1950 jackson pollock moma collection	1	20330	31.282593396014036
+707	autumn rhythm number 30 1950 jackson pollock moma collection	2	6676	18.633734422520522
+707	autumn rhythm number 30 1950 jackson pollock moma collection	3	4092	18.53062781085533
+707	autumn rhythm number 30 1950 jackson pollock moma collection	4	63186	17.112622973824685
+707	autumn rhythm number 30 1950 jackson pollock moma collection	5	76713	16.44218083208175
+707	autumn rhythm number 30 1950 jackson pollock moma collection	6	32286	16.082250906846483
+707	autumn rhythm number 30 1950 jackson pollock moma collection	7	97003	16.058629123097838
+707	autumn rhythm number 30 1950 jackson pollock moma collection	8	97001	15.799090698167454
+707	autumn rhythm number 30 1950 jackson pollock moma collection	9	84882	15.549999260244016
+707	autumn rhythm number 30 1950 jackson pollock moma collection	10	84920	15.24008904025414
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	1	88770	29.268914179729677
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	2	85536	23.519489243179287
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	3	27003	22.705502314561247
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	4	16437	20.180945270885587
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	5	10363	17.00943634045197
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	6	36659	15.869151251791134
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	7	75528	15.804559646100241
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	8	64365	14.943721101302607
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	9	23536	14.862790318216817
+708	national ignition facility lawrence livermore 3.15 megajoule fusion yield	10	61954	13.802320528668789
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	1	76935	44.1883671360937
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	2	77171	43.12537996207849
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	3	2626	39.475217716977596
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	4	62015	36.68780938414012
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	5	78806	30.555677974956545
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	6	62033	29.67126181898177
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	7	62051	29.237597080122722
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	8	20069	25.72747169518914
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	9	7066	25.67319255098233
+709	electrophilic aromatic substitution mechanism benzene friedel crafts acylation reaction	10	62008	24.606011435070197
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	1	73218	40.38106951994731
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	2	73202	24.04833644015195
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	3	87585	23.458524518800488
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	4	46956	16.389822508549983
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	5	69696	14.761954139960025
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	6	8377	13.19713642703599
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	7	32101	12.051562609610817
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	8	16339	11.836267572627133
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	9	3632	11.762920750319097
+710	yamanaka factors oct4 sox2 klf4 myc induced pluripotent stem	10	14126	11.742047601603232

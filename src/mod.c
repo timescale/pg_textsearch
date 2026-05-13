@@ -33,7 +33,7 @@
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.2.0-dev");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.0-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
