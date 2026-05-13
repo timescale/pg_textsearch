@@ -133,6 +133,24 @@ bool	  tpvector_is_v2(const void *raw);
 TpVector *tpvector_canonicalize(TpVector *raw);
 
 /*
+ * Full validation of a raw byte buffer as a v2 TpVector.
+ *
+ * Checks that `len` is large enough to cover the TpVector header,
+ * that the magic and version bytes match, that the embedded
+ * varlena length equals `len`, and that the entry stream decodes
+ * fully within the buffer (each varint freq + varint lexeme_len +
+ * lexeme bytes stays in bounds).  On any inconsistency, raises an
+ * ereport(ERROR, errcode=ERRCODE_DATA_CORRUPTED).
+ *
+ * After a successful call the buffer is safe to iterate with
+ * get_tpvector_first_entry / get_tpvector_next_entry without per-
+ * entry bounds checks.  Use this at trust boundaries where the
+ * bytes come from on-disk memtable pages, network input, or other
+ * untrusted sources.
+ */
+void tpvector_validate_v2_buffer(const char *bytes, uint32 len);
+
+/*
  * Varint helpers (internal but exposed for adjacent code).
  *
  * Encoding: little-endian base-128. Each byte's high bit indicates

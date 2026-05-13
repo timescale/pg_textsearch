@@ -1,0 +1,67 @@
+-- Phase 3 of the memtable v2 redesign (see plan / issue #374):
+-- exercise the on-disk read path TpDataSource implementation
+-- via the bm25_test_chain_source() scaffold.  Each case writes
+-- records through tp_memtable_append() with real TpVector
+-- payloads, then opens a chain source and verifies the read-back
+-- through the TpDataSource interface (get_postings,
+-- get_doc_length, total_docs, total_len).
+--
+-- The new source is NOT yet wired into the index AM; insert and
+-- standalone scoring still go through the legacy DSA memtable
+-- until Phase 4.
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE TABLE chain_source_t (id int, body text);
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Empty chain: source create returns NULL.
+SELECT bm25_test_chain_source('chain_source_idx', 'empty_chain');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Single doc, single term: count=1, doc_freq=1, freq matches.
+SELECT bm25_test_chain_source('chain_source_idx', 'one_doc_one_term');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Multiple docs share one term: count=N, all ctids match.
+SELECT bm25_test_chain_source(
+    'chain_source_idx', 'multi_doc_shared_term');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- One doc, three distinct terms: each term round-trips.
+SELECT bm25_test_chain_source('chain_source_idx', 'multi_term');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Records spill across multiple memtable pages: chain walk
+-- aggregates all docs into one term entry.
+SELECT bm25_test_chain_source('chain_source_idx', 'multi_page_chain');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- get_postings for an absent term returns NULL.
+SELECT bm25_test_chain_source('chain_source_idx', 'term_not_found');
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- get_doc_length: present ctids return their length; absent
+-- ctids return -1.
+SELECT bm25_test_chain_source('chain_source_idx', 'doc_length_lookup');
+
+-- Clean up
+DROP EXTENSION pg_textsearch CASCADE;

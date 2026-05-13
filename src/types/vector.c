@@ -246,6 +246,44 @@ tpvector_canonicalize(TpVector *raw)
 	return raw;
 }
 
+void
+tpvector_validate_v2_buffer(const char *bytes, uint32 len)
+{
+	TpVector *v;
+
+	if (bytes == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer is NULL")));
+
+	if (len < sizeof(TpVector))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer too small: %u bytes, need at "
+						"least %zu",
+						len,
+						sizeof(TpVector))));
+
+	v = (TpVector *)bytes;
+
+	if (v->magic[0] != TPVECTOR_V2_MAGIC0 ||
+		v->magic[1] != TPVECTOR_V2_MAGIC1 ||
+		v->magic[2] != TPVECTOR_V2_MAGIC2 || v->magic[3] != TPVECTOR_V2_MAGIC3)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer has wrong magic bytes")));
+
+	if ((uint32)VARSIZE(v) != len)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector varlena length %u does not match buffer "
+						"length %u",
+						(uint32)VARSIZE(v),
+						len)));
+
+	tpvector_validate_v2(v);
+}
+
 /* ---------------------------------------------------------------------
  * Entry iteration (v2)
  * ---------------------------------------------------------------------

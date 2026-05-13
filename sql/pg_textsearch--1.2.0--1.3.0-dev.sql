@@ -43,6 +43,17 @@ RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
 LANGUAGE C STRICT;
 
+-- Internal-only scaffold: exercises the on-disk memtable read path
+-- introduced in Phase 3 of the memtable v2 redesign (issue #374).
+-- Subject to removal once later phases provide end-to-end coverage.
+CREATE FUNCTION bm25_test_chain_source(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
+LANGUAGE C STRICT;
+
 REVOKE EXECUTE ON FUNCTION bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_memtable_chain(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_test_chain_source(text, text)
+    FROM PUBLIC;
