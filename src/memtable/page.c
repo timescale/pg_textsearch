@@ -55,6 +55,20 @@ tp_memtable_page_init(Page page)
 	hdr->free_offset = (uint16)TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET;
 	hdr->next_block	 = InvalidBlockNumber;
 	hdr->dead_fxid	 = InvalidFullTransactionId;
+
+	/*
+	 * Mark the entire page as "in-use" so GenericXLog does not treat
+	 * the area we use for records as the standard PD_LOWER..PD_UPPER
+	 * hole.  GenericXLogFinish() zeroes that hole when applying the
+	 * scratch image to the buffer, which would silently wipe out our
+	 * header and records.  Setting pd_lower=BLCKSZ collapses the hole
+	 * to zero bytes so the full page is included in the delta and
+	 * the buffer write-back.  The standard PageHeader.pd_special and
+	 * pd_upper remain at BLCKSZ from PageInit, which is fine: we do
+	 * not use line pointers or PageAddItem on this page format, so
+	 * the invariants those macros rely on are not exercised.
+	 */
+	((PageHeader)page)->pd_lower = BLCKSZ;
 }
 
 bool

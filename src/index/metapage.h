@@ -78,6 +78,19 @@ typedef struct TpIndexMetaPageData
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
 											 */
 	uint16 level_counts[TP_MAX_LEVELS];		/* Segment count per level */
+
+	/*
+	 * Memtable v2 (issue #374): head/tail of the on-disk
+	 * memtable page chain.  Both fields hold InvalidBlockNumber
+	 * when the chain is empty; tail_blkno may differ from
+	 * head_blkno once the chain has more than one page.  All
+	 * mutations to these fields go through GenericXLog atomic
+	 * with the corresponding chain-page mutation.  Introduced
+	 * in TP_METAPAGE_VERSION 7; later phases of the redesign
+	 * will retire first_docid_page above.
+	 */
+	BlockNumber memtable_head_blkno;
+	BlockNumber memtable_tail_blkno;
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;

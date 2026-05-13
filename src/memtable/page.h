@@ -94,6 +94,18 @@ typedef struct TpMemtableRecord
 #define TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET \
 	(TP_MEMTABLE_PAGE_HEADER_OFFSET + MAXALIGN(sizeof(TpMemtablePageHeader)))
 
+/*
+ * Largest vector payload that can fit on an otherwise-empty
+ * memtable page.  The writer rejects records whose vector_len
+ * exceeds this up front (no buffer or WAL work performed).
+ *
+ * Derived constant so callers can size sanity-check inputs
+ * before touching the writer; the writer also re-checks.
+ */
+#define TP_MEMTABLE_PAGE_MAX_VECTOR_LEN                         \
+	((uint32)((BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET) - \
+			  TP_MEMTABLE_RECORD_BASE_SIZE))
+
 /* Return the on-page header.  Caller must hold the buffer pinned. */
 extern TpMemtablePageHeader *tp_memtable_page_header(Page page);
 

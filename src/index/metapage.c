@@ -94,6 +94,14 @@ tp_init_metapage(Page page, Oid text_config_oid)
 		metap->level_counts[i] = 0;
 	}
 
+	/*
+	 * Memtable v2 chain: explicitly InvalidBlockNumber (=
+	 * 0xFFFFFFFF) — NOT zero, since block 0 is the metapage
+	 * itself.  See TP_METAPAGE_VERSION in constants.h.
+	 */
+	metap->memtable_head_blkno = InvalidBlockNumber;
+	metap->memtable_tail_blkno = InvalidBlockNumber;
+
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
 	phdr->pd_lower = SizeOfPageHeaderData + sizeof(TpIndexMetaPageData);
@@ -151,12 +159,17 @@ tp_get_metapage(Relation index)
 	if (metap->version != TP_METAPAGE_VERSION)
 	{
 		UnlockReleaseBuffer(buf);
-		elog(ERROR,
-			 "Incompatible index version for \"%s\": found version %d, "
-			 "expected %d. Please drop and recreate the index.",
-			 RelationGetRelationName(index),
-			 metap->version,
-			 TP_METAPAGE_VERSION);
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("incompatible pg_textsearch index version for "
+						"\"%s\": found %u, expected %u",
+						RelationGetRelationName(index),
+						metap->version,
+						TP_METAPAGE_VERSION),
+				 errhint("This index was created by a different release of "
+						 "pg_textsearch.  Drop and recreate (or REINDEX) "
+						 "the index to upgrade to the current on-disk "
+						 "format.")));
 	}
 
 	/* Copy metapage data to avoid buffer issues */

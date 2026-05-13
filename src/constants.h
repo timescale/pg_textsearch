@@ -22,8 +22,15 @@
  * Page format versions - bump when on-disk format changes.
  * Each page type has its own version for independent evolution.
  */
-#define TP_METAPAGE_VERSION \
-	6 /* Bumped for BMW block_max_norm fix (min not max) */
+/*
+ * v7: memtable v2 redesign (issue #374).  Adds memtable_head_blkno
+ * and memtable_tail_blkno at the end of TpIndexMetaPageData.  A
+ * v6 metapage zero-fills those slots; because InvalidBlockNumber
+ * is 0xFFFFFFFF (NOT 0 — block 0 is the metapage itself), an
+ * additive-only field add would have been unsafe.  Hence the bump;
+ * REINDEX is required when upgrading from a v6 index.
+ */
+#define TP_METAPAGE_VERSION	  7
 #define TP_DOCID_PAGE_VERSION 1 /* Initial version */
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
 /* Initial version (memtable v2 redesign) */

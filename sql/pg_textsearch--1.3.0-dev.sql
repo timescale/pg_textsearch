@@ -273,3 +273,26 @@ CREATE FUNCTION @extschema@.bm25_test_memtable_page(case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
 LANGUAGE C STRICT;
+
+-- Internal-only scaffold: exercises the on-disk memtable write path
+-- introduced in Phase 2 of the memtable v2 redesign (issue #374).
+-- Subject to removal once later phases provide end-to-end coverage.
+CREATE FUNCTION @extschema@.bm25_test_memtable_append(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_append'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_memtable_chain(
+    index_name text,
+    OUT blkno bigint,
+    OUT n_records integer,
+    OUT free_offset integer,
+    OUT next_block bigint)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
+LANGUAGE C STRICT;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;
