@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778574200734,
+  "lastUpdate": 1778660461870,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -2422,6 +2422,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.629,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "62308b82a5e514320d0802beab2ebe4ea33d751b",
+          "message": "ci(benchmark): wikipedia validate by per-rank score, not per-doc set (#372)\n\nPort the per-rank score validation approach from msmarco (#366) to the\nWikipedia validator.\n\n## Motivation\n\nBenchmark run\n[25745376667](https://github.com/timescale/pg_textsearch/actions/runs/25745376667)\non `release-1.2.0` failed Wikipedia validation. Of 80 queries:\n- **19** had `docs_match=f, scores_match=t, max_abs_diff=0.000000` —\npure tie-cluster doc-set differences (BMW vs ground-truth tie-break\nordering). All matched on scores.\n- **1** had a real per-rank score divergence beyond 4 decimal places.\n\nThe old script used doc-set comparison plus 4-decimal rounding and\ntreated *any* divergence as fatal. This produces the same tie-cluster\nfalse-positive class that #366 fixed for MS MARCO.\n\n## Change\n\nWikipedia validator now mirrors `msmarco/validate_queries.sql`\nstructurally:\n- Per-rank score comparison (rank 1..10) within **0.001** absolute\ntolerance — same threshold and shape as msmarco.\n- `LIMIT 10` is held inside the inner subquery so it propagates to the\nBM25 index scan (BMW K=10). See #365 for the trap of letting the planner\npark the LIMIT above a WindowAgg.\n- Doc-set match is still reported as supplementary diagnostic info, but\nno longer part of the pass/fail decision.\n- Allowlist mechanism with tracking-issue references, starting empty for\nWikipedia.\n\n## Behavior\n\nRe-running run 25745376667 with this change would have:\n- ✅ Eliminated all 19 tie-cluster false positives.\n- ✅ Still flagged the 1 real divergence (or passed it if its abs diff is\n≤ 0.001 — the same tolerance applied to msmarco, which is the\nestablished standard).\n\n## Notes\n\n`benchmarks/datasets/msmarco-v2/validate_queries.sql` still uses the\nlegacy doc-set logic and should likely receive the same treatment. Out\nof scope for this PR to keep the diff focused on what failed on run\n25745376667.\n\nFollow-up to #366.",
+          "timestamp": "2026-05-13T00:37:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/62308b82a5e514320d0802beab2ebe4ea33d751b"
+        },
+        "date": 1778660455563,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2411.109123,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.415,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4687.82845,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.427,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8187.895468,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.489,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 12694.846982,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.63,
             "unit": "ms"
           }
         ]
