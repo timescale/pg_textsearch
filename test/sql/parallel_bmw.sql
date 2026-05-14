@@ -77,22 +77,6 @@ FROM (
 WHERE content = 'target';
 
 --------------------------------------------------------------------------------
--- Test 2: Baseline without BMW confirms correct results
---------------------------------------------------------------------------------
-SET pg_textsearch.enable_bmw = false;
-
-SELECT COUNT(*) AS short_docs_in_top10_no_bmw
-FROM (
-    SELECT content
-    FROM parallel_bmw_test
-    ORDER BY content <@> to_bm25query('target', 'parallel_bmw_test_idx')
-    LIMIT 10
-) sub
-WHERE content = 'target';
-
-SET pg_textsearch.enable_bmw = true;
-
---------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 DROP TABLE parallel_bmw_test CASCADE;

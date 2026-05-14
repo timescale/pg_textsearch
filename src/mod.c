@@ -250,6 +250,15 @@ _PG_init(void)
 			NULL);
 
 	/*
+	 * Reserve the pg_textsearch.* GUC prefix.  Without this,
+	 * postgresql.conf entries for GUCs we removed in earlier
+	 * releases (e.g. pg_textsearch.memory_limit, deleted in
+	 * 1.3.0's Phase 7B) are silently ignored after upgrade
+	 * instead of producing a warning at server start.
+	 */
+	MarkGUCPrefixReserved("pg_textsearch");
+
+	/*
 	 * Initialize index access method options
 	 */
 	tp_relopt_kind = add_reloption_kind();

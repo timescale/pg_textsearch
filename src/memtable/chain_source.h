@@ -62,6 +62,20 @@ extern TpDataSource *
 tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel);
 
 /*
+ * Return the total number of memtable chain pages walked by a
+ * chain source (regular pages + fragment continuation pages).
+ *
+ * Used by recovery / fresh-backend paths to seed
+ * shared->chain_page_count after shmem init has reset the atomic
+ * to zero, so the auto-spill heuristic isn't blind to a chain
+ * that already exists on disk.  Returns 0 when src is NULL.
+ *
+ * Asserts that `src` is a chain source (not any other
+ * TpDataSource implementation).
+ */
+extern uint32 tp_memtable_chain_source_page_count(TpDataSource *src);
+
+/*
  * Extract a sorted term dictionary + finalized doc map from a
  * chain source.  Used by the spill path (`tp_do_spill`) to feed
  * `tp_write_segment` without re-walking the chain pages.

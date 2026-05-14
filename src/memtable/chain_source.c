@@ -71,10 +71,16 @@ typedef struct ChainDocLenEntry
 
 typedef struct TpMemtableChainSource
 {
-	TpDataSource	   base;	   /* must be first */
-	MemoryContext	   mcxt;	   /* private context, deleted in close() */
-	HTAB			  *term_ht;	   /* char* → ChainTermEntry */
-	HTAB			  *doclen_ht;  /* ItemPointerData → ChainDocLenEntry */
+	TpDataSource  base;			   /* must be first */
+	MemoryContext mcxt;			   /* private context, deleted in close() */
+	HTAB		 *term_ht;		   /* char* → ChainTermEntry */
+	HTAB		 *doclen_ht;	   /* ItemPointerData → ChainDocLenEntry */
+	uint32		  chain_pages;	   /* total chain pages walked
+									* (regular + continuation); used to
+									* seed shared->chain_page_count when
+									* a backend reopens an index whose
+									* counter atomic was reset to 0 by
+									* shmem init. */
 	TpLocalIndexState *lock_state; /* state we acquired the per-index
 									* LWLock on (NULL if the lock was
 									* already held by an outer caller
@@ -413,6 +419,7 @@ reassemble_fragment(
 		next_blk = tp_memtable_page_get_next(cpage);
 		UnlockReleaseBuffer(cbuf);
 		cont_blkno = next_blk;
+		src->chain_pages++;
 	}
 
 	*out_buf = full;
@@ -487,18 +494,22 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 
 		hdr	 = tp_memtable_page_header(page);
 		next = hdr->next_block;
+		src->chain_pages++;
 
 		seen = 0;
 		for (rec = tp_memtable_page_first(page); rec != NULL;
 			 rec = tp_memtable_page_next(page, rec))
 		{
 			if (seen >= hdr->n_records)
+			{
+				UnlockReleaseBuffer(buf);
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("pg_textsearch memtable page block %u "
 								"iteration exceeds declared n_records=%u",
 								cur,
 								hdr->n_records)));
+			}
 
 			/*
 			 * Defensive: each record's vector_len must fit in
@@ -574,13 +585,16 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 		}
 
 		if (seen != hdr->n_records)
-			ereport(WARNING,
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("pg_textsearch memtable page block %u iterated "
 							"%u records, header says n_records=%u",
 							cur,
 							seen,
 							hdr->n_records)));
+		}
 
 		UnlockReleaseBuffer(buf);
 		cur = next;
@@ -818,6 +832,28 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 	}
 
 	return (TpDataSource *)src;
+}
+
+/*
+ * Return the total number of chain pages walked by a chain source.
+ * Includes both regular memtable pages and continuation pages of
+ * any fragments encountered.  Matches the writer's
+ * shared->chain_page_count accounting (which adds +1 per regular
+ * page and +(2 + n_cont) per fragment publish).  Used by
+ * tp_rebuild_index_from_disk to seed the atomic counter when a
+ * backend reopens an index whose shmem state was just (re-)created.
+ */
+uint32
+tp_memtable_chain_source_page_count(TpDataSource *base)
+{
+	TpMemtableChainSource *src;
+
+	if (base == NULL)
+		return 0;
+
+	Assert(base->ops == &chain_source_ops);
+	src = (TpMemtableChainSource *)base;
+	return src->chain_pages;
 }
 
 /* ---------- public extractor ---------- */

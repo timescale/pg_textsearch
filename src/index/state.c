@@ -1090,9 +1090,25 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	chain_src = tp_memtable_chain_source_create(local_state, index_rel);
 	if (chain_src != NULL)
 	{
-		chain_docs = (uint64)chain_src->total_docs;
-		chain_len  = (uint64)chain_src->total_len;
+		uint32 chain_pages;
+
+		chain_docs	= (uint64)chain_src->total_docs;
+		chain_len	= (uint64)chain_src->total_len;
+		chain_pages = tp_memtable_chain_source_page_count(chain_src);
 		tp_source_close(chain_src);
+
+		/*
+		 * Seed shared->chain_page_count from the on-disk chain
+		 * so the auto-spill threshold isn't blind to pages that
+		 * pre-existed in the index when this backend (or this
+		 * shmem segment) was started.  The writer always
+		 * increments the counter strictly under SHARED, but
+		 * we're inside tp_rebuild_index_from_disk's LW_EXCLUSIVE
+		 * (acquired above), so we can atomically initialize it
+		 * without racing the writer.
+		 */
+		pg_atomic_write_u32(
+				&local_state->shared->chain_page_count, chain_pages);
 	}
 
 	pg_atomic_write_u32(
