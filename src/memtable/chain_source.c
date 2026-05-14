@@ -289,7 +289,19 @@ ingest_terms(
 	if (vector_len == 0)
 		return;
 
+	/*
+	 * The bytes here come from chain pages we wrote ourselves
+	 * via `tp_add_document_terms` → `create_tpvector_from_strings`,
+	 * which always emits a well-formed v2 buffer.  Disk-level
+	 * corruption is caught by the page CRC in the buffer
+	 * manager, and structural corruption of an in-process write
+	 * would point at our own bug rather than untrusted input.
+	 * Run a full bounds-check only in assert-enabled builds so
+	 * we don't pay for re-walking every varint on the read path.
+	 */
+#ifdef USE_ASSERT_CHECKING
 	tpvector_validate_v2_buffer(vector_bytes, vector_len);
+#endif
 	vec = (TpVector *)vector_bytes;
 
 	entry = get_tpvector_first_entry(vec);
@@ -300,7 +312,17 @@ ingest_terms(
 		char			  stackbuf[256];
 		char			 *term_cstr;
 
-		tpvector_entry_decode(entry, &v);
+		/*
+		 * Decode-and-advance in a single pass: returns the next
+		 * entry pointer in addition to populating `v`, so we
+		 * don't pay for a second varint decode of (freq, lex_len)
+		 * just to advance the cursor.  The legacy pattern
+		 * (`tpvector_entry_decode` + `get_tpvector_next_entry`)
+		 * decoded both varints twice per entry, which became the
+		 * dominant per-record cost on read-heavy workloads
+		 * against the on-disk memtable chain (issue #374).
+		 */
+		entry = tpvector_entry_decode_advance(entry, &v);
 
 		/*
 		 * Stack-allocate the lookup key for short lexemes
@@ -323,8 +345,6 @@ ingest_terms(
 
 		if (term_cstr != stackbuf)
 			pfree(term_cstr);
-
-		entry = get_tpvector_next_entry(entry);
 	}
 }
 

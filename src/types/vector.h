@@ -112,14 +112,20 @@ char *get_tpvector_index_name(TpVector *tpvec);
  *   TpVectorEntry *e = get_tpvector_first_entry(vec);
  *   for (int i = 0; i < vec->entry_count; i++) {
  *       TpVectorEntryView v;
- *       tpvector_entry_decode(e, &v);
+ *       e = tpvector_entry_decode_advance(e, &v);
  *       // use v.frequency, v.lexeme_len, v.lexeme
- *       e = get_tpvector_next_entry(e);
  *   }
+ *
+ * The decode-only / advance-only variants are kept for callers
+ * that need either operation independently (e.g. validators);
+ * the hot path should use the combined `_advance` form, which
+ * decodes the varints exactly once.
  */
 TpVectorEntry *get_tpvector_first_entry(TpVector *vec);
 TpVectorEntry *get_tpvector_next_entry(TpVectorEntry *current);
 void tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out);
+TpVectorEntry *tpvector_entry_decode_advance(
+		const TpVectorEntry *entry, TpVectorEntryView *out);
 
 /*
  * Format detection + canonicalization.

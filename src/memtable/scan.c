@@ -68,7 +68,7 @@ tp_memtable_search(
 		TpVectorEntryView v;
 		char			 *term_str;
 
-		tpvector_entry_decode(entry, &v);
+		ptr = (char *)tpvector_entry_decode_advance(entry, &v);
 
 		term_str = palloc(v.lexeme_len + 1);
 		memcpy(term_str, v.lexeme, v.lexeme_len);
@@ -76,8 +76,6 @@ tp_memtable_search(
 
 		query_terms[i]		 = term_str;
 		query_frequencies[i] = (int32)v.frequency;
-
-		ptr = (char *)get_tpvector_next_entry(entry);
 	}
 
 	/* Allocate result arrays in scan context */

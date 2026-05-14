@@ -1705,7 +1705,7 @@ tp_insert(
 			TpVectorEntryView v;
 			char			 *lexeme;
 
-			tpvector_entry_decode(vector_entry, &v);
+			vector_entry = tpvector_entry_decode_advance(vector_entry, &v);
 
 			lexeme = palloc(v.lexeme_len + 1);
 			memcpy(lexeme, v.lexeme, v.lexeme_len);
@@ -1714,8 +1714,6 @@ tp_insert(
 			terms[i]	   = lexeme;
 			frequencies[i] = (int32)v.frequency;
 			doc_length += v.frequency;
-
-			vector_entry = get_tpvector_next_entry(vector_entry);
 		}
 	}
 

@@ -324,6 +324,32 @@ get_tpvector_next_entry(TpVectorEntry *current)
 	return (TpVectorEntry *)cursor;
 }
 
+/*
+ * Decode the entry pointed at by `entry` into `*out` and return
+ * the pointer to the next entry in the stream — in one varint
+ * pass, not two.  This is the hot-path iterator: the legacy
+ * pattern of `tpvector_entry_decode(e, &v); e =
+ * get_tpvector_next_entry(e);` re-decodes both varints just to
+ * advance the cursor, and shows up clearly in per-record profiles
+ * on read-heavy workloads against the on-disk memtable chain.
+ *
+ * The returned pointer is `(uint8 *)entry + 2 varints + lex_len`,
+ * computed from the cursor that `tpvector_varint_decode` already
+ * advanced — no extra work.
+ */
+TpVectorEntry *
+tpvector_entry_decode_advance(
+		const TpVectorEntry *entry, TpVectorEntryView *out)
+{
+	const uint8 *cursor = (const uint8 *)entry;
+	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+
+	out->frequency	= tpvector_varint_decode(&cursor, end);
+	out->lexeme_len = tpvector_varint_decode(&cursor, end);
+	out->lexeme		= (const char *)cursor;
+	return (TpVectorEntry *)(cursor + out->lexeme_len);
+}
+
 /* ---------------------------------------------------------------------
  * tpvector_in: text input
  * ---------------------------------------------------------------------
