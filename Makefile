@@ -52,7 +52,6 @@ OBJS = \
 	src/index/registry.o \
 	src/index/metapage.o \
 	src/index/limit.o \
-	src/index/memory.o \
 	src/index/resolve.o \
 	src/index/source.o \
 	src/planner/hooks.o \
@@ -171,15 +170,11 @@ test-replication-extended:
 	    exit 1; \
 	fi
 
-test-memory:
-	@echo "Running memory accounting tests..."
-	@cd test/scripts && ./memory_accounting.sh
-
 test-multi-index:
 	@echo "Running multi-index / multi-user / multi-schema tests..."
 	@cd test/scripts && ./multi_index.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-memory test-multi-index
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -352,4 +347,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-memory test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

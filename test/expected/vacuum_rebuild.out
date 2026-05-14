@@ -122,7 +122,7 @@ DROP TABLE vacuum_allgone;
 -- ================================================================
 -- Test 3: Multi-level segments with deletions
 -- ================================================================
-SET pg_textsearch.memtable_spill_threshold = 200;
+SET pg_textsearch.memtable_pages_threshold = 1;
 CREATE TABLE vacuum_multilevel (
     id serial PRIMARY KEY,
     content text
@@ -144,7 +144,7 @@ SELECT bm25_summarize_index('vacuum_multilevel_idx') ~ 'L1'
     AS has_l1_segments;
  has_l1_segments 
 -----------------
- f
+ t
 (1 row)
 
 -- Delete half
@@ -163,7 +163,7 @@ FROM (
       1000
 (1 row)
 
-RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 DROP TABLE vacuum_multilevel;
 -- ================================================================
 -- Test 4: VACUUM with no dead tuples (no-op)

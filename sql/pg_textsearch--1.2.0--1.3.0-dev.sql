@@ -58,6 +58,12 @@ REVOKE EXECUTE ON FUNCTION bm25_memtable_chain(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_test_chain_source(text, text)
     FROM PUBLIC;
 
+-- Phase 7B of the memtable v2 redesign (issue #374) deletes the
+-- soft-limit memory_usage SRF along with the underlying soft-limit
+-- machinery; the chain_page_count-based auto-spill heuristic replaces
+-- the old global byte accounting.
+DROP FUNCTION IF EXISTS bm25_memory_usage();
+
 -- Standalone scoring functions are not parallel-safe: they open the index
 -- relation by name, attach per-backend state, and walk the on-disk memtable
 -- chain under shared latches.  Parallel workers attempting the same setup

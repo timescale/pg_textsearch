@@ -163,7 +163,7 @@ DROP TABLE reindex_memtable_test;
 -- =============================================================================
 
 -- Lower spill threshold BEFORE creating the table so it applies to inserts
-SET pg_textsearch.memtable_spill_threshold = 500;
+SET pg_textsearch.memtable_pages_threshold = 1;
 
 CREATE TABLE bulk_memtable_test (
     id serial PRIMARY KEY,
@@ -207,7 +207,7 @@ SELECT count(*) AS final_count FROM (
     ORDER BY content <@> to_bm25query('networking', 'bulk_memtable_idx')
 ) sub;
 
-RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 DROP TABLE bulk_memtable_test;
 
 -- =============================================================================

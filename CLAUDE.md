@@ -134,9 +134,8 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.default_limit` | Default limit for queries without LIMIT | 1000 |
 | `pg_textsearch.log_scores` | Log BM25 scores during scans | false |
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
-| `pg_textsearch.memory_limit` | Legacy GUC, no longer authoritative for the on-disk memtable (issue #374); slated for redefinition or removal | 2GB |
-| `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill | 100000 |
-| `pg_textsearch.memtable_spill_threshold` | Posting entries to trigger spill (deprecated) | 32000000 |
+| `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
+| `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 

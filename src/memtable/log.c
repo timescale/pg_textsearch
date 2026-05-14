@@ -93,11 +93,12 @@ memtable_read_tail_blkno(Relation rel)
  */
 static BlockNumber
 memtable_bootstrap_and_append(
-		Relation	rel,
-		ItemPointer ctid,
-		int32		doc_length,
-		const char *vector_bytes,
-		uint32		vector_len)
+		Relation			rel,
+		TpSharedIndexState *shared,
+		ItemPointer			ctid,
+		int32				doc_length,
+		const char		   *vector_bytes,
+		uint32				vector_len)
 {
 	Buffer			  metabuf;
 	Buffer			  newbuf;
@@ -165,6 +166,16 @@ memtable_bootstrap_and_append(
 	UnlockReleaseBuffer(newbuf);
 	UnlockReleaseBuffer(metabuf);
 
+	/*
+	 * Bump chain page count after successful publish.  No lock
+	 * needed: chain_page_count is an unsynchronized heuristic
+	 * for tp_auto_spill_if_needed; the spill path (which resets
+	 * it to 0) holds LW_EXCLUSIVE so concurrent inserts are
+	 * fenced.
+	 */
+	if (shared != NULL)
+		pg_atomic_fetch_add_u32(&shared->chain_page_count, 1);
+
 	return newblk;
 }
 
@@ -179,12 +190,13 @@ memtable_bootstrap_and_append(
  */
 static BlockNumber
 memtable_extend_and_append(
-		Relation	rel,
-		Buffer		tailbuf,
-		ItemPointer ctid,
-		int32		doc_length,
-		const char *vector_bytes,
-		uint32		vector_len)
+		Relation			rel,
+		TpSharedIndexState *shared,
+		Buffer				tailbuf,
+		ItemPointer			ctid,
+		int32				doc_length,
+		const char		   *vector_bytes,
+		uint32				vector_len)
 {
 	Buffer			  newbuf;
 	Buffer			  metabuf;
@@ -221,6 +233,9 @@ memtable_extend_and_append(
 
 	UnlockReleaseBuffer(metabuf);
 	UnlockReleaseBuffer(newbuf);
+
+	if (shared != NULL)
+		pg_atomic_fetch_add_u32(&shared->chain_page_count, 1);
 
 	return newblk;
 }
@@ -270,12 +285,13 @@ memtable_extend_and_append(
  */
 static BlockNumber
 memtable_append_fragment(
-		Relation	rel,
-		Buffer		old_tailbuf,
-		ItemPointer ctid,
-		int32		doc_length,
-		const char *vector_bytes,
-		uint32		vector_len)
+		Relation			rel,
+		TpSharedIndexState *shared,
+		Buffer				old_tailbuf,
+		ItemPointer			ctid,
+		int32				doc_length,
+		const char		   *vector_bytes,
+		uint32				vector_len)
 {
 	uint32			  inline_cap = tp_memtable_fragment_inline_capacity_max();
 	uint32			  cont_cap	 = tp_memtable_continuation_max_chunk();
@@ -450,6 +466,17 @@ memtable_append_fragment(
 	}
 
 	pfree(cont_blknos);
+
+	/*
+	 * Bump chain page count by the number of pages we just
+	 * published: Thead + n_cont continuation pages + Tnew.
+	 * Done after both publish branches finish so we never
+	 * count pages on the lost-bootstrap-race return path
+	 * above.
+	 */
+	if (shared != NULL)
+		pg_atomic_fetch_add_u32(&shared->chain_page_count, 2 + n_cont);
+
 	return thead_blkno;
 }
 
@@ -543,6 +570,7 @@ tp_memtable_append(
 
 			result = memtable_append_fragment(
 					rel,
+					index_state->shared,
 					fragment_old_tail,
 					ctid,
 					doc_length,
@@ -558,7 +586,12 @@ tp_memtable_append(
 		if (tail_blkno == InvalidBlockNumber)
 		{
 			result = memtable_bootstrap_and_append(
-					rel, ctid, doc_length, vector_bytes, vector_len);
+					rel,
+					index_state->shared,
+					ctid,
+					doc_length,
+					vector_bytes,
+					vector_len);
 			if (result != InvalidBlockNumber)
 				return result;
 
@@ -617,7 +650,13 @@ tp_memtable_append(
 
 		/* Tail is full; allocate a new page and append there. */
 		result = memtable_extend_and_append(
-				rel, tailbuf, ctid, doc_length, vector_bytes, vector_len);
+				rel,
+				index_state->shared,
+				tailbuf,
+				ctid,
+				doc_length,
+				vector_bytes,
+				vector_len);
 		UnlockReleaseBuffer(tailbuf);
 		return result;
 	}
@@ -738,33 +777,13 @@ tp_add_document_terms(
 		int				   term_count,
 		int32			   doc_length)
 {
-	TpMemtable *memtable;
-
 	tp_memtable_append(rel, ctid, doc_length, vector_bytes, vector_len);
-
-	/*
-	 * Bump the registry-visible posting/term/doc counters used
-	 * by the auto-spill thresholds and the global soft-limit
-	 * heuristic.  These atomics are no longer authoritative for
-	 * query correctness (Phase 4 derives totals from metapage +
-	 * chain source instead), but they remain the cheapest
-	 * proxy for "write pressure" available without re-reading
-	 * the chain.  Phase 7B will delete these atomics along
-	 * with the soft-limit auto-spill heuristic.
-	 */
-	memtable = get_memtable(local_state);
-	if (memtable)
-	{
-		pg_atomic_fetch_add_u64(&memtable->total_postings, term_count);
-		pg_atomic_fetch_add_u64(&memtable->num_terms, term_count);
-		pg_atomic_fetch_add_u64(&memtable->total_term_len, (uint64)vector_len);
-	}
 
 	/*
 	 * Corpus statistics: still bumped on the primary for
 	 * compatibility with vacuum's shrinkage protocol; readers
-	 * no longer trust these atomics.  Phase 7B deletes them
-	 * along with the per-index DSA state.
+	 * no longer trust these atomics.  Phase 7C will delete the
+	 * per-index DSA state along with these last bumps.
 	 */
 	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
 	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);

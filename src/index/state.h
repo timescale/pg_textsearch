@@ -69,6 +69,20 @@ typedef struct TpSharedIndexState
 	pg_atomic_uint64 total_len;	 /* Total length of all documents */
 
 	/*
+	 * Auto-spill heuristic (memtable v2): number of chain pages
+	 * currently published in the on-disk memtable chain.
+	 * Incremented after each successful page-publish
+	 * GenericXLogFinish in src/memtable/log.c; reset to 0 after
+	 * tp_spill_finalize() completes.  Not WAL-logged: on crash
+	 * recovery, the counter starts at 0 even if the chain
+	 * survived.  Worst case the heuristic overshoots by ~one
+	 * threshold's worth of pages between restart and the next
+	 * normal merge — acceptable since the counter only governs
+	 * when to spill, not correctness.
+	 */
+	pg_atomic_uint32 chain_page_count;
+
+	/*
 	 * Cached estimated memtable size in bytes, updated
 	 * atomically by writers. Used to maintain the global
 	 * estimated_total_bytes counter without scanning.

@@ -28,7 +28,7 @@ echo ""
 # Show initial configuration (skip if parameters not available)
 echo "=== Initial Configuration ==="
 psql -c "SHOW pg_textsearch.bulk_load_threshold;" 2>/dev/null || echo "pg_textsearch.bulk_load_threshold: (parameter not visible)"
-psql -c "SHOW pg_textsearch.memtable_spill_threshold;" 2>/dev/null || echo "pg_textsearch.memtable_spill_threshold: (parameter not visible)"
+psql -c "SHOW pg_textsearch.memtable_pages_threshold;" 2>/dev/null || echo "pg_textsearch.memtable_pages_threshold: (parameter not visible)"
 echo ""
 
 # Choose benchmark size based on argument

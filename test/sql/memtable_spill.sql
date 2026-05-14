@@ -4,7 +4,7 @@
 --   * inserts append to chain pages,
 --   * manual bm25_spill_index() drains the chain into an L0
 --     segment,
---   * memtable_spill_threshold triggers an auto-spill at
+--   * memtable_pages_threshold triggers an auto-spill at
 --     transaction end,
 --   * queries return correct results across spills.
 
@@ -58,7 +58,7 @@ SELECT bm25_spill_index('memtable_spill_idx') AS empty_chain_spill;
 -- Test 7: subsequent inserts build a fresh chain.  Run them in
 -- a transaction with the auto-spill threshold disabled so the
 -- chain remains observable at COMMIT.
-SET pg_textsearch.memtable_spill_threshold = 0;
+SET pg_textsearch.memtable_pages_threshold = 0;
 BEGIN;
 INSERT INTO memtable_spill_test (body)
 SELECT 'beta ' || i FROM generate_series(1, 30) i;
@@ -72,13 +72,13 @@ COMMIT;
 SELECT count(*) > 0 AS chain_persists_after_commit
 FROM bm25_memtable_chain('memtable_spill_idx');
 
--- Test 8: memtable_spill_threshold (in postings) drains the
+-- Test 8: memtable_pages_threshold (in chain pages) drains the
 -- chain at COMMIT.  Spill once to start from empty, then insert
 -- past the threshold and verify the chain ends empty.
 SELECT bm25_spill_index('memtable_spill_idx') IS NOT NULL OR true
        AS reset;
 
-SET pg_textsearch.memtable_spill_threshold = 50;
+SET pg_textsearch.memtable_pages_threshold = 1;
 INSERT INTO memtable_spill_test (body)
 SELECT 'gamma ' || i || ' delta ' || (i+1) || ' epsilon ' || (i+2)
 FROM generate_series(1, 100) i;
@@ -86,7 +86,7 @@ FROM generate_series(1, 100) i;
 SELECT count(*) AS chain_pages_after_autospill
 FROM bm25_memtable_chain('memtable_spill_idx');
 
-RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 
 -- Test 9: query the (now-spilled) data to confirm end-to-end
 -- correctness across the auto-spill path.

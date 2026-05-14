@@ -78,7 +78,7 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 		if (index_rel != NULL)
 		{
 			tp_spill_memtable_if_needed(
-					index_rel, entry->local_state, TP_MIN_SPILL_POSTINGS);
+					index_rel, entry->local_state, TP_MIN_SPILL_PAGES);
 			index_close(index_rel, RowExclusiveLock);
 			index_rel = NULL;
 		}
@@ -353,6 +353,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	pg_atomic_init_u32(&shared_state->total_docs, 0);
 	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
+	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 
 	/*
 	 * Initialize the per-index LWLock using a fixed tranche ID.
@@ -489,6 +490,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
+	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 
 	/*
 	 * Initialize per-index LWLock using a fixed tranche ID.
@@ -734,9 +736,6 @@ tp_cleanup_build_mode_on_abort(void)
 			Oid			index_oid = local_state->shared->index_oid;
 			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
 
-			/* Subtract estimate before freeing shared state */
-			tp_subtract_index_estimate(local_state->shared);
-
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 			{
 				/* Free shared state from global DSA */
@@ -841,8 +840,6 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 			Oid			index_oid = ls->shared->index_oid;
 			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
 
-			tp_subtract_index_estimate(ls->shared);
-
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 				dsa_free(global_dsa, shared_dp);
 
@@ -938,9 +935,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 	/* Get shared state */
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
-
-	/* Subtract estimate from global counter before freeing */
-	tp_subtract_index_estimate(shared_state);
 
 	/*
 	 * v1 stored DSA dshash tables off shared_state->memtable_dp;
@@ -1261,9 +1255,6 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	if (!memtable)
 		return;
 
-	/* Subtract this index's estimate from the global counter */
-	tp_subtract_index_estimate(local_state->shared);
-
 	/*
 	 * BUILD MODE: Destroy entire private DSA and create fresh one.
 	 * This provides perfect memory reclamation - ALL memory returns to OS.
@@ -1292,7 +1283,7 @@ tp_clear_memtable(TpLocalIndexState *local_state)
  * Check if any index should spill to disk due to bulk load threshold.
  * Spill is triggered when terms added this transaction exceeds threshold.
  *
- * Note: memtable_spill_threshold is now checked in real-time via
+ * Note: memtable_pages_threshold is checked in real-time via
  * tp_auto_spill_if_needed() after each document insert.
  *
  * This is called at PRE_COMMIT via the transaction callback in mod.c.

@@ -82,9 +82,8 @@ unix_socket_directories = '${DATA_DIR}'
 listen_addresses = 'localhost'
 log_min_messages = warning
 shared_preload_libraries = 'pg_textsearch'
-pg_textsearch.memory_limit = '256MB'
 pg_textsearch.bulk_load_threshold = 0
-pg_textsearch.memtable_spill_threshold = 0
+pg_textsearch.memtable_pages_threshold = 0
 EOF
 
     "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" \
@@ -364,8 +363,7 @@ test_non_owner_spill() {
     log "Test 3: Non-owner INSERT triggers auto-spill"
 
     # Tighten per-index limit so spill triggers quickly.
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '4MB';"
+    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = 1;"
     reload_conf
 
     # Create roles.
@@ -463,8 +461,7 @@ test_non_owner_spill() {
     run_sql_quiet "DROP OWNED BY inserter CASCADE;"
     run_sql_quiet "DROP ROLE idx_owner;"
     run_sql_quiet "DROP ROLE inserter;"
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '256MB';"
+    run_sql_quiet "ALTER SYSTEM RESET pg_textsearch.memtable_pages_threshold;"
     reload_conf
     log "Test 3 complete"
 }
@@ -480,8 +477,7 @@ test_cross_user_pressure_spill() {
     log "Test 4: Cross-user memory pressure spill"
 
     # Tight global limit: 4MB total, per-index soft = 512kB.
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '4MB';"
+    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = 1;"
     reload_conf
 
     # Create two owner roles.
@@ -603,8 +599,7 @@ test_cross_user_pressure_spill() {
     run_sql_quiet "DROP OWNED BY user_b CASCADE;"
     run_sql_quiet "DROP ROLE user_a;"
     run_sql_quiet "DROP ROLE user_b;"
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '256MB';"
+    run_sql_quiet "ALTER SYSTEM RESET pg_textsearch.memtable_pages_threshold;"
     reload_conf
     log "Test 4 complete"
 }
@@ -620,8 +615,7 @@ test_concurrent_spills() {
     log "Test 5: Concurrent spills from multiple backends"
 
     # Tight per-index limit so each backend spills.
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '4MB';"
+    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = 1;"
     reload_conf
 
     local N=4
@@ -687,8 +681,7 @@ test_concurrent_spills() {
     for i in $(seq 1 $N); do
         run_sql_quiet "DROP TABLE spill_t${i} CASCADE;"
     done
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '256MB';"
+    run_sql_quiet "ALTER SYSTEM RESET pg_textsearch.memtable_pages_threshold;"
     reload_conf
     log "Test 5 complete"
 }
@@ -703,8 +696,7 @@ test_concurrent_spills() {
 test_query_during_spill() {
     log "Test 6: Query during cross-index spill"
 
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '4MB';"
+    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = 1;"
     reload_conf
 
     # Set up two tables with indexes.
@@ -780,8 +772,7 @@ test_query_during_spill() {
 
     run_sql_quiet "DROP TABLE query_target CASCADE;"
     run_sql_quiet "DROP TABLE spill_driver CASCADE;"
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '256MB';"
+    run_sql_quiet "ALTER SYSTEM RESET pg_textsearch.memtable_pages_threshold;"
     reload_conf
     log "Test 6 complete"
 }
@@ -796,8 +787,7 @@ test_query_during_spill() {
 test_mixed_workload() {
     log "Test 7: Mixed workload across many indexes"
 
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '4MB';"
+    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = 1;"
     reload_conf
 
     # Create schemas and roles.
@@ -971,8 +961,7 @@ test_mixed_workload() {
     run_sql_quiet "DROP OWNED BY mix_writer CASCADE;"
     run_sql_quiet "DROP ROLE mix_owner;"
     run_sql_quiet "DROP ROLE mix_writer;"
-    run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                       = '256MB';"
+    run_sql_quiet "ALTER SYSTEM RESET pg_textsearch.memtable_pages_threshold;"
     reload_conf
     log "Test 7 complete"
 }

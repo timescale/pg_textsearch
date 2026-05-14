@@ -400,13 +400,8 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
-`pg_textsearch.memory_limit` | 2GB | Legacy cap on shared-memory memtables; no longer authoritative for the on-disk memtable (issue #374). Will be redefined or removed.
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
-`pg_textsearch.memtable_spill_threshold` | 32000000 | **Deprecated.** Posting entries before auto-spill (0 = disable)
-
-> **`memtable_spill_threshold` is deprecated.** It was the original
-> mechanism for bounding memtable growth, triggering a spill when an
-> index accumulated a fixed number of posting entries.
+`pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 
 #### Memtable architecture
 
@@ -419,9 +414,15 @@ helper used by online-page-fix tooling) reconstructs every page without
 needing to load `pg_textsearch.so`. See
 [`docs/memtable_v2.md`](docs/memtable_v2.md) for the spec.
 
-`bulk_load_threshold` triggers an auto-spill when a single transaction
-accumulates many terms in the memtable — useful for COPY / bulk
-INSERT to bound chain-page growth.
+Auto-spill is governed by two complementary triggers:
+
+- `memtable_pages_threshold` — fires after each insert when the chain
+  has grown past the configured page count. Default 64 pages
+  (~512 KB at 8 KB blocks) keeps query latency bounded since the
+  chain stays small.
+- `bulk_load_threshold` — fires at COMMIT when a single transaction
+  accumulates many terms in the memtable; useful for COPY / bulk
+  INSERT to bound chain-page growth.
 
 ```sql
 -- Manual spill (forces the current chain to a new L0 segment)

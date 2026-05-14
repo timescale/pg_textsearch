@@ -396,9 +396,11 @@ jobs:
             RAISE NOTICE 'PASS: extension version %', ver;
           END $$;
 
-          -- Phase 6: 1.1.0 features (text[] indexes, bm25_memory_usage).
+          -- Phase 6: 1.1.0 features (text[] indexes).
           -- Catches upgrade scripts that forget new SQL objects added
-          -- during a release cycle.
+          -- during a release cycle.  bm25_memory_usage was dropped in
+          -- 1.3.0-dev (issue #374, Phase 7B) so it is no longer
+          -- exercised here.
           CREATE TABLE upgrade_textarr (id serial, tags text[]);
           INSERT INTO upgrade_textarr (tags) VALUES (ARRAY['hello', 'world']);
           CREATE INDEX idx_upgrade_textarr ON upgrade_textarr
@@ -414,15 +416,6 @@ jobs:
               RAISE EXCEPTION 'FAIL: text[] index returned no results';
             END IF;
             RAISE NOTICE 'PASS: text[] BM25 index works, id=%', rec.id;
-          END $$;
-          DO $$
-          DECLARE bytes int8;
-          BEGIN
-            SELECT dsa_total_bytes INTO bytes FROM bm25_memory_usage();
-            IF bytes IS NULL THEN
-              RAISE EXCEPTION 'FAIL: bm25_memory_usage returned NULL';
-            END IF;
-            RAISE NOTICE 'PASS: bm25_memory_usage works, bytes=%', bytes;
           END $$;
 
           SELECT 'All compat-tier upgrade tests passed!' AS status;
@@ -521,9 +514,11 @@ jobs:
             RAISE NOTICE 'PASS: new index works, score=%', score_val;
           END $$;
 
-          -- Test 7: 1.1.0 features (text[] indexes, bm25_memory_usage).
+          -- Test 7: 1.1.0 features (text[] indexes).
           -- Catches upgrade scripts that forget new SQL objects added
-          -- during a release cycle.
+          -- during a release cycle.  bm25_memory_usage was dropped in
+          -- 1.3.0-dev (issue #374, Phase 7B) so it is no longer
+          -- exercised here.
           CREATE TABLE upgrade_textarr (id serial, tags text[]);
           INSERT INTO upgrade_textarr (tags) VALUES (ARRAY['hello', 'world']);
           CREATE INDEX idx_upgrade_textarr ON upgrade_textarr
@@ -539,15 +534,6 @@ jobs:
               RAISE EXCEPTION 'FAIL: text[] index returned no results';
             END IF;
             RAISE NOTICE 'PASS: text[] BM25 index works, id=%', rec.id;
-          END $$;
-          DO $$
-          DECLARE bytes int8;
-          BEGIN
-            SELECT dsa_total_bytes INTO bytes FROM bm25_memory_usage();
-            IF bytes IS NULL THEN
-              RAISE EXCEPTION 'FAIL: bm25_memory_usage returned NULL';
-            END IF;
-            RAISE NOTICE 'PASS: bm25_memory_usage works, bytes=%', bytes;
           END $$;
 
           SELECT 'All legacy-tier upgrade tests passed!' AS status;

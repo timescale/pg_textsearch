@@ -52,9 +52,11 @@ bool tp_log_bmw_stats = false;
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
-/* Global variable for memtable spill threshold (0 = disabled)
- * Deprecated: use memory_limit instead */
-int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
+/*
+ * Memtable v2 (issue #374) auto-spill: chain pages per index
+ * before the next insert triggers a spill (0 = disabled).
+ */
+int tp_memtable_pages_threshold = TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD;
 
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
@@ -63,9 +65,6 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
-
-/* Memory limit GUC (in KB, 0 = disabled) */
-int tp_memory_limit = 2097152; /* 2 GB */
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -204,14 +203,16 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"pg_textsearch.memtable_spill_threshold",
-			"Posting entries to trigger memtable spill",
-			"When the memtable reaches this many posting entries, spill to "
-			"disk at transaction end. Set to 0 to disable.",
-			&tp_memtable_spill_threshold,
-			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 32M */
+			"pg_textsearch.memtable_pages_threshold",
+			"Chain pages to trigger memtable spill",
+			"When the on-disk memtable chain reaches this many pages, "
+			"spill to an L0 segment at the next insert.  Each page is "
+			"8 KiB.  Set to 0 to disable auto-spill (chain grows until "
+			"VACUUM or manual bm25_spill_index()).",
+			&tp_memtable_pages_threshold,
+			TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD, /* default 64 */
 			0,									 /* min 0 (disabled) */
-			INT_MAX,							 /* max INT_MAX */
+			INT_MAX,							 /* max */
 			PGC_SUSET,
 			0,
 			NULL,
@@ -243,25 +244,6 @@ _PG_init(void)
 			true,		 /* default on - benchmarks show net benefit */
 			PGC_USERSET, /* Can be changed per session */
 			0,
-			NULL,
-			NULL,
-			NULL);
-
-	DefineCustomIntVariable(
-			"pg_textsearch.memory_limit",
-			"Memory limit for pg_textsearch memtables",
-			"Hard cap on DSA memory reserved by "
-			"pg_textsearch. Inserts fail with an error "
-			"when exceeded. Internally, spill thresholds "
-			"at 50%% (global) and 12.5%% (per-index) "
-			"keep usage well below this limit. "
-			"Set to 0 to disable.",
-			&tp_memory_limit,
-			2097152,	   /* default: 2 GB */
-			0,			   /* min: 0 (disabled) */
-			MAX_KILOBYTES, /* max */
-			PGC_SIGHUP,	   /* changeable via reload */
-			GUC_UNIT_KB,
 			NULL,
 			NULL,
 			NULL);

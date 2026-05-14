@@ -58,7 +58,7 @@ shared_preload_libraries = '${lib_name}'
 
 # Lower thresholds to trigger multiple memtable spills during CIC tests
 pg_textsearch.bulk_load_threshold = 10000
-pg_textsearch.memtable_spill_threshold = 100000
+pg_textsearch.memtable_pages_threshold = 2
 EOF
 
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w || error "Failed to start PostgreSQL"

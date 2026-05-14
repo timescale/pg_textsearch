@@ -356,18 +356,33 @@ source walks every record at scan time (the v1 dshash had O(1)
 term lookup against an in-memory hash). At small memtable sizes
 (default auto-spill thresholds) this is parity. At large memtable
 sizes — e.g. a manually disabled auto-spill or an oversized
-`pg_textsearch.memtable_spill_threshold` — the cost can dominate.
+`pg_textsearch.memtable_pages_threshold` — the cost can dominate.
 
 The mitigation is the spill threshold itself: tighter spill
-thresholds keep the chain short. The Phase-10 tuning of the
-default thresholds is tracked separately. Pending follow-ups:
+thresholds keep the chain short. Pending follow-ups:
 
-- Replace `pg_textsearch.memory_limit` (DSA-bytes semantics) with
-  a chain-page-count threshold (`pg_textsearch.memtable_max_pages`
-  or similar).
 - Per-term skip lists at the memtable layer (an A3-style hybrid
   per `plan.md`) if smaller spill thresholds prove insufficient
   for high-cardinality query workloads.
+
+## Auto-spill triggers
+
+| GUC | Default | Trigger point | Effect |
+|-----|---------|---------------|--------|
+| `pg_textsearch.memtable_pages_threshold` | 64 | After each successful chain extend | Spill the chain at the next `tp_auto_spill_if_needed` check |
+| `pg_textsearch.bulk_load_threshold` | 100000 | PRE_COMMIT, when `terms_added_this_xact` exceeds the threshold | Spill the chain in `tp_bulk_load_spill_check` |
+
+Both default to non-zero. Setting either to 0 disables that trigger;
+manual spills via `bm25_spill_index('idx_name')` still work.
+
+The chain-page counter is a per-index `pg_atomic_uint32`
+(`TpSharedIndexState.chain_page_count`). Incremented after each
+successful page-publish `GenericXLogFinish` in `src/memtable/log.c`,
+reset to 0 after `tp_spill_finalize`. The counter is not WAL-logged;
+on crash recovery it starts at 0 even if the chain survived. Worst
+case the heuristic overshoots by ~one threshold's worth of pages
+between restart and the next normal merge — acceptable since the
+counter only governs when to spill, not correctness.
 
 ## Future cleanups (tracked separately)
 
@@ -375,10 +390,5 @@ default thresholds is tracked separately. Pending follow-ups:
   `amvacuumcleanup` (B-tree's `merged_at_xid` pattern).
 - Removal of the DSA-backed registry in favor of a fixed-size
   shmem hash sized at `shmem_request_hook` time
-  (`pg_textsearch.max_indexes` GUC).
-- Removal of dead DSA helpers in `src/memtable/posting.c` and
-  `src/memtable/stringtable.c` (most callers are gone since
-  Phase 4 but the helpers remain compiled).
-- Reduction of `pg_textsearch.memory_limit` to something
-  meaningful for the page-backed layer (e.g. chain-page count
-  threshold).
+  (`pg_textsearch.max_indexes` GUC). The vestigial `TpMemtable`
+  DSA stub allocation goes away with this.

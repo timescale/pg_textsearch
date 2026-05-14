@@ -212,14 +212,6 @@ jobs:
           cd test/scripts && ./cic.sh
         "
 
-        echo "Running memory accounting tests under sanitizer..."
-        timeout 600s bash -c "
-          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
-          export PGHOST=$PWD/tmp_sanitizer_test
-          export PGPORT=55433
-          cd test/scripts && ./memory_accounting.sh
-        "
-
         echo "Running multi-index / multi-user / multi-schema tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"

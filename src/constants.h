@@ -54,17 +54,24 @@
 #define TP_MAX_QUERY_LIMIT			   100000
 #define TP_DEFAULT_SEGMENT_THRESHOLD   10000
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
-#define TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD \
-	32000000 /* posting entries to trigger spill (~1M docs/segment) */
 
 /*
- * Lower bound on postings for VACUUM-cleanup and shutdown-hook
+ * Default for pg_textsearch.memtable_pages_threshold (memtable v2
+ * auto-spill trigger).  64 chain pages * 8 KiB = ~512 KiB of
+ * memtable per index before the next insert spills to an L0
+ * segment.  Tuned for low latency without producing runt L0
+ * segments under typical insert traffic; 0 disables auto-spill.
+ */
+#define TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD 64
+
+/*
+ * Lower bound on chain pages for VACUUM-cleanup and shutdown-hook
  * spills.  Below this, leaving the documents on the in-relation
  * memtable chain is cheaper than writing a runt L0 segment — LSM
  * compaction would spend more work consolidating tiny segments
  * than the chain pages cost to scan during reads.
  */
-#define TP_MIN_SPILL_POSTINGS 1000
+#define TP_MIN_SPILL_PAGES 2
 
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
@@ -114,5 +121,5 @@
  */
 extern bool tp_log_scores;
 extern int	tp_bulk_load_threshold;
-extern int	tp_memtable_spill_threshold;
+extern int	tp_memtable_pages_threshold;
 extern int	tp_segments_per_level;

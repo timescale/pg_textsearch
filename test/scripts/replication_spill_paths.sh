@@ -43,8 +43,7 @@ trap repl_cleanup EXIT INT TERM
 # Tunes the GUCs so the only spill trigger that fires is the
 # bulk-load PRE_COMMIT path:
 #   - bulk_load_threshold = 500 terms (low, easy to cross)
-#   - memtable_spill_threshold = 0 (disabled)
-#   - memory_limit very high (per-row check won't fire)
+#   - memtable_pages_threshold = 0 (disabled)
 # Then runs a 2000-row INSERT in a single transaction. Each row
 # carries enough unique terms that terms_added_this_xact crosses
 # the threshold by COMMIT time, so tp_bulk_load_spill_check fires
@@ -74,15 +73,13 @@ test_bulk_load_spill_replication() {
         ) t;
     "
 
-    # bulk_load_threshold and memtable_spill_threshold are SUSET —
+    # bulk_load_threshold and memtable_pages_threshold are SUSET —
     # set per-session in the same psql -c that runs the INSERT so
-    # PRE_COMMIT sees them. memory_limit is SIGHUP and stays at
-    # its default 2 GB, which is well above the ~140 KB this
-    # transaction needs.
+    # PRE_COMMIT sees them.
     long_lived_before_after "${STANDBY_PORT}" "${query}" \
         "primary_sql \"
             SET pg_textsearch.bulk_load_threshold = 500;
-            SET pg_textsearch.memtable_spill_threshold = 0;
+            SET pg_textsearch.memtable_pages_threshold = 0;
             BEGIN;
             INSERT INTO bulk_docs (content)
                 SELECT 'alpha bravo charlie delta echo ' ||
@@ -290,8 +287,8 @@ test_cold_start_corpus_stats() {
         CREATE INDEX cs_docs_idx ON cs_docs USING bm25(content)
             WITH (text_config='english');
         -- Insert without spilling. The default
-        -- bulk_load_threshold (100k terms) and per-index soft
-        -- limit (memory_limit / 8) are nowhere near 200 docs of
+        -- bulk_load_threshold (100k terms) and the chain-page
+        -- threshold (64 pages) are nowhere near 200 docs of
         -- 6 words each, so this stays purely in the memtable.
         INSERT INTO cs_docs (content)
             SELECT 'iota kappa lambda mu nu ' || md5(g::text)

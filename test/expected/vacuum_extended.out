@@ -194,7 +194,7 @@ DROP TABLE reindex_memtable_test;
 -- triggers multiple spills without needing millions of rows.
 -- =============================================================================
 -- Lower spill threshold BEFORE creating the table so it applies to inserts
-SET pg_textsearch.memtable_spill_threshold = 500;
+SET pg_textsearch.memtable_pages_threshold = 1;
 CREATE TABLE bulk_memtable_test (
     id serial PRIMARY KEY,
     content text
@@ -253,7 +253,7 @@ SELECT count(*) AS final_count FROM (
         5001
 (1 row)
 
-RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 DROP TABLE bulk_memtable_test;
 -- =============================================================================
 -- Test 7: VACUUM spills un-spilled memtable on insert-only tables (issue #333)

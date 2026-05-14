@@ -168,10 +168,10 @@ char *tp_buildphasename(int64 phase);
 
 /*
  * Spill a memtable to an L0 segment.  Skips when
- * total_postings < min_postings.  Acquires LW_EXCLUSIVE internally.
+ * chain_page_count < min_pages.  Acquires LW_EXCLUSIVE internally.
  */
 void tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint64 min_postings);
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
 
 /*
  * Spill the current index's memtable to a disk segment.

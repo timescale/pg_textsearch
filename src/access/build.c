@@ -141,7 +141,6 @@ tp_do_spill(
 	BlockNumber		 root;
 	uint64			 docs_delta;
 	uint64			 len_delta;
-	TpMemtable		*memtable;
 
 	if (out_segment_root != NULL)
 		*out_segment_root = InvalidBlockNumber;
@@ -195,23 +194,12 @@ tp_do_spill(
 	tp_source_close(src);
 
 	/*
-	 * Reset auto-spill counter heuristic.  The DSA-backed atomics
-	 * are no longer authoritative for query correctness (Phase 4
-	 * reads chain source + metapage instead), but the
-	 * total_postings counter is still consulted by
-	 * tp_auto_spill_if_needed() as a write-throughput proxy, and
-	 * the (num_terms, total_term_len) atomics feed into the
-	 * memory-pressure estimate.  Reset all three plus the
-	 * global registry counter that tracks them.
+	 * Reset chain_page_count: the chain is empty after
+	 * tp_spill_finalize.  Caller holds LW_EXCLUSIVE so no
+	 * concurrent insert can have bumped this since the
+	 * pre-spill chain extension was published.
 	 */
-	memtable = get_memtable(index_state);
-	if (memtable)
-	{
-		pg_atomic_write_u64(&memtable->total_postings, 0);
-		pg_atomic_write_u64(&memtable->num_terms, 0);
-		pg_atomic_write_u64(&memtable->total_term_len, 0);
-		tp_subtract_index_estimate(index_state->shared);
-	}
+	pg_atomic_write_u32(&index_state->shared->chain_page_count, 0);
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -223,98 +211,29 @@ tp_do_spill(
 }
 
 /*
- * Auto-spill memtable when memory limits are exceeded.
+ * Auto-spill memtable when the on-disk chain grows past the
+ * configured page threshold (memtable v2, issue #374).
  *
- * Checks in order:
- * 1. Legacy memtable_spill_threshold (posting count).
- * 2. Per-index soft limit: memory_limit / 8.
- * 3. Global soft limit: memory_limit / 2
- *    (amortized every ~100 documents).
- *
- * The hard limit (memory_limit itself) is checked separately
- * in tp_check_hard_limit().
+ * The pre-lock read of chain_page_count is a fast bailout
+ * (approximate: a concurrent insert may have bumped the counter
+ * since we read it).  False positives just trigger an
+ * unnecessary lock acquisition (re-checked under LW_EXCLUSIVE
+ * below); false negatives mean this insert doesn't spill but
+ * the next one will.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
-	TpMemtable *memtable;
-	bool		needs_spill = false;
+	uint32 threshold;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
 
-	memtable = get_memtable(index_state);
-	if (!memtable)
-		return;
+	threshold = (uint32)tp_memtable_pages_threshold;
+	if (threshold == 0)
+		return; /* auto-spill disabled */
 
-	/*
-	 * Check thresholds without the per-index lock.  These reads
-	 * are approximate: a concurrent insert may have bumped the
-	 * counters since we read them, and a concurrent spill may
-	 * have cleared them.  That's fine — a false positive just
-	 * triggers an unnecessary lock acquisition (the double-check
-	 * under LW_EXCLUSIVE below catches it), and a false negative
-	 * means this insert doesn't spill but the next one will.
-	 */
-
-	/* Legacy per-index posting count threshold */
-	if (tp_memtable_spill_threshold > 0 &&
-		pg_atomic_read_u64(&memtable->total_postings) >=
-				(uint64)tp_memtable_spill_threshold)
-	{
-		needs_spill = true;
-	}
-
-	if (!needs_spill && tp_memory_limit > 0)
-	{
-		/* Per-index soft limit: memory_limit / 8 */
-		uint64 limit = tp_per_index_limit_bytes();
-		uint64 est	 = tp_estimate_memtable_bytes(memtable);
-
-		/* Update global estimate while we have it */
-		tp_update_index_estimate(index_state->shared, memtable);
-
-		if (limit > 0 && est > limit)
-			needs_spill = true;
-
-		/*
-		 * Global soft limit: memory_limit / 2
-		 * (amortized every ~100 docs)
-		 */
-		if (!needs_spill && ++index_state->docs_since_global_check >= 100)
-		{
-			uint64 g_limit = tp_soft_limit_bytes();
-			uint64 g_est;
-
-			index_state->docs_since_global_check = 0;
-			g_est = tp_get_estimated_total_bytes();
-
-			if (g_est > g_limit)
-			{
-				/*
-				 * Global memory exceeds the soft limit.
-				 * Try to evict the largest memtable.  This
-				 * can fail if every candidate is locked by
-				 * another backend or has an empty memtable
-				 * (stale estimate).
-				 */
-				if (!tp_evict_largest_memtable(index_state->shared->index_oid))
-				{
-					elog(WARNING,
-						 "pg_textsearch: global soft "
-						 "limit exceeded "
-						 "(" UINT64_FORMAT " kB / " UINT64_FORMAT
-						 " kB) but no "
-						 "memtable could be spilled",
-						 (uint64)(g_est / 1024),
-						 (uint64)(g_limit / 1024));
-				}
-				return;
-			}
-		}
-	}
-
-	if (!needs_spill)
+	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < threshold)
 		return;
 
 	/*
@@ -322,76 +241,18 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	 * inserters (who hold LW_SHARED) until the spill completes.
 	 * The spill itself writes segment pages and updates the
 	 * metapage — it does not acquire any other LWLock or
-	 * heavyweight lock, so deadlock is not possible.  The
-	 * duration is bounded by the memtable size (limited by the
-	 * per-index soft limit).
+	 * heavyweight lock, so deadlock is not possible.
 	 */
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
-	/*
-	 * Re-check: another backend may have spilled while
-	 * we waited for the exclusive lock.
-	 */
-	memtable = get_memtable(index_state);
-	if (memtable)
+	/* Re-check: another backend may have spilled while we waited. */
+	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
+		threshold)
 	{
-		bool still_needed = false;
-
-		if (tp_memtable_spill_threshold > 0 &&
-			pg_atomic_read_u64(&memtable->total_postings) >=
-					(uint64)tp_memtable_spill_threshold)
-			still_needed = true;
-
-		if (!still_needed && tp_memory_limit > 0)
-		{
-			uint64 limit = tp_per_index_limit_bytes();
-			uint64 est	 = tp_estimate_memtable_bytes(memtable);
-			if (limit > 0 && est > limit)
-				still_needed = true;
-		}
-
-		if (still_needed)
-			tp_do_spill(index_state, index_rel, NULL);
+		tp_do_spill(index_state, index_rel, NULL);
 	}
 
 	tp_release_index_lock(index_state);
-}
-
-/*
- * Hard limit check: fail the current operation if DSA segment
- * memory exceeds memory_limit.  Called from tp_insert before
- * adding terms to the memtable.
- *
- * Raises ERROR if the limit is exceeded; returns normally
- * otherwise.
- */
-static void
-tp_check_hard_limit(void)
-{
-	uint64 limit_bytes;
-	uint64 dsa_bytes;
-
-	if (tp_memory_limit <= 0)
-		return;
-
-	limit_bytes = tp_hard_limit_bytes();
-
-	tp_registry_update_dsa_counter();
-	dsa_bytes = tp_registry_get_total_dsa_bytes();
-
-	if (dsa_bytes > limit_bytes)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("pg_textsearch DSA memory "
-						"(" UINT64_FORMAT " kB) exceeds "
-						"memory_limit "
-						"(%d kB)",
-						(uint64)(dsa_bytes / 1024),
-						tp_memory_limit),
-				 errhint("Increase pg_textsearch."
-						 "memory_limit or spill "
-						 "indexes with "
-						 "bm25_spill_index().")));
 }
 
 /*
@@ -1335,55 +1196,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	tp_build_init_metapage(index, text_config_oid, k1, b);
 
 	/*
-	 * Check memory limits before starting build.
-	 * The post-build transition allocates a runtime memtable
-	 * in the global DSA, so try to free space first.
-	 *
-	 * Soft limit: try to evict if estimated usage is high.
-	 * Hard limit: fail if DSA reservation exceeds the cap.
-	 */
-	if (tp_memory_limit > 0)
-	{
-		uint64 soft = tp_soft_limit_bytes();
-
-		if (tp_get_estimated_total_bytes() > soft)
-			tp_evict_largest_memtable(InvalidOid);
-
-		{
-			uint64 limit = tp_hard_limit_bytes();
-			uint64 dsa_bytes;
-
-			tp_registry_update_dsa_counter();
-			dsa_bytes = tp_registry_get_total_dsa_bytes();
-
-			if (dsa_bytes > limit)
-			{
-				tp_evict_largest_memtable(InvalidOid);
-
-				/* Re-check after eviction attempt */
-				tp_registry_update_dsa_counter();
-				dsa_bytes = tp_registry_get_total_dsa_bytes();
-
-				if (dsa_bytes > limit)
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("pg_textsearch DSA "
-									"memory (" UINT64_FORMAT " kB) exceeds "
-									"memory_limit "
-									"(%d kB), cannot "
-									"start index build",
-									(uint64)(dsa_bytes / 1024),
-									tp_memory_limit),
-							 errhint("Increase "
-									 "pg_textsearch."
-									 "memory_limit or "
-									 "spill indexes with "
-									 "bm25_spill_index().")));
-			}
-		}
-	}
-
-	/*
 	 * Check if parallel build is possible and beneficial.
 	 *
 	 * Postgres has already called plan_create_index_workers() and stored
@@ -1850,12 +1662,6 @@ tp_insert(
 
 	if (index_state != NULL && term_count > 0)
 	{
-		/*
-		 * Hard limit check before acquiring the per-index lock.
-		 * Bails out before touching any shared state.
-		 */
-		tp_check_hard_limit();
-
 		/*
 		 * Acquire per-index lock in SHARED mode.  Phase 4 does
 		 * not require any hash-table initialization here — the
