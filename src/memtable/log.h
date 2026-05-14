@@ -71,9 +71,10 @@
  *     fragment and advancing the meta tail.
  *
  * Returns the block number of the page that received the new
- * record.  The per-index LWLock remains held in SHARED mode for
- * the duration of the transaction (released by the standard
- * xact-end callback).
+ * record.  The per-index LWLock is left held in SHARED mode on
+ * return; the AM-level caller (`tp_insert`) releases it before
+ * the auto-spill check, and the standard xact-end callback is a
+ * safety net for any path that forgets to release.
  */
 extern BlockNumber tp_memtable_append(
 		Relation	rel,
