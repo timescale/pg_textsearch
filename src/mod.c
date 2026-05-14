@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <fmgr.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
@@ -521,4 +522,24 @@ tp_process_utility(
 				queryEnv,
 				dest,
 				qc);
+}
+
+/*
+ * Deprecated stub for legacy upgrade compatibility.
+ *
+ * pg_textsearch--1.0.0--1.1.0.sql ships with a CREATE FUNCTION
+ * bm25_memory_usage() that binds to this C symbol.  The SRF and
+ * its underlying soft-limit infrastructure were removed in
+ * 1.3.0-dev (issue #374), and the matching SQL function is
+ * DROPped by pg_textsearch--1.2.0--1.3.0-dev.sql, but during an
+ * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0-dev,
+ * the CREATE in 1.0.0--1.1.0 has to find this symbol before the
+ * DROP can run.  The stub returns NULL.
+ */
+PG_FUNCTION_INFO_V1(tp_memory_usage);
+
+Datum
+tp_memory_usage(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_NULL();
 }
