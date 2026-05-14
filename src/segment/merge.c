@@ -17,7 +17,6 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/state.h"
-#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"

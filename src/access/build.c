@@ -38,7 +38,6 @@
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "replication/replication.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/io.h"

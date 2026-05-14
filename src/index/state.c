@@ -43,7 +43,6 @@
 #include "memtable/log.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
-#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"

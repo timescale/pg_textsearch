@@ -24,7 +24,6 @@
 #include "access/am.h"
 #include "index/metapage.h"
 #include "index/registry.h"
-#include "replication/replication.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"

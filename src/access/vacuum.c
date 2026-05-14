@@ -33,7 +33,6 @@
 #include "index/state.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"

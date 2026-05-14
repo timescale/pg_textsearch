@@ -59,7 +59,6 @@ OBJS = \
 	src/index/memory.o \
 	src/index/resolve.o \
 	src/index/source.o \
-	src/replication/rmgr.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/dump.o
