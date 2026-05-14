@@ -1715,11 +1715,13 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	 * docs.  See TpIndexMetaPageData.total_docs in metapage.h for
 	 * the invariant total_docs = Σ segment.num_docs.
 	 *
-	 * For WAL-logged indexes we route the linkage through
-	 * tp_xlog_merge_linkage so the standby's redo can take the
-	 * per-index LW_EXCLUSIVE and serialize against in-flight
-	 * scans (#349). For UNLOGGED / TEMP indexes we fall back to
-	 * the local GenericXLog path — there is no standby to confuse.
+	 * Phase 4 unified the WAL-logged and UNLOGGED / TEMP paths
+	 * onto GenericXLog.  The standby's redo replays the page
+	 * bytes directly; serialization against in-flight scans is no
+	 * longer the rmgr's responsibility (#349) -- the chain_source
+	 * read path takes the per-index LWLock around the buffer
+	 * walk, so concurrent backend scans on the standby see a
+	 * consistent metapage snapshot.
 	 */
 	{
 		uint32			   merged_docs	 = 0;

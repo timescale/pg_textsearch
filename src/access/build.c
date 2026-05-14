@@ -631,14 +631,11 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	index_rel = index_open(index_oid, RowExclusiveLock);
 
 	/*
-	 * Take the per-index LW_EXCLUSIVE before driving merges. The
-	 * merge linkage helper (tp_xlog_merge_linkage) requires the
-	 * caller to hold this lock so the standby's redo can serialize
-	 * against backend scans (#349). Concurrent backend scans hold
-	 * LW_SHARED; they block here for the duration of the
-	 * force-merge, which is fine — bm25_force_merge is an
-	 * administrative operation with no expectation of concurrent
-	 * read throughput.
+	 * Take the per-index LW_EXCLUSIVE before driving merges so
+	 * concurrent insert/scan readers (which take LW_SHARED via
+	 * tp_memtable_append / chain_source) serialize behind us.
+	 * Force-merge is an administrative operation with no
+	 * expectation of concurrent read throughput.
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
