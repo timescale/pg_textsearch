@@ -52,14 +52,30 @@
  * serves get_postings / get_doc_length from in-memory
  * accumulators thereafter.
  *
+ * When `query_term_count > 0`, the term HTAB is pre-populated
+ * with `query_terms[0..query_term_count-1]` (NUL-terminated
+ * lexeme bytes; UTF-8 / index text_config's encoding) and the
+ * chain walk only materialises postings for those terms.  This is
+ * the typical scoring path: a 2–5 term query against a memtable
+ * with thousands of unique lexemes avoids building an HTAB of
+ * every lexeme just to read N of them.  Pass `query_terms=NULL,
+ * query_term_count=0` to disable the filter and accumulate every
+ * lexeme — this is the contract required by the spill path
+ * (which needs the full term dictionary) and by callers that read
+ * the source's corpus totals without inspecting per-term
+ * postings.
+ *
  * Returns NULL if the chain is empty (mirrors the existing
  * tp_memtable_source_create() contract that an absent memtable
  * is signalled by a NULL source).
  *
  * Caller must free via tp_source_close().
  */
-extern TpDataSource *
-tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel);
+extern TpDataSource *tp_memtable_chain_source_create(
+		TpLocalIndexState *state,
+		Relation		   rel,
+		const char *const *query_terms,
+		int				   query_term_count);
 
 /*
  * Return the total number of memtable chain pages walked by a

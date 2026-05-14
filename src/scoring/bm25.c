@@ -165,8 +165,11 @@ tp_score_documents(
 	total_len64	 = (int64)metap->total_len;
 	pfree(metap);
 
-	memtable_src =
-			tp_memtable_chain_source_create(local_state, index_relation);
+	memtable_src = tp_memtable_chain_source_create(
+			local_state,
+			index_relation,
+			(const char *const *)query_terms,
+			query_term_count);
 	if (memtable_src != NULL)
 	{
 		total_docs64 += memtable_src->total_docs;

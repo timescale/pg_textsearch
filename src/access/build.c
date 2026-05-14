@@ -160,7 +160,7 @@ tp_do_spill(
 	 * the caller holds it EXCLUSIVE; the constructor returns
 	 * NULL for an empty chain.
 	 */
-	src = tp_memtable_chain_source_create(index_state, index_rel);
+	src = tp_memtable_chain_source_create(index_state, index_rel, NULL, 0);
 	if (src == NULL)
 		return false;
 

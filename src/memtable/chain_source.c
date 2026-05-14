@@ -81,6 +81,14 @@ typedef struct TpMemtableChainSource
 									* a backend reopens an index whose
 									* counter atomic was reset to 0 by
 									* shmem init. */
+	bool filter_terms;			   /* true when constructor was passed
+									* a non-empty query_terms[]: the
+									* term HTAB is pre-populated with
+									* those terms (and only those) at
+									* construction time, and ingest_terms
+									* uses HASH_FIND (not HASH_ENTER) so
+									* non-query terms are skipped.  See
+									* issue #374, query-term filtering. */
 	TpLocalIndexState *lock_state; /* state we acquired the per-index
 									* LWLock on (NULL if the lock was
 									* already held by an outer caller
@@ -158,8 +166,27 @@ lookup_or_create_term(
 	 * first field is safe because the hash bucket is determined
 	 * by the *bytes* the pointer references, not the pointer
 	 * address, and the bytes are unchanged after we copy them.
+	 *
+	 * Filter mode (set when the constructor was passed a
+	 * non-empty query_terms[]): query terms have already been
+	 * pre-inserted into the HTAB, so HASH_FIND is sufficient and
+	 * any miss means the lexeme is not a query term — return
+	 * NULL so the caller skips term_entry_append.  This is the
+	 * key win: for an N-term query against a memtable with M
+	 * unique lexemes, we do O(N) HASH_ENTERs at construction +
+	 * O(records × terms_per_record) HASH_FINDs during the walk,
+	 * vs. O(records × terms_per_record) HASH_ENTERs in the
+	 * legacy unfiltered path.  HASH_FIND is materially cheaper
+	 * (no allocator traffic, no bucket-split rehash).
 	 */
-	key	  = term;
+	key = term;
+	if (src->filter_terms)
+	{
+		entry = (ChainTermEntry *)
+				hash_search(src->term_ht, &key, HASH_FIND, &found);
+		return found ? entry : NULL;
+	}
+
 	entry = (ChainTermEntry *)
 			hash_search(src->term_ht, &key, HASH_ENTER, &found);
 
@@ -291,7 +318,8 @@ ingest_terms(
 		term_cstr[v.lexeme_len] = '\0';
 
 		te = lookup_or_create_term(src, term_cstr, (int)v.lexeme_len);
-		term_entry_append(src, te, ctid, (int32)v.frequency);
+		if (te != NULL)
+			term_entry_append(src, te, ctid, (int32)v.frequency);
 
 		if (term_cstr != stackbuf)
 			pfree(term_cstr);
@@ -694,7 +722,11 @@ static const TpDataSourceOps chain_source_ops = {
 /* ---------- public constructor ---------- */
 
 TpDataSource *
-tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
+tp_memtable_chain_source_create(
+		TpLocalIndexState *state,
+		Relation		   rel,
+		const char *const *query_terms,
+		int				   query_term_count)
 {
 	TpMemtableChainSource *src;
 	MemoryContext		   mcxt;
@@ -703,6 +735,8 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 
 	Assert(state != NULL);
 	Assert(rel != NULL);
+	Assert(query_term_count >= 0);
+	Assert(query_term_count == 0 || query_terms != NULL);
 
 	/*
 	 * Acquire the per-index LWLock in SHARED mode for the whole
@@ -776,12 +810,24 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 			CurrentMemoryContext,
 			"pg_textsearch chain source",
 			ALLOCSET_DEFAULT_SIZES);
-	src->mcxt		= mcxt;
-	src->base.ops	= &chain_source_ops;
-	src->lock_state = lock_state_to_release;
+	src->mcxt		  = mcxt;
+	src->base.ops	  = &chain_source_ops;
+	src->lock_state	  = lock_state_to_release;
+	src->filter_terms = (query_term_count > 0);
 
 	{
 		MemoryContext old = MemoryContextSwitchTo(mcxt);
+		long		  initial_term_buckets;
+
+		/*
+		 * Filter mode: pre-size the term HTAB to exactly the
+		 * number of query terms (rounded up to dynahash's
+		 * minimum).  Unfiltered mode keeps the legacy 1024
+		 * default since it must accommodate the entire term
+		 * dictionary in the chain (used by the spill path).
+		 */
+		initial_term_buckets = src->filter_terms ? (long)query_term_count + 1
+												 : 1024L;
 
 		memset(&info, 0, sizeof(info));
 		info.keysize   = sizeof(char *);
@@ -791,7 +837,7 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 		info.hcxt	   = mcxt;
 		src->term_ht   = hash_create(
 				  "pg_textsearch chain source: terms",
-				  1024,
+				  initial_term_buckets,
 				  &info,
 				  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 
@@ -804,6 +850,71 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 				1024,
 				&info,
 				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+		MemoryContextSwitchTo(old);
+	}
+
+	/*
+	 * Filter mode: pre-insert query terms into the term HTAB
+	 * with empty postings.  The chain walk's ingest_terms uses
+	 * HASH_FIND-only against this HTAB, so any lexeme not
+	 * pre-inserted is skipped (no posting list materialised, no
+	 * dynahash growth, no per-term memcpy).  This is the
+	 * dominant read-path speedup for queries against a sizeable
+	 * memtable: instead of building an HTAB with every unique
+	 * lexeme in the memtable (and then reading only N of them),
+	 * we build an HTAB with exactly the N terms the caller is
+	 * going to read.  Issue #374.
+	 */
+	if (src->filter_terms)
+	{
+		MemoryContext old = MemoryContextSwitchTo(mcxt);
+
+		for (int q = 0; q < query_term_count; q++)
+		{
+			const char	   *qt = query_terms[q];
+			Size			qt_len;
+			char		   *copy;
+			ChainTermEntry *entry;
+			const char	   *key;
+			bool			found;
+
+			if (qt == NULL || qt[0] == '\0')
+				continue;
+			qt_len = strlen(qt);
+			copy   = palloc(qt_len + 1);
+			memcpy(copy, qt, qt_len + 1);
+
+			/*
+			 * Briefly flip filter_terms off so this HASH_ENTER
+			 * goes through the normal create path.  We re-enable
+			 * filtering after pre-insertion completes; the walk
+			 * uses HASH_FIND-only.
+			 */
+			src->filter_terms = false;
+			key				  = copy;
+			entry			  = (ChainTermEntry *)
+					hash_search(src->term_ht, &key, HASH_ENTER, &found);
+			src->filter_terms = true;
+			if (!found)
+			{
+				entry->term		   = copy;
+				entry->ctids	   = NULL;
+				entry->frequencies = NULL;
+				entry->count	   = 0;
+				entry->capacity	   = 0;
+				entry->doc_freq	   = 0;
+			}
+			else
+			{
+				/*
+				 * Duplicate query terms (e.g. "the the") collapse
+				 * into a single HTAB entry — already present from
+				 * an earlier iteration, nothing more to do.
+				 */
+				pfree(copy);
+			}
+		}
 
 		MemoryContextSwitchTo(old);
 	}
@@ -1048,7 +1159,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 	{
 		ItemPointerData any_ctid;
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src != NULL)
 			TEST_FAIL("chain source over empty index is non-NULL");
 
@@ -1068,7 +1179,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 		expected_doc_length =
 				test_append_terms(rel, idx_name, &ctid, 1, terms, freqs);
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL after one append");
 
@@ -1115,7 +1226,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 					rel, idx_name, &expected_ctids[i], 1, terms, freqs);
 		}
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL");
 
@@ -1149,7 +1260,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 		ItemPointerSet(&ctid, 300, 1);
 		test_append_terms(rel, idx_name, &ctid, 3, terms, freqs);
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL");
 
@@ -1199,7 +1310,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 			test_append_terms(rel, idx_name, &ctid, 1, terms, freqs);
 		}
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL");
 
@@ -1224,7 +1335,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 		ItemPointerSet(&ctid, 500, 1);
 		test_append_terms(rel, idx_name, &ctid, 1, terms, freqs);
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL");
 
@@ -1247,7 +1358,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 		test_append_terms(rel, idx_name, &ctid_a, 2, t_a, f_a);
 		test_append_terms(rel, idx_name, &ctid_b, 1, t_b, f_b);
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL");
 
@@ -1319,7 +1430,7 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 		ItemPointerSet(&ctid, 700, 1);
 		test_append_terms(rel, idx_name, &ctid, N_TERMS, terms, freqs);
 
-		src = tp_memtable_chain_source_create(state, rel);
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
 		if (src == NULL)
 			TEST_FAIL("chain source NULL after fragment append");
 

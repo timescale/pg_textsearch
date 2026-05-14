@@ -1087,7 +1087,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return local_state;
 	}
 
-	chain_src = tp_memtable_chain_source_create(local_state, index_rel);
+	chain_src =
+			tp_memtable_chain_source_create(local_state, index_rel, NULL, 0);
 	if (chain_src != NULL)
 	{
 		uint32 chain_pages;
