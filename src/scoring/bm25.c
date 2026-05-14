@@ -13,8 +13,8 @@
 #include "index/metapage.h"
 #include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_source.h"
 #include "memtable/memtable.h"
-#include "memtable/source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
 #include "segment/segment.h"
@@ -180,7 +180,8 @@ tp_score_documents(
 	total_len64	 = (int64)metap->total_len;
 	pfree(metap);
 
-	memtable_src = tp_memtable_source_create(local_state, index_relation);
+	memtable_src =
+			tp_memtable_chain_source_create(local_state, index_relation);
 	if (memtable_src != NULL)
 	{
 		total_docs64 += memtable_src->total_docs;

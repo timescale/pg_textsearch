@@ -38,7 +38,6 @@ OBJS = \
 	src/memtable/posting.o \
 	src/memtable/stringtable.o \
 	src/memtable/scan.o \
-	src/memtable/source.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \

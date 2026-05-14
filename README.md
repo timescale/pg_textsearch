@@ -305,7 +305,10 @@ bm25query = bm25query → boolean | Equality comparison
 
 ## Performance
 
-pg_textsearch indexes use a memtable architecture for efficient writes. Like other index types, it's faster to create an index after loading your data.
+pg_textsearch indexes use an on-disk paged memtable (the L0 of an LSM)
+for efficient writes. The memtable is mutated under standard buffer
+locks and WAL-logged via `GenericXLog`. Like other index types, it is
+faster to create an index after loading your data.
 
 ```sql
 -- Load data first
@@ -397,64 +400,44 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
-`pg_textsearch.memory_limit` | 2GB | Cap on shared memory used by memtables (0 = disable)
+`pg_textsearch.memory_limit` | 2GB | Legacy cap on shared-memory memtables; no longer authoritative for the on-disk memtable (issue #374). Will be redefined or removed.
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_spill_threshold` | 32000000 | **Deprecated.** Posting entries before auto-spill (0 = disable)
 
 > **`memtable_spill_threshold` is deprecated.** It was the original
 > mechanism for bounding memtable growth, triggering a spill when an
-> index accumulated a fixed number of posting entries. The newer
-> `memory_limit` GUC replaces it with byte-level estimation that
-> accounts for term overhead and works across indexes. Both checks
-> are evaluated (OR'd), so existing configurations continue to work.
-> New deployments should use `memory_limit` only.
+> index accumulated a fixed number of posting entries.
 
-#### Memory management
+#### Memtable architecture
 
-pg_textsearch keeps in-memory inverted indexes (memtables) in Postgres
-dynamic shared memory (DSA). Without a limit, heavy write workloads can
-grow DSA until the OS OOM killer terminates the server.
+Starting in 1.3.0, the L0 memtable lives in the index relation itself
+as a chain of doc-record pages, mutated under standard buffer locks
+and WAL-logged via `GenericXLog`. There is no shared-memory memtable,
+no custom WAL resource manager, and no docid-page recovery scaffold.
+PostgreSQL's stock WAL replay (including the single-page reconstruction
+helper used by online-page-fix tooling) reconstructs every page without
+needing to load `pg_textsearch.so`. See
+[`docs/memtable_v2.md`](docs/memtable_v2.md) for the spec.
 
-`memory_limit` caps this growth. It is the maximum amount of DSA memory
-the extension will use for memtables. When usage approaches this cap,
-the extension automatically spills memtables to on-disk segments. If
-usage still exceeds the cap, inserts fail with an ERROR rather than
-risking an OOM kill.
-
-Internally, three thresholds are derived from `memory_limit`:
-
-| Threshold | Value | What happens |
-| --- | --- | --- |
-| Per-index soft limit | `memory_limit / 8` | Spills that index's memtable to a disk segment |
-| Global soft limit | `memory_limit / 2` | Evicts the largest memtable across all indexes |
-| Hard limit | `memory_limit` | Rejects the insert with an ERROR |
-
-During normal operation, the soft limits keep usage well below the hard
-cap. You only need to set `memory_limit`; the internal ratios are tuned
-for typical workloads.
+`bulk_load_threshold` triggers an auto-spill when a single transaction
+accumulates many terms in the memtable — useful for COPY / bulk
+INSERT to bound chain-page growth.
 
 ```sql
--- Tune for a smaller instance (e.g., 4 GB RAM)
-ALTER SYSTEM SET pg_textsearch.memory_limit = '512MB';
-SELECT pg_reload_conf();
-
--- Tune for a larger instance (e.g., 64 GB RAM)
-ALTER SYSTEM SET pg_textsearch.memory_limit = '16GB';
-SELECT pg_reload_conf();
-```
-
-To check current memory usage:
-
-```sql
-SELECT * FROM bm25_memory_usage();
+-- Manual spill (forces the current chain to a new L0 segment)
+SELECT bm25_spill_index('docs_idx');
 ```
 
 VACUUM (including autovacuum's insert-threshold path) also spills the
 memtable when it runs, so the amount of un-spilled state between
 `CREATE INDEX` and the next server restart stays bounded.
 
-**Crash recovery**: The memtable is rebuilt from the heap on startup, so no
-data is lost if Postgres crashes before spilling to disk.
+**Crash recovery**: The on-disk memtable chain is itself the durable
+record. After a crash, stock PostgreSQL replay restores every page;
+no rebuild is needed at first backend open.
+
+**Streaming replication**: All page mutations are replicated via the
+standard WAL stream. Standbys reconstruct every page natively.
 
 ## Monitoring
 

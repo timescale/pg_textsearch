@@ -14,7 +14,7 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/source.h"
-#include "memtable/source.h"
+#include "memtable/chain_source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
 #include "segment/alive_bitset.h"
@@ -423,7 +423,7 @@ score_memtable_single_term(
 	int			   i;
 
 	/* Create memtable data source */
-	source = tp_memtable_source_create(local_state, index);
+	source = tp_memtable_chain_source_create(local_state, index);
 	if (!source)
 		return;
 
@@ -711,7 +711,7 @@ score_memtable_multi_term(
 	int			  term_idx;
 
 	/* Create memtable data source */
-	source = tp_memtable_source_create(local_state, index);
+	source = tp_memtable_chain_source_create(local_state, index);
 	if (!source)
 		return;
 

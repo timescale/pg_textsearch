@@ -38,9 +38,9 @@
 #include "index/resolve.h"
 #include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_source.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
-#include "memtable/source.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/fieldnorm.h"
@@ -803,7 +803,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			 * We open the chain source for the current relation up front
 			 * so we can include its docs in the "is empty?" decision.
 			 */
-			memtable_src = tp_memtable_source_create(index_state, index_rel);
+			memtable_src =
+					tp_memtable_chain_source_create(index_state, index_rel);
 
 			if (total_docs == 0 &&
 				(memtable_src == NULL || memtable_src->total_docs == 0) &&
@@ -851,7 +852,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						 */
 						if (memtable_src != NULL)
 							tp_source_close(memtable_src);
-						memtable_src = tp_memtable_source_create(
+						memtable_src = tp_memtable_chain_source_create(
 								index_state, index_rel);
 					}
 				}
@@ -865,7 +866,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 * yet; do it now.
 		 */
 		if (memtable_src == NULL)
-			memtable_src = tp_memtable_source_create(index_state, index_rel);
+			memtable_src =
+					tp_memtable_chain_source_create(index_state, index_rel);
 
 		if (memtable_src != NULL)
 		{
