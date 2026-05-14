@@ -638,6 +638,25 @@ chain_get_doc_length(TpDataSource *source, ItemPointer ctid)
 	return dle->doc_length;
 }
 
+static uint32
+chain_get_doc_freq(TpDataSource *source, const char *term)
+{
+	TpMemtableChainSource *src = (TpMemtableChainSource *)source;
+	ChainTermEntry		  *entry;
+	const char			  *key;
+	bool				   found;
+
+	if (term == NULL || term[0] == '\0')
+		return 0;
+
+	key	  = term;
+	entry = (ChainTermEntry *)
+			hash_search(src->term_ht, &key, HASH_FIND, &found);
+	if (!found)
+		return 0;
+	return (uint32)entry->doc_freq;
+}
+
 static void
 chain_close(TpDataSource *source)
 {
@@ -654,6 +673,7 @@ static const TpDataSourceOps chain_source_ops = {
 		.get_postings	= chain_get_postings,
 		.free_postings	= chain_free_postings,
 		.get_doc_length = chain_get_doc_length,
+		.get_doc_freq	= chain_get_doc_freq,
 		.close			= chain_close,
 };
 

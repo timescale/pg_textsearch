@@ -14,6 +14,7 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
+#include "index/source.h"
 #include "index/state.h"
 #include "segment/segment.h"
 
@@ -122,11 +123,18 @@ typedef struct TpBMWStats
  * For single-term queries, uses block-level upper bounds to skip
  * blocks that cannot contribute to top-k results.
  *
+ * `memtable_src` is the already-built chain source over the on-disk
+ * memtable chain (may be NULL when the chain is empty).  The caller
+ * retains ownership and is responsible for closing it after BMW
+ * returns.  Threading the source in (instead of re-creating it
+ * here) avoids a second full chain walk on every query.
+ *
  * Returns number of results (up to max_results).
  */
 extern int tp_score_single_term_bmw(
 		TpLocalIndexState *local_state,
 		Relation		   index,
+		TpDataSource	  *memtable_src,
 		const char		  *term,
 		float4			   idf,
 		float4			   k1,
@@ -143,11 +151,16 @@ extern int tp_score_single_term_bmw(
  * For multi-term queries, uses the WAND algorithm with block-level
  * upper bounds to find top-k documents efficiently.
  *
+ * `memtable_src` is the already-built chain source over the on-disk
+ * memtable chain (may be NULL when the chain is empty).  The caller
+ * retains ownership.
+ *
  * Returns number of results (up to max_results).
  */
 extern int tp_score_multi_term_bmw(
 		TpLocalIndexState *local_state,
 		Relation		   index,
+		TpDataSource	  *memtable_src,
 		char			 **terms,
 		int				   term_count,
 		int32			  *query_freqs,

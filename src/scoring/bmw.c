@@ -404,26 +404,25 @@ compute_bm25_score(
 /*
  * Score memtable postings for a single term.
  * Memtable has no skip index, so we score all postings exhaustively.
- * Uses the TpDataSource interface for clean abstraction.
+ *
+ * Caller owns `source` (a TpMemtableChainSource over the index's
+ * on-disk chain) and is responsible for closing it.  If `source`
+ * is NULL we skip memtable scoring entirely.
  */
 static void
 score_memtable_single_term(
-		TpTopKHeap		  *heap,
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		const char		  *term,
-		float4			   idf,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		TpBMWStats		  *stats)
+		TpTopKHeap	 *heap,
+		TpDataSource *source,
+		const char	 *term,
+		float4		  idf,
+		float4		  k1,
+		float4		  b,
+		float4		  avg_doc_len,
+		TpBMWStats	 *stats)
 {
-	TpDataSource  *source;
 	TpPostingData *postings;
 	int			   i;
 
-	/* Create memtable data source */
-	source = tp_memtable_chain_source_create(local_state, index);
 	if (!source)
 		return;
 
@@ -433,7 +432,6 @@ score_memtable_single_term(
 	{
 		if (postings)
 			tp_source_free_postings(source, postings);
-		tp_source_close(source);
 		return;
 	}
 
@@ -463,7 +461,6 @@ score_memtable_single_term(
 	}
 
 	tp_source_free_postings(source, postings);
-	tp_source_close(source);
 }
 
 /*
@@ -577,6 +574,7 @@ int
 tp_score_single_term_bmw(
 		TpLocalIndexState *local_state,
 		Relation		   index,
+		TpDataSource	  *memtable_src,
 		const char		  *term,
 		float4			   idf,
 		float4			   k1,
@@ -593,6 +591,8 @@ tp_score_single_term_bmw(
 	int				level;
 	int				result_count;
 
+	(void)local_state; /* reserved for future use */
+
 	/* Initialize stats */
 	if (stats)
 		memset(stats, 0, sizeof(TpBMWStats));
@@ -602,7 +602,7 @@ tp_score_single_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_single_term(
-			&heap, local_state, index, term, idf, k1, b, avg_doc_len, stats);
+			&heap, memtable_src, term, idf, k1, b, avg_doc_len, stats);
 
 	/* Get segment level heads from metapage */
 	metap = tp_get_metapage(index);
@@ -695,23 +695,19 @@ term_current_doc_id(TpTermState *ts)
  */
 static void
 score_memtable_multi_term(
-		TpTopKHeap		  *heap,
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		TpTermState		 **terms,
-		int				   term_count,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		TpBMWStats		  *stats)
+		TpTopKHeap	 *heap,
+		TpDataSource *source,
+		TpTermState **terms,
+		int			  term_count,
+		float4		  k1,
+		float4		  b,
+		float4		  avg_doc_len,
+		TpBMWStats	 *stats)
 {
-	TpDataSource *source;
-	HTAB		 *doc_accum;
-	HASHCTL		  hash_ctl;
-	int			  term_idx;
+	HTAB   *doc_accum;
+	HASHCTL hash_ctl;
+	int		term_idx;
 
-	/* Create memtable data source */
-	source = tp_memtable_chain_source_create(local_state, index);
 	if (!source)
 		return;
 
@@ -800,7 +796,6 @@ score_memtable_multi_term(
 	}
 
 	hash_destroy(doc_accum);
-	tp_source_close(source);
 }
 
 /*
@@ -1628,6 +1623,7 @@ int
 tp_score_multi_term_bmw(
 		TpLocalIndexState *local_state,
 		Relation		   index,
+		TpDataSource	  *memtable_src,
 		char			 **query_terms,
 		int				   term_count,
 		int32			  *query_freqs,
@@ -1648,6 +1644,8 @@ tp_score_multi_term_bmw(
 	int				result_count;
 	int				i;
 
+	(void)local_state; /* reserved for future use */
+
 	/* Initialize stats */
 	if (stats)
 		memset(stats, 0, sizeof(TpBMWStats));
@@ -1667,15 +1665,7 @@ tp_score_multi_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_multi_term(
-			&heap,
-			local_state,
-			index,
-			terms,
-			term_count,
-			k1,
-			b,
-			avg_doc_len,
-			stats);
+			&heap, memtable_src, terms, term_count, k1, b, avg_doc_len, stats);
 
 	/* Get segment level heads from metapage */
 	metap = tp_get_metapage(index);

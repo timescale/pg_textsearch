@@ -38,7 +38,9 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
  * Returns 0 if term not found in any source.
  *
  * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
- * source; we read the per-term doc_freq via tp_source_get_postings.
+ * source; we read the per-term doc_freq via the source op without
+ * materializing the full posting list (which would be O(count) and
+ * is wasteful for IDF lookup).
  */
 static uint32
 tp_get_unified_doc_freq(
@@ -52,15 +54,7 @@ tp_get_unified_doc_freq(
 
 	/* Get doc_freq from memtable chain source */
 	if (memtable_src != NULL)
-	{
-		TpPostingData *postings = tp_source_get_postings(memtable_src, term);
-
-		if (postings != NULL)
-		{
-			doc_freq = (uint32)postings->count;
-			tp_source_free_postings(memtable_src, postings);
-		}
-	}
+		doc_freq = tp_source_get_doc_freq(memtable_src, term);
 
 	/* Add doc_freq from all segment levels */
 	for (level = 0; level < TP_MAX_LEVELS; level++)
@@ -81,7 +75,8 @@ tp_get_unified_doc_freq(
  * it opens each segment only once instead of once per term.
  *
  * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
- * source; we read each term's doc_freq via tp_source_get_postings.
+ * source; we read each term's doc_freq via the source op without
+ * materializing posting lists.
  */
 static void
 tp_batch_get_unified_doc_freq(
@@ -100,16 +95,7 @@ tp_batch_get_unified_doc_freq(
 	{
 		doc_freqs[i] = 0;
 		if (memtable_src != NULL)
-		{
-			TpPostingData *postings =
-					tp_source_get_postings(memtable_src, terms[i]);
-
-			if (postings != NULL)
-			{
-				doc_freqs[i] = (uint32)postings->count;
-				tp_source_free_postings(memtable_src, postings);
-			}
-		}
+			doc_freqs[i] = tp_source_get_doc_freq(memtable_src, terms[i]);
 	}
 
 	/* Add doc_freq from all segment levels (batch lookup) */
@@ -232,6 +218,7 @@ tp_score_documents(
 		result_count = tp_score_single_term_bmw(
 				local_state,
 				index_relation,
+				memtable_src,
 				term,
 				idf,
 				k1,
@@ -305,6 +292,7 @@ tp_score_documents(
 		result_count = tp_score_multi_term_bmw(
 				local_state,
 				index_relation,
+				memtable_src,
 				query_terms,
 				query_term_count,
 				query_frequencies,
