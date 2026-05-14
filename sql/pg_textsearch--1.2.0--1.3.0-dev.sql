@@ -38,7 +38,8 @@ CREATE FUNCTION bm25_memtable_chain(
     OUT blkno bigint,
     OUT n_records integer,
     OUT free_offset integer,
-    OUT next_block bigint)
+    OUT next_block bigint,
+    OUT flags integer)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
 LANGUAGE C STRICT;

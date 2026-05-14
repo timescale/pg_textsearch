@@ -220,6 +220,27 @@ jobs:
           cd test/scripts && ./multi_index.sh
         "
 
+        # WAL-audit asserts no custom rmgr records on stream
+        # (issue #374) and that crash recovery reads the on-disk
+        # memtable chain.  Spins up its own PG instance on a
+        # dedicated port; uses the sanitizer-built pg_textsearch.so
+        # via $PATH.
+        echo "Running WAL audit tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./wal_audit.sh
+        "
+
+        # Replication spill paths exercises bulk-load PRE_COMMIT
+        # spill and VACUUM bulkdelete spill on a primary + standby
+        # pair, asserting both paths replicate cleanly.  Spins up
+        # its own primary + standby on dedicated ports.
+        echo "Running replication spill-paths tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./replication_spill_paths.sh
+        "
+
         # Clean up
         pg_ctl stop -D tmp_sanitizer_test/data -l tmp_sanitizer_test/data/logfile
 

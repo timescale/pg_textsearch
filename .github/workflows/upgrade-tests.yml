@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0']
+        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0', '1.2.0']
 
     steps:
     - name: Checkout current code
@@ -116,7 +116,7 @@ jobs:
         SQL
 
         # Compat tier (>= 0.5.1): add batch 2, spill, capture baselines
-        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1" && dpkg --compare-versions "${{ matrix.old_version }}" lt "1.2.0"; then
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
 
@@ -246,7 +246,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1" && dpkg --compare-versions "${{ matrix.old_version }}" lt "1.2.0"; then
           echo "=== Testing new binary reads old segments (pre-ALTER EXTENSION) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -311,7 +311,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1" && dpkg --compare-versions "${{ matrix.old_version }}" lt "1.2.0"; then
           echo "=== Compat tier: ALTER EXTENSION UPDATE (no REINDEX) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -336,7 +336,7 @@ jobs:
         EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
           pg_textsearch.control | cut -d. -f1,2)
 
-        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1"; then
+        if dpkg --compare-versions "${{ matrix.old_version }}" ge "0.5.1" && dpkg --compare-versions "${{ matrix.old_version }}" lt "1.2.0"; then
           echo "=== Compat tier: multi-phase segment validation ==="
           psql -h /tmp -d upgrade_test \
             -v expected_version="$EXPECTED_VERSION" << 'SQL'

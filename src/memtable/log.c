@@ -1339,11 +1339,12 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		state->cur = metap->memtable_head_blkno;
 		pfree(metap);
 
-		tupdesc = CreateTemplateTupleDesc(4);
+		tupdesc = CreateTemplateTupleDesc(5);
 		TupleDescInitEntry(tupdesc, 1, "blkno", INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 2, "n_records", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 3, "free_offset", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 4, "next_block", INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, 5, "flags", INT4OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 		funcctx->user_fctx	= state;
 
@@ -1363,8 +1364,8 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		Buffer				  buf;
 		Page				  page;
 		TpMemtablePageHeader *hdr;
-		Datum				  values[4];
-		bool				  nulls[4] = {false, false, false, false};
+		Datum				  values[5];
+		bool				  nulls[5] = {false, false, false, false, false};
 		BlockNumber			  next_blk;
 		HeapTuple			  tup;
 
@@ -1394,6 +1395,7 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		{
 			values[3] = Int64GetDatum((int64)next_blk);
 		}
+		values[4] = Int32GetDatum((int32)hdr->flags);
 
 		UnlockReleaseBuffer(buf);
 		state->cur = next_blk;
