@@ -99,10 +99,10 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 
 /*
  * before_shmem_exit hook: spill the memtable of every index this
- * backend has touched, so the docid chain doesn't have to be
- * replayed from heap on the next server start.  Skipped on clean
- * client exit (code == 0); fires on any FATAL (cluster shutdown,
- * pg_terminate_backend, etc.).
+ * backend has touched, so the on-disk memtable chain doesn't
+ * accumulate runt pages that would have to be merge-compacted
+ * later.  Skipped on clean client exit (code == 0); fires on any
+ * FATAL (cluster shutdown, pg_terminate_backend, etc.).
  */
 static void
 tp_shutdown_spill_callback(int code, Datum arg pg_attribute_unused())
@@ -1008,28 +1008,26 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  * index whose registry entry is empty (server restart, hot
  * standby cold start, PITR-recovered cluster).
  *
- * Invariants and the scenarios this path has to handle are
- * specified in docs/replication/CORRECTNESS.md — read it before
- * changing this function. The flow at a high level:
+ * Phase 4+ (issue #374): the durable record of the in-flight
+ * memtable lives entirely on the index relation's chain pages.
+ * Standard GenericXLog replay restores both the chain pages and
+ * the metapage's `memtable_head_blkno`/`memtable_tail_blkno`
+ * pointers before any backend gets here, so this function only
+ * has to (re)register shared state for lock coordination.
  *
- *   1. validate metapage magic (early metap snapshot, pre-register)
+ * The flow at a high level:
+ *
+ *   1. validate metapage magic
  *   2. tp_create_shared_index_state with reuse_if_exists=true
  *      (atomic register-or-attach; concurrent rebuilds resolve
  *      to the same shared state)
- *   3. drain WAL replay to the wal-receiver flush LSN
- *   4. acquire per-index LW_EXCLUSIVE
- *   5. re-read metap under the lock (decisions are made off the
- *      fresh snapshot, not the early one)
- *   6. branch on heap-empty / empty-index / non-empty
- *   7. for non-empty: walk docid pages, then atomic_write
- *      total_docs = fresh_metap.total + memtable_count
- *   8. release the lock
  *
- * Race-safety against concurrent INSERT_TERMS / SPILL /
- * MERGE_LINKAGE redo comes from (a) the LW_EXCLUSIVE lock
- * blocking custom-rmgr redo for the duration of the walk, and
- * (b) the per-CTID idempotency gate in tp_store_document_length
- * deduping any add applied by redo before our walk got there.
+ * No WAL drain, no chain walk, and no recovery-time rebuild is
+ * needed: the on-disk metapage + chain pages + segments already
+ * encode every committed insert.  Atomic counters that survive
+ * in shared state (e.g. `total_postings` for auto-spill) are
+ * advisory; readers consult the chain source for authoritative
+ * statistics.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
@@ -1083,11 +1081,13 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	pfree(early_metap);
 
 	/*
-	 * Register shared state up front.  Phase 4: durable state
-	 * lives entirely on disk (metapage + chain pages + segment
-	 * pages).  No docid-page replay or memtable reconstruction
-	 * needed: the chain pages are themselves the durable record
-	 * of the unspilled documents.
+	 * Register shared state up front.  Phase 4+ (issue #374):
+	 * durable state lives entirely on disk (metapage + chain
+	 * pages + segment pages).  No docid-page replay or memtable
+	 * reconstruction needed — the chain pages are themselves the
+	 * durable record of unspilled documents, and standard
+	 * GenericXLog replay has already brought them up to date by
+	 * the time any backend reaches this path.
 	 */
 	local_state = tp_create_shared_index_state(
 			index_oid, heap_oid, /* reuse_if_exists */ true);
@@ -1098,47 +1098,25 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Drain WAL replay so the on-disk metapage and chain pages
-	 * we read below reflect everything emitted by the primary up
-	 * to drain start.
-	 */
-	if (RecoveryInProgress())
-	{
-		XLogRecPtr target = GetWalRcvFlushRecPtr(NULL, NULL);
-		if (target == InvalidXLogRecPtr)
-			target = GetXLogReplayRecPtr(NULL);
-		while (GetXLogReplayRecPtr(NULL) < target)
-		{
-			CHECK_FOR_INTERRUPTS();
-			pg_usleep(1000L);
-		}
-	}
-
-	/*
-	 * Hold LW_EXCLUSIVE across the seed.  Concurrent backend
-	 * scans hold LW_SHARED and block until we release, so no
-	 * scan sees a half-seeded shared state.
+	 * Seed the advisory shared corpus atomics so the existing
+	 * vacuum-shrinkage protocol stays consistent across backend
+	 * boundaries: shared->total_docs = persisted segment docs +
+	 * on-disk chain docs.  Query correctness does not depend on
+	 * these atomics anymore (scoring reads metapage totals +
+	 * chain source directly); they are kept until Phase 7's
+	 * registry teardown.
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
 
 	fresh_metap = tp_get_metapage(index_rel);
 	if (fresh_metap == NULL)
 	{
-		elog(WARNING,
-			 "Could not re-read metapage for index %u after drain",
-			 index_oid);
+		elog(WARNING, "Could not re-read metapage for index %u", index_oid);
 		tp_release_index_lock(local_state);
 		index_close(index_rel, AccessShareLock);
 		return local_state;
 	}
 
-	/*
-	 * Seed shared corpus atomics so vacuum's shrinkage protocol
-	 * is consistent: shared->total_docs = persisted segment docs
-	 * + on-disk chain docs.  Query correctness does not depend
-	 * on the atomic anymore (Phase 4 reads metapage + chain
-	 * source directly).
-	 */
 	chain_src = tp_memtable_chain_source_create(local_state, index_rel);
 	if (chain_src != NULL)
 	{
@@ -1159,279 +1137,6 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	index_close(index_rel, AccessShareLock);
 
 	return local_state;
-}
-
-/*
- * Rebuild posting lists from docid pages stored on disk
- * This scans the docid pages, retrieves documents from heap, and rebuilds the
- * posting lists
- */
-void
-tp_rebuild_posting_lists_from_docids(
-		Relation		   index_rel,
-		TpLocalIndexState *local_state,
-		TpIndexMetaPage	   metap)
-{
-	Buffer			   docid_buf;
-	Page			   docid_page;
-	TpDocidPageHeader *docid_header;
-	ItemPointer		   docids;
-	BlockNumber		   current_page;
-	BlockNumber		   last_valid_page = InvalidBlockNumber;
-	Relation		   heap_rel;
-	IndexInfo		  *indexInfo;
-	EState			  *estate;
-	ExprContext		  *econtext;
-	TupleTableSlot	  *eval_slot;
-	Datum			   idx_values[INDEX_MAX_KEYS];
-	bool			   idx_isnull[INDEX_MAX_KEYS];
-	bool			   chain_truncated = false;
-
-	if (!metap || metap->first_docid_page == InvalidBlockNumber)
-	{
-		return;
-	}
-
-	/* Inform user that recovery is starting */
-	elog(INFO,
-		 "Recovering pg_textsearch index %u from disk",
-		 index_rel->rd_id);
-
-	/* Open the heap relation to fetch document text */
-	heap_rel = relation_open(index_rel->rd_index->indrelid, AccessShareLock);
-
-	/*
-	 * Ensure the string hash table is initialized before
-	 * rebuilding posting lists. The caller (tp_rebuild_index_from_disk)
-	 * holds LW_EXCLUSIVE on the per-index lock, which
-	 * tp_ensure_string_table_initialized requires (cold-path init
-	 * must not race with the LW_SHARED hot path in
-	 * tp_get_or_create_posting_list).
-	 */
-	tp_ensure_string_table_initialized(local_state);
-
-	/* Set up expression evaluation */
-	indexInfo = BuildIndexInfo(index_rel);
-	estate	  = CreateExecutorState();
-	econtext  = GetPerTupleExprContext(estate);
-	eval_slot = MakeSingleTupleTableSlot(
-			RelationGetDescr(heap_rel), &TTSOpsBufferHeapTuple);
-
-	if (indexInfo->ii_Predicate != NIL)
-		indexInfo->ii_PredicateState =
-				ExecPrepareQual(indexInfo->ii_Predicate, estate);
-
-	current_page = metap->first_docid_page;
-
-	/* Scan through all docid pages */
-	while (current_page != InvalidBlockNumber)
-	{
-		/* Read the docid page */
-		docid_buf = ReadBuffer(index_rel, current_page);
-		LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-		docid_page	 = BufferGetPage(docid_buf);
-		docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-		/*
-		 * Validate this is actually a docid page and not stale data.
-		 */
-		if (docid_header->magic != TP_DOCID_PAGE_MAGIC)
-		{
-			uint32 found_magic = docid_header->magic;
-
-			UnlockReleaseBuffer(docid_buf);
-
-			if (found_magic == 0)
-			{
-				/*
-				 * All-zero page: a crash occurred after the chain
-				 * pointer was flushed but before this page reached
-				 * disk. Treat as end-of-chain and recover what we
-				 * have.
-				 */
-				elog(WARNING,
-					 "Unflushed docid page at block %u "
-					 "(all zeros) - truncating recovery "
-					 "chain",
-					 current_page);
-			}
-			else
-			{
-				/*
-				 * Non-zero but wrong magic: actual on-disk
-				 * corruption. Don't silently continue.
-				 */
-				elog(ERROR,
-					 "Corrupted docid page at block %u: "
-					 "expected magic 0x%08X, found "
-					 "0x%08X",
-					 current_page,
-					 TP_DOCID_PAGE_MAGIC,
-					 found_magic);
-			}
-			chain_truncated = true;
-			break;
-		}
-
-		last_valid_page = current_page;
-
-		/* Get docids array with proper alignment */
-		docids = (ItemPointer)((char *)docid_header +
-							   MAXALIGN(sizeof(TpDocidPageHeader)));
-
-		/* Process each docid on this page */
-		for (unsigned int i = 0; i < docid_header->num_docids; i++)
-		{
-			ItemPointer	  ctid = &docids[i];
-			HeapTupleData tuple_data;
-			HeapTuple	  tuple = &tuple_data;
-			Buffer		  heap_buf;
-			bool		  valid;
-			BlockNumber	  heap_blkno;
-
-			/* Validate the ItemPointer before attempting fetch */
-			if (!ItemPointerIsValid(ctid))
-			{
-				elog(WARNING,
-					 "Invalid ItemPointer in docid page"
-					 " - skipping");
-				continue;
-			}
-
-			/* Initialize tuple for heap_fetch */
-			tuple->t_self = *ctid;
-
-			/*
-			 * Try to fetch the document from heap using the
-			 * stored ctid. We use heap_fetch with SnapshotAny
-			 * to see all tuples, but we need to be careful
-			 * because the tuple might not exist if this is
-			 * stale data from a previous index incarnation.
-			 *
-			 * First check if the block exists in the heap.
-			 */
-			heap_blkno = ItemPointerGetBlockNumber(ctid);
-			if (heap_blkno >= RelationGetNumberOfBlocks(heap_rel))
-			{
-				/*
-				 * Block doesn't exist in heap - stale data.
-				 * This can occur when:
-				 * - The heap was VACUUMed and pages truncated
-				 * - The table was TRUNCATEd after index built
-				 * - Crash between index update and heap update
-				 * - Data corruption resulted in invalid ctids
-				 * Skip these entries rather than failing.
-				 */
-				continue;
-			}
-
-			/* Fetch document from heap */
-			valid = heap_fetch(heap_rel, SnapshotAny, tuple, &heap_buf, true);
-			if (!valid || !HeapTupleIsValid(tuple))
-			{
-				if (heap_buf != InvalidBuffer)
-					ReleaseBuffer(heap_buf);
-				continue; /* Skip invalid documents */
-			}
-
-			/* Evaluate index expression */
-			ExecStoreBufferHeapTuple(tuple, eval_slot, heap_buf);
-			econtext->ecxt_scantuple = eval_slot;
-			FormIndexDatum(
-					indexInfo, eval_slot, estate, idx_values, idx_isnull);
-
-			/* Check partial index predicate */
-			if (indexInfo->ii_Predicate != NIL &&
-				!ExecQual(indexInfo->ii_PredicateState, econtext))
-			{
-				ExecClearTuple(eval_slot);
-				ResetExprContext(econtext);
-				ReleaseBuffer(heap_buf);
-				continue;
-			}
-
-			if (!idx_isnull[0])
-			{
-				text *document_text = DatumGetTextPP(idx_values[0]);
-				int32 doc_length;
-
-				/* tp_add_document_terms already increments the atomic */
-				(void)tp_process_document_text(
-						document_text,
-						ctid,
-						metap->text_config_oid,
-						local_state,
-						NULL,
-						&doc_length);
-			}
-
-			ExecClearTuple(eval_slot);
-			ResetExprContext(econtext);
-			ReleaseBuffer(heap_buf);
-		}
-
-		/* Move to next page */
-		current_page = docid_header->next_page;
-
-		UnlockReleaseBuffer(docid_buf);
-	}
-
-	ExecDropSingleTupleTableSlot(eval_slot);
-	FreeExecutorState(estate);
-	relation_close(heap_rel, AccessShareLock);
-
-	/*
-	 * If we truncated the chain due to an invalid page, fix the
-	 * chain so the corrupted tail is unreachable. We overwrite
-	 * next_page on the last valid page rather than clearing the
-	 * entire chain, so that a second crash before the memtable
-	 * is spilled doesn't lose the valid docid pages.
-	 */
-	if (chain_truncated && last_valid_page != InvalidBlockNumber)
-	{
-		Buffer			   trunc_buf;
-		GenericXLogState  *xlog_state;
-		Page			   trunc_page;
-		TpDocidPageHeader *trunc_hdr;
-
-		trunc_buf = ReadBuffer(index_rel, last_valid_page);
-		LockBuffer(trunc_buf, BUFFER_LOCK_EXCLUSIVE);
-
-		xlog_state = GenericXLogStart(index_rel);
-		trunc_page = GenericXLogRegisterBuffer(xlog_state, trunc_buf, 0);
-		trunc_hdr  = (TpDocidPageHeader *)PageGetContents(trunc_page);
-		trunc_hdr->next_page = InvalidBlockNumber;
-		GenericXLogFinish(xlog_state);
-
-		UnlockReleaseBuffer(trunc_buf);
-	}
-	else if (chain_truncated)
-	{
-		/*
-		 * The very first page was invalid — no valid pages
-		 * at all. Clear the metapage pointer.
-		 */
-		tp_clear_docid_pages(index_rel);
-	}
-
-	/* Log recovery completion */
-	if (local_state && local_state->shared)
-	{
-		elog(INFO,
-			 "Recovery complete for pg_textsearch index %u: "
-			 "%u documents restored",
-			 index_rel->rd_id,
-			 pg_atomic_read_u32(&local_state->shared->total_docs));
-
-		/*
-		 * Reset terms_added_this_xact to prevent bulk load spill from
-		 * triggering after recovery. Recovery re-adds all documents to the
-		 * memtable, which would otherwise count toward the bulk load
-		 * threshold and incorrectly trigger a segment write.
-		 */
-		local_state->terms_added_this_xact	 = 0;
-		local_state->docs_since_global_check = 0;
-	}
 }
 
 /*

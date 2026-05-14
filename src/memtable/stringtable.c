@@ -510,27 +510,16 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 }
 
 /*
- * Add terms from a document to the posting lists
- * This coordinates between string table and posting list management
- *
- * Idempotent by CTID: tp_store_document_length is the single
- * check-and-add gate. If the CTID is already present (a concurrent
- * caller — typically WAL redo on a standby vs. a backend rebuilding
- * from docid pages — beat us to it) we return without touching the
- * posting lists or the corpus counters. Without this gate the two
- * paths can race during the rebuild window and double-add the same
- * doc; see the comment on tp_rebuild_index_from_disk.
- */
-/*
  * Append a single document to the on-disk memtable chain and
  * bump the per-index posting counters used by auto-spill.
  *
- * Phase 4: the previous DSA write path (dshash inserts +
- * tp_store_document_length / tp_add_document_to_posting_list +
- * idempotency gate) is replaced by an unconditional
- * tp_memtable_append() into the on-disk chain.  Crash idempotency
- * is provided by GenericXLog LSN-checked redo at the page level,
- * not by application-level deduplication.
+ * Memtable v2 (issue #374): the previous DSA write path
+ * (dshash inserts + tp_store_document_length +
+ * tp_add_document_to_posting_list + idempotency gate) is
+ * replaced by an unconditional tp_memtable_append() into the
+ * on-disk chain.  Crash idempotency is provided by GenericXLog
+ * LSN-checked redo at the page level, not by application-level
+ * deduplication.
  *
  * The `vector_bytes` payload is an in-memory v2 TpVector; only
  * its byte image is appended to the chain.  `term_count` is

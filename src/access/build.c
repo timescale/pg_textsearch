@@ -1079,11 +1079,12 @@ tp_tokenize_text(
 }
 
 /*
- * Core document processing: convert text to terms and add to posting lists
- * This is shared between index building and docid recovery.
+ * Core document processing: convert text to terms and add to posting lists.
+ * This is shared between CREATE INDEX build (heap scan) and DML inserts
+ * (single-tuple aminsert).
  *
  * If index_rel is provided, auto-spill will occur when memory limit is
- * exceeded. If index_rel is NULL, no auto-spill occurs (recovery path).
+ * exceeded. If index_rel is NULL, no auto-spill occurs.
  */
 bool
 tp_process_document_text(
@@ -1297,13 +1298,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 RelationGetRelationName(index));
 
 	/*
-	 * Invalidate docid cache to prevent stale entries from a previous build.
-	 * This is critical during VACUUM FULL, which creates a new index file
-	 * with different block layout than the old one.
-	 */
-	tp_invalidate_docid_cache();
-
-	/*
 	 * Determine if the indexed column is a text array type.
 	 * If so, we flatten array elements into a single text value
 	 * before tokenization. Expression indexes (attnum == 0)
@@ -1477,10 +1471,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * shared state that INSERT and SELECT need.
 			 * Without this, the first post-build access falls
 			 * through to tp_rebuild_index_from_disk() (the
-			 * crash-recovery path), which is fragile: a
-			 * concurrent backend can race to recreate the
-			 * state, leaving the inserting backend's memtable
-			 * invisible to scans.
+			 * first-access bootstrap path), which can race
+			 * with concurrent backends touching the same
+			 * index and re-creating its registry entry.
 			 *
 			 * By creating the state here — the same backend
 			 * that ran the build — we ensure the registry
@@ -1767,8 +1760,8 @@ tp_buildempty(Relation index)
  * Tokenization happens before any lock is acquired so that
  * CPU-intensive text processing does not serialize inserts.
  * The per-index lock is held as LW_SHARED for the memtable
- * write and docid-page update, then released before the
- * auto-spill check (which may need LW_EXCLUSIVE).
+ * chain append, then released before the auto-spill check
+ * (which may need LW_EXCLUSIVE).
  */
 bool
 tp_insert(
@@ -1904,10 +1897,13 @@ tp_insert(
 	else if (term_count > 0 && ItemPointerIsValid(ht_ctid))
 	{
 		/*
-		 * No shared state but valid doc -- nothing to do.
-		 * Phase 4 removed the docid-page bookkeeping; if shared
-		 * state isn't registered yet a backend isn't going to
-		 * insert anyway.
+		 * No shared state for this index -- nothing to do.
+		 * Memtable v2 (issue #374) writes go through
+		 * tp_memtable_append, which needs a registered
+		 * shared-state entry to take the per-index LWLock; if
+		 * the entry isn't there yet, the backend hasn't
+		 * touched the index successfully yet and isn't going
+		 * to insert anyway.
 		 */
 	}
 

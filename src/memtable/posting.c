@@ -292,11 +292,12 @@ tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
  * owns the addition of this doc to the memtable), false if an entry
  * for `ctid` was already present.
  *
- * Used as the idempotency gate in tp_add_document_terms so that a
- * standby's docid-page rebuild and concurrent INSERT_TERMS redo
- * cannot double-add the same CTID. The doc-length table is the gate
- * (rather than a separate "seen" set) so we get insert + dedup in a
- * single dshash op under the partition lock.
+ * Memtable v1 used this dshash as the idempotency gate against
+ * concurrent WAL-redo and rebuild paths.  Memtable v2 (issue
+ * #374) made tp_memtable_append idempotent at the page-LSN
+ * layer so this gate is no longer wired to insert.  The DSA
+ * helpers stay compiled until Phase 7 deletes the whole
+ * shared-memory memtable.
  */
 bool
 tp_store_document_length(
@@ -344,13 +345,9 @@ tp_store_document_length(
 /*
  * Walk the doc-length hash table and return (count, sum_lengths).
  *
- * Used by tp_rebuild_index_from_disk to compute the post-drain
- * memtable size as ground truth for the corpus-stat write — see
- * the comment in tp_rebuild_index_from_disk for why a single
- * atomic_write is needed instead of fetch_add (review #11
- * scenario where INSERT_TERMS replay during the drain ALSO ends
- * up in fresh_metap.total_docs via SPILL's
- * tp_sync_metapage_stats, and fetch_add would double-count).
+ * Memtable v1 helper, retained for the lifecycle and debug-dump
+ * paths that still attach to the (now unused) shared-memory
+ * doc-length dshash.  Phase 7 deletes the whole DSA memtable.
  *
  * Caller must hold the per-index LWLock (any mode); we take the
  * dshash partition locks via dshash_seq_init.

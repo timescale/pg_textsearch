@@ -247,14 +247,12 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	TpLocalIndexState *index_state;
 	TpMemtable		  *memtable;
 	dsa_area		  *area;
-	uint32			   memtable_terms  = 0;
-	uint32			   memtable_docs   = 0;
-	int				   segment_count   = 0;
-	uint32			   segment_terms   = 0;
-	uint32			   segment_docs	   = 0;
-	uint32			   segment_alive   = 0;
-	uint32			   recovery_pages  = 0;
-	uint32			   recovery_docids = 0;
+	uint32			   memtable_terms = 0;
+	uint32			   memtable_docs  = 0;
+	int				   segment_count  = 0;
+	uint32			   segment_terms  = 0;
+	uint32			   segment_docs	  = 0;
+	uint32			   segment_alive  = 0;
 
 	dump_printf(out, "Index: %s\n", index_name);
 
@@ -376,42 +374,6 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	dump_printf(out, "\nMemtable:\n");
 	dump_printf(out, "  terms: %u\n", memtable_terms);
 	dump_printf(out, "  documents: %u\n", memtable_docs);
-
-	/* Count recovery pages */
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		Buffer			   docid_buf;
-		Page			   docid_page;
-		TpDocidPageHeader *docid_header;
-		BlockNumber		   current_page = metap->first_docid_page;
-
-		while (current_page != InvalidBlockNumber && recovery_pages < 10000)
-		{
-			CHECK_FOR_INTERRUPTS();
-
-			docid_buf = ReadBuffer(index_rel, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
-			{
-				recovery_docids += docid_header->num_docids;
-				recovery_pages++;
-				current_page = docid_header->next_page;
-			}
-			else
-			{
-				current_page = InvalidBlockNumber;
-			}
-
-			UnlockReleaseBuffer(docid_buf);
-		}
-	}
-
-	dump_printf(out, "\nRecovery Pages:\n");
-	dump_printf(out, "  pages: %u\n", recovery_pages);
-	dump_printf(out, "  docids: %u\n", recovery_docids);
 
 	/* Segment summary by level */
 	dump_printf(out, "\nSegments:\n");
@@ -620,58 +582,21 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "  k1: %.2f\n", metap->k1);
 		dump_printf(out, "  b: %.2f\n", metap->b);
 
-		dump_printf(out, "Metapage Recovery Info:\n");
+		dump_printf(out, "Metapage Info:\n");
 		dump_printf(out, "  magic: 0x%08X\n", metap->magic);
-		dump_printf(out, "  first_docid_page: %u\n", metap->first_docid_page);
+		dump_printf(out, "  version: %u\n", metap->version);
+		dump_printf(
+				out,
+				"  memtable_head_blkno: %u\n",
+				metap->memtable_head_blkno);
+		dump_printf(
+				out,
+				"  memtable_tail_blkno: %u\n",
+				metap->memtable_tail_blkno);
 	}
 
 	/* Memtable contents */
 	dump_memtable(out, index_state);
-
-	/* Crash recovery info */
-	dump_printf(out, "Crash Recovery:\n");
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		Buffer			   docid_buf;
-		Page			   docid_page;
-		TpDocidPageHeader *docid_header;
-		BlockNumber		   current_page = metap->first_docid_page;
-		int				   page_count	= 0;
-		int				   total_docids = 0;
-
-		while (current_page != InvalidBlockNumber)
-		{
-			CHECK_FOR_INTERRUPTS();
-
-			docid_buf = ReadBuffer(index_rel, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
-			{
-				total_docids += docid_header->num_docids;
-				page_count++;
-				current_page = docid_header->next_page;
-			}
-			else
-			{
-				current_page = InvalidBlockNumber;
-			}
-
-			UnlockReleaseBuffer(docid_buf);
-
-			if (page_count > 10000)
-				break;
-		}
-
-		dump_printf(
-				out, "  Pages: %d, Documents: %d\n", page_count, total_docids);
-	}
-	else
-	{
-		dump_printf(out, "  No recovery pages\n");
-	}
 
 	/* Detailed segment dump (first 2 per level) */
 	{
@@ -883,7 +808,6 @@ typedef struct PageMapEntry
 /* Page types */
 #define PAGE_UNUSED	   0 /* Empty/free page */
 #define PAGE_METAPAGE  1 /* Index metapage (block 0) */
-#define PAGE_DOCID	   2 /* Recovery docid page */
 #define PAGE_SEG_HDR   3 /* Segment header */
 #define PAGE_SEG_INDEX 4 /* Segment page index */
 #define PAGE_SEG_DATA  5 /* Segment data page */
@@ -947,8 +871,6 @@ get_page_char(PageMapEntry *e)
 		return '.';
 	case PAGE_METAPAGE:
 		return 'M';
-	case PAGE_DOCID:
-		return 'R'; /* Recovery */
 	case PAGE_SEG_HDR:
 		return 'H'; /* Header */
 	case PAGE_SEG_INDEX:
@@ -973,7 +895,7 @@ get_page_char(PageMapEntry *e)
 }
 
 /*
- * Mark metapage and docid (recovery) pages in the page map.
+ * Mark the metapage in the page map.
  */
 static void
 mark_special_pages(
@@ -982,40 +904,13 @@ mark_special_pages(
 		PageMapEntry   *page_map,
 		BlockNumber		total_blocks)
 {
+	(void)index_rel;
+	(void)metap;
+	(void)total_blocks;
+
 	/* Mark metapage */
 	page_map[0].page_type = PAGE_METAPAGE;
 	page_map[0].level	  = 255;
-
-	/* Mark docid pages */
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		BlockNumber current = metap->first_docid_page;
-		int			count	= 0;
-
-		while (current != InvalidBlockNumber && current < total_blocks &&
-			   count < 10000)
-		{
-			Buffer			   buf;
-			Page			   page;
-			TpDocidPageHeader *hdr;
-
-			page_map[current].page_type = PAGE_DOCID;
-			page_map[current].level		= 255;
-
-			buf = ReadBuffer(index_rel, current);
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			page = BufferGetPage(buf);
-			hdr	 = (TpDocidPageHeader *)PageGetContents(page);
-
-			if (hdr->magic == TP_DOCID_PAGE_MAGIC)
-				current = hdr->next_page;
-			else
-				current = InvalidBlockNumber;
-
-			UnlockReleaseBuffer(buf);
-			count++;
-		}
-	}
 }
 
 /*
@@ -1281,7 +1176,6 @@ typedef struct PageCounts
 	uint32 skip;
 	uint32 docmap;
 	uint32 idx;
-	uint32 recovery;
 } PageCounts;
 
 /*
@@ -1306,9 +1200,6 @@ count_page_types(
 			break;
 		case PAGE_METAPAGE:
 			/* Metapage counted separately, not in output */
-			break;
-		case PAGE_DOCID:
-			counts->recovery++;
 			break;
 		case PAGE_SEG_HDR:
 			counts->header++;
@@ -1391,24 +1282,21 @@ write_pageviz_header(
 	fprintf(fp, "\n");
 
 	fprintf(fp, "#\n");
-	fprintf(fp,
-			"# Special: \033[48;5;15m\033[30mM" ANSI_RESET
-			"=metapage  \033[48;5;33mR" ANSI_RESET "=recovery\n");
+	fprintf(fp, "# Special: \033[48;5;15m\033[30mM" ANSI_RESET "=metapage\n");
 	fprintf(fp,
 			"# Letters: H=header d=dictionary (blank)=postings "
 			"s=skip m=docmap i=idx .=empty\n");
 	fprintf(fp, "#\n");
 	fprintf(fp,
 			"# Page counts: empty=%u header=%u dict=%u post=%u "
-			"skip=%u docmap=%u idx=%u recovery=%u\n",
+			"skip=%u docmap=%u idx=%u\n",
 			counts->empty,
 			counts->header,
 			counts->dict,
 			counts->post,
 			counts->skip,
 			counts->docmap,
-			counts->idx,
-			counts->recovery);
+			counts->idx);
 	fprintf(fp, "#\n");
 }
 
@@ -1437,9 +1325,6 @@ write_pageviz_map(
 			break;
 		case PAGE_METAPAGE:
 			fprintf(fp, "\033[48;5;15m\033[30m%c" ANSI_RESET, c);
-			break;
-		case PAGE_DOCID:
-			fprintf(fp, "\033[48;5;33m%c" ANSI_RESET, c);
 			break;
 		case PAGE_SEG_HDR:
 		case PAGE_SEG_INDEX:

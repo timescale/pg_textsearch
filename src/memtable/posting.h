@@ -50,9 +50,9 @@ extern void tp_add_document_to_posting_list(
 
 /*
  * Reserve a doc-length slot for `ctid`. Returns true if newly
- * inserted, false if an entry for `ctid` was already present. Acts
- * as the idempotency gate in tp_add_document_terms for the
- * primary-insert / docid-rebuild / WAL-redo paths.
+ * inserted, false if an entry for `ctid` was already present.
+ * Memtable v1 idempotency gate; unused by memtable v2 inserts
+ * (Phase 7 deletes the helper along with the DSA memtable).
  */
 extern bool tp_store_document_length(
 		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length);

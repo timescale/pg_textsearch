@@ -11,7 +11,6 @@
  * These are used to validate page contents and detect corruption.
  */
 #define TP_METAPAGE_MAGIC	0x5450494D /* "TPIM" - Tapir Index Metapage */
-#define TP_DOCID_PAGE_MAGIC 0x54504944 /* "TPID" - Tapir Docid Page */
 #define TP_SEGMENT_MAGIC	0x54505347 /* "TPSG" - Tapir Segment */
 #define TP_PAGE_INDEX_MAGIC 0x54505049 /* "TPPI" - Tapir Page Index */
 #define TP_MEMTABLE_PAGE_MAGIC                                              \
@@ -31,7 +30,6 @@
  * REINDEX is required when upgrading from a v6 index.
  */
 #define TP_METAPAGE_VERSION	  7
-#define TP_DOCID_PAGE_VERSION 1 /* Initial version */
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
 /* Initial version (memtable v2 redesign) */
 #define TP_MEMTABLE_PAGE_VERSION 1
@@ -57,10 +55,10 @@
 
 /*
  * Lower bound on postings for VACUUM-cleanup and shutdown-hook
- * spills.  Below this, re-tokenizing the docid chain from heap on
- * the next server start is fast enough that writing a runt L0
- * segment isn't worthwhile — LSM compaction would spend more work
- * consolidating tiny segments than the chain replay costs.
+ * spills.  Below this, leaving the documents on the in-relation
+ * memtable chain is cheaper than writing a runt L0 segment — LSM
+ * compaction would spend more work consolidating tiny segments
+ * than the chain pages cost to scan during reads.
  */
 #define TP_MIN_SPILL_POSTINGS 1000
 

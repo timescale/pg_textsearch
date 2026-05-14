@@ -64,15 +64,18 @@ typedef struct TpIndexMetaPageData
 	 * sync with Σ segment.num_docs at spill/sync boundaries.
 	 */
 	uint64 total_docs;
-	uint64 _unused_total_terms;	  /* Unused, retained for on-disk compat */
-	uint64 total_len;			  /* Σ segment.total_len, same frame as
-									 total_docs */
-	float4		k1;				  /* BM25 k1 parameter */
-	float4		b;				  /* BM25 b parameter */
-	BlockNumber root_blkno;		  /* Root page of the index tree */
-	BlockNumber term_stats_root;  /* Root page of term statistics B-tree */
-	BlockNumber first_docid_page; /* First page of docid chain for crash
-								   * recovery */
+	uint64 _unused_total_terms;		/* Unused, retained for on-disk compat */
+	uint64 total_len;				/* Σ segment.total_len, same frame as
+									   total_docs */
+	float4		k1;					/* BM25 k1 parameter */
+	float4		b;					/* BM25 b parameter */
+	BlockNumber root_blkno;			/* Root page of the index tree */
+	BlockNumber term_stats_root;	/* Root page of term statistics B-tree */
+	BlockNumber _unused_docid_page; /* Reserved: was first_docid_page,
+									 * retired in Phase 6 of issue #374
+									 * (memtable v2 obsoletes docid pages).
+									 * Kept to preserve metapage offsets;
+									 * always InvalidBlockNumber. */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
@@ -86,27 +89,13 @@ typedef struct TpIndexMetaPageData
 	 * head_blkno once the chain has more than one page.  All
 	 * mutations to these fields go through GenericXLog atomic
 	 * with the corresponding chain-page mutation.  Introduced
-	 * in TP_METAPAGE_VERSION 7; later phases of the redesign
-	 * will retire first_docid_page above.
+	 * in TP_METAPAGE_VERSION 7.
 	 */
 	BlockNumber memtable_head_blkno;
 	BlockNumber memtable_tail_blkno;
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;
-
-/*
- * Document ID page structure for crash recovery
- * Stores ItemPointerData (ctid) entries for documents in the index.
- * Magic and version constants are defined in constants.h.
- */
-typedef struct TpDocidPageHeader
-{
-	uint32		magic;		/* TP_DOCID_PAGE_MAGIC */
-	uint32		version;	/* TP_DOCID_PAGE_VERSION */
-	uint32		num_docids; /* Number of docids stored on this page */
-	BlockNumber next_page;	/* Next page in chain, or InvalidBlockNumber */
-} TpDocidPageHeader;
 
 /*
  * Metapage operations
@@ -121,9 +110,3 @@ extern TpIndexMetaPage tp_get_metapage(Relation index);
  */
 extern void
 tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state);
-/*
- * Document ID operations for crash recovery
- */
-extern void tp_add_docid_to_pages(Relation index, ItemPointer ctid);
-extern void tp_clear_docid_pages(Relation index);
-extern void tp_invalidate_docid_cache(void);

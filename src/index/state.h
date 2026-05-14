@@ -85,10 +85,11 @@ typedef struct TpSharedIndexState
 	LWLock lock; /* Per-index lock for this index */
 
 	/*
-	 * Generation counter for docid page cache invalidation.
-	 * Incremented under LW_EXCLUSIVE when docid pages are
-	 * cleared (spill). Backends compare their cached
-	 * generation to detect stale docid page caches.
+	 * Reserved: was used to invalidate per-backend docid-page
+	 * writer caches across a spill (memtable v1).  Memtable v2
+	 * (issue #374) removed the docid page chain, so the counter
+	 * is no longer read by any path.  Kept until Phase 7's
+	 * registry teardown deletes this whole struct.
 	 */
 	pg_atomic_uint64 spill_generation;
 } TpSharedIndexState;
@@ -159,10 +160,6 @@ extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
 extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
 extern void tp_cleanup_build_mode_on_abort(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
-extern void				  tp_rebuild_posting_lists_from_docids(
-					  Relation			 index_rel,
-					  TpLocalIndexState *local_state,
-					  TpIndexMetaPage	 metap);
 
 /* Helper function for accessing memtable from local state */
 extern TpMemtable *get_memtable(TpLocalIndexState *local_state);

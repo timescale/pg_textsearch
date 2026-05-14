@@ -930,13 +930,13 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				sizeof(IndexBulkDeleteResult));
 
 	/*
-	 * Spill the memtable so the docid chain doesn't outlive a
-	 * server restart.  Insert-only tables skip ambulkdelete (no
-	 * dead tuples), so without this call nothing would spill and
-	 * the first query after the next start would be slow.  Skip
-	 * under TP_MIN_SPILL_POSTINGS — that few docs is faster to
-	 * replay from heap on restart than a runt L0 segment would be
-	 * to compact away.
+	 * Spill the memtable so the on-disk memtable chain doesn't
+	 * accumulate forever on insert-only tables.  Insert-only
+	 * tables skip ambulkdelete (no dead tuples), so without this
+	 * call nothing would spill and the chain would keep growing.
+	 * Skip under TP_MIN_SPILL_POSTINGS — that few docs is cheaper
+	 * to read from the chain on every query than to compact a
+	 * runt L0 segment away.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)

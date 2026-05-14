@@ -95,11 +95,11 @@ main() {
     sql_quiet "CREATE INDEX extras_idx ON extras USING bm25 (body)
         WITH (text_config='english');"
 
-    # Populate the docid-page chains without tripping bulk-load
+    # Populate the memtable chains without tripping bulk-load
     # auto-spill.  One INSERT per autocommit statement keeps each
     # transaction well under the bulk-load threshold, so the rows
-    # accumulate in the memtable / docid chain instead of spilling
-    # to a segment.
+    # accumulate in the on-disk memtable chain instead of
+    # spilling to a segment.
     log "Inserting 500 rows per table in single-statement transactions..."
     {
         for i in $(seq 1 500); do
@@ -113,8 +113,9 @@ main() {
 
     for idx in docs_idx extras_idx; do
         local pre
-        pre=$(sql "SELECT (bm25_summarize_index('${idx}')::text
-                ~ 'docids: 500')::int")
+        pre=$(sql "SELECT (
+                COALESCE(sum(n_records), 0) = 500
+            )::int FROM bm25_memtable_chain('${idx}')")
         if [ "${pre}" != "1" ]; then
             error "Pre-shutdown: ${idx} chain not populated as expected"
         fi
@@ -158,12 +159,14 @@ main() {
 
     # Both chains must be drained and both indexes queryable.  We
     # explicitly do not trigger recovery by querying the index
-    # first — bm25_summarize_index reads the on-disk metapage
-    # directly, so we can observe the pre-recovery chain state.
+    # first — bm25_memtable_chain reads the on-disk metapage and
+    # chain pages directly, so we can observe the post-spill
+    # state without any in-process bootstrap.
     for idx in docs_idx extras_idx; do
         local post
-        post=$(sql "SELECT (bm25_summarize_index('${idx}')::text
-                ~ 'docids: 0')::int")
+        post=$(sql "SELECT (
+                COALESCE(sum(n_records), 0) = 0
+            )::int FROM bm25_memtable_chain('${idx}')")
         if [ "${post}" != "1" ]; then
             local summary
             summary=$(sql "SELECT bm25_summarize_index('${idx}')")
