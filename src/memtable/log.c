@@ -65,7 +65,16 @@ memtable_read_tail_blkno(Relation rel)
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page  = BufferGetPage(buf);
 	metap = (TpIndexMetaPage)PageGetContents(page);
-	tail  = metap->memtable_tail_blkno;
+	/*
+	 * v6 compat: v6 metapages predate the chain fields and zero-
+	 * fill those offsets.  Treat as empty chain so we land on the
+	 * bootstrap path, which lazily bumps the on-disk version to v7
+	 * in the same GenericXLog.
+	 */
+	if (metap->version == TP_METAPAGE_VERSION_V6)
+		tail = InvalidBlockNumber;
+	else
+		tail = metap->memtable_tail_blkno;
 	UnlockReleaseBuffer(buf);
 
 	return tail;
@@ -106,7 +115,15 @@ memtable_bootstrap_and_append(
 		TpIndexMetaPage cur_metap	  = (TpIndexMetaPage)PageGetContents(
 				cur_meta_page);
 
-		if (cur_metap->memtable_tail_blkno != InvalidBlockNumber)
+		/*
+		 * v6 compat: a v6 metapage has zero-filled
+		 * memtable_tail_blkno (== 0), which is NOT the same as
+		 * InvalidBlockNumber.  Don't treat that as "another
+		 * backend already bootstrapped"; we still need to
+		 * bootstrap (and lazily bump version below).
+		 */
+		if (cur_metap->version != TP_METAPAGE_VERSION_V6 &&
+			cur_metap->memtable_tail_blkno != InvalidBlockNumber)
 		{
 			/* Lost the race: another backend bootstrapped first. */
 			UnlockReleaseBuffer(metabuf);
@@ -128,6 +145,18 @@ memtable_bootstrap_and_append(
 			newpage_local, ctid, doc_length, vector_bytes, vector_len);
 
 	metap = (TpIndexMetaPage)PageGetContents(metapage_local);
+	/*
+	 * Lazy upgrade: bump v6 → v7 on first chain write.  v6
+	 * metapages had pd_lower covering only 112 bytes of content;
+	 * widen it so the new memtable_*_blkno fields are no longer
+	 * in the page hole (GenericXLog skips hole bytes).
+	 */
+	if (metap->version == TP_METAPAGE_VERSION_V6)
+	{
+		metap->version						   = TP_METAPAGE_VERSION;
+		((PageHeader)metapage_local)->pd_lower = SizeOfPageHeaderData +
+												 sizeof(TpIndexMetaPageData);
+	}
 	metap->memtable_head_blkno = newblk;
 	metap->memtable_tail_blkno = newblk;
 
@@ -359,13 +388,18 @@ memtable_append_fragment(
 		Page			cur_mp	  = BufferGetPage(metabuf);
 		TpIndexMetaPage cur_metap = (TpIndexMetaPage)PageGetContents(cur_mp);
 
-		if (cur_metap->memtable_tail_blkno != InvalidBlockNumber)
+		if (cur_metap->version != TP_METAPAGE_VERSION_V6 &&
+			cur_metap->memtable_tail_blkno != InvalidBlockNumber)
 		{
 			/*
 			 * Lost bootstrap race: another backend populated the
 			 * chain while we were extending pages.  The pages we
 			 * extended are unreachable via meta and become
 			 * orphans; amvacuumcleanup reclaims them later.
+			 *
+			 * v6 compat: skip this check on v6 metapages whose
+			 * chain fields read as zero; bootstrap-during-upgrade
+			 * is the expected case there, not a lost race.
 			 */
 			UnlockReleaseBuffer(metabuf);
 			pfree(cont_blknos);
@@ -379,6 +413,12 @@ memtable_append_fragment(
 			xlog_state = GenericXLogStart(rel);
 			meta_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 			metap	   = (TpIndexMetaPage)PageGetContents(meta_local);
+			if (metap->version == TP_METAPAGE_VERSION_V6)
+			{
+				metap->version = TP_METAPAGE_VERSION;
+				((PageHeader)meta_local)->pd_lower =
+						SizeOfPageHeaderData + sizeof(TpIndexMetaPageData);
+			}
 			metap->memtable_head_blkno = thead_blkno;
 			metap->memtable_tail_blkno = tnew_blkno;
 			GenericXLogFinish(xlog_state);
@@ -653,6 +693,17 @@ tp_spill_finalize(
 	metap->memtable_tail_blkno = InvalidBlockNumber;
 	metap->total_docs += docs_delta;
 	metap->total_len += len_delta;
+	/*
+	 * Lazy upgrade: bump v6 → v7 in the same GenericXLog.  v6
+	 * pd_lower covers only 112 bytes of content; widen to v7's
+	 * 120 so the new chain fields are not in the hole.
+	 */
+	if (metap->version == TP_METAPAGE_VERSION_V6)
+	{
+		metap->version					 = TP_METAPAGE_VERSION;
+		((PageHeader)metapage)->pd_lower = SizeOfPageHeaderData +
+										   sizeof(TpIndexMetaPageData);
+	}
 
 	GenericXLogFinish(state);
 	if (BufferIsValid(seg_buf))

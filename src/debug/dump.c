@@ -22,6 +22,7 @@
 #include "index/resolve.h"
 #include "index/state.h"
 #include "memtable/memtable.h"
+#include "memtable/page.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "segment/io.h"
@@ -245,8 +246,6 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	TpLocalIndexState *index_state;
-	TpMemtable		  *memtable;
-	dsa_area		  *area;
 	uint32			   memtable_terms = 0;
 	uint32			   memtable_docs  = 0;
 	int				   segment_count  = 0;
@@ -321,53 +320,33 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 				(double)dsa_total_size / (1024.0 * 1024.0));
 	}
 
-	/* Count memtable terms without iterating content */
-	memtable = get_memtable(index_state);
-	area	 = index_state->dsa;
-
-	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID &&
-		area)
+	/* Count memtable documents from the on-disk page chain (v2). */
+	memtable_terms = 0;
+	memtable_docs  = 0;
+	if (metap && BlockNumberIsValid(metap->memtable_head_blkno))
 	{
-		dshash_table *string_table =
-				tp_string_table_attach(area, memtable->string_hash_handle);
-		if (string_table)
+		BlockNumber blk = metap->memtable_head_blkno;
+
+		while (BlockNumberIsValid(blk))
 		{
-			dshash_seq_status  status;
-			TpStringHashEntry *entry;
+			Buffer buf;
+			Page   page;
 
-			dshash_seq_init(&status, string_table, false);
-			while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) !=
-				   NULL)
+			CHECK_FOR_INTERRUPTS();
+			buf = ReadBuffer(index_rel, blk);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			if (tp_memtable_page_is_valid(page))
 			{
-				CHECK_FOR_INTERRUPTS();
-				if (DsaPointerIsValid(entry->key.posting_list))
-					memtable_terms++;
+				memtable_docs += tp_memtable_page_n_records(page);
+				blk = tp_memtable_page_get_next(page);
 			}
-			dshash_seq_term(&status);
-			dshash_detach(string_table);
-		}
-	}
-
-	/* Count memtable documents */
-	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID &&
-		area)
-	{
-		dshash_table *doclength_table =
-				tp_doclength_table_attach(area, memtable->doc_lengths_handle);
-		if (doclength_table)
-		{
-			dshash_seq_status status;
-			TpDocLengthEntry *entry;
-
-			dshash_seq_init(&status, doclength_table, false);
-			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
-				   NULL)
+			else
 			{
-				CHECK_FOR_INTERRUPTS();
-				memtable_docs++;
+				/* Should not happen on a healthy chain. */
+				blk = InvalidBlockNumber;
 			}
-			dshash_seq_term(&status);
-			dshash_detach(doclength_table);
+			UnlockReleaseBuffer(buf);
 		}
 	}
 

@@ -71,10 +71,14 @@ typedef struct ChainDocLenEntry
 
 typedef struct TpMemtableChainSource
 {
-	TpDataSource  base;		 /* must be first */
-	MemoryContext mcxt;		 /* private context, deleted in close() */
-	HTAB		 *term_ht;	 /* char* → ChainTermEntry */
-	HTAB		 *doclen_ht; /* ItemPointerData → ChainDocLenEntry */
+	TpDataSource	   base;	   /* must be first */
+	MemoryContext	   mcxt;	   /* private context, deleted in close() */
+	HTAB			  *term_ht;	   /* char* → ChainTermEntry */
+	HTAB			  *doclen_ht;  /* ItemPointerData → ChainDocLenEntry */
+	TpLocalIndexState *lock_state; /* state we acquired the per-index
+									* LWLock on (NULL if the lock was
+									* already held by an outer caller
+									* before this source was created). */
 } TpMemtableChainSource;
 
 /* ---------- hash helpers ---------- */
@@ -641,6 +645,8 @@ chain_close(TpDataSource *source)
 
 	if (src->mcxt != NULL)
 		MemoryContextDelete(src->mcxt);
+	if (src->lock_state != NULL)
+		tp_release_index_lock(src->lock_state);
 	pfree(src);
 }
 
@@ -659,6 +665,7 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 	TpMemtableChainSource *src;
 	MemoryContext		   mcxt;
 	HASHCTL				   info;
+	TpLocalIndexState	  *lock_state_to_release;
 
 	Assert(state != NULL);
 	Assert(rel != NULL);
@@ -667,10 +674,34 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 	 * Acquire the per-index LWLock in SHARED mode for the whole
 	 * scan.  This excludes Phase 4 spill (LW_EXCLUSIVE) which
 	 * would otherwise rip chain pages out from under us.
-	 * Idempotent within an xact; released by the standard
-	 * xact-end callback.
+	 *
+	 * Lock ownership: if the caller already held the lock (e.g.,
+	 * scan.c acquires SHARED for the whole scan and we're being
+	 * created from inside that scope), tp_acquire_index_lock is a
+	 * no-op and *we* must not release on close — otherwise the
+	 * outer caller would suddenly be operating without the lock.
+	 * We remember whether we ourselves grabbed the lock; close()
+	 * releases only when we own the acquisition.  Releasing
+	 * eagerly in close() (instead of deferring to the xact-end
+	 * callback) is required because the LWLock memory lives in
+	 * the shared DSA region, which is freed by
+	 * tp_cleanup_index_shared_memory() when an index is dropped
+	 * (including ON COMMIT DROP on a temp table); leaving the
+	 * lock held past the source's lifetime risks the
+	 * LWLockReleaseAll() at xact-end dereferencing freed memory.
 	 */
+	if (state->lock_held)
+		lock_state_to_release = NULL;
+	else
+		lock_state_to_release = state;
 	tp_acquire_index_lock(state, LW_SHARED);
+	/*
+	 * Defensive: if our acquire was a no-op because the caller
+	 * already held an exclusive lock (e.g., spill path), still
+	 * don't release on close().
+	 */
+	if (lock_state_to_release != NULL && !state->lock_held)
+		lock_state_to_release = NULL;
 
 	/*
 	 * Quick empty-chain test under SHARED metapage lock so we
@@ -686,10 +717,27 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 		metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 		metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
-		empty = (metap->memtable_head_blkno == InvalidBlockNumber);
+		/*
+		 * v6 compat: zero-filled chain fields on a v6 page must
+		 * NOT be interpreted as "head at block 0" (block 0 is
+		 * the metapage itself).  Treat v6 as an empty chain.
+		 */
+		if (metap->version == TP_METAPAGE_VERSION_V6)
+			empty = true;
+		else
+			empty = (metap->memtable_head_blkno == InvalidBlockNumber);
 		UnlockReleaseBuffer(metabuf);
 		if (empty)
+		{
+			/*
+			 * Release the lock we just acquired (if any) before
+			 * returning NULL — the chain_close path doesn't run
+			 * for a NULL source.
+			 */
+			if (lock_state_to_release != NULL)
+				tp_release_index_lock(lock_state_to_release);
 			return NULL;
+		}
 	}
 
 	/*
@@ -702,8 +750,9 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 			CurrentMemoryContext,
 			"pg_textsearch chain source",
 			ALLOCSET_DEFAULT_SIZES);
-	src->mcxt	  = mcxt;
-	src->base.ops = &chain_source_ops;
+	src->mcxt		= mcxt;
+	src->base.ops	= &chain_source_ops;
+	src->lock_state = lock_state_to_release;
 
 	{
 		MemoryContext old = MemoryContextSwitchTo(mcxt);

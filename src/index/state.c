@@ -925,6 +925,29 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	LocalStateCacheEntry *entry = NULL;
 	bool				  found;
 
+	/*
+	 * Release any per-index LWLock this backend still holds for
+	 * this index BEFORE we free the DSA memory that backs the
+	 * lock.  Without this step, a chain_source or build that
+	 * leaks the lock (e.g., via an error path before its close()
+	 * runs) would leave a dangling held_lwlocks[] entry pointing
+	 * into freed shared memory; the end-of-xact LWLockReleaseAll()
+	 * would then trip an assertion in debug/sanitizer builds and
+	 * potentially corrupt LWLock accounting in production.
+	 *
+	 * Look up the local_state up front for this lookup; do NOT
+	 * remove it from the cache yet — the later block below will
+	 * dispose of it after the DSA frees.
+	 */
+	if (local_state_cache != NULL)
+	{
+		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+		if (found && entry != NULL && entry->local_state != NULL &&
+			entry->local_state->lock_held)
+			tp_release_index_lock(entry->local_state);
+	}
+	entry = NULL;
+
 	/* Look up the DSA pointer in registry */
 	shared_dp = tp_registry_lookup_dsa(index_oid);
 

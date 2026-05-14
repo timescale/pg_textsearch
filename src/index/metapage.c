@@ -120,7 +120,8 @@ tp_get_metapage(Relation index)
 	}
 
 	/* Check version compatibility */
-	if (metap->version != TP_METAPAGE_VERSION)
+	if (metap->version != TP_METAPAGE_VERSION &&
+		metap->version != TP_METAPAGE_VERSION_V6)
 	{
 		UnlockReleaseBuffer(buf);
 		ereport(ERROR,
@@ -139,6 +140,23 @@ tp_get_metapage(Relation index)
 	/* Copy metapage data to avoid buffer issues */
 	result = (TpIndexMetaPage)palloc(sizeof(TpIndexMetaPageData));
 	memcpy(result, metap, sizeof(TpIndexMetaPageData));
+
+	/*
+	 * v6 compat: a v6 page is byte-identical to v7's leading 112
+	 * bytes, but the trailing memtable_head_blkno /
+	 * memtable_tail_blkno slots are zero-filled (because PageInit
+	 * zero-fills page contents).  Since InvalidBlockNumber is
+	 * 0xFFFFFFFF, naively trusting the zero would point us at
+	 * block 0 (the metapage itself).  Fix that up here so all
+	 * callers see a coherent "empty memtable chain" view; the
+	 * on-disk version stays 6 until the first write lazily bumps
+	 * it under GenericXLog.
+	 */
+	if (result->version == TP_METAPAGE_VERSION_V6)
+	{
+		result->memtable_head_blkno = InvalidBlockNumber;
+		result->memtable_tail_blkno = InvalidBlockNumber;
+	}
 
 	UnlockReleaseBuffer(buf);
 	return result;
