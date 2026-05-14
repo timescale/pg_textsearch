@@ -66,14 +66,24 @@ typedef struct TpMemtablePageHeader
 {
     uint32          magic;        /* TP_MEMTABLE_PAGE_MAGIC */
     uint16          version;      /* 1 */
-    uint16          flags;        /* reserved */
-    uint32          n_records;
-    uint32          free_offset;  /* tail-of-records */
+    uint16          flags;        /* TP_MEMTABLE_PAGE_FLAG_* */
+    uint16          n_records;
+    uint16          free_offset;  /* tail-of-records, MAXALIGN'd */
     BlockNumber     next_block;   /* chain link; Invalid at tail */
     FullTransactionId dead_fxid;  /* reserved for future
                                    * deferred reclaim */
 } TpMemtablePageHeader;  /* 24 bytes */
 ```
+
+`flags` carries:
+- `TP_MEMTABLE_PAGE_FLAG_DEAD` (0x0001) — page has been spilled
+  or merged out (reserved; currently unused, slated for the
+  deferred FSM-recycle path).
+- `TP_MEMTABLE_PAGE_FLAG_CONTINUATION` (0x0002) — page is a
+  continuation of a multi-page record (see *Multi-page records*
+  below); `n_records == 0` and the bytes between
+  `TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET` and `free_offset` are
+  opaque payload, not a record stream.
 
 The standard `PageHeader` lives in the first 24 bytes of the
 page; the `TpMemtablePageHeader` immediately follows.
@@ -88,9 +98,10 @@ page formats in PostgreSQL that don't use line pointers.
 typedef struct TpMemtableRecord
 {
     ItemPointerData ctid;          /* 6 bytes */
-    uint16          _pad;          /* alignment */
+    uint16          flags;         /* TP_MEMTABLE_RECORD_FLAG_* */
     int32           doc_length;
-    uint32          vector_len;
+    uint32          vector_len;    /* FULL payload length, even
+                                    * when split across pages */
     char            vector_bytes[FLEXIBLE_ARRAY_MEMBER];
                                    /* opaque v2 bm25vector */
 } TpMemtableRecord;
@@ -100,6 +111,45 @@ Records are appended back-to-back from
 `TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET` upward, each `MAXALIGN`'d.
 `vector_bytes` is the v2 bm25vector wire format
 (see `src/types/vector.h`); the memtable layer doesn't decode it.
+
+### Multi-page (FRAGMENT) records
+
+bm25vectors can exceed a single page (a long document tokenizes
+to a vector larger than `BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET
+- sizeof(TpMemtableRecord)`, roughly 8 KB minus header overhead).
+The memtable supports arbitrarily large records via a FRAGMENT
+encoding:
+
+```
+   Thead (regular page, n_records=1, flags on record = FRAGMENT)
+     │   ← inline prefix bytes fill the page
+     ▼
+   C1 (continuation page, flags = CONTINUATION, no records,
+     │  payload chunk #1 fills the page)
+     ▼
+   C2 ─► … ─► Cn ─► Tnew (regular memtable page; the new chain tail)
+```
+
+- **Fragment head record.** `TP_MEMTABLE_RECORD_FLAG_FRAGMENT` is
+  set on the record's `flags`. `vector_len` carries the **full**
+  payload length; the inline prefix on the head page is
+  `page.free_offset - record_offset - sizeof(TpMemtableRecord)` bytes
+  (always sized to fill the head page, so `free_offset == BLCKSZ`
+  after the write). The head page's `n_records` is always 1.
+- **Continuation pages.** Carry the `TP_MEMTABLE_PAGE_FLAG_CONTINUATION`
+  page-header flag, have `n_records = 0`, and store an opaque
+  payload chunk between the header and `free_offset`. They're
+  reached only via the fragment head's `next_block → C1 → C2 → …`
+  and skipped by the outer chain walk (which resumes at the last
+  continuation's `next_block`).
+- **Per-continuation chunk size** is bounded by
+  `BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET`. There is no
+  cap on the number of continuations per record beyond the
+  varlena limit on `bm25vector` itself (~1 GB).
+
+See `tp_memtable_fragment_inline_capacity_max()` and
+`tp_memtable_continuation_max_chunk()` in `src/memtable/page.h`
+for the exact per-page byte budgets.
 
 ## Write path (`tp_memtable_append`)
 
@@ -111,32 +161,54 @@ per-index LWLock SHARED → tail buf EXCL
                           → metapage buf EXCL
 ```
 
-The append takes three forms:
+The append takes four forms, dispatched on `vector_len` vs
+`TP_MEMTABLE_PAGE_MAX_VECTOR_LEN` and on whether the chain is empty:
 
-1. **Bootstrap.** Metapage `tail_blkno == Invalid`. Acquire meta
-   `EXCL`, re-check (lost-race),
-   `ExtendBufferedRel(EB_LOCK_FIRST)`, single `GenericXLog`
-   over {meta, new}: init new page, append record, set
-   `head=tail=new_blkno`.
+1. **Bootstrap.** Metapage `tail_blkno == Invalid` and the record
+   fits on a single page. Acquire meta `EXCL`, re-check
+   (lost-race), `ExtendBufferedRel(EB_LOCK_FIRST)`, single
+   `GenericXLog` over {meta, new}: init new page, append record,
+   set `head = tail = new_blkno`.
 
 2. **Fast append.** Read meta `SHARED` for `tail_blkno`;
    release; lock tail `EXCL`; stale-tail check; if `can_fit`:
    single `GenericXLog` over tail, append.
 
-3. **Extend.** Tail full.
+3. **Extend.** Tail full but record fits on a single page.
    `ExtendBufferedRel(EB_LOCK_FIRST)`; acquire meta `EXCL`;
    single `GenericXLog` over {tail, new, meta}: init new page,
    set `tail.next_block = new_blkno`, append record to new,
    update `metap.tail_blkno = new_blkno`.
 
-Reject up front: any `vec_len` whose `record_size` exceeds
-`BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET`.
+4. **Fragment (oversized record).** `vector_len >
+   TP_MEMTABLE_PAGE_MAX_VECTOR_LEN`. Implemented in
+   `memtable_append_fragment` (`src/memtable/log.c`):
 
-Crash safety: if we crash between `ExtendBufferedRel` and
-`GenericXLogFinish`, the relation has an unreachable extra
-block whose contents are uninitialized. That's an acceptable
-leak; no code sequentially scans the relation without
-`tp_memtable_page_is_valid` gating.
+   1. Extend `Tnew` (the post-fragment tail) and init it empty;
+      own `GenericXLog`.
+   2. Extend `Cn`, `Cn-1`, …, `C1` in reverse order (so each
+      knows its successor block at init time); each is its own
+      `GenericXLog` with `tp_memtable_continuation_page_init`
+      copying the relevant chunk of payload bytes.
+   3. Extend `Thead` and write the FRAGMENT head record with
+      the inline prefix; own `GenericXLog`; set
+      `Thead.next_block = C1`.
+   4. **Publish.** A final `GenericXLog` over {old_tail, meta}
+      (extend case) or {meta} (bootstrap case): set
+      `old_tail.next_block = Thead` and `metap.tail_blkno = Tnew`.
+
+   Up to step 4 the new pages are orphans — they have valid
+   magic but no `meta.head → … → Thead` path reaches them.
+   A crash at any point before step 4 leaves orphan pages that
+   the outer chain walk never traverses.
+
+Crash safety: if we crash between any `ExtendBufferedRel` and
+its `GenericXLogFinish`, the relation has unreachable extra
+blocks whose contents are uninitialized or have valid magic
+but no metapage pointer. That's an acceptable leak; no code
+sequentially scans the relation without `tp_memtable_page_is_valid`
+gating, and the outer chain walk never reaches them. Orphan
+reclaim is deferred to a future `amvacuumcleanup` pass.
 
 ## Read path (`tp_memtable_chain_source_create`)
 
@@ -147,12 +219,21 @@ BMW / sequential scoring. It:
   (excludes spill; coexists with concurrent inserts which
   also hold SHARED + per-page EXCL).
 - Walks the chain head→tail under SHARED buffer lock one page
-  at a time.
+  at a time. Continuation pages are never visited by the outer
+  walk — only by `reassemble_fragment`.
 - For each record: bounds-checks against the page's
-  `free_offset`; validates `vector_bytes` via
+  `free_offset`; if `flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT`,
+  calls `reassemble_fragment` to walk the head page's
+  continuation chain under per-page SHARED locks and palloc a
+  single contiguous `vector_bytes` buffer in the source's
+  memory context; otherwise uses the inline `vector_bytes`
+  directly. Either way, validates the assembled bytes via
   `tpvector_validate_v2_buffer`; for each unique term in the
   vector, accumulates `(ctid, freq)` into a per-term posting
   buffer in a private memory context.
+- After a fragment, the outer walk resumes at the last
+  continuation's `next_block`, not at the head page's
+  `next_block` (which points at C1).
 - Builds a doc-length lookup HTAB from the records.
 
 All accumulators live in a child memory context that
