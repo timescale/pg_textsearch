@@ -249,6 +249,45 @@ REINDEX. There is no dual-format support.
 - The `docs/replication/CORRECTNESS.md` invariants doc (this
   doc replaces it).
 
+## Performance characteristics
+
+A smoke benchmark on a single-node Postgres 18 with default GUCs
+(`shared_buffers=128MB`), measuring 50k bulk INSERT + spill + 10k
+"hot" INSERT + three ORDER BY queries against a `bm25` index over
+synthetic text:
+
+|                          | main (1.2.x) | v2 (1.3.0)    | delta       |
+|--------------------------|--------------|---------------|-------------|
+| 50k bulk INSERT          | ~2.48s       | ~2.20s        | **−11%**    |
+| 10k INSERT (post-spill)  | ~232ms       | ~204ms        | **−12%**    |
+| Query, 10k-doc memtable  | ~1.5ms       | ~15ms         | **+10×**    |
+| Query, 1k-doc memtable   | ~1.5ms       | ~1.8ms        | parity      |
+
+Average of 3 runs each.
+
+**Inserts are faster** because the v2 write path avoids the DSA
+dshash term-lookup and per-term posting-list lock dance on the hot
+insert path. Each insert is one buffer-lock + one GenericXLog
+record.
+
+**Query latency is linear in memtable size** because the chain
+source walks every record at scan time (the v1 dshash had O(1)
+term lookup against an in-memory hash). At small memtable sizes
+(default auto-spill thresholds) this is parity. At large memtable
+sizes — e.g. a manually disabled auto-spill or an oversized
+`pg_textsearch.memtable_spill_threshold` — the cost can dominate.
+
+The mitigation is the spill threshold itself: tighter spill
+thresholds keep the chain short. The Phase-10 tuning of the
+default thresholds is tracked separately. Pending follow-ups:
+
+- Replace `pg_textsearch.memory_limit` (DSA-bytes semantics) with
+  a chain-page-count threshold (`pg_textsearch.memtable_max_pages`
+  or similar).
+- Per-term skip lists at the memtable layer (an A3-style hybrid
+  per `plan.md`) if smaller spill thresholds prove insufficient
+  for high-cardinality query workloads.
+
 ## Future cleanups (tracked separately)
 
 - Lazy reclaim of orphan memtable chain pages from spill via
