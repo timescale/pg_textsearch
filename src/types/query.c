@@ -39,8 +39,6 @@
 #include "index/source.h"
 #include "index/state.h"
 #include "memtable/chain_source.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/fieldnorm.h"

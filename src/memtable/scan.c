@@ -15,7 +15,6 @@
 #include "index/limit.h"
 #include "index/metapage.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
 #include "memtable/scan.h"
 #include "scoring/bm25.h"
 #include "types/vector.h"

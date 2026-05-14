@@ -711,6 +711,68 @@ tp_spill_finalize(
 	UnlockReleaseBuffer(metabuf);
 }
 
+/*
+ * Append a single document to the on-disk memtable chain and
+ * bump the per-index counters used by auto-spill heuristics.
+ *
+ * Memtable v2 (issue #374): the previous DSA write path
+ * (dshash inserts + tp_store_document_length +
+ * tp_add_document_to_posting_list + idempotency gate) is
+ * replaced by an unconditional tp_memtable_append() into the
+ * on-disk chain.  Crash idempotency is provided by GenericXLog
+ * LSN-checked redo at the page level, not by application-level
+ * deduplication.
+ *
+ * The `vector_bytes` payload is an in-memory v2 TpVector; only
+ * its byte image is appended to the chain.  `term_count` is
+ * used to bump the bulk-load detection counter; the chain
+ * source reconstructs per-term postings on read.
+ */
+void
+tp_add_document_terms(
+		TpLocalIndexState *local_state,
+		Relation		   rel,
+		ItemPointer		   ctid,
+		const char		  *vector_bytes,
+		uint32			   vector_len,
+		int				   term_count,
+		int32			   doc_length)
+{
+	TpMemtable *memtable;
+
+	tp_memtable_append(rel, ctid, doc_length, vector_bytes, vector_len);
+
+	/*
+	 * Bump the registry-visible posting/term/doc counters used
+	 * by the auto-spill thresholds and the global soft-limit
+	 * heuristic.  These atomics are no longer authoritative for
+	 * query correctness (Phase 4 derives totals from metapage +
+	 * chain source instead), but they remain the cheapest
+	 * proxy for "write pressure" available without re-reading
+	 * the chain.  Phase 7B will delete these atomics along
+	 * with the soft-limit auto-spill heuristic.
+	 */
+	memtable = get_memtable(local_state);
+	if (memtable)
+	{
+		pg_atomic_fetch_add_u64(&memtable->total_postings, term_count);
+		pg_atomic_fetch_add_u64(&memtable->num_terms, term_count);
+		pg_atomic_fetch_add_u64(&memtable->total_term_len, (uint64)vector_len);
+	}
+
+	/*
+	 * Corpus statistics: still bumped on the primary for
+	 * compatibility with vacuum's shrinkage protocol; readers
+	 * no longer trust these atomics.  Phase 7B deletes them
+	 * along with the per-index DSA state.
+	 */
+	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
+	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);
+
+	/* Track terms added in this transaction for bulk load detection. */
+	local_state->terms_added_this_xact += term_count;
+}
+
 /* ---------------------------------------------------------------------
  * Scaffold SQL functions.  Internal-only; subject to removal once
  * Phase 4+ provides end-to-end coverage.

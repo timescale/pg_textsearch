@@ -110,3 +110,31 @@ extern void tp_spill_finalize(
 		BlockNumber new_segment_root,
 		uint64		docs_delta,
 		uint64		len_delta);
+
+/* Forward declaration to avoid heavy header include. */
+typedef struct TpLocalIndexState TpLocalIndexState;
+
+/*
+ * Append one document to the on-disk memtable chain and update
+ * the per-transaction bulk-load counter.
+ *
+ * Memtable v2 (issue #374): the previous DSA-based posting and
+ * doc-length tables are gone; this is a thin wrapper around
+ * tp_memtable_append() that also bumps:
+ *   - corpus statistics (total_docs / total_len atomics, still
+ *     written by the primary for compatibility with vacuum's
+ *     shrinkage protocol; Phase 7B removes these),
+ *   - terms_added_this_xact, used by tp_bulk_load_spill_check.
+ *
+ * `vector_bytes` points to `vector_len` bytes of opaque payload
+ * (the in-memory v2 TpVector wire format).  The chain source
+ * reconstructs per-term postings on read.
+ */
+extern void tp_add_document_terms(
+		TpLocalIndexState *local_state,
+		Relation		   rel,
+		ItemPointer		   ctid,
+		const char		  *vector_bytes,
+		uint32			   vector_len,
+		int				   term_count,
+		int32			   doc_length);

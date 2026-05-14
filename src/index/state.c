@@ -41,8 +41,6 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
-#include "memtable/posting.h"
-#include "memtable/stringtable.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -827,36 +825,14 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 		else if (ls->shared != NULL && global_dsa != NULL)
 		{
 			/*
-			 * Runtime mode: memtable is in global DSA.
-			 * Destroy hash tables before freeing to avoid
-			 * leaking DSA memory.
+			 * Runtime mode: memtable_dp held DSA dshash tables
+			 * in v1; v2 keeps it allocated but empty.  Free the
+			 * stub allocation so the surrounding shared-state
+			 * free can complete.  Phase 7B removes the field
+			 * entirely.
 			 */
 			if (DsaPointerIsValid(ls->shared->memtable_dp))
-			{
-				TpMemtable *mt = (TpMemtable *)
-						dsa_get_address(global_dsa, ls->shared->memtable_dp);
-
-				if (mt->string_hash_handle != DSHASH_HANDLE_INVALID)
-				{
-					dshash_table *ht = tp_string_table_attach(
-							global_dsa, mt->string_hash_handle);
-					if (ht)
-					{
-						tp_string_table_clear(global_dsa, ht);
-						dshash_destroy(ht);
-					}
-				}
-
-				if (mt->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-				{
-					dshash_table *ht = tp_doclength_table_attach(
-							global_dsa, mt->doc_lengths_handle);
-					if (ht)
-						dshash_destroy(ht);
-				}
-
 				dsa_free(global_dsa, ls->shared->memtable_dp);
-			}
 		}
 
 		/* Free shared state from global DSA and unregister */
@@ -921,7 +897,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	dsa_area			 *dsa;
 	dsa_pointer			  shared_dp;
 	TpSharedIndexState	 *shared_state;
-	TpMemtable			 *memtable;
 	LocalStateCacheEntry *entry = NULL;
 	bool				  found;
 
@@ -961,41 +936,20 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
 
-	/* Get shared state to access memtable */
+	/* Get shared state */
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
-	memtable = (TpMemtable *)dsa_get_address(dsa, shared_state->memtable_dp);
-
-	/* Clear and destroy the string hash table if it exists */
-	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
-	{
-		dshash_table *string_hash;
-
-		string_hash =
-				tp_string_table_attach(dsa, memtable->string_hash_handle);
-		if (string_hash != NULL)
-		{
-			/* Free all strings and posting lists */
-			tp_string_table_clear(dsa, string_hash);
-			dshash_destroy(string_hash);
-		}
-	}
-
-	/* Destroy the document lengths hash table if it exists */
-	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-	{
-		dshash_table *doc_lengths_hash;
-
-		doc_lengths_hash =
-				tp_doclength_table_attach(dsa, memtable->doc_lengths_handle);
-		if (doc_lengths_hash != NULL)
-			dshash_destroy(doc_lengths_hash);
-	}
 
 	/* Subtract estimate from global counter before freeing */
 	tp_subtract_index_estimate(shared_state);
 
-	/* Free shared state structures from DSA */
-	dsa_free(dsa, shared_state->memtable_dp);
+	/*
+	 * v1 stored DSA dshash tables off shared_state->memtable_dp;
+	 * v2 keeps the stub allocation but doesn't populate it.
+	 * Free the stub so the surrounding shared-state free can
+	 * complete.  Phase 7B removes the field entirely.
+	 */
+	if (DsaPointerIsValid(shared_state->memtable_dp))
+		dsa_free(dsa, shared_state->memtable_dp);
 
 	/* Free shared_state */
 	dsa_free(dsa, shared_dp);
@@ -1322,49 +1276,16 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	}
 
 	/*
-	 * RUNTIME MODE: Use best-effort reclamation with dshash_destroy +
-	 * dsa_trim. This is the existing behavior for concurrent inserts.
+	 * RUNTIME MODE: v2 memtable contents live in shared
+	 * buffers (the on-disk chain), not in DSA.  Reset the
+	 * legacy auto-spill counters and trim the global DSA;
+	 * nothing else to do here.
 	 */
-	{
-		dshash_table *string_table;
-		dshash_table *doc_lengths_table;
-		Size		  dsa_size_before;
+	pg_atomic_write_u64(&memtable->total_postings, 0);
+	pg_atomic_write_u64(&memtable->num_terms, 0);
+	pg_atomic_write_u64(&memtable->total_term_len, 0);
 
-		dsa_size_before = dsa_get_total_size(local_state->dsa);
-
-		/* Destroy the string hash table */
-		if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
-		{
-			string_table = tp_string_table_attach(
-					local_state->dsa, memtable->string_hash_handle);
-			if (string_table)
-			{
-				tp_string_table_clear(local_state->dsa, string_table);
-				dshash_destroy(string_table);
-			}
-			memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-		}
-
-		/* Destroy the document lengths hash table */
-		if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-		{
-			doc_lengths_table = tp_doclength_table_attach(
-					local_state->dsa, memtable->doc_lengths_handle);
-			if (doc_lengths_table)
-				dshash_destroy(doc_lengths_table);
-			memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-		}
-
-		/* Reset counters */
-		pg_atomic_write_u64(&memtable->total_postings, 0);
-		pg_atomic_write_u64(&memtable->num_terms, 0);
-		pg_atomic_write_u64(&memtable->total_term_len, 0);
-
-		/* Try to reclaim DSA memory (best effort) */
-		dsa_trim(local_state->dsa);
-
-		(void)dsa_size_before;
-	}
+	dsa_trim(local_state->dsa);
 }
 
 /*

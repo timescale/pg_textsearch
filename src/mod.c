@@ -25,9 +25,6 @@
 #include "constants.h"
 #include "index/registry.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
-#include "memtable/stringtable.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 
@@ -323,15 +320,6 @@ _PG_init(void)
 	/* Install ProcessUtility hook for partitioned build tracking */
 	prev_process_utility_hook = ProcessUtility_hook;
 	ProcessUtility_hook		  = tp_process_utility;
-
-	/*
-	 * Register LWLock tranches for dshash tables used in parallel builds.
-	 * These must be registered in every process that might use them.
-	 */
-	LWLockRegisterTranche(TP_STRING_HASH_TRANCHE_ID, "tapir_string_hash");
-	LWLockRegisterTranche(
-			TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
-	LWLockRegisterTranche(TP_TRANCHE_POSTING_LOCK, "tapir_posting_lock");
 }
 
 /*

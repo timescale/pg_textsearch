@@ -14,7 +14,6 @@
 #include "index/source.h"
 #include "index/state.h"
 #include "memtable/chain_source.h"
-#include "memtable/memtable.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
 #include "segment/segment.h"
