@@ -164,5 +164,6 @@ window.BRANCH_INFO = {
   "6171de0d06705b5a8401274354fb15696021ed1c": "release-1.2.0",
   "831a896e8b1fddde2b0b2aff0c525f2db10c60f7": "greentodd/wikipedia-per-rank-validation",
   "bf9a450b659b355e2a6db7739bb7790b9de8e625": "greentodd/wikipedia-per-rank-validation",
-  "62308b82a5e514320d0802beab2ebe4ea33d751b": "main"
+  "62308b82a5e514320d0802beab2ebe4ea33d751b": "main",
+  "5bd3a2736d0228abc57f72e4f17f464cdb06f3d7": "memtable-v2"
 };
