@@ -1751,20 +1751,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		st = tp_get_local_index_state(RelationGetRelid(index));
 
-		if (RelationNeedsWAL(index))
-		{
-			tp_xlog_merge_linkage(
-					index,
-					level,
-					segment_count,
-					total_at_level,
-					remainder_head,
-					new_segment,
-					docs_shrinkage,
-					tokens_shrinkage,
-					st);
-		}
-		else
 		{
 			GenericXLogState *xlog_state;
 			Page			  meta_copy;
@@ -1776,8 +1762,10 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 			/*
 			 * Clamp atomic subs symmetrically with the metapage sub
-			 * below.  tp_sync_metapage_stats reads the atomic under
-			 * the same metapage lock, so this serializes against it.
+			 * below.  Phase 4: the shmem atomic no longer drives
+			 * query correctness, but vacuum's shrinkage protocol
+			 * still reads it, so we maintain it in lockstep with
+			 * the metapage.
 			 */
 			if (st != NULL && st->shared != NULL)
 			{

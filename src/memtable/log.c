@@ -196,6 +196,223 @@ memtable_extend_and_append(
 	return newblk;
 }
 
+/*
+ * Multi-page (fragment) write path.  Called when vector_len
+ * exceeds TP_MEMTABLE_PAGE_MAX_VECTOR_LEN.
+ *
+ * Pre-conditions:
+ *   - rel is open and the per-index LWLock is held SHARED.
+ *   - old_tailbuf is either:
+ *       (a) InvalidBuffer -- bootstrap path (chain was empty
+ *           when we last read the metapage).  We hold no
+ *           buffer lock on entry.
+ *       (b) Locked EXCLUSIVE by the caller and verified valid
+ *           + tail (next_block==Invalid).  We keep it locked
+ *           across the sequence and release it on return.
+ *
+ * Layout of the new pages we create:
+ *
+ *   Thead (regular memtable page; fragment head record)
+ *     ─► C1 (continuation page; payload chunk #1)
+ *           ─► C2 ─► ... ─► Cn ─► Tnew (regular memtable page;
+ *                                       initially empty, becomes
+ *                                       the new tail)
+ *
+ * Extensions are done in reverse order (Tnew first, then
+ * Cn..C1, then Thead) so each newly-initialized page already
+ * knows the block number of its successor.  Each new page gets
+ * its own GenericXLog record (FULL_IMAGE).
+ *
+ * Publish is one final GenericXLog covering at most 2 buffers:
+ *   - {meta}              for bootstrap; sets head=Thead, tail=Tnew.
+ *   - {old_tail, meta}    for extend; sets old_tail.next=Thead
+ *                         and meta.tail=Tnew.
+ *
+ * Returns the block number of Thead on success, or
+ * InvalidBlockNumber on a lost bootstrap race (caller should
+ * retry — the already-extended pages become orphans, reclaimed
+ * lazily by amvacuumcleanup).
+ *
+ * Crash safety: a crash anywhere up to and including the publish
+ * GenericXLog leaves orphan pages with valid magic but
+ * unreachable via meta.head → chain.  No code may sequentially
+ * scan the relation without validating each page via
+ * tp_memtable_page_is_valid().
+ */
+static BlockNumber
+memtable_append_fragment(
+		Relation	rel,
+		Buffer		old_tailbuf,
+		ItemPointer ctid,
+		int32		doc_length,
+		const char *vector_bytes,
+		uint32		vector_len)
+{
+	uint32			  inline_cap = tp_memtable_fragment_inline_capacity_max();
+	uint32			  cont_cap	 = tp_memtable_continuation_max_chunk();
+	uint32			  inline_len = inline_cap;
+	uint32			  remaining;
+	uint32			  n_cont;
+	BlockNumber		 *cont_blknos;
+	BlockNumber		  tnew_blkno;
+	BlockNumber		  thead_blkno;
+	Buffer			  metabuf;
+	GenericXLogState *xlog_state;
+	bool			  bootstrap = (old_tailbuf == InvalidBuffer);
+
+	Assert(vector_len > inline_cap);
+	Assert(cont_cap > 0);
+
+	remaining = vector_len - inline_len;
+	n_cont	  = (remaining + cont_cap - 1) / cont_cap;
+	Assert(n_cont >= 1);
+
+	cont_blknos = palloc(n_cont * sizeof(BlockNumber));
+
+	/* Step 1: extend Tnew (the post-fragment tail page). */
+	{
+		Buffer			  buf;
+		Page			  page_local;
+		GenericXLogState *x;
+
+		buf = ExtendBufferedRel(
+				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		tnew_blkno = BufferGetBlockNumber(buf);
+
+		x = GenericXLogStart(rel);
+		page_local =
+				GenericXLogRegisterBuffer(x, buf, GENERIC_XLOG_FULL_IMAGE);
+		tp_memtable_page_init(page_local);
+		/* next_block remains InvalidBlockNumber (tail) */
+
+		GenericXLogFinish(x);
+		UnlockReleaseBuffer(buf);
+	}
+
+	/*
+	 * Step 2: extend Cn..C1 in reverse, each linking to its
+	 * already-allocated successor.
+	 */
+	for (int i = (int)n_cont - 1; i >= 0; i--)
+	{
+		Buffer			  buf;
+		Page			  page_local;
+		GenericXLogState *x;
+		BlockNumber		  next_blk;
+		uint32			  chunk_off;
+		uint32			  chunk_len;
+
+		CHECK_FOR_INTERRUPTS();
+
+		next_blk  = (i == (int)n_cont - 1) ? tnew_blkno : cont_blknos[i + 1];
+		chunk_off = inline_len + (uint32)i * cont_cap;
+		Assert(chunk_off < vector_len);
+		chunk_len = vector_len - chunk_off;
+		if (chunk_len > cont_cap)
+			chunk_len = cont_cap;
+
+		buf = ExtendBufferedRel(
+				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		cont_blknos[i] = BufferGetBlockNumber(buf);
+
+		x = GenericXLogStart(rel);
+		page_local =
+				GenericXLogRegisterBuffer(x, buf, GENERIC_XLOG_FULL_IMAGE);
+		tp_memtable_continuation_page_init(
+				page_local, vector_bytes + chunk_off, chunk_len, next_blk);
+		GenericXLogFinish(x);
+		UnlockReleaseBuffer(buf);
+	}
+
+	/* Step 3: extend Thead and write the FRAGMENT head record. */
+	{
+		Buffer			  buf;
+		Page			  page_local;
+		GenericXLogState *x;
+
+		buf = ExtendBufferedRel(
+				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		thead_blkno = BufferGetBlockNumber(buf);
+
+		x = GenericXLogStart(rel);
+		page_local =
+				GenericXLogRegisterBuffer(x, buf, GENERIC_XLOG_FULL_IMAGE);
+		tp_memtable_page_init(page_local);
+		tp_memtable_page_append_fragment_head(
+				page_local,
+				ctid,
+				doc_length,
+				vector_bytes,
+				inline_len,
+				vector_len);
+		tp_memtable_page_set_next(page_local, cont_blknos[0]);
+		GenericXLogFinish(x);
+		UnlockReleaseBuffer(buf);
+	}
+
+	/* Step 4-5: publish. */
+	metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+	if (bootstrap)
+	{
+		Page			cur_mp	  = BufferGetPage(metabuf);
+		TpIndexMetaPage cur_metap = (TpIndexMetaPage)PageGetContents(cur_mp);
+
+		if (cur_metap->memtable_tail_blkno != InvalidBlockNumber)
+		{
+			/*
+			 * Lost bootstrap race: another backend populated the
+			 * chain while we were extending pages.  The pages we
+			 * extended are unreachable via meta and become
+			 * orphans; amvacuumcleanup reclaims them later.
+			 */
+			UnlockReleaseBuffer(metabuf);
+			pfree(cont_blknos);
+			return InvalidBlockNumber;
+		}
+
+		{
+			Page			meta_local;
+			TpIndexMetaPage metap;
+
+			xlog_state = GenericXLogStart(rel);
+			meta_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+			metap	   = (TpIndexMetaPage)PageGetContents(meta_local);
+			metap->memtable_head_blkno = thead_blkno;
+			metap->memtable_tail_blkno = tnew_blkno;
+			GenericXLogFinish(xlog_state);
+		}
+		UnlockReleaseBuffer(metabuf);
+	}
+	else
+	{
+		Page			old_tail_local;
+		Page			meta_local;
+		TpIndexMetaPage metap;
+
+		/*
+		 * We still hold old_tailbuf EXCL.  Caller already
+		 * verified old_tail.next_block == Invalid; concurrent
+		 * writers are blocked by that lock until we publish.
+		 */
+		xlog_state	   = GenericXLogStart(rel);
+		old_tail_local = GenericXLogRegisterBuffer(xlog_state, old_tailbuf, 0);
+		meta_local	   = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+
+		tp_memtable_page_set_next(old_tail_local, thead_blkno);
+		metap = (TpIndexMetaPage)PageGetContents(meta_local);
+		metap->memtable_tail_blkno = tnew_blkno;
+
+		GenericXLogFinish(xlog_state);
+		UnlockReleaseBuffer(metabuf);
+		UnlockReleaseBuffer(old_tailbuf);
+	}
+
+	pfree(cont_blknos);
+	return thead_blkno;
+}
+
 BlockNumber
 tp_memtable_append(
 		Relation	rel,
@@ -210,21 +427,6 @@ tp_memtable_append(
 	Assert(rel != NULL);
 	Assert(ctid != NULL);
 	Assert(vector_len == 0 || vector_bytes != NULL);
-
-	/*
-	 * Up-front size guard.  Reject records whose vector payload
-	 * cannot fit on an otherwise-empty page before any buffer
-	 * or WAL work — otherwise we would leak a relation
-	 * extension or have to ereport from inside a critical
-	 * section.
-	 */
-	if (vector_len > TP_MEMTABLE_PAGE_MAX_VECTOR_LEN)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("pg_textsearch memtable record too large: vector_len "
-						"%u exceeds maximum %u",
-						vector_len,
-						(unsigned)TP_MEMTABLE_PAGE_MAX_VECTOR_LEN)));
 
 	/*
 	 * Acquire the per-index LWLock in SHARED mode.  In Phase 2
@@ -244,12 +446,12 @@ tp_memtable_append(
 	tp_acquire_index_lock(index_state, LW_SHARED);
 
 	/*
-	 * Fast / extend / bootstrap retry loop.  Each retry is
-	 * caused by another backend either bootstrapping or
-	 * extending the chain; under bounded concurrency the loop
-	 * terminates.  We bound the iteration count defensively
-	 * with INT_MAX/2 just to surface any pathological live-lock
-	 * during development.
+	 * Fast / extend / bootstrap / fragment retry loop.  Each
+	 * retry is caused by another backend either bootstrapping
+	 * or extending the chain; under bounded concurrency the
+	 * loop terminates.  We bound the iteration count
+	 * defensively with INT_MAX/2 just to surface any
+	 * pathological live-lock during development.
 	 */
 	for (int iter = 0; iter < INT_MAX / 2; iter++)
 	{
@@ -261,6 +463,57 @@ tp_memtable_append(
 		CHECK_FOR_INTERRUPTS();
 
 		tail_blkno = memtable_read_tail_blkno(rel);
+
+		/*
+		 * Oversized record path.  Routes both the bootstrap
+		 * (tail_blkno==Invalid) and extend cases through the
+		 * shared fragment writer.
+		 */
+		if (vector_len > TP_MEMTABLE_PAGE_MAX_VECTOR_LEN)
+		{
+			Buffer fragment_old_tail = InvalidBuffer;
+
+			if (tail_blkno != InvalidBlockNumber)
+			{
+				tailbuf = ReadBuffer(rel, tail_blkno);
+				LockBuffer(tailbuf, BUFFER_LOCK_EXCLUSIVE);
+				tailpage = BufferGetPage(tailbuf);
+
+				if (!tp_memtable_page_is_valid(tailpage))
+				{
+					UnlockReleaseBuffer(tailbuf);
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("pg_textsearch memtable tail page at "
+									"block %u in index \"%s\" is not a valid "
+									"memtable page (magic mismatch)",
+									tail_blkno,
+									RelationGetRelationName(rel))));
+				}
+
+				if (tp_memtable_page_get_next(tailpage) != InvalidBlockNumber)
+				{
+					/* Stale tail.  Retry. */
+					UnlockReleaseBuffer(tailbuf);
+					continue;
+				}
+
+				fragment_old_tail = tailbuf;
+			}
+
+			result = memtable_append_fragment(
+					rel,
+					fragment_old_tail,
+					ctid,
+					doc_length,
+					vector_bytes,
+					vector_len);
+			if (result != InvalidBlockNumber)
+				return result;
+
+			/* Lost bootstrap race; retry. */
+			continue;
+		}
 
 		if (tail_blkno == InvalidBlockNumber)
 		{
@@ -336,6 +589,75 @@ tp_memtable_append(
 					"index \"%s\"",
 					RelationGetRelationName(rel))));
 	return InvalidBlockNumber; /* keep compilers happy */
+}
+
+/*
+ * tp_spill_finalize -- atomic spill publication.
+ *
+ * Updates the metapage to point at the new segment, resets the
+ * memtable chain head/tail, and bumps total_docs/total_len, all
+ * inside a single GenericXLog record.
+ *
+ * Caller must hold the per-index LWLock in EXCLUSIVE mode.
+ *
+ * If the new segment block is valid, we also splice its
+ * next_segment to the previous L0 head, adding it to the same
+ * GenericXLog record.  GenericXLog allows up to 4 buffers; we
+ * use at most 2 (meta + segment header).
+ */
+#include "segment/format.h"
+
+void
+tp_spill_finalize(
+		Relation	rel,
+		BlockNumber new_segment_root,
+		uint64		docs_delta,
+		uint64		len_delta)
+{
+	Buffer			  metabuf;
+	Buffer			  seg_buf = InvalidBuffer;
+	GenericXLogState *state;
+	Page			  metapage;
+	TpIndexMetaPage	  metap;
+	BlockNumber		  old_l0_head;
+
+	Assert(rel != NULL);
+
+	metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+	state	 = GenericXLogStart(rel);
+	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	old_l0_head = metap->level_heads[0];
+
+	if (new_segment_root != InvalidBlockNumber)
+	{
+		Page			 seg_page;
+		TpSegmentHeader *seg_header;
+
+		seg_buf = ReadBuffer(rel, new_segment_root);
+		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+		seg_page = GenericXLogRegisterBuffer(state, seg_buf, 0);
+		/* Ensure pd_lower covers content for GenericXLog */
+		((PageHeader)seg_page)->pd_lower = BLCKSZ;
+		seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
+		seg_header->next_segment = old_l0_head;
+
+		metap->level_heads[0] = new_segment_root;
+		metap->level_counts[0]++;
+	}
+
+	metap->memtable_head_blkno = InvalidBlockNumber;
+	metap->memtable_tail_blkno = InvalidBlockNumber;
+	metap->total_docs += docs_delta;
+	metap->total_len += len_delta;
+
+	GenericXLogFinish(state);
+	if (BufferIsValid(seg_buf))
+		UnlockReleaseBuffer(seg_buf);
+	UnlockReleaseBuffer(metabuf);
 }
 
 /* ---------------------------------------------------------------------
@@ -671,43 +993,230 @@ bm25_test_memtable_append(PG_FUNCTION_ARGS)
 			TEST_FAIL("found %d records, expected %d", idx, N);
 		TEST_OK();
 	}
-	else if (strcmp(case_name, "oversized_rejected") == 0)
+	else if (strcmp(case_name, "multi_page_fragment") == 0)
 	{
-		ItemPointerData ctid;
-		bool			raised	= false;
-		uint32			bad_len = TP_MEMTABLE_PAGE_MAX_VECTOR_LEN + 1;
-		char		   *vec		= palloc0(bad_len);
-
-		ItemPointerSet(&ctid, 1, 1);
-
-		PG_TRY();
-		{
-			tp_memtable_append(rel, &ctid, 0, vec, bad_len);
-		}
-		PG_CATCH();
-		{
-			FlushErrorState();
-			raised = true;
-		}
-		PG_END_TRY();
-		pfree(vec);
-
-		if (!raised)
-			TEST_FAIL("oversized append did not raise");
-
 		/*
-		 * Chain must be untouched: a fresh index test sees
-		 * an empty chain after the rejected call.
+		 * Append three records in sequence:
+		 *   1. A small record on a fresh page (ctid1).
+		 *   2. A record whose vector_len exceeds
+		 *      TP_MEMTABLE_PAGE_MAX_VECTOR_LEN (ctid2).  This
+		 *      forces the fragment branch: head page + N
+		 *      continuation pages + a fresh tail page.
+		 *   3. Another small record (ctid3), which should
+		 *      land on the just-extended fresh tail.
+		 *
+		 * Verify the resulting chain shape page-by-page and
+		 * that the fragment head record's metadata
+		 * round-trips (full vector_len, FRAGMENT flag, inline
+		 * prefix bytes match the input).
 		 */
-		{
-			TpIndexMetaPage metap = tp_get_metapage(rel);
+		ItemPointerData ctid1, ctid2, ctid3;
+		uint32			small_len = 64;
+		uint32			large_len;
+		char		   *small_vec;
+		char		   *large_vec;
+		uint32			inline_cap;
+		uint32			cont_cap;
+		uint32			expected_n_cont;
+		uint32			expected_total_pages;
+		uint32			observed_pages = 0;
+		BlockNumber		head_blk;
+		BlockNumber		tail_blk;
+		BlockNumber		cur;
+		TpIndexMetaPage metap;
 
-			if (metap->memtable_head_blkno != InvalidBlockNumber)
-				TEST_FAIL(
-						"chain mutated by rejected append (head=%u)",
-						metap->memtable_head_blkno);
-			pfree(metap);
+		inline_cap		= tp_memtable_fragment_inline_capacity_max();
+		cont_cap		= tp_memtable_continuation_max_chunk();
+		large_len		= inline_cap + (uint32)(2.5 * (double)cont_cap);
+		expected_n_cont = (large_len - inline_cap + cont_cap - 1) / cont_cap;
+		/* small_page + Thead + Cn + Tnew (the post-fragment tail). */
+		expected_total_pages = 1 + 1 + expected_n_cont + 1;
+
+		small_vec = palloc(small_len);
+		large_vec = palloc(large_len);
+		test_fill_vector(small_vec, small_len, 11);
+		test_fill_vector(large_vec, large_len, 22);
+
+		ItemPointerSet(&ctid1, 1, 1);
+		tp_memtable_append(rel, &ctid1, 10, small_vec, small_len);
+
+		ItemPointerSet(&ctid2, 2, 1);
+		tp_memtable_append(rel, &ctid2, 20, large_vec, large_len);
+
+		ItemPointerSet(&ctid3, 3, 1);
+		tp_memtable_append(rel, &ctid3, 30, small_vec, small_len);
+
+		metap	 = tp_get_metapage(rel);
+		head_blk = metap->memtable_head_blkno;
+		tail_blk = metap->memtable_tail_blkno;
+		pfree(metap);
+
+		if (head_blk == InvalidBlockNumber)
+			TEST_FAIL("head_blk Invalid after appends");
+		if (tail_blk == InvalidBlockNumber)
+			TEST_FAIL("tail_blk Invalid after appends");
+
+		cur = head_blk;
+		while (cur != InvalidBlockNumber)
+		{
+			Buffer				  buf;
+			Page				  page;
+			TpMemtablePageHeader *hdr;
+			BlockNumber			  next_blk;
+
+			buf = ReadBuffer(rel, cur);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			if (!tp_memtable_page_is_valid(page))
+			{
+				UnlockReleaseBuffer(buf);
+				TEST_FAIL("invalid page at block %u", cur);
+			}
+			hdr		 = tp_memtable_page_header(page);
+			next_blk = hdr->next_block;
+
+			if (observed_pages == 0)
+			{
+				/* Original small_record page (ctid1). */
+				TpMemtableRecord *r;
+
+				if ((hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("first page has CONTINUATION flag");
+				}
+				if (hdr->n_records != 1)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"first page n_records=%u, expected 1",
+							hdr->n_records);
+				}
+				r = tp_memtable_page_first(page);
+				if ((r->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("first page record has FRAGMENT flag");
+				}
+				if (!ItemPointerEquals(&r->ctid, &ctid1))
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("first page record ctid mismatch");
+				}
+			}
+			else if (observed_pages == 1)
+			{
+				/* Fragment head page. */
+				TpMemtableRecord *r;
+
+				if ((hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("fragment head has CONTINUATION flag");
+				}
+				if (hdr->n_records != 1)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"fragment head n_records=%u, expected 1",
+							hdr->n_records);
+				}
+				r = tp_memtable_page_first(page);
+				if ((r->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) == 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("fragment head record missing FRAGMENT flag");
+				}
+				if (r->vector_len != large_len)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"fragment vector_len=%u, expected %u",
+							r->vector_len,
+							large_len);
+				}
+				if (!ItemPointerEquals(&r->ctid, &ctid2))
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("fragment head ctid mismatch");
+				}
+				/* Spot-check inline prefix bytes. */
+				if (memcmp(r->vector_bytes, large_vec, 32) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("fragment inline prefix bytes mismatch");
+				}
+			}
+			else if (observed_pages < 2 + expected_n_cont)
+			{
+				/* Continuation page. */
+				if ((hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) == 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"expected continuation flag at page %u",
+							observed_pages);
+				}
+				if (hdr->n_records != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"continuation n_records=%u, expected 0",
+							hdr->n_records);
+				}
+			}
+			else
+			{
+				/* Tnew tail page containing ctid3. */
+				TpMemtableRecord *r;
+
+				if (cur != tail_blk)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"last page is block %u, but meta.tail=%u",
+							cur,
+							tail_blk);
+				}
+				if ((hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("tail page has CONTINUATION flag");
+				}
+				if (hdr->n_records != 1)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL(
+							"tail page n_records=%u, expected 1",
+							hdr->n_records);
+				}
+				r = tp_memtable_page_first(page);
+				if ((r->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("tail page record has FRAGMENT flag");
+				}
+				if (!ItemPointerEquals(&r->ctid, &ctid3))
+				{
+					UnlockReleaseBuffer(buf);
+					TEST_FAIL("tail page ctid mismatch");
+				}
+			}
+
+			UnlockReleaseBuffer(buf);
+			observed_pages++;
+			cur = next_blk;
 		}
+
+		if (observed_pages != expected_total_pages)
+			TEST_FAIL(
+					"observed %u pages, expected %u (n_cont=%u)",
+					observed_pages,
+					expected_total_pages,
+					expected_n_cont);
+
+		pfree(small_vec);
+		pfree(large_vec);
 		TEST_OK();
 	}
 

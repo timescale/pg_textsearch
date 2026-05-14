@@ -47,6 +47,24 @@
 #define TP_MEMTABLE_PAGE_FLAG_DEAD            \
 	0x0001 /* page has been spilled or merged \
 			* out; dead_fxid records when */
+/*
+ * Page contains continuation bytes of a previous record's
+ * oversized payload.  n_records is 0 and the on-page bytes
+ * between [first_record_offset, free_offset) form an opaque
+ * chunk of payload.  See tp_memtable_continuation_page_init().
+ */
+#define TP_MEMTABLE_PAGE_FLAG_CONTINUATION 0x0002
+
+/* Flags occupying the `flags` field of TpMemtableRecord. */
+/*
+ * Record's vector payload spans this page + one or more
+ * following continuation pages.  vector_len stores the FULL
+ * payload length; the inline byte count on this page is
+ * implicit (page_free_offset - record_offset - base_size).
+ * The record is always the sole record on its head page; the
+ * head page's next_block points to the first continuation.
+ */
+#define TP_MEMTABLE_RECORD_FLAG_FRAGMENT 0x0001
 
 /*
  * Tapir memtable page header.
@@ -80,11 +98,13 @@ typedef struct TpMemtablePageHeader
  */
 typedef struct TpMemtableRecord
 {
-	ItemPointerData ctid; /* heap tuple id of the indexed doc */
-	uint16			_pad; /* explicit padding so doc_length is 4-aligned */
+	ItemPointerData ctid;		/* heap tuple id of the indexed doc */
+	uint16			flags;		/* see TP_MEMTABLE_RECORD_FLAG_* */
 	int32			doc_length; /* token count of the indexed doc */
-	uint32			vector_len; /* byte length of vector_bytes */
-	char			vector_bytes[FLEXIBLE_ARRAY_MEMBER];
+	uint32			vector_len; /* byte length of full vector payload
+								 * (may exceed the inline byte count
+								 * when FRAGMENT flag is set) */
+	char vector_bytes[FLEXIBLE_ARRAY_MEMBER];
 } TpMemtableRecord;
 
 #define TP_MEMTABLE_RECORD_BASE_SIZE (offsetof(TpMemtableRecord, vector_bytes))
@@ -96,11 +116,13 @@ typedef struct TpMemtableRecord
 
 /*
  * Largest vector payload that can fit on an otherwise-empty
- * memtable page.  The writer rejects records whose vector_len
- * exceeds this up front (no buffer or WAL work performed).
+ * memtable page as a single (non-fragmented) record.  Records
+ * whose vector_len exceeds this are written via the FRAGMENT
+ * path: a head record on its own page followed by one or more
+ * continuation pages.
  *
- * Derived constant so callers can size sanity-check inputs
- * before touching the writer; the writer also re-checks.
+ * Derived constant so callers can sanity-check inputs before
+ * touching the writer; the writer also re-checks.
  */
 #define TP_MEMTABLE_PAGE_MAX_VECTOR_LEN                         \
 	((uint32)((BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET) - \
@@ -172,3 +194,75 @@ extern void		   tp_memtable_page_set_next(Page page, BlockNumber blk);
 
 /* Number of records currently on the page. */
 extern uint16 tp_memtable_page_n_records(Page page);
+
+/* ---------- multi-page (fragment) record support ---------- */
+
+/*
+ * Inline payload bytes that a FRAGMENT head record can store on
+ * an otherwise-empty page.  The remainder of the payload lives
+ * on continuation pages (chained via the head page's next_block,
+ * each continuation's own next_block).
+ *
+ * The fragment writer always sizes the inline prefix to this
+ * maximum so the head page contains exactly one (FRAGMENT)
+ * record and has no remaining free space — the page's
+ * free_offset advances to BLCKSZ.
+ */
+extern uint32 tp_memtable_fragment_inline_capacity_max(void);
+
+/*
+ * Append a FRAGMENT head record onto an otherwise-empty page.
+ * `total_vector_len` is the full payload length (must exceed
+ * TP_MEMTABLE_PAGE_MAX_VECTOR_LEN — caller ensures this).
+ * `prefix_len` bytes from `prefix` are copied inline; the
+ * remainder lives on continuation pages the caller will
+ * populate separately.
+ *
+ * `prefix_len` must equal tp_memtable_fragment_inline_capacity_max()
+ * (i.e. fill the page) — the caller is responsible for slicing
+ * the input payload accordingly.
+ *
+ * Returns a pointer into the page at the newly written record.
+ */
+extern TpMemtableRecord *tp_memtable_page_append_fragment_head(
+		Page		page,
+		ItemPointer ctid,
+		int32		doc_length,
+		const char *prefix,
+		uint32		prefix_len,
+		uint32		total_vector_len);
+
+/*
+ * Maximum payload chunk size, in bytes, that fits on a single
+ * continuation page.  Continuation pages carry no records;
+ * they are pure payload immediately following the page header.
+ */
+extern uint32 tp_memtable_continuation_max_chunk(void);
+
+/*
+ * Initialize `page` as a continuation page carrying `chunk_len`
+ * bytes of payload (`chunk` may be NULL only when chunk_len==0)
+ * and linking forward to `next_block`.  The page must already
+ * have been zeroed and laid out by PageInit().  Caller is
+ * responsible for ensuring chunk_len <= continuation_max_chunk().
+ */
+extern void tp_memtable_continuation_page_init(
+		Page		page,
+		const char *chunk,
+		uint32		chunk_len,
+		BlockNumber next_block);
+
+/*
+ * Returns true iff `page` carries a valid memtable page header
+ * with the CONTINUATION flag set.
+ */
+extern bool tp_memtable_page_is_continuation(Page page);
+
+/*
+ * Return a pointer to the chunk bytes stored on a continuation
+ * page; writes the chunk length to *out_len.  Caller holds the
+ * buffer pinned (and at least SHARED-locked) for the bytes'
+ * lifetime.
+ */
+extern const char *
+tp_memtable_continuation_page_chunk(Page page, uint32 *out_len);

@@ -125,7 +125,7 @@ tp_memtable_page_append(
 	rec = (TpMemtableRecord *)((char *)page + hdr->free_offset);
 
 	ItemPointerCopy(ctid, &rec->ctid);
-	rec->_pad		= 0;
+	rec->flags		= 0;
 	rec->doc_length = doc_length;
 	rec->vector_len = vector_len;
 	if (vector_len > 0)
@@ -182,6 +182,182 @@ uint16
 tp_memtable_page_n_records(Page page)
 {
 	return tp_memtable_page_header(page)->n_records;
+}
+
+/* ---------------------------------------------------------------------
+ * Multi-page (fragment) record support.
+ *
+ * Layout of a FRAGMENT head page:
+ *   header (flags=0, n_records=1, next_block=C1)
+ *   one TpMemtableRecord with flags=FRAGMENT, vector_len=FULL,
+ *   inline prefix bytes that fill the rest of the page.
+ *   The page's free_offset advances to BLCKSZ; nothing else
+ *   appends to this page.
+ *
+ * Layout of a continuation page:
+ *   header (flags=CONTINUATION, n_records=0, next_block=Cnext|Tnew|Invalid)
+ *   raw payload bytes at [first_record_offset, free_offset).
+ *   No record framing on this page.
+ *
+ * The chain walker, on encountering a FRAGMENT head, reassembles
+ * the full payload by reading inline bytes + each continuation's
+ * chunk in order, then skips past the last continuation when
+ * resuming the outer walk.
+ * ---------------------------------------------------------------------
+ */
+
+uint32
+tp_memtable_fragment_inline_capacity_max(void)
+{
+	/*
+	 * The head page starts empty (free_offset =
+	 * TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET).  After appending a
+	 * FRAGMENT head record with inline payload `inline_len`, the
+	 * page's free_offset must reach BLCKSZ exactly (under
+	 * MAXALIGN).  The record total size is
+	 * MAXALIGN(base + inline_len), so we want the largest
+	 * `inline_len` such that
+	 *   first_record_offset + MAXALIGN(base + inline_len) <= BLCKSZ
+	 *
+	 * Since first_record_offset and BLCKSZ are MAXALIGN-multiples,
+	 * MAXALIGN(base + inline_len) <= BLCKSZ - first_record_offset.
+	 * Solving: inline_len <= BLCKSZ - first_record_offset - base
+	 * once we account for the MAXALIGN.  The largest aligned
+	 * record total that fits is BLCKSZ - first_record_offset, so:
+	 */
+	return (uint32)((BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET) -
+					TP_MEMTABLE_RECORD_BASE_SIZE);
+}
+
+TpMemtableRecord *
+tp_memtable_page_append_fragment_head(
+		Page		page,
+		ItemPointer ctid,
+		int32		doc_length,
+		const char *prefix,
+		uint32		prefix_len,
+		uint32		total_vector_len)
+{
+	TpMemtablePageHeader *hdr;
+	TpMemtableRecord	 *rec;
+	uint32				  expected_prefix;
+
+	hdr				= tp_memtable_page_header(page);
+	expected_prefix = tp_memtable_fragment_inline_capacity_max();
+
+	if (prefix_len != expected_prefix)
+		elog(ERROR,
+			 "tp_memtable_page_append_fragment_head: prefix_len=%u "
+			 "must equal inline capacity %u",
+			 prefix_len,
+			 expected_prefix);
+
+	if (total_vector_len <= prefix_len)
+		elog(ERROR,
+			 "tp_memtable_page_append_fragment_head: total_vector_len=%u "
+			 "must exceed prefix_len=%u",
+			 total_vector_len,
+			 prefix_len);
+
+	if (hdr->n_records != 0 ||
+		hdr->free_offset != TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET)
+		elog(ERROR,
+			 "tp_memtable_page_append_fragment_head: head page must be "
+			 "empty (n_records=%u, free_offset=%u)",
+			 hdr->n_records,
+			 hdr->free_offset);
+
+	rec = (TpMemtableRecord *)((char *)page + hdr->free_offset);
+
+	ItemPointerCopy(ctid, &rec->ctid);
+	rec->flags		= TP_MEMTABLE_RECORD_FLAG_FRAGMENT;
+	rec->doc_length = doc_length;
+	rec->vector_len = total_vector_len;
+	if (prefix_len > 0)
+		memcpy(rec->vector_bytes, prefix, prefix_len);
+
+	/*
+	 * Advance free_offset to BLCKSZ.  The inline payload
+	 * occupies bytes [vector_bytes_offset, BLCKSZ); since
+	 * prefix_len == BLCKSZ - first_record_offset - base (the
+	 * formula above), free_offset = first_record_offset + base
+	 * + prefix_len = BLCKSZ exactly.  Sanity-asserted via the
+	 * arithmetic.
+	 */
+	hdr->free_offset = (uint16)BLCKSZ;
+	hdr->n_records	 = 1;
+
+	return rec;
+}
+
+uint32
+tp_memtable_continuation_max_chunk(void)
+{
+	/*
+	 * Continuation pages hold a single contiguous chunk of
+	 * payload bytes at [first_record_offset, BLCKSZ).  No
+	 * record framing; the chunk's length is implicit in the
+	 * page's free_offset.
+	 */
+	return (uint32)(BLCKSZ - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET);
+}
+
+void
+tp_memtable_continuation_page_init(
+		Page page, const char *chunk, uint32 chunk_len, BlockNumber next_block)
+{
+	TpMemtablePageHeader *hdr;
+	uint32				  cap = tp_memtable_continuation_max_chunk();
+
+	if (chunk_len > cap)
+		elog(ERROR,
+			 "tp_memtable_continuation_page_init: chunk_len %u exceeds "
+			 "capacity %u",
+			 chunk_len,
+			 cap);
+
+	PageInit(page, BLCKSZ, 0);
+
+	hdr				 = tp_memtable_page_header(page);
+	hdr->magic		 = TP_MEMTABLE_PAGE_MAGIC;
+	hdr->version	 = TP_MEMTABLE_PAGE_VERSION;
+	hdr->flags		 = TP_MEMTABLE_PAGE_FLAG_CONTINUATION;
+	hdr->n_records	 = 0;
+	hdr->free_offset = (uint16)(TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET +
+								chunk_len);
+	hdr->next_block	 = next_block;
+	hdr->dead_fxid	 = InvalidFullTransactionId;
+
+	if (chunk_len > 0)
+		memcpy((char *)page + TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET,
+			   chunk,
+			   chunk_len);
+
+	/*
+	 * Suppress the GenericXLog hole between pd_lower and pd_upper
+	 * for the same reason as regular memtable pages — see
+	 * tp_memtable_page_init().
+	 */
+	((PageHeader)page)->pd_lower = BLCKSZ;
+}
+
+bool
+tp_memtable_page_is_continuation(Page page)
+{
+	TpMemtablePageHeader *hdr = tp_memtable_page_header(page);
+
+	return tp_memtable_page_is_valid(page) &&
+		   (hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) != 0;
+}
+
+const char *
+tp_memtable_continuation_page_chunk(Page page, uint32 *out_len)
+{
+	TpMemtablePageHeader *hdr = tp_memtable_page_header(page);
+
+	Assert((hdr->flags & TP_MEMTABLE_PAGE_FLAG_CONTINUATION) != 0);
+	*out_len = (uint32)hdr->free_offset - TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET;
+	return (const char *)page + TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET;
 }
 
 /* ---------------------------------------------------------------------

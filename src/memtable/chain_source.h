@@ -60,3 +60,27 @@
  */
 extern TpDataSource *
 tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel);
+
+/*
+ * Extract a sorted term dictionary + finalized doc map from a
+ * chain source.  Used by the spill path (`tp_do_spill`) to feed
+ * `tp_write_segment` without re-walking the chain pages.
+ *
+ * The output arrays live in `dest_mcxt` and survive the source's
+ * `close()`.  Each TermInfo's `term`, `ctids`, and `freqs` are
+ * deep-copied out of the source's private mcxt so the caller can
+ * safely close the source before consuming the dictionary.  The
+ * TpDocMapBuilder is built fresh and `tp_docmap_finalize`-ed; the
+ * caller frees it via `tp_docmap_destroy`.
+ *
+ * Asserts that `src` is a chain source (not any other TpDataSource
+ * impl).
+ */
+struct TermInfo;
+struct TpDocMapBuilder;
+extern void tp_memtable_chain_source_extract(
+		TpDataSource			*src,
+		MemoryContext			 dest_mcxt,
+		struct TermInfo		   **out_terms,
+		uint32					*out_num_terms,
+		struct TpDocMapBuilder **out_docmap);

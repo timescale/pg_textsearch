@@ -37,7 +37,10 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/registry.h"
+#include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_source.h"
+#include "memtable/log.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "replication/replication.h"
@@ -1035,11 +1038,10 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	TpIndexMetaPage	   early_metap;
 	TpIndexMetaPage	   fresh_metap;
 	TpLocalIndexState *local_state;
-	Relation		   heap_rel;
-	BlockNumber		   heap_blocks;
 	Oid				   heap_oid;
-	uint32			   memtable_count;
-	uint64			   memtable_total_len;
+	TpDataSource	  *chain_src;
+	uint64			   chain_docs = 0;
+	uint64			   chain_len  = 0;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -1053,10 +1055,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 
 	/*
 	 * Read the metapage early so we can validate the magic before
-	 * registering shared state. Magic is set at index creation and
-	 * never changes, so this check is stable across replay. The
-	 * other metap fields (total_docs, first_docid_page, level_heads)
-	 * we read again post-drain — see below.
+	 * registering shared state.  Magic is set at index creation and
+	 * never changes, so this check is stable across replay.
 	 */
 	early_metap = tp_get_metapage(index_rel);
 	if (early_metap == NULL)
@@ -1083,20 +1083,11 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	pfree(early_metap);
 
 	/*
-	 * Register shared state up front. From this point on, redo of
-	 * INSERT_TERMS / SPILL / MERGE_LINKAGE records hits the
-	 * registry and applies to our shared state instead of being
-	 * silently skipped. We still need to drain WAL replay so docid
-	 * pages reflect everything that has been emitted (with
-	 * concurrent writers, INSERT_TERMS and the paired docid-page
-	 * GenericXLog can interleave). After the drain we acquire
-	 * LW_EXCLUSIVE and re-read the metapage, then make the
-	 * empty-index / stale-heap decisions and walk docid pages
-	 * against fresh data — the prior code decided based on the
-	 * pre-drain snapshot, which on a hot standby in mid-replay
-	 * could see total_docs=0 / first_docid_page=Invalid even
-	 * though the docid-page WAL was queued, silently losing the
-	 * cohort whose docid-page records were still pending.
+	 * Register shared state up front.  Phase 4: durable state
+	 * lives entirely on disk (metapage + chain pages + segment
+	 * pages).  No docid-page replay or memtable reconstruction
+	 * needed: the chain pages are themselves the durable record
+	 * of the unspilled documents.
 	 */
 	local_state = tp_create_shared_index_state(
 			index_oid, heap_oid, /* reuse_if_exists */ true);
@@ -1107,13 +1098,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Drain WAL replay before reading metap or walking docid pages.
-	 * Waiting for replay to catch up to the receive LSN gives us a
-	 * snapshot in which every WAL record emitted by the primary up
-	 * to drain start is visible on disk. Combined with the
-	 * LW_EXCLUSIVE acquired below and the idempotency gate in
-	 * tp_add_document_terms, concurrent replay can no longer cause
-	 * double-add or miss.
+	 * Drain WAL replay so the on-disk metapage and chain pages
+	 * we read below reflect everything emitted by the primary up
+	 * to drain start.
 	 */
 	if (RecoveryInProgress())
 	{
@@ -1128,22 +1115,9 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Hold LW_EXCLUSIVE across the rebuild. Three reasons:
-	 *
-	 *   1. tp_ensure_string_table_initialized (called via
-	 *      tp_rebuild_posting_lists_from_docids) requires
-	 *      LW_EXCLUSIVE per its contract — the cold-path
-	 *      hash-table init must not race with the LW_SHARED
-	 *      hot path in tp_get_or_create_posting_list.
-	 *
-	 *   2. INSERT_TERMS / SPILL / MERGE_LINKAGE redo records
-	 *      that arrive after the drain target block on this
-	 *      lock, so the metap re-read and docid walk see a
-	 *      consistent state.
-	 *
-	 *   3. Concurrent backend scans hold LW_SHARED, so they
-	 *      block until the rebuild releases — no scan ever
-	 *      sees a half-rebuilt memtable.
+	 * Hold LW_EXCLUSIVE across the seed.  Concurrent backend
+	 * scans hold LW_SHARED and block until we release, so no
+	 * scan sees a half-seeded shared state.
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
 
@@ -1159,71 +1133,26 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Heap-empty stale-data check (after drain so heap_blocks
-	 * reflects post-replay state). If the heap was TRUNCATEd or
-	 * recreated since the index was built but metap still claims
-	 * docs, log a warning and return the empty shared state we
-	 * already registered.
+	 * Seed shared corpus atomics so vacuum's shrinkage protocol
+	 * is consistent: shared->total_docs = persisted segment docs
+	 * + on-disk chain docs.  Query correctness does not depend
+	 * on the atomic anymore (Phase 4 reads metapage + chain
+	 * source directly).
 	 */
-	heap_rel	= relation_open(heap_oid, AccessShareLock);
-	heap_blocks = RelationGetNumberOfBlocks(heap_rel);
-	relation_close(heap_rel, AccessShareLock);
-
-	if (heap_blocks == 0 && fresh_metap->total_docs > 0)
+	chain_src = tp_memtable_chain_source_create(local_state, index_rel);
+	if (chain_src != NULL)
 	{
-		elog(WARNING,
-			 "Index %u metapage shows %lu documents but heap is "
-			 "empty - ignoring stale data",
-			 index_oid,
-			 (unsigned long)fresh_metap->total_docs);
-		pfree(fresh_metap);
-		tp_release_index_lock(local_state);
-		index_close(index_rel, AccessShareLock);
-		return local_state;
+		chain_docs = (uint64)chain_src->total_docs;
+		chain_len  = (uint64)chain_src->total_len;
+		tp_source_close(chain_src);
 	}
 
-	/*
-	 * Empty-index check on fresh metap. Decided post-drain so we
-	 * don't return early on a standby whose docid-page WAL is
-	 * still queued behind us — that was the silent miss flagged
-	 * in review.
-	 */
-	if (fresh_metap->total_docs == 0 &&
-		fresh_metap->first_docid_page == InvalidBlockNumber &&
-		fresh_metap->level_heads[0] == InvalidBlockNumber)
-	{
-		pfree(fresh_metap);
-		tp_release_index_lock(local_state);
-		index_close(index_rel, AccessShareLock);
-		return local_state;
-	}
-
-	tp_rebuild_posting_lists_from_docids(index_rel, local_state, fresh_metap);
-
-	/*
-	 * Set corpus stats as ground truth. fresh_metap covers the
-	 * spilled-segment slice; the doc-length table covers the
-	 * memtable slice (whatever the docid walk added plus
-	 * anything INSERT_TERMS redo applied to our registered
-	 * state during the drain — both routed through the same
-	 * idempotency gate, so each CTID counts exactly once).
-	 *
-	 * pg_atomic_write (not fetch_add): we are setting absolute
-	 * truth here under LW_EXCLUSIVE, not adding a delta. fetch_add
-	 * would double-count any cohort whose INSERT_TERMS hit the
-	 * registered shared state during the drain AND whose
-	 * post-spill total ended up in fresh_metap.total_docs via
-	 * SPILL's tp_sync_metapage_stats — the standby would then
-	 * report total_docs higher than the primary, skewing BM25 IDF
-	 * until backend restart.
-	 */
-	tp_doclength_summary(local_state, &memtable_count, &memtable_total_len);
 	pg_atomic_write_u32(
 			&local_state->shared->total_docs,
-			fresh_metap->total_docs + memtable_count);
+			(uint32)(fresh_metap->total_docs + chain_docs));
 	pg_atomic_write_u64(
 			&local_state->shared->total_len,
-			fresh_metap->total_len + memtable_total_len);
+			fresh_metap->total_len + chain_len);
 
 	pfree(fresh_metap);
 	tp_release_index_lock(local_state);
@@ -1742,7 +1671,6 @@ tp_bulk_load_spill_check(void)
 	{
 		TpLocalIndexState *local_state = entry->local_state;
 		Relation		   index_rel;
-		BlockNumber		   segment_root;
 		bool			   index_open_failed = false;
 
 		if (!local_state || !local_state->shared)
@@ -1779,23 +1707,8 @@ tp_bulk_load_spill_check(void)
 			continue;
 		}
 
-		/* Write the segment */
-		segment_root = tp_write_segment(local_state, index_rel);
-
-		/* Clear memtable and update metapage if spill succeeded */
-		if (segment_root != InvalidBlockNumber)
-		{
-			tp_clear_memtable(local_state);
-			tp_clear_docid_pages(index_rel);
-			tp_sync_metapage_stats(index_rel, local_state);
-
-			if (RelationNeedsWAL(index_rel))
-				tp_xlog_spill(index_rel, segment_root);
-			else
-				tp_link_l0_chain_head(index_rel, segment_root);
-
-			tp_maybe_compact_level(index_rel, 0);
-		}
+		/* Phase 4: unified spill path. */
+		(void)tp_do_spill(local_state, index_rel, NULL);
 
 		index_close(index_rel, RowExclusiveLock);
 		tp_release_index_lock(local_state);

@@ -107,7 +107,7 @@ FROM generate_series(1, 100) AS i;
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                4
+                5
 (1 row)
 
 -- Dump with multiple segments
@@ -212,7 +212,7 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                7
+               10
 (1 row)
 
 -- ORDER BY score LIMIT triggers BMW seek path on segments

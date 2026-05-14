@@ -8,11 +8,18 @@
 
 #include <postgres.h>
 
+#include <utils/rel.h>
+
 #include "index/source.h"
 #include "index/state.h"
 
 /*
  * Create a data source that reads from the memtable.
  * Caller must close with tp_source_close() when done.
+ *
+ * Phase 4 of issue #374: this delegates to
+ * tp_memtable_chain_source_create.  `rel` must be a valid open
+ * index relation; passing NULL is a programmer error.
  */
-extern TpDataSource *tp_memtable_source_create(TpLocalIndexState *local_state);
+extern TpDataSource *
+tp_memtable_source_create(TpLocalIndexState *local_state, Relation rel);

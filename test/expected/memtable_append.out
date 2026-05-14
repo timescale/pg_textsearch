@@ -107,18 +107,32 @@ NOTICE:  BM25 index build started for relation memtable_append_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
--- Oversized record is rejected; chain is untouched.
-SELECT bm25_test_memtable_append('memtable_append_idx', 'oversized_rejected');
+-- Oversized record goes through the multi-page (fragment) path:
+-- a fragment head page followed by N continuation pages and a
+-- fresh tail page, with a small bookend record on either side
+-- to verify the head record stays on the original page and the
+-- new tail can still accept subsequent appends.
+SELECT bm25_test_memtable_append('memtable_append_idx', 'multi_page_fragment');
  bm25_test_memtable_append 
 ---------------------------
  OK
 (1 row)
 
-SELECT count(*) AS chain_pages FROM bm25_memtable_chain('memtable_append_idx');
- chain_pages 
--------------
-           0
-(1 row)
+-- Page shape:
+--   small_record_page (n_records=1)
+--   fragment_head     (n_records=1, FRAGMENT flag set)
+--   continuation*N    (n_records=0, CONTINUATION flag set)
+--   new_tail          (n_records=1)
+SELECT n_records FROM bm25_memtable_chain('memtable_append_idx');
+ n_records 
+-----------
+         1
+         1
+         0
+         0
+         0
+         1
+(6 rows)
 
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;

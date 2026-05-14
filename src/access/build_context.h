@@ -109,10 +109,10 @@ tp_build_context_should_flush(TpBuildContext *ctx)
  * Returns a palloc'd array of TermInfo-like structures.
  * Caller must pfree the returned array.
  *
- * The returned TermInfo entries have:
+ * The returned TpBuildTermInfo entries have:
  *   - term, term_len: from the hash table entry
- *   - posting_list_dp: UNUSED (set to InvalidDsaPointer)
  *   - expull: pointer to the TpExpull in the hash table entry
+ *   - doc_freq: number of distinct documents for the term
  */
 typedef struct TpBuildTermInfo
 {

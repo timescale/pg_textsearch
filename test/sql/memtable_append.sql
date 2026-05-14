@@ -55,9 +55,18 @@ DROP INDEX memtable_append_idx;
 CREATE INDEX memtable_append_idx ON memtable_append_t
     USING bm25 (body) WITH (text_config = 'english');
 
--- Oversized record is rejected; chain is untouched.
-SELECT bm25_test_memtable_append('memtable_append_idx', 'oversized_rejected');
-SELECT count(*) AS chain_pages FROM bm25_memtable_chain('memtable_append_idx');
+-- Oversized record goes through the multi-page (fragment) path:
+-- a fragment head page followed by N continuation pages and a
+-- fresh tail page, with a small bookend record on either side
+-- to verify the head record stays on the original page and the
+-- new tail can still accept subsequent appends.
+SELECT bm25_test_memtable_append('memtable_append_idx', 'multi_page_fragment');
+-- Page shape:
+--   small_record_page (n_records=1)
+--   fragment_head     (n_records=1, FRAGMENT flag set)
+--   continuation*N    (n_records=0, CONTINUATION flag set)
+--   new_tail          (n_records=1)
+SELECT n_records FROM bm25_memtable_chain('memtable_append_idx');
 
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;

@@ -211,39 +211,49 @@ term_entry_append(
 
 /* ---------- record ingestion ---------- */
 
+/*
+ * Record one (ctid → doc_length) row in the source's
+ * doc-length HTAB.  Duplicate ctids in the chain would indicate
+ * a corrupt write (each heap tuple writes exactly one chain
+ * record); ereport on collision.
+ */
 static void
-ingest_record(TpMemtableChainSource *src, TpMemtableRecord *rec)
+ingest_doclen(TpMemtableChainSource *src, ItemPointer ctid, int32 doc_length)
 {
 	bool			  found;
 	ChainDocLenEntry *dle;
-	TpVector		 *vec;
-	TpVectorEntry	 *entry;
 
-	/*
-	 * Doc-length row.  Duplicate ctids in the chain would
-	 * indicate a corrupt write (each heap tuple writes exactly
-	 * one chain record); ereport on collision.
-	 */
 	dle = (ChainDocLenEntry *)
-			hash_search(src->doclen_ht, &rec->ctid, HASH_ENTER, &found);
+			hash_search(src->doclen_ht, ctid, HASH_ENTER, &found);
 	if (found)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pg_textsearch chain has duplicate ctid (%u,%u)",
-						ItemPointerGetBlockNumber(&rec->ctid),
-						ItemPointerGetOffsetNumber(&rec->ctid))));
-	dle->doc_length = rec->doc_length;
+						ItemPointerGetBlockNumber(ctid),
+						ItemPointerGetOffsetNumber(ctid))));
+	dle->doc_length = doc_length;
+}
 
-	/*
-	 * Vector payload: validate the wire format up front (after
-	 * which iteration is safe without per-entry bounds checks)
-	 * then walk entries.
-	 */
-	if (rec->vector_len == 0)
+/*
+ * Decode a v2 TpVector payload and append (ctid, freq) entries
+ * to per-term accumulators.  Payload may be inline on a record
+ * or reassembled across continuation pages by the caller.
+ */
+static void
+ingest_terms(
+		TpMemtableChainSource *src,
+		ItemPointer			   ctid,
+		const char			  *vector_bytes,
+		uint32				   vector_len)
+{
+	TpVector	  *vec;
+	TpVectorEntry *entry;
+
+	if (vector_len == 0)
 		return;
 
-	tpvector_validate_v2_buffer(rec->vector_bytes, rec->vector_len);
-	vec = (TpVector *)rec->vector_bytes;
+	tpvector_validate_v2_buffer(vector_bytes, vector_len);
+	vec = (TpVector *)vector_bytes;
 
 	entry = get_tpvector_first_entry(vec);
 	for (int i = 0; i < vec->entry_count; i++)
@@ -271,13 +281,144 @@ ingest_record(TpMemtableChainSource *src, TpMemtableRecord *rec)
 		term_cstr[v.lexeme_len] = '\0';
 
 		te = lookup_or_create_term(src, term_cstr, (int)v.lexeme_len);
-		term_entry_append(src, te, &rec->ctid, (int32)v.frequency);
+		term_entry_append(src, te, ctid, (int32)v.frequency);
 
 		if (term_cstr != stackbuf)
 			pfree(term_cstr);
 
 		entry = get_tpvector_next_entry(entry);
 	}
+}
+
+/*
+ * Reassemble a multi-page (FRAGMENT) record's payload.  On
+ * entry, `head_page` is the SHARED-locked page hosting the
+ * fragment head record `rec`.  This function walks the
+ * continuation chain (SHARED-locking each continuation page
+ * one at a time) and copies the full payload into a palloc'd
+ * buffer in src->mcxt.
+ *
+ * Returns the block number of the first non-continuation page
+ * after the last continuation (i.e. where the outer chain walk
+ * should resume), and writes the reassembled buffer pointer
+ * to *out_buf.  The caller is responsible for ingesting the
+ * payload before that buffer is reclaimed.
+ *
+ * Holding the head page SHARED across the walk is sufficient
+ * because: spill holds per-index LW_EXCLUSIVE (incompatible
+ * with our source's LW_SHARED), so the chain cannot disappear
+ * under us; concurrent writers only extend NEW (orphan) pages
+ * and only EXCL-lock the old tail and metapage, neither of
+ * which we touch here.
+ */
+static BlockNumber
+reassemble_fragment(
+		TpMemtableChainSource *src,
+		Relation			   rel,
+		Page				   head_page,
+		TpMemtableRecord	  *rec,
+		char				 **out_buf)
+{
+	TpMemtablePageHeader *hdr;
+	uint32				  full_len = rec->vector_len;
+	char				 *vec_start;
+	char				 *page_end;
+	uint32				  inline_len;
+	char				 *full;
+	uint32				  copied;
+	BlockNumber			  cont_blkno;
+	MemoryContext		  old;
+
+	hdr		  = tp_memtable_page_header(head_page);
+	vec_start = (char *)rec->vector_bytes;
+	page_end  = (char *)head_page + hdr->free_offset;
+
+	if (page_end <= vec_start)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("pg_textsearch fragment head record has no inline "
+						"payload")));
+
+	inline_len = (uint32)(page_end - vec_start);
+
+	if (inline_len >= full_len)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("pg_textsearch fragment record has inline_len=%u "
+						">= full_len=%u (should have been a regular record)",
+						inline_len,
+						full_len)));
+
+	old	 = MemoryContextSwitchTo(src->mcxt);
+	full = palloc(full_len);
+	MemoryContextSwitchTo(old);
+
+	memcpy(full, rec->vector_bytes, inline_len);
+	copied	   = inline_len;
+	cont_blkno = hdr->next_block;
+
+	while (copied < full_len)
+	{
+		Buffer		cbuf;
+		Page		cpage;
+		const char *chunk;
+		uint32		chunk_len;
+		BlockNumber next_blk;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (cont_blkno == InvalidBlockNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch fragment continuation chain "
+							"truncated: copied=%u, expected=%u",
+							copied,
+							full_len)));
+
+		cbuf = ReadBuffer(rel, cont_blkno);
+		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+		cpage = BufferGetPage(cbuf);
+
+		if (!tp_memtable_page_is_continuation(cpage))
+		{
+			UnlockReleaseBuffer(cbuf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch fragment continuation at block "
+							"%u is not a continuation page",
+							cont_blkno)));
+		}
+
+		chunk = tp_memtable_continuation_page_chunk(cpage, &chunk_len);
+		if (chunk_len == 0 || copied + chunk_len > full_len)
+		{
+			UnlockReleaseBuffer(cbuf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch fragment continuation at block "
+							"%u has invalid chunk_len=%u (copied=%u, "
+							"full_len=%u)",
+							cont_blkno,
+							chunk_len,
+							copied,
+							full_len)));
+		}
+
+		memcpy(full + copied, chunk, chunk_len);
+		copied += chunk_len;
+		next_blk = tp_memtable_page_get_next(cpage);
+		UnlockReleaseBuffer(cbuf);
+		cont_blkno = next_blk;
+	}
+
+	*out_buf = full;
+	/*
+	 * `cont_blkno` is the next_block of the LAST continuation
+	 * page we read — i.e. the block where the outer chain walk
+	 * should resume.  May be InvalidBlockNumber if the fragment
+	 * was the tail of the chain.
+	 */
+	return cont_blkno;
 }
 
 /* ---------- chain walk ---------- */
@@ -317,6 +458,27 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 							RelationGetRelationName(rel))));
 		}
 
+		/*
+		 * The outer chain walk must only ever traverse regular
+		 * memtable pages.  Continuation pages are reached
+		 * exclusively via reassemble_fragment() and skipped
+		 * past when the outer walk resumes.  Encountering a
+		 * continuation page here means either the writer
+		 * miscomputed next_block, or a fragment head record's
+		 * post-continuation pointer was lost.
+		 */
+		if (tp_memtable_page_is_continuation(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable outer walk reached "
+							"continuation page at block %u in index "
+							"\"%s\"",
+							cur,
+							RelationGetRelationName(rel))));
+		}
+
 		validate_page_layout(page, cur);
 
 		hdr	 = tp_memtable_page_header(page);
@@ -338,8 +500,12 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 			 * Defensive: each record's vector_len must fit in
 			 * the remaining page bytes.  free_offset already
 			 * ensures the record stream fits collectively;
-			 * this checks per-record bounds.
+			 * this checks per-record bounds.  Skipped for
+			 * FRAGMENT records, whose vector_len is the FULL
+			 * payload across pages (the on-page byte budget
+			 * is the inline prefix, bounded by free_offset).
 			 */
+			if ((rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) == 0)
 			{
 				char *rec_end = (char *)rec +
 								tp_memtable_record_size(rec->vector_len);
@@ -358,7 +524,48 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 				}
 			}
 
-			ingest_record(src, rec);
+			ingest_doclen(src, &rec->ctid, rec->doc_length);
+
+			if ((rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
+			{
+				char	   *full;
+				BlockNumber post_cont;
+
+				/*
+				 * FRAGMENT records must be the sole record on
+				 * their head page.  Otherwise the outer
+				 * walk's `next` semantics become ambiguous
+				 * (other records on the same page would never
+				 * be reached after the fragment redirects the
+				 * walk past the continuation chain).
+				 */
+				if (hdr->n_records != 1)
+				{
+					UnlockReleaseBuffer(buf);
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("pg_textsearch fragment head page %u "
+									"has n_records=%u (must be 1)",
+									cur,
+									hdr->n_records)));
+				}
+
+				post_cont = reassemble_fragment(src, rel, page, rec, &full);
+				ingest_terms(src, &rec->ctid, full, rec->vector_len);
+				pfree(full);
+
+				/*
+				 * Resume the outer walk after the last
+				 * continuation, not at the head page's
+				 * next_block (which points to the first
+				 * continuation).
+				 */
+				next = post_cont;
+				seen++;
+				break;
+			}
+
+			ingest_terms(src, &rec->ctid, rec->vector_bytes, rec->vector_len);
 			seen++;
 		}
 
@@ -550,6 +757,102 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 	}
 
 	return (TpDataSource *)src;
+}
+
+/* ---------- public extractor ---------- */
+
+#include "segment/dictionary.h"
+#include "segment/docmap.h"
+
+static int
+term_info_cmp(const void *a, const void *b)
+{
+	const TermInfo *ta = (const TermInfo *)a;
+	const TermInfo *tb = (const TermInfo *)b;
+	int				r  = strcmp(ta->term, tb->term);
+
+	return r;
+}
+
+void
+tp_memtable_chain_source_extract(
+		TpDataSource	 *base,
+		MemoryContext	  dest_mcxt,
+		TermInfo		**out_terms,
+		uint32			 *out_num_terms,
+		TpDocMapBuilder **out_docmap)
+{
+	TpMemtableChainSource *src = (TpMemtableChainSource *)base;
+	MemoryContext		   old;
+	HASH_SEQ_STATUS		   seq;
+	ChainTermEntry		  *te;
+	ChainDocLenEntry	  *dle;
+	uint32				   num_terms;
+	uint32				   i;
+	TermInfo			  *terms;
+	TpDocMapBuilder		  *docmap;
+
+	Assert(base != NULL);
+	Assert(base->ops == &chain_source_ops);
+	Assert(out_terms != NULL && out_num_terms != NULL && out_docmap != NULL);
+
+	old = MemoryContextSwitchTo(dest_mcxt);
+
+	/* Build docmap from the doclen HTAB. */
+	docmap = tp_docmap_create();
+	hash_seq_init(&seq, src->doclen_ht);
+	while ((dle = (ChainDocLenEntry *)hash_seq_search(&seq)) != NULL)
+		tp_docmap_add(docmap, &dle->ctid, (uint32)dle->doc_length);
+	tp_docmap_finalize(docmap);
+
+	/* Materialize the term dictionary. */
+	num_terms = (uint32)hash_get_num_entries(src->term_ht);
+	if (num_terms == 0)
+	{
+		*out_terms	   = NULL;
+		*out_num_terms = 0;
+		*out_docmap	   = docmap;
+		MemoryContextSwitchTo(old);
+		return;
+	}
+
+	terms = (TermInfo *)palloc0(num_terms * sizeof(TermInfo));
+	i	  = 0;
+	hash_seq_init(&seq, src->term_ht);
+	while ((te = (ChainTermEntry *)hash_seq_search(&seq)) != NULL)
+	{
+		uint32 c = (uint32)te->count;
+
+		terms[i].term_len = (uint32)strlen(te->term);
+		terms[i].term	  = (char *)palloc(terms[i].term_len + 1);
+		memcpy(terms[i].term, te->term, terms[i].term_len + 1);
+		terms[i].count	  = c;
+		terms[i].doc_freq = (uint32)te->doc_freq;
+
+		if (c > 0)
+		{
+			terms[i].ctids = (ItemPointerData *)palloc(
+					c * sizeof(ItemPointerData));
+			memcpy(terms[i].ctids, te->ctids, c * sizeof(ItemPointerData));
+			terms[i].freqs = (int32 *)palloc(c * sizeof(int32));
+			memcpy(terms[i].freqs, te->frequencies, c * sizeof(int32));
+		}
+
+		i++;
+	}
+	Assert(i == num_terms);
+
+	/* Sort lexicographically for the segment writer's dict layout. */
+	qsort(terms, num_terms, sizeof(TermInfo), term_info_cmp);
+
+	for (i = 0; i < num_terms; i++)
+		terms[i].dict_entry_idx = i;
+
+	*out_terms	   = terms;
+	*out_num_terms = num_terms;
+	*out_docmap	   = docmap;
+
+	MemoryContextSwitchTo(old);
 }
 
 /* ---------------------------------------------------------------------
@@ -861,6 +1164,117 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 					tp_source_get_doc_length(src, &ctid_b));
 		if (tp_source_get_doc_length(src, &ctid_missing) != -1)
 			TEST_FAIL("doc_length(missing) != -1");
+		TEST_OK();
+	}
+	else if (strcmp(case_name, "fragment_roundtrip") == 0)
+	{
+		/*
+		 * Construct a TpVector whose payload exceeds
+		 * TP_MEMTABLE_PAGE_MAX_VECTOR_LEN so the writer takes
+		 * the fragment branch (head page + N continuations
+		 * + fresh tail).  Then verify the chain source
+		 * reassembles the payload and round-trips per-term
+		 * postings and the doc-length entry.
+		 */
+		const int		N_TERMS	 = 240;
+		const int		LEX_LEN	 = 60;
+		const char	  **terms	 = palloc(N_TERMS * sizeof(char *));
+		int32		   *freqs	 = palloc(N_TERMS * sizeof(int32));
+		int32			expected = 0;
+		ItemPointerData ctid;
+		TpPostingData  *post;
+		uint32			vec_len;
+
+		for (int i = 0; i < N_TERMS; i++)
+		{
+			char *t = palloc(LEX_LEN + 1);
+			snprintf(t, LEX_LEN + 1, "frag_%05d_", i);
+			/*
+			 * Pad with deterministic bytes so each lexeme is
+			 * exactly LEX_LEN characters; the lookup later
+			 * needs to use the same encoding.
+			 */
+			for (int j = (int)strlen(t); j < LEX_LEN; j++)
+				t[j] = 'a' + (j % 26);
+			t[LEX_LEN] = '\0';
+			terms[i]   = t;
+			freqs[i]   = i + 1;
+			expected += freqs[i];
+		}
+
+		/*
+		 * Sanity: confirm the resulting TpVector exceeds the
+		 * single-page cap so we're actually exercising the
+		 * fragment path.
+		 */
+		{
+			TpVector *v = test_make_tpvector(idx_name, N_TERMS, terms, freqs);
+			vec_len		= VARSIZE(v);
+			pfree(v);
+		}
+		if (vec_len <= TP_MEMTABLE_PAGE_MAX_VECTOR_LEN)
+			TEST_FAIL(
+					"test built TpVector with len=%u (<= max %u); "
+					"increase N_TERMS/LEX_LEN to exercise fragmentation",
+					vec_len,
+					(unsigned)TP_MEMTABLE_PAGE_MAX_VECTOR_LEN);
+
+		ItemPointerSet(&ctid, 700, 1);
+		test_append_terms(rel, idx_name, &ctid, N_TERMS, terms, freqs);
+
+		src = tp_memtable_chain_source_create(state, rel);
+		if (src == NULL)
+			TEST_FAIL("chain source NULL after fragment append");
+
+		if (src->total_docs != 1)
+			TEST_FAIL("total_docs=%d, expected 1", src->total_docs);
+		if (src->total_len != expected)
+			TEST_FAIL(
+					"total_len=%lld, expected %d",
+					(long long)src->total_len,
+					expected);
+		if (tp_source_get_doc_length(src, &ctid) != expected)
+			TEST_FAIL(
+					"doc_length=%d, expected %d",
+					tp_source_get_doc_length(src, &ctid),
+					expected);
+
+		/* Spot-check a handful of terms across the payload. */
+		{
+			int probe_idx[] = {0, 1, N_TERMS / 4, N_TERMS / 2, N_TERMS - 1};
+
+			for (size_t k = 0; k < sizeof(probe_idx) / sizeof(probe_idx[0]);
+				 k++)
+			{
+				int			i = probe_idx[k];
+				const char *t = terms[i];
+
+				post = tp_source_get_postings(src, t);
+				if (post == NULL)
+					TEST_FAIL("get_postings(%s) returned NULL", t);
+				if (post->count != 1)
+					TEST_FAIL("count for %s = %d, expected 1", t, post->count);
+				if (post->doc_freq != 1)
+					TEST_FAIL(
+							"doc_freq for %s = %d, expected 1",
+							t,
+							post->doc_freq);
+				if (!ItemPointerEquals(&post->ctids[0], &ctid))
+					TEST_FAIL("ctid mismatch for %s", t);
+				if (post->frequencies[0] != freqs[i])
+					TEST_FAIL(
+							"freq for %s = %d, expected %d",
+							t,
+							post->frequencies[0],
+							freqs[i]);
+				tp_source_free_postings(src, post);
+			}
+		}
+
+		for (int i = 0; i < N_TERMS; i++)
+			pfree((void *)terms[i]);
+		pfree(terms);
+		pfree(freqs);
 		TEST_OK();
 	}
 

@@ -828,7 +828,7 @@ tp_evict_largest_memtable(Oid caller_oid)
 		uint64			   target_est = candidates[i].estimated_bytes;
 		TpLocalIndexState *target_state;
 		Relation		   index_rel	 = NULL;
-		BlockNumber		   segment_root	 = InvalidBlockNumber;
+		bool			   spilled		 = false;
 		bool			   lock_was_ours = false;
 
 		target_state = tp_get_local_index_state(target_oid);
@@ -875,28 +875,15 @@ tp_evict_largest_memtable(Oid caller_oid)
 		 */
 		index_rel = index_open(target_oid, NoLock);
 
-		segment_root = tp_write_segment(target_state, index_rel);
+		spilled = tp_do_spill(target_state, index_rel, NULL);
 
-		if (segment_root != InvalidBlockNumber)
-		{
-			tp_clear_memtable(target_state);
-			tp_clear_docid_pages(index_rel);
-			tp_sync_metapage_stats(index_rel, target_state);
-
-			if (RelationNeedsWAL(index_rel))
-				tp_xlog_spill(index_rel, segment_root);
-			else
-				tp_link_l0_chain_head(index_rel, segment_root);
-
-			tp_maybe_compact_level(index_rel, 0);
-
+		if (spilled)
 			elog(LOG,
 				 "pg_textsearch: memory pressure, "
 				 "spilled memtable for index %u "
 				 "(est " UINT64_FORMAT " kB)",
 				 target_oid,
 				 (uint64)(target_est / 1024));
-		}
 
 		if (!lock_was_ours)
 			tp_release_index_lock(target_state);
@@ -910,7 +897,7 @@ tp_evict_largest_memtable(Oid caller_oid)
 		 * If the memtable was empty (stale candidate),
 		 * try the next candidate.
 		 */
-		if (segment_root != InvalidBlockNumber)
+		if (spilled)
 			return true;
 		/* else continue to next candidate */
 	}

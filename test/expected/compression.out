@@ -29,7 +29,7 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('compression_idx');
  bm25_spill_index 
 ------------------
-                2
+                4
 (1 row)
 
 -- Query should work correctly with compressed segments
@@ -71,7 +71,7 @@ FROM generate_series(1, 100) AS i;
 SELECT bm25_spill_index('compression_idx');
  bm25_spill_index 
 ------------------
-                6
+                9
 (1 row)
 
 -- Query across both segments
@@ -130,7 +130,7 @@ FROM generate_series(1, 150) AS i;
 SELECT bm25_spill_index('uncompressed_idx');
  bm25_spill_index 
 ------------------
-                2
+                3
 (1 row)
 
 -- Should work the same
@@ -166,7 +166,7 @@ FROM generate_series(1, 150) AS i;
 SELECT bm25_spill_index('mixed_idx');
  bm25_spill_index 
 ------------------
-                2
+                3
 (1 row)
 
 -- Verify compressed segment works
@@ -186,7 +186,7 @@ FROM generate_series(151, 300) AS i;
 SELECT bm25_spill_index('mixed_idx');
  bm25_spill_index 
 ------------------
-                6
+                8
 (1 row)
 
 -- Query should work across mixed compressed/uncompressed segments
@@ -221,7 +221,7 @@ FROM generate_series(301, 450) AS i;
 SELECT bm25_spill_index('mixed_idx');
  bm25_spill_index 
 ------------------
-               10
+               13
 (1 row)
 
 -- Now we have: compressed segment, uncompressed segment, compressed segment
@@ -256,7 +256,7 @@ FROM generate_series(1, 150) AS i;
 SELECT bm25_spill_index('mixed_idx2');
  bm25_spill_index 
 ------------------
-                2
+                3
 (1 row)
 
 -- Enable compression
@@ -268,7 +268,7 @@ FROM generate_series(151, 300) AS i;
 SELECT bm25_spill_index('mixed_idx2');
  bm25_spill_index 
 ------------------
-                6
+                8
 (1 row)
 
 -- Query across uncompressed and compressed segments

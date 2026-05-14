@@ -24,7 +24,7 @@ INSERT INTO bmw_bug (content) SELECT 'beta only ' || i FROM generate_series(7, 2
 SELECT bm25_spill_index('bmw_bug_idx');
  bm25_spill_index 
 ------------------
-                2
+                4
 (1 row)
 
 -- Posting list layout in segment:
@@ -116,7 +116,7 @@ FROM generate_series(1, 500) i;
 SELECT bm25_spill_index('wand_many_terms_idx');
  bm25_spill_index 
 ------------------
-                2
+                8
 (1 row)
 
 -- 8-term query: WAND vs exhaustive (LIMIT 10 avoids tie boundary)

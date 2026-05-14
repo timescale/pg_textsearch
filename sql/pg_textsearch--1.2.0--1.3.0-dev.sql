@@ -57,3 +57,13 @@ REVOKE EXECUTE ON FUNCTION bm25_test_memtable_append(text, text)
 REVOKE EXECUTE ON FUNCTION bm25_memtable_chain(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_test_chain_source(text, text)
     FROM PUBLIC;
+
+-- Standalone scoring functions are not parallel-safe: they open the index
+-- relation by name, attach per-backend state, and walk the on-disk memtable
+-- chain under shared latches.  Parallel workers attempting the same setup
+-- do not survive worker startup reliably.  Ranked queries should use
+-- ORDER BY <@> ... LIMIT n, which uses an index scan and does not exercise
+-- these functions in workers.
+ALTER FUNCTION bm25_text_bm25query_score(text, bm25query) PARALLEL UNSAFE;
+ALTER FUNCTION bm25_textarray_bm25query_score(text[], bm25query)
+    PARALLEL UNSAFE;

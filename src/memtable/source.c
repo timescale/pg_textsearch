@@ -8,8 +8,10 @@
 
 #include <lib/dshash.h>
 #include <utils/memutils.h>
+#include <utils/rel.h>
 
 #include "index/source.h"
+#include "memtable/chain_source.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/source.h"
@@ -130,38 +132,18 @@ static const TpDataSourceOps memtable_source_ops = {
 
 /*
  * Create a data source that reads from the memtable.
+ *
+ * Phase 4 of issue #374: this is now a thin wrapper around
+ * tp_memtable_chain_source_create.  The legacy DSA-backed
+ * implementation (memtable_get_postings / memtable_get_doc_length /
+ * memtable_close above) is no longer reachable from production
+ * code; the dshash machinery and TpMemtableSource struct remain
+ * compiled but unused until Phase 7 teardown.
  */
 TpDataSource *
-tp_memtable_source_create(TpLocalIndexState *local_state)
+tp_memtable_source_create(TpLocalIndexState *local_state, Relation rel)
 {
-	TpMemtableSource *ms;
-	TpMemtable		 *memtable;
-
 	Assert(local_state != NULL);
 
-	memtable = get_memtable(local_state);
-	if (!memtable || pg_atomic_read_u64(&memtable->total_postings) == 0)
-		return NULL;
-
-	ms			 = (TpMemtableSource *)palloc0(sizeof(TpMemtableSource));
-	ms->base.ops = &memtable_source_ops;
-	ms->base.total_docs = pg_atomic_read_u32(&local_state->shared->total_docs);
-	ms->base.total_len	= pg_atomic_read_u64(&local_state->shared->total_len);
-	ms->local_state		= local_state;
-
-	/* Attach to string table if available */
-	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
-	{
-		ms->string_table = tp_string_table_attach(
-				local_state->dsa, memtable->string_hash_handle);
-	}
-
-	/* Attach to doc length table if available */
-	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
-	{
-		ms->doclength_table = tp_doclength_table_attach(
-				local_state->dsa, memtable->doc_lengths_handle);
-	}
-
-	return (TpDataSource *)ms;
+	return tp_memtable_chain_source_create(local_state, rel);
 }

@@ -7,27 +7,39 @@
 #pragma once
 
 #include "postgres.h"
-#include "utils/dsa.h"
+#include "storage/itemptr.h"
 
 /* Forward declarations */
-struct TpLocalIndexState;
+struct TpDataSource;
 struct TpSegmentReader;
 struct TpSegmentHeader;
 
 /*
- * Term info for building dictionary
+ * Term info for building a segment dictionary.
+ *
+ * The ctids/freqs arrays are owned by the caller (typically the
+ * caller's memory context, e.g. the chain source's private mcxt that
+ * already holds the parallel ctid/freq arrays).  tp_write_segment
+ * reads them directly; it does not free or take ownership.
  */
 typedef struct TermInfo
 {
-	char	   *term;			 /* The term text */
-	uint32		term_len;		 /* Term length */
-	dsa_pointer posting_list_dp; /* DSA pointer to posting list */
-	uint32		dict_entry_idx;	 /* Index in dict_entries array */
+	char			*term;			 /* The term text */
+	uint32			 term_len;		 /* Term length */
+	ItemPointerData *ctids;			 /* Array of doc CTIDs (len = count) */
+	int32			*freqs;			 /* Array of term freqs (len = count) */
+	uint32			 count;			 /* Length of ctids/freqs */
+	uint32			 doc_freq;		 /* Document frequency (used for IDF) */
+	uint32			 dict_entry_idx; /* Index in dict_entries array */
 } TermInfo;
 
-/* Dictionary building functions */
-extern TermInfo *
-tp_build_dictionary(struct TpLocalIndexState *state, uint32 *num_terms);
+/*
+ * Free a TermInfo[] previously returned by a dictionary builder.
+ *
+ * Only the `term` strings are freed; the ctids/freqs arrays are
+ * presumed to live in the source's memory context and are dropped
+ * when that context is reset.
+ */
 extern void tp_free_dictionary(TermInfo *terms, uint32 num_terms);
 
 /* Shared term-reading helper */

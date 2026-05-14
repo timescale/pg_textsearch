@@ -72,9 +72,10 @@ extern void tp_ensure_string_table_initialized(TpLocalIndexState *local_state);
 /* Document term management functions */
 extern void tp_add_document_terms(
 		TpLocalIndexState *local_state,
+		Relation		   rel,
 		ItemPointer		   ctid,
-		char			 **terms,
-		int32			  *frequencies,
+		const char		  *vector_bytes,
+		uint32			   vector_len,
 		int				   term_count,
 		int32			   doc_length);
 

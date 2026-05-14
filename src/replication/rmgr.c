@@ -85,130 +85,21 @@ tp_register_rmgr(void)
  * docid pages, picking up everything the missed redo would have
  * applied.
  */
+/*
+ * Phase 4: INSERT_TERMS records are no longer emitted. This redo
+ * stub exists only because the rmgr is still registered; we PANIC
+ * if we ever see one, since Decision 4 of the v2 plan requires
+ * REINDEX on upgrade — any legitimate primary will not emit these.
+ *
+ * Phase 8 removes the rmgr entirely along with this file.
+ */
 static void
 tp_redo_apply_insert_terms(XLogReaderState *record)
 {
-	char			   *raw = XLogRecGetData(record);
-	xl_tp_insert_terms *hdr = (xl_tp_insert_terms *)raw;
-	TpVector		   *vec;
-	TpSharedIndexState *shared;
-	dsa_area		   *dsa;
-	TpLocalIndexState	stack_local;
-	TpVectorEntry	   *vector_entry;
-	char			  **terms		= NULL;
-	int32			   *frequencies = NULL;
-	int					term_count;
-	int					doc_length = 0;
-	int					i;
-
-	/*
-	 * Validate header length first — reading hdr->vector_size before
-	 * confirming the record contains a full header would dereference
-	 * past the validated WAL buffer for a degenerate < sizeof(*hdr)
-	 * record. Practically unreachable (CRC + single emitter), but
-	 * the check is here, so make it actually correct.
-	 */
-	if (XLogRecGetDataLen(record) < sizeof(*hdr))
-		elog(PANIC,
-			 "INSERT_TERMS header truncated: got %u, need %zu",
-			 XLogRecGetDataLen(record),
-			 sizeof(*hdr));
-	if (XLogRecGetDataLen(record) < sizeof(*hdr) + hdr->vector_size)
-		elog(PANIC,
-			 "INSERT_TERMS vector truncated: declared %u, got %u",
-			 hdr->vector_size,
-			 (uint32)(XLogRecGetDataLen(record) - sizeof(*hdr)));
-
-	vec = (TpVector *)(raw + sizeof(*hdr));
-	vec = tpvector_canonicalize(vec);
-
-	term_count = vec->entry_count;
-	if (term_count == 0)
-		return;
-
-	/*
-	 * Find shared state. If no registry entry yet, skip — first
-	 * backend access of this index on the standby will rebuild
-	 * from docid pages.
-	 */
-	{
-		/*
-		 * tp_registry_lookup returns the dsa_pointer cast as a
-		 * TpSharedIndexState *; the caller is responsible for
-		 * resolving via dsa_get_address.
-		 */
-		TpSharedIndexState *raw = tp_registry_lookup(hdr->index_oid);
-		dsa_pointer			shared_dp;
-
-		if (raw == NULL)
-			return;
-
-		shared_dp = (dsa_pointer)(uintptr_t)raw;
-		dsa		  = tp_registry_get_dsa();
-		if (dsa == NULL)
-			return;
-		shared = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
-	}
-
-	memset(&stack_local, 0, sizeof(stack_local));
-	stack_local.shared		  = shared;
-	stack_local.dsa			  = dsa;
-	stack_local.is_build_mode = false;
-	stack_local.lock_held	  = false;
-	stack_local.lock_mode	  = LW_SHARED;
-
-	/* Decode entries into terms[] / frequencies[]. */
-	terms		= palloc(term_count * sizeof(char *));
-	frequencies = palloc(term_count * sizeof(int32));
-
-	vector_entry = TPVECTOR_ENTRIES_PTR(vec);
-	for (i = 0; i < term_count; i++)
-	{
-		TpVectorEntryView v;
-		char			 *lexeme;
-
-		tpvector_entry_decode(vector_entry, &v);
-
-		lexeme = palloc(v.lexeme_len + 1);
-		memcpy(lexeme, v.lexeme, v.lexeme_len);
-		lexeme[v.lexeme_len] = '\0';
-
-		terms[i]	   = lexeme;
-		frequencies[i] = (int32)v.frequency;
-		doc_length += v.frequency;
-
-		vector_entry = get_tpvector_next_entry(vector_entry);
-	}
-
-	{
-		TpMemtable *mt;
-		bool		need_init;
-
-		mt		  = get_memtable(&stack_local);
-		need_init = mt && (mt->string_hash_handle == DSHASH_HANDLE_INVALID ||
-						   mt->doc_lengths_handle == DSHASH_HANDLE_INVALID);
-
-		tp_acquire_index_lock(
-				&stack_local, need_init ? LW_EXCLUSIVE : LW_SHARED);
-
-		if (need_init)
-			tp_ensure_string_table_initialized(&stack_local);
-
-		tp_add_document_terms(
-				&stack_local,
-				&hdr->ctid,
-				terms,
-				frequencies,
-				term_count,
-				doc_length);
-
-		tp_release_index_lock(&stack_local);
-	}
-
-	for (i = 0; i < term_count; i++)
-		pfree(terms[i]);
-	pfree(terms);
-	pfree(frequencies);
+	(void)record;
+	elog(PANIC,
+		 "tp_redo_apply_insert_terms: legacy INSERT_TERMS WAL record "
+		 "encountered after Phase 4 switchover; REINDEX required");
 }
 
 /*

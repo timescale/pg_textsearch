@@ -54,9 +54,6 @@
  *     bytes)
  *
  * On entry, this function:
- *   - Validates `vector_len` against TP_MEMTABLE_PAGE_MAX_VECTOR_LEN
- *     and ereports ERROR if oversized.  No buffer or WAL work
- *     is performed in that case.
  *   - Acquires the per-index LWLock in SHARED mode (idempotent
  *     within an xact via tp_acquire_index_lock).
  *   - Bootstraps the chain (first append) under one GenericXLog
@@ -64,7 +61,14 @@
  *   - Appends to the existing tail page under one GenericXLog
  *     record covering {tail}; OR
  *   - Extends the chain under one GenericXLog record covering
- *     {tail, new page, metapage}, then appends to new tail.
+ *     {tail, new page, metapage}, then appends to new tail; OR
+ *   - For oversized payloads (vector_len greater than
+ *     TP_MEMTABLE_PAGE_MAX_VECTOR_LEN): writes a head fragment
+ *     record on a fresh page followed by N continuation pages
+ *     and a fresh tail; each new page gets its own GenericXLog
+ *     record, and a final atomic GenericXLog publishes the
+ *     pages by linking the old tail (or meta head) to the head
+ *     fragment and advancing the meta tail.
  *
  * Returns the block number of the page that received the new
  * record.  The per-index LWLock remains held in SHARED mode for
@@ -77,3 +81,31 @@ extern BlockNumber tp_memtable_append(
 		int32		doc_length,
 		const char *vector_bytes,
 		uint32		vector_len);
+
+/*
+ * Atomically publish a spill.  Used by the spill path after
+ * tp_write_segment has produced a new L0 segment from the chain.
+ *
+ * Performs, in a single GenericXLog record:
+ *   - Resets memtable_head_blkno / memtable_tail_blkno to
+ *     InvalidBlockNumber on the metapage.
+ *   - Splices the new segment in at the head of the L0 chain,
+ *     setting its `next_segment` to the previous L0 head and
+ *     bumping the metapage's level_heads[0] / level_counts[0].
+ *   - Adds `docs_delta` / `len_delta` to total_docs / total_len
+ *     (these are caller-supplied: the chain source's totals).
+ *
+ * Old chain pages are NOT touched here -- they become orphans
+ * (intact `TP_MEMTABLE_PAGE_MAGIC` headers, but no metapage
+ * pointer reaches them).  In-flight scans walking the old chain
+ * via a metapage snapshot they already latched complete safely;
+ * new scans see the new metapage and skip the orphans.  Phase 5b
+ * will reclaim them in amvacuumcleanup.
+ *
+ * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
+ */
+extern void tp_spill_finalize(
+		Relation	rel,
+		BlockNumber new_segment_root,
+		uint64		docs_delta,
+		uint64		len_delta);

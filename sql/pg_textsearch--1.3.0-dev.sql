@@ -126,10 +126,17 @@ CREATE OPERATOR @extschema@.= (
 -- COST 1000: Standalone scoring is expensive. Each call parses document text
 -- with to_tsvector (~14μs per doc), opens the index, looks up IDF values, and
 -- calculates BM25 scores. High cost helps planner prefer index scans.
+--
+-- PARALLEL UNSAFE: standalone scoring opens the index relation by name,
+-- attaches per-backend state (registry, DSA, LWLocks), and walks the
+-- on-disk memtable chain under shared latches.  Parallel workers attempting
+-- the same setup do not survive worker startup reliably (see follow-up
+-- issue).  Ranked queries should use ORDER BY <@> ... LIMIT n, which is an
+-- index scan and does not exercise this function in workers.
 CREATE FUNCTION @extschema@.bm25_text_bm25query_score(left_text text, right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- bm25query equality function
 CREATE FUNCTION @extschema@.bm25query_eq(@extschema@.bm25query, @extschema@.bm25query)
@@ -188,11 +195,13 @@ DEFAULT FOR TYPE text USING bm25 AS
 
 -- BM25 scoring function for text[] <@> bm25query operations
 -- Flattens array elements with spaces, then scores as a single document.
+-- PARALLEL UNSAFE: delegates to bm25_text_bm25query_score; see that
+-- function's declaration for the rationale.
 CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
     left_arr text[], right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- Error stub for text[] <@> text (planner should rewrite to bm25query)
 CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)

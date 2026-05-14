@@ -111,6 +111,25 @@ SELECT bm25_test_chain_source('chain_source_idx', 'doc_length_lookup');
  OK
 (1 row)
 
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Fragment round-trip: write a single record whose TpVector
+-- payload exceeds TP_MEMTABLE_PAGE_MAX_VECTOR_LEN, then read it
+-- back through the chain source.  Verifies that the writer
+-- splits the payload across a fragment head page + N
+-- continuation pages and that the reader correctly reassembles
+-- the bytes before decoding term entries.
+SELECT bm25_test_chain_source('chain_source_idx', 'fragment_roundtrip');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
 NOTICE:  drop cascades to index chain_source_idx

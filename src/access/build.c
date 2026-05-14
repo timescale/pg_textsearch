@@ -33,10 +33,14 @@
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
+#include "memtable/chain_source.h"
+#include "memtable/log.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "replication/replication.h"
+#include "segment/dictionary.h"
+#include "segment/docmap.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -123,41 +127,94 @@ tp_buildphasename(int64 phase)
 
 /*
  * Spill the current index's memtable to a disk segment.
- * Returns true if a segment was written.
+ * Returns true if a segment was written (or the chain was non-empty
+ * and a doc-length-only contribution was applied).
  *
  * Caller must already hold LW_EXCLUSIVE on the per-index lock.
  */
-static bool
-tp_do_spill(TpLocalIndexState *index_state, Relation index_rel)
+bool
+tp_do_spill(
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		BlockNumber		  *out_segment_root)
 {
-	BlockNumber root;
+	TpDataSource	*src;
+	TermInfo		*terms;
+	uint32			 num_terms;
+	TpDocMapBuilder *docmap;
+	BlockNumber		 root;
+	uint64			 docs_delta;
+	uint64			 len_delta;
+	TpMemtable		*memtable;
+
+	if (out_segment_root != NULL)
+		*out_segment_root = InvalidBlockNumber;
 
 	/*
-	 * Standby is read-only; spill is primary-only. Standby's
-	 * memtable changes only via WAL redo (INSERT_TERMS adds, SPILL
-	 * clears). If a spill ran here it would diverge standby state
-	 * from primary.
+	 * Standby is read-only; spill is primary-only.  All durable
+	 * state lives on disk; redo applies GenericXLog records and
+	 * never invokes spill itself.
 	 */
 	if (RecoveryInProgress())
 		return false;
 
-	root = tp_write_segment(index_state, index_rel);
-	if (root == InvalidBlockNumber)
+	/*
+	 * Open a chain source.  This idempotently re-acquires the
+	 * per-index LWLock in SHARED mode, which is a no-op since
+	 * the caller holds it EXCLUSIVE; the constructor returns
+	 * NULL for an empty chain.
+	 */
+	src = tp_memtable_chain_source_create(index_state, index_rel);
+	if (src == NULL)
 		return false;
 
-	tp_clear_memtable(index_state);
-	tp_clear_docid_pages(index_rel);
-	tp_sync_metapage_stats(index_rel, index_state);
+	docs_delta = (uint64)src->total_docs;
+	len_delta  = (uint64)src->total_len;
 
-	if (RelationNeedsWAL(index_rel))
+	tp_memtable_chain_source_extract(
+			src, CurrentMemoryContext, &terms, &num_terms, &docmap);
+
+	if (num_terms == 0)
 	{
-		tp_xlog_spill(index_rel, root);
+		/*
+		 * Chain exists but yielded no terms (e.g. records with
+		 * empty vectors).  Still publish the spill: we want the
+		 * chain reset and the doc-length contribution applied.
+		 */
+		root = InvalidBlockNumber;
 	}
 	else
 	{
-		/* Unlogged / TEMP: no SPILL WAL means we still need
-		 * the chain-link metapage update to happen here. */
-		tp_link_l0_chain_head(index_rel, root);
+		root = tp_write_segment(index_rel, terms, num_terms, docmap);
+	}
+
+	if (out_segment_root != NULL)
+		*out_segment_root = root;
+
+	tp_spill_finalize(index_rel, root, docs_delta, len_delta);
+
+	/* Free dictionary + docmap (chain source no longer needed). */
+	tp_free_dictionary(terms, num_terms);
+	tp_docmap_destroy(docmap);
+	tp_source_close(src);
+
+	/*
+	 * Reset auto-spill counter heuristic.  The DSA-backed atomics
+	 * are no longer authoritative for query correctness (Phase 4
+	 * reads chain source + metapage instead), but the
+	 * total_postings counter is still consulted by
+	 * tp_auto_spill_if_needed() as a write-throughput proxy, and
+	 * the (num_terms, total_term_len) atomics feed into the
+	 * memory-pressure estimate.  Reset all three plus the
+	 * global registry counter that tracks them.
+	 */
+	memtable = get_memtable(index_state);
+	if (memtable)
+	{
+		pg_atomic_write_u64(&memtable->total_postings, 0);
+		pg_atomic_write_u64(&memtable->num_terms, 0);
+		pg_atomic_write_u64(&memtable->total_term_len, 0);
+		tp_subtract_index_estimate(index_state->shared);
 	}
 
 	pgstat_progress_update_param(
@@ -298,7 +355,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		}
 
 		if (still_needed)
-			tp_do_spill(index_state, index_rel);
+			tp_do_spill(index_state, index_rel, NULL);
 	}
 
 	tp_release_index_lock(index_state);
@@ -514,27 +571,15 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	/* Acquire exclusive lock for write operation */
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
-	/* Write the segment */
-	segment_root = tp_write_segment(index_state, index_rel);
-
-	/* Clear the memtable after successful spilling */
-	if (segment_root != InvalidBlockNumber)
-	{
-		tp_clear_memtable(index_state);
-		tp_clear_docid_pages(index_rel);
-		tp_sync_metapage_stats(index_rel, index_state);
-
-		if (RelationNeedsWAL(index_rel))
-		{
-			tp_xlog_spill(index_rel, segment_root);
-		}
-		else
-		{
-			tp_link_l0_chain_head(index_rel, segment_root);
-		}
-
-		tp_maybe_compact_level(index_rel, 0);
-	}
+	/*
+	 * Phase 4: unified spill path.  We use the out-param so the
+	 * legacy `bm25_spill_index()` SRF returns the new L0 segment's
+	 * block number even when the very next maybe_compact step
+	 * folds that segment into L1 (leaving metap.level_heads[0] =
+	 * InvalidBlockNumber).
+	 */
+	segment_root = InvalidBlockNumber;
+	(void)tp_do_spill(index_state, index_rel, &segment_root);
 
 	/* Release lock */
 	tp_release_index_lock(index_state);
@@ -1076,26 +1121,43 @@ tp_process_document_text(
 	doc_length = tp_tokenize_text(
 			document_text, text_config_oid, &terms, &frequencies, &term_count);
 
-	if (term_count > 0)
+	if (term_count > 0 && index_rel != NULL)
 	{
+		char	 *index_name = get_rel_name(RelationGetRelid(index_rel));
+		TpVector *tpvec;
+
+		tpvec = create_tpvector_from_strings(
+				index_name, term_count, (const char **)terms, frequencies);
+		pfree(index_name);
+
 		/*
 		 * Acquire exclusive lock for this transaction if not already held.
 		 * During index build, we acquire once and hold for the entire build.
 		 */
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
-		/* Add document terms to posting lists */
 		tp_add_document_terms(
-				index_state, ctid, terms, frequencies, term_count, doc_length);
+				index_state,
+				index_rel,
+				ctid,
+				(const char *)tpvec,
+				(uint32)VARSIZE(tpvec),
+				term_count,
+				doc_length);
 
+		tp_auto_spill_if_needed(index_state, index_rel);
+
+		pfree(tpvec);
+		tp_free_terms_array(terms, term_count);
+		pfree(frequencies);
+	}
+	else if (term_count > 0)
+	{
 		/*
-		 * Check memory after document completion and auto-spill if needed.
-		 * Only spill if index_rel is provided (not during recovery).
+		 * Legacy recovery path with no Relation: under Phase 4
+		 * the rebuild function is short-circuited and never
+		 * reaches here, but we keep the cleanup path correct.
 		 */
-		if (index_rel != NULL)
-			tp_auto_spill_if_needed(index_state, index_rel);
-
-		/* Free the terms array and individual lexemes */
 		tp_free_terms_array(terms, term_count);
 		pfree(frequencies);
 	}
@@ -1797,94 +1859,40 @@ tp_insert(
 		}
 	}
 
-	/* --- Phase 2: Shared-memory work (under lock) --- */
+	/* --- Phase 2: Shared-memory + chain-page work (under lock) --- */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
 
 	if (index_state != NULL && term_count > 0)
 	{
 		/*
 		 * Hard limit check before acquiring the per-index lock.
-		 * This is a simple atomic read of the global DSA counter
-		 * — it does not flush or evict any memtable.  If over
-		 * the hard limit, we ERROR out before touching any
-		 * shared state.
+		 * Bails out before touching any shared state.
 		 */
 		tp_check_hard_limit();
 
 		/*
-		 * Acquire per-index lock. Normally LW_SHARED so
-		 * multiple inserters run concurrently.
-		 *
-		 * Cold path: if the memtable hash tables are not
-		 * yet initialized, acquire LW_EXCLUSIVE and init.
-		 * We stay exclusive for the cold-path insert to
-		 * prevent a concurrent spill from clearing the
-		 * tables between init and use.
-		 *
-		 * The lockless pre-check is an optimization to
-		 * avoid exclusive on the hot path. If a concurrent
-		 * spill invalidates between the check and lock
-		 * acquire, we detect it under the lock and retry.
+		 * Acquire per-index lock in SHARED mode.  Phase 4 does
+		 * not require any hash-table initialization here — the
+		 * chain pages are extended on demand by
+		 * tp_memtable_append() while we hold per-buffer EXCL
+		 * on the tail.  Spill holds LW_EXCLUSIVE to fence
+		 * inserts during the chain-reset step.
 		 */
-		for (;;)
-		{
-			TpMemtable *mt		  = get_memtable(index_state);
-			bool		need_init = mt &&
-							 (mt->string_hash_handle ==
-									  DSHASH_HANDLE_INVALID ||
-							  mt->doc_lengths_handle == DSHASH_HANDLE_INVALID);
+		tp_acquire_index_lock(index_state, LW_SHARED);
 
-			tp_acquire_index_lock(
-					index_state, need_init ? LW_EXCLUSIVE : LW_SHARED);
-
-			if (need_init)
-			{
-				tp_ensure_string_table_initialized(index_state);
-				break; /* Hold exclusive for insert */
-			}
-
-			/*
-			 * Re-check under shared lock: a spill may
-			 * have cleared the tables after our lockless
-			 * read but before we acquired shared.
-			 */
-			mt = get_memtable(index_state);
-			if (mt && (mt->string_hash_handle == DSHASH_HANDLE_INVALID ||
-					   mt->doc_lengths_handle == DSHASH_HANDLE_INVALID))
-			{
-				/* Stale read — retry with exclusive */
-				tp_release_index_lock(index_state);
-				continue;
-			}
-			break;
-		}
-
-		/* Validate TID before adding to posting list */
+		/* Validate TID before appending to the chain */
 		if (!ItemPointerIsValid(ht_ctid))
 			elog(WARNING, "Invalid TID in tp_insert, skipping");
 		else
 		{
 			tp_add_document_terms(
 					index_state,
+					index,
 					ht_ctid,
-					terms,
-					frequencies,
+					(const char *)tpvec,
+					(uint32)VARSIZE(tpvec),
 					term_count,
 					doc_length);
-
-			if (RelationNeedsWAL(index))
-			{
-				START_CRIT_SECTION();
-				tp_xlog_insert_terms(RelationGetRelid(index), ht_ctid, tpvec);
-				END_CRIT_SECTION();
-			}
-
-			/*
-			 * Docid pages under LW_SHARED — spill clears
-			 * these under LW_EXCLUSIVE, so they must be
-			 * written while we hold shared.
-			 */
-			tp_add_docid_to_pages(index, ht_ctid);
 		}
 
 		/* Release lock before spill check */
@@ -1898,8 +1906,12 @@ tp_insert(
 	}
 	else if (term_count > 0 && ItemPointerIsValid(ht_ctid))
 	{
-		/* No shared state but valid doc — record TID */
-		tp_add_docid_to_pages(index, ht_ctid);
+		/*
+		 * No shared state but valid doc -- nothing to do.
+		 * Phase 4 removed the docid-page bookkeeping; if shared
+		 * state isn't registered yet a backend isn't going to
+		 * insert anyway.
+		 */
 	}
 
 	/* Free the terms array and individual lexemes */

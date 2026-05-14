@@ -410,6 +410,7 @@ static void
 score_memtable_single_term(
 		TpTopKHeap		  *heap,
 		TpLocalIndexState *local_state,
+		Relation		   index,
 		const char		  *term,
 		float4			   idf,
 		float4			   k1,
@@ -422,7 +423,7 @@ score_memtable_single_term(
 	int			   i;
 
 	/* Create memtable data source */
-	source = tp_memtable_source_create(local_state);
+	source = tp_memtable_source_create(local_state, index);
 	if (!source)
 		return;
 
@@ -601,7 +602,7 @@ tp_score_single_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_single_term(
-			&heap, local_state, term, idf, k1, b, avg_doc_len, stats);
+			&heap, local_state, index, term, idf, k1, b, avg_doc_len, stats);
 
 	/* Get segment level heads from metapage */
 	metap = tp_get_metapage(index);
@@ -696,6 +697,7 @@ static void
 score_memtable_multi_term(
 		TpTopKHeap		  *heap,
 		TpLocalIndexState *local_state,
+		Relation		   index,
 		TpTermState		 **terms,
 		int				   term_count,
 		float4			   k1,
@@ -709,7 +711,7 @@ score_memtable_multi_term(
 	int			  term_idx;
 
 	/* Create memtable data source */
-	source = tp_memtable_source_create(local_state);
+	source = tp_memtable_source_create(local_state, index);
 	if (!source)
 		return;
 
@@ -1665,7 +1667,15 @@ tp_score_multi_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_multi_term(
-			&heap, local_state, terms, term_count, k1, b, avg_doc_len, stats);
+			&heap,
+			local_state,
+			index,
+			terms,
+			term_count,
+			k1,
+			b,
+			avg_doc_len,
+			stats);
 
 	/* Get segment level heads from metapage */
 	metap = tp_get_metapage(index);

@@ -17,6 +17,7 @@
 #include "common/hashfn_unstable.h"
 #include "index/memory.h"
 #include "index/state.h"
+#include "memtable/log.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -520,38 +521,60 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
  * paths can race during the rebuild window and double-add the same
  * doc; see the comment on tp_rebuild_index_from_disk.
  */
+/*
+ * Append a single document to the on-disk memtable chain and
+ * bump the per-index posting counters used by auto-spill.
+ *
+ * Phase 4: the previous DSA write path (dshash inserts +
+ * tp_store_document_length / tp_add_document_to_posting_list +
+ * idempotency gate) is replaced by an unconditional
+ * tp_memtable_append() into the on-disk chain.  Crash idempotency
+ * is provided by GenericXLog LSN-checked redo at the page level,
+ * not by application-level deduplication.
+ *
+ * The `vector_bytes` payload is an in-memory v2 TpVector; only
+ * its byte image is appended to the chain.  `term_count` is
+ * used to bump the bulk-load detection counters; the chain
+ * source reconstructs per-term postings on read.
+ */
 void
 tp_add_document_terms(
 		TpLocalIndexState *local_state,
+		Relation		   rel,
 		ItemPointer		   ctid,
-		char			 **terms,
-		int32			  *frequencies,
+		const char		  *vector_bytes,
+		uint32			   vector_len,
 		int				   term_count,
 		int32			   doc_length)
 {
-	int i;
+	TpMemtable *memtable;
 
-	if (!tp_store_document_length(local_state, ctid, doc_length))
-		return;
+	tp_memtable_append(rel, ctid, doc_length, vector_bytes, vector_len);
 
-	for (i = 0; i < term_count; i++)
+	/*
+	 * Bump the registry-visible posting/term/doc counters used
+	 * by the auto-spill thresholds and the global soft-limit
+	 * heuristic.  These atomics are no longer authoritative for
+	 * query correctness (Phase 4 derives totals from metapage +
+	 * chain source instead), but they remain the cheapest
+	 * proxy for "write pressure" available without re-reading
+	 * the chain.
+	 */
+	memtable = get_memtable(local_state);
+	if (memtable)
 	{
-		TpPostingList *posting_list;
-		int32		   frequency = frequencies[i];
-
-		/* Get or create posting list for this term */
-		posting_list = tp_get_or_create_posting_list(local_state, terms[i]);
-
-		/* Add document entry to posting list */
-		tp_add_document_to_posting_list(
-				local_state, posting_list, ctid, frequency);
+		pg_atomic_fetch_add_u64(&memtable->total_postings, term_count);
+		/* num_terms / total_term_len are now stale-but-bounded;
+		 * we add term_count and an upper-bound byte cost so the
+		 * memory estimator remains a usable safety valve. */
+		pg_atomic_fetch_add_u64(&memtable->num_terms, term_count);
+		pg_atomic_fetch_add_u64(&memtable->total_term_len, (uint64)vector_len);
 	}
 
 	/*
-	 * Update corpus statistics.
-	 * Protected by the per-index LWLock acquired at transaction level.
-	 * The lock's memory barriers ensure these updates are visible to other
-	 * backends on NUMA systems.
+	 * Corpus statistics: still bumped on the primary (per
+	 * Phase 4 plan), but readers no longer trust these atomics.
+	 * They will be deleted in Phase 7.
 	 */
 	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
 	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);

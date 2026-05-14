@@ -187,7 +187,6 @@ tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint64 min_postings)
 {
 	TpMemtable *memtable;
-	BlockNumber segment_root;
 
 	/* Standby is read-only; spill is primary-only. */
 	if (RecoveryInProgress())
@@ -202,22 +201,7 @@ tp_spill_memtable_if_needed(
 		return;
 
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-
-	segment_root = tp_write_segment(index_state, index);
-	if (segment_root != InvalidBlockNumber)
-	{
-		tp_clear_memtable(index_state);
-		tp_clear_docid_pages(index);
-		tp_sync_metapage_stats(index, index_state);
-
-		if (RelationNeedsWAL(index))
-			tp_xlog_spill(index, segment_root);
-		else
-			tp_link_l0_chain_head(index, segment_root);
-
-		tp_maybe_compact_level(index, 0);
-	}
-
+	tp_do_spill(index_state, index, NULL);
 	tp_release_index_lock(index_state);
 }
 

@@ -63,5 +63,17 @@ CREATE INDEX chain_source_idx ON chain_source_t
 -- ctids return -1.
 SELECT bm25_test_chain_source('chain_source_idx', 'doc_length_lookup');
 
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Fragment round-trip: write a single record whose TpVector
+-- payload exceeds TP_MEMTABLE_PAGE_MAX_VECTOR_LEN, then read it
+-- back through the chain source.  Verifies that the writer
+-- splits the payload across a fragment head page + N
+-- continuation pages and that the reader correctly reassembles
+-- the bytes before decoding term entries.
+SELECT bm25_test_chain_source('chain_source_idx', 'fragment_roundtrip');
+
 -- Clean up
 DROP EXTENSION pg_textsearch CASCADE;
