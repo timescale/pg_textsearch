@@ -677,20 +677,24 @@ jobs:
         pg_ctl stop -D tmp_hypertable_test/data || true
         rm -rf tmp_hypertable_test
 
-    - name: Run upgrade compat test (exercises V4 segment reading)
+    - name: Run upgrade compat test (v6 metapage → REINDEX path)
       timeout-minutes: 5
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         export PG_CONFIG="/usr/lib/postgresql/17/bin/pg_config"
         LIB_NAME="pg_textsearch"
 
-        # Download and build v1.0.0 (V4 format) WITHOUT coverage flags
+        # Download and build v1.0.0 (V4 segment + v6 metapage) WITHOUT
+        # coverage flags.  Used to seed an index whose on-disk format is
+        # the pre-1.3.0 layout; we then upgrade the binary and exercise
+        # the v6-metapage rejection + REINDEX-from-heap recovery path.
         curl -fsSL -o /tmp/old.tar.gz \
           "https://github.com/timescale/pg_textsearch/releases/download/v1.0.0/pg_textsearch-1.0.0.tar.gz"
         tar -xzf /tmp/old.tar.gz -C /tmp
         (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo make install)
 
-        # Start PG with old binary and create V4 segments
+        # Start PG with old binary and create a v6-metapage index with
+        # V4 segments.
         rm -rf tmp_upgrade_cov
         mkdir -p tmp_upgrade_cov
         initdb -D tmp_upgrade_cov/data --auth-local=trust --auth-host=trust
@@ -729,24 +733,49 @@ jobs:
 
         pg_ctl start -D tmp_upgrade_cov/data -l tmp_upgrade_cov/data/logfile -w
 
-        # Exercise V4 compat reading: query, ALTER, VACUUM, merge
+        # Exercise v6-metapage rejection + REINDEX-from-heap path.
+        # The 1.3.0 binary refuses to read v6 metapages (data-safety
+        # guarantee: pre-1.3.0 indexes may contain on-disk docid-page
+        # docs that the new binary cannot replay).  Operators must
+        # REINDEX before queries work.  This gives us coverage of
+        # both the metapage-version error path AND the
+        # build-from-heap codepath on a legacy heap.
         psql -h $PWD/tmp_upgrade_cov -p 55435 -d upgrade_cov << 'SQL'
         \set ON_ERROR_STOP on
-        -- V4 segment reading (pre-ALTER)
-        SELECT count(*) FROM (
-          SELECT 1 FROM docs
-          ORDER BY content <@> to_bm25query('database', 'idx')
-          LIMIT 10) sub;
+
+        -- Pre-ALTER: queries against v6 index should ERROR with
+        -- REINDEX hint (errcode 0A000 / feature_not_supported).
+        -- Capture this in a savepoint so the next statement still
+        -- runs.
+        BEGIN;
+        SAVEPOINT s;
+        DO $$
+        BEGIN
+          PERFORM count(*) FROM (
+            SELECT 1 FROM docs
+            ORDER BY content <@> to_bm25query('database', 'idx')
+            LIMIT 10) sub;
+          RAISE EXCEPTION 'expected v6 metapage ERROR did not fire';
+        EXCEPTION
+          WHEN feature_not_supported THEN
+            RAISE NOTICE 'PASS: v6 metapage rejected pre-REINDEX';
+        END $$;
+        ROLLBACK TO SAVEPOINT s;
+        COMMIT;
 
         ALTER EXTENSION pg_textsearch UPDATE;
 
-        -- V4 reading (post-ALTER)
+        -- REINDEX rebuilds the index from heap; new index uses
+        -- the v7 metapage and current segment format.
+        REINDEX INDEX idx;
+
+        -- V7/V5 reading post-REINDEX
         SELECT count(*) FROM (
           SELECT 1 FROM docs
           ORDER BY content <@> to_bm25query('search ranking', 'idx')
           LIMIT 10) sub;
 
-        -- VACUUM with alive bitset on V4 segments
+        -- VACUUM with alive bitset on V5 segments
         DELETE FROM docs WHERE id <= 20;
         VACUUM docs;
 
@@ -755,7 +784,7 @@ jobs:
           ORDER BY content <@> to_bm25query('database', 'idx')
           LIMIT 10) sub;
 
-        -- Merge V4 segments into V5
+        -- Merge V5 segments
         SELECT bm25_force_merge('idx');
 
         SELECT count(*) FROM (
