@@ -258,18 +258,19 @@ CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 
--- Internal-only scaffold: exercises the on-disk memtable page format
--- helpers introduced in Phase 1 of the memtable v2 redesign (issue
--- #374). Subject to removal once later phases provide end-to-end
--- coverage of the same code paths.
+-- The bm25_test_memtable_page / bm25_test_memtable_append /
+-- bm25_test_chain_source / bm25_memtable_chain functions are
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
+-- redesign (issue #374).  They are not part of the supported
+-- public API: their signatures, return values, and existence are
+-- subject to change or removal in ANY release (including patch
+-- releases) without notice or upgrade paths.  Do not depend on
+-- them from application code.
 CREATE FUNCTION @extschema@.bm25_test_memtable_page(case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
 LANGUAGE C STRICT;
 
--- Internal-only scaffold: exercises the on-disk memtable write path
--- introduced in Phase 2 of the memtable v2 redesign (issue #374).
--- Subject to removal once later phases provide end-to-end coverage.
 CREATE FUNCTION @extschema@.bm25_test_memtable_append(
     index_name text, case_name text)
 RETURNS text
@@ -287,15 +288,14 @@ RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
 LANGUAGE C STRICT;
 
--- Internal-only scaffold: exercises the on-disk memtable read path
--- introduced in Phase 3 of the memtable v2 redesign (issue #374).
--- Subject to removal once later phases provide end-to-end coverage.
 CREATE FUNCTION @extschema@.bm25_test_chain_source(
     index_name text, case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
 LANGUAGE C STRICT;
 
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
+    FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;

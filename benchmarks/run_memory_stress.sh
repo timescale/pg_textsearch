@@ -75,7 +75,8 @@ if psql -f "$(dirname "$0")/$BENCHMARK_FILE" 2>&1; then
             ;;
         "small"|"large")
             echo "If benchmark completed without memory errors, try:"
-            echo "- Reducing tapir.shared_memory_size in postgresql.conf"
+            echo "- Lowering pg_textsearch.memtable_pages_threshold to"
+            echo "  spill more aggressively (in postgresql.conf)"
             echo "- Running 'large' size for maximum stress"
             ;;
     esac

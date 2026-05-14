@@ -15,18 +15,16 @@ BEGIN
     END IF;
 END $$;
 
--- Internal-only scaffold: exercises the on-disk memtable page format
--- helpers introduced in Phase 1 of the memtable v2 redesign (issue
--- #374). Subject to removal once later phases provide end-to-end
--- coverage of the same code paths.
+-- The bm25_test_memtable_page / bm25_test_memtable_append /
+-- bm25_test_chain_source / bm25_memtable_chain functions are
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
+-- redesign (issue #374).  Not part of the supported public API.
+-- See pg_textsearch--1.3.0-dev.sql for the full disclaimer.
 CREATE FUNCTION bm25_test_memtable_page(case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
 LANGUAGE C STRICT;
 
--- Internal-only scaffold: exercises the on-disk memtable write path
--- introduced in Phase 2 of the memtable v2 redesign (issue #374).
--- Subject to removal once later phases provide end-to-end coverage.
 CREATE FUNCTION bm25_test_memtable_append(
     index_name text, case_name text)
 RETURNS text
@@ -44,15 +42,14 @@ RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
 LANGUAGE C STRICT;
 
--- Internal-only scaffold: exercises the on-disk memtable read path
--- introduced in Phase 3 of the memtable v2 redesign (issue #374).
--- Subject to removal once later phases provide end-to-end coverage.
 CREATE FUNCTION bm25_test_chain_source(
     index_name text, case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
 LANGUAGE C STRICT;
 
+REVOKE EXECUTE ON FUNCTION bm25_test_memtable_page(text)
+    FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_memtable_chain(text) FROM PUBLIC;

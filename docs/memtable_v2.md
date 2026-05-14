@@ -324,11 +324,25 @@ REINDEX. There is no dual-format support.
   `_unused_docid_page` to preserve metapage offsets),
   `TpDocidPageHeader`, `TP_DOCID_PAGE_MAGIC`,
   `TP_DOCID_PAGE_VERSION`.
-- `tp_rebuild_index_from_disk` and the LSN-drain bootstrap
-  dance.
+- The LSN-drain bootstrap dance.  The
+  `tp_rebuild_index_from_disk` symbol still exists in
+  `src/index/state.c` but is now a thin path that opens the
+  index, reads the metapage, and (if the on-disk chain is
+  non-empty) seeds `shared->chain_page_count` from the chain
+  walk so the auto-spill heuristic sees pages that pre-existed
+  the current shmem segment.  No docid replay; no waiting on
+  WAL replay LSN.
 - `spill_generation` and the in-process docid-page cache.
 - The `docs/replication/CORRECTNESS.md` invariants doc (this
   doc replaces it).
+- `pg_textsearch.memory_limit` and
+  `pg_textsearch.memtable_spill_threshold` GUCs along with the
+  `bm25_memory_usage` SRF and the soft-limit cross-index byte
+  accounting they fed (Phase 7B).  Replaced by the
+  chain-page-count trigger `pg_textsearch.memtable_pages_threshold`
+  (default 64).  Postgres' shared-buffer pressure is the real
+  cap on memtable size now; an oversized chain just gets paged
+  out by the buffer manager like any other relation.
 
 ## Performance characteristics
 
