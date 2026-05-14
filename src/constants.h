@@ -23,18 +23,14 @@
  */
 /*
  * v7: memtable v2 redesign (issue #374).  Adds memtable_head_blkno
- * and memtable_tail_blkno at the end of TpIndexMetaPageData.  We
- * read v6 metapages compatibly: a v6 page zero-fills those slots,
- * so the read path explicitly maps 0 → InvalidBlockNumber for the
- * two new fields.  An empty v6 metapage is therefore equivalent to
- * a v7 metapage with an empty chain.  The first write
- * (memtable_bootstrap_and_append or tp_spill_finalize) lazily bumps
- * the on-disk version to 7 under the same GenericXLog that
- * initializes the chain head/tail or resets them.
+ * and memtable_tail_blkno at the end of TpIndexMetaPageData and
+ * removes the docid recovery pages.  v6 indexes may contain
+ * unspilled documents in the now-deleted docid pages, so we reject
+ * v6 at metapage open with a REINDEX hint instead of upgrading
+ * lazily and risking silent data loss.
  */
-#define TP_METAPAGE_VERSION	   7
-#define TP_METAPAGE_VERSION_V6 6 /* compat: read-only, lazy-upgrade */
-#define TP_PAGE_INDEX_VERSION  1 /* Page index format version */
+#define TP_METAPAGE_VERSION	  7
+#define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
 /* Initial version (memtable v2 redesign) */
 #define TP_MEMTABLE_PAGE_VERSION 1
 

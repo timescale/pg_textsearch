@@ -717,15 +717,7 @@ tp_memtable_chain_source_create(TpLocalIndexState *state, Relation rel)
 		metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 		metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
-		/*
-		 * v6 compat: zero-filled chain fields on a v6 page must
-		 * NOT be interpreted as "head at block 0" (block 0 is
-		 * the metapage itself).  Treat v6 as an empty chain.
-		 */
-		if (metap->version == TP_METAPAGE_VERSION_V6)
-			empty = true;
-		else
-			empty = (metap->memtable_head_blkno == InvalidBlockNumber);
+		empty = (metap->memtable_head_blkno == InvalidBlockNumber);
 		UnlockReleaseBuffer(metabuf);
 		if (empty)
 		{

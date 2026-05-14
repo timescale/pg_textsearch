@@ -35,6 +35,7 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
+#include "memtable/page.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/io.h"
@@ -323,6 +324,13 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
  * block still in use, then truncates everything beyond it.
  * This reclaims pages freed by compaction (which sit below the
  * high-water mark) and unused pool margin from parallel builds.
+ *
+ * Includes the on-disk memtable chain in the high-water mark
+ * calculation: those pages hold live, not-yet-spilled documents
+ * and must not be truncated even when a caller (e.g.
+ * bm25_force_merge) only intended to reclaim segment space.
+ * Caller is responsible for serializing concurrent extension of
+ * the chain by holding the per-index LWLock EXCLUSIVE.
  */
 void
 tp_truncate_dead_pages(Relation index)
@@ -332,6 +340,7 @@ tp_truncate_dead_pages(Relation index)
 	TpIndexMetaPage metap;
 	BlockNumber		max_used = 1; /* at least metapage */
 	BlockNumber		nblocks;
+	BlockNumber		chain_blk;
 	int				level;
 
 	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
@@ -363,6 +372,53 @@ tp_truncate_dead_pages(Relation index)
 			seg	   = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
+	}
+
+	/*
+	 * Walk the on-disk memtable chain (including continuation
+	 * pages reached via fragment head records) so live pages are
+	 * never truncated.  Each link is read under SHARED buffer
+	 * lock; the per-index LWLock held by the caller (EXCLUSIVE)
+	 * ensures no concurrent extension races us.
+	 */
+	chain_blk = metap->memtable_head_blkno;
+	while (chain_blk != InvalidBlockNumber)
+	{
+		Buffer				  cbuf;
+		Page				  cpage;
+		TpMemtablePageHeader *chdr;
+		BlockNumber			  next_blk;
+
+		if (chain_blk + 1 > max_used)
+			max_used = chain_blk + 1;
+
+		cbuf = ReadBuffer(index, chain_blk);
+		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+		cpage = BufferGetPage(cbuf);
+		if (!tp_memtable_page_is_valid(cpage))
+		{
+			UnlockReleaseBuffer(cbuf);
+			UnlockReleaseBuffer(metabuf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable page at block %u in "
+							"index \"%s\" has invalid magic",
+							chain_blk,
+							RelationGetRelationName(index))));
+		}
+		chdr	 = tp_memtable_page_header(cpage);
+		next_blk = chdr->next_block;
+
+		/*
+		 * A fragment head page's next_block points to the first
+		 * continuation page; walk through them so they're all
+		 * included in max_used.  Continuation pages link
+		 * forward via their own next_block field to the next
+		 * continuation, terminating when the next non-
+		 * continuation page is reached (or InvalidBlockNumber).
+		 */
+		UnlockReleaseBuffer(cbuf);
+		chain_blk = next_blk;
 	}
 
 	UnlockReleaseBuffer(metabuf);
@@ -505,6 +561,12 @@ tp_force_merge(PG_FUNCTION_ARGS)
 							index_name)));
 
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		/*
+		 * Spill the memtable first so force-merge produces a
+		 * truly single-segment layout.  tp_do_spill is a no-op
+		 * when the chain is empty.
+		 */
+		(void)tp_do_spill(index_state, index_rel, NULL);
 		tp_force_merge_all(index_rel);
 		tp_truncate_dead_pages(index_rel);
 		tp_release_index_lock(index_state);
