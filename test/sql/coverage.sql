@@ -253,13 +253,13 @@ SELECT 'buildspill unique term' || i || ' extra words for document ' || i
 FROM generate_series(1, 500) AS i;
 
 -- Set very low spill threshold so CREATE INDEX spills during build
-SET pg_textsearch.memtable_spill_threshold = 100;
+SET pg_textsearch.memtable_pages_threshold = 1;
 
 CREATE INDEX build_spill_idx ON build_spill_test USING bm25(content)
     WITH (text_config='english');
 
 -- Reset threshold
-SET pg_textsearch.memtable_spill_threshold = 32000000;
+RESET pg_textsearch.memtable_pages_threshold;
 
 -- Verify index works after build-mode spill
 SELECT count(*) FROM (

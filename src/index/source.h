@@ -52,6 +52,15 @@ typedef struct TpDataSourceOps
 	int32 (*get_doc_length)(TpDataSource *source, ItemPointer ctid);
 
 	/*
+	 * Get the per-term document frequency without materializing
+	 * the posting list.  Returns 0 if the term is unknown.
+	 * Implementations should be O(1) lookup on an already-built
+	 * index/htab — this is on the BM25 IDF hot path and must not
+	 * allocate or copy postings.
+	 */
+	uint32 (*get_doc_freq)(TpDataSource *source, const char *term);
+
+	/*
 	 * Close and free the data source.
 	 */
 	void (*close)(TpDataSource *source);
@@ -73,6 +82,8 @@ struct TpDataSource
 	((src)->ops->free_postings((src), (data)))
 #define tp_source_get_doc_length(src, ctid) \
 	((src)->ops->get_doc_length((src), (ctid)))
+#define tp_source_get_doc_freq(src, term) \
+	((src)->ops->get_doc_freq((src), (term)))
 #define tp_source_close(src) ((src)->ops->close((src)))
 
 /*

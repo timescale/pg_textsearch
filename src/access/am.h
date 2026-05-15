@@ -168,10 +168,25 @@ char *tp_buildphasename(int64 phase);
 
 /*
  * Spill a memtable to an L0 segment.  Skips when
- * total_postings < min_postings.  Acquires LW_EXCLUSIVE internally.
+ * chain_page_count < min_pages.  Acquires LW_EXCLUSIVE internally.
  */
 void tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint64 min_postings);
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
+
+/*
+ * Spill the current index's memtable to a disk segment.
+ * Returns true if a segment was written or chain stats were applied.
+ * If `out_segment_root` is non-NULL and a segment was emitted (not
+ * solely a doc-length update), it receives the BlockNumber of the
+ * new L0 segment header *before* any subsequent L0->L1 compaction;
+ * otherwise it is set to InvalidBlockNumber.
+ *
+ * Caller must already hold LW_EXCLUSIVE on the per-index lock.
+ */
+bool tp_do_spill(
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		BlockNumber		  *out_segment_root);
 
 /*
  * Handler functions (am/handler.c)

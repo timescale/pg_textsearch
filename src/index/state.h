@@ -69,6 +69,20 @@ typedef struct TpSharedIndexState
 	pg_atomic_uint64 total_len;	 /* Total length of all documents */
 
 	/*
+	 * Auto-spill heuristic (memtable v2): number of chain pages
+	 * currently published in the on-disk memtable chain.
+	 * Incremented after each successful page-publish
+	 * GenericXLogFinish in src/memtable/log.c; reset to 0 after
+	 * tp_spill_finalize() completes.  Not WAL-logged: on crash
+	 * recovery, the counter starts at 0 even if the chain
+	 * survived.  Worst case the heuristic overshoots by ~one
+	 * threshold's worth of pages between restart and the next
+	 * normal merge — acceptable since the counter only governs
+	 * when to spill, not correctness.
+	 */
+	pg_atomic_uint32 chain_page_count;
+
+	/*
 	 * Cached estimated memtable size in bytes, updated
 	 * atomically by writers. Used to maintain the global
 	 * estimated_total_bytes counter without scanning.
@@ -85,10 +99,11 @@ typedef struct TpSharedIndexState
 	LWLock lock; /* Per-index lock for this index */
 
 	/*
-	 * Generation counter for docid page cache invalidation.
-	 * Incremented under LW_EXCLUSIVE when docid pages are
-	 * cleared (spill). Backends compare their cached
-	 * generation to detect stale docid page caches.
+	 * Reserved: was used to invalidate per-backend docid-page
+	 * writer caches across a spill (memtable v1).  Memtable v2
+	 * (issue #374) removed the docid page chain, so the counter
+	 * is no longer read by any path.  Kept alive until the
+	 * shared-memory registry is itself retired (issue #377).
 	 */
 	pg_atomic_uint64 spill_generation;
 } TpSharedIndexState;
@@ -159,10 +174,6 @@ extern void tp_recreate_build_dsa(TpLocalIndexState *local_state);
 extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
 extern void tp_cleanup_build_mode_on_abort(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
-extern void				  tp_rebuild_posting_lists_from_docids(
-					  Relation			 index_rel,
-					  TpLocalIndexState *local_state,
-					  TpIndexMetaPage	 metap);
 
 /* Helper function for accessing memtable from local state */
 extern TpMemtable *get_memtable(TpLocalIndexState *local_state);

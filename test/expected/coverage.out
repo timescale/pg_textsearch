@@ -107,7 +107,7 @@ FROM generate_series(1, 100) AS i;
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                4
+                5
 (1 row)
 
 -- Dump with multiple segments
@@ -212,7 +212,7 @@ FROM generate_series(1, 200) AS i;
 SELECT bm25_spill_index('coverage_idx');
  bm25_spill_index 
 ------------------
-                7
+               10
 (1 row)
 
 -- ORDER BY score LIMIT triggers BMW seek path on segments
@@ -328,7 +328,7 @@ INSERT INTO build_spill_test (content)
 SELECT 'buildspill unique term' || i || ' extra words for document ' || i
 FROM generate_series(1, 500) AS i;
 -- Set very low spill threshold so CREATE INDEX spills during build
-SET pg_textsearch.memtable_spill_threshold = 100;
+SET pg_textsearch.memtable_pages_threshold = 1;
 CREATE INDEX build_spill_idx ON build_spill_test USING bm25(content)
     WITH (text_config='english');
 NOTICE:  BM25 index build started for relation build_spill_idx
@@ -336,7 +336,7 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 500 documents, avg_length=7.00
 -- Reset threshold
-SET pg_textsearch.memtable_spill_threshold = 32000000;
+RESET pg_textsearch.memtable_pages_threshold;
 -- Verify index works after build-mode spill
 SELECT count(*) FROM (
     SELECT 1 FROM build_spill_test

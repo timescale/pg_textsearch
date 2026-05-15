@@ -4,19 +4,22 @@
 # WAL stream. Three tests:
 #
 #   3. UNLOGGED bm25 index emits zero pg_textsearch records.
-#      Verifies the RelationNeedsWAL(rel) gate at every spill /
-#      insert emission site.
+#      Vestigial check: after issue #374 deleted the custom rmgr,
+#      there is no pg_textsearch resource manager registered, so
+#      this is trivially true. Kept to catch regressions if a
+#      future change reintroduces a custom rmgr without honoring
+#      RelationNeedsWAL(rel).
 #
-#   4. LOGGED bm25 inserts and spills produce records that
-#      pg_walinspect describes by name (INSERT_TERMS, SPILL).
-#      Verifies tp_rmgr_desc / tp_rmgr_identify produce the right
-#      output — the only path that exercises them in a normal
-#      Postgres install.
+#   4. LOGGED bm25 inserts and spills emit ONLY Generic (page-delta)
+#      WAL records — no custom rmgr 149. Verifies the on-disk
+#      memtable + GenericXLog design (issue #374): every page
+#      mutation goes through GenericXLog so stock PostgreSQL replay
+#      (including the single-page WAL-redo helper) can reconstruct
+#      every page without loading pg_textsearch.so.
 #
-#   5. Crash + restart: WAL retains our records and the index is
-#      queryable post-recovery. Distinct from recovery.sh because
-#      we look in pg_walinspect at the LSN range that crossed the
-#      crash to confirm the records were on the wire.
+#   5. Crash + restart: the index is queryable post-recovery. The
+#      on-disk memtable chain pages are themselves the durable
+#      record — no docid-page bootstrap is needed.
 #
 # Tests use pg_walinspect (contrib in PG15+). All work happens in
 # the regression's own database; no replication setup needed.
@@ -119,11 +122,11 @@ records (expected 0). RelationNeedsWAL guard is broken."
 }
 
 # ---------------------------------------------------------------
-# Test 4: LOGGED inserts/spill produce records pg_walinspect can
-# describe by name.
+# Test 4: LOGGED inserts/spill emit ONLY Generic records — no
+# custom rmgr 149. This is the core walredo-compatibility check.
 # ---------------------------------------------------------------
 test_logged_records_described_by_name() {
-    log "=== Test 4: pg_walinspect describes our records by name ==="
+    log "=== Test 4: logged ops use only Generic WAL records ==="
 
     sql "
         CREATE TABLE l_docs (
@@ -145,32 +148,40 @@ test_logged_records_described_by_name() {
     local lsn_after
     lsn_after=$(sql "SELECT pg_current_wal_lsn();")
 
-    local insert_terms_count
-    local spill_count
-    insert_terms_count=$(count_records "${lsn_before}" "${lsn_after}" \
-        "INSERT_TERMS")
-    spill_count=$(count_records "${lsn_before}" "${lsn_after}" \
-        "SPILL")
-    log "  INSERT_TERMS records: ${insert_terms_count} (expect 50)"
-    log "  SPILL records:        ${spill_count} (expect 1)"
+    # After issue #374 no custom resource manager is registered.
+    # We expect ZERO pg_textsearch-named records and a positive
+    # count of Generic records covering the metapage, chain
+    # pages, and segment header.
+    local custom_count
+    custom_count=$(count_records "${lsn_before}" "${lsn_after}")
+    log "  custom pg_textsearch records: ${custom_count} (expect 0)"
+    if [ "${custom_count}" != "0" ]; then
+        error "Test 4: expected 0 pg_textsearch records (custom \
+rmgr was deleted in issue #374), got '${custom_count}'. A custom \
+WAL record path was reintroduced."
+    fi
 
-    if [ "${insert_terms_count}" != "50" ]; then
-        error "Test 4: expected 50 INSERT_TERMS records, got \
-'${insert_terms_count}'. tp_rmgr_identify may be returning the \
-wrong name for XLOG_TP_INSERT_TERMS."
+    local generic_count
+    generic_count=$(sql "
+        SELECT count(*) FROM
+            pg_get_wal_records_info('${lsn_before}', '${lsn_after}')
+        WHERE resource_manager = 'Generic';")
+    log "  Generic records: ${generic_count} (expect >0)"
+    if [ "${generic_count}" -lt 1 ]; then
+        error "Test 4: expected ≥1 Generic record for the on-disk \
+memtable mutations, got '${generic_count}'. The GenericXLog write \
+path is silent."
     fi
-    if [ "${spill_count}" != "1" ]; then
-        error "Test 4: expected 1 SPILL record, got '${spill_count}'."
-    fi
-    log "Test 4 PASSED: rm_desc / rm_identify produce expected names"
+    log "Test 4 PASSED: logged ops emit only Generic records"
 }
 
 # ---------------------------------------------------------------
-# Test 5: Crash + restart — our WAL records persist across the
-# crash and the index is queryable after recovery.
+# Test 5: Crash + restart — the index is queryable post-recovery.
+# The on-disk memtable chain pages + segment pages are themselves
+# the durable record; stock PostgreSQL replay reconstructs them.
 # ---------------------------------------------------------------
 test_crash_replay() {
-    log "=== Test 5: crash + restart preserves WAL records ==="
+    log "=== Test 5: crash + restart preserves the index ==="
 
     sql "
         CREATE TABLE c_docs (
@@ -186,9 +197,9 @@ test_crash_replay() {
     local lsn_after_checkpoint
     lsn_after_checkpoint=$(sql "SELECT pg_current_wal_lsn();")
 
-    # Insert again; these records ride the WAL only — no checkpoint
-    # has flushed the memtable, so on crash the docs are recoverable
-    # only via WAL replay or docid pages.
+    # Insert again; these records ride the WAL only (no checkpoint
+    # has flushed the dirty buffers), so on crash the post-CP docs
+    # are recoverable only via WAL replay.
     sql "
         INSERT INTO c_docs (content)
             SELECT 'postcheckpoint ' || md5(g::text)
@@ -212,32 +223,34 @@ test_crash_replay() {
     pg_ctl start -D "${DATA_DIR}" -l "${DATA_DIR}/postgres.log" -w \
         >/dev/null
 
-    # Recovery completed. Verify our INSERT_TERMS records were on
-    # the WAL stream that crossed the crash (i.e., the LSN window
-    # between the last checkpoint and the pre-crash LSN).
-    local crashed_count
-    crashed_count=$(count_records "${lsn_after_checkpoint}" \
-        "${lsn_pre_crash}" "INSERT_TERMS")
-    log "  INSERT_TERMS records replayed across crash: ${crashed_count}"
-    if [ "${crashed_count}" -lt 30 ]; then
-        error "Test 5: expected ≥30 INSERT_TERMS records in the \
-post-checkpoint pre-crash WAL window, got '${crashed_count}'"
+    # Recovery completed. The post-CP records were Generic
+    # (page-delta) records. Verify there are no pg_textsearch
+    # custom records in that LSN window — they must not exist
+    # after issue #374.
+    local custom_count
+    custom_count=$(count_records "${lsn_after_checkpoint}" \
+        "${lsn_pre_crash}")
+    log "  custom pg_textsearch records across crash window: ${custom_count} (expect 0)"
+    if [ "${custom_count}" != "0" ]; then
+        error "Test 5: expected 0 custom records across the \
+crash-recovery LSN window (issue #374 deleted the custom rmgr), \
+got '${custom_count}'"
     fi
 
-    # Index must be functional post-recovery — first-access
-    # rebuild walks docid pages and populates the memtable. Verify
-    # via bm25_summarize_index since we want a direct memtable-size
-    # assertion independent of BMW corner cases.
-    local summary memtable_docs
-    summary=$(sql "SELECT bm25_summarize_index('c_docs_idx');" 2>/dev/null)
-    memtable_docs=$(echo "${summary}" \
-        | awk '/^Memtable:/{f=1;next} f && /documents:/{print $2; exit}')
-    log "  post-recovery memtable docs: ${memtable_docs:-<none>} (expect 60)"
-    if [ "${memtable_docs:-0}" != "60" ]; then
-        error "Test 5: expected 60 docs in memtable post-recovery \
-(rebuild from docid pages), got '${memtable_docs}'"
+    # Index must be functional post-recovery and contain all 60
+    # docs (30 precrash + 30 postcheckpoint).
+    local total_docs
+    total_docs=$(sql "
+        SELECT count(*) FROM (
+            SELECT 1 FROM c_docs
+            ORDER BY content <@> to_bm25query('precrash OR postcheckpoint', 'c_docs_idx')
+        ) sub;")
+    log "  post-recovery doc count: ${total_docs:-<none>} (expect 60)"
+    if [ "${total_docs:-0}" -lt 60 ]; then
+        error "Test 5: expected ≥60 docs queryable post-recovery, \
+got '${total_docs}'"
     fi
-    log "Test 5 PASSED: WAL records survive crash, index recovers"
+    log "Test 5 PASSED: WAL recovery preserves the index"
 }
 
 main() {

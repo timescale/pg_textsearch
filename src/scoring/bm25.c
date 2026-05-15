@@ -11,8 +11,9 @@
 #include <utils/memutils.h>
 
 #include "index/metapage.h"
+#include "index/source.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
+#include "memtable/chain_source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
 #include "segment/segment.h"
@@ -35,22 +36,25 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
 /*
  * Get unified doc_freq for a term (memtable + all segments).
  * Returns 0 if term not found in any source.
+ *
+ * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
+ * source; we read the per-term doc_freq via the source op without
+ * materializing the full posting list (which would be O(count) and
+ * is wasteful for IDF lookup).
  */
 static uint32
 tp_get_unified_doc_freq(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		const char		  *term,
-		BlockNumber		  *level_heads)
+		TpDataSource *memtable_src,
+		Relation	  index,
+		const char	 *term,
+		BlockNumber	 *level_heads)
 {
-	uint32		   doc_freq = 0;
-	TpPostingList *posting_list;
-	int			   level;
+	uint32 doc_freq = 0;
+	int	   level;
 
-	/* Get doc_freq from memtable */
-	posting_list = tp_get_posting_list(local_state, term);
-	if (posting_list && posting_list->doc_count > 0)
-		doc_freq = posting_list->doc_count;
+	/* Get doc_freq from memtable chain source */
+	if (memtable_src != NULL)
+		doc_freq = tp_source_get_doc_freq(memtable_src, term);
 
 	/* Add doc_freq from all segment levels */
 	for (level = 0; level < TP_MAX_LEVELS; level++)
@@ -69,15 +73,19 @@ tp_get_unified_doc_freq(
  * Batch get unified doc_freq for multiple terms (memtable + all segments).
  * Much faster than calling tp_get_unified_doc_freq in a loop because
  * it opens each segment only once instead of once per term.
+ *
+ * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
+ * source; we read each term's doc_freq via the source op without
+ * materializing posting lists.
  */
 static void
 tp_batch_get_unified_doc_freq(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		char			 **terms,
-		int				   term_count,
-		BlockNumber		  *level_heads,
-		uint32			  *doc_freqs)
+		TpDataSource *memtable_src,
+		Relation	  index,
+		char		**terms,
+		int			  term_count,
+		BlockNumber	 *level_heads,
+		uint32		 *doc_freqs)
 {
 	int level;
 	int i;
@@ -85,11 +93,9 @@ tp_batch_get_unified_doc_freq(
 	/* Initialize doc_freqs with memtable counts */
 	for (i = 0; i < term_count; i++)
 	{
-		TpPostingList *posting_list =
-				tp_get_posting_list(local_state, terms[i]);
-		doc_freqs[i] = (posting_list && posting_list->doc_count > 0)
-							 ? posting_list->doc_count
-							 : 0;
+		doc_freqs[i] = 0;
+		if (memtable_src != NULL)
+			doc_freqs[i] = tp_source_get_doc_freq(memtable_src, terms[i]);
 	}
 
 	/* Add doc_freq from all segment levels (batch lookup) */
@@ -121,10 +127,14 @@ tp_score_documents(
 		float4			 **result_scores)
 {
 	float4			avg_doc_len;
+	int64			total_docs64;
+	int64			total_len64;
 	int32			total_docs;
 	TpIndexMetaPage metap;
 	BlockNumber		level_heads[TP_MAX_LEVELS];
+	TpDataSource   *memtable_src = NULL;
 	int				i;
+	int				result_count = 0;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -141,26 +151,43 @@ tp_score_documents(
 		return 0;
 	}
 
-	total_docs	= pg_atomic_read_u32(&local_state->shared->total_docs);
-	avg_doc_len = total_docs > 0
-						? (float4)(pg_atomic_read_u64(
-										   &local_state->shared->total_len) /
-								   (double)total_docs)
-						: 0.0f;
-
-	if (total_docs <= 0)
-		return 0;
-
-	/* Get segment level heads for querying all levels */
+	/*
+	 * Phase 4 of issue #374: totals come from `metap` (persisted
+	 * segments) + the chain source (active memtable on disk).
+	 * The shmem atomic is still bumped on the primary for vacuum's
+	 * shrinkage protocol but is not authoritative for queries (it
+	 * would drift on standbys and freshly-opened backends).
+	 */
 	metap = tp_get_metapage(index_relation);
 	for (i = 0; i < TP_MAX_LEVELS; i++)
 		level_heads[i] = metap->level_heads[i];
+	total_docs64 = (int64)metap->total_docs;
+	total_len64	 = (int64)metap->total_len;
 	pfree(metap);
 
-	/* If avg_doc_len is 0, all documents have zero length and
-	 * would get zero BM25 scores */
-	if (avg_doc_len <= 0.0f)
+	memtable_src = tp_memtable_chain_source_create(
+			local_state,
+			index_relation,
+			(const char *const *)query_terms,
+			query_term_count);
+	if (memtable_src != NULL)
+	{
+		total_docs64 += memtable_src->total_docs;
+		total_len64 += memtable_src->total_len;
+	}
+
+	total_docs	= (total_docs64 > PG_INT32_MAX) ? PG_INT32_MAX
+												: (int32)total_docs64;
+	avg_doc_len = total_docs > 0
+						? (float4)((double)total_len64 / (double)total_docs)
+						: 0.0f;
+
+	if (total_docs <= 0 || avg_doc_len <= 0.0f)
+	{
+		if (memtable_src != NULL)
+			tp_source_close(memtable_src);
 		return 0;
+	}
 
 	/*
 	 * BMW fast path for single-term queries.
@@ -172,14 +199,17 @@ tp_score_documents(
 		uint32		doc_freq;
 		float4		idf;
 		float4	   *scores;
-		int			result_count;
 		TpBMWStats	stats;
 
 		/* Get unified doc_freq across memtable and segments */
 		doc_freq = tp_get_unified_doc_freq(
-				local_state, index_relation, term, level_heads);
+				memtable_src, index_relation, term, level_heads);
 		if (doc_freq == 0)
+		{
+			if (memtable_src != NULL)
+				tp_source_close(memtable_src);
 			return 0;
+		}
 
 		/* Calculate IDF */
 		idf = tp_calculate_idf(doc_freq, total_docs);
@@ -191,6 +221,7 @@ tp_score_documents(
 		result_count = tp_score_single_term_bmw(
 				local_state,
 				index_relation,
+				memtable_src,
 				term,
 				idf,
 				k1,
@@ -222,6 +253,8 @@ tp_score_documents(
 		}
 
 		*result_scores = scores;
+		if (memtable_src != NULL)
+			tp_source_close(memtable_src);
 		return result_count;
 	}
 
@@ -233,13 +266,12 @@ tp_score_documents(
 		uint32	  *doc_freqs;
 		float4	  *idfs;
 		float4	  *scores;
-		int		   result_count;
 		TpBMWStats stats;
 
 		/* Batch lookup doc_freqs for all terms (opens each segment once) */
 		doc_freqs = palloc(query_term_count * sizeof(uint32));
 		tp_batch_get_unified_doc_freq(
-				local_state,
+				memtable_src,
 				index_relation,
 				query_terms,
 				query_term_count,
@@ -263,6 +295,7 @@ tp_score_documents(
 		result_count = tp_score_multi_term_bmw(
 				local_state,
 				index_relation,
+				memtable_src,
 				query_terms,
 				query_term_count,
 				query_frequencies,
@@ -298,6 +331,8 @@ tp_score_documents(
 		}
 
 		*result_scores = scores;
+		if (memtable_src != NULL)
+			tp_source_close(memtable_src);
 		return result_count;
 	}
 }

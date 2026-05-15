@@ -35,7 +35,6 @@ test/
 
 - **recovery.sh** - Actual crash simulation with SIGKILL and recovery verification
 - **concurrency.sh** - Multi-session concurrency and string interning safety tests
-- **memory_limits.sh** - Memory budget enforcement stress testing with capacity limits
 - **replication.sh** - Physical streaming replication smoke tests + long-lived backend staleness reproducer
 - **replication_issue_342.sh** - Targeted #342 reproducer (memtable spill standby visibility)
 - **replication_parallel_build.sh** - 150K-row parallel CREATE INDEX with standby streaming
@@ -79,7 +78,7 @@ All tests are time-based to ensure sustained load over the configured duration.
 
 Configuration (environment variables):
 - `STRESS_DURATION_MINUTES` - Test duration (default: 5 local, 30 nightly)
-- `SPILL_THRESHOLD` - Posting threshold for spills (default: 1000 local, 500 nightly)
+- `SPILL_THRESHOLD` - Chain-page threshold for spills (default: 2 local, 2 nightly)
 - `DOCS_PER_BATCH` - Documents per insert batch (default: 100)
 - `CONCURRENT_READERS` - Number of concurrent reader processes (default: 3)
 
@@ -96,29 +95,7 @@ Tests verify:
 - ✅ Resource cleanup on index drop
 - ✅ Segment count tracking and validation
 
-### 5. Memory Budget Testing
-
-The Tapir extension enforces strict per-index memory budgets to prevent runaway memory usage.
-
-#### Memory Limits Tests (`memory_limits.sh`)
-- **String Table Capacity**: Tests hash table entry limits (25% of budget)
-- **Posting List Capacity**: Tests posting entry limits (75% of budget)
-- **Mixed Scenarios**: Tests balanced usage of both limits
-- **Per-Index Budgets**: Verifies independent budgets for multiple indexes
-- **Error Handling**: Validates clear error messages when limits exceeded
-
-Configuration:
-- Uses `tapir.shared_memory_size = 1` (1MB per index) for fast testing
-- Assumes 5-character average term length
-- String table: ~6,900 entry limit, Posting lists: ~32,000 entry limit
-
-Tests verify:
-- ✅ Hard capacity limits prevent memory budget violations
-- ✅ Clear error messages when limits exceeded
-- ✅ Per-index budgets work independently
-- ✅ Graceful transaction abort on capacity exceeded
-
-### 6. Replication Tests
+### 5. Replication Tests
 
 Physical streaming replication, cascading replication, failover, and PITR
 coverage. Most tests use **persistent psql sessions** (FIFO-managed

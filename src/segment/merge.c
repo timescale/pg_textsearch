@@ -17,7 +17,6 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/state.h"
-#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
@@ -1715,11 +1714,13 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	 * docs.  See TpIndexMetaPageData.total_docs in metapage.h for
 	 * the invariant total_docs = Σ segment.num_docs.
 	 *
-	 * For WAL-logged indexes we route the linkage through
-	 * tp_xlog_merge_linkage so the standby's redo can take the
-	 * per-index LW_EXCLUSIVE and serialize against in-flight
-	 * scans (#349). For UNLOGGED / TEMP indexes we fall back to
-	 * the local GenericXLog path — there is no standby to confuse.
+	 * Phase 4 unified the WAL-logged and UNLOGGED / TEMP paths
+	 * onto GenericXLog.  The standby's redo replays the page
+	 * bytes directly; serialization against in-flight scans is no
+	 * longer the rmgr's responsibility (#349) -- the chain_source
+	 * read path takes the per-index LWLock around the buffer
+	 * walk, so concurrent backend scans on the standby see a
+	 * consistent metapage snapshot.
 	 */
 	{
 		uint32			   merged_docs	 = 0;
@@ -1751,20 +1752,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		st = tp_get_local_index_state(RelationGetRelid(index));
 
-		if (RelationNeedsWAL(index))
-		{
-			tp_xlog_merge_linkage(
-					index,
-					level,
-					segment_count,
-					total_at_level,
-					remainder_head,
-					new_segment,
-					docs_shrinkage,
-					tokens_shrinkage,
-					st);
-		}
-		else
 		{
 			GenericXLogState *xlog_state;
 			Page			  meta_copy;
@@ -1776,8 +1763,10 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 			/*
 			 * Clamp atomic subs symmetrically with the metapage sub
-			 * below.  tp_sync_metapage_stats reads the atomic under
-			 * the same metapage lock, so this serializes against it.
+			 * below.  Phase 4: the shmem atomic no longer drives
+			 * query correctness, but vacuum's shrinkage protocol
+			 * still reads it, so we maintain it in lockstep with
+			 * the metapage.
 			 */
 			if (st != NULL && st->shared != NULL)
 			{

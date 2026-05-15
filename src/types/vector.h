@@ -112,14 +112,20 @@ char *get_tpvector_index_name(TpVector *tpvec);
  *   TpVectorEntry *e = get_tpvector_first_entry(vec);
  *   for (int i = 0; i < vec->entry_count; i++) {
  *       TpVectorEntryView v;
- *       tpvector_entry_decode(e, &v);
+ *       e = tpvector_entry_decode_advance(e, &v);
  *       // use v.frequency, v.lexeme_len, v.lexeme
- *       e = get_tpvector_next_entry(e);
  *   }
+ *
+ * The decode-only / advance-only variants are kept for callers
+ * that need either operation independently (e.g. validators);
+ * the hot path should use the combined `_advance` form, which
+ * decodes the varints exactly once.
  */
 TpVectorEntry *get_tpvector_first_entry(TpVector *vec);
 TpVectorEntry *get_tpvector_next_entry(TpVectorEntry *current);
 void tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out);
+TpVectorEntry *tpvector_entry_decode_advance(
+		const TpVectorEntry *entry, TpVectorEntryView *out);
 
 /*
  * Format detection + canonicalization.
@@ -131,6 +137,24 @@ void tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out);
  */
 bool	  tpvector_is_v2(const void *raw);
 TpVector *tpvector_canonicalize(TpVector *raw);
+
+/*
+ * Full validation of a raw byte buffer as a v2 TpVector.
+ *
+ * Checks that `len` is large enough to cover the TpVector header,
+ * that the magic and version bytes match, that the embedded
+ * varlena length equals `len`, and that the entry stream decodes
+ * fully within the buffer (each varint freq + varint lexeme_len +
+ * lexeme bytes stays in bounds).  On any inconsistency, raises an
+ * ereport(ERROR, errcode=ERRCODE_DATA_CORRUPTED).
+ *
+ * After a successful call the buffer is safe to iterate with
+ * get_tpvector_first_entry / get_tpvector_next_entry without per-
+ * entry bounds checks.  Use this at trust boundaries where the
+ * bytes come from on-disk memtable pages, network input, or other
+ * untrusted sources.
+ */
+void tpvector_validate_v2_buffer(const char *bytes, uint32 len);
 
 /*
  * Varint helpers (internal but exposed for adjacent code).

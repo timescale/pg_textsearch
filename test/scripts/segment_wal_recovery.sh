@@ -135,10 +135,9 @@ listen_addresses = 'localhost'
 log_min_messages = warning
 shared_preload_libraries = 'pg_textsearch'
 
-# Tight memory limit so auto-spill triggers during inserts.
-pg_textsearch.memory_limit = '4MB'
+# Tight page threshold so auto-spill triggers during inserts.
+pg_textsearch.memtable_pages_threshold = 1
 pg_textsearch.bulk_load_threshold = 0
-pg_textsearch.memtable_spill_threshold = 0
 pg_textsearch.segments_per_level = 2
 EOF
 
@@ -160,10 +159,10 @@ run_sql_quiet "CREATE EXTENSION pg_textsearch VERSION '1.3.0-dev';"
 
 log "Part 1: WAL coverage check"
 
-# Temporarily raise memory limit so data stays in memtable
+# Temporarily disable auto-spill so data stays in memtable
 # until we explicitly spill.
-run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                   = '256MB';"
+run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold
+                   = 0;"
 run_sql_quiet "SELECT pg_reload_conf();"
 sleep 0.2
 
@@ -213,9 +212,9 @@ fi
 
 run_sql_quiet "DROP TABLE wal_check CASCADE;"
 
-# Restore tight limit for Part 2.
-run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memory_limit
-                   = '4MB';"
+# Restore tight threshold for Part 2.
+run_sql_quiet "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold
+                   = 1;"
 run_sql_quiet "SELECT pg_reload_conf();"
 sleep 0.2
 

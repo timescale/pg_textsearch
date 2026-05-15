@@ -104,7 +104,7 @@ DROP TABLE vacuum_allgone;
 -- Test 3: Multi-level segments with deletions
 -- ================================================================
 
-SET pg_textsearch.memtable_spill_threshold = 200;
+SET pg_textsearch.memtable_pages_threshold = 1;
 
 CREATE TABLE vacuum_multilevel (
     id serial PRIMARY KEY,
@@ -137,7 +137,7 @@ FROM (
     LIMIT 2000
 ) sub;
 
-RESET pg_textsearch.memtable_spill_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 DROP TABLE vacuum_multilevel;
 
 -- ================================================================

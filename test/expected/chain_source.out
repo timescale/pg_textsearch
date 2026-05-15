@@ -1,0 +1,131 @@
+-- Unit-level coverage for the on-disk memtable chain
+-- TpDataSource implementation (memtable v2, issue #374), driven
+-- through the bm25_test_chain_source() scaffold.  Each case
+-- writes records through tp_memtable_append() with real TpVector
+-- payloads, then opens a chain source and verifies the read-back
+-- through the TpDataSource interface (get_postings,
+-- get_doc_length, total_docs, total_len).
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE TABLE chain_source_t (id int, body text);
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Empty chain: source create returns NULL.
+SELECT bm25_test_chain_source('chain_source_idx', 'empty_chain');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Single doc, single term: count=1, doc_freq=1, freq matches.
+SELECT bm25_test_chain_source('chain_source_idx', 'one_doc_one_term');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Multiple docs share one term: count=N, all ctids match.
+SELECT bm25_test_chain_source(
+    'chain_source_idx', 'multi_doc_shared_term');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- One doc, three distinct terms: each term round-trips.
+SELECT bm25_test_chain_source('chain_source_idx', 'multi_term');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Records spill across multiple memtable pages: chain walk
+-- aggregates all docs into one term entry.
+SELECT bm25_test_chain_source('chain_source_idx', 'multi_page_chain');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- get_postings for an absent term returns NULL.
+SELECT bm25_test_chain_source('chain_source_idx', 'term_not_found');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- get_doc_length: present ctids return their length; absent
+-- ctids return -1.
+SELECT bm25_test_chain_source('chain_source_idx', 'doc_length_lookup');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Fragment round-trip: write a single record whose TpVector
+-- payload exceeds TP_MEMTABLE_PAGE_MAX_VECTOR_LEN, then read it
+-- back through the chain source.  Verifies that the writer
+-- splits the payload across a fragment head page + N
+-- continuation pages and that the reader correctly reassembles
+-- the bytes before decoding term entries.
+SELECT bm25_test_chain_source('chain_source_idx', 'fragment_roundtrip');
+ bm25_test_chain_source 
+------------------------
+ OK
+(1 row)
+
+-- Clean up
+DROP EXTENSION pg_textsearch CASCADE;
+NOTICE:  drop cascades to index chain_source_idx

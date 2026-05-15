@@ -27,8 +27,6 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
 #include "types/vector.h"
 
 /* ---------------------------------------------------------------------
@@ -246,6 +244,44 @@ tpvector_canonicalize(TpVector *raw)
 	return raw;
 }
 
+void
+tpvector_validate_v2_buffer(const char *bytes, uint32 len)
+{
+	TpVector *v;
+
+	if (bytes == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer is NULL")));
+
+	if (len < sizeof(TpVector))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer too small: %u bytes, need at "
+						"least %zu",
+						len,
+						sizeof(TpVector))));
+
+	v = (TpVector *)bytes;
+
+	if (v->magic[0] != TPVECTOR_V2_MAGIC0 ||
+		v->magic[1] != TPVECTOR_V2_MAGIC1 ||
+		v->magic[2] != TPVECTOR_V2_MAGIC2 || v->magic[3] != TPVECTOR_V2_MAGIC3)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector buffer has wrong magic bytes")));
+
+	if ((uint32)VARSIZE(v) != len)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("bm25vector varlena length %u does not match buffer "
+						"length %u",
+						(uint32)VARSIZE(v),
+						len)));
+
+	tpvector_validate_v2(v);
+}
+
 /* ---------------------------------------------------------------------
  * Entry iteration (v2)
  * ---------------------------------------------------------------------
@@ -286,6 +322,32 @@ get_tpvector_next_entry(TpVectorEntry *current)
 	(void)freq;
 	cursor += lex_len;
 	return (TpVectorEntry *)cursor;
+}
+
+/*
+ * Decode the entry pointed at by `entry` into `*out` and return
+ * the pointer to the next entry in the stream — in one varint
+ * pass, not two.  This is the hot-path iterator: the legacy
+ * pattern of `tpvector_entry_decode(e, &v); e =
+ * get_tpvector_next_entry(e);` re-decodes both varints just to
+ * advance the cursor, and shows up clearly in per-record profiles
+ * on read-heavy workloads against the on-disk memtable chain.
+ *
+ * The returned pointer is `(uint8 *)entry + 2 varints + lex_len`,
+ * computed from the cursor that `tpvector_varint_decode` already
+ * advanced — no extra work.
+ */
+TpVectorEntry *
+tpvector_entry_decode_advance(
+		const TpVectorEntry *entry, TpVectorEntryView *out)
+{
+	const uint8 *cursor = (const uint8 *)entry;
+	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+
+	out->frequency	= tpvector_varint_decode(&cursor, end);
+	out->lexeme_len = tpvector_varint_decode(&cursor, end);
+	out->lexeme		= (const char *)cursor;
+	return (TpVectorEntry *)(cursor + out->lexeme_len);
 }
 
 /* ---------------------------------------------------------------------

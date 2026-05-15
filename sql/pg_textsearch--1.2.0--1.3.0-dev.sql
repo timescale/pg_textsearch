@@ -14,3 +14,60 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- The bm25_test_memtable_page / bm25_test_memtable_append /
+-- bm25_test_chain_source / bm25_memtable_chain functions are
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
+-- redesign (issue #374).  Not part of the supported public API.
+-- See pg_textsearch--1.3.0-dev.sql for the full disclaimer.
+CREATE FUNCTION bm25_test_memtable_page(case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION bm25_test_memtable_append(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_append'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION bm25_memtable_chain(
+    index_name text,
+    OUT blkno bigint,
+    OUT n_records integer,
+    OUT free_offset integer,
+    OUT next_block bigint,
+    OUT flags integer)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION bm25_test_chain_source(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
+LANGUAGE C STRICT;
+
+REVOKE EXECUTE ON FUNCTION bm25_test_memtable_page(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_test_memtable_append(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_memtable_chain(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_test_chain_source(text, text)
+    FROM PUBLIC;
+
+-- Phase 7B of the memtable v2 redesign (issue #374) deletes the
+-- soft-limit memory_usage SRF along with the underlying soft-limit
+-- machinery; the chain_page_count-based auto-spill heuristic replaces
+-- the old global byte accounting.
+DROP FUNCTION IF EXISTS bm25_memory_usage();
+
+-- Standalone scoring functions are not parallel-safe: they open the index
+-- relation by name, attach per-backend state, and walk the on-disk memtable
+-- chain under shared latches.  Parallel workers attempting the same setup
+-- do not survive worker startup reliably.  Ranked queries should use
+-- ORDER BY <@> ... LIMIT n, which uses an index scan and does not exercise
+-- these functions in workers.
+ALTER FUNCTION bm25_text_bm25query_score(text, bm25query) PARALLEL UNSAFE;
+ALTER FUNCTION bm25_textarray_bm25query_score(text[], bm25query)
+    PARALLEL UNSAFE;

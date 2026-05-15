@@ -30,9 +30,6 @@
 #include "debug/dump.h"
 #include "index/metapage.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
-#include "memtable/stringtable.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
@@ -943,55 +940,6 @@ block_posting_cmp_by_doc_id(const void *a, const void *b)
 }
 
 /*
- * Build docmap from memtable's document lengths.
- * Returns the docmap builder which must be freed by caller.
- */
-static TpDocMapBuilder *
-build_docmap_from_memtable(TpLocalIndexState *state)
-{
-	TpMemtable		 *memtable = get_memtable(state);
-	TpDocMapBuilder	 *docmap;
-	dshash_table	 *doc_lengths_hash;
-	dshash_seq_status seq_status;
-	TpDocLengthEntry *doc_entry;
-	dshash_parameters doc_lengths_params;
-
-	docmap = tp_docmap_create();
-
-	if (!memtable || memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-		return docmap;
-
-	/* Setup parameters for doc lengths hash table */
-	memset(&doc_lengths_params, 0, sizeof(doc_lengths_params));
-	doc_lengths_params.key_size			= sizeof(ItemPointerData);
-	doc_lengths_params.entry_size		= sizeof(TpDocLengthEntry);
-	doc_lengths_params.hash_function	= dshash_memhash;
-	doc_lengths_params.compare_function = dshash_memcmp;
-
-	/* Attach to document lengths hash table */
-	doc_lengths_hash = dshash_attach(
-			state->dsa,
-			&doc_lengths_params,
-			memtable->doc_lengths_handle,
-			NULL);
-
-	/* Iterate through all documents and add to docmap */
-	dshash_seq_init(&seq_status, doc_lengths_hash, false);
-	while ((doc_entry = (TpDocLengthEntry *)dshash_seq_next(&seq_status)) !=
-		   NULL)
-	{
-		tp_docmap_add(docmap, &doc_entry->ctid, (uint32)doc_entry->doc_length);
-	}
-	dshash_seq_term(&seq_status);
-	dshash_detach(doc_lengths_hash);
-
-	/* Finalize to build output arrays */
-	tp_docmap_finalize(docmap);
-
-	return docmap;
-}
-
-/*
  * Per-term block information for streaming format.
  * Updated for streaming layout: postings written before skip index.
  */
@@ -1004,24 +952,36 @@ typedef struct TermBlockInfo
 } TermBlockInfo;
 
 /*
- * Write segment from memtable with streaming format.
+ * Write segment from a pre-built dictionary + docmap, e.g. produced
+ * by walking the on-disk memtable chain via the chain source.
  *
- * Layout: [header] → [dictionary] → [postings] → [skip index] →
- *         [fieldnorm] → [ctid map]
+ * Phase 4: this function no longer reads DSA memtable structures.
+ * The caller is responsible for:
+ *   - Building `terms[]` (sorted lexicographically; each entry owns
+ *     its `term` plus parallel `ctids[]` / `freqs[]` arrays whose
+ *     length is `count`, and a `doc_freq` count of distinct docs).
+ *   - Building `docmap` and calling `tp_docmap_finalize` on it.
+ *   - Freeing both after the call (via `tp_free_dictionary` and
+ *     `tp_docmap_destroy`).  The arrays inside TermInfo are presumed
+ *     to live in a memory context the caller drops as a whole.
+ *
+ * Layout: [header] -> [dictionary] -> [postings] -> [skip index] ->
+ *         [fieldnorm] -> [ctid map]
  *
  * This matches the merge format: postings written before skip index.
  */
 BlockNumber
-tp_write_segment(TpLocalIndexState *state, Relation index)
+tp_write_segment(
+		Relation		 index,
+		TermInfo		*terms,
+		uint32			 num_terms,
+		TpDocMapBuilder *docmap)
 {
-	TermInfo		*terms;
-	uint32			 num_terms;
-	BlockNumber		 header_block;
-	BlockNumber		 page_index_root;
-	TpSegmentWriter	 writer;
-	TpSegmentHeader	 header;
-	TpDictionary	 dict;
-	TpDocMapBuilder *docmap;
+	BlockNumber		header_block;
+	BlockNumber		page_index_root;
+	TpSegmentWriter writer;
+	TpSegmentHeader header;
+	TpDictionary	dict;
 
 	uint32			*string_offsets;
 	uint32			 string_pos;
@@ -1039,18 +999,8 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	/* Initialize the writer to avoid garbage values */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
 
-	/* Build docmap from memtable */
-	docmap = build_docmap_from_memtable(state);
-
-	/* Build sorted dictionary */
-	terms = tp_build_dictionary(state, &num_terms);
-
 	if (num_terms == 0)
-	{
-		tp_free_dictionary(terms, num_terms);
-		tp_docmap_destroy(docmap);
 		return InvalidBlockNumber;
-	}
 
 	/* Initialize writer with incremental page allocation */
 	tp_segment_writer_init(&writer, index);
@@ -1149,9 +1099,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 	 */
 	for (i = 0; i < num_terms; i++)
 	{
-		TpPostingList  *posting_list = NULL;
-		TpPostingEntry *entries		 = NULL;
-		uint32			doc_count	 = 0;
+		uint32			doc_count = terms[i].count;
 		uint32			block_idx;
 		uint32			num_blocks;
 		TpBlockPosting *block_postings = NULL;
@@ -1159,20 +1107,7 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 		/* Record where this term's postings start */
 		term_blocks[i].posting_offset	= writer.current_offset;
 		term_blocks[i].skip_entry_start = skip_entries_count;
-
-		if (terms[i].posting_list_dp != InvalidDsaPointer)
-		{
-			posting_list = (TpPostingList *)
-					dsa_get_address(state->dsa, terms[i].posting_list_dp);
-			if (posting_list && posting_list->doc_count > 0)
-			{
-				entries = (TpPostingEntry *)
-						dsa_get_address(state->dsa, posting_list->entries_dp);
-				doc_count = posting_list->doc_count;
-			}
-		}
-
-		term_blocks[i].doc_freq = posting_list ? posting_list->doc_freq : 0;
+		term_blocks[i].doc_freq			= terms[i].doc_freq;
 
 		if (doc_count == 0)
 		{
@@ -1190,19 +1125,19 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 			uint32 j;
 			for (j = 0; j < doc_count; j++)
 			{
-				uint32 doc_id = tp_docmap_lookup(docmap, &entries[j].ctid);
+				uint32 doc_id = tp_docmap_lookup(docmap, &terms[i].ctids[j]);
 				uint8  norm;
 
 				if (doc_id == UINT32_MAX)
 					elog(ERROR,
 						 "CTID (%u,%u) not found in docmap",
-						 ItemPointerGetBlockNumber(&entries[j].ctid),
-						 ItemPointerGetOffsetNumber(&entries[j].ctid));
+						 ItemPointerGetBlockNumber(&terms[i].ctids[j]),
+						 ItemPointerGetOffsetNumber(&terms[i].ctids[j]));
 
 				norm = tp_docmap_get_fieldnorm(docmap, doc_id);
 
 				block_postings[j].doc_id	= doc_id;
-				block_postings[j].frequency = (uint16)entries[j].frequency;
+				block_postings[j].frequency = (uint16)terms[i].freqs[j];
 				block_postings[j].fieldnorm = norm;
 				block_postings[j].reserved	= 0;
 			}
@@ -1550,11 +1485,9 @@ tp_write_segment(TpLocalIndexState *state, Relation index)
 
 	FlushRelationBuffers(index);
 
-	/* Clean up */
-	tp_free_dictionary(terms, num_terms);
+	/* Clean up writer-owned state. Caller frees terms[] and docmap. */
 	pfree(string_offsets);
 	pfree(term_blocks);
-	tp_docmap_destroy(docmap);
 	if (writer.pages)
 		pfree(writer.pages);
 

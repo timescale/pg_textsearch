@@ -36,9 +36,9 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
+#include "index/source.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
+#include "memtable/chain_source.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/fieldnorm.h"
@@ -681,6 +681,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	WordEntry		  *query_entries;
 	char			  *query_lexemes_start;
 	TpLocalIndexState *index_state;
+	TpDataSource	  *memtable_src = NULL;
 	float4			   avg_doc_len;
 	int32			   total_docs;
 	int64			   total_len;
@@ -764,11 +765,16 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 								child_index_oid)));
 			}
 
-			total_docs	= pg_atomic_read_u32(&index_state->shared->total_docs);
-			total_len	= pg_atomic_read_u64(&index_state->shared->total_len);
-			avg_doc_len = total_docs > 0 ? (float4)((double)total_len /
-													(double)total_docs)
-										 : 0.0f;
+			/*
+			 * Phase 4 of issue #374: totals come from `metap` (persisted
+			 * segments only) plus the chain source (active memtable on
+			 * disk).  The shmem atomic is still bumped by inserts on the
+			 * primary for vacuum's shrinkage protocol but is not
+			 * authoritative for queries (it drifts on standbys and
+			 * freshly-opened backends).
+			 */
+			total_docs = metap->total_docs;
+			total_len  = metap->total_len;
 		}
 		else
 		{
@@ -782,15 +788,25 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 								index_oid)));
 			}
 
-			total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
-			total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
+			/* See partitioned-index branch above for the totals rule. */
+			total_docs = metap->total_docs;
+			total_len  = metap->total_len;
 
 			/*
-			 * If the index has no documents, check if this is an
-			 * inheritance parent (e.g., hypertable) and use the first
-			 * child's stats and segments for scoring.
+			 * If the index has no segment storage of its own, check if
+			 * this is an inheritance parent (e.g., hypertable) and use
+			 * the first child's stats and segments for scoring.
+			 *
+			 * Phase 4: empty means no segments AND nothing in the chain.
+			 * We open the chain source for the current relation up front
+			 * so we can include its docs in the "is empty?" decision.
 			 */
-			if (total_docs == 0 && indexed_colname != NULL)
+			memtable_src = tp_memtable_chain_source_create(
+					index_state, index_rel, NULL, 0);
+
+			if (total_docs == 0 &&
+				(memtable_src == NULL || memtable_src->total_docs == 0) &&
+				indexed_colname != NULL)
 			{
 				Oid first_child_idx = find_first_child_bm25_index(
 						index_oid, indexed_colname);
@@ -805,15 +821,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						TpIndexMetaPage child_metap;
 
 						index_state = child_state;
-						total_docs	= pg_atomic_read_u32(
-								 &child_state->shared->total_docs);
-						total_len = pg_atomic_read_u64(
-								&child_state->shared->total_len);
 
 						/*
-						 * Also switch to the child index for segment access.
-						 * The parent index has no segments, so IDF lookup
-						 * would fail without this.
+						 * Switch to the child index for segment access and
+						 * for the chain source.  The parent index has no
+						 * segments, so IDF lookup would fail without this.
 						 */
 						child_rel =
 								index_open(first_child_idx, AccessShareLock);
@@ -827,14 +839,47 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						metap = child_metap;
 						index_close(index_rel, AccessShareLock);
 						index_rel = child_rel;
+
+						total_docs = metap->total_docs;
+						total_len  = metap->total_len;
+
+						/*
+						 * Rebuild the chain source against the child
+						 * relation: the parent source (likely NULL) is
+						 * stale for the new lock target.
+						 */
+						if (memtable_src != NULL)
+							tp_source_close(memtable_src);
+						memtable_src = tp_memtable_chain_source_create(
+								index_state, index_rel, NULL, 0);
 					}
 				}
 			}
-
-			avg_doc_len = total_docs > 0 ? (float4)((double)total_len /
-													(double)total_docs)
-										 : 0.0f;
 		}
+
+		/*
+		 * Phase 4 of issue #374: add the active memtable's contribution
+		 * on top of the persisted-segment totals from the metapage.  In
+		 * the partitioned branch above we haven't opened a chain source
+		 * yet; do it now.
+		 */
+		if (memtable_src == NULL)
+			memtable_src = tp_memtable_chain_source_create(
+					index_state, index_rel, NULL, 0);
+
+		if (memtable_src != NULL)
+		{
+			int64 chain_docs = memtable_src->total_docs;
+			int64 chain_len	 = memtable_src->total_len;
+			int64 sum		 = (int64)total_docs + chain_docs;
+
+			total_docs = (sum > PG_INT32_MAX) ? PG_INT32_MAX : (int32)sum;
+			total_len += chain_len;
+		}
+
+		avg_doc_len = total_docs > 0
+							? (float4)((double)total_len / (double)total_docs)
+							: 0.0f;
 
 		/*
 		 * Get or initialize the IDF cache. The cache is stored in fn_extra
@@ -892,13 +937,12 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		{
 			char *query_lexeme_raw = query_lexemes_start +
 									 query_entries[q_i].pos;
-			int			   lexeme_len = query_entries[q_i].len;
-			char		  *query_lexeme;
-			TpPostingList *posting_list;
-			float4		   idf;
-			float4		   tf; /* term frequency in document */
-			float4		   term_score;
-			int			   query_freq;
+			int	   lexeme_len = query_entries[q_i].len;
+			char  *query_lexeme;
+			float4 idf;
+			float4 tf; /* term frequency in document */
+			float4 term_score;
+			int	   query_freq;
 
 			/* Create properly null-terminated string from tsvector lexeme */
 			query_lexeme = palloc(lexeme_len + 1);
@@ -937,10 +981,22 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					uint32 memtable_doc_freq = 0;
 					uint32 segment_doc_freq	 = 0;
 
-					posting_list =
-							tp_get_posting_list(index_state, query_lexeme);
-					if (posting_list && posting_list->doc_count > 0)
-						memtable_doc_freq = posting_list->doc_count;
+					/*
+					 * Phase 4 of issue #374: query the memtable via the
+					 * chain source built above (DSA posting lists are dead
+					 * code in the live path).
+					 */
+					if (memtable_src != NULL)
+					{
+						TpPostingData *postings = tp_source_get_postings(
+								memtable_src, query_lexeme);
+
+						if (postings != NULL)
+						{
+							memtable_doc_freq = (uint32)postings->count;
+							tp_source_free_postings(memtable_src, postings);
+						}
+					}
 
 					/* Get doc_freq from all segment levels */
 					for (int level = 0; level < TP_MAX_LEVELS; level++)
@@ -985,6 +1041,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/* Clean up */
+		if (memtable_src)
+		{
+			tp_source_close(memtable_src);
+			memtable_src = NULL;
+		}
 		pfree(metap);
 		metap = NULL;
 		index_close(index_rel, AccessShareLock);
@@ -992,6 +1053,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (memtable_src)
+			tp_source_close(memtable_src);
 		if (metap)
 			pfree(metap);
 		if (index_rel)

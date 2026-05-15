@@ -126,10 +126,17 @@ CREATE OPERATOR @extschema@.= (
 -- COST 1000: Standalone scoring is expensive. Each call parses document text
 -- with to_tsvector (~14μs per doc), opens the index, looks up IDF values, and
 -- calculates BM25 scores. High cost helps planner prefer index scans.
+--
+-- PARALLEL UNSAFE: standalone scoring opens the index relation by name,
+-- attaches per-backend state (registry, DSA, LWLocks), and walks the
+-- on-disk memtable chain under shared latches.  Parallel workers attempting
+-- the same setup do not survive worker startup reliably (see follow-up
+-- issue).  Ranked queries should use ORDER BY <@> ... LIMIT n, which is an
+-- index scan and does not exercise this function in workers.
 CREATE FUNCTION @extschema@.bm25_text_bm25query_score(left_text text, right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- bm25query equality function
 CREATE FUNCTION @extschema@.bm25query_eq(@extschema@.bm25query, @extschema@.bm25query)
@@ -188,11 +195,13 @@ DEFAULT FOR TYPE text USING bm25 AS
 
 -- BM25 scoring function for text[] <@> bm25query operations
 -- Flattens array elements with spaces, then scores as a single document.
+-- PARALLEL UNSAFE: delegates to bm25_text_bm25query_score; see that
+-- function's declaration for the rationale.
 CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
     left_arr text[], right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- Error stub for text[] <@> text (planner should rewrite to bm25query)
 CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)
@@ -245,22 +254,50 @@ CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
--- Memory usage visibility function.
--- Intentionally accessible to all users (monitoring/ops use case).
--- Only exposes aggregate DSA byte counts and configured limits,
--- not per-index or per-user data.
-CREATE FUNCTION bm25_memory_usage(
-    OUT dsa_total_bytes int8,
-    OUT dsa_total_mb float4,
-    OUT estimated_bytes int8,
-    OUT estimated_mb float4,
-    OUT counter_bytes int8,
-    OUT memory_limit_mb float4,
-    OUT usage_pct float4
-)
-AS 'MODULE_PATHNAME', 'tp_memory_usage'
-LANGUAGE C VOLATILE;
-
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
+
+-- The bm25_test_memtable_page / bm25_test_memtable_append /
+-- bm25_test_chain_source / bm25_memtable_chain functions are
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
+-- redesign (issue #374).  They are not part of the supported
+-- public API: their signatures, return values, and existence are
+-- subject to change or removal in ANY release (including patch
+-- releases) without notice or upgrade paths.  Do not depend on
+-- them from application code.
+CREATE FUNCTION @extschema@.bm25_test_memtable_page(case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_test_memtable_append(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_memtable_append'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_memtable_chain(
+    index_name text,
+    OUT blkno bigint,
+    OUT n_records integer,
+    OUT free_offset integer,
+    OUT next_block bigint,
+    OUT flags integer)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_test_chain_source(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
+LANGUAGE C STRICT;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_chain_source(text, text)
+    FROM PUBLIC;

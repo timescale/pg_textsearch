@@ -31,40 +31,29 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: Memtable mutations and segment merges
-  are WAL-logged via a custom resource manager (rmgr ID 149,
-  registered at https://wiki.postgresql.org/wiki/CustomWALResourceManagers,
-  records `INSERT_TERMS` / `SPILL` / `MERGE_LINKAGE`). On a
-  streaming standby — and during primary crash recovery — redo
-  applies the records directly to the in-shared-memory memtable
-  and to the metapage. SPILL and MERGE_LINKAGE redo hold the
-  per-index `LW_EXCLUSIVE` so concurrent backend scans
-  (`LW_SHARED`) block until the redo completes. The startup
-  process can't open relations (no transaction state), so redo
-  bypasses `tp_get_local_index_state` and constructs a minimal
-  `TpLocalIndexState` on the stack from the registry's shared
-  state plus the global DSA. WAL emission is gated on
-  `RelationNeedsWAL(rel)` so UNLOGGED / TEMP indexes don't pay
-  for records that can't apply on the standby. Docid pages
-  remain the durable on-disk record of what's in the memtable;
-  on a fresh standby backend the rebuild path in
-  `tp_rebuild_index_from_disk` drains WAL replay, acquires
-  `LW_EXCLUSIVE`, re-reads the metapage from disk, walks docid
-  pages, then atomic-writes corpus stats as
-  `metap_total + memtable_count`. `tp_add_document_terms` is
-  idempotent by CTID. **The bootstrap path's invariants and the
-  scenarios it has to handle are spec'd at
-  [`docs/replication/CORRECTNESS.md`](docs/replication/CORRECTNESS.md);
-  read it before changing the rebuild flow.** Closes #345, #349,
-  #350.
+- **Physical replication**: All page mutations are WAL-logged via
+  `GenericXLog` records. There is no custom resource manager;
+  pg_textsearch does not register an rmgr. Stock PostgreSQL replay
+  reconstructs every page on a streaming standby or during crash
+  recovery — including the on-disk memtable chain pages, segment
+  pages, and the metapage. This is what lets PostgreSQL's
+  single-page WAL-redo helper (and any other no-extension-load
+  replay context) work without loading `pg_textsearch.so`.
+  **The on-disk memtable design is spec'd at
+  [`docs/memtable_v2.md`](docs/memtable_v2.md); read it before
+  changing the write/read/spill flow.** Closes #345, #349,
+  #350, #374.
 
 ## Core Architecture
 
 ### Storage Architecture
 
-The index uses a hybrid storage approach:
-- **Memtable**: In-memory inverted index with term dictionary and posting
-  lists, stored in shared memory for concurrent access
+The index uses an LSM-like layered storage approach:
+- **Memtable (L0)**: An on-disk paged structure stored in the index
+  relation itself. Writes append doc records (ctid + length +
+  packed bm25vector bytes) to a tail page chained off the
+  metapage. Mutations are WAL-logged via `GenericXLog`.
+  See [`docs/memtable_v2.md`](docs/memtable_v2.md).
 - **Segments**: Immutable disk-based structures using V2 block storage format
   with skip lists for efficient top-k queries
 
@@ -85,7 +74,9 @@ details):
 - **Layer 2 (Index coordination):** `scoring/` (BM25, Block-Max
   WAND), `index/` (state lifecycle, registry, metapage, posting
   source abstraction)
-- **Layer 3 (Storage):** `memtable/` (in-memory inverted index),
+- **Layer 3 (Storage):** `memtable/` (on-disk paged L0 — chain of
+  doc-record pages mutated under buffer locks, WAL-logged via
+  `GenericXLog`; see [`docs/memtable_v2.md`](docs/memtable_v2.md)),
   `segment/` (on-disk segments, merge, compression)
 - **Cross-cutting:** `debug/` (dump utilities), `mod.c` (init)
 
@@ -143,9 +134,8 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.default_limit` | Default limit for queries without LIMIT | 1000 |
 | `pg_textsearch.log_scores` | Log BM25 scores during scans | false |
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
-| `pg_textsearch.memory_limit` | Hard cap on memtable DSA memory (soft limits derived internally) | 2GB |
-| `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill | 100000 |
-| `pg_textsearch.memtable_spill_threshold` | Posting entries to trigger spill (deprecated) | 32000000 |
+| `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
+| `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 
@@ -326,10 +316,11 @@ tables.
 - Postgres coding conventions followed
 - Memory allocation patterns follow Postgres standards
 - Wrap all lines at 79 characters
-- A memtable is stored in shared memory, but there is one memtable per index.
-  Memtables are not shared across indexes, only across backend processes via
-  shared memory.
-- Postgres is installed at ~/pgsql
+- The L0 memtable is an on-disk chain of pages in the index relation
+  (one chain per index). Mutated under standard buffer locks and
+  WAL-logged via `GenericXLog`. See
+  [`docs/memtable_v2.md`](docs/memtable_v2.md) before changing
+  the write/read/spill flow.
 
 ### Pre-Commit Checklist
 

@@ -31,9 +31,6 @@
 #include "access/build_context.h"
 #include "index/metapage.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
-#include "replication/replication.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"
@@ -175,20 +172,17 @@ tp_apply_vacuum_shrinkage(
 }
 
 /*
- * Spill memtable to an L0 segment.  Caller passes a minimum posting
- * count below which the spill is a no-op — used by VACUUM cleanup
- * and the shutdown hook to avoid producing runt L0 segments on
- * lightly-loaded indexes.  The pre-lock read is a fast bailout; if
- * it races with an insert, the worst case is a harmless no-op
- * inside tp_write_segment.
+ * Spill memtable to an L0 segment.  Caller passes a minimum
+ * chain-page count below which the spill is a no-op — used by
+ * VACUUM cleanup and the shutdown hook to avoid producing runt
+ * L0 segments on lightly-loaded indexes.  The pre-lock read is
+ * a fast bailout; if it races with an insert, the worst case
+ * is a harmless no-op inside tp_do_spill().
  */
 void
 tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint64 min_postings)
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	TpMemtable *memtable;
-	BlockNumber segment_root;
-
 	/* Standby is read-only; spill is primary-only. */
 	if (RecoveryInProgress())
 		return;
@@ -196,28 +190,11 @@ tp_spill_memtable_if_needed(
 	if (!index_state || !index_state->shared)
 		return;
 
-	memtable = get_memtable(index_state);
-	if (!memtable ||
-		pg_atomic_read_u64(&memtable->total_postings) < min_postings)
+	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
 		return;
 
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-
-	segment_root = tp_write_segment(index_state, index);
-	if (segment_root != InvalidBlockNumber)
-	{
-		tp_clear_memtable(index_state);
-		tp_clear_docid_pages(index);
-		tp_sync_metapage_stats(index, index_state);
-
-		if (RelationNeedsWAL(index))
-			tp_xlog_spill(index, segment_root);
-		else
-			tp_link_l0_chain_head(index, segment_root);
-
-		tp_maybe_compact_level(index, 0);
-	}
-
+	tp_do_spill(index_state, index, NULL);
 	tp_release_index_lock(index_state);
 }
 
@@ -946,18 +923,18 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				sizeof(IndexBulkDeleteResult));
 
 	/*
-	 * Spill the memtable so the docid chain doesn't outlive a
-	 * server restart.  Insert-only tables skip ambulkdelete (no
-	 * dead tuples), so without this call nothing would spill and
-	 * the first query after the next start would be slow.  Skip
-	 * under TP_MIN_SPILL_POSTINGS — that few docs is faster to
-	 * replay from heap on restart than a runt L0 segment would be
-	 * to compact away.
+	 * Spill the memtable so the on-disk memtable chain doesn't
+	 * accumulate forever on insert-only tables.  Insert-only
+	 * tables skip ambulkdelete (no dead tuples), so without this
+	 * call nothing would spill and the chain would keep growing.
+	 * Skip under TP_MIN_SPILL_PAGES — that few docs is cheaper
+	 * to read from the chain on every query than to compact a
+	 * runt L0 segment away.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
 		tp_spill_memtable_if_needed(
-				info->index, index_state, TP_MIN_SPILL_POSTINGS);
+				info->index, index_state, TP_MIN_SPILL_PAGES);
 
 	/* Get current index statistics from metapage */
 	metap = tp_get_metapage(info->index);

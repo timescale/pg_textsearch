@@ -70,16 +70,20 @@ typedef struct TpSegmentWriter
 	uint32			  posting_buffer_size; /* Current size of buffer */
 } TpSegmentWriter;
 
-/* Forward declarations for index.c */
-struct TpLocalIndexState;
+/* Forward declarations */
+struct TermInfo;
+struct TpDocMapBuilder;
 
 /*
  * Function declarations
  */
 
 /* Writer functions */
-extern BlockNumber
-			tp_write_segment(struct TpLocalIndexState *state, Relation index);
+extern BlockNumber tp_write_segment(
+		Relation				index,
+		struct TermInfo		   *terms,
+		uint32					num_terms,
+		struct TpDocMapBuilder *docmap);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);

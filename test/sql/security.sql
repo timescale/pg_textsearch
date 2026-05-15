@@ -44,7 +44,7 @@ SELECT has_function_privilege('test_nonsuperuser', 'bm25_summarize_index(text)',
 
 -- Resource-control GUCs should require superuser
 SET pg_textsearch.bulk_load_threshold = 1;
-SET pg_textsearch.memtable_spill_threshold = 0;
+SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.segments_per_level = 2;
 
 -- Logging GUCs should require superuser (info disclosure in pooled envs)

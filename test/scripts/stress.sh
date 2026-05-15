@@ -22,7 +22,7 @@ LOGFILE="${DATA_DIR}/postgres.log"
 
 # Test parameters - can be overridden via environment
 STRESS_DURATION_MINUTES="${STRESS_DURATION_MINUTES:-5}"
-SPILL_THRESHOLD="${SPILL_THRESHOLD:-1000}"  # Low threshold for more segments
+SPILL_THRESHOLD="${SPILL_THRESHOLD:-2}"  # Low threshold for more segments
 DOCS_PER_BATCH="${DOCS_PER_BATCH:-100}"
 CONCURRENT_READERS="${CONCURRENT_READERS:-6}"       # Readers per test
 CONCURRENT_WRITERS="${CONCURRENT_WRITERS:-3}"       # Writers for concurrent tests
@@ -97,10 +97,10 @@ EOF
 
     # Set low spill threshold
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c \
-        "ALTER SYSTEM SET pg_textsearch.memtable_spill_threshold = ${SPILL_THRESHOLD};" >/dev/null
+        "ALTER SYSTEM SET pg_textsearch.memtable_pages_threshold = ${SPILL_THRESHOLD};" >/dev/null
     pg_ctl reload -D "${DATA_DIR}" >/dev/null
 
-    log "PostgreSQL started with memtable_spill_threshold = ${SPILL_THRESHOLD}"
+    log "PostgreSQL started with memtable_pages_threshold = ${SPILL_THRESHOLD}"
 }
 
 run_sql() {
@@ -164,7 +164,7 @@ test_extended_insert_query() {
     local last_validation=$start_time
     local last_segment_count=0
 
-    info "Duration: ${duration}s, target: ~$((duration * 70)) docs, ~$((duration * 70 / SPILL_THRESHOLD)) segments"
+    info "Duration: ${duration}s, target: ~$((duration * 70)) docs, ~$((duration * 70 / (SPILL_THRESHOLD * 50))) segments"
 
     while [ $(date +%s) -lt $end_time ]; do
         batch_num=$((batch_num + 1))
@@ -708,7 +708,7 @@ print_summary() {
     echo ""
     echo "Configuration:"
     echo "  Duration:            ${STRESS_DURATION_MINUTES} minutes"
-    echo "  Spill threshold:     ${SPILL_THRESHOLD} postings"
+    echo "  Spill threshold:     ${SPILL_THRESHOLD} pages"
     echo "  Docs per batch:      ${DOCS_PER_BATCH}"
     echo "  Concurrent readers:  ${CONCURRENT_READERS}"
     echo "  Concurrent writers:  ${CONCURRENT_WRITERS}"
@@ -751,7 +751,7 @@ main() {
     echo ""
     echo "Configuration:"
     echo "  Duration:           ${STRESS_DURATION_MINUTES} minutes (${TOTAL_SECONDS} seconds)"
-    echo "  Spill threshold:    ${SPILL_THRESHOLD} postings"
+    echo "  Spill threshold:    ${SPILL_THRESHOLD} pages"
     echo "  Docs per batch:     ${DOCS_PER_BATCH}"
     echo "  Concurrent readers: ${CONCURRENT_READERS}"
     echo "  Concurrent writers: ${CONCURRENT_WRITERS}"

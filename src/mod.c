@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <fmgr.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
@@ -25,11 +26,7 @@
 #include "constants.h"
 #include "index/registry.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
-#include "memtable/stringtable.h"
 #include "planner/hooks.h"
-#include "replication/replication.h"
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -56,9 +53,11 @@ bool tp_log_bmw_stats = false;
 /* Global variable for bulk load spill threshold (0 = disabled) */
 int tp_bulk_load_threshold = TP_DEFAULT_BULK_LOAD_THRESHOLD;
 
-/* Global variable for memtable spill threshold (0 = disabled)
- * Deprecated: use memory_limit instead */
-int tp_memtable_spill_threshold = TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD;
+/*
+ * Memtable v2 (issue #374) auto-spill: chain pages per index
+ * before the next insert triggers a spill (0 = disabled).
+ */
+int tp_memtable_pages_threshold = TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD;
 
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
@@ -67,9 +66,6 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
-
-/* Memory limit GUC (in KB, 0 = disabled) */
-int tp_memory_limit = 2097152; /* 2 GB */
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -208,14 +204,16 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
-			"pg_textsearch.memtable_spill_threshold",
-			"Posting entries to trigger memtable spill",
-			"When the memtable reaches this many posting entries, spill to "
-			"disk at transaction end. Set to 0 to disable.",
-			&tp_memtable_spill_threshold,
-			TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD, /* default 32M */
+			"pg_textsearch.memtable_pages_threshold",
+			"Chain pages to trigger memtable spill",
+			"When the on-disk memtable chain reaches this many pages, "
+			"spill to an L0 segment at the next insert.  Each page is "
+			"8 KiB.  Set to 0 to disable auto-spill (chain grows until "
+			"VACUUM or manual bm25_spill_index()).",
+			&tp_memtable_pages_threshold,
+			TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD, /* default 64 */
 			0,									 /* min 0 (disabled) */
-			INT_MAX,							 /* max INT_MAX */
+			INT_MAX,							 /* max */
 			PGC_SUSET,
 			0,
 			NULL,
@@ -251,24 +249,14 @@ _PG_init(void)
 			NULL,
 			NULL);
 
-	DefineCustomIntVariable(
-			"pg_textsearch.memory_limit",
-			"Memory limit for pg_textsearch memtables",
-			"Hard cap on DSA memory reserved by "
-			"pg_textsearch. Inserts fail with an error "
-			"when exceeded. Internally, spill thresholds "
-			"at 50%% (global) and 12.5%% (per-index) "
-			"keep usage well below this limit. "
-			"Set to 0 to disable.",
-			&tp_memory_limit,
-			2097152,	   /* default: 2 GB */
-			0,			   /* min: 0 (disabled) */
-			MAX_KILOBYTES, /* max */
-			PGC_SIGHUP,	   /* changeable via reload */
-			GUC_UNIT_KB,
-			NULL,
-			NULL,
-			NULL);
+	/*
+	 * Reserve the pg_textsearch.* GUC prefix.  Without this,
+	 * postgresql.conf entries for GUCs we removed in earlier
+	 * releases (e.g. pg_textsearch.memory_limit, deleted in
+	 * 1.3.0's Phase 7B) are silently ignored after upgrade
+	 * instead of producing a warning at server start.
+	 */
+	MarkGUCPrefixReserved("pg_textsearch");
 
 	/*
 	 * Initialize index access method options
@@ -311,9 +299,6 @@ _PG_init(void)
 	prev_object_access_hook = object_access_hook;
 	object_access_hook		= tp_object_access;
 
-	/* Register the custom WAL resource manager (memtable replication). */
-	tp_register_rmgr();
-
 	/* Register transaction callback to release index locks at transaction end
 	 */
 	RegisterXactCallback(tp_xact_callback, NULL);
@@ -327,15 +312,6 @@ _PG_init(void)
 	/* Install ProcessUtility hook for partitioned build tracking */
 	prev_process_utility_hook = ProcessUtility_hook;
 	ProcessUtility_hook		  = tp_process_utility;
-
-	/*
-	 * Register LWLock tranches for dshash tables used in parallel builds.
-	 * These must be registered in every process that might use them.
-	 */
-	LWLockRegisterTranche(TP_STRING_HASH_TRANCHE_ID, "tapir_string_hash");
-	LWLockRegisterTranche(
-			TP_DOCLENGTH_HASH_TRANCHE_ID, "tapir_doclength_hash");
-	LWLockRegisterTranche(TP_TRANCHE_POSTING_LOCK, "tapir_posting_lock");
 }
 
 /*
@@ -555,4 +531,24 @@ tp_process_utility(
 				queryEnv,
 				dest,
 				qc);
+}
+
+/*
+ * Deprecated stub for legacy upgrade compatibility.
+ *
+ * pg_textsearch--1.0.0--1.1.0.sql ships with a CREATE FUNCTION
+ * bm25_memory_usage() that binds to this C symbol.  The SRF and
+ * its underlying soft-limit infrastructure were removed in
+ * 1.3.0-dev (issue #374), and the matching SQL function is
+ * DROPped by pg_textsearch--1.2.0--1.3.0-dev.sql, but during an
+ * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0-dev,
+ * the CREATE in 1.0.0--1.1.0 has to find this symbol before the
+ * DROP can run.  The stub returns NULL.
+ */
+PG_FUNCTION_INFO_V1(tp_memory_usage);
+
+Datum
+tp_memory_usage(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_NULL();
 }

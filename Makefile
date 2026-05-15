@@ -30,12 +30,11 @@ OBJS = \
 	src/access/scan.o \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
+	src/memtable/chain_source.o \
 	src/memtable/expull.o \
-	src/memtable/memtable.o \
-	src/memtable/posting.o \
-	src/memtable/stringtable.o \
+	src/memtable/log.o \
+	src/memtable/page.o \
 	src/memtable/scan.o \
-	src/memtable/source.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
@@ -53,10 +52,8 @@ OBJS = \
 	src/index/registry.o \
 	src/index/metapage.o \
 	src/index/limit.o \
-	src/index/memory.o \
 	src/index/resolve.o \
 	src/index/source.o \
-	src/replication/rmgr.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/dump.o
@@ -77,7 +74,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load catalog_stats compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms max_shared_memory memory merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
@@ -173,15 +170,11 @@ test-replication-extended:
 	    exit 1; \
 	fi
 
-test-memory:
-	@echo "Running memory accounting tests..."
-	@cd test/scripts && ./memory_accounting.sh
-
 test-multi-index:
 	@echo "Running multi-index / multi-user / multi-schema tests..."
 	@cd test/scripts && ./multi_index.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-memory test-multi-index
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -354,4 +347,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-memory test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

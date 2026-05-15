@@ -21,218 +21,130 @@
 #include "index/metapage.h"
 #include "index/resolve.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
-#include "memtable/posting.h"
-#include "memtable/stringtable.h"
+#include "memtable/page.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 
 /* Output size limits for string mode */
-#define MAX_OUTPUT_SIZE		  (256 * 1024) /* 256KB soft limit */
-#define MAX_TERMS_FULL_DETAIL 20		   /* Show full posting lists */
-#define MAX_TERMS_SUMMARY	  100		   /* Show just doc frequency */
-#define MAX_DOCS_TO_SHOW	  10		   /* Doc length entries to show */
-#define MAX_POSTINGS_SHOWN	  5			   /* Postings per term */
+#define MAX_OUTPUT_SIZE	 (256 * 1024) /* 256KB soft limit */
+#define MAX_DOCS_TO_SHOW 20			  /* Records to show in full */
 
 /* Forward declaration - implemented in segment.c */
 extern void tp_dump_segment_to_output(
 		Relation index, BlockNumber segment_root, DumpOutput *out);
 
 /*
- * Dump memtable contents
+ * Dump memtable contents (v2 on-disk chain).
+ *
+ * Walks the on-disk page chain rooted at the metapage's
+ * memtable_head_blkno field and prints per-page summaries plus
+ * a per-document CTID + doc_length listing.  In v2 there is no
+ * in-memory term dictionary or posting list — those are
+ * reconstructed by the chain source at query time.  The TpVector
+ * payload on each record contains the terms; we expose it via
+ * vector_len here for sizing visibility but do not decode it
+ * (see bm25_dump_index summarize section for term counts).
  */
 static void
-dump_memtable(DumpOutput *out, TpLocalIndexState *index_state)
+dump_memtable(DumpOutput *out, TpLocalIndexState *index_state, Relation rel)
 {
-	TpMemtable *memtable = get_memtable(index_state);
-	dsa_area   *area	 = index_state->dsa;
+	TpIndexMetaPage metap;
+	BlockNumber		blk;
+	uint32			page_count = 0;
+	uint32			rec_count  = 0;
+	uint32			docs_shown = 0;
+	int				max_docs;
 
-	dump_printf(out, "Term Dictionary:\n");
+	(void)index_state;
 
-	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID &&
-		area)
+	if (rel == NULL)
 	{
-		dshash_table *string_table =
-				tp_string_table_attach(area, memtable->string_hash_handle);
-
-		if (string_table)
-		{
-			uint32			   term_count  = 0;
-			uint32			   terms_shown = 0;
-			uint32			   max_terms_full;
-			uint32			   max_terms_summary;
-			dshash_seq_status  status;
-			TpStringHashEntry *entry;
-
-			max_terms_full	  = out->full_dump ? UINT32_MAX
-											   : MAX_TERMS_FULL_DETAIL;
-			max_terms_summary = out->full_dump ? UINT32_MAX
-											   : MAX_TERMS_SUMMARY;
-
-			dshash_seq_init(&status, string_table, false);
-
-			while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) !=
-				   NULL)
-			{
-				CHECK_FOR_INTERRUPTS();
-
-				if (DsaPointerIsValid(entry->key.posting_list))
-				{
-					TpPostingList *posting_list;
-					const char	  *stored_str;
-
-					term_count++;
-
-					/* Check output size limit */
-					if (!out->full_dump && out->str &&
-						out->str->len > (int)MAX_OUTPUT_SIZE)
-					{
-						/* Stop adding terms */
-						continue;
-					}
-
-					posting_list =
-							dsa_get_address(area, entry->key.posting_list);
-					stored_str = tp_get_key_str(area, &entry->key);
-
-					if (terms_shown < max_terms_full)
-					{
-						/* Full detail */
-						TpPostingEntry *postings;
-						int				max_show;
-						int				i;
-
-						dump_printf(
-								out,
-								"  '%s': doc_freq=%d, postings=",
-								stored_str,
-								posting_list->doc_count);
-
-						postings = tp_get_posting_entries(area, posting_list);
-						max_show = out->full_dump ? posting_list->doc_count
-												  : MAX_POSTINGS_SHOWN;
-
-						for (i = 0;
-							 i < posting_list->doc_count && i < max_show;
-							 i++)
-						{
-							if (i > 0)
-								dump_printf(out, ",");
-							dump_printf(
-									out,
-									"(%u,%u):%d",
-									BlockIdGetBlockNumber(
-											&postings[i].ctid.ip_blkid),
-									postings[i].ctid.ip_posid,
-									postings[i].frequency);
-						}
-
-						if (posting_list->doc_count > max_show)
-						{
-							dump_printf(
-									out,
-									"... (%d more)",
-									posting_list->doc_count - max_show);
-						}
-						dump_printf(out, "\n");
-					}
-					else if (terms_shown < max_terms_summary)
-					{
-						dump_printf(
-								out,
-								"  '%s': doc_freq=%d\n",
-								stored_str,
-								posting_list->doc_count);
-					}
-
-					terms_shown++;
-				}
-			}
-
-			dshash_seq_term(&status);
-			dshash_detach(string_table);
-
-			if (terms_shown < term_count)
-			{
-				dump_printf(
-						out,
-						"  ... showing %u of %u terms (output truncated)\n",
-						terms_shown,
-						term_count);
-			}
-			dump_printf(out, "Total terms: %u\n", term_count);
-		}
-		else
-		{
-			dump_printf(out, "  ERROR: Cannot attach to string hash table\n");
-		}
-	}
-	else
-	{
-		dump_printf(out, "  No terms (string hash table not initialized)\n");
+		dump_printf(out, "Memtable Pages:\n  (relation not open)\n");
+		return;
 	}
 
-	/* Document length hash table */
-	dump_printf(out, "Document Length Hash Table:\n");
-	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID &&
-		area)
+	metap = tp_get_metapage(rel);
+	if (metap == NULL || !BlockNumberIsValid(metap->memtable_head_blkno))
 	{
-		dshash_table *doclength_table =
-				tp_doclength_table_attach(area, memtable->doc_lengths_handle);
+		dump_printf(out, "Memtable Pages:\n  (empty)\n");
+		if (metap)
+			pfree(metap);
+		return;
+	}
 
-		if (doclength_table)
+	max_docs = out->full_dump ? INT_MAX : MAX_DOCS_TO_SHOW;
+	dump_printf(out, "Memtable Pages:\n");
+
+	for (blk = metap->memtable_head_blkno; BlockNumberIsValid(blk);)
+	{
+		Buffer		buf;
+		Page		page;
+		BlockNumber next;
+		int			n;
+
+		CHECK_FOR_INTERRUPTS();
+		buf = ReadBuffer(rel, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page))
 		{
-			dshash_seq_status status;
-			TpDocLengthEntry *entry;
-			int				  total_count = 0;
-			int				  shown_count = 0;
-			int max_docs = out->full_dump ? INT_MAX : MAX_DOCS_TO_SHOW;
+			dump_printf(out, "  block %u: INVALID (missing magic)\n", blk);
+			UnlockReleaseBuffer(buf);
+			break;
+		}
 
-			dshash_seq_init(&status, doclength_table, false);
+		n	 = tp_memtable_page_n_records(page);
+		next = tp_memtable_page_get_next(page);
+		page_count++;
 
-			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
-				   NULL)
+		dump_printf(out, "  block %u: n_records=%d, next=%u\n", blk, n, next);
+
+		if (!out->full_dump && out->str &&
+			out->str->len > (int)MAX_OUTPUT_SIZE)
+		{
+			rec_count += n;
+			UnlockReleaseBuffer(buf);
+			blk = next;
+			continue;
+		}
+
+		{
+			TpMemtableRecord *rec = tp_memtable_page_first(page);
+			while (rec != NULL)
 			{
-				CHECK_FOR_INTERRUPTS();
-
-				total_count++;
-
-				if (shown_count < max_docs)
+				rec_count++;
+				if (docs_shown < (uint32)max_docs)
 				{
 					dump_printf(
 							out,
-							"  CTID (%u,%u): doc_length=%d\n",
-							BlockIdGetBlockNumber(&entry->ctid.ip_blkid),
-							entry->ctid.ip_posid,
-							entry->doc_length);
-					shown_count++;
+							"    CTID (%u,%u): doc_length=%d, "
+							"vector_len=%u\n",
+							BlockIdGetBlockNumber(&rec->ctid.ip_blkid),
+							rec->ctid.ip_posid,
+							rec->doc_length,
+							rec->vector_len);
+					docs_shown++;
 				}
+				rec = tp_memtable_page_next(page, rec);
 			}
-
-			if (shown_count < total_count)
-				dump_printf(
-						out,
-						"  ... (showing %d of %d entries)\n",
-						shown_count,
-						total_count);
-
-			dump_printf(
-					out, "Total document length entries: %d\n", total_count);
-
-			dshash_seq_term(&status);
-			dshash_detach(doclength_table);
 		}
-		else
-		{
-			dump_printf(
-					out,
-					"  ERROR: Cannot attach to document length hash table\n");
-		}
+
+		UnlockReleaseBuffer(buf);
+		blk = next;
 	}
-	else
-	{
-		dump_printf(out, "  No document length table (not initialized)\n");
-	}
+
+	if (docs_shown < rec_count)
+		dump_printf(
+				out,
+				"  ... (showing %u of %u records)\n",
+				docs_shown,
+				rec_count);
+
+	dump_printf(out, "Total memtable pages: %u\n", page_count);
+	dump_printf(out, "Total memtable records: %u\n", rec_count);
+
+	pfree(metap);
 }
 
 /*
@@ -245,16 +157,12 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	TpLocalIndexState *index_state;
-	TpMemtable		  *memtable;
-	dsa_area		  *area;
-	uint32			   memtable_terms  = 0;
-	uint32			   memtable_docs   = 0;
-	int				   segment_count   = 0;
-	uint32			   segment_terms   = 0;
-	uint32			   segment_docs	   = 0;
-	uint32			   segment_alive   = 0;
-	uint32			   recovery_pages  = 0;
-	uint32			   recovery_docids = 0;
+	uint32			   memtable_terms = 0;
+	uint32			   memtable_docs  = 0;
+	int				   segment_count  = 0;
+	uint32			   segment_terms  = 0;
+	uint32			   segment_docs	  = 0;
+	uint32			   segment_alive  = 0;
 
 	dump_printf(out, "Index: %s\n", index_name);
 
@@ -323,95 +231,39 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 				(double)dsa_total_size / (1024.0 * 1024.0));
 	}
 
-	/* Count memtable terms without iterating content */
-	memtable = get_memtable(index_state);
-	area	 = index_state->dsa;
-
-	if (memtable && memtable->string_hash_handle != DSHASH_HANDLE_INVALID &&
-		area)
+	/* Count memtable documents from the on-disk page chain (v2). */
+	memtable_terms = 0;
+	memtable_docs  = 0;
+	if (metap && BlockNumberIsValid(metap->memtable_head_blkno))
 	{
-		dshash_table *string_table =
-				tp_string_table_attach(area, memtable->string_hash_handle);
-		if (string_table)
+		BlockNumber blk = metap->memtable_head_blkno;
+
+		while (BlockNumberIsValid(blk))
 		{
-			dshash_seq_status  status;
-			TpStringHashEntry *entry;
+			Buffer buf;
+			Page   page;
 
-			dshash_seq_init(&status, string_table, false);
-			while ((entry = (TpStringHashEntry *)dshash_seq_next(&status)) !=
-				   NULL)
+			CHECK_FOR_INTERRUPTS();
+			buf = ReadBuffer(index_rel, blk);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			if (tp_memtable_page_is_valid(page))
 			{
-				CHECK_FOR_INTERRUPTS();
-				if (DsaPointerIsValid(entry->key.posting_list))
-					memtable_terms++;
+				memtable_docs += tp_memtable_page_n_records(page);
+				blk = tp_memtable_page_get_next(page);
 			}
-			dshash_seq_term(&status);
-			dshash_detach(string_table);
-		}
-	}
-
-	/* Count memtable documents */
-	if (memtable && memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID &&
-		area)
-	{
-		dshash_table *doclength_table =
-				tp_doclength_table_attach(area, memtable->doc_lengths_handle);
-		if (doclength_table)
-		{
-			dshash_seq_status status;
-			TpDocLengthEntry *entry;
-
-			dshash_seq_init(&status, doclength_table, false);
-			while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) !=
-				   NULL)
+			else
 			{
-				CHECK_FOR_INTERRUPTS();
-				memtable_docs++;
+				/* Should not happen on a healthy chain. */
+				blk = InvalidBlockNumber;
 			}
-			dshash_seq_term(&status);
-			dshash_detach(doclength_table);
+			UnlockReleaseBuffer(buf);
 		}
 	}
 
 	dump_printf(out, "\nMemtable:\n");
 	dump_printf(out, "  terms: %u\n", memtable_terms);
 	dump_printf(out, "  documents: %u\n", memtable_docs);
-
-	/* Count recovery pages */
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		Buffer			   docid_buf;
-		Page			   docid_page;
-		TpDocidPageHeader *docid_header;
-		BlockNumber		   current_page = metap->first_docid_page;
-
-		while (current_page != InvalidBlockNumber && recovery_pages < 10000)
-		{
-			CHECK_FOR_INTERRUPTS();
-
-			docid_buf = ReadBuffer(index_rel, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
-			{
-				recovery_docids += docid_header->num_docids;
-				recovery_pages++;
-				current_page = docid_header->next_page;
-			}
-			else
-			{
-				current_page = InvalidBlockNumber;
-			}
-
-			UnlockReleaseBuffer(docid_buf);
-		}
-	}
-
-	dump_printf(out, "\nRecovery Pages:\n");
-	dump_printf(out, "  pages: %u\n", recovery_pages);
-	dump_printf(out, "  docids: %u\n", recovery_docids);
 
 	/* Segment summary by level */
 	dump_printf(out, "\nSegments:\n");
@@ -620,58 +472,21 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "  k1: %.2f\n", metap->k1);
 		dump_printf(out, "  b: %.2f\n", metap->b);
 
-		dump_printf(out, "Metapage Recovery Info:\n");
+		dump_printf(out, "Metapage Info:\n");
 		dump_printf(out, "  magic: 0x%08X\n", metap->magic);
-		dump_printf(out, "  first_docid_page: %u\n", metap->first_docid_page);
+		dump_printf(out, "  version: %u\n", metap->version);
+		dump_printf(
+				out,
+				"  memtable_head_blkno: %u\n",
+				metap->memtable_head_blkno);
+		dump_printf(
+				out,
+				"  memtable_tail_blkno: %u\n",
+				metap->memtable_tail_blkno);
 	}
 
 	/* Memtable contents */
-	dump_memtable(out, index_state);
-
-	/* Crash recovery info */
-	dump_printf(out, "Crash Recovery:\n");
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		Buffer			   docid_buf;
-		Page			   docid_page;
-		TpDocidPageHeader *docid_header;
-		BlockNumber		   current_page = metap->first_docid_page;
-		int				   page_count	= 0;
-		int				   total_docids = 0;
-
-		while (current_page != InvalidBlockNumber)
-		{
-			CHECK_FOR_INTERRUPTS();
-
-			docid_buf = ReadBuffer(index_rel, current_page);
-			LockBuffer(docid_buf, BUFFER_LOCK_SHARE);
-			docid_page	 = BufferGetPage(docid_buf);
-			docid_header = (TpDocidPageHeader *)PageGetContents(docid_page);
-
-			if (docid_header->magic == TP_DOCID_PAGE_MAGIC)
-			{
-				total_docids += docid_header->num_docids;
-				page_count++;
-				current_page = docid_header->next_page;
-			}
-			else
-			{
-				current_page = InvalidBlockNumber;
-			}
-
-			UnlockReleaseBuffer(docid_buf);
-
-			if (page_count > 10000)
-				break;
-		}
-
-		dump_printf(
-				out, "  Pages: %d, Documents: %d\n", page_count, total_docids);
-	}
-	else
-	{
-		dump_printf(out, "  No recovery pages\n");
-	}
+	dump_memtable(out, index_state, index_rel);
 
 	/* Detailed segment dump (first 2 per level) */
 	{
@@ -883,7 +698,6 @@ typedef struct PageMapEntry
 /* Page types */
 #define PAGE_UNUSED	   0 /* Empty/free page */
 #define PAGE_METAPAGE  1 /* Index metapage (block 0) */
-#define PAGE_DOCID	   2 /* Recovery docid page */
 #define PAGE_SEG_HDR   3 /* Segment header */
 #define PAGE_SEG_INDEX 4 /* Segment page index */
 #define PAGE_SEG_DATA  5 /* Segment data page */
@@ -947,8 +761,6 @@ get_page_char(PageMapEntry *e)
 		return '.';
 	case PAGE_METAPAGE:
 		return 'M';
-	case PAGE_DOCID:
-		return 'R'; /* Recovery */
 	case PAGE_SEG_HDR:
 		return 'H'; /* Header */
 	case PAGE_SEG_INDEX:
@@ -973,7 +785,7 @@ get_page_char(PageMapEntry *e)
 }
 
 /*
- * Mark metapage and docid (recovery) pages in the page map.
+ * Mark the metapage in the page map.
  */
 static void
 mark_special_pages(
@@ -982,40 +794,13 @@ mark_special_pages(
 		PageMapEntry   *page_map,
 		BlockNumber		total_blocks)
 {
+	(void)index_rel;
+	(void)metap;
+	(void)total_blocks;
+
 	/* Mark metapage */
 	page_map[0].page_type = PAGE_METAPAGE;
 	page_map[0].level	  = 255;
-
-	/* Mark docid pages */
-	if (metap && metap->first_docid_page != InvalidBlockNumber)
-	{
-		BlockNumber current = metap->first_docid_page;
-		int			count	= 0;
-
-		while (current != InvalidBlockNumber && current < total_blocks &&
-			   count < 10000)
-		{
-			Buffer			   buf;
-			Page			   page;
-			TpDocidPageHeader *hdr;
-
-			page_map[current].page_type = PAGE_DOCID;
-			page_map[current].level		= 255;
-
-			buf = ReadBuffer(index_rel, current);
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			page = BufferGetPage(buf);
-			hdr	 = (TpDocidPageHeader *)PageGetContents(page);
-
-			if (hdr->magic == TP_DOCID_PAGE_MAGIC)
-				current = hdr->next_page;
-			else
-				current = InvalidBlockNumber;
-
-			UnlockReleaseBuffer(buf);
-			count++;
-		}
-	}
 }
 
 /*
@@ -1281,7 +1066,6 @@ typedef struct PageCounts
 	uint32 skip;
 	uint32 docmap;
 	uint32 idx;
-	uint32 recovery;
 } PageCounts;
 
 /*
@@ -1306,9 +1090,6 @@ count_page_types(
 			break;
 		case PAGE_METAPAGE:
 			/* Metapage counted separately, not in output */
-			break;
-		case PAGE_DOCID:
-			counts->recovery++;
 			break;
 		case PAGE_SEG_HDR:
 			counts->header++;
@@ -1391,24 +1172,21 @@ write_pageviz_header(
 	fprintf(fp, "\n");
 
 	fprintf(fp, "#\n");
-	fprintf(fp,
-			"# Special: \033[48;5;15m\033[30mM" ANSI_RESET
-			"=metapage  \033[48;5;33mR" ANSI_RESET "=recovery\n");
+	fprintf(fp, "# Special: \033[48;5;15m\033[30mM" ANSI_RESET "=metapage\n");
 	fprintf(fp,
 			"# Letters: H=header d=dictionary (blank)=postings "
 			"s=skip m=docmap i=idx .=empty\n");
 	fprintf(fp, "#\n");
 	fprintf(fp,
 			"# Page counts: empty=%u header=%u dict=%u post=%u "
-			"skip=%u docmap=%u idx=%u recovery=%u\n",
+			"skip=%u docmap=%u idx=%u\n",
 			counts->empty,
 			counts->header,
 			counts->dict,
 			counts->post,
 			counts->skip,
 			counts->docmap,
-			counts->idx,
-			counts->recovery);
+			counts->idx);
 	fprintf(fp, "#\n");
 }
 
@@ -1437,9 +1215,6 @@ write_pageviz_map(
 			break;
 		case PAGE_METAPAGE:
 			fprintf(fp, "\033[48;5;15m\033[30m%c" ANSI_RESET, c);
-			break;
-		case PAGE_DOCID:
-			fprintf(fp, "\033[48;5;33m%c" ANSI_RESET, c);
 			break;
 		case PAGE_SEG_HDR:
 		case PAGE_SEG_INDEX:

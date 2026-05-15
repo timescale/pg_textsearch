@@ -11,18 +11,28 @@
  * These are used to validate page contents and detect corruption.
  */
 #define TP_METAPAGE_MAGIC	0x5450494D /* "TPIM" - Tapir Index Metapage */
-#define TP_DOCID_PAGE_MAGIC 0x54504944 /* "TPID" - Tapir Docid Page */
 #define TP_SEGMENT_MAGIC	0x54505347 /* "TPSG" - Tapir Segment */
 #define TP_PAGE_INDEX_MAGIC 0x54505049 /* "TPPI" - Tapir Page Index */
+#define TP_MEMTABLE_PAGE_MAGIC                                              \
+	0x5450544D /* "TPTM" - Tapir Memtable (replaces docid pages; introduced \
+				* in the memtable v2 redesign, see issue #374) */
 
 /*
  * Page format versions - bump when on-disk format changes.
  * Each page type has its own version for independent evolution.
  */
-#define TP_METAPAGE_VERSION \
-	6 /* Bumped for BMW block_max_norm fix (min not max) */
-#define TP_DOCID_PAGE_VERSION 1 /* Initial version */
+/*
+ * v7: memtable v2 redesign (issue #374).  Adds memtable_head_blkno
+ * and memtable_tail_blkno at the end of TpIndexMetaPageData and
+ * removes the docid recovery pages.  v6 indexes may contain
+ * unspilled documents in the now-deleted docid pages, so we reject
+ * v6 at metapage open with a REINDEX hint instead of upgrading
+ * lazily and risking silent data loss.
+ */
+#define TP_METAPAGE_VERSION	  7
 #define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
+/* Initial version (memtable v2 redesign) */
+#define TP_MEMTABLE_PAGE_VERSION 1
 
 #define TP_METAPAGE_BLKNO 0
 
@@ -40,17 +50,24 @@
 #define TP_MAX_QUERY_LIMIT			   100000
 #define TP_DEFAULT_SEGMENT_THRESHOLD   10000
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
-#define TP_DEFAULT_MEMTABLE_SPILL_THRESHOLD \
-	32000000 /* posting entries to trigger spill (~1M docs/segment) */
 
 /*
- * Lower bound on postings for VACUUM-cleanup and shutdown-hook
- * spills.  Below this, re-tokenizing the docid chain from heap on
- * the next server start is fast enough that writing a runt L0
- * segment isn't worthwhile — LSM compaction would spend more work
- * consolidating tiny segments than the chain replay costs.
+ * Default for pg_textsearch.memtable_pages_threshold (memtable v2
+ * auto-spill trigger).  64 chain pages * 8 KiB = ~512 KiB of
+ * memtable per index before the next insert spills to an L0
+ * segment.  Tuned for low latency without producing runt L0
+ * segments under typical insert traffic; 0 disables auto-spill.
  */
-#define TP_MIN_SPILL_POSTINGS 1000
+#define TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD 64
+
+/*
+ * Lower bound on chain pages for VACUUM-cleanup and shutdown-hook
+ * spills.  Below this, leaving the documents on the in-relation
+ * memtable chain is cheaper than writing a runt L0 segment — LSM
+ * compaction would spend more work consolidating tiny segments
+ * than the chain pages cost to scan during reads.
+ */
+#define TP_MIN_SPILL_PAGES 2
 
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
@@ -100,5 +117,5 @@
  */
 extern bool tp_log_scores;
 extern int	tp_bulk_load_threshold;
-extern int	tp_memtable_spill_threshold;
+extern int	tp_memtable_pages_threshold;
 extern int	tp_segments_per_level;

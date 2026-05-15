@@ -30,15 +30,13 @@ JOIN pg_class c ON c.oid = i.indexrelid
 WHERE c.relname = 'unlogged_idx';
 
 -- ----------------------------------------------------------------
--- Coverage for the GenericXLog merge-linkage fallback
+-- Coverage for level-N → level-(N+1) merge on an UNLOGGED index
 --
--- merge.c routes the level-N → level-(N+1) linkage update through
--- tp_xlog_merge_linkage on WAL-logged indexes (custom rmgr, see
--- replication.h) and through GenericXLog on UNLOGGED / TEMP
--- indexes (no standby to confuse). The WAL-logged path is hit by
--- almost every other regression test that drives a merge; the
--- GenericXLog fallback is otherwise unexercised. Drive a real
--- compaction here to cover it.
+-- merge.c uses GenericXLog for the linkage update on both
+-- WAL-logged and UNLOGGED / TEMP indexes (Phase 4 of issue #374
+-- unified the paths).  The UNLOGGED case is otherwise unexercised
+-- by the regression suite -- almost every other test runs against
+-- WAL-logged indexes -- so drive a real compaction here.
 --
 -- Set segments_per_level = 2 so 3 spills cross the threshold and
 -- the third spill triggers a level-0 → level-1 merge.
