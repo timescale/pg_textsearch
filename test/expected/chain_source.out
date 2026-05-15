@@ -1,14 +1,10 @@
--- Phase 3 of the memtable v2 redesign (see plan / issue #374):
--- exercise the on-disk read path TpDataSource implementation
--- via the bm25_test_chain_source() scaffold.  Each case writes
--- records through tp_memtable_append() with real TpVector
+-- Unit-level coverage for the on-disk memtable chain
+-- TpDataSource implementation (memtable v2, issue #374), driven
+-- through the bm25_test_chain_source() scaffold.  Each case
+-- writes records through tp_memtable_append() with real TpVector
 -- payloads, then opens a chain source and verifies the read-back
 -- through the TpDataSource interface (get_postings,
 -- get_doc_length, total_docs, total_len).
---
--- The new source is NOT yet wired into the index AM; insert and
--- standalone scoring still go through the legacy DSA memtable
--- until Phase 4.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 CREATE TABLE chain_source_t (id int, body text);
 CREATE INDEX chain_source_idx ON chain_source_t

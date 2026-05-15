@@ -102,8 +102,8 @@ typedef struct TpSharedIndexState
 	 * Reserved: was used to invalidate per-backend docid-page
 	 * writer caches across a spill (memtable v1).  Memtable v2
 	 * (issue #374) removed the docid page chain, so the counter
-	 * is no longer read by any path.  Kept until Phase 7's
-	 * registry teardown deletes this whole struct.
+	 * is no longer read by any path.  Kept alive until the
+	 * shared-memory registry is itself retired (issue #377).
 	 */
 	pg_atomic_uint64 spill_generation;
 } TpSharedIndexState;

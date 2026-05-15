@@ -1073,8 +1073,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * boundaries: shared->total_docs = persisted segment docs +
 	 * on-disk chain docs.  Query correctness does not depend on
 	 * these atomics anymore (scoring reads metapage totals +
-	 * chain source directly); they are kept until Phase 7's
-	 * registry teardown.
+	 * chain source directly); they are kept alive until the
+	 * shared-memory registry is itself retired (issue #377).
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
 

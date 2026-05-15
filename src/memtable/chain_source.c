@@ -3,14 +3,14 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * chain_source.c - TpDataSource over the on-disk memtable page
- *                  chain (Phase 3 of issue #374).
+ *                  chain (memtable v2, issue #374).
  *
  * See chain_source.h for the concurrency contract and high-level
  * semantics.
  *
- * Scaffold SQL functions are exposed at the bottom of this file
- * (bm25_test_chain_source).  Phase 3 is scaffold-only; the new
- * source is not yet plumbed into the index AM.  See plan.md.
+ * A scaffold SQL function is exposed at the bottom of this file
+ * (bm25_test_chain_source) for unit-level coverage, complementing
+ * the end-to-end coverage in the regression suite.
  */
 #include <postgres.h>
 
@@ -58,10 +58,10 @@ typedef struct ChainTermEntry
 
 /*
  * One row in the per-ctid doc-length hash table.  Keyed by raw
- * ItemPointerData (HASH_BLOBS).  Phase 3 records (ctid →
- * doc_length); duplicate ctids are an invariant violation
- * (each heap tuple writes exactly one chain record) and we
- * surface them as DATA_CORRUPTED at open time.
+ * ItemPointerData (HASH_BLOBS).  Records (ctid → doc_length);
+ * duplicate ctids are an invariant violation (each heap tuple
+ * writes exactly one chain record) and we surface them as
+ * DATA_CORRUPTED at open time.
  */
 typedef struct ChainDocLenEntry
 {
@@ -760,8 +760,8 @@ tp_memtable_chain_source_create(
 
 	/*
 	 * Acquire the per-index LWLock in SHARED mode for the whole
-	 * scan.  This excludes Phase 4 spill (LW_EXCLUSIVE) which
-	 * would otherwise rip chain pages out from under us.
+	 * scan.  This excludes spill (LW_EXCLUSIVE) which would
+	 * otherwise rip chain pages out from under us.
 	 *
 	 * Lock ownership: if the caller already held the lock (e.g.,
 	 * scan.c acquires SHARED for the whole scan and we're being
@@ -942,10 +942,11 @@ tp_memtable_chain_source_create(
 	walk_chain(src, rel);
 
 	/*
-	 * Corpus-level counters: derive from the chain itself so
-	 * scoring computed from this source is internally
-	 * consistent.  Phase 4 will replace these with whole-index
-	 * totals (memtable chain + segments).
+	 * Corpus-level counters: report just the in-flight memtable
+	 * contribution (derived from this chain).  Scoring callers
+	 * (bm25.c, types/query.c) layer this on top of the
+	 * persisted-segment totals stored on the metapage to obtain
+	 * whole-index totals.
 	 */
 	{
 		long			  doc_count;
@@ -1093,9 +1094,9 @@ tp_memtable_chain_source_extract(
  * the same index and verifies the read-back through the
  * TpDataSource interface.  Returns 'OK' or 'FAIL: <detail>'.
  *
- * The scaffold drops and re-creates the host index between
- * test cases (in the SQL harness) so each case starts on an
- * empty chain.
+ * The harness drops and re-creates the host index between test
+ * cases (in the SQL harness) so each case starts on an empty
+ * chain.
  * ---------------------------------------------------------------------
  */
 

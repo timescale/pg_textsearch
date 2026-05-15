@@ -4,8 +4,8 @@
  *
  * log.c - On-disk memtable write path.
  *
- * Phase 2 of the memtable v2 redesign (issue #374).  See log.h
- * for the concurrency contract and high-level semantics.
+ * Memtable v2 (issue #374).  See log.h for the concurrency
+ * contract and high-level semantics.
  *
  * Scaffold SQL functions are exposed at the bottom of this file:
  *
@@ -16,9 +16,8 @@
  *       → SETOF (blkno bigint, n_records int, free_offset int,
  *                next_block bigint)
  *
- * These functions are internal-only scaffolding and will be
- * retired once the integration tests in later phases cover the
- * same paths end-to-end.
+ * These functions are internal-only unit-test entry points,
+ * complementing the end-to-end coverage in the regression suite.
  */
 #include <postgres.h>
 
@@ -456,11 +455,10 @@ tp_memtable_append(
 	Assert(vector_len == 0 || vector_bytes != NULL);
 
 	/*
-	 * Acquire the per-index LWLock in SHARED mode.  In Phase 2
-	 * no LW_EXCLUSIVE holder exists (spill still mutates the
-	 * DSA memtable, not the on-disk one).  Taking the lock now
-	 * locks in the discipline so the Phase 4 switchover does
-	 * not churn this code's signature.
+	 * Acquire the per-index LWLock in SHARED mode.  Spill takes
+	 * it EXCLUSIVE (see build.c's tp_spill_*) so this excludes
+	 * concurrent spill, while permitting other writers and
+	 * readers (which both take SHARED).
 	 */
 	index_oid	= RelationGetRelid(rel);
 	index_state = tp_get_local_index_state(index_oid);
@@ -742,8 +740,8 @@ tp_add_document_terms(
 }
 
 /* ---------------------------------------------------------------------
- * Scaffold SQL functions.  Internal-only; subject to removal once
- * Phase 4+ provides end-to-end coverage.
+ * Scaffold SQL functions.  Internal-only unit-test entry points,
+ * complementing the end-to-end coverage in the regression suite.
  * ---------------------------------------------------------------------
  */
 

@@ -3,8 +3,7 @@
 -- via the bm25_test_memtable_page() scaffold function. Each case
 -- returns 'OK' on success or 'FAIL: <reason>' otherwise.
 --
--- This is Phase 1 of the memtable redesign (see plan / issue #374).
--- The helpers are not yet wired into the insert/scan paths.
+-- Memtable v2 page format (see plan / issue #374).
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 -- An uninitialized (zero-filled) page must be rejected.
 SELECT bm25_test_memtable_page('reject_uninitialized');

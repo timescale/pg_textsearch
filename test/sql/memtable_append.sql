@@ -1,12 +1,12 @@
--- Phase 2 of the memtable v2 redesign (see plan / issue #374):
--- exercise the on-disk write path tp_memtable_append() through
+-- Unit-level coverage for the on-disk write path
+-- tp_memtable_append() (memtable v2, issue #374), driven through
 -- the bm25_test_memtable_append() scaffold function, plus the
 -- chain-inspection SRF bm25_memtable_chain().
 --
--- The scaffold is NOT wired into the index AM yet; these tests
--- use an ordinary pg_textsearch index purely as a host for the
--- memtable pages.  Insert/scan SQL paths still go through the
--- legacy DSA memtable until Phase 4.
+-- These tests use an ordinary pg_textsearch index purely as a
+-- host for the memtable pages; the assertions are about the
+-- chain layout, not end-to-end query semantics (which the rest
+-- of the regression suite covers).
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 

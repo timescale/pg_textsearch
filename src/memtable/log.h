@@ -17,12 +17,13 @@
  *               └─► new buffer EXCL (just-extended)
  *                     └─► metapage buffer EXCL
  *
- * Reverse-order acquisitions are forbidden.  Readers (Phase 3)
- * take the metapage SHARED, read memtable_head_blkno, and
- * release the metapage before acquiring any chain-page lock.
- * Spill (Phase 4) holds the per-index LWLock EXCLUSIVE, which
- * excludes all writers above; that is the path by which spill
- * gains uncontended access to the chain pages.
+ * Reverse-order acquisitions are forbidden.  Readers
+ * (chain_source.c) take the metapage SHARED, read
+ * memtable_head_blkno, and release the metapage before acquiring
+ * any chain-page lock.  Spill (build.c) holds the per-index
+ * LWLock EXCLUSIVE, which excludes all writers above; that is
+ * the path by which spill gains uncontended access to the chain
+ * pages.
  *
  * Crash safety: a crash between ExtendBufferedRel() and
  * GenericXLogFinish() leaves an uninitialized block on disk
@@ -30,10 +31,6 @@
  * sequentially scan the relation without first validating each
  * page via tp_memtable_page_is_valid().  See plan.md for
  * additional discussion.
- *
- * The writer is not yet wired into the index insert path.  In
- * Phase 2 it is exposed only through the scaffold SQL functions
- * defined in log.c; the unified switchover happens in Phase 4.
  */
 #pragma once
 
@@ -49,9 +46,8 @@
  *   - `rel` is open with at least RowExclusiveLock (heavyweight)
  *     and writes to it are permitted in the current xact
  *   - `vector_bytes` points to `vector_len` bytes of opaque
- *     payload (in the final design, the v2 TpVector wire
- *     format; in Phase 2 scaffold callers may pass synthetic
- *     bytes)
+ *     payload (the v2 TpVector wire format; scaffold callers
+ *     in log.c may pass synthetic bytes for unit-test coverage)
  *
  * On entry, this function:
  *   - Acquires the per-index LWLock in SHARED mode (idempotent

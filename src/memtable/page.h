@@ -4,12 +4,11 @@
  *
  * page.h - On-disk memtable page format.
  *
- * Phase 1 of the memtable redesign (see issue #374). This module
- * defines the layout of a memtable log page and exposes a minimal
- * set of helpers that operate on a single in-memory page buffer.
- * Concurrency, WAL emission, and chain management are introduced
- * in later phases; everything here is mechanical bytes-on-a-page
- * code.
+ * Memtable v2 (see issue #374). This module defines the layout
+ * of a memtable log page and exposes a minimal set of helpers
+ * that operate on a single in-memory page buffer.  Concurrency,
+ * WAL emission, and chain management live one layer up in log.c;
+ * everything here is mechanical bytes-on-a-page code.
  *
  * Layout summary (offsets shown for BLCKSZ=8192, MAXALIGN=8):
  *

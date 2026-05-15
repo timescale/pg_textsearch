@@ -3,13 +3,12 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * chain_source.h - TpDataSource over the on-disk memtable page
- *                  chain (Phase 3 of issue #374).
+ *                  chain (memtable v2, issue #374).
  *
  * Reads document records from the chain rooted at
- * meta.memtable_head_blkno (introduced in Phase 2), aggregates
- * them into in-memory per-term posting lists and a per-ctid
- * doc-length map, and serves them through the standard
- * TpDataSourceOps interface.
+ * meta.memtable_head_blkno, aggregates them into in-memory
+ * per-term posting lists and a per-ctid doc-length map, and
+ * serves them through the standard TpDataSourceOps interface.
  *
  * Concurrency contract:
  *
@@ -28,12 +27,6 @@
  * MemoryContext under CurrentMemoryContext; all accumulators,
  * key copies, and HTAB internals live inside it.  `close()`
  * deletes the child context in one shot (no per-entry frees).
- *
- * Phase 3 scope: this module is NOT yet wired into the index
- * AM.  The existing DSA-backed tp_memtable_source_create() is
- * still the active source; this code is exercised only through
- * the scaffold SQL function defined in chain_source.c.  The
- * unified switchover happens in Phase 4 together with spill.
  */
 #pragma once
 

@@ -7,13 +7,11 @@
  * See page.h for the layout and conventions. This file is
  * intentionally callable from anywhere that has a Page pointer;
  * it does no buffer locking, WAL emission, or chain management.
- * Those concerns live one layer up (Phase 2+).
+ * Those concerns live one layer up (log.c).
  *
  * Also exposed here is bm25_test_memtable_page(text), a scaffold
  * SQL function used to exercise the helpers from the SQL
- * regression suite while the rest of the redesign is in flight.
- * It is internal-only and may be removed once the integration
- * tests cover the same paths end-to-end.
+ * regression suite for unit-level coverage.
  */
 #include <postgres.h>
 
