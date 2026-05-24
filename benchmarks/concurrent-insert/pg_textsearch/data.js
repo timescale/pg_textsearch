@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779523285998,
+  "lastUpdate": 1779610226215,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -3104,6 +3104,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.996,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "023c3841b7d41fd3dbdbaa6f48ef3da46c9a362b",
+          "message": "Replace shared-memory memtable with on-disk paged structure (#374) (#375)\n\nReplaces the shared-memory memtable with an on-disk paged structure,\nremoving the custom WAL resource manager and the docid recovery pages it\nrequired.\n\nCloses #374. (Supersedes the design proposed there, which kept an\nin-memory memtable behind custom-but-page-less WAL records.)\n\n## Motivation\n\nThe original L0 layer was a shared-memory inverted index (DSA-backed\ndshash tables) replayed on standbys via a custom rmgr (ID 149). This\nworked on a regular streaming standby — extension loaded, rmgr\nregistered, redo applies to the in-shmem memtable — but it broke\nPostgreSQL's stateless WAL-redo helper used for single-page\nreconstruction: that environment has no shared memory and cannot load\n`pg_textsearch.so`, so `INSERT_TERMS` redo is undefined and\n`SPILL`/`MERGE_LINKAGE` are brittle.\n\nRather than re-engineer custom WAL records to be page-only, this PR\nremoves the in-memory memtable entirely. The memtable becomes a chain of\npages in the index relation itself, mutated under buffer locks,\nWAL-logged via `GenericXLog`. Walredo and any other stateless replay\nenvironment reconstructs every page without loading the extension.\n\n## What changes\n\n- **Memtable storage.** A chain of pages rooted at the metapage's new\n`(memtable_head_blkno, memtable_tail_blkno)` fields. Each page has a\nmagic header (`TP_MEMTABLE_PAGE_MAGIC`) and a sequence of\nvariable-length doc records (`ctid, doc_length, vector_len,\nvector_bytes`). Oversized `TpVector` payloads are stored as a FRAGMENT\nhead + N CONTINUATION pages, reassembled by the reader.\n- **Write path.** `tp_add_document_terms` builds a `TpVector` and calls\n`tp_memtable_append`, which extends or appends to the tail page under a\nsingle `GenericXLog` record. Per-index `LW_SHARED` is held for the txn;\nthe tail buffer is taken `EXCLUSIVE` only while the record is being\nwritten.\n- **Read path.** `chain_source` walks the chain under the per-index\n`LW_SHARED`. Scoring and query-time `doc_freq` paths take a\n`TpDataSource *` so they consult the chain instead of dshash.\n- **Spill.** `tp_do_spill` extracts the chain via `chain_source`, builds\nan L0 segment via `tp_write_segment`, then one `GenericXLog` over\n`{metapage, new segment header}` publishes the result. Held under\n`LW_EXCLUSIVE`.\n- **Custom rmgr deleted.** `src/replication/rmgr.c` is gone, the call to\n`tp_register_rmgr()` in `_PG_init` is removed, and the `INSERT_TERMS` /\n`SPILL` / `MERGE_LINKAGE` record types no longer exist. Slot 149 is\nintentionally retired.\n- **`pg_textsearch.memory_limit` and `bm25_memory_usage()` removed.**\nThe soft-limit byte-accounting was DSA-specific and not meaningful for\nthe page-backed layer. Replaced by a chain-page-count trigger\n`pg_textsearch.memtable_pages_threshold` (default 64). Postgres'\nshared-buffer pressure is the real cap on memtable size now; an\noversized chain just gets paged out by the buffer manager like any other\nrelation.\n- **`MarkGUCPrefixReserved(\"pg_textsearch\")`** added to `_PG_init` so\nstale `postgresql.conf` entries for the removed GUCs are flagged at\nserver start instead of being silently ignored.\n- **PARALLEL UNSAFE** marker added to `bm25_text_bm25query_score` and\n`bm25_textarray_bm25query_score`: the chain source needs a stable\nper-index lock for the lifetime of the query.\n\n## Spec\n\nSee [`docs/memtable_v2.md`](docs/memtable_v2.md) for the on-disk page\nformat, write/read/spill flow, concurrency contract, and WAL replay\nstory. Replaces the obsolete `docs/replication/CORRECTNESS.md`.\n\n## Performance (this PR vs. main 1.2.x, default GUCs)\n\n### Bulk path\n\n| Path                        | main 1.2.x | this PR  | delta    |\n|-----------------------------|------------|----------|----------|\n| 50k bulk INSERT             | 2.48s      | 2.20s    | **-11%** |\n| 10k INSERT (post-spill)     | 232ms      | 204ms    | **-12%** |\n\n### Read latency vs. memtable chain size\n\nBy design, read latency scales with the size of the in-flight memtable\nchain (see [`docs/memtable_v2.md`](docs/memtable_v2.md)). How full the\nchain is allowed to get is a per-deployment tradeoff governed by\n`pg_textsearch.memtable_pages_threshold` (default 64).\n\n| Memtable size                 | Chain pages | this PR  |\n|-------------------------------|-------------|----------|\n| 0 docs (segments-only)        | 0           | 2–5 ms   |\n| 2k docs (default threshold)   | 64          | 3.2 ms   |\n| 10k docs                      | 255         | 14 ms    |\n| 30k docs                      | 960         | 59 ms    |\n\nGH `Benchmarks` workflow run for full numbers vs. the most recent\nsuccessful `main` scheduled run is in the comments below.\n\n## Upgrade\n\n`TP_METAPAGE_VERSION` is bumped 6 → 7. **v6 metapages fail at open with\na clear `REINDEX INDEX` error**; there is no dual-format support. The\n`pg_textsearch--1.2.0--1.3.0-dev.sql` upgrade script handles the\nSQL-level side (drops the removed `bm25_memory_usage` function, marks\nscoring functions PARALLEL UNSAFE), but operators must `REINDEX` each\n`bm25` index to migrate v6 metapages to v7. The upgrade-tests CI matrix\nexercises this path for v1.2.0 (added in Batch 4 of post-review fixes).\n\n## Out of scope / follow-ups\n\n- #377 — Drop `shared_preload_libraries` requirement (subsumes registry\nteardown / `TpMemtable` deletion)\n- #378 — Release rmgr ID 149 from the PostgreSQL wiki\n- #379 — Reclaim orphaned chain pages after spill\n- #380 — Standby-safe horizon for displaced segment pages during merge\n(predates this PR)\n- #381 — Reduce WAL amplification for FRAGMENT chain-page writes\n- #382 — Tail-page contention on high-concurrency single-term inserts\n- #383 — Re-establish read compatibility for v6 metapages (avoid forced\nREINDEX on upgrade)\n\n\n## Testing\n\n- `make installcheck`: **64/64 green**.\n- `make format-check`: clean (clang-format 21.1.8).\n- `bash test/scripts/wal_audit.sh`: all 3 tests pass — verifies zero\ncustom rmgr records in any LSN window, including across a SIGKILL +\nrestart crash window.\n- `bash test/scripts/shutdown_spill.sh`: pass.\n- `bash test/scripts/docid_chain_recovery.sh`: pass (test now exercises\nthe new memtable chain; file rename deferred to a follow-up).\n- `pg_waldump` on the regression's traffic: zero rmgr ID 149 records.",
+          "timestamp": "2026-05-15T01:11:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/023c3841b7d41fd3dbdbaa6f48ef3da46c9a362b"
+        },
+        "date": 1779610217351,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2443.672618,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.409,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4466.012488,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.448,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6778.943751,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.59,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8444.087891,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.947,
             "unit": "ms"
           }
         ]
