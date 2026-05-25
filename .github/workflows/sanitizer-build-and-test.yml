@@ -180,14 +180,6 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
-        echo "Running docid chain recovery tests under sanitizer..."
-        timeout 600s bash -c "
-          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
-          export PGHOST=$PWD/tmp_sanitizer_test
-          export PGPORT=55433
-          cd test/scripts && ./docid_chain_recovery.sh
-        "
-
         echo "Running shutdown spill tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"

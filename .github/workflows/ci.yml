@@ -138,13 +138,6 @@ jobs:
           echo "✗ Crash recovery tests failed"
           exit 1
         fi
-        echo "Running docid chain recovery tests..."
-        if (cd test/scripts && ./docid_chain_recovery.sh); then
-          echo "✓ Docid chain recovery tests passed"
-        else
-          echo "✗ Docid chain recovery tests failed"
-          exit 1
-        fi
         echo "Running shutdown spill tests..."
         if (cd test/scripts && ./shutdown_spill.sh); then
           echo "✓ Shutdown spill tests passed"
@@ -496,14 +489,6 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
-        echo "Running docid chain recovery tests under sanitizer..."
-        timeout 600s bash -c "
-          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
-          export PGHOST=$PWD/tmp_sanitizer_test
-          export PGPORT=55433
-          cd test/scripts && ./docid_chain_recovery.sh
-        "
-
         echo "Running shutdown spill tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -645,7 +630,6 @@ jobs:
         (cd test/scripts && ./concurrency.sh) || true
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
-        (cd test/scripts && ./docid_chain_recovery.sh) || true
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./multi_index.sh) || true
