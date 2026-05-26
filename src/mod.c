@@ -67,6 +67,15 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  */
 bool tp_compress_segments = true;
 
+/*
+ * Memtable shared-memory cache enable flag.  Scaffolding only:
+ * this variable is registered as a GUC but not read anywhere in
+ * this build.  A subsequent change will wire it to gate the
+ * in-memory cache lookup path that sits in front of the on-disk
+ * memtable chain.
+ */
+bool tp_memtable_cache_enabled = false;
+
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
 
@@ -244,6 +253,21 @@ _PG_init(void)
 			&tp_compress_segments,
 			true,		 /* default on - benchmarks show net benefit */
 			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.memtable_cache_enabled",
+			"Enable the in-memory memtable cache for queries.",
+			"When enabled (default once the cache is implemented), "
+			"queries read from a derived shared-memory cache rather "
+			"than walking the on-disk memtable chain. The chain "
+			"remains the source of truth. No-op in this build.",
+			&tp_memtable_cache_enabled,
+			false, /* default off until cache implementation lands */
+			PGC_USERSET,
 			0,
 			NULL,
 			NULL,
