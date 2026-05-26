@@ -25,12 +25,14 @@
  * the path by which spill gains uncontended access to the chain
  * pages.
  *
- * Crash safety: a crash between ExtendBufferedRel() and
- * GenericXLogFinish() leaves an uninitialized block on disk
- * that is unreachable via meta.head → next chain.  No code may
- * sequentially scan the relation without first validating each
- * page via tp_memtable_page_is_valid().  See plan.md for
- * additional discussion.
+ * Crash safety: a crash between page allocation
+ * (ExtendBufferedRel or FSM reuse via GetFreeIndexPage) and
+ * GenericXLogFinish() leaves a block on disk that is unreachable
+ * via meta.head → next chain and usually without a DEAD stamp.
+ * No code may sequentially scan the relation without first
+ * validating each page via tp_memtable_page_is_valid().  Orphans
+ * without DEAD may be recycled later by amvacuumcleanup once
+ * horizon rules exist for never-linked blocks.
  */
 #pragma once
 
@@ -92,12 +94,12 @@ extern BlockNumber tp_memtable_append(
  *   - Adds `docs_delta` / `len_delta` to total_docs / total_len
  *     (these are caller-supplied: the chain source's totals).
  *
- * Old chain pages are NOT touched here -- they become orphans
- * (intact `TP_MEMTABLE_PAGE_MAGIC` headers, but no metapage
- * pointer reaches them).  In-flight scans walking the old chain
- * via a metapage snapshot they already latched complete safely;
- * new scans see the new metapage and skip the orphans.  Phase 5b
- * will reclaim them in amvacuumcleanup.
+ * Does not modify the old memtable chain pages.  The caller must
+ * run `tp_memtable_mark_chain_dead` first so each unlinked page is
+ * WAL-stamped `DEAD` + `dead_fxid` before head/tail are cleared here.
+ * After this call the chain blocks are orphans (no metapage pointer).
+ * `tp_vacuumcleanup` returns them to the index FSM via
+ * `RecordFreeIndexPage`; `tp_memtable_alloc_page` reuses them.
  *
  * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
  */
@@ -106,6 +108,16 @@ extern void tp_spill_finalize(
 		BlockNumber new_segment_root,
 		uint64		docs_delta,
 		uint64		len_delta);
+
+/*
+ * WAL-stamp every page in the memtable chain rooted at `head` as
+ * dead (including fragment continuation pages).  Called from
+ * `tp_do_spill` under LW_EXCLUSIVE after extract/write_segment and
+ * before `tp_spill_finalize`.  `horizon` is stored in each page's
+ * `dead_fxid` for later reclaim once globally safe.
+ */
+extern void tp_memtable_mark_chain_dead(
+		Relation rel, BlockNumber head, FullTransactionId horizon);
 
 /* Forward declaration to avoid heavy header include. */
 typedef struct TpLocalIndexState TpLocalIndexState;

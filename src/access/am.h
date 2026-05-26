@@ -93,7 +93,7 @@ void tp_truncate_dead_pages(Relation index);
 /*
  * Build functions (am/build.c)
  */
-struct IndexBuildResult		 *
+struct IndexBuildResult *
 tp_build(Relation heap, Relation index, struct IndexInfo *indexInfo);
 void tp_buildempty(Relation index);
 bool tp_insert(
@@ -146,11 +146,11 @@ void tp_build_progress_end(void);
  */
 IndexScanDesc tp_beginscan(Relation index, int nkeys, int norderbys);
 void		  tp_rescan(
-				 IndexScanDesc scan,
-				 ScanKey	   keys,
-				 int		   nkeys,
-				 ScanKey	   orderbys,
-				 int		   norderbys);
+		IndexScanDesc scan,
+		ScanKey		  keys,
+		int			  nkeys,
+		ScanKey		  orderbys,
+		int			  norderbys);
 void tp_endscan(IndexScanDesc scan);
 bool tp_gettuple(IndexScanDesc scan, ScanDirection dir);
 
@@ -172,6 +172,15 @@ char *tp_buildphasename(int64 phase);
  */
 void tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
+
+/*
+ * Recycle memtable pages stamped DEAD during spill: scan the index
+ * main fork, RecordFreeIndexPage when dead_fxid is older than the
+ * global visibility horizon.  Returns the number of blocks freed.
+ * Caller must hold per-index LW_SHARED or stronger (tp_vacuumcleanup).
+ * FSM updates are not WAL-logged (same as segment page free).
+ */
+int tp_reclaim_dead_memtable_pages(Relation rel);
 
 /*
  * Spill the current index's memtable to a disk segment.

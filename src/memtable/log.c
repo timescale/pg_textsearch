@@ -14,7 +14,11 @@
  *
  *   bm25_memtable_chain(index_name text)
  *       → SETOF (blkno bigint, n_records int, free_offset int,
- *                next_block bigint)
+ *                next_block bigint, flags int)
+ *
+ *   bm25_memtable_dead_pages(index_name text)
+ *       → SETOF (blkno bigint, flags int, dead_fxid bigint,
+ *                n_records int)
  *
  * These functions are internal-only unit-test entry points,
  * complementing the end-to-end coverage in the regression suite.
@@ -23,6 +27,7 @@
 
 #include <access/generic_xlog.h>
 #include <access/relation.h>
+#include <access/transam.h>
 #include <catalog/index.h>
 #include <fmgr.h>
 #include <funcapi.h>
@@ -30,6 +35,7 @@
 #include <storage/block.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/indexfsm.h>
 #include <storage/itemptr.h>
 #include <storage/lwlock.h>
 #include <utils/builtins.h>
@@ -68,6 +74,37 @@ memtable_read_tail_blkno(Relation rel)
 	UnlockReleaseBuffer(buf);
 
 	return tail;
+}
+
+/*
+ * Allocate a memtable chain page: try the index FSM first, else
+ * extend the relation.  Returns a pinned buffer with
+ * BUFFER_LOCK_EXCLUSIVE (same as ExtendBufferedRel EB_LOCK_FIRST).
+ * Caller must UnlockReleaseBuffer when done.
+ */
+static Buffer
+tp_memtable_alloc_page(Relation rel)
+{
+	BlockNumber block;
+
+	block = GetFreeIndexPage(rel);
+	if (BlockNumberIsValid(block))
+	{
+		if (block == TP_METAPAGE_BLKNO)
+			elog(ERROR, "pg_textsearch: FSM returned metapage for memtable");
+
+		if (block >= RelationGetNumberOfBlocks(rel))
+			elog(ERROR,
+				 "pg_textsearch: FSM returned block %u beyond relation "
+				 "size for index \"%s\"",
+				 block,
+				 RelationGetRelationName(rel));
+
+		return ReadBufferExtended(
+				rel, MAIN_FORKNUM, block, RBM_ZERO_AND_LOCK, NULL);
+	}
+
+	return ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 }
 
 /*
@@ -114,14 +151,13 @@ memtable_bootstrap_and_append(
 		}
 	}
 
-	newbuf =
-			ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 
 	xlog_state	   = GenericXLogStart(rel);
 	metapage_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 	newpage_local  = GenericXLogRegisterBuffer(
-			 xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
+			xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
 
 	tp_memtable_page_init(newpage_local);
 	tp_memtable_page_append(
@@ -177,8 +213,7 @@ memtable_extend_and_append(
 	TpIndexMetaPage	  metap;
 	GenericXLogState *xlog_state;
 
-	newbuf =
-			ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 
 	metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
@@ -187,7 +222,7 @@ memtable_extend_and_append(
 	xlog_state	   = GenericXLogStart(rel);
 	tailpage_local = GenericXLogRegisterBuffer(xlog_state, tailbuf, 0);
 	newpage_local  = GenericXLogRegisterBuffer(
-			 xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
+			xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
 	metapage_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 
 	tp_memtable_page_init(newpage_local);
@@ -244,8 +279,8 @@ memtable_extend_and_append(
  *
  * Returns the block number of Thead on success, or
  * InvalidBlockNumber on a lost bootstrap race (caller should
- * retry — the already-extended pages become orphans, reclaimed
- * lazily by amvacuumcleanup).
+ * retry — the already-extended pages become orphans without a
+ * DEAD stamp; FSM reclaim is Step 2 in amvacuumcleanup).
  *
  * Crash safety: a crash anywhere up to and including the publish
  * GenericXLog leaves orphan pages with valid magic but
@@ -290,8 +325,7 @@ memtable_append_fragment(
 		Page			  page_local;
 		GenericXLogState *x;
 
-		buf = ExtendBufferedRel(
-				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		buf		   = tp_memtable_alloc_page(rel);
 		tnew_blkno = BufferGetBlockNumber(buf);
 
 		x = GenericXLogStart(rel);
@@ -326,8 +360,7 @@ memtable_append_fragment(
 		if (chunk_len > cont_cap)
 			chunk_len = cont_cap;
 
-		buf = ExtendBufferedRel(
-				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		buf			   = tp_memtable_alloc_page(rel);
 		cont_blknos[i] = BufferGetBlockNumber(buf);
 
 		x = GenericXLogStart(rel);
@@ -345,8 +378,7 @@ memtable_append_fragment(
 		Page			  page_local;
 		GenericXLogState *x;
 
-		buf = ExtendBufferedRel(
-				BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+		buf			= tp_memtable_alloc_page(rel);
 		thead_blkno = BufferGetBlockNumber(buf);
 
 		x = GenericXLogStart(rel);
@@ -380,7 +412,7 @@ memtable_append_fragment(
 			 * Lost bootstrap race: another backend populated the
 			 * chain while we were extending pages.  The pages we
 			 * extended are unreachable via meta and become
-			 * orphans; amvacuumcleanup reclaims them later.
+			 * orphans (no DEAD stamp); reclaim in Step 2.
 			 */
 			UnlockReleaseBuffer(metabuf);
 			pfree(cont_blknos);
@@ -633,7 +665,9 @@ tp_memtable_append(
  *
  * Updates the metapage to point at the new segment, resets the
  * memtable chain head/tail, and bumps total_docs/total_len, all
- * inside a single GenericXLog record.
+ * inside a single GenericXLog record.  Unlinked chain pages must
+ * already carry TP_MEMTABLE_PAGE_FLAG_DEAD from
+ * tp_memtable_mark_chain_dead (called in tp_do_spill first).
  *
  * Caller must hold the per-index LWLock in EXCLUSIVE mode.
  *
@@ -695,6 +729,154 @@ tp_spill_finalize(
 	if (BufferIsValid(seg_buf))
 		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
+}
+
+/*
+ * WAL-log DEAD + dead_fxid on one memtable page (delta record).
+ * Caller must hold an exclusive lock on buf.
+ */
+static void
+tp_memtable_wal_mark_page_dead_buf(
+		Relation rel, Buffer buf, FullTransactionId horizon)
+{
+	Page			  page;
+	GenericXLogState *state;
+
+	Assert(BufferIsValid(buf));
+
+	state = GenericXLogStart(rel);
+	page  = GenericXLogRegisterBuffer(state, buf, 0);
+
+	if (!tp_memtable_page_is_dead(page))
+		tp_memtable_page_mark_dead(page, horizon);
+
+	GenericXLogFinish(state);
+}
+
+/*
+ * Mark continuation pages for one FRAGMENT record.  Returns the
+ * first block that is not a continuation page (resume outer walk).
+ */
+static BlockNumber
+tp_memtable_mark_continuation_chain_dead(
+		Relation rel, BlockNumber blk, FullTransactionId horizon)
+{
+	BlockNumber cur = blk;
+
+	while (cur != InvalidBlockNumber)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+		BlockNumber			  next;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBuffer(rel, cur);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		page = BufferGetPage(buf);
+		hdr	 = tp_memtable_page_header(page);
+
+		if (!tp_memtable_page_is_valid(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable marking dead chain page "
+							"inner walk at block %u in index \"%s\" has "
+							"invalid magic",
+							cur,
+							RelationGetRelationName(rel))));
+		}
+		if (!tp_memtable_page_is_continuation(page))
+		{
+			UnlockReleaseBuffer(buf);
+			return cur;
+		}
+
+		next = hdr->next_block;
+		tp_memtable_wal_mark_page_dead_buf(rel, buf, horizon);
+		UnlockReleaseBuffer(buf);
+		cur = next;
+	}
+	return cur;
+}
+
+/*
+ * Mark every page in the spilled memtable chain DEAD (outer walk +
+ * fragment continuation sub-chains).  See docs/memtable_v2.md spill
+ * step 4.  Does not free blocks; amvacuumcleanup recycles later.
+ */
+void
+tp_memtable_mark_chain_dead(
+		Relation rel, BlockNumber head, FullTransactionId horizon)
+{
+	BlockNumber cur;
+
+	if (head == InvalidBlockNumber)
+		return;
+
+	cur = head;
+
+	while (cur != InvalidBlockNumber)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+		TpMemtableRecord	 *rec;
+		BlockNumber			  next;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBuffer(rel, cur);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable marking dead chain page "
+							"outer walk at block %u in index \"%s\" has "
+							"invalid magic",
+							cur,
+							RelationGetRelationName(rel))));
+		}
+		if (tp_memtable_page_is_continuation(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable marking dead page outer "
+							"walk reached invalid continuation page at "
+							"block %u in index \"%s\"",
+							cur,
+							RelationGetRelationName(rel))));
+		}
+
+		hdr	 = tp_memtable_page_header(page);
+		next = hdr->next_block;
+		rec	 = tp_memtable_page_first(page);
+
+		if (rec != NULL &&
+			(rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
+		{
+			/*
+			 * Inner walk marks C1..Cn; returns the first
+			 * non-continuation block (usually the post-fragment
+			 * tail), same resume rule as chain_source.c.
+			 */
+			next = tp_memtable_mark_continuation_chain_dead(
+					rel, next, horizon);
+		}
+
+		tp_memtable_wal_mark_page_dead_buf(rel, buf, horizon);
+		UnlockReleaseBuffer(buf);
+
+		cur = next;
+	}
 }
 
 /*
@@ -1401,4 +1583,93 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		tup = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
 	}
+}
+
+/*
+ * Dead-orphan SRF.  Scans index blocks after the metapage and
+ * returns one row per memtable page stamped DEAD by spill (step 4).
+ */
+PG_FUNCTION_INFO_V1(bm25_memtable_dead_pages);
+
+typedef struct DeadScanState
+{
+	Relation	rel;
+	BlockNumber cur;
+	BlockNumber nblocks;
+} DeadScanState;
+
+Datum
+bm25_memtable_dead_pages(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	DeadScanState	*state;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext oldcontext;
+		text		 *idx_text = PG_GETARG_TEXT_PP(0);
+		char		 *idx_name = text_to_cstring(idx_text);
+		TupleDesc	  tupdesc;
+
+		funcctx	   = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		state		   = (DeadScanState *)palloc(sizeof(DeadScanState));
+		state->rel	   = test_open_index(idx_name);
+		state->nblocks = RelationGetNumberOfBlocks(state->rel);
+		state->cur	   = TP_METAPAGE_BLKNO + 1;
+
+		tupdesc = CreateTemplateTupleDesc(4);
+		TupleDescInitEntry(tupdesc, 1, "blkno", INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, 2, "flags", INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, 3, "dead_fxid", INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, 4, "n_records", INT4OID, -1, 0);
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+		funcctx->user_fctx	= state;
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	state	= (DeadScanState *)funcctx->user_fctx;
+
+	while (state->cur < state->nblocks)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+		BlockNumber			  blk = state->cur;
+		Datum				  values[4];
+		bool				  nulls[4] = {false, false, false, false};
+		HeapTuple			  tup;
+
+		state->cur++;
+
+		buf = ReadBuffer(state->rel, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page) ||
+			!tp_memtable_page_is_dead(page))
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		hdr = tp_memtable_page_header(page);
+
+		values[0] = Int64GetDatum((int64)blk);
+		values[1] = Int32GetDatum((int32)hdr->flags);
+		values[2] = Int64GetDatum(
+				(int64)U64FromFullTransactionId(hdr->dead_fxid));
+		values[3] = Int32GetDatum((int32)hdr->n_records);
+
+		UnlockReleaseBuffer(buf);
+
+		tup = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
+	}
+
+	index_close(state->rel, RowExclusiveLock);
+	SRF_RETURN_DONE(funcctx);
 }

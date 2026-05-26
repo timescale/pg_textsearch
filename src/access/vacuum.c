@@ -9,6 +9,7 @@
 #include <access/genam.h>
 #include <access/generic_xlog.h>
 #include <access/heapam.h>
+#include <access/transam.h>
 #include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
@@ -20,6 +21,7 @@
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/procarray.h>
 #include <tsearch/ts_utils.h>
 #include <utils/builtins.h>
 #include <utils/fmgrprotos.h>
@@ -31,6 +33,7 @@
 #include "access/build_context.h"
 #include "index/metapage.h"
 #include "index/state.h"
+#include "memtable/page.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"
@@ -916,6 +919,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	TpIndexMetaPage	   metap;
 	TpLocalIndexState *index_state;
+	int				   freed_pages;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
@@ -962,8 +966,29 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		if (index_state != NULL)
 			tp_release_index_lock(index_state);
 
-		if (stats->pages_deleted == 0 && stats->tuples_removed == 0)
+		/*
+		 * Return DEAD memtable orphan blocks to the index FSM once
+		 * their dead_fxid is older than the global visibility horizon.
+		 * LW_SHARED is enough: only already-unlinked DEAD pages are
+		 * touched; live inserts/scans hold the same lock and mutate
+		 * the metapage chain, not these blocks.  Spill (LW_EXCLUSIVE)
+		 * waits until this scan finishes.
+		 */
+		if (index_state != NULL)
+			tp_acquire_index_lock(index_state, LW_SHARED);
+		freed_pages = tp_reclaim_dead_memtable_pages(info->index);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
+
+		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
+			freed_pages == 0)
 			stats->pages_free = 0;
+
+		if (freed_pages != 0)
+		{
+			stats->pages_free += freed_pages;
+			IndexFreeSpaceMapVacuum(info->index);
+		}
 
 		pfree(metap);
 	}
@@ -982,4 +1007,56 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 
 	return stats;
+}
+
+/*
+ * Scan the index main fork for memtable pages stamped DEAD at spill
+ * and recycle blocks whose dead_fxid is older than the global
+ * visibility horizon (FullTransactionId compare).  Does not WAL-log
+ * page bodies or clear DEAD flags; reuse overwrites via
+ * tp_memtable_alloc_page.  Caller holds per-index LW_SHARED (or
+ * stronger); excludes spill via LW_EXCLUSIVE incompatibility.
+ */
+int
+tp_reclaim_dead_memtable_pages(Relation rel)
+{
+	int				  reclaimed_pages = 0;
+	BlockNumber		  nblocks		  = RelationGetNumberOfBlocks(rel);
+	BlockNumber		  blk;
+	TransactionId	  oldest;
+	FullTransactionId oldest_fxid;
+
+	oldest		= GetOldestNonRemovableTransactionId(rel);
+	oldest_fxid = FullTransactionIdFromAllowableAt(
+			ReadNextFullTransactionId(), oldest);
+
+	for (blk = TP_METAPAGE_BLKNO + 1; blk < nblocks; blk++)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBuffer(rel, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page) ||
+			!tp_memtable_page_is_dead(page))
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		hdr = tp_memtable_page_header(page);
+		if (FullTransactionIdPrecedes(hdr->dead_fxid, oldest_fxid))
+		{
+			RecordFreeIndexPage(rel, blk);
+			reclaimed_pages++;
+		}
+
+		UnlockReleaseBuffer(buf);
+	}
+	return reclaimed_pages;
 }
