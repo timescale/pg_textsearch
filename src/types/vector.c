@@ -326,7 +326,7 @@ get_tpvector_next_entry(TpVectorEntry *current)
 	const uint8 *end	= (const uint8 *)UINT32_MAX; /* effectively unbounded */
 #else
     const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
-#endif	
+#endif
 
 	freq	= tpvector_varint_decode(&cursor, end);
 	lex_len = tpvector_varint_decode(&cursor, end);
@@ -353,7 +353,11 @@ tpvector_entry_decode_advance(
 		const TpVectorEntry *entry, TpVectorEntryView *out)
 {
 	const uint8 *cursor = (const uint8 *)entry;
-	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+#if SIZEOF_VOID_P == 4	
+	const uint8 *end	= (const uint8 *)UINT32_MAX; /* effectively unbounded */
+#else
+    const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+#endif
 
 	out->frequency	= tpvector_varint_decode(&cursor, end);
 	out->lexeme_len = tpvector_varint_decode(&cursor, end);
