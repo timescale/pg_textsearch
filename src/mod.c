@@ -13,6 +13,7 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <fmgr.h>
+#include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
@@ -75,6 +76,15 @@ bool tp_compress_segments = true;
  * memtable chain.
  */
 bool tp_memtable_cache_enabled = false;
+
+/*
+ * Soft+hard memory budget for the in-memory memtable cache, in
+ * kilobytes.  Restored from v1; scaffolding only in this build —
+ * no consumer reads this yet.  Default and bounds live in
+ * constants.h (TP_DEFAULT_MEMORY_LIMIT_KB) so the GUC registration
+ * and the backing-variable initializer cannot drift.
+ */
+int tp_memory_limit_kb = TP_DEFAULT_MEMORY_LIMIT_KB;
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -273,12 +283,30 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomIntVariable(
+			"pg_textsearch.memory_limit",
+			"Maximum shared memory used by the in-memory memtable cache.",
+			"This setting has no effect in this build; it is "
+			"scaffolding for an upcoming change.  Once the cache "
+			"is wired up, this value will be applied as a "
+			"three-tier budget: per-index soft (limit/8) triggers "
+			"spill of that index; global soft (limit/2) evicts "
+			"the largest cache; global hard (limit) refuses new "
+			"inserts.  A value of 0 means no limit.",
+			&tp_memory_limit_kb,
+			TP_DEFAULT_MEMORY_LIMIT_KB,
+			0,
+			INT_MAX,
+			PGC_SIGHUP,
+			GUC_UNIT_KB,
+			NULL,
+			NULL,
+			NULL);
+
 	/*
-	 * Reserve the pg_textsearch.* GUC prefix.  Without this,
-	 * postgresql.conf entries for GUCs we removed in earlier
-	 * releases (e.g. pg_textsearch.memory_limit, deleted in
-	 * 1.3.0's Phase 7B) are silently ignored after upgrade
-	 * instead of producing a warning at server start.
+	 * Reserve the pg_textsearch.* GUC prefix so unknown settings
+	 * (typos, or GUCs removed in a future release) produce a
+	 * warning at server start rather than being silently ignored.
 	 */
 	MarkGUCPrefixReserved("pg_textsearch");
 
