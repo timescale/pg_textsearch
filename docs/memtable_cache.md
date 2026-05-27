@@ -96,18 +96,28 @@ the cache.
 
 ## Data structures
 
+The existing `TpMemtable` struct (`src/index/state.h`) is
+effectively dead after the v2 cutover: `string_hash_handle` and
+`doc_lengths_handle` are only ever set to `DSHASH_HANDLE_
+INVALID`, and the three counters (`total_postings`,
+`num_terms`, `total_term_len`) are only ever initialized to 0
+and never read. Phase 1 of this work deletes the three dead
+counters and rewrites the struct around the cache contract.
+`string_hash_handle` and `doc_lengths_handle` survive because
+the cache will populate them with real values:
+
 ```c
-/* in src/index/state.h, extending the existing TpMemtable stub */
+/* src/index/state.h, rewritten for the cache */
 typedef struct TpMemtable
 {
-    /* --- inherited v1 fields, currently dead but still allocated --- */
-    dshash_table_handle string_hash_handle;  /* term  → TpStringHashEntry */
-    dshash_table_handle doc_lengths_handle;  /* ctid  → TpDocLengthEntry  */
-    pg_atomic_uint64    total_postings;
-    pg_atomic_uint64    num_terms;
-    pg_atomic_uint64    total_term_len;
+    /* dshash inverted index: term → TpStringHashEntry.  Set by
+     * cold_build, reset to DSHASH_HANDLE_INVALID by
+     * tp_cache_clear.  Identical schema to v1. */
+    dshash_table_handle string_hash_handle;
 
-    /* --- new in cache design --- */
+    /* dshash doc-length map: ctid → TpDocLengthEntry.  Same
+     * lifecycle as string_hash_handle. */
+    dshash_table_handle doc_lengths_handle;
 
     /* The single serialization point for cache mutation: every
      * path that advances the cursor or inserts records into the
@@ -135,15 +145,30 @@ typedef struct TpMemtable
                                                 * apply counter,
                                                 * lock-free read */
 
-    /* memory accounting */
-    pg_atomic_uint64    estimated_bytes;       /* cached cache
-                                                * footprint */
+    /* Memory accounting (cache footprint, used by the 3-tier
+     * memory cap).  Updated by apply paths under apply_lock. */
+    pg_atomic_uint64    estimated_bytes;
 } TpMemtable;
 ```
 
 `TpStringHashEntry`, `TpPostingList`, `TpPostingEntry`,
 `TpDocLengthEntry` come back verbatim from `62308b82`. They're
 already designed for the dshash + DSA pattern.
+
+**Corpus stats for query evaluation come from
+`TpSharedIndexState`, not from `TpMemtable`.** The shared
+struct already carries `total_docs` (u32 atomic) and
+`total_len` (u64 atomic) representing the **whole-index**
+totals (segments + memtable). These are maintained by the
+existing v2 paths: `log.c` increments per insert, `merge.c`
+decrements when dead docs are merged out, `vacuum.c` adjusts
+on VACUUM, `build.c` initializes from the metapage. The cache
+source mirrors v1 (`src/memtable/source.c` @ `62308b82` lines
+139-140) and simply reads `shared->total_docs` / `total_len`
+into `TpDataSource.total_docs` / `total_len` at source-create
+time. Per-cache contribution to the corpus is not separately
+tracked — the cache reflects the chain, which has already
+been counted into `shared`.
 
 Spill detection: every apply path takes `cache.apply_lock` and
 checks `cursor.gen_head_blkno == meta.head_blkno` while still
@@ -869,6 +894,30 @@ The same A/B approach applies to local benchmarking via
 runs a fixed mixed workload with the cache toggled on and off
 and prints both numbers side by side.
 
+## Terminology going forward
+
+The "v1 / v2" labels in this doc refer to the historical
+in-memory and on-disk implementations of the memtable; they're
+unavoidable here because the doc explains a migration. The
+**code and going-forward documentation should not perpetuate
+these labels**. Once the cache lands, the descriptive names are:
+
+| Use this                                      | Not this   |
+|-----------------------------------------------|------------|
+| "on-disk memtable" / "page chain" / "chain"   | "v2"       |
+| "in-memory cache" / "memtable cache" / "cache"| "v1"       |
+| "chain source" / "cache source"               | "v1/v2 source" |
+| "memtable v2 redesign (#374)" → just "#374" or "the on-disk memtable redesign" | "memtable v2 redesign" |
+
+Phase 1's cleanup pass through `src/index/state.{c,h}`,
+`src/index/metapage.{c,h}`, `src/access/build.c`, `src/mod.c`,
+and `src/constants.h` rewrites the existing `v1`/`v2` comments
+to the descriptive form. Tracked as part of phase 1 below so
+the resurrected code lands with the same convention.
+
+Issue numbers (#374, #345, #349, #350, #377) remain — those
+are persistent references; only the "vN" labels are dropped.
+
 ## What's out of scope (this PR)
 
 - Backward compatibility for pre-1.3.0-dev indexes. The cache
@@ -915,10 +964,14 @@ and prints both numbers side by side.
 Implementation order (each independently reviewable; each leaves
 `make installcheck` green via the helpers from #391):
 
-1. **Resurrect v1 in-memory pieces**.
+1. **Resurrect v1 in-memory pieces** + **terminology cleanup**.
    `memtable/{memtable,posting,stringtable}.{c,h}` +
-   `posting_entry.h` from `62308b82`. Wire into Makefile.
-   Compile-clean, no callers.
+   `posting_entry.h` from `62308b82`, with comment headers
+   rewritten to use "in-memory memtable cache" rather than
+   "v1". Wire into Makefile. Compile-clean, no callers. Same
+   pass sweeps `state.{c,h}`, `metapage.{c,h}`, `build.c`,
+   `mod.c`, `constants.h` for the v1/v2 → on-disk/in-memory
+   rename (see "Terminology going forward").
 2. **Cache lifecycle scaffolding**. Add `apply_lock`, `lock`,
    cursor fields, `estimated_bytes` to `TpMemtable`. Update
    `state.c` init/teardown. Add `tp_cache_clear`. No mutation
