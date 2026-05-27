@@ -69,6 +69,17 @@
  */
 #define TP_MIN_SPILL_PAGES 2
 
+/*
+ * Default for pg_textsearch.memory_limit (in kilobytes).  Matches the
+ * v1 in-memory memtable's 2 GiB ceiling.  Used as both the GUC default
+ * and the initial value of the backing variable so the two cannot
+ * drift.  A value of 0 means "no limit" (cache grows until backend
+ * memory is exhausted); the cache implementation will treat any
+ * non-zero value as a three-tier budget (per-index soft = limit/8,
+ * global soft = limit/2, global hard = limit).
+ */
+#define TP_DEFAULT_MEMORY_LIMIT_KB (2 * 1024 * 1024)
+
 /* Hash table sizes */
 #define TP_STRING_INTERNING_HASH_SIZE	  1024
 #define TP_POSTING_LIST_HASH_INITIAL_SIZE 32
