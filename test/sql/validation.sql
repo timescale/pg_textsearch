@@ -91,9 +91,19 @@ BEGIN
     -- Suppress per-row BM25 NOTICEs from this helper's internal index
     -- queries so output stays stable regardless of caller's log_scores
     -- setting, and so the cold+warm doubled execution does not duplicate
-    -- NOTICE lines.
+    -- NOTICE lines.  log_scores is registered PGC_SUSET; non-superuser
+    -- callers cannot change it, so skip the set_config when it's already
+    -- off and tolerate insufficient_privilege errors otherwise.
     v_saved_log_scores := current_setting('pg_textsearch.log_scores', true);
-    PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+    IF v_saved_log_scores IS DISTINCT FROM 'off' THEN
+        BEGIN
+            PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+        EXCEPTION WHEN insufficient_privilege THEN
+            -- Caller lacks privilege to mutate the GUC; leave it as-is.
+            -- Restore step will also be skipped (v_saved_log_scores -> NULL).
+            v_saved_log_scores := NULL;
+        END;
+    END IF;
 
     -- Step 1: Tokenize documents with proper term frequency counting
     EXECUTE format($sql$
@@ -225,9 +235,14 @@ BEGIN
         'CREATE TEMP TABLE temp_idx_warm_10 ON COMMIT DROP AS %s', v_idx_sql);
 
     SELECT bool_and(
-        -- Both runs must match each other AND the ground-truth score for
-        -- the same content.
-        ROUND(c.score::numeric, 4) = ROUND(w.score::numeric, 4)
+        -- Cold and warm must produce the same ranked content+score; both
+        -- must match the SQL ground-truth score for that content.  Use
+        -- IS NOT DISTINCT FROM so one-sided rows (NULL from FULL OUTER
+        -- JOIN) are detected instead of being silently masked by NULL
+        -- propagation through `=`.
+        c.content IS NOT DISTINCT FROM w.content
+        AND ROUND(c.score::numeric, 4)
+            IS NOT DISTINCT FROM ROUND(w.score::numeric, 4)
         AND EXISTS (
             SELECT 1 FROM temp_sql_scores s
             WHERE s.content = c.content
@@ -235,9 +250,11 @@ BEGIN
                   = ROUND((-c.score)::numeric, 4)
         )
     ) INTO v_idx_match_10
-    FROM (SELECT row_number() OVER () AS rn, content, score
+    FROM (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                 content, score
           FROM temp_idx_cold_10) c
-    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+    FULL OUTER JOIN (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                            content, score
                      FROM temp_idx_warm_10) w USING (rn);
 
     v_idx_sql := format($sql$
@@ -258,7 +275,9 @@ BEGIN
         'CREATE TEMP TABLE temp_idx_warm_100 ON COMMIT DROP AS %s', v_idx_sql);
 
     SELECT bool_and(
-        ROUND(c.score::numeric, 4) = ROUND(w.score::numeric, 4)
+        c.content IS NOT DISTINCT FROM w.content
+        AND ROUND(c.score::numeric, 4)
+            IS NOT DISTINCT FROM ROUND(w.score::numeric, 4)
         AND EXISTS (
             SELECT 1 FROM temp_sql_scores s
             WHERE s.content = c.content
@@ -266,9 +285,11 @@ BEGIN
                   = ROUND((-c.score)::numeric, 4)
         )
     ) INTO v_idx_match_100
-    FROM (SELECT row_number() OVER () AS rn, content, score
+    FROM (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                 content, score
           FROM temp_idx_cold_100) c
-    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+    FULL OUTER JOIN (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                            content, score
                      FROM temp_idx_warm_100) w USING (rn);
 
     -- Clean up
@@ -283,9 +304,18 @@ BEGIN
     DROP TABLE IF EXISTS temp_idx_cold_100;
     DROP TABLE IF EXISTS temp_idx_warm_100;
 
-    -- Restore caller's log_scores setting
-    PERFORM set_config('pg_textsearch.log_scores',
-                      COALESCE(v_saved_log_scores, 'off'), true);
+    -- Restore caller's log_scores setting.  Skipped when v_saved_log_scores
+    -- is NULL, which means we either didn't change the GUC (already 'off')
+    -- or couldn't (non-superuser caller).
+    IF v_saved_log_scores IS NOT NULL THEN
+        BEGIN
+            PERFORM set_config('pg_textsearch.log_scores',
+                              v_saved_log_scores, true);
+        EXCEPTION WHEN insufficient_privilege THEN
+            -- Best-effort: caller lost privilege mid-call (unlikely)
+            NULL;
+        END;
+    END IF;
 
     RETURN COALESCE(v_all_match, false)
         AND COALESCE(v_idx_match_10, true)
@@ -455,8 +485,16 @@ BEGIN
     -- Suppress per-row BM25 NOTICEs from the helper's internal queries so
     -- output stays stable whether the caller has set log_scores or not, and
     -- so the cold+warm doubled execution does not duplicate NOTICE lines.
+    -- log_scores is PGC_SUSET; skip the set_config when it's already off
+    -- and tolerate insufficient_privilege for non-superuser callers.
     v_saved_log_scores := current_setting('pg_textsearch.log_scores', true);
-    PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+    IF v_saved_log_scores IS DISTINCT FROM 'off' THEN
+        BEGIN
+            PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+        EXCEPTION WHEN insufficient_privilege THEN
+            v_saved_log_scores := NULL;
+        END;
+    END IF;
 
     -- Index scan query reused for cold and warm runs
     v_idx_sql := format($sql$
@@ -515,14 +553,21 @@ BEGIN
     ) INTO v_warm_match
     FROM idx_scan_scores_warm i;
 
-    -- Verify cold and warm produce identical ranked results
+    -- Verify cold and warm produce identical ranked results.  Use
+    -- IS NOT DISTINCT FROM so one-sided rows from FULL OUTER JOIN fail
+    -- the comparison instead of being masked by NULL propagation, and
+    -- give row_number() a deterministic ordering so tied scores rank
+    -- the same in both subqueries.
     SELECT bool_and(
         c.content IS NOT DISTINCT FROM w.content
-        AND ROUND(c.score::numeric, 6) = ROUND(w.score::numeric, 6)
+        AND ROUND(c.score::numeric, 6)
+            IS NOT DISTINCT FROM ROUND(w.score::numeric, 6)
     ) INTO v_cold_eq_warm
-    FROM (SELECT row_number() OVER () AS rn, content, score
+    FROM (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                 content, score
           FROM idx_scan_scores_cold) c
-    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+    FULL OUTER JOIN (SELECT row_number() OVER (ORDER BY score, content) AS rn,
+                            content, score
                      FROM idx_scan_scores_warm) w USING (rn);
 
     -- Cleanup
@@ -530,9 +575,16 @@ BEGIN
     DROP TABLE IF EXISTS idx_scan_scores_warm;
     DROP TABLE IF EXISTS standalone_scores;
 
-    -- Restore caller's log_scores setting
-    PERFORM set_config('pg_textsearch.log_scores',
-                      COALESCE(v_saved_log_scores, 'off'), true);
+    -- Restore caller's log_scores setting.  Skipped when v_saved_log_scores
+    -- is NULL (we didn't change it, or couldn't as a non-superuser).
+    IF v_saved_log_scores IS NOT NULL THEN
+        BEGIN
+            PERFORM set_config('pg_textsearch.log_scores',
+                              v_saved_log_scores, true);
+        EXCEPTION WHEN insufficient_privilege THEN
+            NULL;
+        END;
+    END IF;
 
     RETURN COALESCE(v_cold_match, true)
         AND COALESCE(v_warm_match, true)
