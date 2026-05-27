@@ -614,6 +614,25 @@ walk_chain(TpMemtableChainSource *src, Relation rel)
 				}
 
 				post_cont = reassemble_fragment(src, rel, page, rec, &full);
+
+				/*
+				 * Validate the reassembled buffer unconditionally
+				 * (i.e. also in release builds): a multi-page
+				 * fragment payload has just been stitched together
+				 * across multiple buffer-locked page reads, so the
+				 * defensive value is much higher than for an inline
+				 * record where we can lean on page CRC and the
+				 * "same-backend write" rationale.  The cost is
+				 * amortised over a payload that is by definition
+				 * larger than a single page.  Without this check, a
+				 * structurally-malformed `full` buffer would
+				 * silently propagate into the per-term accumulator
+				 * (via `tpvector_entry_decode_advance`, which
+				 * assumes well-formedness) and from there into the
+				 * next L0 segment at spill.
+				 */
+				tpvector_validate_v2_buffer(full, rec->vector_len);
+
 				ingest_terms(src, &rec->ctid, full, rec->vector_len);
 				pfree(full);
 
