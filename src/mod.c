@@ -13,6 +13,7 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <fmgr.h>
+#include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
@@ -66,6 +67,24 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
+
+/*
+ * Memtable shared-memory cache enable flag.  Scaffolding only:
+ * this variable is registered as a GUC but not read anywhere in
+ * this build.  A subsequent change will wire it to gate the
+ * in-memory cache lookup path that sits in front of the on-disk
+ * memtable chain.
+ */
+bool tp_memtable_cache_enabled = false;
+
+/*
+ * Soft+hard memory budget for the in-memory memtable cache, in
+ * kilobytes.  Restored from v1; scaffolding only in this build —
+ * no consumer reads this yet.  Default and bounds live in
+ * constants.h (TP_DEFAULT_MEMORY_LIMIT_KB) so the GUC registration
+ * and the backing-variable initializer cannot drift.
+ */
+int tp_memory_limit_kb = TP_DEFAULT_MEMORY_LIMIT_KB;
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -249,12 +268,45 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomBoolVariable(
+			"pg_textsearch.memtable_cache_enabled",
+			"Enable the in-memory memtable cache for queries.",
+			"When enabled (default once the cache is implemented), "
+			"queries read from a derived shared-memory cache rather "
+			"than walking the on-disk memtable chain. The chain "
+			"remains the source of truth. No-op in this build.",
+			&tp_memtable_cache_enabled,
+			false, /* default off until cache implementation lands */
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.memory_limit",
+			"Maximum shared memory used by the in-memory memtable cache.",
+			"This setting has no effect in this build; it is "
+			"scaffolding for an upcoming change.  Once the cache "
+			"is wired up, this value will be applied as a "
+			"three-tier budget: per-index soft (limit/8) triggers "
+			"spill of that index; global soft (limit/2) evicts "
+			"the largest cache; global hard (limit) refuses new "
+			"inserts.  A value of 0 means no limit.",
+			&tp_memory_limit_kb,
+			TP_DEFAULT_MEMORY_LIMIT_KB,
+			0,
+			INT_MAX,
+			PGC_SIGHUP,
+			GUC_UNIT_KB,
+			NULL,
+			NULL,
+			NULL);
+
 	/*
-	 * Reserve the pg_textsearch.* GUC prefix.  Without this,
-	 * postgresql.conf entries for GUCs we removed in earlier
-	 * releases (e.g. pg_textsearch.memory_limit, deleted in
-	 * 1.3.0's Phase 7B) are silently ignored after upgrade
-	 * instead of producing a warning at server start.
+	 * Reserve the pg_textsearch.* GUC prefix so unknown settings
+	 * (typos, or GUCs removed in a future release) produce a
+	 * warning at server start rather than being silently ignored.
 	 */
 	MarkGUCPrefixReserved("pg_textsearch");
 
