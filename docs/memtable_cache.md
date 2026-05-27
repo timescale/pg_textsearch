@@ -159,23 +159,39 @@ is needed. (The vestigial `spill_generation` field in
 Building on the v2 contract in `chain_source.h`:
 
 ```
-per-index LWLock          (SHARED for readers, EXCL for spill)
-  ├─► cache.apply_lock    (EXCL for any path that advances the
-  │                         cursor: reader catchup, cold lazy
-  │                         build, spill catchup, evict.  Held
-  │                         only for the duration of the apply
-  │                         itself.)
-  │     └─► cache.lock    (SHARED for any path serving a
-  │                         TpDataSource — held for the lifetime
-  │                         of the source.  EXCL for drop/evict
-  │                         only; apply_lock holders may take
-  │                         SHARED.)
-  │           └─► dshash buckets
-  │                 └─► TpPostingList.lock     (per-term, leaf)
+caller per-index LWLock   (SHARED for readers, EXCL for spill)
+  ├─► caller cache.apply_lock
+  │     │  (EXCL for any path that advances the cursor: reader
+  │     │   catchup, cold lazy build, spill catchup.  Held only
+  │     │   for the duration of the apply itself.)
+  │     └─► caller cache.lock
+  │           │  (SHARED for any path serving a TpDataSource —
+  │           │   held for the lifetime of the source.  EXCL for
+  │           │   drop/evict only; apply_lock holders may take
+  │           │   SHARED.)
+  │           └─► caller dshash buckets
+  │                 └─► caller TpPostingList.lock  (per-term,
+  │                                                 leaf)
+  ├─► global_eviction_mutex
+  │     │  (EXCL, held only inside evict_largest.  Serializes
+  │     │   evictions across all backends so cross-index AB-BA
+  │     │   between victim selections cannot occur; see "Memory
+  │     │   cap" below for the full argument.)
+  │     └─► target per-index LWLock  (EXCL, target ≠ caller)
+  │           └─► target cache.apply_lock  (EXCL)
+  │                 └─► target cache.lock  (EXCL)
   └─► chain page buffers  (existing v2 contract; SHARED for
                             readers via metapage → head → next
                             walks, EXCL only inside log.c)
 ```
+
+The `global_eviction_mutex` sits above any **other** index's
+per-index LWLock. evict_largest **must** skip the caller's own
+index when choosing a victim: otherwise the caller (which
+already holds its own per-index LWLock in SHARED or EXCL mode
+incompatible with same-backend EXCL re-acquire) would deadlock
+on itself. See "Memory cap" for both the self-eviction and
+cross-index AB-BA arguments.
 
 Two separate cache locks because they have different lifetimes:
 
@@ -264,11 +280,20 @@ only "is the cursor at the current logical tail?", answered by
 asking the chain walker: starting from `next_blkno @ next_off`,
 is there a next record? If not, we're caught up.
 
-### Apply protocol (single shared protocol for all mutators)
+### Apply protocol (catchup)
 
-Every path that wants to insert records into the cache —
-reader catchup, cold lazy build, or spill catchup —
-**MUST** follow this protocol:
+The catchup protocol below — used by **reader catchup** and
+**spill catchup** — advances the cursor over already-applied
+state. Cold lazy build is a **separate** bootstrap path:
+because it must allocate the dshash tables structurally, it
+takes `cache.lock` EXCL rather than SHARED, and is documented
+in "Read path" under `cold_build`. The two paths share the same
+high-level invariants (apply_lock EXCL serialization, monotonic
+cursor advance, generation-token check) but the cache.lock
+modes differ.
+
+Catchup callers (reader catchup, spill catchup) **MUST** follow
+this protocol:
 
 ```
 /*
@@ -466,12 +491,22 @@ Notes:
 - **`get_postings(term)`** on the returned source does
   `tp_string_table_lookup` under dshash bucket lock, acquires
   `TpPostingList.lock` SHARED, copies entries into heap-
-  allocated `TpPostingData`, releases. Identical to v1.
+  allocated `TpPostingData`, releases. Identical to v1. The
+  returned `TpPostingData` holds POD copies
+  (`ItemPointerData`, `int32`) and has no surviving references
+  into the DSA arena.
 - **Hold `cache.lock` SHARED across the entire scan**. This
-  excludes drop/evict for the source's lifetime — necessary
-  because the source's served `TpPostingData` references DSA
-  pointers that drop would invalidate. Per-query LIMIT (default
-  1000) bounds the lifetime.
+  excludes drop/evict for the source's lifetime. The reason is
+  **not** the heap-allocated `TpPostingData` (which would
+  survive a drop on its own), but the source's cached
+  `dshash_table` attachments (`string_table`, `doclength_
+  table`): `get_postings` performs a fresh dshash lookup per
+  query term, and BM25 scoring calls `get_doc_length` per
+  posting hit. A concurrent `tp_cache_clear` that reset
+  handles to `DSHASH_HANDLE_INVALID` and freed the underlying
+  dshash tables would dangle the cached attachments and
+  corrupt the next lookup. Per-query LIMIT (default 1000)
+  bounds the lifetime.
 - **Cold-build ABORT** and **catchup BUDGET_EXCEEDED** are
   symmetric memory-cap behaviors: when the budget can't
   accommodate the build, we serve via chain_source instead.
@@ -531,9 +566,6 @@ tp_spill(state, rel) {
     LWLockRelease(per-index LWLock);
 }
 ```
-
-The trailing prose about the "cursor caught up check" is now
-obsolete (always catch up first); replace with:
 
 After spill, `tp_cache_clear` deallocates the dshash tables.
 The next query lazy-builds. Because writes don't touch the
@@ -603,38 +635,74 @@ Three thresholds:
 
 2. **Global soft cap = `memory_limit / 2`**. When the sum of
    all per-index caches' `estimated_bytes` crosses this, the
-   **largest** cache is **evicted** (`tp_cache_clear`, NOT
-   spilled — the chain is still source of truth). Eviction
-   protocol:
+   **largest cache other than the caller's own** is **evicted**
+   (`tp_cache_clear`, NOT spilled — the chain is still source
+   of truth). Eviction protocol:
 
    ```
    evict_largest():
-     /* select target without holding any cache lock */
-     target = argmax over all indexes of estimated_bytes
+     /* Pick a victim WITHOUT the caller's own index in the
+      * argmax.  Skipping self is what prevents the
+      * self-eviction deadlock: the caller already holds its
+      * own per-index LWLock (SHARED for read-path eviction;
+      * EXCL for spill-path eviction), and LWLocks are
+      * non-recursive — a same-backend EXCL re-acquire of a
+      * lock the backend already holds would hang with no
+      * deadlock detection. */
+     target = argmax_{idx ≠ caller_index} estimated_bytes(idx)
+     if target == none:
+         return NOTHING_TO_EVICT
 
-     /* acquire in canonical order to avoid deadlock */
+     /* Acquire the global eviction mutex BEFORE the target's
+      * per-index lock.  This serializes evictions across the
+      * cluster.  Cross-index AB-BA cannot occur because only
+      * one backend is inside evict_largest at a time: if A
+      * picks Y as victim and B picks X, the global mutex
+      * forces them to run sequentially, and by the time the
+      * second one runs its argmax the situation has changed
+      * (the first eviction freed its target's bytes; the
+      * second may now find a different victim, or none). */
+     LWLockAcquire(global_eviction_mutex, LW_EXCLUSIVE)
+
      LWLockAcquire(target's per-index LWLock, LW_EXCLUSIVE)
      LWLockAcquire(target's cache.apply_lock, LW_EXCLUSIVE)
      LWLockAcquire(target's cache.lock,       LW_EXCLUSIVE)
 
-     /* re-check after lock acquire: another backend may have
-      * evicted the same target. */
+     /* Re-check after lock acquire: another backend may have
+      * already evicted this target between the argmax and
+      * the lock acquire. */
      if cache still present and estimated_bytes >= threshold:
          tp_cache_clear(target)
          atomic_sub(global estimated_total_bytes,
                     target.estimated_bytes)
 
-     release in reverse order
+     /* release in reverse order */
+     LWLockRelease(target's cache.lock)
+     LWLockRelease(target's cache.apply_lock)
+     LWLockRelease(target's per-index LWLock)
+     LWLockRelease(global_eviction_mutex)
    ```
 
-   The **target per-index LWLock must be acquired BEFORE
-   cache.apply_lock and cache.lock** to maintain the global
-   lock order. Eviction waits on any active reader of the
-   target index. That's correct: we can't yank the dshash
-   tables out from under a concurrent `apply_to_tail` even
-   though it holds only apply_lock EXCL — the chain page
-   buffer lock and posting list locks it transitively holds
-   need a clean shutdown.
+   **Why deadlock is impossible**:
+   - *Self-eviction*: `argmax_{idx ≠ caller_index}` syntactically
+     excludes the caller's index, so we never try to acquire a
+     per-index LWLock the caller already holds.
+   - *Cross-index AB-BA between victim picks*: only one backend
+     holds `global_eviction_mutex` at a time, so two concurrent
+     evictions cannot interleave their target-lock acquires.
+     The second backend's `evict_largest` invocation runs after
+     the first releases all target locks; by then `target` may
+     have changed.
+
+   **What if the caller's own index is the largest?** The caller
+   has no way to evict its own cache from inside the apply
+   protocol (LWLock self-upgrade is impossible). evict_largest
+   returns NOTHING_TO_EVICT (no other-index target exists or
+   total caller-excluded bytes are under threshold), the caller
+   returns BUDGET_EXCEEDED, and the read falls back to
+   `chain_source` for this query. A different backend, on a
+   later query against a different index, will see this index
+   in its argmax and evict it.
 
 3. **Global hard cap = `memory_limit`**. Reached only if soft
    cap eviction failed to make room (rare race). The
@@ -655,11 +723,22 @@ Counters used:
   sum across all per-index caches in shared memory. Cheap to
   read at check time.
 
-The global-cap check runs at apply-protocol entry (covers cold
-build, reader catchup, spill catchup) and on every Nth record
-during a long catchup. Reads of an already-caught-up cache pay
-only the per-index `estimated_bytes` touch in the apply protocol
-header.
+The global-cap check runs **at apply-protocol entry**, before
+the caller acquires `cache.apply_lock` (and therefore before
+holding any of its own cache locks). Triggering eviction at
+this point keeps the caller's cache locks out of the
+acquisition chain entirely: evict_largest needs only
+`global_eviction_mutex` + the target's per-index/apply/cache
+locks, all on a different index. There is **no mid-walk
+eviction trigger**: the per-record check inside `apply_to_tail`
+is for the per-index soft cap only (returns BUDGET_EXCEEDED on
+exceed, no eviction). This is deliberate — invoking
+evict_largest while holding the caller's own apply_lock and
+cache.lock would stall other readers on the caller's index for
+the duration of the target's per-index EXCL acquire.
+
+Reads of an already-caught-up cache pay only the per-index
+`estimated_bytes` touch in the apply protocol header.
 
 ## Code layout
 
@@ -844,11 +923,14 @@ Implementation order (each independently reviewable; each leaves
    cursor fields, `estimated_bytes` to `TpMemtable`. Update
    `state.c` init/teardown. Add `tp_cache_clear`. No mutation
    paths yet.
-3. **Apply protocol**. Implement `apply_to_tail` and the
-   `cold_build` helper in `cache.{c,h}` — the single shared
-   helper used by both read-side apply paths. Factor the chain
-   walker out of `chain_source.c` for reuse. Unit tests against
-   synthetic cursors.
+3. **Apply protocol**. Implement `apply_to_tail` (catchup) and
+   the `cold_build` bootstrap path in `cache.{c,h}`. Both
+   advance the cursor and share the same invariants
+   (apply_lock EXCL serialization, generation-token check), but
+   take `cache.lock` in different modes (SHARED for catchup,
+   EXCL for cold_build). Factor the chain walker out of
+   `chain_source.c` for reuse. Unit tests against synthetic
+   cursors.
 4. **Read path**. Implement `tp_memtable_cache_source_create`
    with cold lazy build + catchup. Wire scoring to prefer the
    cache source when `tp_memtable_cache_enabled` is on. Both
@@ -857,9 +939,11 @@ Implementation order (each independently reviewable; each leaves
 5. **Spill consumption from cache**. `tp_write_segment_from_
    cache` after catchup; chain_source fallback when budget
    exceeded. `tp_spill_finalize` clears the cache.
-6. **3-tier memory cap**. Per-index soft, global soft (eviction
-   with canonical lock order), global hard. Add
-   `cache_memory_cap.sql` test.
+6. **3-tier memory cap**. Per-index soft, global soft
+   (`evict_largest` with `global_eviction_mutex` +
+   skip-caller's-own-index), global hard. Add
+   `cache_memory_cap.sql` test that exercises both same-index
+   and cross-index eviction paths.
 7. **Benchmark wiring**. Extend `benchmark.yml` and
    `benchmark-concurrent-insert.yml` with the
    `memtable_cache: [off, on]` matrix dimension. Run nightly
