@@ -56,6 +56,41 @@ The cache is the v1 memtable. The chain is the v2 memtable. The
 only conceptual addition is the apply cursor + the read-side
 catchup protocol that keeps the cache in sync with the chain.
 
+### Spill already pays the build cost
+
+A separate reason the lazy/read-mutates design is right: the
+spill path **already** builds an in-memory inverted index every
+time it runs, even in the no-cache world. Today's
+`chain_source.c` (lines 76-77, 858-868, 1007-1085) walks the
+chain at source-create time and populates two backend-local
+HTABs (`term_ht: char* → ChainTermEntry`, `doclen_ht:
+ItemPointerData → ChainDocLenEntry`); `tp_do_spill`
+(`src/access/build.c:163-185`) then calls
+`tp_memtable_chain_source_extract` which walks those HTABs to
+feed the segment writer. The HTABs are thrown away when the
+source closes.
+
+So the cache is not adding a new "build inverted index" step —
+it's repurposing one that the chain source already performs on
+every query and every spill, and moving the result from per-
+backend ephemeral storage to shared DSA. Concretely:
+
+- **Before**: each query opens a chain source → builds local
+  HTABs → throws them away. Each spill opens a chain source →
+  builds local HTABs → feeds the segment writer → throws them
+  away. Exactly one build per (backend, operation).
+- **After**: each query catches the shared cache up to tail →
+  serves. Each spill catches the shared cache up → writes
+  segment directly from it. Exactly one build per (chain
+  generation, anyone). Subsequent operations against the same
+  chain generation reuse the build.
+
+This also reinforces "lazy ≥ eager": the build cost is paid
+by **whichever of (first query, spill) comes first**, then
+amortized across all subsequent operations in that chain
+generation. Eager updates would shift work onto every write
+regardless of whether a query or spill ever follows.
+
 ## What we resurrect
 
 The v1 cutover commit (`023c3841`) deleted seven files we want
@@ -133,11 +168,12 @@ typedef struct TpMemtable
 
     /* Apply cursor (see "The apply cursor" section).  Mutated
      * only under apply_lock EXCL. */
-    BlockNumber         cursor_gen_head_blkno; /* generation
-                                                * token: equals
-                                                * meta.head_blkno
-                                                * the cache was
-                                                * built against */
+    uint64              cursor_gen_spill_count; /* generation
+                                                 * token: equals
+                                                 * TpSharedIndexState
+                                                 * .spill_generation
+                                                 * at cold-build
+                                                 * time. */
     BlockNumber         cursor_next_blkno;     /* logical next
                                                 * record position */
     uint16              cursor_next_off;
@@ -170,14 +206,40 @@ time. Per-cache contribution to the corpus is not separately
 tracked — the cache reflects the chain, which has already
 been counted into `shared`.
 
-Spill detection: every apply path takes `cache.apply_lock` and
-checks `cursor.gen_head_blkno == meta.head_blkno` while still
-under per-index SHARED (or stronger). Because the only
-operation that changes `meta.head_blkno` is spill, which holds
-per-index EXCL, the read of `meta.head_blkno` inside the
-applier is exclusive of spill — no separate generation atomic
-is needed. (The vestigial `spill_generation` field in
-`TpSharedIndexState` from #374 remains unused.)
+**Spill detection** must defend against a subtle ABA hole:
+spill zeroes `meta.head_blkno`, but the freed chain pages are
+**not** returned to the FSM (`tp_spill_finalize` in
+`src/memtable/log.c:647-698` only updates the metapage and
+counters). They become orphans in the index file. Normal inserts
+extend the relation via `ExtendBufferedRel` and never reuse
+orphan blocks, so naively comparing `cursor.gen_head_blkno`
+against `meta.head_blkno` would be safe in steady state.
+
+The hole is `bm25_force_merge` → `tp_truncate_dead_pages`
+(`src/access/build.c:336-429`), which calls
+`RelationTruncate(index, max_used)`. If a spill landed before
+the force-merge and the orphan chain head was above `max_used`,
+truncation drops it; the next insert's `ExtendBufferedRel`
+then lands at the same physical block number. A
+`(cursor.gen_head_blkno == meta.head_blkno)` check would pass
+spuriously, and the cache would apply a stale cursor against
+fresh data.
+
+The defense is the already-allocated
+`TpSharedIndexState.spill_generation` atomic. Originally added
+in #374 and currently unused, it's repurposed as the cache's
+generation token: bumped under per-index EXCL inside
+`tp_spill_finalize`, captured into `cursor.gen_spill_count` at
+cold-build time, compared on every apply. This is monotonic
+within a single backend lifetime (it sits in DSA shared memory
+and is wiped on restart along with the cache itself, so
+cross-restart monotonicity is not needed).
+
+Because `spill_generation` lives in DSA and is bumped under
+per-index EXCL, an applier holding per-index SHARED (or
+stronger) sees a consistent value relative to spill — same
+exclusion argument as the original `meta.head_blkno`-based
+check, just without the ABA hole.
 
 ## Lock order
 
@@ -255,10 +317,14 @@ and spill catchup.
 ```c
 typedef struct TpCacheCursor
 {
-    /* Identifies the chain generation the cache was built from.
-     * Compared against meta.head_blkno on every apply / serve to
-     * detect spills. */
-    BlockNumber gen_head_blkno;
+    /* Identifies the chain generation the cache was built
+     * from.  Captured from TpSharedIndexState.spill_generation
+     * at cold-build time, under per-index SHARED+ (which
+     * excludes spill, the only writer of spill_generation).
+     * Compared on every apply / serve to detect a spill that
+     * may have raced through under per-index EXCL between
+     * captures. */
+    uint64 gen_spill_count;
 
     /* Logical position of the NEXT chain record to apply.
      * "Logical" means: this is the (page, off) the next record
@@ -273,14 +339,14 @@ typedef struct TpCacheCursor
      * successful apply.  Used by debug + by readers that want a
      * cheap "did anything change" check that's robust to
      * fragment-page games.  Not strictly required for correctness
-     * because (gen_head_blkno, next_blkno, next_off) is sufficient,
+     * because (gen_spill_count, next_blkno, next_off) is sufficient,
      * but it makes invariants easier to assert. */
     pg_atomic_uint64 seq;
 } TpCacheCursor;
 ```
 
 The cursor lives in `TpMemtable` (shared, DSA). Mutations of
-`gen_head_blkno`, `next_blkno`, `next_off` happen under
+`gen_spill_count`, `next_blkno`, `next_off` happen under
 `apply_lock` EXCL. `seq` is a `pg_atomic_uint64` for lock-free
 read.
 
@@ -336,7 +402,7 @@ apply_to_tail():
     LWLockAcquire(cache.apply_lock, LW_EXCLUSIVE)
     LWLockAcquire(cache.lock,       LW_SHARED)
 
-    if (cursor.gen_head_blkno != meta.head_blkno):
+    if (cursor.gen_spill_count != atomic_read(shared->spill_generation)):
         # Spill completed before our per-index SHARED acquire (a
         # spill needs per-index EXCL, so it can't have completed
         # while we were holding SHARED).  The cache is stale.
@@ -353,7 +419,7 @@ apply_to_tail():
         # (spill path under budget pressure).
         release cache.lock SHARED
         acquire cache.lock EXCL
-        if (cursor.gen_head_blkno != meta.head_blkno):
+        if (cursor.gen_spill_count != atomic_read(shared->spill_generation)):
             tp_cache_clear()
         release cache.lock EXCL
         release apply_lock
@@ -477,9 +543,9 @@ cold_build(rel):
         return RETRY
 
     /* allocate dshash tables, set handles */
-    cursor.gen_head_blkno = meta.head_blkno
-    cursor.next_blkno    = meta.head_blkno
-    cursor.next_off      = 0
+    cursor.gen_spill_count = atomic_read(shared->spill_generation)
+    cursor.next_blkno      = meta.head_blkno
+    cursor.next_off        = 0
 
     /* Walk the chain head→tail, applying each record.  Monitor
      * memory cap on each insert; if exceeded, abort: free
@@ -579,12 +645,16 @@ tp_spill(state, rel) {
 
     tp_spill_finalize(rel, new_segment_root,
                       totals.docs, totals.len);
-    /* spill_finalize zeroes meta.head_blkno/meta.tail_blkno. */
+    /* spill_finalize bumps shared->spill_generation atomically
+     * under per-index EXCL, then zeroes meta.head_blkno /
+     * meta.tail_blkno.  The cache below is now stale by
+     * generation; any future apply will observe the mismatch. */
 
     tp_cache_clear(state);   /* deallocates dshash tables,
                               * sets handles to DSHASH_HANDLE_
-                              * INVALID, cursor.gen_head_blkno =
-                              * InvalidBlockNumber */
+                              * INVALID, cursor.gen_spill_count =
+                              * 0 (will mismatch shared->
+                              * spill_generation on next apply) */
 
     LWLockRelease(cache.lock);
     LWLockRelease(cache.apply_lock);
@@ -599,39 +669,49 @@ second query pays a cold-build instead of a catchup walk.
 
 ## Standby / replication
 
-WAL replay does not load `pg_textsearch.so`, so no extension code
-runs. The cache cannot be maintained from replay. Behaviors:
+WAL replay does not load `pg_textsearch.so`, so no extension
+code runs on the standby — including the code that bumps
+`shared->spill_generation` inside `tp_spill_finalize`. The
+generation token is therefore unreliable across replay, and
+chain page links in orphan pages (which a stale cursor would
+chase) still exist on disk after spill replay. Rather than
+invent a separate standby-side detection path, **the cache is
+disabled on standbys**:
 
-- **Read on standby**: `RecoveryInProgress() == true`, but the
-  read path doesn't care — it lazy-builds from whatever the
-  chain says. Each apply checks `cursor.gen_head_blkno ==
-  meta.head_blkno`; if replay applied a spill record between
-  two reads, the second read sees DROPPED and cold-builds
-  against the post-spill chain.
+```c
+TpDataSource *
+tp_memtable_cache_source_create(...)
+{
+    if (RecoveryInProgress())
+        return NULL;  /* caller falls through to chain_source */
+    ...
+}
+```
 
-- **Spill replay on standby**: replay zeros `meta.head_blkno` /
-  `meta.tail_blkno`. The next query observes the generation
-  mismatch and drops + rebuilds. No code runs on the standby
-  during replay, so no cache mutation can happen between the
-  metapage change and the next query.
+Consequences:
 
-- **Promotion**: the standby's last-built cache reflects the
-  chain it was built from. The first query post-promotion does
-  one of:
-  - No new chain records → walker finds nothing, serves
-    immediately.
-  - Generation mismatch (a spill happened) → DROPPED + cold
-    rebuild.
-  - New records published during the gap → catchup walks them
-    just like steady-state primary catchup.
+- **Read on standby**: falls through to `chain_source`,
+  identical to today's behavior. The perf-recovery goal
+  targets the primary, which is where writes (and most read
+  traffic) live.
+- **Spill replay on standby**: replay zeros `meta.head_blkno`/
+  `meta.tail_blkno` via standard `GenericXLog` redo. The
+  cache was never built on the standby, so there's nothing
+  to invalidate.
+- **Promotion**: `RecoveryInProgress()` flips to false. The
+  first query after promotion does a cold-build from the
+  current chain (whatever replay left). All subsequent
+  queries take the catchup path normally. Promotion does not
+  bump `spill_generation` because the DSA atomic was already
+  consistent (the standby simply never touched the cache);
+  the very first cold-build captures whatever
+  `spill_generation` is at that point.
 
-  The first **write** post-promotion writes to the chain (its
-  normal path) without touching the cache. The first read
-  after that handles whatever cache state results, via the
-  same protocol it uses on the steady-state primary.
-
-No new cross-recovery invariants beyond the `cursor.
-gen_head_blkno` check are required.
+No new cross-recovery invariants are introduced. The cost is
+giving up the perf win on standby read replicas — acceptable
+for the simplicity, and we can revisit by promoting
+`spill_generation` to a WAL-replicated metapage field if
+profiling shows standby reads are a bottleneck.
 
 ## Memory cap (3 tiers)
 
@@ -949,7 +1029,7 @@ are persistent references; only the "vN" labels are dropped.
    not required for the perf-recovery goal.
 
 2. **Cursor seq as authoritative vs debug-only**: the current
-   design uses `(cursor.gen_head_blkno, cursor.next_blkno,
+   design uses `(cursor.gen_spill_count, cursor.next_blkno,
    cursor.next_off)` as the authoritative "where are we" tuple
    and `cursor.seq` as a lock-free monotonic counter for "did
    anything change" cheap checks + debug asserts. Could promote
@@ -991,7 +1071,11 @@ Implementation order (each independently reviewable; each leaves
    vs_standalone`) start exercising cold + warm via the cache.
 5. **Spill consumption from cache**. `tp_write_segment_from_
    cache` after catchup; chain_source fallback when budget
-   exceeded. `tp_spill_finalize` clears the cache.
+   exceeded. Modify `tp_spill_finalize` to bump
+   `shared->spill_generation` under per-index EXCL **before**
+   zeroing `meta.head_blkno`/`meta.tail_blkno`, so any reader
+   acquiring per-index SHARED after the spill sees the new
+   generation. `tp_spill_finalize` also clears the cache.
 6. **3-tier memory cap**. Per-index soft, global soft
    (`evict_largest` with `global_eviction_mutex` +
    skip-caller's-own-index), global hard. Add
