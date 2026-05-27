@@ -88,11 +88,24 @@ jobs:
         ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
           --with-openssl --without-readline --without-zlib --without-libxml
         make -j$(nproc)
+        # Build the pg_walinspect contrib module under the same
+        # sanitizer flags. wal_audit.sh requires it; without this
+        # CREATE EXTENSION pg_walinspect fails at test setup.
+        make -C contrib/pg_walinspect -j$(nproc)
 
     - name: Install PostgreSQL ${{ matrix.pg }}
       run: |
         cd ~/$PG_SRC_DIR
         make install
+        # On cache hits the build step is skipped, so re-run the
+        # pg_walinspect build here (no-op when already built) and
+        # always install it.
+        make -C contrib/pg_walinspect -j$(nproc)
+        make -C contrib/pg_walinspect install
+        # Fail fast if the contrib install regressed — clearer
+        # error than a CREATE EXTENSION failure 8 minutes into
+        # the test phase.
+        test -f "$HOME/$PG_INSTALL_DIR/share/extension/pg_walinspect.control"
         ~/$PG_INSTALL_DIR/bin/pg_config --version
 
     - name: Verify sanitizers are enabled
