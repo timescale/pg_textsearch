@@ -14,7 +14,7 @@ cost. Every index scan now opens a `chain_source` that walks
 every doc record, just to materialize the few posting lists the
 query actually needs. With a chain of ~64 pages (the auto-spill
 threshold) that's hundreds of `ReadBuffer` calls per query
-regardless of query selectivity.
+regardless of keyword frequency.
 
 The v1 in-memory memtable did not pay that cost: it kept a DSA-
 backed inverted index (`term → posting list`) and a doc-length
@@ -32,25 +32,29 @@ changing v2's source of truth.
   memtable: dshash `term → TpPostingList`, dshash `ctid →
   doc_length`, plus rolling corpus totals.
 - The cache is **derived state**: lazily built on first query,
-  incrementally updated by writers, dropped + rebuilt on spill
-  or invalidation. Crashing or losing it is harmless — the next
-  query rebuilds from the chain.
+  incrementally caught up by subsequent queries, dropped +
+  rebuilt on spill or invalidation. Crashing or losing it is
+  harmless — the next query rebuilds from the chain.
+- **The write path does not touch the cache.**
+  `tp_add_document_terms` is unchanged; writes only mutate the
+  on-disk chain. This keeps the v2 contract untouched and
+  eliminates any spill-during-apply race.
+- **Reads — with spill as a special case of read — are the only
+  cache mutators.** A reader that opens a `TpDataSource` first
+  catches the cache up to the current chain tail, then serves
+  from it. Spill reuses the same "catch up, then act" path; it
+  just writes a segment from the cache instead of returning
+  posting lists.
 - An **apply cursor** tracks the next chain record the cache
-  expects to consume. Three paths can advance the cursor —
-  writer hook, reader catchup, cold lazy build — and all three
-  share a single `apply_lock`-serialized helper
-  (`apply_records_up_to`). The cursor IS the commit point;
-  every record is applied to the cache exactly once per
-  generation.
-- The writer hook attaches at the tail of `tp_add_document_
-  terms` while the writer still holds per-index LWLock SHARED.
-  Spill (which needs per-index LWLock EXCL) cannot fire
-  concurrently with cache application, so spill-during-apply is
-  excluded by the existing v2 lock contract.
+  expects to consume. Both apply callers (reader catchup and
+  spill catchup) go through a single shared helper
+  `apply_to_tail()` under `cache.apply_lock` EXCL. The cursor
+  IS the commit point; every record is applied exactly once
+  per generation.
 
 The cache is the v1 memtable. The chain is the v2 memtable. The
-only conceptual additions are the apply cursor + the shared
-apply protocol that keeps the cache in sync with the chain.
+only conceptual addition is the apply cursor + the read-side
+catchup protocol that keeps the cache in sync with the chain.
 
 ## What we resurrect
 
@@ -84,19 +88,11 @@ Net: ~1450 LOC restored. The existing `TpMemtable` scaffold in
 counters) is already wired through `state.c`; we just fill in the
 handles instead of leaving them invalid.
 
-### Required API change to `tp_memtable_append`
-
-`tp_memtable_append` currently returns `BlockNumber` — the page
-of the just-written record. That's insufficient: the cache hook
-needs (a) the explicit bootstrap signal, (b) the within-page
-offset, (c) the logical "next position" after this record (which
-differs from `(record_blkno, off+1)` for fragment appends because
-the fragment chain ends on a fresh tail page), and (d) the
-`meta.head_blkno` observed at publish time as the generation
-token. This PR changes the return type to
-`TpMemtableAppendResult` (defined in "The apply cursor"
-section). All callers (currently only `tp_add_document_terms`)
-are updated in lockstep; the on-disk format is unchanged.
+**No changes to `tp_memtable_append`'s signature** or any other
+v2 write-side API. Reviewer-requested simplification: the cache
+does not attach a write-side hook, so writers need not surface
+any extra metadata (bootstrap flag, post-apply cursor, etc.) to
+the cache.
 
 ## Data structures
 
@@ -149,14 +145,14 @@ typedef struct TpMemtable
 `TpDocLengthEntry` come back verbatim from `62308b82`. They're
 already designed for the dshash + DSA pattern.
 
-The vestigial `spill_generation` atomic in `TpSharedIndexState`
-(see `state.h:108`) is repurposed: bumped under per-index EXCL
-at the end of `tp_spill_finalize`, read by any cache path that
-took per-index SHARED to check "did a spill complete between my
-acquire and now". Combined with the `cursor_gen_head_blkno`
-check inside the apply_lock, we have a two-tier spill detector
-(cheap atomic read first, authoritative metapage compare on
-mismatch).
+Spill detection: every apply path takes `cache.apply_lock` and
+checks `cursor.gen_head_blkno == meta.head_blkno` while still
+under per-index SHARED (or stronger). Because the only
+operation that changes `meta.head_blkno` is spill, which holds
+per-index EXCL, the read of `meta.head_blkno` inside the
+applier is exclusive of spill — no separate generation atomic
+is needed. (The vestigial `spill_generation` field in
+`TpSharedIndexState` from #374 remains unused.)
 
 ## Lock order
 
@@ -164,11 +160,11 @@ Building on the v2 contract in `chain_source.h`:
 
 ```
 per-index LWLock          (SHARED for readers, EXCL for spill)
-  ├─► cache.apply_lock    (EXCL for any path that mutates the
-  │                         cache or advances the watermark:
-  │                         writer hook, reader catchup, cold
-  │                         lazy build, evict.  Held only for
-  │                         the duration of the apply itself.)
+  ├─► cache.apply_lock    (EXCL for any path that advances the
+  │                         cursor: reader catchup, cold lazy
+  │                         build, spill catchup, evict.  Held
+  │                         only for the duration of the apply
+  │                         itself.)
   │     └─► cache.lock    (SHARED for any path serving a
   │                         TpDataSource — held for the lifetime
   │                         of the source.  EXCL for drop/evict
@@ -184,10 +180,10 @@ per-index LWLock          (SHARED for readers, EXCL for spill)
 Two separate cache locks because they have different lifetimes:
 
 - `cache.apply_lock` (EXCL only) is held briefly while mutating
-  the cache structure or advancing the watermark. It's the
-  serialization point for "who's writing into the cache right
-  now". This is the lock that prevents the writer-hook /
-  cold-build / reader-catchup double-apply races.
+  the cache structure or advancing the cursor. It serializes
+  the only two apply callers — reader catchup and spill
+  catchup — against each other so the cursor advances by
+  exactly one record per apply.
 - `cache.lock` (SHARED for readers, EXCL only for full drop or
   evict) covers the lifetime of a served `TpDataSource`. A
   reader holds it SHARED from open through close; an apply path
@@ -202,12 +198,16 @@ held across chain page buffer EXCL acquisitions; readers walking
 the chain for catchup may hold both cache locks SHARED while
 taking chain page buffer SHARED (reader-on-reader is fine).
 
+Note: because the write path doesn't touch the cache, a writer
+holding per-index SHARED cannot block on either cache lock. The
+write path is invisible to the cache.
+
 ## The apply cursor
 
-The watermark is not a passive metadata field. It is the
-**authoritative apply cursor** for the cache, and every path
-that mutates the cache must consult and advance it under
-`cache.apply_lock` EXCL.
+The cache is updated lazily by readers. The apply cursor is the
+authoritative "next chain record to consume" pointer, advanced
+under `cache.apply_lock` EXCL by reader catchup, cold lazy build,
+and spill catchup.
 
 ### What the cursor stores
 
@@ -266,54 +266,59 @@ is there a next record? If not, we're caught up.
 
 ### Apply protocol (single shared protocol for all mutators)
 
-Every path that wants to insert a record into the cache —
-whether it's a writer's just-completed append, a reader doing
-incremental catchup, or a cold lazy build from scratch —
+Every path that wants to insert records into the cache —
+reader catchup, cold lazy build, or spill catchup —
 **MUST** follow this protocol:
 
 ```
 /*
- * Advance the cache cursor to `target_next`, applying every
- * chain record encountered along the way.  `target_next` is
- * itself a cursor value — the (blkno, off) the cursor should
- * hold once we've applied the record(s) the caller cares about.
+ * Advance the cache cursor to the current logical tail,
+ * applying every chain record encountered along the way.
  *
- * `target_next == NULL` means "apply everything currently
- * visible at meta.tail".
+ * The walker stops as soon as has_next() returns false.  Because
+ * the only callers want "catch up to whatever's currently on
+ * disk", there's no per-record target; the chain walker's
+ * link-following loop IS the stop condition and is robust
+ * against fragment-page allocation order.
  */
-apply_records_up_to(target_next):
+apply_to_tail():
     Assert(holding per-index LWLock SHARED or stronger)
     LWLockAcquire(cache.apply_lock, LW_EXCLUSIVE)
     LWLockAcquire(cache.lock,       LW_SHARED)
 
     if (cursor.gen_head_blkno != meta.head_blkno):
-        # Spill happened between caller's perception of the chain
-        # and now.  Drop the cache (under cache.lock EXCL upgrade)
-        # and return DROPPED to caller.  Caller decides whether
-        # to retry (cold-build) or skip (writer hook for a record
-        # that's now orphaned by the spill).
-        promote_cache_lock_to_excl_and_drop()
+        # Spill completed before our per-index SHARED acquire (a
+        # spill needs per-index EXCL, so it can't have completed
+        # while we were holding SHARED).  The cache is stale.
+        # Drop it:
+        #   - Release cache.lock SHARED, re-acquire EXCL.
+        #     Because spill held per-index EXCL until it finished,
+        #     no readers' source could be alive across the gap
+        #     where the spill happened, so cache.lock has no
+        #     SHARED holders other than us — EXCL acquire is
+        #     immediate.
+        #   - tp_cache_clear() under cache.lock EXCL.
+        # Return DROPPED to the caller, which decides whether to
+        # cold-build (read path) or fall back to chain_source
+        # (spill path under budget pressure).
+        release cache.lock SHARED
+        acquire cache.lock EXCL
+        if (cursor.gen_head_blkno != meta.head_blkno):
+            tp_cache_clear()
+        release cache.lock EXCL
         release apply_lock
         return DROPPED
 
     walker = chain_walker_open_at(cursor.next_blkno, cursor.next_off)
-    while True:
-        # Stop condition.  Two equivalent forms:
-        #
-        #   (a) If target_next was provided and the cursor has
-        #       reached it, stop.  Comparison is EQUALITY on
-        #       (blkno, off) — no ordering arithmetic, robust
-        #       against fragment-page allocation order.
-        #   (b) If walker has no next record (cursor at logical
-        #       tail), stop.
-        if target_next != NULL
-           AND cursor.next_blkno == target_next.blkno
-           AND cursor.next_off   == target_next.off:
-            break
-        if NOT walker.has_next():
-            break
-
+    while walker.has_next():
         rec = walker.read_record()        # under chain page SHARED
+
+        # Memory-cap check on every apply (read path is the only
+        # caller that allocates into the cache).
+        if (estimated_bytes + size(rec) > per_index_soft_cap):
+            release locks
+            return BUDGET_EXCEEDED
+
         apply_record_to_cache(rec)        # under cache.lock SHARED,
                                           # mutates posting lists +
                                           # doclen hash under their
@@ -327,166 +332,44 @@ apply_records_up_to(target_next):
     return OK
 ```
 
-Stop-condition note: when callers know exactly which record they
-care about (writer hook with its `result.post_apply_next_*`),
-form (a) lets them avoid pulling extra chain pages into the
-buffer LRU. Reader catchup uses `target_next == NULL` and
-relies on form (b).
-
 Key properties:
 
-- **`apply_lock` EXCL serializes ALL appliers**. No writer-hook
-  can race with reader-catchup or cold-build. No two writers can
-  step on each other's watermark advancement.
-- **Idempotent for re-entrant callers**. A writer that just
-  appended record at position `P` calls `apply_records_up_to(P)`.
-  If catchup already happened to apply `P`, the walker starts at
-  `P+1`, finds nothing, and returns immediately. The writer's
-  contribution is the call itself, not the act of inserting; the
-  cursor decides who actually does the insert.
-- **Bridges write+read paths**. A writer who finds `cursor.next`
-  is far behind its just-appended record will catch the cache
-  up across that gap. Inversely, a reader who arrives between
-  two writers' chain publishes catches the cache up to whatever
-  was most recently published.
-- **No double-apply**. Because the cursor advances strictly
-  per-record under the apply_lock, every record is applied
-  exactly once across the lifetime of the cache (within one
-  `gen_head_blkno` generation).
+- **`apply_lock` EXCL serializes ALL appliers**. Reader catchup,
+  cold build, and spill catchup do not race each other.
+- **Idempotent across concurrent callers**. Two readers that
+  both want to catch up serialize on apply_lock. The second
+  reader finds the cursor at the position the first one left it,
+  walks until `has_next()` is false (which is "now"), and
+  applies whatever has accumulated since.
+- **No double-apply**. The cursor advances strictly per-record
+  under apply_lock, so every record is applied exactly once per
+  generation.
+- **Walker uses logical link traversal**, not block-number
+  comparison, so fragment-page allocation order can't desync the
+  apply order.
 
 The walker reuses the existing chain-walker logic in
 `chain_source.c`, factored into a reusable helper.
 
-### `TpMemtableAppendResult`
-
-`tp_memtable_append` is updated to return:
-
-```c
-typedef struct TpMemtableAppendResult
-{
-    bool         bootstrapped;        /* this append created the
-                                       * chain (meta.head was
-                                       * InvalidBlockNumber on
-                                       * entry, valid on return) */
-    bool         fragmented;          /* used the fragment path */
-    BlockNumber  record_blkno;        /* where the head record
-                                       * lives (Thead for fragments,
-                                       * tail page for normal) */
-    uint16       record_off;          /* slot within record_blkno */
-    BlockNumber  post_apply_next_blkno; /* logical next position
-                                         * after this record */
-    uint16       post_apply_next_off;
-    BlockNumber  observed_head_blkno;  /* meta.head_blkno seen by
-                                        * the publish step */
-} TpMemtableAppendResult;
-```
-
-The cache hook consumes this struct, not just a `BlockNumber`.
-`bootstrapped` is the explicit bootstrap signal. The
-`post_apply_next_*` fields tell the hook the cursor value it
-should reach. `observed_head_blkno` is the generation token the
-hook compares against `cursor.gen_head_blkno`.
-
 ## Write path
 
-`tp_add_document_terms()` is the single primary-side ingest
-entry point. Per `log.h:70-73`, it **leaves the per-index
-LWLock held SHARED on return**. That guarantee is what makes
-the cache hook safe against spill:
+**Unchanged.** `tp_add_document_terms` and `tp_memtable_append`
+have no cache interaction. Writes mutate only the v2 on-disk
+chain, exactly as today.
 
-```
-tp_add_document_terms(state, rel, ctid, vec_bytes, vec_len, ...) {
-    /* existing v2 code (abridged): */
-    Assert(holding per-index LWLock SHARED);
-    result = tp_memtable_append(rel, ctid, doc_length,
-                                vec_bytes, vec_len);
-    atomic_add(state->shared->total_docs, 1);
-    atomic_add(state->shared->total_len, doc_length);
-    /* per-index LWLock SHARED is STILL held here */
+This is a deliberate simplification (reviewer-requested): the
+cache is **lazily** caught up by readers, not eagerly maintained
+by writers. The cost is that the first reader after a burst of
+writes pays a catchup walk; the benefit is the v2 write path is
+entirely untouched and no spill-during-apply race can exist.
 
-    /* new: cache update hook */
-    if (!RecoveryInProgress()
-        && tp_memtable_cache_enabled
-        && !state->is_build_mode) {
-        tp_cache_apply_local_append(state, &result,
-                                    ctid, doc_length,
-                                    vec_bytes, vec_len);
-    }
-    /* caller releases per-index LWLock SHARED */
-}
-```
-
-Inside `tp_cache_apply_local_append`:
-
-```
-tp_cache_apply_local_append(state, result, ctid, len, vec, n):
-    Assert(holding per-index LWLock SHARED)
-
-    /* Step 1: quick generation check, no locks beyond per-index.
-     * If meta.head_blkno != result->observed_head_blkno, the
-     * record we just published is now orphaned by a spill we
-     * raced against.  Skip the cache.  The next query will
-     * lazy-build. */
-    if (read meta.head_blkno != result.observed_head_blkno):
-        return
-
-    /* Step 2: bootstrap the cache on the chain's first-ever
-     * append.  Cheap to detect via result.bootstrapped.  Without
-     * this, every cache would need at least one query before
-     * existing, which masks write-side regressions. */
-    if (result.bootstrapped):
-        LWLockAcquire(cache.apply_lock, LW_EXCLUSIVE)
-        if (cache still empty):
-            initialize_empty_cache()
-            cursor.gen_head_blkno = result.observed_head_blkno
-            cursor.next_blkno    = result.record_blkno
-            cursor.next_off      = result.record_off
-            /* fall through to apply our own record */
-        LWLockRelease(cache.apply_lock)
-
-    /* Step 3: standard apply path.  If the cache is empty
-     * (string_hash_handle == DSHASH_HANDLE_INVALID) and we
-     * didn't just bootstrap, skip — no need to lazy-build on
-     * the write side. */
-    if (cache empty): return
-
-    /* Step 4: apply up to and including our record.  This may
-     * also catch up earlier records published by other backends
-     * that haven't been applied yet.  Idempotent: if catchup
-     * already raced ahead and applied our record, the walker
-     * sees nothing to do. */
-    apply_records_up_to(
-        target_next = {result.post_apply_next_blkno,
-                       result.post_apply_next_off})
-
-    /* Step 5: memory-cap check (cheap atomic read).  If we
-     * crossed the per-index soft cap by this insert, request a
-     * spill at xact end (don't spill mid-statement). */
-    if (estimated_bytes > per_index_soft_cap):
-        request_xact_end_spill(state)
-```
-
-Key safety properties:
-
-- **Spill cannot fire while the hook is running**. The hook runs
-  under per-index SHARED, which excludes the EXCL needed by
-  `tp_spill`. Generation mismatch in Step 1 only happens if a
-  concurrent writer raced us between our chain publish and our
-  generation read — a window so narrow it's almost theoretical,
-  but the explicit check costs one atomic load. The `cursor.
-  gen_head_blkno` check inside `apply_lock` is the
-  authoritative one.
-- **No double-apply with concurrent catchup readers**. Both go
-  through `apply_records_up_to` under `apply_lock` EXCL. The
-  cursor advances exactly once per record.
-- **No double-apply with cold lazy build**. Cold build acquires
-  `apply_lock` EXCL and walks head→tail; if a writer's hook
-  fires while build is in progress, it queues on `apply_lock`,
-  then when it runs finds the cursor already at or past its
-  record and applies nothing.
-- **Bootstrap is the only path that creates a cache from the
-  write side**. All other "no cache yet" appends defer cache
-  creation to the next query's lazy build.
+Catchup cost is bounded by `pg_textsearch.memtable_pages_
+threshold` (default 64) — once that many pages accumulate, an
+auto-spill fires and the cache is dropped + rebuilt fresh on the
+next query. In typical workloads the cache is caught up after
+the first query in a transaction, and all subsequent queries
+within that transaction pay only the O(query terms) posting-list
+lookup.
 
 ## Read path
 
@@ -497,19 +380,28 @@ query_term_count)` mirrors the chain source contract:
 tp_memtable_cache_source_create(state, rel, terms, nterms):
     Assert(holding per-index LWLock SHARED)
 
-    /* Step 1: catchup or build, under apply_lock EXCL.  Passing
-     * NULL means "apply to current logical tail". */
+    /* Step 1: catchup or build, under apply_lock EXCL. */
     for retry in [first, second]:
-        result = apply_records_up_to(target_next = NULL)
+        result = apply_to_tail()
         if result == OK:
             break
+        if result == BUDGET_EXCEEDED:
+            /* Cache won't fit; serve from chain_source instead.
+             * Cache is left in whatever caught-up-then-aborted
+             * state it was in; the next query will retry or
+             * eviction will reclaim it. */
+            return tp_memtable_chain_source_create(state, rel,
+                                                   terms, nterms)
         Assert(result == DROPPED)  /* spill detected */
         /* Step 1a: cold lazy build into the post-spill chain.
          * Done once; second DROPPED in a row is a bug or a
          * legitimate burst of spills, in which case we just
          * fall back to chain_source. */
         if first iteration:
-            cold_build(rel)
+            cold_build_result = cold_build(rel)
+            if cold_build_result == ABORT:
+                return tp_memtable_chain_source_create(state, rel,
+                                                       terms, nterms)
             continue
         return tp_memtable_chain_source_create(state, rel,
                                                terms, nterms)
@@ -560,12 +452,17 @@ cold_build(rel):
 
 Notes:
 
-- **Hot path = `apply_records_up_to` returning OK on the first
-  call with the walker finding 0 records**. In steady state
-  (writes have already applied themselves via the write hook),
-  the cache is caught up, `apply_lock` is briefly acquired,
-  walker finds nothing, lock released — single LWLock acquire +
-  release per query open. This is the fast path we're tuning for.
+- **Hot path = `apply_to_tail` returning OK on the first call
+  with the walker finding 0 records**. In steady state (no
+  writes since the last query), the cache is caught up,
+  `apply_lock` is briefly acquired, walker finds nothing, lock
+  released — single LWLock acquire + release per query open.
+  This is the fast path we're tuning for.
+- **First read after a write burst** pays the catchup walk:
+  `apply_to_tail` walks every chain record published since the
+  last catchup, decoding each and applying to the cache. Cost
+  is O(records since last catchup), bounded by the auto-spill
+  threshold.
 - **`get_postings(term)`** on the returned source does
   `tp_string_table_lookup` under dshash bucket lock, acquires
   `TpPostingList.lock` SHARED, copies entries into heap-
@@ -575,42 +472,54 @@ Notes:
   because the source's served `TpPostingData` references DSA
   pointers that drop would invalidate. Per-query LIMIT (default
   1000) bounds the lifetime.
-- **Cold-build ABORT path** is the read-side equivalent of the
-  per-index soft cap on the write side. A cache that won't fit
-  in budget isn't worth building; chain_source remains correct
-  if slower.
+- **Cold-build ABORT** and **catchup BUDGET_EXCEEDED** are
+  symmetric memory-cap behaviors: when the budget can't
+  accommodate the build, we serve via chain_source instead.
+  Eviction (see "Memory cap") may later reclaim the partially-
+  populated cache.
 
 ## Spill path
 
-Spill currently constructs a `chain_source` and feeds it into
-the segment writer. With the cache, spill can consume the cache
-directly when caught up:
+Spill becomes a **special case of catchup**: bring the cache up
+to the current chain tail, then write the segment from the
+cache. The v2 chain_source path remains as fallback when the
+cache can't be (re)built within budget.
 
 ```
 tp_spill(state, rel) {
     LWLockAcquire(per-index LWLock, LW_EXCLUSIVE);  /* existing */
 
     /* per-index EXCL excludes:
-     *   - all writer hooks (they hold per-index SHARED)
      *   - all read-path apply protocols (cold build, catchup)
      *   - the cache's TpDataSource lifetime locks
-     * No cache mutator can be running concurrently. */
+     * No cache mutator can be running concurrently.  (Writes
+     * don't touch the cache at all, so there's no writer-side
+     * exclusion to worry about.) */
 
     LWLockAcquire(cache.apply_lock, LW_EXCLUSIVE);
     LWLockAcquire(cache.lock,       LW_EXCLUSIVE);
 
-    if (cache exists AND cursor caught up to (tail_blkno, tail_count)):
+    /* Catch the cache up to the current chain tail.  If the
+     * cache doesn't exist yet, build it cold.  Either way, on
+     * return the cache reflects the entire chain. */
+    if (cache exists):
+        catchup_result = apply_to_tail_under_existing_excl_locks();
+    else:
+        catchup_result = cold_build_under_existing_excl_locks(rel);
+
+    if (catchup_result == OK):
         tp_write_segment_from_cache(state, &totals);
     else:
-        /* cache stale or absent — fall back to chain walk */
+        /* Budget exceeded or DROPPED somehow — fall back to the
+         * v2 chain-source spill path, which is the existing
+         * implementation. */
         src = tp_memtable_chain_source_create(state, rel, NULL, 0);
         tp_write_segment_from_source(src, &totals);
         tp_source_close(src);
 
     tp_spill_finalize(rel, new_segment_root,
                       totals.docs, totals.len);
-    /* spill_finalize zeroes meta.head_blkno/meta.tail_blkno
-     * and increments state->shared->spill_generation atomically. */
+    /* spill_finalize zeroes meta.head_blkno/meta.tail_blkno. */
 
     tp_cache_clear(state);   /* deallocates dshash tables,
                               * sets handles to DSHASH_HANDLE_
@@ -623,17 +532,13 @@ tp_spill(state, rel) {
 }
 ```
 
-The `cursor caught up` check is `cursor.gen_head_blkno ==
-meta.head_blkno && cursor.next_blkno == meta.tail_blkno &&
-cursor.next_off == current_tail_line_pointer_count`. If a
-partial catchup would be needed, we fall back to the chain
-walk rather than running catchup under per-index EXCL — it's
-the same I/O either way and chain_source is well-tested.
+The trailing prose about the "cursor caught up check" is now
+obsolete (always catch up first); replace with:
 
 After spill, `tp_cache_clear` deallocates the dshash tables.
-The next write hook bootstraps a new cache; or the next query
-lazy-builds. Both go through the apply protocol so neither
-double-applies.
+The next query lazy-builds. Because writes don't touch the
+cache, a spill that lands between two queries simply means the
+second query pays a cold-build instead of a catchup walk.
 
 ## Standby / replication
 
@@ -641,37 +546,35 @@ WAL replay does not load `pg_textsearch.so`, so no extension code
 runs. The cache cannot be maintained from replay. Behaviors:
 
 - **Read on standby**: `RecoveryInProgress() == true`, but the
-  read hook does not care — it builds from whatever the chain
-  says. Lazy build works identically to the primary. Each
-  read-path apply checks `cursor.gen_head_blkno == meta.
-  head_blkno`; if replay applied a spill record, the check
-  fails and the cache is dropped + rebuilt.
+  read path doesn't care — it lazy-builds from whatever the
+  chain says. Each apply checks `cursor.gen_head_blkno ==
+  meta.head_blkno`; if replay applied a spill record between
+  two reads, the second read sees DROPPED and cold-builds
+  against the post-spill chain.
 
 - **Spill replay on standby**: replay zeros `meta.head_blkno` /
   `meta.tail_blkno`. The next query observes the generation
   mismatch and drops + rebuilds. No code runs on the standby
-  during replay, so no cache mutation happens between the
+  during replay, so no cache mutation can happen between the
   metapage change and the next query.
 
 - **Promotion**: the standby's last-built cache reflects the
-  chain it was built from. Two cases:
+  chain it was built from. The first query post-promotion does
+  one of:
+  - No new chain records → walker finds nothing, serves
+    immediately.
+  - Generation mismatch (a spill happened) → DROPPED + cold
+    rebuild.
+  - New records published during the gap → catchup walks them
+    just like steady-state primary catchup.
 
-  1. **No write activity between promotion and the first read**:
-     reads keep using the cache. The apply protocol's
-     `cursor.gen_head_blkno == meta.head_blkno` check holds (no
-     spill happened) and there's nothing new on the chain.
-  2. **A primary-style write fires first**: the write hook calls
-     `apply_records_up_to(result.post_apply_next_*)`. This
-     **catches the cache up across any records that the
-     standby's chain accumulated between cache-build and
-     promotion** (e.g., records replicated during the gap)
-     before applying its own record. The hook is the same path
-     a steady-state primary write takes; it is correct by
-     construction.
+  The first **write** post-promotion writes to the chain (its
+  normal path) without touching the cache. The first read
+  after that handles whatever cache state results, via the
+  same protocol it uses on the steady-state primary.
 
 No new cross-recovery invariants beyond the `cursor.
-gen_head_blkno` check are required. The cursor IS the standby-
-promotion safety net.
+gen_head_blkno` check are required.
 
 ## Memory cap (3 tiers)
 
@@ -680,23 +583,23 @@ all per-index caches in this backend's shared memory view.
 Three thresholds:
 
 1. **Per-index soft cap = `memory_limit / 8`**. Enforced on
-   **every** allocation path:
-   - **Write hook**: after apply, if `estimated_bytes` crossed
-     the cap, request an xact-end spill via
-     `request_xact_end_spill(state)` (the existing v2
-     auto-spill mechanism on terms-added or pages-added
-     threshold). Don't spill mid-statement.
+   **every** allocation path (which is now only the read
+   side):
    - **Cold lazy build**: check on every record-apply. If the
      **next** apply would exceed the cap, **abort the partial
      build**: free in-flight dshash entries, reset handles to
      `DSHASH_HANDLE_INVALID`, release locks, return ABORT to
      caller. Caller falls back to `chain_source`.
-   - **Reader catchup**: same check on every record. On
-     exceed, abort catchup (cache stays valid through the
-     last successfully applied record, but cursor doesn't
-     advance) and the read source falls back to chain_source
-     for the remaining gap. (Cache + chain_source compound is
-     not implemented in this PR — see open question.)
+   - **Reader catchup**: same check on every record. On exceed,
+     return BUDGET_EXCEEDED to the caller, which serves via
+     `chain_source` for this query. The cache is left in the
+     state it was in (caught up through the last successful
+     apply); subsequent queries will either succeed (if more
+     budget is available) or also fall back to chain_source.
+     Eviction will eventually reclaim it.
+   - **Spill catchup**: same as cold build / reader catchup.
+     On exceed, spill falls back to the v2 chain_source spill
+     path.
 
 2. **Global soft cap = `memory_limit / 2`**. When the sum of
    all per-index caches' `estimated_bytes` crosses this, the
@@ -726,19 +629,18 @@ Three thresholds:
 
    The **target per-index LWLock must be acquired BEFORE
    cache.apply_lock and cache.lock** to maintain the global
-   lock order. This means eviction waits on any active writer
-   or reader of the target index. That's correct: we can't
-   yank the dshash tables out from under a concurrent
-   `apply_records_up_to` even though it holds only apply_lock
-   EXCL — the chain page buffer lock and posting list locks it
-   transitively holds need a clean shutdown.
+   lock order. Eviction waits on any active reader of the
+   target index. That's correct: we can't yank the dshash
+   tables out from under a concurrent `apply_to_tail` even
+   though it holds only apply_lock EXCL — the chain page
+   buffer lock and posting list locks it transitively holds
+   need a clean shutdown.
 
 3. **Global hard cap = `memory_limit`**. Reached only if soft
-   cap eviction failed to make room (rare race). The triggering
-   write **ERRORs** with `out_of_shared_memory` rather than
-   silently exceeding the cap. The write to the on-disk chain
-   has already succeeded by this point (this is the cache
-   hook); the only effect is leaving the cache partially behind.
+   cap eviction failed to make room (rare race). The
+   triggering read **falls back to chain_source** rather than
+   silently exceeding the cap. (There is no analogous write-
+   side error path because writes don't touch the cache.)
 
 On standby (`RecoveryInProgress`), spilling is replay-driven so
 only eviction is used. The chain source becomes the fallback for
@@ -753,10 +655,11 @@ Counters used:
   sum across all per-index caches in shared memory. Cheap to
   read at check time.
 
-The global-cap check runs on every Nth write (amortized via
-`local_state->docs_since_global_check`, same pattern v1 used)
-and on every cold-build / catchup apply. Reads of an already-
-caught-up cache pay only the per-index estimated_bytes touch.
+The global-cap check runs at apply-protocol entry (covers cold
+build, reader catchup, spill catchup) and on every Nth record
+during a long catchup. Reads of an already-caught-up cache pay
+only the per-index `estimated_bytes` touch in the apply protocol
+header.
 
 ## Code layout
 
@@ -764,18 +667,18 @@ caught-up cache pay only the per-index estimated_bytes touch.
 src/memtable/
     arena.{c,h}             unchanged
     expull.{c,h}            unchanged
-    chain_source.{c,h}      unchanged interface; tp_spill consumes
-                            cache when present, else chain_source
-    log.{c,h}               tp_add_document_terms gains the
-                            cache-update hook (one new call)
+    chain_source.{c,h}      unchanged interface; spill falls back
+                            here when cache catchup exceeds budget
+    log.{c,h}               UNCHANGED — no cache hook in the
+                            write path
     page.{c,h}              unchanged
     scan.{c,h}              unchanged
     memtable.{c,h}          restored from 62308b82; thin stub
     posting.{c,h}           restored from 62308b82
     posting_entry.h         restored from 62308b82
     stringtable.{c,h}       restored from 62308b82
-    cache.{c,h}             NEW — watermark, build, sync, evict,
-                            spill-helper, and the
+    cache.{c,h}             NEW — cursor, apply protocol, cold
+                            build, eviction, spill-helper, and the
                             tp_memtable_cache_source_create
                             TpDataSource implementation
                             (subsumes old source.{c,h})
@@ -799,7 +702,8 @@ format change.
 
 ## Testing
 
-Test scaffolding already landed in #391:
+### Correctness (via existing scaffolding from #391)
+
 - `validate_bm25_scoring` runs the index-scan top-k twice for
   LIMIT 10 and LIMIT 100, compares both runs to SQL-computed
   ground truth and to each other (covers 13 BM25 tests).
@@ -810,7 +714,7 @@ Once the cache lands, both helpers exercise the cold/lazy-build
 path (first run) and warm-cache path (second run) against
 ground truth — automatically, with no test-file changes.
 
-Additional tests this PR adds:
+Additional correctness tests this PR adds:
 
 1. **`test/sql/cache_spill.sql`**: explicit spill-boundary
    coverage. Writes a controlled batch, lets the cache build,
@@ -823,15 +727,68 @@ Additional tests this PR adds:
    builds from replicated chain, scoring matches across both.
    Spill replay on replica invalidates and rebuilds.
 
-3. **`benchmarks/sql/memtable_resident.sql` +
-   `run_memtable_resident.sh`**: warm-cache perf goal. Emits
-   `METRIC memtable_resident_p50_ms <ms>`. CI threshold TBD
-   from baseline run.
+3. **`test/sql/cache_memory_cap.sql`**: explicit memory-cap
+   coverage. Configures a small `pg_textsearch.memory_limit`,
+   triggers per-index soft cap (cold-build ABORT path),
+   triggers global soft cap (eviction of largest), verifies
+   chain_source fallback returns correct scores.
 
 CI: existing `make installcheck` covers correctness via the
-helpers above. The benchmark wiring is added to `benchmark.yml`
-with a soft-fail threshold initially, hardened once we have a
-stable baseline.
+helpers above; the three new test files plug into the same
+runner.
+
+### A/B benchmarking (via existing workflows)
+
+Reviewer-requested: benchmarking is part of testing, and we
+reuse the existing GitHub Actions workflows rather than building
+a parallel harness. Two workflows already exist:
+
+- `.github/workflows/benchmark.yml` — daily ranking-quality
+  benchmarks against Cranfield / MS MARCO / Wikipedia.
+- `.github/workflows/benchmark-concurrent-insert.yml` — daily
+  concurrent-INSERT throughput against MS MARCO.
+
+Both are extended with a matrix dimension over
+`pg_textsearch.memtable_cache_enabled`:
+
+```yaml
+strategy:
+  matrix:
+    memtable_cache: [off, on]
+```
+
+Each matrix leg runs the **same workload** through the same
+runner script, exports the same metrics, and tags them with the
+cache state (e.g., `bench_msmarco_query_p50_ms{cache=off}` vs
+`bench_msmarco_query_p50_ms{cache=on}`). The existing metrics
+publisher in `benchmarks/runner/run_benchmark.sh` already emits
+`METRIC <name> <value>` lines; we add a `_cache_on` / `_cache_
+off` suffix or a labels parameter.
+
+A/B targets:
+
+| Workload | Metric of interest | Expected effect |
+|----------|--------------------|------------------|
+| MS MARCO concurrent INSERT | inserts/sec at each concurrency | **No regression** with cache on — writes don't touch the cache, so the only delta is the once-per-spill-cycle cache-clear cost |
+| MS MARCO mixed read/write | query p50/p95 latency | **Improvement** with cache on — the goal of this PR |
+| Cranfield ranking quality | NDCG@10, MAP | **No change** — scoring is identical, cache only changes how posting lists are sourced |
+| Wikipedia query throughput | queries/sec at each concurrency | **Improvement** with cache on; concurrent queries benefit from a shared cache |
+
+Soft-fail thresholds initially (publish numbers, no CI gating).
+After two weeks of nightly runs we'll have baselines; then
+harden the gate as "cache=on must not regress more than X%
+against cache=off on the INSERT workload, and must improve by
+at least Y% on the query workload".
+
+CI matrix overhead: both workflows already take 1-2h per run;
+the matrix doubles that. Acceptable for nightly runs. The
+manual `workflow_dispatch` interface gets a `cache_only` input
+so developers can run just one leg during iteration.
+
+The same A/B approach applies to local benchmarking via
+`benchmarks/sql/memtable_resident.sql` (new): a SQL script that
+runs a fixed mixed workload with the cache toggled on and off
+and prints both numbers side by side.
 
 ## What's out of scope (this PR)
 
@@ -863,35 +820,22 @@ stable baseline.
    cost in `get_postings` per query term. Defer to a follow-up;
    not required for the perf-recovery goal.
 
-2. **Watermark seq as authoritative vs debug-only**: the
-   current design uses `(cursor.gen_head_blkno,
-   cursor.next_blkno, cursor.next_off)` as the authoritative
-   "where are we" tuple and `cursor.seq` as a lock-free
-   monotonic counter for "did anything change" cheap checks +
-   debug asserts. Could promote seq to authoritative (use it
-   as the apply-order index, with a side table mapping seq →
-   (blk, off)). The tuple-based approach is simpler and avoids
-   the side table; revisit only if profiling shows the cursor
-   check costs us under contention.
-
-3. **Where the request_xact_end_spill check fires**: the v2
-   auto-spill already runs from
-   `pg_textsearch.memtable_pages_threshold` and
-   `pg_textsearch.bulk_load_threshold`. The cache adds a third
-   trigger (per-index soft cap on estimated_bytes). Whether
-   these should all share a single "request spill" mechanism
-   or remain three independent checks is a code-org question;
-   default to extending the v2 mechanism with a new reason
-   field.
+2. **Cursor seq as authoritative vs debug-only**: the current
+   design uses `(cursor.gen_head_blkno, cursor.next_blkno,
+   cursor.next_off)` as the authoritative "where are we" tuple
+   and `cursor.seq` as a lock-free monotonic counter for "did
+   anything change" cheap checks + debug asserts. Could promote
+   seq to authoritative (use it as the apply-order index, with
+   a side table mapping seq → (blk, off)). The tuple-based
+   approach is simpler and avoids the side table; revisit only
+   if profiling shows the cursor check costs us under
+   contention.
 
 ## Phases
 
 Implementation order (each independently reviewable; each leaves
 `make installcheck` green via the helpers from #391):
 
-0. **`tp_memtable_append` API change**. Introduce
-   `TpMemtableAppendResult`; update all callers. No cache code
-   yet. Smallest possible diff.
 1. **Resurrect v1 in-memory pieces**.
    `memtable/{memtable,posting,stringtable}.{c,h}` +
    `posting_entry.h` from `62308b82`. Wire into Makefile.
@@ -900,24 +844,23 @@ Implementation order (each independently reviewable; each leaves
    cursor fields, `estimated_bytes` to `TpMemtable`. Update
    `state.c` init/teardown. Add `tp_cache_clear`. No mutation
    paths yet.
-3. **Apply protocol**. Implement `apply_records_up_to` in
-   `cache.{c,h}` — the single shared helper used by all three
-   apply paths. Factor the chain walker out of `chain_source.c`
-   for reuse. Unit tests covering the protocol against synthetic
-   cursors.
+3. **Apply protocol**. Implement `apply_to_tail` and the
+   `cold_build` helper in `cache.{c,h}` — the single shared
+   helper used by both read-side apply paths. Factor the chain
+   walker out of `chain_source.c` for reuse. Unit tests against
+   synthetic cursors.
 4. **Read path**. Implement `tp_memtable_cache_source_create`
-   with cold lazy build via `apply_records_up_to(meta.tail)`.
-   Wire scoring to prefer the cache source when
-   `tp_memtable_cache_enabled` is on. At this point queries on
-   warm cache hit the apply protocol; new writes are still
-   chain-only and the cache is dropped + rebuilt across every
-   write batch.
-5. **Write hook + bootstrap**. Add `tp_cache_apply_local_append`
-   to `tp_add_document_terms`. Cache stays caught up across
-   writes; readers stop seeing the drop/rebuild path.
-6. **Spill consumption from cache**. `tp_write_segment_from_
-   cache` when caught up; chain fallback otherwise. `tp_spill_
-   finalize` clears the cache.
-7. **3-tier memory cap**. Per-index soft, global soft (eviction
-   with canonical lock order), global hard. Wire benchmark.
-   Decide threshold from baseline run. Ship.
+   with cold lazy build + catchup. Wire scoring to prefer the
+   cache source when `tp_memtable_cache_enabled` is on. Both
+   helpers from #391 (`validate_bm25_scoring`, `validate_index_
+   vs_standalone`) start exercising cold + warm via the cache.
+5. **Spill consumption from cache**. `tp_write_segment_from_
+   cache` after catchup; chain_source fallback when budget
+   exceeded. `tp_spill_finalize` clears the cache.
+6. **3-tier memory cap**. Per-index soft, global soft (eviction
+   with canonical lock order), global hard. Add
+   `cache_memory_cap.sql` test.
+7. **Benchmark wiring**. Extend `benchmark.yml` and
+   `benchmark-concurrent-insert.yml` with the
+   `memtable_cache: [off, on]` matrix dimension. Run nightly
+   for two weeks to set baselines. Decide soft-fail thresholds.
