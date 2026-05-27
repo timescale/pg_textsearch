@@ -56,40 +56,59 @@ The cache is the v1 memtable. The chain is the v2 memtable. The
 only conceptual addition is the apply cursor + the read-side
 catchup protocol that keeps the cache in sync with the chain.
 
-### Spill already pays the build cost
+### Lazy vs eager updates
 
-A separate reason the lazy/read-mutates design is right: the
-spill path **already** builds an in-memory inverted index every
-time it runs, even in the no-cache world. Today's
-`chain_source.c` (lines 76-77, 858-868, 1007-1085) walks the
-chain at source-create time and populates two backend-local
-HTABs (`term_ht: char* → ChainTermEntry`, `doclen_ht:
-ItemPointerData → ChainDocLenEntry`); `tp_do_spill`
-(`src/access/build.c:163-185`) then calls
-`tp_memtable_chain_source_extract` which walks those HTABs to
-feed the segment writer. The HTABs are thrown away when the
-source closes.
+Writers in this design do not touch the cache; only readers and
+spill mutate it. This is a real trade-off, not a free lunch, so
+it's worth stating precisely:
 
-So the cache is not adding a new "build inverted index" step —
-it's repurposing one that the chain source already performs on
-every query and every spill, and moving the result from per-
-backend ephemeral storage to shared DSA. Concretely:
+- **Total work is the same either way.** Over a chain
+  generation producing N records, either eager or lazy
+  ultimately performs N record-applies plus the structural
+  cost of one inverted index. Lazy splits that into a
+  cold-build (or incremental catchups) plus the spill catchup;
+  eager spreads it across N write transactions. The
+  arithmetic balances.
 
-- **Before**: each query opens a chain source → builds local
-  HTABs → throws them away. Each spill opens a chain source →
-  builds local HTABs → feeds the segment writer → throws them
-  away. Exactly one build per (backend, operation).
-- **After**: each query catches the shared cache up to tail →
-  serves. Each spill catches the shared cache up → writes
-  segment directly from it. Exactly one build per (chain
-  generation, anyone). Subsequent operations against the same
-  chain generation reuse the build.
+- **Lazy preserves writer throughput.** v1 had ONE structure,
+  so writers updating the in-memory inverted index WAS the
+  memtable write. v2 has two structures: the WAL-logged chain
+  (source of truth) and the cache (derived). Eager means each
+  writer does `chain_append + cache_apply`, ~2x v1's per-write
+  cost. Lazy keeps writers at `chain_append`, ~v1's per-write
+  cost. For a write-dominated workload this is the largest
+  practical difference.
 
-This also reinforces "lazy ≥ eager": the build cost is paid
-by **whichever of (first query, spill) comes first**, then
-amortized across all subsequent operations in that chain
-generation. Eager updates would shift work onto every write
-regardless of whether a query or spill ever follows.
+- **Lazy preserves the v2 lock contract.** Writers currently
+  hold per-index LWLock SHARED and never touch any DSA dshash.
+  Adding eager cache mutation either (a) widens that contract
+  to include cache-side locks (creating writer/writer cache
+  contention on a previously concurrent path) or (b) splits
+  apply into "writer-eager when cache exists, reader-lazy
+  otherwise" (just lazy with extra branches). Both undo the
+  "writers don't touch the cache" simplification on which the
+  whole apply protocol rests.
+
+- **Bulk-load + spill before any query.** Lazy pays the build
+  cost exactly once at spill, via the same chain_source HTAB
+  path we already use. Eager pays it distributed across N
+  writes — same total, but writer throughput drops while no
+  query benefits from the pre-warming.
+
+- **Eager wins on first-query latency** for low-read workloads.
+  A query that lands after a long write burst pays a catchup
+  walk bounded by `memtable_pages_threshold` (default 64 pages
+  ≈ a few ms). Eager would have pre-paid this. So for query-
+  latency-sensitive workloads with infrequent queries, eager
+  has a measurable advantage.
+
+This PR picks lazy: write paths kept at v2 cost, smaller
+apply-protocol surface area, and the spill path consolidates
+its already-existing HTAB build into the shared cache. The
+phase-7 benchmark phase tests whether the bounded first-query
+catchup cost is in fact tolerable. Promoting select hot terms
+to eager update later is a refinement we can layer in without
+restructuring the cache.
 
 ## What we resurrect
 
@@ -206,40 +225,24 @@ time. Per-cache contribution to the corpus is not separately
 tracked — the cache reflects the chain, which has already
 been counted into `shared`.
 
-**Spill detection** must defend against a subtle ABA hole:
-spill zeroes `meta.head_blkno`, but the freed chain pages are
-**not** returned to the FSM (`tp_spill_finalize` in
-`src/memtable/log.c:647-698` only updates the metapage and
-counters). They become orphans in the index file. Normal inserts
-extend the relation via `ExtendBufferedRel` and never reuse
-orphan blocks, so naively comparing `cursor.gen_head_blkno`
-against `meta.head_blkno` would be safe in steady state.
-
-The hole is `bm25_force_merge` → `tp_truncate_dead_pages`
-(`src/access/build.c:336-429`), which calls
-`RelationTruncate(index, max_used)`. If a spill landed before
-the force-merge and the orphan chain head was above `max_used`,
-truncation drops it; the next insert's `ExtendBufferedRel`
-then lands at the same physical block number. A
-`(cursor.gen_head_blkno == meta.head_blkno)` check would pass
-spuriously, and the cache would apply a stale cursor against
-fresh data.
-
-The defense is the already-allocated
-`TpSharedIndexState.spill_generation` atomic. Originally added
-in #374 and currently unused, it's repurposed as the cache's
-generation token: bumped under per-index EXCL inside
-`tp_spill_finalize`, captured into `cursor.gen_spill_count` at
-cold-build time, compared on every apply. This is monotonic
-within a single backend lifetime (it sits in DSA shared memory
-and is wiped on restart along with the cache itself, so
-cross-restart monotonicity is not needed).
-
-Because `spill_generation` lives in DSA and is bumped under
-per-index EXCL, an applier holding per-index SHARED (or
-stronger) sees a consistent value relative to spill — same
-exclusion argument as the original `meta.head_blkno`-based
-check, just without the ABA hole.
+**Spill detection.** The cache generation token is
+`cursor.gen_spill_count`, captured at cold-build time from
+`TpSharedIndexState.spill_generation` (a pre-existing atomic
+added in #374, otherwise unused since the v2 chain landed).
+`tp_spill_finalize` bumps `spill_generation` under per-index
+EXCL before clearing the metapage, so any apply path acquiring
+per-index SHARED after a spill observes the mismatch and drops
++ rebuilds. We use this counter rather than `meta.head_blkno`
+because `meta.head_blkno` admits an ABA: spill does **not** FSM-
+free the orphaned chain pages (`tp_spill_finalize` in
+`src/memtable/log.c:647-698` only updates the metapage), but
+`bm25_force_merge` → `tp_truncate_dead_pages`
+(`src/access/build.c:336-429`) calls `RelationTruncate` past
+the orphan head, after which a fresh `ExtendBufferedRel` can
+land at the same physical block number — a head-blkno check
+would pass spuriously. `spill_generation` is monotonic within
+a backend lifetime, which is sufficient since the cache also
+does not survive restart.
 
 ## Lock order
 
