@@ -82,8 +82,19 @@ DECLARE
     v_total_docs integer;
     v_avg_doc_length float8;
     v_all_match boolean;
+    v_idx_match_10 boolean;
+    v_idx_match_100 boolean;
     v_sql text;
+    v_idx_sql text;
+    v_saved_log_scores text;
 BEGIN
+    -- Suppress per-row BM25 NOTICEs from this helper's internal index
+    -- queries so output stays stable regardless of caller's log_scores
+    -- setting, and so the cold+warm doubled execution does not duplicate
+    -- NOTICE lines.
+    v_saved_log_scores := current_setting('pg_textsearch.log_scores', true);
+    PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+
     -- Step 1: Tokenize documents with proper term frequency counting
     EXECUTE format($sql$
         CREATE TEMP TABLE temp_docs ON COMMIT DROP AS
@@ -162,7 +173,8 @@ BEGIN
     $sql$, p_text_column, p_query, p_index_name, p_table_name, p_text_column);
     EXECUTE v_sql;
 
-    -- Step 7: Compute BM25 scores and compare to 4 decimal places
+    -- Step 7: Materialize SQL ground-truth scores and compare to standalone
+    CREATE TEMP TABLE temp_sql_scores ON COMMIT DROP AS
     WITH sql_scores AS (
         SELECT
             d.doc_id,
@@ -180,12 +192,84 @@ BEGIN
         LEFT JOIN temp_df df ON df.term = q.term
         GROUP BY d.doc_id, d.content
     )
+    SELECT doc_id, content, bm25_score FROM sql_scores;
+
     SELECT bool_and(
         -- Compare to 4 decimal places
         ROUND(s.bm25_score::numeric, 4) = ROUND((-t.score)::numeric, 4)
     ) INTO v_all_match
-    FROM sql_scores s
+    FROM temp_sql_scores s
     JOIN temp_tapir_scores t ON s.doc_id = t.doc_id;
+
+    -- Step 8: Exercise the index-scan path (top-k ORDER BY + LIMIT) twice
+    -- for each of two cap sizes. With memtable_cache_enabled=on, the first
+    -- run exercises the cold/lazy-build path and the second the warm cache;
+    -- both runs must match the SQL ground-truth scores from Step 7.  With
+    -- the cache disabled the two runs are trivially identical so existing
+    -- behavior is unchanged.
+    v_idx_sql := format($sql$
+        SELECT
+            %I as content,
+            (%I <@> to_bm25query(%L, %L))::float8 as score
+        FROM %I
+        WHERE %I IS NOT NULL
+        ORDER BY %I <@> to_bm25query(%L, %L)
+        LIMIT %s
+    $sql$, p_text_column, p_text_column, p_query, p_index_name,
+          p_table_name, p_text_column,
+          p_text_column, p_query, p_index_name, 10);
+
+    EXECUTE format(
+        'CREATE TEMP TABLE temp_idx_cold_10 ON COMMIT DROP AS %s', v_idx_sql);
+    EXECUTE format(
+        'CREATE TEMP TABLE temp_idx_warm_10 ON COMMIT DROP AS %s', v_idx_sql);
+
+    SELECT bool_and(
+        -- Both runs must match each other AND the ground-truth score for
+        -- the same content.
+        ROUND(c.score::numeric, 4) = ROUND(w.score::numeric, 4)
+        AND EXISTS (
+            SELECT 1 FROM temp_sql_scores s
+            WHERE s.content = c.content
+              AND ROUND(s.bm25_score::numeric, 4)
+                  = ROUND((-c.score)::numeric, 4)
+        )
+    ) INTO v_idx_match_10
+    FROM (SELECT row_number() OVER () AS rn, content, score
+          FROM temp_idx_cold_10) c
+    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+                     FROM temp_idx_warm_10) w USING (rn);
+
+    v_idx_sql := format($sql$
+        SELECT
+            %I as content,
+            (%I <@> to_bm25query(%L, %L))::float8 as score
+        FROM %I
+        WHERE %I IS NOT NULL
+        ORDER BY %I <@> to_bm25query(%L, %L)
+        LIMIT %s
+    $sql$, p_text_column, p_text_column, p_query, p_index_name,
+          p_table_name, p_text_column,
+          p_text_column, p_query, p_index_name, 100);
+
+    EXECUTE format(
+        'CREATE TEMP TABLE temp_idx_cold_100 ON COMMIT DROP AS %s', v_idx_sql);
+    EXECUTE format(
+        'CREATE TEMP TABLE temp_idx_warm_100 ON COMMIT DROP AS %s', v_idx_sql);
+
+    SELECT bool_and(
+        ROUND(c.score::numeric, 4) = ROUND(w.score::numeric, 4)
+        AND EXISTS (
+            SELECT 1 FROM temp_sql_scores s
+            WHERE s.content = c.content
+              AND ROUND(s.bm25_score::numeric, 4)
+                  = ROUND((-c.score)::numeric, 4)
+        )
+    ) INTO v_idx_match_100
+    FROM (SELECT row_number() OVER () AS rn, content, score
+          FROM temp_idx_cold_100) c
+    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+                     FROM temp_idx_warm_100) w USING (rn);
 
     -- Clean up
     DROP TABLE IF EXISTS temp_docs;
@@ -193,8 +277,19 @@ BEGIN
     DROP TABLE IF EXISTS temp_df;
     DROP TABLE IF EXISTS temp_query;
     DROP TABLE IF EXISTS temp_tapir_scores;
+    DROP TABLE IF EXISTS temp_sql_scores;
+    DROP TABLE IF EXISTS temp_idx_cold_10;
+    DROP TABLE IF EXISTS temp_idx_warm_10;
+    DROP TABLE IF EXISTS temp_idx_cold_100;
+    DROP TABLE IF EXISTS temp_idx_warm_100;
 
-    RETURN COALESCE(v_all_match, false);
+    -- Restore caller's log_scores setting
+    PERFORM set_config('pg_textsearch.log_scores',
+                      COALESCE(v_saved_log_scores, 'off'), true);
+
+    RETURN COALESCE(v_all_match, false)
+        AND COALESCE(v_idx_match_10, true)
+        AND COALESCE(v_idx_match_100, true);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -336,8 +431,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Validate that index scan and standalone scoring produce identical results
--- Index scan is triggered by ORDER BY score LIMIT; standalone runs on all rows
+-- Validate that index scan and standalone scoring produce identical results.
+-- Index scan is triggered by ORDER BY score LIMIT; standalone runs on all
+-- rows.  The index query is executed TWICE so that, when the memtable cache
+-- is enabled, the first run exercises the cold/lazy-build path and the
+-- second run exercises the warm path; both runs must agree with standalone
+-- scoring and with each other.
 CREATE OR REPLACE FUNCTION validate_index_vs_standalone(
     p_table_name text,
     p_text_column text,
@@ -346,12 +445,21 @@ CREATE OR REPLACE FUNCTION validate_index_vs_standalone(
     p_limit integer DEFAULT 100
 ) RETURNS boolean AS $$
 DECLARE
-    v_all_match boolean;
+    v_cold_match boolean;
+    v_warm_match boolean;
+    v_cold_eq_warm boolean;
+    v_idx_sql text;
     v_sql text;
+    v_saved_log_scores text;
 BEGIN
-    -- Get scores via index scan mode (ORDER BY score triggers index use)
-    v_sql := format($sql$
-        CREATE TEMP TABLE idx_scan_scores ON COMMIT DROP AS
+    -- Suppress per-row BM25 NOTICEs from the helper's internal queries so
+    -- output stays stable whether the caller has set log_scores or not, and
+    -- so the cold+warm doubled execution does not duplicate NOTICE lines.
+    v_saved_log_scores := current_setting('pg_textsearch.log_scores', true);
+    PERFORM set_config('pg_textsearch.log_scores', 'off', true);
+
+    -- Index scan query reused for cold and warm runs
+    v_idx_sql := format($sql$
         SELECT
             %I as content,
             (%I <@> to_bm25query(%L, %L))::float8 as score
@@ -362,7 +470,16 @@ BEGIN
     $sql$, p_text_column, p_text_column, p_query, p_index_name,
           p_table_name, p_text_column,
           p_text_column, p_query, p_index_name, p_limit);
-    EXECUTE v_sql;
+
+    -- Cold run (first touch of the index after any prior state)
+    EXECUTE format(
+        'CREATE TEMP TABLE idx_scan_scores_cold ON COMMIT DROP AS %s',
+        v_idx_sql);
+
+    -- Warm run (re-execute identical query; exercises warm cache when enabled)
+    EXECUTE format(
+        'CREATE TEMP TABLE idx_scan_scores_warm ON COMMIT DROP AS %s',
+        v_idx_sql);
 
     -- Get scores via standalone scoring mode (no ORDER BY score)
     v_sql := format($sql$
@@ -378,21 +495,48 @@ BEGIN
           p_text_column, p_query, p_index_name);
     EXECUTE v_sql;
 
-    -- Verify all index scan results exist in standalone with matching scores
+    -- Verify cold run matches standalone
     SELECT bool_and(
         EXISTS (
             SELECT 1 FROM standalone_scores s
             WHERE s.content = i.content
               AND ROUND(s.score::numeric, 6) = ROUND(i.score::numeric, 6)
         )
-    ) INTO v_all_match
-    FROM idx_scan_scores i;
+    ) INTO v_cold_match
+    FROM idx_scan_scores_cold i;
+
+    -- Verify warm run matches standalone
+    SELECT bool_and(
+        EXISTS (
+            SELECT 1 FROM standalone_scores s
+            WHERE s.content = i.content
+              AND ROUND(s.score::numeric, 6) = ROUND(i.score::numeric, 6)
+        )
+    ) INTO v_warm_match
+    FROM idx_scan_scores_warm i;
+
+    -- Verify cold and warm produce identical ranked results
+    SELECT bool_and(
+        c.content IS NOT DISTINCT FROM w.content
+        AND ROUND(c.score::numeric, 6) = ROUND(w.score::numeric, 6)
+    ) INTO v_cold_eq_warm
+    FROM (SELECT row_number() OVER () AS rn, content, score
+          FROM idx_scan_scores_cold) c
+    FULL OUTER JOIN (SELECT row_number() OVER () AS rn, content, score
+                     FROM idx_scan_scores_warm) w USING (rn);
 
     -- Cleanup
-    DROP TABLE IF EXISTS idx_scan_scores;
+    DROP TABLE IF EXISTS idx_scan_scores_cold;
+    DROP TABLE IF EXISTS idx_scan_scores_warm;
     DROP TABLE IF EXISTS standalone_scores;
 
-    RETURN COALESCE(v_all_match, true);
+    -- Restore caller's log_scores setting
+    PERFORM set_config('pg_textsearch.log_scores',
+                      COALESCE(v_saved_log_scores, 'off'), true);
+
+    RETURN COALESCE(v_cold_match, true)
+        AND COALESCE(v_warm_match, true)
+        AND COALESCE(v_cold_eq_warm, true);
 END;
 $$ LANGUAGE plpgsql;
 
