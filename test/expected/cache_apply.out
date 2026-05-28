@@ -90,11 +90,13 @@ SELECT result, records_applied
 (1 row)
 
 -- ---------- spill invalidates the cache ----------
--- Bump the spill generation directly to simulate what
--- tp_spill_finalize() will do once it lands in phase 6.  The
--- cache stale-detection path doesn't depend on the spill
--- machinery, only on the generation counter, so this isolates
--- the DROPPED branch.
+-- Bump the spill generation directly to exercise the DROPPED
+-- defensive branch in tp_cache_apply_to_tail.  Real spill paths
+-- (tp_spill_finalize) bump the generation AND immediately drop
+-- the cache's dshash tables via tp_cache_clear, so the next
+-- apply_to_tail lands on NOT_INITIALIZED instead of DROPPED.
+-- The helper isolates the stale-cursor-without-cleared-tables
+-- case so the safety net stays exercised.
 SELECT (bm25_cache_bump_spill_generation('cache_apply_idx') > 0)
         AS gen_advanced;
  gen_advanced 

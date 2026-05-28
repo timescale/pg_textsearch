@@ -71,12 +71,13 @@ bool tp_compress_segments = true;
 /*
  * Memtable shared-memory cache enable flag.  Gates the read-path
  * chooser (tp_memtable_source_create_for_read) on the cache vs
- * the on-disk chain.  Defaults to off in this build; flipping to
- * on opt-in lands first, then the default-on flip lands once
- * spill catchup (phase 6) closes the staleness window after a
- * spill.
+ * the on-disk chain.  Defaults to on: phase 5 wired
+ * tp_spill_finalize to bump the per-index spill_generation and
+ * call tp_cache_clear, closing the cross-spill staleness window
+ * that previously forced opt-in.  Standbys still bypass the
+ * cache via RecoveryInProgress() in the chooser.
  */
-bool tp_memtable_cache_enabled = false;
+bool tp_memtable_cache_enabled = true;
 
 /*
  * Debug GUC for the in-memory memtable cache.  When enabled the
@@ -284,11 +285,14 @@ _PG_init(void)
 			"When enabled, queries are served from a derived "
 			"shared-memory cache rather than walking the on-disk "
 			"memtable chain.  The chain remains the source of "
-			"truth.  Default is off; set on to opt in.  Spill "
-			"catchup is wired up in a later phase, so flipping on "
-			"may return stale results across a spill until then.",
+			"truth.  Default is on: queries against the chain are "
+			"served by a derived cache so per-term posting lookups "
+			"don't pay the O(records) chain walk.  Disable to "
+			"force every query through the on-disk chain.  "
+			"Standbys always use the chain regardless of this "
+			"setting (RecoveryInProgress disables the cache).",
 			&tp_memtable_cache_enabled,
-			false,
+			true,
 			PGC_USERSET,
 			0,
 			NULL,

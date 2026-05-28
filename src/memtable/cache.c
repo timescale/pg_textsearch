@@ -749,12 +749,16 @@ bm25_cache_apply_to_tail(PG_FUNCTION_ARGS)
 /*
  * bm25_cache_bump_spill_generation(index_name) -> bigint
  *
- * Test-only knob that increments TpSharedIndexState.spill_generation
- * directly, simulating what tp_spill_finalize() will do in phase 6
- * (the cache stale-detection path is independent of the spill
- * machinery being wired in, so this lets us cover apply_to_tail's
- * DROPPED branch from Phase 3 without depending on a phase-6
- * landing).  The returned value is the new generation.
+ * Permanent test scaffold for the DROPPED defensive branch of
+ * tp_cache_apply_to_tail.  Real spill paths (tp_spill_finalize)
+ * bump shared->spill_generation AND immediately drop the cache's
+ * dshash tables via tp_cache_clear, so a subsequent apply_to_tail
+ * lands on the NOT_INITIALIZED branch instead of DROPPED.  This
+ * helper increments the generation without touching the tables,
+ * exposing the DROPPED branch to test coverage so the safety net
+ * doesn't bitrot.  The returned value is the new generation.
+ *
+ * INTERNAL-only; revoked from PUBLIC in the install/upgrade SQL.
  */
 Datum
 bm25_cache_bump_spill_generation(PG_FUNCTION_ARGS)

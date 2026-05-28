@@ -187,7 +187,7 @@ tp_do_spill(
 	if (out_segment_root != NULL)
 		*out_segment_root = root;
 
-	tp_spill_finalize(index_rel, root, docs_delta, len_delta);
+	tp_spill_finalize(index_state, index_rel, root, docs_delta, len_delta);
 
 	/* Free dictionary + docmap (chain source no longer needed). */
 	tp_free_dictionary(terms, num_terms);

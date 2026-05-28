@@ -100,12 +100,23 @@ extern BlockNumber tp_memtable_append(
  * will reclaim them in amvacuumcleanup.
  *
  * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
+ *
+ * `state` is required when the in-memory memtable cache is active
+ * (runtime mode); it provides the DSA attachment used to drop the
+ * cache's dshash tables after the metapage is published, and the
+ * pg_atomic counter that the cache's apply protocol uses as a
+ * stale-detection token.  Callers that legitimately have no cache
+ * (e.g. spill-from-build before the local state is wired up) may
+ * pass NULL; in that case the spill_generation bump and the
+ * tp_cache_clear call are both skipped (the build path constructs
+ * an empty cache anyway).
  */
 extern void tp_spill_finalize(
-		Relation	rel,
-		BlockNumber new_segment_root,
-		uint64		docs_delta,
-		uint64		len_delta);
+		TpLocalIndexState *state,
+		Relation		   rel,
+		BlockNumber		   new_segment_root,
+		uint64			   docs_delta,
+		uint64			   len_delta);
 
 /* Forward declaration to avoid heavy header include. */
 typedef struct TpLocalIndexState TpLocalIndexState;
