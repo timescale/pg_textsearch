@@ -132,6 +132,16 @@
 #define TP_TRANCHE_CACHE_LOCK		1011
 
 /*
+ * Global eviction mutex tranche (see docs/memtable_cache.md
+ * §"Memory cap (3 tiers)").  Serializes cache evictions across
+ * backends.  Acquired EXCL by evict_largest and by index cleanup
+ * (DROP INDEX path) to prevent races between an in-flight victim
+ * inspection and a concurrent dsa_free of the victim's shared
+ * state.
+ */
+#define TP_TRANCHE_EVICTION_MUTEX 1012
+
+/*
  * Global GUC variables declared in mod.c
  * Note: tp_relopt_kind is declared in index.c as it requires
  * access/reloptions.h

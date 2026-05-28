@@ -73,6 +73,17 @@ RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
+-- Cache memory-cap scaffolds (phase 6).
+CREATE FUNCTION bm25_cache_global_estimated_bytes()
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION bm25_cache_evict_largest(index_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_cache_evict_largest'
+LANGUAGE C STRICT;
+
 -- Cache source scaffold (phase 4).
 CREATE FUNCTION bm25_test_cache_source(
     index_name text, case_name text)
@@ -91,6 +102,8 @@ REVOKE EXECUTE ON FUNCTION bm25_cache_cold_build(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_apply_to_tail(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_bump_spill_generation(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_test_cache_source(text, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_cache_global_estimated_bytes() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bm25_cache_evict_largest(text) FROM PUBLIC;
 
 -- Phase 7B of the memtable v2 redesign (issue #374) deletes the
 -- soft-limit memory_usage SRF along with the underlying soft-limit

@@ -324,6 +324,19 @@ RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
+-- Cache memory-cap scaffolds (phase 6).  Same INTERNAL-ONLY
+-- disclaimer as above.  See docs/memtable_cache.md
+-- §"Memory cap (3 tiers)".
+CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_evict_largest(index_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_cache_evict_largest'
+LANGUAGE C STRICT;
+
 -- Cache source scaffold (in-memory memtable cache, phase 4).
 -- Same INTERNAL-ONLY disclaimer as above.
 CREATE FUNCTION @extschema@.bm25_test_cache_source(
@@ -345,4 +358,8 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_apply_to_tail(text)
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_bump_spill_generation(text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_cache_source(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_evict_largest(text)
     FROM PUBLIC;

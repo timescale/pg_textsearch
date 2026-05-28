@@ -17,6 +17,7 @@
 #include <utils/dsa.h>
 #include <utils/memutils.h>
 
+#include "memtable/cache.h"
 #include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -61,7 +62,13 @@ tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
 	memtable->cursor_next_off		 = 0;
 	pg_atomic_write_u64(&memtable->cursor_seq, 0);
-	pg_atomic_write_u64(&memtable->estimated_bytes, 0);
+
+	/*
+	 * Drain estimated_bytes and the matching slice of the global
+	 * counter in lockstep so eviction accounting doesn't drift
+	 * (docs/memtable_cache.md §"Memory cap (3 tiers)").
+	 */
+	tp_cache_account_bytes_drain(memtable);
 
 	dsa_trim(dsa);
 }

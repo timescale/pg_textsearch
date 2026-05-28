@@ -41,6 +41,7 @@
 #include <catalog/index.h>
 #include <fmgr.h>
 #include <funcapi.h>
+#include <lib/dshash.h>
 #include <miscadmin.h>
 #include <storage/lwlock.h>
 #include <utils/builtins.h>
@@ -49,6 +50,7 @@
 
 #include "constants.h"
 #include "index/metapage.h"
+#include "index/registry.h"
 #include "index/resolve.h"
 #include "index/state.h"
 #include "memtable/cache.h"
@@ -67,10 +69,18 @@ extern int tp_memory_limit_kb;
  * Rationale (see docs/memtable_cache.md "Memory cap"): with the
  * default 2 GiB global limit and 8 concurrent indexes, each gets
  * 256 MiB of cache headroom before catchup starts returning
- * BUDGET_EXCEEDED.  The denominator is fixed for Phase 3; the
- * 3-tier cap with eviction lands in Phase 6.
+ * BUDGET_EXCEEDED.  Phase 6 layers the global-cap eviction
+ * protocol on top.
  */
 #define TP_CACHE_INDEX_CAP_DIVISOR 8
+
+/*
+ * Global soft cap = memory_limit / 2; hard cap = memory_limit.
+ * Phase 6 enforces both at apply-protocol entry; the per-index
+ * soft cap from the original Phase 3 design still drives the
+ * per-record short-circuit inside apply.
+ */
+#define TP_CACHE_GLOBAL_SOFT_CAP_DIVISOR 2
 
 uint64
 tp_cache_per_index_soft_cap_bytes(void)
@@ -80,7 +90,262 @@ tp_cache_per_index_soft_cap_bytes(void)
 	return ((uint64)tp_memory_limit_kb * 1024UL) / TP_CACHE_INDEX_CAP_DIVISOR;
 }
 
-/* ---------- per-record decode + apply ---------- */
+uint64
+tp_cache_global_soft_cap_bytes(void)
+{
+	if (tp_memory_limit_kb <= 0)
+		return 0; /* sentinel: unlimited */
+	return ((uint64)tp_memory_limit_kb * 1024UL) /
+		   TP_CACHE_GLOBAL_SOFT_CAP_DIVISOR;
+}
+
+uint64
+tp_cache_global_hard_cap_bytes(void)
+{
+	if (tp_memory_limit_kb <= 0)
+		return 0; /* sentinel: unlimited */
+	return (uint64)tp_memory_limit_kb * 1024UL;
+}
+
+/* ---------- memory accounting ---------- */
+
+/*
+ * Add `delta` bytes to both the per-index and the global
+ * estimated_bytes counters, in lockstep.  Caller must hold
+ * cache.apply_lock EXCL on the target memtable; the per-index
+ * counter is single-writer under that lock and the global one is
+ * an atomic so concurrent updaters from other indexes compose
+ * safely.
+ *
+ * The two atomics are deliberately NOT mutated under a single
+ * lock — the global is approximate by design (Phase 6 hard cap
+ * is documented as approximate; see
+ * docs/memtable_cache.md §"Memory cap (3 tiers)").
+ */
+static inline void
+account_bytes_add(TpMemtable *memtable, uint64 delta)
+{
+	pg_atomic_fetch_add_u64(&memtable->estimated_bytes, delta);
+	pg_atomic_fetch_add_u64(tp_registry_estimated_total_bytes(), delta);
+}
+
+/*
+ * Drain the per-index counter to zero and subtract the drained
+ * amount from the global counter.  Used by tp_cache_clear and
+ * tp_cache_evict_largest.  Symmetric with account_bytes_add so
+ * the global counter stays close to Σ per-index counters; a
+ * raw zero-write of the per-index counter (without the global
+ * subtract) would leak budget into the global counter and stall
+ * future evictions.
+ */
+void
+tp_cache_account_bytes_drain(TpMemtable *memtable)
+{
+	uint64 old;
+
+	if (memtable == NULL)
+		return;
+
+	old = pg_atomic_exchange_u64(&memtable->estimated_bytes, 0);
+	if (old > 0)
+	{
+		pg_atomic_uint64 *gp = tp_registry_estimated_total_bytes();
+		uint64			  cur;
+		uint64			  sub;
+
+		/* Clamp to avoid u64 wrap on accounting drift. */
+		cur = pg_atomic_read_u64(gp);
+		sub = (old > cur) ? cur : old;
+		if (sub > 0)
+			pg_atomic_fetch_sub_u64(gp, sub);
+	}
+}
+
+/* ---------- eviction ---------- */
+
+/*
+ * Argmax callback state.  We track (oid, dsa_pointer, bytes) of
+ * the largest non-caller cache observed so far.  The dsa pointer
+ * lets the post-walk path resolve the victim's shared state
+ * without re-walking the registry.
+ */
+typedef struct EvictCandidate
+{
+	Oid			caller_oid;
+	Oid			best_oid;
+	dsa_pointer best_shared_dp;
+	uint64		best_bytes;
+} EvictCandidate;
+
+/*
+ * Per-entry argmax walker.  Reads memtable->estimated_bytes
+ * without taking any cache lock — atomic reads are sufficient,
+ * since the only mutators (apply_one_record adds,
+ * tp_cache_account_bytes_drain subtracts) are themselves atomic
+ * and we only need an approximate maximum for the soft-cap
+ * eviction policy.
+ */
+static bool
+evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
+{
+	EvictCandidate	   *c = (EvictCandidate *)ctx;
+	dsa_area		   *dsa;
+	TpSharedIndexState *st;
+	TpMemtable		   *mt;
+	uint64				bytes;
+
+	if (oid == c->caller_oid)
+		return false;
+	if (!DsaPointerIsValid(shared_dp))
+		return false;
+
+	dsa = tp_registry_get_dsa();
+	if (dsa == NULL)
+		return false;
+	st = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
+	if (st == NULL || !DsaPointerIsValid(st->memtable_dp))
+		return false;
+
+	mt = (TpMemtable *)dsa_get_address(dsa, st->memtable_dp);
+	if (mt == NULL)
+		return false;
+
+	bytes = pg_atomic_read_u64(&mt->estimated_bytes);
+	if (bytes > c->best_bytes)
+	{
+		c->best_oid		  = oid;
+		c->best_shared_dp = shared_dp;
+		c->best_bytes	  = bytes;
+	}
+	return false; /* don't stop early; scan all entries */
+}
+
+TpCacheEvictResult
+tp_cache_evict_largest(Oid caller_oid)
+{
+	LWLock			   *mutex = tp_registry_eviction_mutex();
+	dsa_area		   *dsa	  = tp_registry_get_dsa();
+	EvictCandidate		c;
+	TpSharedIndexState *victim;
+	TpMemtable		   *vt_memtable;
+
+	if (dsa == NULL || mutex == NULL)
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+
+	LWLockAcquire(mutex, LW_EXCLUSIVE);
+
+	c.caller_oid	 = caller_oid;
+	c.best_oid		 = InvalidOid;
+	c.best_shared_dp = InvalidDsaPointer;
+	c.best_bytes	 = 0;
+
+	tp_registry_walk(evict_walk_cb, &c);
+
+	if (c.best_oid == InvalidOid || !DsaPointerIsValid(c.best_shared_dp))
+	{
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+	}
+
+	victim = (TpSharedIndexState *)dsa_get_address(dsa, c.best_shared_dp);
+	if (victim == NULL || !DsaPointerIsValid(victim->memtable_dp))
+	{
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+	}
+
+	/*
+	 * Deadlock-prevention: conditionally acquire the victim's
+	 * per-index LWLock.  A reader on the victim already holds
+	 * SHARED there; if that reader is also entering apply protocol
+	 * entry and has just acquired the eviction_mutex queue (no,
+	 * we hold it EXCL), then... actually the only concurrent
+	 * holders of `victim->lock` at this moment are readers in
+	 * SHARED.  Blocking on EXCL until they drain would be safe
+	 * for THIS backend, but would create an
+	 * eviction-vs-reader-vs-eviction cycle if a reader on the
+	 * victim is itself waiting to enter evict_largest (queues
+	 * for our mutex while holding victim's SHARED).  Conditional
+	 * acquire turns that cycle into a benign retry.
+	 */
+	if (!LWLockConditionalAcquire(&victim->lock, LW_EXCLUSIVE))
+	{
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_BUSY;
+	}
+
+	vt_memtable = (TpMemtable *)dsa_get_address(dsa, victim->memtable_dp);
+	if (vt_memtable == NULL)
+	{
+		LWLockRelease(&victim->lock);
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+	}
+
+	/*
+	 * Re-check after acquiring victim->lock: another evict caller
+	 * is impossible (we hold the mutex), but a tp_spill_finalize
+	 * on the victim could have just cleared its cache via the
+	 * caller's own per-index EXCL path.  Skip if drained.
+	 */
+	if (pg_atomic_read_u64(&vt_memtable->estimated_bytes) == 0)
+	{
+		LWLockRelease(&victim->lock);
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+	}
+
+	LWLockAcquire(&vt_memtable->apply_lock, LW_EXCLUSIVE);
+	LWLockAcquire(&vt_memtable->lock, LW_EXCLUSIVE);
+	tp_cache_clear(dsa, vt_memtable);
+	LWLockRelease(&vt_memtable->lock);
+	LWLockRelease(&vt_memtable->apply_lock);
+
+	LWLockRelease(&victim->lock);
+	LWLockRelease(mutex);
+
+	return TP_CACHE_EVICT_EVICTED;
+}
+
+/*
+ * Apply-protocol entry hook: check the global soft cap and
+ * trigger eviction if it's exceeded.  Returns true on success
+ * (cap respected, or eviction made room); false on
+ * hard-cap-exceeded.
+ *
+ * Soft-cap eviction is a best-effort step that runs once per
+ * apply-protocol entry — if it returns BUSY (another reader
+ * contends for the victim's lock) we continue with the apply
+ * anyway, because the hard cap below still guards against
+ * uncontrolled growth.
+ *
+ * Called from tp_cache_apply_to_tail and tp_cache_cold_build
+ * BEFORE either acquires cache.apply_lock, so the caller's own
+ * cache locks are out of the chain.  See
+ * docs/memtable_cache.md §"Memory cap (3 tiers)".
+ */
+static bool
+global_cap_check(Oid caller_oid)
+{
+	uint64 soft = tp_cache_global_soft_cap_bytes();
+	uint64 hard = tp_cache_global_hard_cap_bytes();
+	uint64 cur;
+
+	if (soft == 0 && hard == 0)
+		return true; /* unlimited */
+
+	cur = pg_atomic_read_u64(tp_registry_estimated_total_bytes());
+
+	if (soft > 0 && cur >= soft)
+	{
+		(void)tp_cache_evict_largest(caller_oid);
+		cur = pg_atomic_read_u64(tp_registry_estimated_total_bytes());
+	}
+
+	if (hard > 0 && cur >= hard)
+		return false;
+	return true;
+}
 
 /*
  * Decoded view of one chain record's payload, ready to feed
@@ -224,7 +489,7 @@ apply_one_record(
 			doc->term_count,
 			doc_length);
 
-	pg_atomic_fetch_add_u64(&memtable->estimated_bytes, doc->estimated_size);
+	account_bytes_add(memtable, doc->estimated_size);
 	return true;
 }
 
@@ -272,6 +537,16 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 			 "pg_textsearch cache apply: memtable not allocated for "
 			 "index oid=%u",
 			 local_state->shared->index_oid);
+
+	/*
+	 * Apply-protocol-entry hook: enforce the global cap before
+	 * we take cache.apply_lock.  If eviction fails to make room
+	 * and we're over the hard cap, return BUDGET_EXCEEDED so
+	 * the caller falls back to chain_source.  See
+	 * docs/memtable_cache.md §"Memory cap (3 tiers)".
+	 */
+	if (!global_cap_check(local_state->shared->index_oid))
+		return TP_CACHE_APPLY_BUDGET_EXCEEDED;
 
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_SHARED);
@@ -398,6 +673,15 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 			 "pg_textsearch cache cold build: memtable not allocated for "
 			 "index oid=%u",
 			 local_state->shared->index_oid);
+
+	/*
+	 * Apply-protocol-entry hook: enforce the global cap before
+	 * we take cache.apply_lock.  Returning ABORT instead of
+	 * building lets the caller fall back to chain_source for
+	 * this query without dirtying any cache state.
+	 */
+	if (!global_cap_check(local_state->shared->index_oid))
+		return TP_CACHE_COLD_ABORT;
 
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
@@ -783,4 +1067,71 @@ bm25_cache_bump_spill_generation(PG_FUNCTION_ARGS)
 
 	new_gen = pg_atomic_add_fetch_u64(&state->shared->spill_generation, 1);
 	return Int64GetDatum((int64)new_gen);
+}
+
+/*
+ * bm25_cache_global_estimated_bytes() -> bigint
+ *
+ * Returns the registry-wide estimated_total_bytes counter.
+ * Permanent unit-test scaffold for the Phase 6 memory-cap
+ * accounting protocol (docs/memtable_cache.md §"Memory cap
+ * (3 tiers)").  Production callers should not depend on this
+ * being precise: it's a soft accounting tracker, not a
+ * resource accounting source of truth.
+ *
+ * INTERNAL-only; revoked from PUBLIC in the install/upgrade SQL.
+ */
+PG_FUNCTION_INFO_V1(bm25_cache_global_estimated_bytes);
+
+Datum
+bm25_cache_global_estimated_bytes(PG_FUNCTION_ARGS)
+{
+	pg_atomic_uint64 *p = tp_registry_estimated_total_bytes();
+
+	return Int64GetDatum((int64)pg_atomic_read_u64(p));
+}
+
+/*
+ * bm25_cache_evict_largest(index_name) -> text
+ *
+ * Invokes tp_cache_evict_largest, treating `index_name` as the
+ * caller's "own" index (so the argmax skips it).  Returns a
+ * one-line summary string: "evicted", "nothing_found", or
+ * "busy".  Used by test/sql/cache_memory_cap.sql to exercise
+ * the eviction protocol without needing concurrent SQL
+ * sessions or a low memory_limit GUC.
+ *
+ * INTERNAL-only; revoked from PUBLIC in the install/upgrade SQL.
+ */
+PG_FUNCTION_INFO_V1(bm25_cache_evict_largest);
+
+Datum
+bm25_cache_evict_largest(PG_FUNCTION_ARGS)
+{
+	text			  *idx_text = PG_GETARG_TEXT_PP(0);
+	char			  *idx_name = text_to_cstring(idx_text);
+	Oid				   oid		= tp_resolve_index_name_shared(idx_name);
+	TpCacheEvictResult r;
+	const char		  *txt;
+
+	if (!OidIsValid(oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("pg_textsearch index \"%s\" not found", idx_name)));
+
+	r = tp_cache_evict_largest(oid);
+	switch (r)
+	{
+	case TP_CACHE_EVICT_EVICTED:
+		txt = "evicted";
+		break;
+	case TP_CACHE_EVICT_BUSY:
+		txt = "busy";
+		break;
+	case TP_CACHE_EVICT_NOTHING_FOUND:
+	default:
+		txt = "nothing_found";
+		break;
+	}
+	return PointerGetDatum(cstring_to_text(txt));
 }

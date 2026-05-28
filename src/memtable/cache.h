@@ -114,8 +114,66 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel);
  * Returns the threshold that the apply paths compare
  * estimated_bytes against on every record.  0 means unlimited.
  *
- * Exposed for the SQL test scaffold and (in future phases) the
- * eviction policy; production callers should not gate on this
- * directly.
+ * Exposed for the SQL test scaffold and the eviction policy;
+ * production callers should not gate on this directly.
  */
 extern uint64 tp_cache_per_index_soft_cap_bytes(void);
+
+/*
+ * Global soft and hard memory caps, in BYTES (the GUC is in kB).
+ * Global soft cap = memory_limit / 2; hard cap = memory_limit.
+ * Both return 0 to mean "unlimited" when the GUC is disabled.
+ * See docs/memtable_cache.md §"Memory cap (3 tiers)".
+ */
+extern uint64 tp_cache_global_soft_cap_bytes(void);
+extern uint64 tp_cache_global_hard_cap_bytes(void);
+
+/*
+ * Outcome of tp_cache_evict_largest().
+ *
+ *   EVICTED        a victim was found and its cache cleared; the
+ *                  drained bytes were subtracted from the global
+ *                  counter.  Caller may re-check the global cap.
+ *
+ *   NOTHING_FOUND  no eligible victim (no registered index other
+ *                  than the caller's, or the global counter
+ *                  dropped under the threshold between argmax and
+ *                  re-check).  Caller falls back to chain_source.
+ *
+ *   BUSY           the victim's per-index LWLock could not be
+ *                  conditionally acquired (a reader is in flight).
+ *                  Caller falls back to chain_source; a later
+ *                  call may succeed.  Returning BUSY rather than
+ *                  blocking is mandatory to avoid the
+ *                  eviction-vs-reader deadlock documented in
+ *                  cache.c (caller holds its own per-index
+ *                  SHARED; blocking on the victim's per-index
+ *                  EXCL while a concurrent reader on the victim
+ *                  has already entered evict_largest would form
+ *                  a cycle).
+ */
+typedef enum TpCacheEvictResult
+{
+	TP_CACHE_EVICT_EVICTED,
+	TP_CACHE_EVICT_NOTHING_FOUND,
+	TP_CACHE_EVICT_BUSY,
+} TpCacheEvictResult;
+
+/*
+ * Pick the largest cache other than `caller_oid` and evict it
+ * (clear its dshash tables, subtract its bytes from the global
+ * counter).  Caller MUST hold its own per-index LWLock SHARED
+ * (the read path's natural state); MUST NOT hold any cache lock.
+ * See docs/memtable_cache.md §"Memory cap (3 tiers)".
+ */
+extern TpCacheEvictResult tp_cache_evict_largest(Oid caller_oid);
+
+/*
+ * Drain `memtable->estimated_bytes` to zero and subtract the
+ * drained amount from the global estimated_total_bytes counter.
+ * Called by tp_cache_clear; exposed for the eviction path which
+ * drains symmetrically.  Safe to call when the memtable holds no
+ * bytes (no-op).
+ */
+struct TpMemtable; /* forward */
+extern void tp_cache_account_bytes_drain(struct TpMemtable *memtable);

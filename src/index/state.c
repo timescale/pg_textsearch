@@ -921,7 +921,17 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	 * DROP INDEX runs under AccessExclusiveLock on the index, so no
 	 * concurrent backend can be reading the cache here; we do not
 	 * acquire cache.lock.
+	 *
+	 * Memtable-cache eviction (docs/memtable_cache.md §"Memory cap
+	 * (3 tiers)") accesses victim shared states by DSA pointer
+	 * without holding the index relation lock.  Take the global
+	 * eviction mutex EXCL across the dsa_free so a concurrent
+	 * evict_largest cannot deref a victim->lock that we are
+	 * about to free.  The mutex order is global before per-index,
+	 * matching evict_largest's acquire sequence.
 	 */
+	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
+
 	if (DsaPointerIsValid(shared_state->memtable_dp))
 	{
 		TpMemtable *mt = (TpMemtable *)
@@ -933,6 +943,8 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 
 	/* Free shared_state */
 	dsa_free(dsa, shared_dp);
+
+	LWLockRelease(tp_registry_eviction_mutex());
 
 	/* Clean up local state if we have it cached */
 	if (local_state_cache != NULL)

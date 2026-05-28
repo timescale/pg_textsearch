@@ -317,13 +317,14 @@ _PG_init(void)
 	DefineCustomIntVariable(
 			"pg_textsearch.memory_limit",
 			"Maximum shared memory used by the in-memory memtable cache.",
-			"This setting has no effect in this build; it is "
-			"scaffolding for an upcoming change.  Once the cache "
-			"is wired up, this value will be applied as a "
-			"three-tier budget: per-index soft (limit/8) triggers "
-			"spill of that index; global soft (limit/2) evicts "
-			"the largest cache; global hard (limit) refuses new "
-			"inserts.  A value of 0 means no limit.",
+			"Applied as a three-tier budget (see "
+			"docs/memtable_cache.md): per-index soft cap "
+			"(limit/8) returns BUDGET_EXCEEDED to the apply "
+			"protocol so the read falls back to the on-disk "
+			"chain; global soft cap (limit/2) evicts the "
+			"largest non-caller cache via tp_cache_evict_largest; "
+			"global hard cap (limit) refuses cache builds "
+			"entirely.  A value of 0 means no limit.",
 			&tp_memory_limit_kb,
 			TP_DEFAULT_MEMORY_LIMIT_KB,
 			0,
