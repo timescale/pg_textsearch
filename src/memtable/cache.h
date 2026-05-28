@@ -2,11 +2,12 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * cache.h — apply protocol for the in-memory memtable cache.
+ * cache.h — lifecycle + apply protocol for the in-memory memtable cache.
  *
  * The cache is derived state layered on top of the on-disk
  * memtable page chain (the source of truth).  This module owns
- * the two paths that mutate the cache from chain records:
+ * three entry points: two that mutate the cache from chain
+ * records, plus a teardown path.
  *
  *   tp_cache_cold_build()    bootstraps an empty cache from the
  *                            chain head.  Holds cache.apply_lock
@@ -19,6 +20,15 @@
  *                            SHARED, so concurrent readers can
  *                            keep serving from the cache while
  *                            catchup runs.
+ *
+ *   tp_cache_clear()         drops the dshash tables, resets the
+ *                            cursor + estimated_bytes, and drains
+ *                            accounting in lockstep with the
+ *                            global counter.  Called on
+ *                            generation-mismatch drop, spill
+ *                            finalize, eviction, and index
+ *                            teardown.  See the per-function
+ *                            comment below for its lock contract.
  *
  * Spill detection: every apply call generation-checks the
  * cursor's captured spill_generation against
@@ -175,8 +185,7 @@ extern TpCacheEvictResult tp_cache_evict_largest(Oid caller_oid);
  * drains symmetrically.  Safe to call when the memtable holds no
  * bytes (no-op).
  */
-struct TpMemtable; /* forward */
-extern void tp_cache_account_bytes_drain(struct TpMemtable *memtable);
+extern void tp_cache_account_bytes_drain(TpMemtable *memtable);
 
 /*
  * Drop the in-memory cache state.  Frees the dshash inverted index
@@ -204,4 +213,4 @@ extern void tp_cache_account_bytes_drain(struct TpMemtable *memtable);
  * shared-state already unregistered); no cache.lock acquisition
  * is needed there.  See docs/memtable_cache.md.
  */
-extern void tp_cache_clear(dsa_area *dsa, struct TpMemtable *memtable);
+extern void tp_cache_clear(dsa_area *dsa, TpMemtable *memtable);

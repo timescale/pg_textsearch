@@ -19,7 +19,6 @@
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
 #include "index/state.h"
-#include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 
@@ -307,7 +306,7 @@ tp_ensure_string_table_initialized(TpLocalIndexState *local_state)
  * Caller must have ensured the string hash table is initialized
  * (via tp_ensure_string_table_initialized under LW_EXCLUSIVE).
  */
-TpPostingList *
+static TpPostingList *
 tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 {
 	TpMemtable		  *memtable;

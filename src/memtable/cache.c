@@ -2,10 +2,10 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * cache.c — apply protocol for the in-memory memtable cache.
+ * cache.c — lifecycle + apply protocol for the in-memory memtable cache.
  *
  * See cache.h for the public contract and docs/memtable_cache.md
- * for the design.  Two entry points:
+ * for the design.  Three entry points:
  *
  *   tp_cache_cold_build()    cache.apply_lock EXCL +
  *                            cache.lock EXCL.  Allocates dshash
@@ -19,6 +19,13 @@
  *                            (cursor.next_blkno, cursor.next_off)
  *                            to the logical tail, applies each
  *                            record, advances the cursor.
+ *
+ *   tp_cache_clear()         drops the dshash tables, resets the
+ *                            apply cursor + estimated_bytes, and
+ *                            drains accounting in lockstep with
+ *                            the global counter.  Caller-supplied
+ *                            lock contract (see the function
+ *                            comment).
  *
  * Both paths share the same record-apply primitive
  * (apply_one_record) that decodes the on-disk TpVector, runs
@@ -55,7 +62,6 @@
 #include "index/state.h"
 #include "memtable/cache.h"
 #include "memtable/chain_walker.h"
-#include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "types/vector.h"
