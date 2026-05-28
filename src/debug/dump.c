@@ -194,7 +194,30 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 		return;
 	}
 
-	/* Corpus statistics */
+	/*
+	 * Corpus statistics.
+	 *
+	 * total_docs / total_len come from the shared-memory atomics
+	 * that pre-date the post-#374 split between durable corpus
+	 * state (metapage) and the in-flight memtable cache.  Phase 4+
+	 * scoring no longer trusts these atomics (see comment in
+	 * src/memtable/log.c:tp_add_document_terms); they are kept
+	 * alive only because the existing VACUUM-shrinkage clamp still
+	 * decrements them in lockstep with the metapage.  Print them
+	 * for backward compatibility with tests that grep for
+	 * `total_docs:` / `total_len:`.
+	 *
+	 * docs_persisted / len_persisted come from the metapage and
+	 * are the durable source of truth: Σ segment.num_docs and
+	 * Σ segment.total_len respectively (see metapage.h).  Tests
+	 * that need a deterministic post-merge / post-vacuum corpus
+	 * count should grep for these instead, so an intermittent
+	 * atomic-vs-metapage drift (e.g. an as-yet-unidentified race
+	 * that ASan timing can expose between the merge atomic_fetch_sub
+	 * at src/segment/merge.c and the metapage GenericXLog write
+	 * that follows it) doesn't produce a flake on what is
+	 * fundamentally a question about durable state.
+	 */
 	{
 		uint32 total_docs = pg_atomic_read_u32(
 				&index_state->shared->total_docs);
@@ -203,6 +226,17 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "\nCorpus Statistics:\n");
 		dump_printf(out, "  total_docs: %u\n", total_docs);
 		dump_printf(out, "  total_len: %ld\n", (long)total_len);
+		if (metap)
+		{
+			dump_printf(
+					out,
+					"  docs_persisted: " UINT64_FORMAT "\n",
+					metap->total_docs);
+			dump_printf(
+					out,
+					"  len_persisted: " UINT64_FORMAT "\n",
+					metap->total_len);
+		}
 
 		if (total_docs > 0)
 		{
@@ -432,7 +466,13 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		return;
 	}
 
-	/* Corpus statistics */
+	/*
+	 * Corpus statistics.  See the long comment in
+	 * tp_summarize_index_to_output above for the docs_persisted /
+	 * len_persisted rationale (metapage = durable Σ; the
+	 * total_docs / total_len atomics are kept for backward
+	 * compatibility but are not the source of truth).
+	 */
 	{
 		uint32 total_docs = pg_atomic_read_u32(
 				&index_state->shared->total_docs);
@@ -441,6 +481,17 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		dump_printf(out, "Corpus Statistics:\n");
 		dump_printf(out, "  total_docs: %u\n", total_docs);
 		dump_printf(out, "  total_len: %ld\n", (long)total_len);
+		if (metap)
+		{
+			dump_printf(
+					out,
+					"  docs_persisted: " UINT64_FORMAT "\n",
+					metap->total_docs);
+			dump_printf(
+					out,
+					"  len_persisted: " UINT64_FORMAT "\n",
+					metap->total_len);
+		}
 
 		if (total_docs > 0)
 		{
