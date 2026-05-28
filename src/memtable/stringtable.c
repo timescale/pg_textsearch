@@ -122,7 +122,7 @@ tp_string_copy_function(
  * contents live in the DSA area, but the returned handle is allocated from
  * backend memory using the current memory context.
  */
-dshash_table *
+static dshash_table *
 tp_string_table_create(dsa_area *area)
 {
 	dshash_parameters params;

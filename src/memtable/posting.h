@@ -41,6 +41,7 @@ typedef struct TpPostingList
 extern int tp_posting_list_growth_factor;
 
 /* Posting list memory management */
+extern dsa_pointer tp_alloc_posting_list(dsa_area *dsa);
 extern void tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp);
 extern TpPostingEntry *
 tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list);

@@ -663,7 +663,7 @@ tp_memtable_append(
  *   Both steps are skipped when `state` is NULL (e.g. spill paths
  *   that never wired up a local index state).
  */
-#include "memtable/memtable.h"
+#include "memtable/cache.h"
 #include "segment/format.h"
 #include "utils/dsa.h"
 

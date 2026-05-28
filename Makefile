@@ -36,7 +36,6 @@ OBJS = \
 	src/memtable/chain_walker.o \
 	src/memtable/expull.o \
 	src/memtable/log.o \
-	src/memtable/memtable.o \
 	src/memtable/page.o \
 	src/memtable/posting.o \
 	src/memtable/scan.o \
