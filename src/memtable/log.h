@@ -9,8 +9,7 @@
  * memtable_tail_blkno) fields.  See issue #374 and
  * docs/memtable_v2.md for the design.
  *
- * Concurrency contract (committed to in Phase 2, enforced by
- * later phases):
+ * Concurrency contract:
  *
  *     per-index LWLock SHARED/EXCL
  *         └─► tail buffer EXCL
@@ -96,8 +95,8 @@ extern BlockNumber tp_memtable_append(
  * (intact `TP_MEMTABLE_PAGE_MAGIC` headers, but no metapage
  * pointer reaches them).  In-flight scans walking the old chain
  * via a metapage snapshot they already latched complete safely;
- * new scans see the new metapage and skip the orphans.  Phase 5b
- * will reclaim them in amvacuumcleanup.
+ * new scans see the new metapage and skip the orphans.
+ * Reclamation in amvacuumcleanup is a follow-up.
  *
  * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
  *
@@ -130,7 +129,7 @@ typedef struct TpLocalIndexState TpLocalIndexState;
  * tp_memtable_append() that also bumps:
  *   - corpus statistics (total_docs / total_len atomics, still
  *     written by the primary for compatibility with vacuum's
- *     shrinkage protocol; Phase 7B removes these),
+ *     shrinkage protocol; a follow-up will remove these),
  *   - terms_added_this_xact, used by tp_bulk_load_spill_check.
  *
  * `vector_bytes` points to `vector_len` bytes of opaque payload

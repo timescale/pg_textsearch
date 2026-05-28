@@ -40,10 +40,10 @@ typedef struct TpDsmSegmentHeader
  * In-memory memtable cache (see docs/memtable_cache.md).
  *
  * The cache is derived state layered on top of the on-disk memtable
- * page chain (which remains the source of truth).  Phase 2 of #374's
- * follow-up adds the lifecycle scaffolding; the apply protocol,
- * cold build, read source, spill consumption, and memory cap land
- * in subsequent phases.
+ * page chain (which remains the source of truth, per #374).  This
+ * struct holds the lifecycle handles, apply cursor, and footprint
+ * accounting; the apply protocol, cold build, read source, spill
+ * consumption, and memory cap live in cache.c / cache_source.c.
  *
  * Lifetimes:
  *   - string_hash_handle / doc_lengths_handle:
@@ -56,10 +56,10 @@ typedef struct TpDsmSegmentHeader
  *   - cursor_*:
  *       (0, InvalidBlockNumber, 0, 0) at init and after tp_cache_clear.
  *       Mutated only under apply_lock EXCL by reader catchup,
- *       cold lazy build, and spill catchup (phases 3+).
+ *       cold lazy build, and spill catchup.
  *   - estimated_bytes:
- *       0 at init.  Maintained by the apply paths under apply_lock
- *       in phase 3+; read lock-free by the 3-tier memory cap.
+ *       0 at init.  Maintained by the apply paths under apply_lock;
+ *       read lock-free by the 3-tier memory cap.
  *
  * Lock order (see docs/memtable_cache.md "Lock order"):
  *   per-index LWLock (in TpSharedIndexState) → apply_lock → lock
@@ -112,8 +112,8 @@ typedef struct TpMemtable
 	pg_atomic_uint64 cursor_seq;
 
 	/*
-	 * Cache footprint, updated by apply paths under apply_lock in
-	 * phase 3+; read lock-free for the 3-tier memory cap.
+	 * Cache footprint, updated by apply paths under apply_lock;
+	 * read lock-free for the 3-tier memory cap.
 	 */
 	pg_atomic_uint64 estimated_bytes;
 } TpMemtable;

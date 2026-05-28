@@ -294,10 +294,10 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
 LANGUAGE C STRICT;
 
--- Cache apply protocol scaffolds (in-memory memtable cache,
--- phase 3).  Same INTERNAL-ONLY disclaimer as the v2 chain
--- scaffolds above.  Each returns a (result, records_applied,
--- cursor_seq, estimated_bytes) tuple.
+-- Cache apply protocol scaffolds (in-memory memtable cache).
+-- Same INTERNAL-ONLY disclaimer as the v2 chain scaffolds above.
+-- Each returns a (result, records_applied, cursor_seq,
+-- estimated_bytes) tuple.
 CREATE FUNCTION @extschema@.bm25_cache_cold_build(
     index_name text,
     OUT result text,
@@ -324,9 +324,8 @@ RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
--- Cache memory-cap scaffolds (phase 6).  Same INTERNAL-ONLY
--- disclaimer as above.  See docs/memtable_cache.md
--- §"Memory cap (3 tiers)".
+-- Cache memory-cap scaffolds.  Same INTERNAL-ONLY disclaimer as
+-- above.  See docs/memtable_cache.md §"Memory cap (3 tiers)".
 CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
 RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
@@ -337,7 +336,7 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_cache_evict_largest'
 LANGUAGE C STRICT;
 
--- Cache source scaffold (in-memory memtable cache, phase 4).
+-- Cache source scaffold (in-memory memtable cache).
 -- Same INTERNAL-ONLY disclaimer as above.
 CREATE FUNCTION @extschema@.bm25_test_cache_source(
     index_name text, case_name text)

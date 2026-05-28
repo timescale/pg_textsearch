@@ -1071,8 +1071,8 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  * index whose registry entry is empty (server restart, hot
  * standby cold start, PITR-recovered cluster).
  *
- * Phase 4+ (issue #374): the durable record of the in-flight
- * memtable lives entirely on the index relation's chain pages.
+ * Post-#374: the durable record of the in-flight memtable
+ * lives entirely on the index relation's chain pages.
  * Standard GenericXLog replay restores both the chain pages and
  * the metapage's `memtable_head_blkno`/`memtable_tail_blkno`
  * pointers before any backend gets here, so this function only
@@ -1144,13 +1144,13 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	pfree(early_metap);
 
 	/*
-	 * Register shared state up front.  Phase 4+ (issue #374):
-	 * durable state lives entirely on disk (metapage + chain
-	 * pages + segment pages).  No docid-page replay or memtable
-	 * reconstruction needed — the chain pages are themselves the
-	 * durable record of unspilled documents, and standard
-	 * GenericXLog replay has already brought them up to date by
-	 * the time any backend reaches this path.
+	 * Register shared state up front.  Post-#374, durable state
+	 * lives entirely on disk (metapage + chain pages + segment
+	 * pages).  No docid-page replay or memtable reconstruction
+	 * needed — the chain pages are themselves the durable record
+	 * of unspilled documents, and standard GenericXLog replay has
+	 * already brought them up to date by the time any backend
+	 * reaches this path.
 	 */
 	local_state = tp_create_shared_index_state(
 			index_oid, heap_oid, /* reuse_if_exists */ true);
@@ -1410,7 +1410,7 @@ tp_bulk_load_spill_check(void)
 			continue;
 		}
 
-		/* Phase 4: unified spill path. */
+		/* Unified spill path. */
 		(void)tp_do_spill(local_state, index_rel, NULL);
 
 		index_close(index_rel, RowExclusiveLock);

@@ -121,9 +121,9 @@ tp_get_metapage(Relation index)
 	 * shared-memory-memtable release; v7 (this version) replaces
 	 * that with an on-disk paged chain and drops the docid
 	 * recovery pages.  A v6 index may have unspilled documents
-	 * in docid pages (deleted in Phase 6) that the new code
-	 * cannot read, so we reject v6 with an explicit REINDEX hint
-	 * rather than silently truncating the corpus.
+	 * in docid pages (since removed) that the new code cannot
+	 * read, so we reject v6 with an explicit REINDEX hint rather
+	 * than silently truncating the corpus.
 	 */
 	if (metap->version != TP_METAPAGE_VERSION)
 	{

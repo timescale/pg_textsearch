@@ -73,7 +73,7 @@ RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
--- Cache memory-cap scaffolds (phase 6).
+-- Cache memory-cap scaffolds.
 CREATE FUNCTION bm25_cache_global_estimated_bytes()
 RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
@@ -84,7 +84,7 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_cache_evict_largest'
 LANGUAGE C STRICT;
 
--- Cache source scaffold (phase 4).
+-- Cache source scaffold.
 CREATE FUNCTION bm25_test_cache_source(
     index_name text, case_name text)
 RETURNS text
@@ -105,8 +105,8 @@ REVOKE EXECUTE ON FUNCTION bm25_test_cache_source(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_global_estimated_bytes() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_evict_largest(text) FROM PUBLIC;
 
--- Phase 7B of the on-disk memtable redesign (issue #374) deletes the
--- soft-limit memory_usage SRF along with the underlying soft-limit
+-- The on-disk memtable redesign (issue #374) makes the soft-limit
+-- memory_usage SRF obsolete along with the underlying soft-limit
 -- machinery; the chain_page_count-based auto-spill heuristic replaces
 -- the old global byte accounting.
 DROP FUNCTION IF EXISTS bm25_memory_usage();

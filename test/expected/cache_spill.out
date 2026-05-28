@@ -1,12 +1,11 @@
 -- Integration coverage for the spill -> cache-invalidate -> rebuild
--- cycle (cache_source.c + log.c phase 5 of docs/memtable_cache.md).
+-- cycle (cache_source.c + log.c; see docs/memtable_cache.md).
 --
--- Phase 5 wires tp_spill_finalize to (a) bump the per-index
--- spill_generation atomic and (b) drop the cache's dshash tables
--- via tp_cache_clear, so a query that runs after a spill rebuilds
--- a fresh cache from whatever chain pages exist post-spill (zero
--- in the typical case, since spill resets the chain head/tail to
--- InvalidBlockNumber).
+-- tp_spill_finalize (a) bumps the per-index spill_generation atomic
+-- and (b) drops the cache's dshash tables via tp_cache_clear, so a
+-- query that runs after a spill rebuilds a fresh cache from
+-- whatever chain pages exist post-spill (zero in the typical case,
+-- since spill resets the chain head/tail to InvalidBlockNumber).
 --
 -- We exercise both with the cache GUC explicitly enabled so the
 -- chooser routes reads through cache_source.
@@ -52,7 +51,7 @@ SELECT count(*) AS pre_spill_hits FROM (
 
 -- ---------- force a spill ----------
 -- bm25_spill_index drives tp_do_spill -> tp_spill_finalize, which
--- in phase 5 bumps spill_generation and clears the cache.
+-- bumps spill_generation and clears the cache.
 SELECT bm25_spill_index('cache_spill_idx') > 0 AS spill_wrote_docs;
  spill_wrote_docs 
 ------------------

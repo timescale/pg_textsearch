@@ -80,8 +80,8 @@ extern void tp_ensure_string_table_initialized(TpLocalIndexState *local_state);
  * This version applies an already-parsed record (terms +
  * frequencies + doc_length for a CTID) into the in-memory cache
  * structures (string interning table, posting lists, doclength
- * table).  Used by the cache apply protocol (phase 3) to bring
- * the cache up to date with the chain. */
+ * table).  Used by the cache apply protocol to bring the cache
+ * up to date with the chain. */
 extern void tp_cache_apply_document(
 		TpLocalIndexState *local_state,
 		ItemPointer		   ctid,

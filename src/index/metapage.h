@@ -72,8 +72,8 @@ typedef struct TpIndexMetaPageData
 	BlockNumber root_blkno;			/* Root page of the index tree */
 	BlockNumber term_stats_root;	/* Root page of term statistics B-tree */
 	BlockNumber _unused_docid_page; /* Reserved: was first_docid_page,
-									 * retired in Phase 6 of issue #374
-									 * (the on-disk memtable obsoletes
+									 * retired by issue #374 (the
+									 * on-disk memtable obsoletes
 									 * docid pages).  Kept to preserve
 									 * metapage offsets; always
 									 * InvalidBlockNumber. */

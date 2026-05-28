@@ -38,7 +38,7 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
  * Get unified doc_freq for a term (memtable + all segments).
  * Returns 0 if term not found in any source.
  *
- * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
+ * Per issue #374: `memtable_src` is a (possibly NULL) chain
  * source; we read the per-term doc_freq via the source op without
  * materializing the full posting list (which would be O(count) and
  * is wasteful for IDF lookup).
@@ -75,7 +75,7 @@ tp_get_unified_doc_freq(
  * Much faster than calling tp_get_unified_doc_freq in a loop because
  * it opens each segment only once instead of once per term.
  *
- * Phase 4 of issue #374: `memtable_src` is a (possibly NULL) chain
+ * Per issue #374: `memtable_src` is a (possibly NULL) chain
  * source; we read each term's doc_freq via the source op without
  * materializing posting lists.
  */
@@ -153,7 +153,7 @@ tp_score_documents(
 	}
 
 	/*
-	 * Phase 4 of issue #374: totals come from `metap` (persisted
+	 * Per issue #374: totals come from `metap` (persisted
 	 * segments) + the chain source (active memtable on disk).
 	 * The shmem atomic is still bumped on the primary for vacuum's
 	 * shrinkage protocol but is not authoritative for queries (it

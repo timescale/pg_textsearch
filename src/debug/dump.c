@@ -199,7 +199,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	 *
 	 * total_docs / total_len come from the shared-memory atomics
 	 * that pre-date the post-#374 split between durable corpus
-	 * state (metapage) and the in-flight memtable cache.  Phase 4+
+	 * state (metapage) and the in-flight memtable cache.  Current
 	 * scoring no longer trusts these atomics (see comment in
 	 * src/memtable/log.c:tp_add_document_terms); they are kept
 	 * alive only because the existing VACUUM-shrinkage clamp still

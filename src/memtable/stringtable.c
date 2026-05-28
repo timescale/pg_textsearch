@@ -512,10 +512,10 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
  * in-memory cache structures (string table, posting lists, doc-
  * length table).
  *
- * Used by the cache apply protocol (phase 3) to bring the cache
- * up to date with the on-disk chain. The caller has already
- * parsed a (ctid, terms[], frequencies[], doc_length) tuple out
- * of a chain doc record.
+ * Used by the cache apply protocol to bring the cache up to
+ * date with the on-disk chain. The caller has already parsed a
+ * (ctid, terms[], frequencies[], doc_length) tuple out of a
+ * chain doc record.
  *
  * Idempotent by CTID: tp_store_document_length is the single
  * check-and-add gate.  If the CTID is already in the doclength

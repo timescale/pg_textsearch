@@ -1,5 +1,5 @@
 -- Unit coverage for the in-memory memtable cache TpDataSource
--- (cache_source.c, phase 4 of docs/memtable_cache.md).
+-- (cache_source.c; see docs/memtable_cache.md).
 --
 -- Drives bm25_test_cache_source directly so we can observe the
 -- TpDataSource interface (open / total_docs / get_postings /

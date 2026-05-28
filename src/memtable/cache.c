@@ -69,16 +69,15 @@ extern int tp_memory_limit_kb;
  * Rationale (see docs/memtable_cache.md "Memory cap"): with the
  * default 2 GiB global limit and 8 concurrent indexes, each gets
  * 256 MiB of cache headroom before catchup starts returning
- * BUDGET_EXCEEDED.  Phase 6 layers the global-cap eviction
- * protocol on top.
+ * BUDGET_EXCEEDED.  The global-cap eviction protocol layers on
+ * top.
  */
 #define TP_CACHE_INDEX_CAP_DIVISOR 8
 
 /*
  * Global soft cap = memory_limit / 2; hard cap = memory_limit.
- * Phase 6 enforces both at apply-protocol entry; the per-index
- * soft cap from the original Phase 3 design still drives the
- * per-record short-circuit inside apply.
+ * Both are enforced at apply-protocol entry; the per-index soft
+ * cap still drives the per-record short-circuit inside apply.
  */
 #define TP_CACHE_GLOBAL_SOFT_CAP_DIVISOR 2
 
@@ -118,8 +117,8 @@ tp_cache_global_hard_cap_bytes(void)
  * safely.
  *
  * The two atomics are deliberately NOT mutated under a single
- * lock — the global is approximate by design (Phase 6 hard cap
- * is documented as approximate; see
+ * lock — the global is approximate by design (the hard cap is
+ * documented as approximate; see
  * docs/memtable_cache.md §"Memory cap (3 tiers)").
  */
 static inline void
@@ -1089,11 +1088,11 @@ bm25_cache_bump_spill_generation(PG_FUNCTION_ARGS)
  * bm25_cache_global_estimated_bytes() -> bigint
  *
  * Returns the registry-wide estimated_total_bytes counter.
- * Permanent unit-test scaffold for the Phase 6 memory-cap
- * accounting protocol (docs/memtable_cache.md §"Memory cap
- * (3 tiers)").  Production callers should not depend on this
- * being precise: it's a soft accounting tracker, not a
- * resource accounting source of truth.
+ * Permanent unit-test scaffold for the memory-cap accounting
+ * protocol (docs/memtable_cache.md §"Memory cap (3 tiers)").
+ * Production callers should not depend on this being precise:
+ * it's a soft accounting tracker, not a resource accounting
+ * source of truth.
  *
  * INTERNAL-only; revoked from PUBLIC in the install/upgrade SQL.
  */

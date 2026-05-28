@@ -71,11 +71,11 @@ bool tp_compress_segments = true;
 /*
  * Memtable shared-memory cache enable flag.  Gates the read-path
  * chooser (tp_memtable_source_create_for_read) on the cache vs
- * the on-disk chain.  Defaults to on: phase 5 wired
- * tp_spill_finalize to bump the per-index spill_generation and
- * call tp_cache_clear, closing the cross-spill staleness window
- * that previously forced opt-in.  Standbys still bypass the
- * cache via RecoveryInProgress() in the chooser.
+ * the on-disk chain.  Defaults to on: tp_spill_finalize bumps
+ * the per-index spill_generation and calls tp_cache_clear,
+ * closing the cross-spill staleness window that would otherwise
+ * force opt-in.  Standbys still bypass the cache via
+ * RecoveryInProgress() in the chooser.
  */
 bool tp_memtable_cache_enabled = true;
 

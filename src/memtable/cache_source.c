@@ -409,14 +409,14 @@ tp_memtable_cache_source_create(
 		cs->holding_cache_lock = true;
 
 		/*
-		 * Re-check handle validity under cache.lock SHARED.  In
-		 * phase 4 nothing concurrent can invalidate them (per-
+		 * Re-check handle validity under cache.lock SHARED.
+		 * Currently nothing concurrent can invalidate them (per-
 		 * index SHARED excludes spill EXCL, and tp_cache_clear
 		 * needs cache.lock EXCL which we now hold SHARED against);
-		 * but the check is cheap and protects future phases that
-		 * may relax that invariant (eviction in phase 7).  We
-		 * raise an error rather than return NULL here because we
-		 * already returned from catchup_cache with OK, so any
+		 * but the check is cheap and protects future changes that
+		 * may relax that invariant (e.g. cross-index eviction).
+		 * We raise an error rather than return NULL here because
+		 * we already returned from catchup_cache with OK, so any
 		 * invalidation is structural.
 		 */
 		if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID ||

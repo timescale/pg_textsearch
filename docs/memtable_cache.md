@@ -114,11 +114,11 @@ it's worth stating precisely:
 This PR picks lazy: write paths kept at v2 cost, smaller
 apply-protocol surface area, and the spill path reuses the
 shared cache for its segment-write pass (then immediately
-invalidates the cache via `tp_cache_clear`).  The phase-8
-benchmark phase tests whether the bounded first-query catchup
-cost is in fact tolerable.  Promoting select hot terms to eager
-update later is a refinement we can layer in without
-restructuring the cache.
+invalidates the cache via `tp_cache_clear`).  Benchmarks
+validate that the bounded first-query catchup cost is in fact
+tolerable.  Promoting select hot terms to eager update later
+is a refinement we can layer in without restructuring the
+cache.
 
 ## What we resurrect
 
@@ -160,19 +160,14 @@ the cache.
 
 ## Data structures
 
-The existing `TpMemtable` struct (`src/index/state.h`) is
+The existing `TpMemtable` struct (`src/index/state.h`) was
 effectively dead after the on-disk-memtable cutover:
-`string_hash_handle` and `doc_lengths_handle` are only ever set
+`string_hash_handle` and `doc_lengths_handle` were only ever set
 to `DSHASH_HANDLE_INVALID`, and the three counters
-(`total_postings`, `num_terms`, `total_term_len`) are only ever
-initialized to 0 and never read.  **Phase 2 of this work
-deletes the three dead counters and rewrites the struct around
-the cache contract.**  (Phase 1 leaves the struct intact: the
-resurrected v1 code still writes to `num_terms` /
-`total_term_len`, and decoupling that is part of the phase 2
-rewrite, not phase 1.)  `string_hash_handle` and
-`doc_lengths_handle` survive because the cache will populate
-them with real values:
+(`total_postings`, `num_terms`, `total_term_len`) were only ever
+initialized to 0 and never read.  The cache wires them back up:
+`string_hash_handle` and `doc_lengths_handle` are populated with
+real values, and the dead counters are removed:
 
 ```c
 /* src/index/state.h, rewritten for the cache */
@@ -933,7 +928,7 @@ Additional correctness tests this PR adds:
      `pg_textsearch.memtable_cache_enabled = on` on both nodes.
      Drive a write+query workload on the primary, then query
      the standby. Assert via the `log_cache_state` debug GUC
-     (added in phase 3) that the standby logs "cache disabled
+     that the standby logs "cache disabled
      by recovery" and falls through to chain_source. Compare
      standby results to primary results: must match. This
      guards against a subtle failure mode where the
@@ -1050,11 +1045,11 @@ these labels**. Once the cache lands, the descriptive names are:
 | "chain source" / "cache source"               | "v1/v2 source" |
 | "memtable v2 redesign (#374)" → just "#374" or "the on-disk memtable redesign" | "memtable v2 redesign" |
 
-Phase 1's cleanup pass through `src/index/state.{c,h}`,
+The cleanup pass through `src/index/state.{c,h}`,
 `src/index/metapage.{c,h}`, `src/access/build.c`, `src/mod.c`,
 and `src/constants.h` rewrites the existing `v1`/`v2` comments
-to the descriptive form. Tracked as part of phase 1 below so
-the resurrected code lands with the same convention.
+to the descriptive form, so the resurrected code lands with
+the same convention.
 
 Issue numbers (#374, #345, #349, #350, #377) remain — those
 are persistent references; only the "vN" labels are dropped.
@@ -1100,67 +1095,62 @@ are persistent references; only the "vN" labels are dropped.
    if profiling shows the cursor check costs us under
    contention.
 
-## Phases
+## Scope delivered
 
-Implementation order (each independently reviewable; each leaves
-`make installcheck` green via the helpers from #391):
+The work lands as a set of self-contained, independently
+reviewable changes (each leaves `make installcheck` green via
+the helpers from #391):
 
-1. **Resurrect v1 in-memory pieces** + **terminology cleanup**.
-   `memtable/{memtable,posting,stringtable}.{c,h}` +
-   `posting_entry.h` from `62308b82`, with comment headers
-   rewritten to use "in-memory memtable cache" rather than
-   "v1". Wire into Makefile. Compile-clean, no callers. Same
-   pass sweeps `state.{c,h}`, `metapage.{c,h}`, `build.c`,
-   `mod.c`, `constants.h` for the v1/v2 → on-disk/in-memory
-   rename (see "Terminology going forward").
-2. **Cache lifecycle scaffolding**. Add `apply_lock`, `lock`,
-   cursor fields, `estimated_bytes` to `TpMemtable`. Update
-   `state.c` init/teardown. Add `tp_cache_clear`. No mutation
-   paths yet.
-3. **Apply protocol**. Implement `apply_to_tail` (catchup) and
-   the `cold_build` bootstrap path in `cache.{c,h}`. Both
-   advance the cursor and share the same invariants
-   (apply_lock EXCL serialization, generation-token check), but
-   take `cache.lock` in different modes (SHARED for catchup,
-   EXCL for cold_build). Factor the chain walker out of
-   `chain_source.c` for reuse. Unit tests against synthetic
-   cursors.
-4. **Read path**. Implement `tp_memtable_cache_source_create`
-   with cold lazy build + catchup. Wire scoring to prefer the
-   cache source when `pg_textsearch.memtable_cache_enabled`
-   (new GUC, default **on**) is true; cache_source_create
-   returns NULL when `RecoveryInProgress()` is true, falling
-   through to chain_source so standbys preserve today's
-   behavior exactly. Add `pg_textsearch.log_cache_state`
-   (debug GUC, default off) that NOTICEs the per-query cache
-   outcome (`cold_build` / `catchup_applied N records` /
-   `catchup_noop` / `disabled_by_recovery` / `aborted_budget`
-   / `disabled_by_guc`), used by the replication and memory-
-   cap tests to make state-coverage assertions explicit. Both
-   helpers from #391 (`validate_bm25_scoring`, `validate_
-   index_vs_standalone`) start exercising cold + warm via the
-   cache.
-5. **Spill consumption from cache**. `tp_write_segment_from_
-   cache` after catchup; chain_source fallback when budget
-   exceeded. Modify `tp_spill_finalize` to bump
-   `shared->spill_generation` under per-index EXCL **before**
-   zeroing `meta.head_blkno`/`meta.tail_blkno`, so any reader
-   acquiring per-index SHARED after the spill sees the new
-   generation. `tp_spill_finalize` also clears the cache.
-6. **3-tier memory cap**. Per-index soft, global soft
-   (`evict_largest` with `global_eviction_mutex` +
-   skip-caller's-own-index), global hard. Add
-   `cache_memory_cap.sql` test that exercises both same-index
-   and cross-index eviction paths.
-7. **Replication coverage**. Add `replication_cache.sh` (C1
-   standby-runtime-disabled, C2 long-lived backend across
-   spill, C3 post-promotion cold-build). Run the existing
-   replication suite with the cache GUC default `on` and
-   confirm no regressions in
-   `replication{,_correctness,_concurrency,_failover,_
-   cascading,_compat,_spill_paths,_parallel_build,_issue_
-   342}.sh`.
-8. **Benchmark wiring**. Extend `benchmark.yml` and
-   `benchmark-concurrent-insert.yml` with the
-   `memtable_cache: [off, on]` matrix dimension. Run nightly
-   for two weeks to set baselines. Decide soft-fail thresholds.
+- **Resurrected in-memory pieces** + **terminology cleanup**.
+  `memtable/{memtable,posting,stringtable}.{c,h}` +
+  `posting_entry.h` from `62308b82`, with comment headers
+  rewritten to use "in-memory memtable cache" rather than
+  "v1". Wired into the Makefile. The same pass sweeps
+  `state.{c,h}`, `metapage.{c,h}`, `build.c`, `mod.c`,
+  `constants.h` for the v1/v2 → on-disk/in-memory rename
+  (see "Terminology going forward").
+- **Cache lifecycle scaffolding**. Added `apply_lock`, `lock`,
+  cursor fields, `estimated_bytes` to `TpMemtable`. Updated
+  `state.c` init/teardown. Added `tp_cache_clear`. No
+  mutation paths yet at this layer.
+- **Apply protocol**. `apply_to_tail` (catchup) and the
+  `cold_build` bootstrap path in `cache.{c,h}`. Both advance
+  the cursor and share the same invariants (apply_lock EXCL
+  serialization, generation-token check), but take
+  `cache.lock` in different modes (SHARED for catchup, EXCL
+  for cold_build). The chain walker is factored out of
+  `chain_source.c` for reuse. Unit tests against synthetic
+  cursors.
+- **Read path**. `tp_memtable_cache_source_create` with cold
+  lazy build + catchup. Scoring prefers the cache source when
+  `pg_textsearch.memtable_cache_enabled` (default **on**) is
+  true; `cache_source_create` returns NULL when
+  `RecoveryInProgress()` is true, falling through to
+  chain_source so standbys preserve today's behavior exactly.
+  `pg_textsearch.log_cache_state` (debug GUC, default off)
+  NOTICEs the per-query cache outcome (`cold_build` /
+  `catchup_applied N records` / `catchup_noop` /
+  `disabled_by_recovery` / `aborted_budget` / `disabled_by_
+  guc`), used by the replication and memory-cap tests to make
+  state-coverage assertions explicit. Both helpers from #391
+  (`validate_bm25_scoring`, `validate_index_vs_standalone`)
+  exercise cold + warm via the cache.
+- **Spill consumption from cache**.
+  `tp_write_segment_from_cache` runs after catchup, with a
+  chain_source fallback when the budget is exceeded.
+  `tp_spill_finalize` bumps `shared->spill_generation` under
+  per-index EXCL **before** zeroing
+  `meta.head_blkno`/`meta.tail_blkno`, so any reader acquiring
+  per-index SHARED after the spill sees the new generation.
+  `tp_spill_finalize` also clears the cache.
+- **3-tier memory cap**. Per-index soft, global soft
+  (`evict_largest` with `global_eviction_mutex` +
+  skip-caller's-own-index), global hard. `cache_memory_cap.sql`
+  exercises both same-index and cross-index eviction paths.
+- **Replication and benchmark coverage** to follow as
+  separate work items: `replication_cache.sh` (C1
+  standby-runtime-disabled, C2 long-lived backend across
+  spill, C3 post-promotion cold-build), and a
+  `memtable_cache: [off, on]` matrix dimension in
+  `benchmark.yml` / `benchmark-concurrent-insert.yml` for
+  ongoing perf tracking.

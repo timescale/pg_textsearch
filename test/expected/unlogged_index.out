@@ -37,8 +37,8 @@ WHERE c.relname = 'unlogged_idx';
 -- Coverage for level-N → level-(N+1) merge on an UNLOGGED index
 --
 -- merge.c uses GenericXLog for the linkage update on both
--- WAL-logged and UNLOGGED / TEMP indexes (Phase 4 of issue #374
--- unified the paths).  The UNLOGGED case is otherwise unexercised
+-- WAL-logged and UNLOGGED / TEMP indexes (issue #374 unified
+-- the paths).  The UNLOGGED case is otherwise unexercised
 -- by the regression suite -- almost every other test runs against
 -- WAL-logged indexes -- so drive a real compaction here.
 --

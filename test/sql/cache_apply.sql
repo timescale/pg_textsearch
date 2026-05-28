@@ -1,10 +1,10 @@
 -- Unit coverage for the in-memory memtable cache apply protocol
--- (cache.c, phase 3 of docs/memtable_cache.md).
+-- (cache.c; see docs/memtable_cache.md).
 --
 -- Drives bm25_cache_cold_build / bm25_cache_apply_to_tail directly
 -- so we can observe (result, records_applied, cursor_seq,
 -- estimated_bytes) deltas across each step without going through
--- the normal reader path (which lands in phase 4).
+-- the normal reader path.
 --
 -- Records come from real heap inserts so we exercise the
 -- production write path end-to-end.

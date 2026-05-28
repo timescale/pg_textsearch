@@ -1,4 +1,4 @@
--- Integration coverage for the Phase 6 memory cap and the
+-- Integration coverage for the memory cap and the
 -- cross-index eviction path
 -- (docs/memtable_cache.md §"Memory cap (3 tiers)").
 --

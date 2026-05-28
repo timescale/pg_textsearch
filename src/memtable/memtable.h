@@ -68,12 +68,12 @@ extern TpPostingList *tp_get_or_create_posting_list(
  *   - corpus stats in TpSharedIndexState: those reflect the on-disk
  *     chain (source of truth), not the cache.
  *
- * Lock contract.  Phase 3+ callers (cold_build retry,
- * generation-mismatch drop, spill_finalize) acquire cache.lock EXCL
- * before calling.  Phase 2's only caller is the DROP-INDEX /
- * subxact-abort teardown path, which runs while no other backend
- * can be reading the cache (AccessExclusiveLock on the index, or
- * shared-state already unregistered); no cache.lock acquisition is
- * needed there.  See docs/memtable_cache.md.
+ * Lock contract.  Callers that may race against readers
+ * (cold_build retry, generation-mismatch drop, spill_finalize)
+ * acquire cache.lock EXCL before calling.  The DROP-INDEX /
+ * subxact-abort teardown path runs while no other backend can be
+ * reading the cache (AccessExclusiveLock on the index, or
+ * shared-state already unregistered); no cache.lock acquisition
+ * is needed there.  See docs/memtable_cache.md.
  */
 extern void tp_cache_clear(dsa_area *dsa, TpMemtable *memtable);
