@@ -496,9 +496,6 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 		entry->key.term.dp =
 				tp_alloc_string_dsa(local_state->dsa, term, term_len);
 		entry->key.posting_list = tp_alloc_posting_list(local_state->dsa);
-
-		pg_atomic_fetch_add_u64(&memtable->num_terms, 1);
-		pg_atomic_fetch_add_u64(&memtable->total_term_len, term_len);
 	}
 
 	posting_list = dsa_get_address(local_state->dsa, entry->key.posting_list);

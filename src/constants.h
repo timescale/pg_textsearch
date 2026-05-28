@@ -122,6 +122,16 @@
 #define TP_TRANCHE_POSTING_LOCK 1009
 
 /*
+ * In-memory memtable cache LWLocks (see docs/memtable_cache.md).
+ * apply_lock serializes cache mutators (reader catchup, cold build,
+ * spill catchup, tp_cache_clear).  lock is the cache lifetime lock,
+ * held SHARED for the lifetime of a served TpDataSource and EXCL only
+ * for drop / evict.
+ */
+#define TP_TRANCHE_CACHE_APPLY_LOCK 1010
+#define TP_TRANCHE_CACHE_LOCK		1011
+
+/*
  * Global GUC variables declared in mod.c
  * Note: tp_relopt_kind is declared in index.c as it requires
  * access/reloptions.h

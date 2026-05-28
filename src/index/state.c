@@ -41,6 +41,7 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
+#include "memtable/memtable.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -370,10 +371,14 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
 	shared_state->memtable_dp = memtable_dp;
 
@@ -535,10 +540,14 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
 	/* Store memtable pointer in shared state for memtable access */
 	shared_state->memtable_dp = memtable_dp;
@@ -565,59 +574,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	entry->local_state = local_state;
 
 	return local_state;
-}
-
-/*
- * Recreate private DSA for build mode
- *
- * This is called after spilling to disk. We destroy the entire private DSA
- * (freeing ALL memory to OS) and create a fresh one for the next batch.
- * This provides perfect memory reclamation.
- */
-void
-tp_recreate_build_dsa(TpLocalIndexState *local_state)
-{
-	dsa_area   *new_dsa;
-	TpMemtable *new_memtable;
-	dsa_pointer memtable_dp;
-
-	Assert(local_state != NULL);
-	Assert(local_state->is_build_mode);
-
-	/*
-	 * Detach from old DSA. This calls dsa_detach() which, for a
-	 * non-attached DSA (no other backends), completely destroys it
-	 * and returns ALL memory to the OS. Perfect reclamation!
-	 */
-	if (local_state->dsa)
-		dsa_detach(local_state->dsa);
-
-	/*
-	 * Create fresh private DSA using fixed tranche ID.
-	 * Using a fixed ID avoids exhausting tranche IDs when creating many
-	 * indexes (e.g., partitioned tables with 500+ partitions).
-	 */
-	new_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
-	if (!new_dsa)
-		elog(ERROR, "Failed to recreate private DSA for build");
-
-	/* Allocate fresh memtable in new DSA */
-	memtable_dp = dsa_allocate(new_dsa, sizeof(TpMemtable));
-	if (!DsaPointerIsValid(memtable_dp))
-		elog(ERROR, "Failed to allocate memtable in new private DSA");
-
-	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
-	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&new_memtable->total_postings, 0);
-	pg_atomic_init_u64(&new_memtable->num_terms, 0);
-	pg_atomic_init_u64(&new_memtable->total_term_len, 0);
-	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-
-	/* Update shared state with new memtable pointer */
-	local_state->shared->memtable_dp = memtable_dp;
-
-	/* Update local state with new DSA */
-	local_state->dsa = new_dsa;
 }
 
 /*
@@ -671,10 +627,14 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
 	/* Update shared state with new memtable pointer */
 	local_state->shared->memtable_dp = memtable_dp;
@@ -824,14 +784,29 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 		else if (ls->shared != NULL && global_dsa != NULL)
 		{
 			/*
-			 * Runtime mode: memtable_dp held DSA dshash tables
-			 * in v1; v2 keeps it allocated but empty.  Free the
-			 * stub allocation so the surrounding shared-state
-			 * free can complete.  Phase 7B removes the field
-			 * entirely.
+			 * Runtime mode: the in-memory cache (see
+			 * docs/memtable_cache.md) may have populated the
+			 * dshash tables hanging off the TpMemtable; drop
+			 * them first so dsa_free on the TpMemtable
+			 * allocation does not leak the dshash internals.
+			 * Safe with an empty cache: tp_cache_clear is a
+			 * no-op when both handles are INVALID.
+			 *
+			 * Subxact abort doesn't acquire cache.lock: this
+			 * path is unwinding an aborted CREATE-INDEX-like
+			 * subtransaction whose shared state is about to be
+			 * unregistered, so no concurrent reader can be
+			 * holding cache.lock.
 			 */
+			TpMemtable *mt = NULL;
+
 			if (DsaPointerIsValid(ls->shared->memtable_dp))
+			{
+				mt = (TpMemtable *)
+						dsa_get_address(global_dsa, ls->shared->memtable_dp);
+				tp_cache_clear(global_dsa, mt);
 				dsa_free(global_dsa, ls->shared->memtable_dp);
+			}
 		}
 
 		/* Free shared state from global DSA and unregister */
@@ -937,13 +912,24 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/*
-	 * v1 stored DSA dshash tables off shared_state->memtable_dp;
-	 * v2 keeps the stub allocation but doesn't populate it.
-	 * Free the stub so the surrounding shared-state free can
-	 * complete.  Phase 7B removes the field entirely.
+	 * The in-memory cache (see docs/memtable_cache.md) may have
+	 * populated the dshash tables hanging off the TpMemtable; drop
+	 * them first so dsa_free on the TpMemtable allocation does not
+	 * leak the dshash internals.  Safe with an empty cache:
+	 * tp_cache_clear is a no-op when both handles are INVALID.
+	 *
+	 * DROP INDEX runs under AccessExclusiveLock on the index, so no
+	 * concurrent backend can be reading the cache here; we do not
+	 * acquire cache.lock.
 	 */
 	if (DsaPointerIsValid(shared_state->memtable_dp))
+	{
+		TpMemtable *mt = (TpMemtable *)
+				dsa_get_address(dsa, shared_state->memtable_dp);
+
+		tp_cache_clear(dsa, mt);
 		dsa_free(dsa, shared_state->memtable_dp);
+	}
 
 	/* Free shared_state */
 	dsa_free(dsa, shared_dp);
@@ -994,10 +980,10 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  *
  * No WAL drain, no chain walk, and no recovery-time rebuild is
  * needed: the on-disk metapage + chain pages + segments already
- * encode every committed insert.  Atomic counters that survive
- * in shared state (e.g. `total_postings` for auto-spill) are
- * advisory; readers consult the chain source for authoritative
- * statistics.
+ * encode every committed insert.  The in-memory memtable cache
+ * (docs/memtable_cache.md) is derived state and lazily built on
+ * the first query after rebuild; readers consult the chain source
+ * for authoritative statistics in the meantime.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
@@ -1248,52 +1234,6 @@ tp_release_all_index_locks(void)
 		if (entry->local_state && entry->local_state->lock_held)
 			tp_release_index_lock(entry->local_state);
 	}
-}
-
-/*
- * Clear the memtable after segment spill by destroying hash tables completely.
- *
- * This destroys the string hash table and document lengths table entirely,
- * allowing their DSA memory to be freed. The tables will be recreated on
- * demand when new documents are added. This aggressive approach ensures
- * that DSA segments can be released back to the OS.
- *
- * Corpus statistics are preserved as they represent the overall index state.
- */
-void
-tp_clear_memtable(TpLocalIndexState *local_state)
-{
-	TpMemtable *memtable;
-
-	if (!local_state || !local_state->shared)
-		return;
-
-	memtable = get_memtable(local_state);
-	if (!memtable)
-		return;
-
-	/*
-	 * BUILD MODE: Destroy entire private DSA and create fresh one.
-	 * This provides perfect memory reclamation - ALL memory returns to OS.
-	 */
-	if (local_state->is_build_mode)
-	{
-		/* Destroy and recreate private DSA */
-		tp_recreate_build_dsa(local_state);
-		return;
-	}
-
-	/*
-	 * RUNTIME MODE: on-disk memtable contents live in shared
-	 * buffers (the on-disk chain), not in DSA.  Reset the
-	 * legacy auto-spill counters and trim the global DSA;
-	 * nothing else to do here.
-	 */
-	pg_atomic_write_u64(&memtable->total_postings, 0);
-	pg_atomic_write_u64(&memtable->num_terms, 0);
-	pg_atomic_write_u64(&memtable->total_term_len, 0);
-
-	dsa_trim(local_state->dsa);
 }
 
 /*

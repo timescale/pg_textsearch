@@ -193,15 +193,6 @@ tp_add_document_to_posting_list(
 
 	if (!local_state->is_build_mode)
 		LWLockRelease(&posting_list->lock);
-
-	/* Track total postings for spill threshold */
-	if (local_state->shared &&
-		DsaPointerIsValid(local_state->shared->memtable_dp))
-	{
-		TpMemtable *memtable = dsa_get_address(
-				local_state->dsa, local_state->shared->memtable_dp);
-		pg_atomic_fetch_add_u64(&memtable->total_postings, 1);
-	}
 }
 
 /*
