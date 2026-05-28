@@ -251,14 +251,7 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    already-held EXCL lock).
 2. Extract sorted `TermInfo[]` + finalized `TpDocMapBuilder`.
 3. Build the new L0 segment via `tp_write_segment`.
-4. **`tp_memtable_mark_chain_dead`**: walk the chain about to be
-   unlinked (including fragment continuation pages) and stamp each
-   page `DEAD` + `dead_fxid` in separate `GenericXLog` records
-   (one page per record; up to four buffers could be batched later).
-   Uses the spill transaction's `FullTransactionId` as the
-   recycle horizon.  Must run **before** step 5 while
-   `memtable_head_blkno` is still valid.
-5. `tp_spill_finalize`: one `GenericXLog` over up to 4
+4. **`tp_spill_finalize`**: one `GenericXLog` over up to 4
    buffers (metapage + new segment header + optionally the
    old chain head; typically 2 buffers in steady state):
    - `level_heads[0] = root`, `level_counts[0]++`
@@ -266,11 +259,27 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    - `memtable_head_blkno = memtable_tail_blkno = Invalid`
    - If old `level_heads[0]` was valid, set
      `new_header->next_segment = old_head`.
+5. **`tp_memtable_mark_chain_dead`**: walk the now-unlinked chain
+   (including fragment continuation pages) and stamp each page
+   `DEAD` + `dead_fxid` in separate `GenericXLog` records (one
+   page per record; up to four buffers could be batched later).
+   Uses the spill transaction's `FullTransactionId` as the
+   recycle horizon.
 6. Reset auto-spill counter heuristic.
 
-After step 5 the old chain blocks are **orphans**: no metapage
-pointer reaches them, but each page still has valid
-`TP_MEMTABLE_PAGE_MAGIC` and a `DEAD` stamp from step 4.
+**Crash-safe ordering**: Steps 4 and 5 are ordered finalize-first,
+then mark-dead. If we crash between step 4 and step 5, the chain
+pages are unreachable (metapage head cleared) but not stamped
+`DEAD`, so `tp_reclaim_dead_memtable_pages` won't free them — they
+leak until REINDEX. The reverse order (mark-dead before finalize)
+would be unsafe: a crash after marking but before finalize leaves
+pages stamped `DEAD` while still reachable via `metap.head`; once
+global xmin advances, vacuum would free pages still in the live
+chain, causing corruption on FSM reuse.
+
+After step 4 the old chain blocks are **orphans**: no metapage
+pointer reaches them. After step 5 each page has valid
+`TP_MEMTABLE_PAGE_MAGIC` and a `DEAD` stamp.
 In-flight scans that already latched a chain head may still walk
 those blocks against the metapage snapshot they started with;
 new scans use the post-spill metapage and skip them.
@@ -287,10 +296,12 @@ from the metapage.  Reclaim and reuse mirror segment compaction:
    under per-index `LW_SHARED`): scan main-fork blocks after
    the metapage; for each page that is valid memtable format and
    `DEAD`, compare `dead_fxid` to the global horizon via
-   `FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(),
-   GetOldestNonRemovableTransactionId(...))` and
-   `FullTransactionIdPrecedes` (wraparound-safe).  When the spill
-   horizon is old enough, call `RecordFreeIndexPage` (index FSM — **not**
+   `FullTransactionIdPrecedes` (wraparound-safe).  Before freeing,
+   check that the block is **not** in the current live chain
+   (defense-in-depth against the crash window between finalize
+   and mark-dead; see `tp_collect_reachable_chain_blocks`).
+   When the spill horizon is old enough and the block is not
+   reachable, call `RecordFreeIndexPage` (index FSM — **not**
    WAL-logged, same as `tp_segment_free_pages`).  Bump
    `IndexBulkDeleteResult.pages_free` and run
    `IndexFreeSpaceMapVacuum` when any pages were freed.
