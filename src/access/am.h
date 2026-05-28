@@ -206,3 +206,6 @@ bool   tp_validate(Oid opclassoid);
 
 /* Relation options kind - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
+
+/* Debug GUC: trigger PANIC after spill finalize for crash-safety testing */
+extern bool tp_debug_panic_after_spill_finalize;

@@ -138,6 +138,8 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
+| `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only) | false |
+| `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only) | false |
 
 
 ### Index Options

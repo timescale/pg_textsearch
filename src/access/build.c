@@ -9,6 +9,7 @@
 #include <access/generic_xlog.h>
 #include <access/tableam.h>
 #include <access/xact.h>
+#include <access/xlog.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
 #include <commands/progress.h>
@@ -212,6 +213,14 @@ tp_do_spill(
 		pfree(metap);
 
 		tp_spill_finalize(index_rel, root, docs_delta, len_delta);
+
+		if (tp_debug_panic_after_spill_finalize)
+		{
+			XLogFlush(GetXLogInsertRecPtr());
+			elog(PANIC,
+				 "pg_textsearch: debug crash after spill finalize "
+				 "(tp_debug_panic_after_spill_finalize)");
+		}
 
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
