@@ -151,14 +151,18 @@ the cache.
 ## Data structures
 
 The existing `TpMemtable` struct (`src/index/state.h`) is
-effectively dead after the v2 cutover: `string_hash_handle` and
-`doc_lengths_handle` are only ever set to `DSHASH_HANDLE_
-INVALID`, and the three counters (`total_postings`,
-`num_terms`, `total_term_len`) are only ever initialized to 0
-and never read. Phase 1 of this work deletes the three dead
-counters and rewrites the struct around the cache contract.
-`string_hash_handle` and `doc_lengths_handle` survive because
-the cache will populate them with real values:
+effectively dead after the on-disk-memtable cutover:
+`string_hash_handle` and `doc_lengths_handle` are only ever set
+to `DSHASH_HANDLE_INVALID`, and the three counters
+(`total_postings`, `num_terms`, `total_term_len`) are only ever
+initialized to 0 and never read.  **Phase 2 of this work
+deletes the three dead counters and rewrites the struct around
+the cache contract.**  (Phase 1 leaves the struct intact: the
+resurrected v1 code still writes to `num_terms` /
+`total_term_len`, and decoupling that is part of the phase 2
+rewrite, not phase 1.)  `string_hash_handle` and
+`doc_lengths_handle` survive because the cache will populate
+them with real values:
 
 ```c
 /* src/index/state.h, rewritten for the cache */
@@ -166,7 +170,8 @@ typedef struct TpMemtable
 {
     /* dshash inverted index: term → TpStringHashEntry.  Set by
      * cold_build, reset to DSHASH_HANDLE_INVALID by
-     * tp_cache_clear.  Identical schema to v1. */
+     * tp_cache_clear.  Identical schema to the original
+     * shared-memory memtable's term table. */
     dshash_table_handle string_hash_handle;
 
     /* dshash doc-length map: ctid → TpDocLengthEntry.  Same

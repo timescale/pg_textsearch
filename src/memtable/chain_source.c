@@ -3,7 +3,7 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * chain_source.c - TpDataSource over the on-disk memtable page
- *                  chain (memtable v2, issue #374).
+ *                  chain (issue #374).
  *
  * See chain_source.h for the concurrency contract and high-level
  * semantics.

@@ -212,8 +212,8 @@ tp_do_spill(
 }
 
 /*
- * Auto-spill memtable when the on-disk chain grows past the
- * configured page threshold (memtable v2, issue #374).
+ * Auto-spill the on-disk memtable when the chain grows past the
+ * configured page threshold (issue #374).
  *
  * The pre-lock read of chain_page_count is a fast bailout
  * (approximate: a concurrent insert may have bumped the counter

@@ -69,8 +69,8 @@ typedef struct TpSharedIndexState
 	pg_atomic_uint64 total_len;	 /* Total length of all documents */
 
 	/*
-	 * Auto-spill heuristic (memtable v2): number of chain pages
-	 * currently published in the on-disk memtable chain.
+	 * Auto-spill heuristic for the on-disk memtable: number of
+	 * chain pages currently published in the page chain.
 	 * Incremented after each successful page-publish
 	 * GenericXLogFinish in src/memtable/log.c; reset to 0 after
 	 * tp_spill_finalize() completes.  Not WAL-logged: on crash
@@ -99,11 +99,18 @@ typedef struct TpSharedIndexState
 	LWLock lock; /* Per-index lock for this index */
 
 	/*
-	 * Reserved: was used to invalidate per-backend docid-page
-	 * writer caches across a spill (memtable v1).  Memtable v2
-	 * (issue #374) removed the docid page chain, so the counter
-	 * is no longer read by any path.  Kept alive until the
-	 * shared-memory registry is itself retired (issue #377).
+	 * Spill generation counter.  Bumped by tp_spill_finalize()
+	 * under LW_EXCLUSIVE after the on-disk chain is truncated.
+	 * Acts as the in-memory memtable cache's invalidation
+	 * token: a cache built against generation N becomes stale
+	 * the moment this counter advances to N+1, even if a new
+	 * chain page happens to be allocated at the same block
+	 * number as the old head (ABA hole on head_blkno alone).
+	 * See docs/memtable_cache.md ("Spill detection").
+	 *
+	 * Not WAL-logged: standby query paths don't use the cache
+	 * (RecoveryInProgress() disables it), so primary-only
+	 * generation tracking is sufficient.
 	 */
 	pg_atomic_uint64 spill_generation;
 } TpSharedIndexState;

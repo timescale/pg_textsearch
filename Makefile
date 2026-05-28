@@ -33,8 +33,11 @@ OBJS = \
 	src/memtable/chain_source.o \
 	src/memtable/expull.o \
 	src/memtable/log.o \
+	src/memtable/memtable.o \
 	src/memtable/page.o \
+	src/memtable/posting.o \
 	src/memtable/scan.o \
+	src/memtable/stringtable.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \

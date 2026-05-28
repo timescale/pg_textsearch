@@ -1284,7 +1284,7 @@ tp_clear_memtable(TpLocalIndexState *local_state)
 	}
 
 	/*
-	 * RUNTIME MODE: v2 memtable contents live in shared
+	 * RUNTIME MODE: on-disk memtable contents live in shared
 	 * buffers (the on-disk chain), not in DSA.  Reset the
 	 * legacy auto-spill counters and trim the global DSA;
 	 * nothing else to do here.

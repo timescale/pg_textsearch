@@ -4,10 +4,10 @@
  *
  * log.h - On-disk memtable write path.
  *
- * Phase 2 of the memtable v2 redesign (see issue #374 and
- * plan.md).  This module appends document records to the
- * on-disk memtable page chain rooted at the metapage's
- * (memtable_head_blkno, memtable_tail_blkno) fields.
+ * Appends document records to the on-disk memtable page chain
+ * rooted at the metapage's (memtable_head_blkno,
+ * memtable_tail_blkno) fields.  See issue #374 and
+ * docs/memtable_v2.md for the design.
  *
  * Concurrency contract (committed to in Phase 2, enforced by
  * later phases):
