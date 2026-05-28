@@ -324,6 +324,14 @@ RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
+-- Cache source scaffold (in-memory memtable cache, phase 4).
+-- Same INTERNAL-ONLY disclaimer as above.
+CREATE FUNCTION @extschema@.bm25_test_cache_source(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_cache_source'
+LANGUAGE C STRICT;
+
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
@@ -335,4 +343,6 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_cold_build(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_apply_to_tail(text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_bump_spill_generation(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_cache_source(text, text)
     FROM PUBLIC;

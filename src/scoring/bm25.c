@@ -13,6 +13,7 @@
 #include "index/metapage.h"
 #include "index/source.h"
 #include "index/state.h"
+#include "memtable/cache_source.h"
 #include "memtable/chain_source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
@@ -165,7 +166,7 @@ tp_score_documents(
 	total_len64	 = (int64)metap->total_len;
 	pfree(metap);
 
-	memtable_src = tp_memtable_chain_source_create(
+	memtable_src = tp_memtable_source_create_for_read(
 			local_state,
 			index_relation,
 			(const char *const *)query_terms,

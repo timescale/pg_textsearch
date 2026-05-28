@@ -69,13 +69,23 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 bool tp_compress_segments = true;
 
 /*
- * Memtable shared-memory cache enable flag.  Scaffolding only:
- * this variable is registered as a GUC but not read anywhere in
- * this build.  A subsequent change will wire it to gate the
- * in-memory cache lookup path that sits in front of the on-disk
- * memtable chain.
+ * Memtable shared-memory cache enable flag.  Gates the read-path
+ * chooser (tp_memtable_source_create_for_read) on the cache vs
+ * the on-disk chain.  Defaults to off in this build; flipping to
+ * on opt-in lands first, then the default-on flip lands once
+ * spill catchup (phase 6) closes the staleness window after a
+ * spill.
  */
 bool tp_memtable_cache_enabled = false;
+
+/*
+ * Debug GUC for the in-memory memtable cache.  When enabled the
+ * read-path chooser logs cache state transitions (apply OK /
+ * BUDGET_EXCEEDED / cold_build OK / RETRY / ABORT / fall back to
+ * chain).  Off by default; intended for development and tests
+ * that need to assert which path served a query.
+ */
+bool tp_log_cache_state = false;
 
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
@@ -271,12 +281,29 @@ _PG_init(void)
 	DefineCustomBoolVariable(
 			"pg_textsearch.memtable_cache_enabled",
 			"Enable the in-memory memtable cache for queries.",
-			"When enabled (default once the cache is implemented), "
-			"queries read from a derived shared-memory cache rather "
-			"than walking the on-disk memtable chain. The chain "
-			"remains the source of truth. No-op in this build.",
+			"When enabled, queries are served from a derived "
+			"shared-memory cache rather than walking the on-disk "
+			"memtable chain.  The chain remains the source of "
+			"truth.  Default is off; set on to opt in.  Spill "
+			"catchup is wired up in a later phase, so flipping on "
+			"may return stale results across a spill until then.",
 			&tp_memtable_cache_enabled,
-			false, /* default off until cache implementation lands */
+			false,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.log_cache_state",
+			"Log in-memory memtable cache state transitions.",
+			"When enabled, the read-path chooser emits LOG messages "
+			"for each cache apply outcome (OK / BUDGET_EXCEEDED / "
+			"cold_build / RETRY / ABORT / fall back to chain).  "
+			"Intended for development and observability.",
+			&tp_log_cache_state,
+			false,
 			PGC_USERSET,
 			0,
 			NULL,
