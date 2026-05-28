@@ -225,45 +225,6 @@ tp_string_table_lookup(
 }
 
 /*
- * Insert a string into the hash table
- * Returns the entry (existing or new)
- */
-TpStringHashEntry *
-tp_string_table_insert(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len)
-{
-	TpStringKey		   lookup_key;
-	TpStringHashEntry *entry;
-	bool			   found;
-
-	Assert(area != NULL);
-	Assert(ht != NULL);
-	Assert(str != NULL);
-	Assert(len > 0);
-
-	/* Build lookup key with explicit length (no null termination required) */
-	lookup_key.term.str		= str;
-	lookup_key.posting_list = InvalidDsaPointer;
-	lookup_key.len			= len;
-
-	/* Try to find or insert the entry */
-	entry = (TpStringHashEntry *)
-			dshash_find_or_insert(ht, &lookup_key, &found);
-
-	if (!found)
-	{
-		/* New entry */
-		entry->key.term.dp		= tp_alloc_string_dsa(area, str, len);
-		entry->key.posting_list = tp_alloc_posting_list(area);
-	}
-
-	/* Release the lock acquired by dshash_find_or_insert */
-	dshash_release_lock(ht, entry);
-
-	return entry;
-}
-
-/*
  * Clear the hash table, removing all entries
  * Frees all DSA string allocations
  */
@@ -292,88 +253,6 @@ tp_string_table_clear(dsa_area *area, dshash_table *ht)
 	}
 
 	dshash_seq_term(&status);
-}
-
-/*
- * Get posting list for a term via string table lookup
- * Returns NULL if term not found
- */
-TpPostingList *
-tp_string_table_get_posting_list(
-		dsa_area *area, dshash_table *ht, const char *term)
-{
-	TpStringHashEntry *entry;
-	size_t			   term_len;
-
-	Assert(area != NULL);
-	Assert(ht != NULL);
-	Assert(term != NULL);
-
-	term_len = strlen(term);
-	entry	 = tp_string_table_lookup(area, ht, term, term_len);
-
-	if (entry && DsaPointerIsValid(entry->key.posting_list))
-	{
-		return (TpPostingList *)dsa_get_address(area, entry->key.posting_list);
-	}
-
-	return NULL;
-}
-
-/*
- * Get posting list for a specific term
- * Returns NULL if term not found
- */
-TpPostingList *
-tp_get_posting_list(TpLocalIndexState *local_state, const char *term)
-{
-	TpMemtable		  *memtable;
-	dshash_table	  *string_table;
-	TpStringHashEntry *string_entry;
-	TpPostingList	  *posting_list;
-	size_t			   term_len;
-
-	Assert(local_state != NULL);
-	Assert(term != NULL);
-
-	/* Get memtable from local state */
-	memtable = get_memtable(local_state);
-	if (!memtable)
-	{
-		elog(ERROR, "Cannot get memtable - index state corrupted");
-		return NULL; /* Never reached */
-	}
-
-	/* Get the string hash table from the memtable */
-	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
-		return NULL;
-
-	string_table = tp_string_table_attach(
-			local_state->dsa, memtable->string_hash_handle);
-	if (!string_table)
-	{
-		elog(WARNING, "Failed to attach to string hash table");
-		return NULL;
-	}
-
-	term_len = strlen(term);
-
-	/* Look up the term in the string table */
-	string_entry = tp_string_table_lookup(
-			local_state->dsa, string_table, term, term_len);
-
-	if (string_entry && DsaPointerIsValid(string_entry->key.posting_list))
-	{
-		posting_list = dsa_get_address(
-				local_state->dsa, string_entry->key.posting_list);
-		dshash_detach(string_table);
-		return posting_list;
-	}
-	else
-	{
-		dshash_detach(string_table);
-		return NULL;
-	}
 }
 
 /*

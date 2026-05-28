@@ -45,8 +45,6 @@ typedef struct TpDocLengthEntry
 /* Function declarations */
 
 /* Memtable-coordinated posting list access */
-extern TpPostingList *
-tp_get_posting_list(TpLocalIndexState *local_state, const char *term);
 extern TpPostingList *tp_get_or_create_posting_list(
 		TpLocalIndexState *local_state, const char *term);
 

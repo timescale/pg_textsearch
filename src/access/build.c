@@ -1351,34 +1351,28 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * CREATE INDEX transaction commits.
 			 */
 			{
-				TpLocalIndexState *pstate;
-				Buffer			   metabuf;
-				Page			   mpage;
-				TpIndexMetaPage	   metap;
+				Buffer			metabuf;
+				Page			mpage;
+				TpIndexMetaPage metap;
 
-				pstate = tp_create_shared_index_state(
+				(void)tp_create_shared_index_state(
 						RelationGetRelid(index),
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-				mpage = BufferGetPage(metabuf);
-				metap = (TpIndexMetaPage)PageGetContents(mpage);
-
-				pg_atomic_write_u32(
-						&pstate->shared->total_docs, metap->total_docs);
-				pg_atomic_write_u64(
-						&pstate->shared->total_len, metap->total_len);
-
 				if (build_progress.active)
 				{
+					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+					mpage = BufferGetPage(metabuf);
+					metap = (TpIndexMetaPage)PageGetContents(mpage);
+
 					build_progress.total_docs += (uint64)metap->total_docs;
 					build_progress.total_len += (uint64)metap->total_len;
 					build_progress.partition_count++;
-				}
 
-				UnlockReleaseBuffer(metabuf);
+					UnlockReleaseBuffer(metabuf);
+				}
 			}
 
 			return par_result;
@@ -1500,10 +1494,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);
 		}
-
-		/* Update shared state for runtime queries */
-		pg_atomic_write_u32(&index_state->shared->total_docs, total_docs);
-		pg_atomic_write_u64(&index_state->shared->total_len, total_len);
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));

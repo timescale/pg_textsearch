@@ -154,10 +154,6 @@ typedef struct TpSharedIndexState
 	 */
 	bool is_build_mode;
 
-	/* Corpus statistics for BM25 scoring */
-	pg_atomic_uint32 total_docs; /* Total number of documents */
-	pg_atomic_uint64 total_len;	 /* Total length of all documents */
-
 	/*
 	 * Auto-spill heuristic for the on-disk memtable: number of
 	 * chain pages currently published in the page chain.

@@ -15,8 +15,6 @@
 
 #include "constants.h"
 
-typedef struct TpLocalIndexState TpLocalIndexState;
-
 /*
  * Tapir Index Metapage Structure
  *
@@ -58,10 +56,10 @@ typedef struct TpIndexMetaPageData
 	 *
 	 * and BM25's N ≥ df(t) precondition for tp_calculate_idf holds.
 	 *
-	 * The shared-memory atomic additionally counts unflushed
-	 * memtable docs and is the source persisted at every spill;
-	 * this disk copy therefore lags between spills but is still in
-	 * sync with Σ segment.num_docs at spill/sync boundaries.
+	 * Unflushed memtable docs are NOT counted here; the on-disk
+	 * memtable chain (issue #374) is the in-flight buffer and
+	 * scoring composes its corpus totals from this metapage value
+	 * plus a chain-source open at read time.
 	 */
 	uint64 total_docs;
 	uint64 _unused_total_terms;		/* Unused, retained for on-disk compat */
@@ -103,11 +101,3 @@ typedef TpIndexMetaPageData *TpIndexMetaPage;
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
-
-/*
- * Persist the shared-memory atomic into the metapage.  Called at
- * every spill site; caller must hold LW_EXCLUSIVE on the per-index
- * lock.
- */
-extern void
-tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state);

@@ -64,8 +64,6 @@ tp_string_table_attach(dsa_area *area, dshash_table_handle handle);
 /* Core hash table operations */
 extern TpStringHashEntry *tp_string_table_lookup(
 		dsa_area *area, dshash_table *ht, const char *str, size_t len);
-extern TpStringHashEntry *tp_string_table_insert(
-		dsa_area *area, dshash_table *ht, const char *str, size_t len);
 extern void tp_string_table_clear(dsa_area *area, dshash_table *ht);
 
 /* Ensure the string hash table is initialized (call under EXCLUSIVE) */
@@ -90,20 +88,8 @@ extern void tp_cache_apply_document(
 		int				   term_count,
 		int32			   doc_length);
 
-/* Posting list access via string table */
-extern TpPostingList *tp_string_table_get_posting_list(
-		dsa_area *area, dshash_table *ht, const char *term);
-
 /* Posting list management in DSA */
 extern dsa_pointer tp_alloc_posting_list(dsa_area *dsa);
-extern TpPostingEntry *
-tp_alloc_posting_entries_dsa(dsa_area *area, uint32 capacity);
-
-/* Helper functions for dsa_pointer conversion */
-extern TpPostingList *
-tp_get_posting_list_from_dp(dsa_area *area, dsa_pointer dp);
-extern TpPostingEntry *
-tp_get_posting_entries_from_dp(dsa_area *area, dsa_pointer dp);
 
 /* LWLock tranche for string table locking */
 #define TP_STRING_HASH_TRANCHE_ID LWTRANCHE_FIRST_USER_DEFINED

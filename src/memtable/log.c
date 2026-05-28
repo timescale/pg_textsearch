@@ -797,15 +797,6 @@ tp_add_document_terms(
 {
 	tp_memtable_append(rel, ctid, doc_length, vector_bytes, vector_len);
 
-	/*
-	 * Corpus statistics: still bumped on the primary for
-	 * compatibility with vacuum's shrinkage protocol; readers
-	 * no longer trust these atomics.  Phase 7C will delete the
-	 * per-index DSA state along with these last bumps.
-	 */
-	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
-	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);
-
 	/* Track terms added in this transaction for bulk load detection. */
 	local_state->terms_added_this_xact += term_count;
 }

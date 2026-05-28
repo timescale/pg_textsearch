@@ -9,19 +9,12 @@
  */
 #include <postgres.h>
 
-#include <access/generic_xlog.h>
-#include <access/heapam.h>
-#include <catalog/index.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
-#include <storage/itemptr.h>
-#include <utils/builtins.h>
 #include <utils/rel.h>
 
 #include "constants.h"
 #include "index/metapage.h"
-#include "index/state.h"
-#include "types/vector.h"
 
 /*
  * Initialize Tapir index metapage
@@ -149,44 +142,4 @@ tp_get_metapage(Relation index)
 
 	UnlockReleaseBuffer(buf);
 	return result;
-}
-
-/*
- * Persist the shared-memory atomic into the metapage.  See
- * TpIndexMetaPageData.total_docs in metapage.h for semantics.
- *
- * Read the atomic only after taking the metapage buffer exclusive
- * lock so a concurrent VACUUM shrinkage (which also holds this lock
- * during its atomic sub + metap write) cannot slip in between our
- * read and our write and have its decrement clobbered by a stale
- * atomic snapshot.
- */
-void
-tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state)
-{
-	Buffer			  mbuf;
-	GenericXLogState *xlog_state;
-	Page			  mpage;
-	TpIndexMetaPage	  mp;
-	uint32			  total_docs;
-	uint64			  total_len;
-
-	if (index_state == NULL || index_state->shared == NULL)
-		return;
-
-	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-
-	total_docs = pg_atomic_read_u32(&index_state->shared->total_docs);
-	total_len  = pg_atomic_read_u64(&index_state->shared->total_len);
-
-	xlog_state = GenericXLogStart(index);
-	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
-	mp		   = (TpIndexMetaPage)PageGetContents(mpage);
-
-	mp->total_docs = total_docs;
-	mp->total_len  = total_len;
-
-	GenericXLogFinish(xlog_state);
-	UnlockReleaseBuffer(mbuf);
 }

@@ -334,54 +334,6 @@ tp_store_document_length(
 }
 
 /*
- * Walk the doc-length hash table and return (count, sum_lengths).
- *
- * Used by the cache apply protocol to compute the cache's view
- * of total_docs / total_len for query-time scoring (see
- * scoring/bm25.c and docs/memtable_cache.md).  Caller must hold
- * the per-index LWLock (any mode); we take the dshash partition
- * locks via dshash_seq_init.
- */
-void
-tp_doclength_summary(
-		TpLocalIndexState *local_state, uint32 *count, uint64 *sum_lengths)
-{
-	TpMemtable		 *memtable;
-	dshash_table	 *doclength_table;
-	dshash_seq_status status;
-	TpDocLengthEntry *entry;
-	uint32			  c = 0;
-	uint64			  s = 0;
-
-	Assert(local_state != NULL);
-	Assert(count != NULL);
-	Assert(sum_lengths != NULL);
-
-	memtable = get_memtable(local_state);
-	if (!memtable || memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-	{
-		*count		 = 0;
-		*sum_lengths = 0;
-		return;
-	}
-
-	doclength_table = tp_doclength_table_attach(
-			local_state->dsa, memtable->doc_lengths_handle);
-
-	dshash_seq_init(&status, doclength_table, false);
-	while ((entry = (TpDocLengthEntry *)dshash_seq_next(&status)) != NULL)
-	{
-		c++;
-		s += (uint32)entry->doc_length;
-	}
-	dshash_seq_term(&status);
-	dshash_detach(doclength_table);
-
-	*count		 = c;
-	*sum_lengths = s;
-}
-
-/*
  * Get document length using a pre-attached doclength table.
  * This is the optimized version for bulk lookups - avoids repeated
  * dshash_attach/detach overhead.
@@ -403,39 +355,4 @@ tp_get_document_length_attached(
 		return doc_length;
 	}
 	return -1; /* Not found */
-}
-
-/*
- * Get document length from the document length hash table.
- * Falls back to searching segments if not found in memtable.
- */
-int32
-tp_get_document_length(
-		TpLocalIndexState *local_state,
-		Relation index	   pg_attribute_unused(),
-		ItemPointer		   ctid)
-{
-	TpMemtable	 *memtable;
-	dshash_table *doclength_table;
-	int32		  doc_length;
-
-	Assert(local_state != NULL);
-	Assert(ctid != NULL);
-
-	memtable = get_memtable(local_state);
-	if (!memtable)
-		elog(ERROR, "Cannot get memtable - index state corrupted");
-
-	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
-		return -1; /* Not in memtable, may be in segment */
-
-	/* Attach to document length table */
-	doclength_table = tp_doclength_table_attach(
-			local_state->dsa, memtable->doc_lengths_handle);
-
-	/* Look up the document length using the attached table */
-	doc_length = tp_get_document_length_attached(doclength_table, ctid);
-
-	dshash_detach(doclength_table);
-	return doc_length;
 }

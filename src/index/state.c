@@ -351,8 +351,6 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	/* Initialize shared state */
 	shared_state->index_oid = index_oid;
 	shared_state->heap_oid	= heap_oid;
-	pg_atomic_init_u32(&shared_state->total_docs, 0);
-	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 	shared_state->is_build_mode = false; /* runtime-mode publication */
@@ -494,8 +492,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Initialize shared state */
 	shared_state->index_oid = index_oid;
 	shared_state->heap_oid	= heap_oid;
-	pg_atomic_init_u32(&shared_state->total_docs, 0);
-	pg_atomic_init_u64(&shared_state->total_len, 0);
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
 	/*
@@ -1076,7 +1072,8 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  * Standard GenericXLog replay restores both the chain pages and
  * the metapage's `memtable_head_blkno`/`memtable_tail_blkno`
  * pointers before any backend gets here, so this function only
- * has to (re)register shared state for lock coordination.
+ * has to (re)register shared state for lock coordination and
+ * seed the chain-page counter used by the auto-spill heuristic.
  *
  * The flow at a high level:
  *
@@ -1084,25 +1081,23 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  *   2. tp_create_shared_index_state with reuse_if_exists=true
  *      (atomic register-or-attach; concurrent rebuilds resolve
  *      to the same shared state)
+ *   3. walk the on-disk chain to seed `chain_page_count`
  *
- * No WAL drain, no chain walk, and no recovery-time rebuild is
- * needed: the on-disk metapage + chain pages + segments already
- * encode every committed insert.  The in-memory memtable cache
+ * No WAL drain and no recovery-time corpus rebuild are needed:
+ * the on-disk metapage + chain pages + segments already encode
+ * every committed insert.  The in-memory memtable cache
  * (docs/memtable_cache.md) is derived state and lazily built on
  * the first query after rebuild; readers consult the chain source
- * for authoritative statistics in the meantime.
+ * for in-flight statistics in the meantime.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
 {
 	Relation		   index_rel;
 	TpIndexMetaPage	   early_metap;
-	TpIndexMetaPage	   fresh_metap;
 	TpLocalIndexState *local_state;
 	Oid				   heap_oid;
 	TpDataSource	  *chain_src;
-	uint64			   chain_docs = 0;
-	uint64			   chain_len  = 0;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -1161,24 +1156,13 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Seed the advisory shared corpus atomics so the existing
-	 * vacuum-shrinkage protocol stays consistent across backend
-	 * boundaries: shared->total_docs = persisted segment docs +
-	 * on-disk chain docs.  Query correctness does not depend on
-	 * these atomics anymore (scoring reads metapage totals +
-	 * chain source directly); they are kept alive until the
-	 * shared-memory registry is itself retired (issue #377).
+	 * Seed the on-disk chain page counter so the auto-spill
+	 * threshold isn't blind to pages that pre-existed in the
+	 * index when this backend (or this shmem segment) was
+	 * started.  Corpus statistics (total_docs / total_len) live
+	 * entirely on the metapage and need no shmem seed.
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-	fresh_metap = tp_get_metapage(index_rel);
-	if (fresh_metap == NULL)
-	{
-		elog(WARNING, "Could not re-read metapage for index %u", index_oid);
-		tp_release_index_lock(local_state);
-		index_close(index_rel, AccessShareLock);
-		return local_state;
-	}
 
 	chain_src =
 			tp_memtable_chain_source_create(local_state, index_rel, NULL, 0);
@@ -1186,33 +1170,19 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	{
 		uint32 chain_pages;
 
-		chain_docs	= (uint64)chain_src->total_docs;
-		chain_len	= (uint64)chain_src->total_len;
 		chain_pages = tp_memtable_chain_source_page_count(chain_src);
 		tp_source_close(chain_src);
 
 		/*
-		 * Seed shared->chain_page_count from the on-disk chain
-		 * so the auto-spill threshold isn't blind to pages that
-		 * pre-existed in the index when this backend (or this
-		 * shmem segment) was started.  The writer always
-		 * increments the counter strictly under SHARED, but
-		 * we're inside tp_rebuild_index_from_disk's LW_EXCLUSIVE
-		 * (acquired above), so we can atomically initialize it
-		 * without racing the writer.
+		 * The writer always increments chain_page_count strictly
+		 * under SHARED, but we're inside tp_rebuild_index_from_disk's
+		 * LW_EXCLUSIVE (acquired above), so we can atomically
+		 * initialize it without racing the writer.
 		 */
 		pg_atomic_write_u32(
 				&local_state->shared->chain_page_count, chain_pages);
 	}
 
-	pg_atomic_write_u32(
-			&local_state->shared->total_docs,
-			(uint32)(fresh_metap->total_docs + chain_docs));
-	pg_atomic_write_u64(
-			&local_state->shared->total_len,
-			fresh_metap->total_len + chain_len);
-
-	pfree(fresh_metap);
 	tp_release_index_lock(local_state);
 	index_close(index_rel, AccessShareLock);
 

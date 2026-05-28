@@ -96,20 +96,15 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 
 /*
  * Apply the invariant total_docs = Σ segment.num_docs (and its
- * total_len counterpart) after Phase 3 has rebuilt or dropped
- * segments.  Decrements both the shared-memory atomic and the
- * on-disk metapage under the metapage buffer exclusive lock so a
- * concurrent tp_sync_metapage_stats (which acquires the same lock)
- * cannot observe a half-applied state or re-inflate the metapage
- * from the atomic between the two decrements.  See
+ * total_len counterpart) on the metapage after Phase 3 has
+ * rebuilt or dropped segments.  Subtraction is clamped at zero
+ * so a stale shrinkage value (e.g. from pre-fix L0 headers
+ * carrying inflated total_tokens) cannot underflow.  See
  * TpIndexMetaPageData.total_docs in metapage.h for the invariant.
  */
 static void
 tp_apply_vacuum_shrinkage(
-		Relation		   index,
-		TpLocalIndexState *index_state,
-		uint64			   docs_shrinkage,
-		uint64			   tokens_shrinkage)
+		Relation index, uint64 docs_shrinkage, uint64 tokens_shrinkage)
 {
 	Buffer			  mbuf;
 	GenericXLogState *xlog_state;
@@ -121,40 +116,6 @@ tp_apply_vacuum_shrinkage(
 
 	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-
-	if (index_state != NULL && index_state->shared != NULL)
-	{
-		/*
-		 * Clamp symmetrically with the metapage write below so a
-		 * shrinkage that exceeds the current atomic (reachable via
-		 * pre-fix L0 headers carrying inflated total_tokens) can't
-		 * wrap the u64 atomic.  A wrap would propagate back to disk
-		 * on the next tp_sync_metapage_stats, which writes the
-		 * atomic into metap unconditionally.
-		 */
-		if (docs_shrinkage > 0)
-		{
-			uint32 cur_docs = pg_atomic_read_u32(
-					&index_state->shared->total_docs);
-			uint32 sub_docs = (docs_shrinkage > (uint64)cur_docs)
-									? cur_docs
-									: (uint32)docs_shrinkage;
-
-			if (sub_docs > 0)
-				pg_atomic_fetch_sub_u32(
-						&index_state->shared->total_docs, sub_docs);
-		}
-		if (tokens_shrinkage > 0)
-		{
-			uint64 cur_len = pg_atomic_read_u64(
-					&index_state->shared->total_len);
-			uint64 sub_len = Min(cur_len, tokens_shrinkage);
-
-			if (sub_len > 0)
-				pg_atomic_fetch_sub_u64(
-						&index_state->shared->total_len, sub_len);
-		}
-	}
 
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
@@ -886,7 +847,7 @@ tp_bulkdelete(
 		}
 
 		tp_apply_vacuum_shrinkage(
-				info->index, index_state, docs_shrinkage, tokens_shrinkage);
+				info->index, docs_shrinkage, tokens_shrinkage);
 	}
 
 	/*
