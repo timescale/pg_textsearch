@@ -189,9 +189,17 @@ tp_do_spill(
 		*out_segment_root = root;
 
 	/*
-	 * Stamp the chain we are about to unlink (DEAD + dead_fxid in
-	 * WAL) before tp_spill_finalize clears memtable_head_blkno.
-	 * FSM recycle runs in tp_vacuumcleanup once the horizon is safe.
+	 * Finalize first, then mark dead - crash-safe ordering.
+	 *
+	 * We must disconnect the chain (clear metap.head) BEFORE stamping
+	 * pages DEAD.  If we crash between mark and finalize, the chain
+	 * is still reachable via metap.head but pages are stamped DEAD;
+	 * once xmin advances, tp_reclaim_dead_memtable_pages would free
+	 * pages still in the live chain, causing corruption on FSM reuse.
+	 *
+	 * By finalizing first: a crash after finalize but before marking
+	 * leaves pages unreachable but un-stamped, so reclaim won't touch
+	 * them.  Worst case: pages leak until REINDEX.
 	 */
 	{
 		BlockNumber		  chain_head;
@@ -202,11 +210,12 @@ tp_do_spill(
 		metap	   = tp_get_metapage(index_rel);
 		chain_head = metap->memtable_head_blkno;
 		pfree(metap);
+
+		tp_spill_finalize(index_rel, root, docs_delta, len_delta);
+
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
 	}
-
-	tp_spill_finalize(index_rel, root, docs_delta, len_delta);
 
 	/* Free dictionary + docmap (chain source no longer needed). */
 	tp_free_dictionary(terms, num_terms);

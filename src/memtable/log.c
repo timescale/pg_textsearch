@@ -410,11 +410,12 @@ memtable_append_fragment(
 		{
 			/*
 			 * Lost bootstrap race: another backend populated the
-			 * chain while we were extending pages.  The pages we
-			 * extended are unreachable via meta and become
-			 * orphans (no DEAD stamp); reclaim in Step 2.
+			 * chain while we were extending pages.  Mark our orphaned
+			 * pages DEAD so they can be reclaimed by vacuum.
 			 */
+			FullTransactionId horizon = ReadNextFullTransactionId();
 			UnlockReleaseBuffer(metabuf);
+			tp_memtable_mark_chain_dead(rel, thead_blkno, horizon);
 			pfree(cont_blknos);
 			return InvalidBlockNumber;
 		}

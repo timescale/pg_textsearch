@@ -94,10 +94,11 @@ extern BlockNumber tp_memtable_append(
  *   - Adds `docs_delta` / `len_delta` to total_docs / total_len
  *     (these are caller-supplied: the chain source's totals).
  *
- * Does not modify the old memtable chain pages.  The caller must
- * run `tp_memtable_mark_chain_dead` first so each unlinked page is
- * WAL-stamped `DEAD` + `dead_fxid` before head/tail are cleared here.
- * After this call the chain blocks are orphans (no metapage pointer).
+ * Does not modify the old memtable chain pages.  After this call
+ * the chain blocks are orphans (no metapage pointer); the caller
+ * should run `tp_memtable_mark_chain_dead` to WAL-stamp each page
+ * `DEAD` + `dead_fxid` for later reclaim (crash-safe ordering:
+ * finalize first, then mark dead).
  * `tp_vacuumcleanup` returns them to the index FSM via
  * `RecordFreeIndexPage`; `tp_memtable_alloc_page` reuses them.
  *
@@ -112,9 +113,10 @@ extern void tp_spill_finalize(
 /*
  * WAL-stamp every page in the memtable chain rooted at `head` as
  * dead (including fragment continuation pages).  Called from
- * `tp_do_spill` under LW_EXCLUSIVE after extract/write_segment and
- * before `tp_spill_finalize`.  `horizon` is stored in each page's
- * `dead_fxid` for later reclaim once globally safe.
+ * `tp_do_spill` under LW_EXCLUSIVE after tp_spill_finalize has
+ * disconnected the chain (crash-safe ordering: finalize first,
+ * then mark dead).  `horizon` is stored in each page's `dead_fxid`
+ * for later reclaim once globally safe.
  */
 extern void tp_memtable_mark_chain_dead(
 		Relation rel, BlockNumber head, FullTransactionId horizon);
