@@ -105,7 +105,7 @@ it's worth stating precisely:
 This PR picks lazy: write paths kept at v2 cost, smaller
 apply-protocol surface area, and the spill path consolidates
 its already-existing HTAB build into the shared cache. The
-phase-7 benchmark phase tests whether the bounded first-query
+phase-8 benchmark phase tests whether the bounded first-query
 catchup cost is in fact tolerable. Promoting select hot terms
 to eager update later is a refinement we can layer in without
 restructuring the cache.
@@ -910,9 +910,52 @@ Additional correctness tests this PR adds:
    spill boundary and rebuild from new chain head.
 
 2. **`test/scripts/replication_cache.sh`**: streaming-
-   replication coverage. Primary builds cache, replica lazy-
-   builds from replicated chain, scoring matches across both.
-   Spill replay on replica invalidates and rebuilds.
+   replication coverage with explicit cache-state assertions.
+   Three test cases:
+
+   - **C1: standby disables cache at runtime.**
+     Start primary + standby. Set
+     `pg_textsearch.memtable_cache_enabled = on` on both nodes.
+     Drive a write+query workload on the primary, then query
+     the standby. Assert via the `log_cache_state` debug GUC
+     (added in phase 3) that the standby logs "cache disabled
+     by recovery" and falls through to chain_source. Compare
+     standby results to primary results: must match. This
+     guards against a subtle failure mode where the
+     `RecoveryInProgress()` check is missed and the cache
+     silently builds on the standby, which would serve stale
+     data after a primary spill since `spill_generation` is
+     DSA-only and not bumped by replay.
+   - **C2: standby long-lived backend across primary spill.**
+     Reuses the existing `long_lived_open` /
+     `long_lived_query` infra from replication_lib.sh. Holds
+     an open psql session on the standby across a primary
+     spill cycle (write → spill → write); the standby's
+     answers must converge on the post-replay primary state,
+     same as today. The cache GUC is on; if any cache code
+     accidentally ran on the standby, this would fail with
+     stale results.
+   - **C3: post-promotion cold-build.**
+     Builds on the existing D2 pattern in
+     replication_failover.sh but adds explicit assertions
+     against `log_cache_state`: the first query against the
+     newly-promoted primary must log "cold-build", return the
+     correct count, and a subsequent query must log "catchup
+     no-op" (cursor already at tail).
+
+   The other replication scripts (`replication.sh`,
+   `replication_correctness.sh`, `replication_concurrency.sh`,
+   `replication_failover.sh`, `replication_cascading.sh`,
+   `replication_compat.sh`, `replication_spill_paths.sh`,
+   `replication_parallel_build.sh`, `replication_issue_342.sh`)
+   continue to run unchanged. With the cache GUC defaulting to
+   `on`, each test exercises the cache lifecycle on the
+   primary and the chain_source fallback on the standby
+   automatically. No new bug class is introduced — the cache
+   is derived state, so any divergence between cache results
+   and chain_source results would show up immediately as a
+   regression in `validate_bm25_scoring` /
+   `validate_index_vs_standalone`.
 
 3. **`test/sql/cache_memory_cap.sql`**: explicit memory-cap
    coverage. Configures a small `pg_textsearch.memory_limit`,
@@ -1069,9 +1112,19 @@ Implementation order (each independently reviewable; each leaves
    cursors.
 4. **Read path**. Implement `tp_memtable_cache_source_create`
    with cold lazy build + catchup. Wire scoring to prefer the
-   cache source when `tp_memtable_cache_enabled` is on. Both
-   helpers from #391 (`validate_bm25_scoring`, `validate_index_
-   vs_standalone`) start exercising cold + warm via the cache.
+   cache source when `pg_textsearch.memtable_cache_enabled`
+   (new GUC, default **on**) is true; cache_source_create
+   returns NULL when `RecoveryInProgress()` is true, falling
+   through to chain_source so standbys preserve today's
+   behavior exactly. Add `pg_textsearch.log_cache_state`
+   (debug GUC, default off) that NOTICEs the per-query cache
+   outcome (`cold_build` / `catchup_applied N records` /
+   `catchup_noop` / `disabled_by_recovery` / `aborted_budget`
+   / `disabled_by_guc`), used by the replication and memory-
+   cap tests to make state-coverage assertions explicit. Both
+   helpers from #391 (`validate_bm25_scoring`, `validate_
+   index_vs_standalone`) start exercising cold + warm via the
+   cache.
 5. **Spill consumption from cache**. `tp_write_segment_from_
    cache` after catchup; chain_source fallback when budget
    exceeded. Modify `tp_spill_finalize` to bump
@@ -1084,7 +1137,15 @@ Implementation order (each independently reviewable; each leaves
    skip-caller's-own-index), global hard. Add
    `cache_memory_cap.sql` test that exercises both same-index
    and cross-index eviction paths.
-7. **Benchmark wiring**. Extend `benchmark.yml` and
+7. **Replication coverage**. Add `replication_cache.sh` (C1
+   standby-runtime-disabled, C2 long-lived backend across
+   spill, C3 post-promotion cold-build). Run the existing
+   replication suite with the cache GUC default `on` and
+   confirm no regressions in
+   `replication{,_correctness,_concurrency,_failover,_
+   cascading,_compat,_spill_paths,_parallel_build,_issue_
+   342}.sh`.
+8. **Benchmark wiring**. Extend `benchmark.yml` and
    `benchmark-concurrent-insert.yml` with the
    `memtable_cache: [off, on]` matrix dimension. Run nightly
    for two weeks to set baselines. Decide soft-fail thresholds.
