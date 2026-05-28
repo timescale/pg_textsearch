@@ -294,10 +294,45 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
 LANGUAGE C STRICT;
 
+-- Cache apply protocol scaffolds (in-memory memtable cache,
+-- phase 3).  Same INTERNAL-ONLY disclaimer as the v2 chain
+-- scaffolds above.  Each returns a (result, records_applied,
+-- cursor_seq, estimated_bytes) tuple.
+CREATE FUNCTION @extschema@.bm25_cache_cold_build(
+    index_name text,
+    OUT result text,
+    OUT records_applied bigint,
+    OUT cursor_seq bigint,
+    OUT estimated_bytes bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'bm25_cache_cold_build'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_apply_to_tail(
+    index_name text,
+    OUT result text,
+    OUT records_applied bigint,
+    OUT cursor_seq bigint,
+    OUT estimated_bytes bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'bm25_cache_apply_to_tail'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_bump_spill_generation(
+    index_name text)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
+LANGUAGE C STRICT;
+
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_chain_source(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_cold_build(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_apply_to_tail(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_bump_spill_generation(text)
     FROM PUBLIC;
