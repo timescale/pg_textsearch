@@ -133,6 +133,27 @@ typedef struct TpSharedIndexState
 	/* Memtable stored in DSA */
 	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
+	/*
+	 * True while this shared state is published by a backend that
+	 * is still in BUILD mode (CREATE INDEX).  In that mode
+	 * `memtable_dp` is a pointer into the **private** DSA of the
+	 * building backend and MUST NOT be dereferenced through the
+	 * global DSA by any other backend (notably the cross-index
+	 * eviction walker at src/memtable/cache.c:evict_walk_cb).
+	 *
+	 * Set to true at registration time in
+	 * tp_create_build_index_state(), cleared in
+	 * tp_finalize_build_mode() under
+	 * tp_registry_eviction_mutex EXCL (the same mutex evict_largest
+	 * walks under) so the walker observes a consistent
+	 * (is_build_mode=false, memtable_dp in global DSA) transition.
+	 *
+	 * Read lock-free by the eviction walker; correctness comes from
+	 * the publish-before-register barrier on the true→true path
+	 * and the eviction_mutex on the true→false transition.
+	 */
+	bool is_build_mode;
+
 	/* Corpus statistics for BM25 scoring */
 	pg_atomic_uint32 total_docs; /* Total number of documents */
 	pg_atomic_uint64 total_len;	 /* Total length of all documents */

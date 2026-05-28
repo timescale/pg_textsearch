@@ -355,17 +355,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
-
-	/*
-	 * Initialize the per-index LWLock using a fixed tranche ID.
-	 * Using a fixed ID avoids exhausting tranche IDs when creating many
-	 * indexes (e.g., partitioned tables with 500+ partitions).
-	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
-	pg_atomic_init_u64(&shared_state->spill_generation, 0);
-
-	/* Allocate and initialize memtable */
-	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
+	shared_state->is_build_mode = false; /* runtime-mode publication */
+	memtable_dp					= dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
 
@@ -494,6 +485,20 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	pg_atomic_init_u64(&shared_state->total_len, 0);
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
+	/*
+	 * Mark this shared state as build-mode BEFORE we publish it
+	 * via tp_registry_register below.  The cross-index eviction
+	 * walker (src/memtable/cache.c:evict_walk_cb) reads this
+	 * flag lock-free and skips entries where it is true, which
+	 * prevents the walker from dereferencing memtable_dp through
+	 * the GLOBAL DSA once we publish a PRIVATE-DSA pointer at
+	 * "shared_state->memtable_dp = memtable_dp" further down.
+	 *
+	 * The flag is cleared in tp_finalize_build_mode() under
+	 * tp_registry_eviction_mutex EXCL, atomically with swapping
+	 * memtable_dp to a global-DSA pointer.
+	 */
+	shared_state->is_build_mode = true;
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 
@@ -593,29 +598,24 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	dsa_area   *global_dsa;
 	TpMemtable *memtable;
 	dsa_pointer memtable_dp;
+	LWLock	   *eviction_mutex;
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
 
 	/*
-	 * Destroy the private DSA. This returns ALL memory to the OS.
-	 * After build, the memtable should be empty (all data spilled to disk).
-	 */
-	if (local_state->dsa)
-	{
-		dsa_detach(local_state->dsa);
-		local_state->dsa = NULL;
-	}
-
-	/*
 	 * Attach to the global shared DSA for runtime operation.
 	 * This is the same DSA used by all backends for concurrent access.
+	 *
+	 * NOTE: we do NOT detach the private DSA yet.  The cross-index
+	 * eviction walker (src/memtable/cache.c:evict_walk_cb) skips
+	 * entries where shared->is_build_mode is true, so as long as
+	 * is_build_mode remains true the private memtable_dp is
+	 * safe.  We only detach after the swap+clear below.
 	 */
 	global_dsa = tp_registry_get_dsa();
 	if (!global_dsa)
 		elog(ERROR, "Failed to get global DSA for runtime mode");
-
-	local_state->dsa = global_dsa;
 
 	/*
 	 * Allocate a fresh memtable in the global DSA.
@@ -636,10 +636,44 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	pg_atomic_init_u64(&memtable->cursor_seq, 0);
 	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
-	/* Update shared state with new memtable pointer */
-	local_state->shared->memtable_dp = memtable_dp;
+	/*
+	 * Publish the new global memtable_dp and clear is_build_mode
+	 * atomically with respect to the cross-index eviction walker.
+	 * The walker holds tp_registry_eviction_mutex EXCL across its
+	 * entire scan, so taking it EXCL here gives readers a single
+	 * coherent transition:
+	 *
+	 *   BEFORE: is_build_mode=true,  memtable_dp=<PRIVATE-DSA ptr>
+	 *   AFTER:  is_build_mode=false, memtable_dp=<GLOBAL-DSA ptr>
+	 *
+	 * Lock order matches evict_largest (eviction_mutex outermost),
+	 * so no inversion vs the rest of the eviction subsystem.
+	 */
+	eviction_mutex = tp_registry_eviction_mutex();
+	if (eviction_mutex != NULL)
+		LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
 
-	/* Transition to runtime mode */
+	local_state->shared->memtable_dp   = memtable_dp;
+	local_state->shared->is_build_mode = false;
+
+	if (eviction_mutex != NULL)
+		LWLockRelease(eviction_mutex);
+
+	/*
+	 * Now that no other backend can reach the private DSA via the
+	 * registry, detach it.  This returns ALL build-time memory to
+	 * the OS.  After build the memtable should be empty (all data
+	 * spilled to disk).
+	 */
+	if (local_state->dsa)
+	{
+		dsa_detach(local_state->dsa);
+		local_state->dsa = NULL;
+	}
+
+	local_state->dsa = global_dsa;
+
+	/* Transition to runtime mode (local-state flag) */
 	local_state->is_build_mode = false;
 }
 
@@ -690,11 +724,28 @@ tp_cleanup_build_mode_on_abort(void)
 		/*
 		 * Clean up shared state from registry. The shared state was allocated
 		 * in the global DSA, so we need to free it there.
+		 *
+		 * Take tp_registry_eviction_mutex EXCL across the
+		 * unregister + dsa_free so the cross-index eviction
+		 * walker (src/memtable/cache.c:tp_cache_evict_largest)
+		 * cannot deref a half-freed shared_state.  We unregister
+		 * FIRST so a future walker can't even find the entry,
+		 * then free under the same mutex so any walker that is
+		 * currently iterating completes before we recycle the
+		 * memory.  Lock order matches evict_largest
+		 * (eviction_mutex outermost).
 		 */
 		if (local_state->shared != NULL)
 		{
-			Oid			index_oid = local_state->shared->index_oid;
-			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+			Oid			index_oid	   = local_state->shared->index_oid;
+			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
+			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
+
+			if (eviction_mutex != NULL)
+				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
+
+			/* Unregister first so no new walker can find us */
+			tp_registry_unregister(index_oid);
 
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 			{
@@ -702,8 +753,8 @@ tp_cleanup_build_mode_on_abort(void)
 				dsa_free(global_dsa, shared_dp);
 			}
 
-			/* Unregister from registry */
-			tp_registry_unregister(index_oid);
+			if (eviction_mutex != NULL)
+				LWLockRelease(eviction_mutex);
 
 			local_state->shared = NULL;
 		}
@@ -781,44 +832,72 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 				ls->dsa = NULL;
 			}
 		}
-		else if (ls->shared != NULL && global_dsa != NULL)
-		{
-			/*
-			 * Runtime mode: the in-memory cache (see
-			 * docs/memtable_cache.md) may have populated the
-			 * dshash tables hanging off the TpMemtable; drop
-			 * them first so dsa_free on the TpMemtable
-			 * allocation does not leak the dshash internals.
-			 * Safe with an empty cache: tp_cache_clear is a
-			 * no-op when both handles are INVALID.
-			 *
-			 * Subxact abort doesn't acquire cache.lock: this
-			 * path is unwinding an aborted CREATE-INDEX-like
-			 * subtransaction whose shared state is about to be
-			 * unregistered, so no concurrent reader can be
-			 * holding cache.lock.
-			 */
-			TpMemtable *mt = NULL;
 
-			if (DsaPointerIsValid(ls->shared->memtable_dp))
-			{
-				mt = (TpMemtable *)
-						dsa_get_address(global_dsa, ls->shared->memtable_dp);
-				tp_cache_clear(global_dsa, mt);
-				dsa_free(global_dsa, ls->shared->memtable_dp);
-			}
-		}
-
-		/* Free shared state from global DSA and unregister */
+		/*
+		 * Free shared state from global DSA and unregister.
+		 *
+		 * Take tp_registry_eviction_mutex EXCL across the
+		 * unregister + dsa_free (and, for runtime mode, the
+		 * memtable free + cache clear) so the cross-index
+		 * eviction walker can't observe a half-freed shared
+		 * state.  We unregister FIRST: once the registry no
+		 * longer references this oid, no new walker can find
+		 * it, and any walker currently iterating completes
+		 * before we recycle the memory.  Lock order matches
+		 * evict_largest (eviction_mutex outermost).
+		 *
+		 * NOTE: the runtime branch's tp_cache_clear is safe
+		 * under the eviction_mutex; it only takes per-memtable
+		 * locks (cache.apply_lock / cache.lock), which are
+		 * acquired BELOW eviction_mutex in the canonical lock
+		 * order documented at src/memtable/cache.c.
+		 */
 		if (ls->shared != NULL)
 		{
-			Oid			index_oid = ls->shared->index_oid;
-			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+			Oid			index_oid	   = ls->shared->index_oid;
+			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
+			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
+
+			if (eviction_mutex != NULL)
+				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
+
+			/* Unregister first so no new walker can find us */
+			tp_registry_unregister(index_oid);
+
+			if (!ls->is_build_mode && global_dsa != NULL)
+			{
+				/*
+				 * Runtime mode: the in-memory cache (see
+				 * docs/memtable_cache.md) may have populated
+				 * the dshash tables hanging off the
+				 * TpMemtable; drop them first so dsa_free on
+				 * the TpMemtable allocation does not leak the
+				 * dshash internals.  Safe with an empty
+				 * cache: tp_cache_clear is a no-op when both
+				 * handles are INVALID.
+				 *
+				 * Subxact abort doesn't acquire cache.lock
+				 * itself: this path is unwinding an aborted
+				 * CREATE-INDEX-like subtransaction whose
+				 * shared state we just unregistered.
+				 */
+				TpMemtable *mt = NULL;
+
+				if (DsaPointerIsValid(ls->shared->memtable_dp))
+				{
+					mt = (TpMemtable *)dsa_get_address(
+							global_dsa, ls->shared->memtable_dp);
+					tp_cache_clear(global_dsa, mt);
+					dsa_free(global_dsa, ls->shared->memtable_dp);
+				}
+			}
 
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 				dsa_free(global_dsa, shared_dp);
 
-			tp_registry_unregister(index_oid);
+			if (eviction_mutex != NULL)
+				LWLockRelease(eviction_mutex);
+
 			ls->shared = NULL;
 		}
 
@@ -925,12 +1004,18 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	 * Memtable-cache eviction (docs/memtable_cache.md §"Memory cap
 	 * (3 tiers)") accesses victim shared states by DSA pointer
 	 * without holding the index relation lock.  Take the global
-	 * eviction mutex EXCL across the dsa_free so a concurrent
-	 * evict_largest cannot deref a victim->lock that we are
-	 * about to free.  The mutex order is global before per-index,
-	 * matching evict_largest's acquire sequence.
+	 * eviction mutex EXCL across the unregister + dsa_free so a
+	 * concurrent evict_largest cannot deref a victim->lock that we
+	 * are about to free.  Unregister FIRST so no new walker can
+	 * find the entry, then free under the same mutex so any walker
+	 * currently iterating completes before we recycle the memory.
+	 * The mutex order is global before per-index, matching
+	 * evict_largest's acquire sequence.
 	 */
 	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
+
+	/* Unregister first so no new walker can find us */
+	tp_registry_unregister(index_oid);
 
 	if (DsaPointerIsValid(shared_state->memtable_dp))
 	{
@@ -966,9 +1051,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 			pfree(ls);
 		}
 	}
-
-	/* Unregister from global registry AFTER cleanup */
-	tp_registry_unregister(index_oid);
 }
 
 /*

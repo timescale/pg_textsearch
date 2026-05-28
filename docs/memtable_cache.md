@@ -89,11 +89,20 @@ it's worth stating precisely:
   "writers don't touch the cache" simplification on which the
   whole apply protocol rests.
 
-- **Bulk-load + spill before any query.** Lazy pays the build
-  cost exactly once at spill, via the same chain_source HTAB
-  path we already use. Eager pays it distributed across N
-  writes — same total, but writer throughput drops while no
-  query benefits from the pre-warming.
+- **Bulk-load + spill before any query.** Lazy pays the
+  cold-build cost on the first query after a spill, via the
+  existing chain_source HTAB path.  The spill path itself does
+  catch the cache up to the chain tail (so it can write the
+  segment from the cache), but then calls `tp_cache_clear` —
+  so any catchup work performed during spill is discarded and
+  the next query starts from an empty cache regardless.  Eager
+  would pay the per-record apply cost distributed across N
+  writes, which would let the next-query-after-spill skip the
+  cold-build only if eager-mode writers also re-applied
+  post-clear (additional protocol complexity, see next bullet).
+  In the current lazy design the "where do we pay it" question
+  collapses to "on the first cold read after spill", which is
+  bounded by `memtable_pages_threshold`.
 
 - **Eager wins on first-query latency** for low-read workloads.
   A query that lands after a long write burst pays a catchup
@@ -103,11 +112,12 @@ it's worth stating precisely:
   has a measurable advantage.
 
 This PR picks lazy: write paths kept at v2 cost, smaller
-apply-protocol surface area, and the spill path consolidates
-its already-existing HTAB build into the shared cache. The
-phase-8 benchmark phase tests whether the bounded first-query
-catchup cost is in fact tolerable. Promoting select hot terms
-to eager update later is a refinement we can layer in without
+apply-protocol surface area, and the spill path reuses the
+shared cache for its segment-write pass (then immediately
+invalidates the cache via `tp_cache_clear`).  The phase-8
+benchmark phase tests whether the bounded first-query catchup
+cost is in fact tolerable.  Promoting select hot terms to eager
+update later is a refinement we can layer in without
 restructuring the cache.
 
 ## What we resurrect

@@ -17,8 +17,8 @@ END $$;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain functions are
--- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
--- redesign (issue #374).  Not part of the supported public API.
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable redesign
+-- (issue #374).  Not part of the supported public API.
 -- See pg_textsearch--1.3.0-dev.sql for the full disclaimer.
 CREATE FUNCTION bm25_test_memtable_page(case_name text)
 RETURNS text
@@ -105,7 +105,7 @@ REVOKE EXECUTE ON FUNCTION bm25_test_cache_source(text, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_global_estimated_bytes() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION bm25_cache_evict_largest(text) FROM PUBLIC;
 
--- Phase 7B of the memtable v2 redesign (issue #374) deletes the
+-- Phase 7B of the on-disk memtable redesign (issue #374) deletes the
 -- soft-limit memory_usage SRF along with the underlying soft-limit
 -- machinery; the chain_page_count-based auto-spill heuristic replaces
 -- the old global byte accounting.

@@ -260,8 +260,8 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain functions are
--- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
--- redesign (issue #374).  They are not part of the supported
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable redesign
+-- (issue #374).  They are not part of the supported
 -- public API: their signatures, return values, and existence are
 -- subject to change or removal in ANY release (including patch
 -- releases) without notice or upgrade paths.  Do not depend on

@@ -206,6 +206,22 @@ evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
 	if (st == NULL || !DsaPointerIsValid(st->memtable_dp))
 		return false;
 
+	/*
+	 * Skip entries owned by a backend that is still in
+	 * CREATE INDEX build mode: in that mode `st->memtable_dp` is
+	 * a pointer into the building backend's PRIVATE DSA and
+	 * cannot be safely dereferenced through the global DSA.  The
+	 * flag is set lock-free before tp_registry_register (see
+	 * src/index/state.c:tp_create_build_index_state) and cleared
+	 * under tp_registry_eviction_mutex EXCL (the mutex this
+	 * walker holds via tp_cache_evict_largest), so we either
+	 * observe is_build_mode=true (and skip the private pointer)
+	 * or is_build_mode=false (and the memtable_dp we read below
+	 * is guaranteed to be a global-DSA pointer).
+	 */
+	if (st->is_build_mode)
+		return false;
+
 	mt = (TpMemtable *)dsa_get_address(dsa, st->memtable_dp);
 	if (mt == NULL)
 		return false;
