@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779870896014,
+  "lastUpdate": 1779957269208,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -3352,6 +3352,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.598,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "dfc15f0dcf577b420c098057e92de9e7e2b0c63f",
+          "message": "fix(memtable): validate reassembled fragment payloads in release builds (#385)\n\n## What\n\nMake `tpvector_validate_v2_buffer()` unconditional on the\nfragment-reassembly\npath in `src/memtable/chain_source.c`. Inline-record validation stays\ngated by\n`#ifdef USE_ASSERT_CHECKING` (no perf change for the common case).\n\n## Why\n\nAfter `reassemble_fragment()` stitches a multi-page payload together,\n`ingest_terms()` decodes it via `tpvector_entry_decode_advance`, which\nassumes a well-formed v2 buffer. The structural validation was\n`#ifdef USE_ASSERT_CHECKING`-gated — so release builds had no defense\nagainst a malformed reassembled buffer.\n\nA structurally-malformed payload here would:\n1. OOB-read in the varint decoder\n2. Silently poison the per-term accumulators\n3. Get serialised into the next L0 segment at spill, surviving restarts\n\nThe author's perf rationale (page CRC + same-backend write) is sound for\n**inline** records but doesn't transfer to **fragments**:\n- the bytes are reassembled across multiple buffer-locked page reads,\n- a fragment is by definition larger than a single page, so per-record\n  validation cost is amortised over a much larger payload,\n- on a standby, the bytes come from WAL replay rather than our local\n  write.\n\n## How\n\nOne call site change in `chain_source.c` — call\n`tpvector_validate_v2_buffer(full, rec->vector_len)` right after\n`reassemble_fragment()` and before `ingest_terms()`. The validation\nfunction already `ereport`s `ERRCODE_DATA_CORRUPTED` on bad input, so\nthe index becomes detection-first rather than silent-corruption-first.\n\n## Testing\n\n- `make installcheck` — 64/64 pass\n- `make format-check` (clang-format 21.1.8) — clean\n\nA targeted regression test that injects a malformed fragment payload\nand asserts the read path errors out (suggested in the review as\nTEST-5b) is a follow-up; this PR is the minimal correctness fix.\n\n## Context\n\nIdentified by the v2 memtable hardening review of PR #374 (FRAG-1,\nMedium severity).\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-05-27T22:38:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dfc15f0dcf577b420c098057e92de9e7e2b0c63f"
+        },
+        "date": 1779957259385,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2656.328161,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.376,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5114.899141,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.391,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8472.17488,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.472,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 13070.952561,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.612,
             "unit": "ms"
           }
         ]
