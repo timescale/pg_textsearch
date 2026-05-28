@@ -356,7 +356,20 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 	shared_state->is_build_mode = false; /* runtime-mode publication */
-	memtable_dp					= dsa_allocate(dsa, sizeof(TpMemtable));
+	/*
+	 * Initialize per-index LWLock + spill_generation in the
+	 * freshly DSA-allocated shared_state.  dsa_allocate does
+	 * NOT zero memory (reused chunks can hold garbage), so any
+	 * field that requires a known initial value must be set
+	 * explicitly.  Without these inits a future
+	 * LWLockAcquire(&shared->lock) can hang on a stuck spinlock
+	 * (PANIC: stuck spinlock detected at LWLockWaitListLock).
+	 * Same tranche choices as tp_create_build_index_state for
+	 * consistency.
+	 */
+	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	pg_atomic_init_u64(&shared_state->spill_generation, 0);
+	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
 
