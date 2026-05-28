@@ -69,13 +69,24 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 bool tp_compress_segments = true;
 
 /*
- * Memtable shared-memory cache enable flag.  Scaffolding only:
- * this variable is registered as a GUC but not read anywhere in
- * this build.  A subsequent change will wire it to gate the
- * in-memory cache lookup path that sits in front of the on-disk
- * memtable chain.
+ * Memtable shared-memory cache enable flag.  Gates the read-path
+ * chooser (tp_memtable_source_create_for_read) on the cache vs
+ * the on-disk chain.  Defaults to on: tp_spill_finalize bumps
+ * the per-index spill_generation and calls tp_cache_clear,
+ * closing the cross-spill staleness window that would otherwise
+ * force opt-in.  Standbys still bypass the cache via
+ * RecoveryInProgress() in the chooser.
  */
-bool tp_memtable_cache_enabled = false;
+bool tp_memtable_cache_enabled = true;
+
+/*
+ * Debug GUC for the in-memory memtable cache.  When enabled the
+ * read-path chooser logs cache state transitions (apply OK /
+ * BUDGET_EXCEEDED / cold_build OK / RETRY / ABORT / fall back to
+ * chain).  Off by default; intended for development and tests
+ * that need to assert which path served a query.
+ */
+bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
@@ -274,12 +285,32 @@ _PG_init(void)
 	DefineCustomBoolVariable(
 			"pg_textsearch.memtable_cache_enabled",
 			"Enable the in-memory memtable cache for queries.",
-			"When enabled (default once the cache is implemented), "
-			"queries read from a derived shared-memory cache rather "
-			"than walking the on-disk memtable chain. The chain "
-			"remains the source of truth. No-op in this build.",
+			"When enabled, queries are served from a derived "
+			"shared-memory cache rather than walking the on-disk "
+			"memtable chain.  The chain remains the source of "
+			"truth.  Default is on: queries against the chain are "
+			"served by a derived cache so per-term posting lookups "
+			"don't pay the O(records) chain walk.  Disable to "
+			"force every query through the on-disk chain.  "
+			"Standbys always use the chain regardless of this "
+			"setting (RecoveryInProgress disables the cache).",
 			&tp_memtable_cache_enabled,
-			false, /* default off until cache implementation lands */
+			true,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.log_cache_state",
+			"Log in-memory memtable cache state transitions.",
+			"When enabled, the read-path chooser emits LOG messages "
+			"for each cache apply outcome (OK / BUDGET_EXCEEDED / "
+			"cold_build / RETRY / ABORT / fall back to chain).  "
+			"Intended for development and observability.",
+			&tp_log_cache_state,
+			false,
 			PGC_USERSET,
 			0,
 			NULL,
@@ -303,13 +334,14 @@ _PG_init(void)
 	DefineCustomIntVariable(
 			"pg_textsearch.memory_limit",
 			"Maximum shared memory used by the in-memory memtable cache.",
-			"This setting has no effect in this build; it is "
-			"scaffolding for an upcoming change.  Once the cache "
-			"is wired up, this value will be applied as a "
-			"three-tier budget: per-index soft (limit/8) triggers "
-			"spill of that index; global soft (limit/2) evicts "
-			"the largest cache; global hard (limit) refuses new "
-			"inserts.  A value of 0 means no limit.",
+			"Applied as a three-tier budget (see "
+			"docs/memtable_cache.md): per-index soft cap "
+			"(limit/8) returns BUDGET_EXCEEDED to the apply "
+			"protocol so the read falls back to the on-disk "
+			"chain; global soft cap (limit/2) evicts the "
+			"largest non-caller cache via tp_cache_evict_largest; "
+			"global hard cap (limit) refuses cache builds "
+			"entirely.  A value of 0 means no limit.",
 			&tp_memory_limit_kb,
 			TP_DEFAULT_MEMORY_LIMIT_KB,
 			0,

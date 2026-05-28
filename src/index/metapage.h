@@ -15,8 +15,6 @@
 
 #include "constants.h"
 
-typedef struct TpLocalIndexState TpLocalIndexState;
-
 /*
  * Tapir Index Metapage Structure
  *
@@ -58,10 +56,10 @@ typedef struct TpIndexMetaPageData
 	 *
 	 * and BM25's N ≥ df(t) precondition for tp_calculate_idf holds.
 	 *
-	 * The shared-memory atomic additionally counts unflushed
-	 * memtable docs and is the source persisted at every spill;
-	 * this disk copy therefore lags between spills but is still in
-	 * sync with Σ segment.num_docs at spill/sync boundaries.
+	 * Unflushed memtable docs are NOT counted here; the on-disk
+	 * memtable chain (issue #374) is the in-flight buffer and
+	 * scoring composes its corpus totals from this metapage value
+	 * plus a chain-source open at read time.
 	 */
 	uint64 total_docs;
 	uint64 _unused_total_terms;		/* Unused, retained for on-disk compat */
@@ -72,10 +70,11 @@ typedef struct TpIndexMetaPageData
 	BlockNumber root_blkno;			/* Root page of the index tree */
 	BlockNumber term_stats_root;	/* Root page of term statistics B-tree */
 	BlockNumber _unused_docid_page; /* Reserved: was first_docid_page,
-									 * retired in Phase 6 of issue #374
-									 * (memtable v2 obsoletes docid pages).
-									 * Kept to preserve metapage offsets;
-									 * always InvalidBlockNumber. */
+									 * retired by issue #374 (the
+									 * on-disk memtable obsoletes
+									 * docid pages).  Kept to preserve
+									 * metapage offsets; always
+									 * InvalidBlockNumber. */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
@@ -83,13 +82,13 @@ typedef struct TpIndexMetaPageData
 	uint16 level_counts[TP_MAX_LEVELS];		/* Segment count per level */
 
 	/*
-	 * Memtable v2 (issue #374): head/tail of the on-disk
-	 * memtable page chain.  Both fields hold InvalidBlockNumber
-	 * when the chain is empty; tail_blkno may differ from
-	 * head_blkno once the chain has more than one page.  All
-	 * mutations to these fields go through GenericXLog atomic
-	 * with the corresponding chain-page mutation.  Introduced
-	 * in TP_METAPAGE_VERSION 7.
+	 * On-disk memtable (issue #374): head/tail of the page
+	 * chain.  Both fields hold InvalidBlockNumber when the
+	 * chain is empty; tail_blkno may differ from head_blkno
+	 * once the chain has more than one page.  All mutations
+	 * to these fields go through GenericXLog atomic with the
+	 * corresponding chain-page mutation.  Introduced in
+	 * TP_METAPAGE_VERSION 7.
 	 */
 	BlockNumber memtable_head_blkno;
 	BlockNumber memtable_tail_blkno;
@@ -102,11 +101,3 @@ typedef TpIndexMetaPageData *TpIndexMetaPage;
  */
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
-
-/*
- * Persist the shared-memory atomic into the metapage.  Called at
- * every spill site; caller must hold LW_EXCLUSIVE on the per-index
- * lock.
- */
-extern void
-tp_sync_metapage_stats(Relation index, TpLocalIndexState *index_state);

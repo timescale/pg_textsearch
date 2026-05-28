@@ -20,7 +20,9 @@
 #include "debug/dump.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
+#include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_source.h"
 #include "memtable/page.h"
 #include "segment/io.h"
 #include "segment/segment.h"
@@ -194,15 +196,47 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 		return;
 	}
 
-	/* Corpus statistics */
+	/*
+	 * Corpus statistics.
+	 *
+	 * docs_persisted / len_persisted come from the metapage and
+	 * are the durable source of truth: Σ segment.num_docs and
+	 * Σ segment.total_len respectively (see metapage.h).
+	 *
+	 * total_docs / total_len reported here are the live in-flight
+	 * totals (persisted + on-disk memtable chain), computed by
+	 * adding a fresh chain-source open onto the metapage values.
+	 * Tests that need a deterministic post-merge / post-vacuum
+	 * corpus count should grep for docs_persisted / len_persisted
+	 * instead.
+	 */
 	{
-		uint32 total_docs = pg_atomic_read_u32(
-				&index_state->shared->total_docs);
-		uint64 total_len = pg_atomic_read_u64(&index_state->shared->total_len);
+		TpDataSource *chain_src = tp_memtable_chain_source_create(
+				index_state, index_rel, NULL, 0);
+		uint64 metap_docs = metap ? metap->total_docs : 0;
+		uint64 metap_len  = metap ? metap->total_len : 0;
+		uint64 chain_docs = chain_src ? (uint64)chain_src->total_docs : 0;
+		uint64 chain_len  = chain_src ? (uint64)chain_src->total_len : 0;
+		uint64 total_docs = metap_docs + chain_docs;
+		uint64 total_len  = metap_len + chain_len;
+
+		if (chain_src)
+			tp_source_close(chain_src);
 
 		dump_printf(out, "\nCorpus Statistics:\n");
-		dump_printf(out, "  total_docs: %u\n", total_docs);
-		dump_printf(out, "  total_len: %ld\n", (long)total_len);
+		dump_printf(out, "  total_docs: " UINT64_FORMAT "\n", total_docs);
+		dump_printf(out, "  total_len: " UINT64_FORMAT "\n", total_len);
+		if (metap)
+		{
+			dump_printf(
+					out,
+					"  docs_persisted: " UINT64_FORMAT "\n",
+					metap->total_docs);
+			dump_printf(
+					out,
+					"  len_persisted: " UINT64_FORMAT "\n",
+					metap->total_len);
+		}
 
 		if (total_docs > 0)
 		{
@@ -432,15 +466,40 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		return;
 	}
 
-	/* Corpus statistics */
+	/*
+	 * Corpus statistics.  See the comment in
+	 * tp_summarize_index_to_output above for the docs_persisted /
+	 * len_persisted rationale (metapage = durable Σ).  total_docs
+	 * / total_len here include any in-flight on-disk memtable
+	 * chain entries via a fresh chain-source open.
+	 */
 	{
-		uint32 total_docs = pg_atomic_read_u32(
-				&index_state->shared->total_docs);
-		uint64 total_len = pg_atomic_read_u64(&index_state->shared->total_len);
+		TpDataSource *chain_src = tp_memtable_chain_source_create(
+				index_state, index_rel, NULL, 0);
+		uint64 metap_docs = metap ? metap->total_docs : 0;
+		uint64 metap_len  = metap ? metap->total_len : 0;
+		uint64 chain_docs = chain_src ? (uint64)chain_src->total_docs : 0;
+		uint64 chain_len  = chain_src ? (uint64)chain_src->total_len : 0;
+		uint64 total_docs = metap_docs + chain_docs;
+		uint64 total_len  = metap_len + chain_len;
+
+		if (chain_src)
+			tp_source_close(chain_src);
 
 		dump_printf(out, "Corpus Statistics:\n");
-		dump_printf(out, "  total_docs: %u\n", total_docs);
-		dump_printf(out, "  total_len: %ld\n", (long)total_len);
+		dump_printf(out, "  total_docs: " UINT64_FORMAT "\n", total_docs);
+		dump_printf(out, "  total_len: " UINT64_FORMAT "\n", total_len);
+		if (metap)
+		{
+			dump_printf(
+					out,
+					"  docs_persisted: " UINT64_FORMAT "\n",
+					metap->total_docs);
+			dump_printf(
+					out,
+					"  len_persisted: " UINT64_FORMAT "\n",
+					metap->total_len);
+		}
 
 		if (total_docs > 0)
 		{

@@ -41,12 +41,23 @@ typedef struct TpRegistryEntry
 /*
  * Global registry control structure stored in shared memory.
  * The actual entries are in a dshash stored in DSA.
+ *
+ * The eviction_mutex and estimated_total_bytes fields are part
+ * of the in-memory memtable cache memory-cap protocol; see
+ * docs/memtable_cache.md §"Memory cap (3 tiers)".  estimated_total_bytes
+ * tracks the sum of TpMemtable.estimated_bytes across all registered
+ * caches in this shmem segment; eviction_mutex serializes
+ * tp_cache_evict_largest invocations (and DROP-time shared-state
+ * teardown) so a victim's TpSharedIndexState cannot be dsa_freed
+ * while another backend is inspecting it.
  */
 typedef struct TpGlobalRegistry
 {
 	LWLock				lock;			 /* Protects initialization */
 	dsa_handle			dsa_handle;		 /* Handle for shared DSA area */
 	dshash_table_handle registry_handle; /* Handle for the registry dshash */
+	LWLock				eviction_mutex;	 /* Serializes cache eviction */
+	pg_atomic_uint64	estimated_total_bytes; /* Σ per-index est bytes */
 } TpGlobalRegistry;
 
 /* Registry management functions */
@@ -74,3 +85,35 @@ extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
 extern dsa_pointer		   tp_registry_lookup_dsa(Oid index_oid);
 extern bool				   tp_registry_is_registered(Oid index_oid);
 extern void				   tp_registry_unregister(Oid index_oid);
+
+/*
+ * Cache memory accounting helpers.  Increment/decrement the
+ * registry's estimated_total_bytes alongside per-index updates.
+ * Internally these route through TpGlobalRegistry; cache code that
+ * mutates TpMemtable.estimated_bytes MUST go through these so the
+ * global counter stays in lockstep with the per-index counter.
+ *
+ * tp_registry_eviction_mutex returns the address of the global
+ * eviction LWLock; tp_cache_evict_largest is the only legitimate
+ * caller, and tp_cleanup_index_shared_memory takes it EXCL before
+ * dsa_freeing a victim shared state.
+ */
+extern pg_atomic_uint64 *tp_registry_estimated_total_bytes(void);
+extern LWLock			*tp_registry_eviction_mutex(void);
+
+/*
+ * Callback-based registry iterator.  For each registered index,
+ * invokes `cb(oid, shared_state_dp, ctx)`.  Stops early when the
+ * callback returns true.  Returns true if the callback ever
+ * returned true, false otherwise.  Bucket locks are held while
+ * the callback runs; the callback MUST NOT acquire arbitrary
+ * LWLocks (the dshash partition lock is held).  Reading fields
+ * via dsa_get_address from the supplied DSA pointer is safe.
+ *
+ * Used by tp_cache_evict_largest to scan for the largest-bytes
+ * cache.  Reads only — no entry mutation from within the
+ * callback.
+ */
+typedef bool (*TpRegistryWalkCb)(
+		Oid index_oid, dsa_pointer shared_dp, void *ctx);
+extern void tp_registry_walk(TpRegistryWalkCb cb, void *ctx);

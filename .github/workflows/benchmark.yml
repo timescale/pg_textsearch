@@ -61,6 +61,17 @@ on:
         required: false
         default: false
         type: boolean
+      benchmark_suite:
+        description: 'Which benchmark suite(s) to run (manual dispatch only). Scheduled runs always execute everything.'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - insert
+          - full
+          - paradedb
+          - baseline
 
 jobs:
   # CPU profiling job (separate from timing benchmarks)
@@ -530,7 +541,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     # Run for any dataset selection or scheduled runs
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.benchmark_suite == 'all' || github.event.inputs.benchmark_suite == 'paradedb' || github.event.inputs.benchmark_suite == ''))
 
     steps:
     - uses: actions/checkout@v4
@@ -1060,6 +1071,7 @@ jobs:
   full-benchmark:
     runs-on: ubuntu-latest  # Standard runner (2-4 vCPUs)
     timeout-minutes: 360  # 6 hours max for full Wikipedia
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.benchmark_suite == 'all' || github.event.inputs.benchmark_suite == 'full' || github.event.inputs.benchmark_suite == ''))
 
     steps:
     - uses: actions/checkout@v4
@@ -1641,7 +1653,7 @@ jobs:
   insert-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.benchmark_suite == 'all' || github.event.inputs.benchmark_suite == 'insert' || github.event.inputs.benchmark_suite == ''))
 
     steps:
     - uses: actions/checkout@v4
@@ -1769,6 +1781,8 @@ jobs:
             tee -a "$GITHUB_WORKSPACE/insert_results.txt"
         time psql -f 02-queries.sql 2>&1 | \
             tee -a "$GITHUB_WORKSPACE/insert_results.txt"
+        time psql -f insert/size_report.sql 2>&1 | \
+            tee -a "$GITHUB_WORKSPACE/insert_results.txt"
 
         echo "End: $(date)" | tee -a "$GITHUB_WORKSPACE/insert_results.txt"
 
@@ -1786,6 +1800,8 @@ jobs:
         time psql -f benchmarks/datasets/msmarco/insert/load.sql 2>&1 | \
             tee -a insert_results.txt
         time psql -f benchmarks/datasets/msmarco/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+        time psql -f benchmarks/datasets/msmarco/insert/size_report.sql 2>&1 | \
             tee -a insert_results.txt
 
         echo "End: $(date)" | tee -a insert_results.txt
@@ -1844,6 +1860,8 @@ jobs:
         time psql -f benchmarks/datasets/wikipedia/insert/load.sql 2>&1 | \
             tee -a insert_results.txt
         time psql -f benchmarks/datasets/wikipedia/queries.sql 2>&1 | \
+            tee -a insert_results.txt
+        time psql -f benchmarks/datasets/wikipedia/insert/size_report.sql 2>&1 | \
             tee -a insert_results.txt
 
         echo "End: $(date)" | tee -a insert_results.txt
@@ -2307,7 +2325,7 @@ jobs:
   baseline-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.benchmark_suite == 'all' || github.event.inputs.benchmark_suite == 'baseline' || github.event.inputs.benchmark_suite == ''))
 
     steps:
     - uses: actions/checkout@v4

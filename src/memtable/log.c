@@ -676,15 +676,39 @@ tp_memtable_append(
  * next_segment to the previous L0 head, adding it to the same
  * GenericXLog record.  GenericXLog allows up to 4 buffers; we
  * use at most 2 (meta + segment header).
+ *
+ * In-memory memtable cache integration (docs/memtable_cache.md
+ * §"Spill detection", §"Spill consumption from cache"):
+ *
+ *   1. Before touching the metapage we bump
+ *      `state->shared->spill_generation` so that any reader
+ *      acquiring per-index SHARED after we release EXCL observes
+ *      a generation mismatch against any cursor that was captured
+ *      before this spill.  The bump goes through a single atomic
+ *      add; standbys never see it because spill is primary-only.
+ *
+ *   2. After the metapage is published we drop the cache's dshash
+ *      tables via `tp_cache_clear` so the next read does a clean
+ *      cold-build and we don't carry dead memory across the spill
+ *      boundary.  The DROPPED defensive path in
+ *      `tp_cache_apply_to_tail` remains as a belt-and-suspenders
+ *      check for any cursor that captured the old generation
+ *      between (1) and (2).
+ *
+ *   Both steps are skipped when `state` is NULL (e.g. spill paths
+ *   that never wired up a local index state).
  */
+#include "memtable/memtable.h"
 #include "segment/format.h"
+#include "utils/dsa.h"
 
 void
 tp_spill_finalize(
-		Relation	rel,
-		BlockNumber new_segment_root,
-		uint64		docs_delta,
-		uint64		len_delta)
+		TpLocalIndexState *local_state,
+		Relation		   rel,
+		BlockNumber		   new_segment_root,
+		uint64			   docs_delta,
+		uint64			   len_delta)
 {
 	Buffer			  metabuf;
 	Buffer			  seg_buf = InvalidBuffer;
@@ -692,8 +716,20 @@ tp_spill_finalize(
 	Page			  metapage;
 	TpIndexMetaPage	  metap;
 	BlockNumber		  old_l0_head;
+	TpMemtable		 *memtable = NULL;
 
 	Assert(rel != NULL);
+
+	/*
+	 * Step 1: bump the cache's spill-generation token BEFORE we
+	 * publish the new metapage.  Cache readers that miss this
+	 * happens-before edge will still detect the staleness via the
+	 * cursor's captured generation on the next apply_to_tail call,
+	 * but we want the common case to be "new reader sees new
+	 * generation immediately and cold-builds from a clean cache".
+	 */
+	if (local_state != NULL && local_state->shared != NULL)
+		pg_atomic_add_fetch_u64(&local_state->shared->spill_generation, 1);
 
 	metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
@@ -730,6 +766,41 @@ tp_spill_finalize(
 	if (BufferIsValid(seg_buf))
 		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
+
+	/*
+	 * Step 2: drop the in-memory cache's dshash tables.
+	 *
+	 * Lock order (docs/memtable_cache.md §"Lock order"):
+	 *   per-index LWLock EXCL  (held by the caller, blocks all
+	 *                           readers / catchup paths)
+	 *     -> cache.apply_lock  (no other holder is possible, since
+	 *                           every apply path takes per-index
+	 *                           SHARED first; taken EXCL here
+	 *                           strictly to honor the documented
+	 *                           order with respect to cache.lock)
+	 *       -> cache.lock      (EXCL for drop)
+	 *
+	 * We resolve the TpMemtable via the local index state's DSA
+	 * attachment, not by reaching into the global registry, to
+	 * keep this call backend-local and avoid any chance of
+	 * deadlocking against the global state lock.
+	 */
+	if (local_state != NULL && local_state->dsa != NULL &&
+		local_state->shared != NULL &&
+		DsaPointerIsValid(local_state->shared->memtable_dp))
+	{
+		memtable = (TpMemtable *)dsa_get_address(
+				local_state->dsa, local_state->shared->memtable_dp);
+
+		if (memtable != NULL)
+		{
+			LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
+			LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
+			tp_cache_clear(local_state->dsa, memtable);
+			LWLockRelease(&memtable->lock);
+			LWLockRelease(&memtable->apply_lock);
+		}
+	}
 }
 
 /*
@@ -908,15 +979,6 @@ tp_add_document_terms(
 		int32			   doc_length)
 {
 	tp_memtable_append(rel, ctid, doc_length, vector_bytes, vector_len);
-
-	/*
-	 * Corpus statistics: still bumped on the primary for
-	 * compatibility with vacuum's shrinkage protocol; readers
-	 * no longer trust these atomics.  Phase 7C will delete the
-	 * per-index DSA state along with these last bumps.
-	 */
-	pg_atomic_fetch_add_u32(&local_state->shared->total_docs, 1);
-	pg_atomic_fetch_add_u64(&local_state->shared->total_len, doc_length);
 
 	/* Track terms added in this transaction for bulk load detection. */
 	local_state->terms_added_this_xact += term_count;

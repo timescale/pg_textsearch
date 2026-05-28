@@ -41,6 +41,7 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
+#include "memtable/memtable.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -350,30 +351,36 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	/* Initialize shared state */
 	shared_state->index_oid = index_oid;
 	shared_state->heap_oid	= heap_oid;
-	pg_atomic_init_u32(&shared_state->total_docs, 0);
-	pg_atomic_init_u64(&shared_state->total_len, 0);
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
-
+	shared_state->is_build_mode = false; /* runtime-mode publication */
 	/*
-	 * Initialize the per-index LWLock using a fixed tranche ID.
-	 * Using a fixed ID avoids exhausting tranche IDs when creating many
-	 * indexes (e.g., partitioned tables with 500+ partitions).
+	 * Initialize per-index LWLock + spill_generation in the
+	 * freshly DSA-allocated shared_state.  dsa_allocate does
+	 * NOT zero memory (reused chunks can hold garbage), so any
+	 * field that requires a known initial value must be set
+	 * explicitly.  Without these inits a future
+	 * LWLockAcquire(&shared->lock) can hang on a stuck spinlock
+	 * (PANIC: stuck spinlock detected at LWLockWaitListLock).
+	 * Same tranche choices as tp_create_build_index_state for
+	 * consistency.
 	 */
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
-
-	/* Allocate and initialize memtable */
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
 	shared_state->memtable_dp = memtable_dp;
 
@@ -485,10 +492,22 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	/* Initialize shared state */
 	shared_state->index_oid = index_oid;
 	shared_state->heap_oid	= heap_oid;
-	pg_atomic_init_u32(&shared_state->total_docs, 0);
-	pg_atomic_init_u64(&shared_state->total_len, 0);
 	shared_state->memtable_dp =
 			InvalidDsaPointer; /* Memtable in private DSA */
+	/*
+	 * Mark this shared state as build-mode BEFORE we publish it
+	 * via tp_registry_register below.  The cross-index eviction
+	 * walker (src/memtable/cache.c:evict_walk_cb) reads this
+	 * flag lock-free and skips entries where it is true, which
+	 * prevents the walker from dereferencing memtable_dp through
+	 * the GLOBAL DSA once we publish a PRIVATE-DSA pointer at
+	 * "shared_state->memtable_dp = memtable_dp" further down.
+	 *
+	 * The flag is cleared in tp_finalize_build_mode() under
+	 * tp_registry_eviction_mutex EXCL, atomically with swapping
+	 * memtable_dp to a global-DSA pointer.
+	 */
+	shared_state->is_build_mode = true;
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
 
@@ -535,10 +554,14 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
 	/* Store memtable pointer in shared state for memtable access */
 	shared_state->memtable_dp = memtable_dp;
@@ -568,59 +591,6 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 }
 
 /*
- * Recreate private DSA for build mode
- *
- * This is called after spilling to disk. We destroy the entire private DSA
- * (freeing ALL memory to OS) and create a fresh one for the next batch.
- * This provides perfect memory reclamation.
- */
-void
-tp_recreate_build_dsa(TpLocalIndexState *local_state)
-{
-	dsa_area   *new_dsa;
-	TpMemtable *new_memtable;
-	dsa_pointer memtable_dp;
-
-	Assert(local_state != NULL);
-	Assert(local_state->is_build_mode);
-
-	/*
-	 * Detach from old DSA. This calls dsa_detach() which, for a
-	 * non-attached DSA (no other backends), completely destroys it
-	 * and returns ALL memory to the OS. Perfect reclamation!
-	 */
-	if (local_state->dsa)
-		dsa_detach(local_state->dsa);
-
-	/*
-	 * Create fresh private DSA using fixed tranche ID.
-	 * Using a fixed ID avoids exhausting tranche IDs when creating many
-	 * indexes (e.g., partitioned tables with 500+ partitions).
-	 */
-	new_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
-	if (!new_dsa)
-		elog(ERROR, "Failed to recreate private DSA for build");
-
-	/* Allocate fresh memtable in new DSA */
-	memtable_dp = dsa_allocate(new_dsa, sizeof(TpMemtable));
-	if (!DsaPointerIsValid(memtable_dp))
-		elog(ERROR, "Failed to allocate memtable in new private DSA");
-
-	new_memtable = (TpMemtable *)dsa_get_address(new_dsa, memtable_dp);
-	new_memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&new_memtable->total_postings, 0);
-	pg_atomic_init_u64(&new_memtable->num_terms, 0);
-	pg_atomic_init_u64(&new_memtable->total_term_len, 0);
-	new_memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-
-	/* Update shared state with new memtable pointer */
-	local_state->shared->memtable_dp = memtable_dp;
-
-	/* Update local state with new DSA */
-	local_state->dsa = new_dsa;
-}
-
-/*
  * Finalize build mode and transition to runtime mode
  *
  * This is called at the end of CREATE INDEX. It:
@@ -637,29 +607,24 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	dsa_area   *global_dsa;
 	TpMemtable *memtable;
 	dsa_pointer memtable_dp;
+	LWLock	   *eviction_mutex;
 
 	Assert(local_state != NULL);
 	Assert(local_state->is_build_mode);
 
 	/*
-	 * Destroy the private DSA. This returns ALL memory to the OS.
-	 * After build, the memtable should be empty (all data spilled to disk).
-	 */
-	if (local_state->dsa)
-	{
-		dsa_detach(local_state->dsa);
-		local_state->dsa = NULL;
-	}
-
-	/*
 	 * Attach to the global shared DSA for runtime operation.
 	 * This is the same DSA used by all backends for concurrent access.
+	 *
+	 * NOTE: we do NOT detach the private DSA yet.  The cross-index
+	 * eviction walker (src/memtable/cache.c:evict_walk_cb) skips
+	 * entries where shared->is_build_mode is true, so as long as
+	 * is_build_mode remains true the private memtable_dp is
+	 * safe.  We only detach after the swap+clear below.
 	 */
 	global_dsa = tp_registry_get_dsa();
 	if (!global_dsa)
 		elog(ERROR, "Failed to get global DSA for runtime mode");
-
-	local_state->dsa = global_dsa;
 
 	/*
 	 * Allocate a fresh memtable in the global DSA.
@@ -671,15 +636,53 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	pg_atomic_init_u64(&memtable->total_postings, 0);
-	pg_atomic_init_u64(&memtable->num_terms, 0);
-	pg_atomic_init_u64(&memtable->total_term_len, 0);
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 
-	/* Update shared state with new memtable pointer */
-	local_state->shared->memtable_dp = memtable_dp;
+	/*
+	 * Publish the new global memtable_dp and clear is_build_mode
+	 * atomically with respect to the cross-index eviction walker.
+	 * The walker holds tp_registry_eviction_mutex EXCL across its
+	 * entire scan, so taking it EXCL here gives readers a single
+	 * coherent transition:
+	 *
+	 *   BEFORE: is_build_mode=true,  memtable_dp=<PRIVATE-DSA ptr>
+	 *   AFTER:  is_build_mode=false, memtable_dp=<GLOBAL-DSA ptr>
+	 *
+	 * Lock order matches evict_largest (eviction_mutex outermost),
+	 * so no inversion vs the rest of the eviction subsystem.
+	 */
+	eviction_mutex = tp_registry_eviction_mutex();
+	if (eviction_mutex != NULL)
+		LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
 
-	/* Transition to runtime mode */
+	local_state->shared->memtable_dp   = memtable_dp;
+	local_state->shared->is_build_mode = false;
+
+	if (eviction_mutex != NULL)
+		LWLockRelease(eviction_mutex);
+
+	/*
+	 * Now that no other backend can reach the private DSA via the
+	 * registry, detach it.  This returns ALL build-time memory to
+	 * the OS.  After build the memtable should be empty (all data
+	 * spilled to disk).
+	 */
+	if (local_state->dsa)
+	{
+		dsa_detach(local_state->dsa);
+		local_state->dsa = NULL;
+	}
+
+	local_state->dsa = global_dsa;
+
+	/* Transition to runtime mode (local-state flag) */
 	local_state->is_build_mode = false;
 }
 
@@ -730,11 +733,28 @@ tp_cleanup_build_mode_on_abort(void)
 		/*
 		 * Clean up shared state from registry. The shared state was allocated
 		 * in the global DSA, so we need to free it there.
+		 *
+		 * Take tp_registry_eviction_mutex EXCL across the
+		 * unregister + dsa_free so the cross-index eviction
+		 * walker (src/memtable/cache.c:tp_cache_evict_largest)
+		 * cannot deref a half-freed shared_state.  We unregister
+		 * FIRST so a future walker can't even find the entry,
+		 * then free under the same mutex so any walker that is
+		 * currently iterating completes before we recycle the
+		 * memory.  Lock order matches evict_largest
+		 * (eviction_mutex outermost).
 		 */
 		if (local_state->shared != NULL)
 		{
-			Oid			index_oid = local_state->shared->index_oid;
-			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+			Oid			index_oid	   = local_state->shared->index_oid;
+			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
+			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
+
+			if (eviction_mutex != NULL)
+				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
+
+			/* Unregister first so no new walker can find us */
+			tp_registry_unregister(index_oid);
 
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 			{
@@ -742,8 +762,8 @@ tp_cleanup_build_mode_on_abort(void)
 				dsa_free(global_dsa, shared_dp);
 			}
 
-			/* Unregister from registry */
-			tp_registry_unregister(index_oid);
+			if (eviction_mutex != NULL)
+				LWLockRelease(eviction_mutex);
 
 			local_state->shared = NULL;
 		}
@@ -821,29 +841,72 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 				ls->dsa = NULL;
 			}
 		}
-		else if (ls->shared != NULL && global_dsa != NULL)
-		{
-			/*
-			 * Runtime mode: memtable_dp held DSA dshash tables
-			 * in v1; v2 keeps it allocated but empty.  Free the
-			 * stub allocation so the surrounding shared-state
-			 * free can complete.  Phase 7B removes the field
-			 * entirely.
-			 */
-			if (DsaPointerIsValid(ls->shared->memtable_dp))
-				dsa_free(global_dsa, ls->shared->memtable_dp);
-		}
 
-		/* Free shared state from global DSA and unregister */
+		/*
+		 * Free shared state from global DSA and unregister.
+		 *
+		 * Take tp_registry_eviction_mutex EXCL across the
+		 * unregister + dsa_free (and, for runtime mode, the
+		 * memtable free + cache clear) so the cross-index
+		 * eviction walker can't observe a half-freed shared
+		 * state.  We unregister FIRST: once the registry no
+		 * longer references this oid, no new walker can find
+		 * it, and any walker currently iterating completes
+		 * before we recycle the memory.  Lock order matches
+		 * evict_largest (eviction_mutex outermost).
+		 *
+		 * NOTE: the runtime branch's tp_cache_clear is safe
+		 * under the eviction_mutex; it only takes per-memtable
+		 * locks (cache.apply_lock / cache.lock), which are
+		 * acquired BELOW eviction_mutex in the canonical lock
+		 * order documented at src/memtable/cache.c.
+		 */
 		if (ls->shared != NULL)
 		{
-			Oid			index_oid = ls->shared->index_oid;
-			dsa_pointer shared_dp = tp_registry_lookup_dsa(index_oid);
+			Oid			index_oid	   = ls->shared->index_oid;
+			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
+			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
+
+			if (eviction_mutex != NULL)
+				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
+
+			/* Unregister first so no new walker can find us */
+			tp_registry_unregister(index_oid);
+
+			if (!ls->is_build_mode && global_dsa != NULL)
+			{
+				/*
+				 * Runtime mode: the in-memory cache (see
+				 * docs/memtable_cache.md) may have populated
+				 * the dshash tables hanging off the
+				 * TpMemtable; drop them first so dsa_free on
+				 * the TpMemtable allocation does not leak the
+				 * dshash internals.  Safe with an empty
+				 * cache: tp_cache_clear is a no-op when both
+				 * handles are INVALID.
+				 *
+				 * Subxact abort doesn't acquire cache.lock
+				 * itself: this path is unwinding an aborted
+				 * CREATE-INDEX-like subtransaction whose
+				 * shared state we just unregistered.
+				 */
+				TpMemtable *mt = NULL;
+
+				if (DsaPointerIsValid(ls->shared->memtable_dp))
+				{
+					mt = (TpMemtable *)dsa_get_address(
+							global_dsa, ls->shared->memtable_dp);
+					tp_cache_clear(global_dsa, mt);
+					dsa_free(global_dsa, ls->shared->memtable_dp);
+				}
+			}
 
 			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
 				dsa_free(global_dsa, shared_dp);
 
-			tp_registry_unregister(index_oid);
+			if (eviction_mutex != NULL)
+				LWLockRelease(eviction_mutex);
+
 			ls->shared = NULL;
 		}
 
@@ -937,16 +1000,45 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/*
-	 * v1 stored DSA dshash tables off shared_state->memtable_dp;
-	 * v2 keeps the stub allocation but doesn't populate it.
-	 * Free the stub so the surrounding shared-state free can
-	 * complete.  Phase 7B removes the field entirely.
+	 * The in-memory cache (see docs/memtable_cache.md) may have
+	 * populated the dshash tables hanging off the TpMemtable; drop
+	 * them first so dsa_free on the TpMemtable allocation does not
+	 * leak the dshash internals.  Safe with an empty cache:
+	 * tp_cache_clear is a no-op when both handles are INVALID.
+	 *
+	 * DROP INDEX runs under AccessExclusiveLock on the index, so no
+	 * concurrent backend can be reading the cache here; we do not
+	 * acquire cache.lock.
+	 *
+	 * Memtable-cache eviction (docs/memtable_cache.md §"Memory cap
+	 * (3 tiers)") accesses victim shared states by DSA pointer
+	 * without holding the index relation lock.  Take the global
+	 * eviction mutex EXCL across the unregister + dsa_free so a
+	 * concurrent evict_largest cannot deref a victim->lock that we
+	 * are about to free.  Unregister FIRST so no new walker can
+	 * find the entry, then free under the same mutex so any walker
+	 * currently iterating completes before we recycle the memory.
+	 * The mutex order is global before per-index, matching
+	 * evict_largest's acquire sequence.
 	 */
+	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
+
+	/* Unregister first so no new walker can find us */
+	tp_registry_unregister(index_oid);
+
 	if (DsaPointerIsValid(shared_state->memtable_dp))
+	{
+		TpMemtable *mt = (TpMemtable *)
+				dsa_get_address(dsa, shared_state->memtable_dp);
+
+		tp_cache_clear(dsa, mt);
 		dsa_free(dsa, shared_state->memtable_dp);
+	}
 
 	/* Free shared_state */
 	dsa_free(dsa, shared_dp);
+
+	LWLockRelease(tp_registry_eviction_mutex());
 
 	/* Clean up local state if we have it cached */
 	if (local_state_cache != NULL)
@@ -968,9 +1060,6 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 			pfree(ls);
 		}
 	}
-
-	/* Unregister from global registry AFTER cleanup */
-	tp_registry_unregister(index_oid);
 }
 
 /*
@@ -978,12 +1067,13 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  * index whose registry entry is empty (server restart, hot
  * standby cold start, PITR-recovered cluster).
  *
- * Phase 4+ (issue #374): the durable record of the in-flight
- * memtable lives entirely on the index relation's chain pages.
+ * Post-#374: the durable record of the in-flight memtable
+ * lives entirely on the index relation's chain pages.
  * Standard GenericXLog replay restores both the chain pages and
  * the metapage's `memtable_head_blkno`/`memtable_tail_blkno`
  * pointers before any backend gets here, so this function only
- * has to (re)register shared state for lock coordination.
+ * has to (re)register shared state for lock coordination and
+ * seed the chain-page counter used by the auto-spill heuristic.
  *
  * The flow at a high level:
  *
@@ -991,25 +1081,23 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  *   2. tp_create_shared_index_state with reuse_if_exists=true
  *      (atomic register-or-attach; concurrent rebuilds resolve
  *      to the same shared state)
+ *   3. walk the on-disk chain to seed `chain_page_count`
  *
- * No WAL drain, no chain walk, and no recovery-time rebuild is
- * needed: the on-disk metapage + chain pages + segments already
- * encode every committed insert.  Atomic counters that survive
- * in shared state (e.g. `total_postings` for auto-spill) are
- * advisory; readers consult the chain source for authoritative
- * statistics.
+ * No WAL drain and no recovery-time corpus rebuild are needed:
+ * the on-disk metapage + chain pages + segments already encode
+ * every committed insert.  The in-memory memtable cache
+ * (docs/memtable_cache.md) is derived state and lazily built on
+ * the first query after rebuild; readers consult the chain source
+ * for in-flight statistics in the meantime.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)
 {
 	Relation		   index_rel;
 	TpIndexMetaPage	   early_metap;
-	TpIndexMetaPage	   fresh_metap;
 	TpLocalIndexState *local_state;
 	Oid				   heap_oid;
 	TpDataSource	  *chain_src;
-	uint64			   chain_docs = 0;
-	uint64			   chain_len  = 0;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -1051,13 +1139,13 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	pfree(early_metap);
 
 	/*
-	 * Register shared state up front.  Phase 4+ (issue #374):
-	 * durable state lives entirely on disk (metapage + chain
-	 * pages + segment pages).  No docid-page replay or memtable
-	 * reconstruction needed — the chain pages are themselves the
-	 * durable record of unspilled documents, and standard
-	 * GenericXLog replay has already brought them up to date by
-	 * the time any backend reaches this path.
+	 * Register shared state up front.  Post-#374, durable state
+	 * lives entirely on disk (metapage + chain pages + segment
+	 * pages).  No docid-page replay or memtable reconstruction
+	 * needed — the chain pages are themselves the durable record
+	 * of unspilled documents, and standard GenericXLog replay has
+	 * already brought them up to date by the time any backend
+	 * reaches this path.
 	 */
 	local_state = tp_create_shared_index_state(
 			index_oid, heap_oid, /* reuse_if_exists */ true);
@@ -1068,24 +1156,13 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	}
 
 	/*
-	 * Seed the advisory shared corpus atomics so the existing
-	 * vacuum-shrinkage protocol stays consistent across backend
-	 * boundaries: shared->total_docs = persisted segment docs +
-	 * on-disk chain docs.  Query correctness does not depend on
-	 * these atomics anymore (scoring reads metapage totals +
-	 * chain source directly); they are kept alive until the
-	 * shared-memory registry is itself retired (issue #377).
+	 * Seed the on-disk chain page counter so the auto-spill
+	 * threshold isn't blind to pages that pre-existed in the
+	 * index when this backend (or this shmem segment) was
+	 * started.  Corpus statistics (total_docs / total_len) live
+	 * entirely on the metapage and need no shmem seed.
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-	fresh_metap = tp_get_metapage(index_rel);
-	if (fresh_metap == NULL)
-	{
-		elog(WARNING, "Could not re-read metapage for index %u", index_oid);
-		tp_release_index_lock(local_state);
-		index_close(index_rel, AccessShareLock);
-		return local_state;
-	}
 
 	chain_src =
 			tp_memtable_chain_source_create(local_state, index_rel, NULL, 0);
@@ -1093,33 +1170,19 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	{
 		uint32 chain_pages;
 
-		chain_docs	= (uint64)chain_src->total_docs;
-		chain_len	= (uint64)chain_src->total_len;
 		chain_pages = tp_memtable_chain_source_page_count(chain_src);
 		tp_source_close(chain_src);
 
 		/*
-		 * Seed shared->chain_page_count from the on-disk chain
-		 * so the auto-spill threshold isn't blind to pages that
-		 * pre-existed in the index when this backend (or this
-		 * shmem segment) was started.  The writer always
-		 * increments the counter strictly under SHARED, but
-		 * we're inside tp_rebuild_index_from_disk's LW_EXCLUSIVE
-		 * (acquired above), so we can atomically initialize it
-		 * without racing the writer.
+		 * The writer always increments chain_page_count strictly
+		 * under SHARED, but we're inside tp_rebuild_index_from_disk's
+		 * LW_EXCLUSIVE (acquired above), so we can atomically
+		 * initialize it without racing the writer.
 		 */
 		pg_atomic_write_u32(
 				&local_state->shared->chain_page_count, chain_pages);
 	}
 
-	pg_atomic_write_u32(
-			&local_state->shared->total_docs,
-			(uint32)(fresh_metap->total_docs + chain_docs));
-	pg_atomic_write_u64(
-			&local_state->shared->total_len,
-			fresh_metap->total_len + chain_len);
-
-	pfree(fresh_metap);
 	tp_release_index_lock(local_state);
 	index_close(index_rel, AccessShareLock);
 
@@ -1251,52 +1314,6 @@ tp_release_all_index_locks(void)
 }
 
 /*
- * Clear the memtable after segment spill by destroying hash tables completely.
- *
- * This destroys the string hash table and document lengths table entirely,
- * allowing their DSA memory to be freed. The tables will be recreated on
- * demand when new documents are added. This aggressive approach ensures
- * that DSA segments can be released back to the OS.
- *
- * Corpus statistics are preserved as they represent the overall index state.
- */
-void
-tp_clear_memtable(TpLocalIndexState *local_state)
-{
-	TpMemtable *memtable;
-
-	if (!local_state || !local_state->shared)
-		return;
-
-	memtable = get_memtable(local_state);
-	if (!memtable)
-		return;
-
-	/*
-	 * BUILD MODE: Destroy entire private DSA and create fresh one.
-	 * This provides perfect memory reclamation - ALL memory returns to OS.
-	 */
-	if (local_state->is_build_mode)
-	{
-		/* Destroy and recreate private DSA */
-		tp_recreate_build_dsa(local_state);
-		return;
-	}
-
-	/*
-	 * RUNTIME MODE: v2 memtable contents live in shared
-	 * buffers (the on-disk chain), not in DSA.  Reset the
-	 * legacy auto-spill counters and trim the global DSA;
-	 * nothing else to do here.
-	 */
-	pg_atomic_write_u64(&memtable->total_postings, 0);
-	pg_atomic_write_u64(&memtable->num_terms, 0);
-	pg_atomic_write_u64(&memtable->total_term_len, 0);
-
-	dsa_trim(local_state->dsa);
-}
-
-/*
  * Check if any index should spill to disk due to bulk load threshold.
  * Spill is triggered when terms added this transaction exceeds threshold.
  *
@@ -1363,7 +1380,7 @@ tp_bulk_load_spill_check(void)
 			continue;
 		}
 
-		/* Phase 4: unified spill path. */
+		/* Unified spill path. */
 		(void)tp_do_spill(local_state, index_rel, NULL);
 
 		index_close(index_rel, RowExclusiveLock);

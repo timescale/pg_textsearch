@@ -139,7 +139,9 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only) | false |
-| `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only) | false |
+| `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
+| `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
+| `pg_textsearch.memory_limit` | Max shared memory (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three-tier budget: per-index soft cap (`limit/8`) → BUDGET_EXCEEDED + chain fallback; global soft cap (`limit/2`) → evict largest non-caller cache; global hard cap (`limit`) → refuse new cache builds. `0` = no limit. See `docs/memtable_cache.md` | 2 GB |
 
 
 ### Index Options
