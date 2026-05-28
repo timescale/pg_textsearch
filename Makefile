@@ -31,6 +31,7 @@ OBJS = \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
 	src/memtable/chain_source.o \
+	src/memtable/chain_walker.o \
 	src/memtable/expull.o \
 	src/memtable/log.o \
 	src/memtable/memtable.o \
