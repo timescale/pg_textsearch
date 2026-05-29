@@ -57,7 +57,6 @@ struct TpStringHashEntry
 };
 
 /* String table creation and initialization */
-extern dshash_table *tp_string_table_create(dsa_area *area);
 extern dshash_table *
 tp_string_table_attach(dsa_area *area, dshash_table_handle handle);
 
@@ -87,9 +86,6 @@ extern void tp_cache_apply_document(
 		int32			  *frequencies,
 		int				   term_count,
 		int32			   doc_length);
-
-/* Posting list management in DSA */
-extern dsa_pointer tp_alloc_posting_list(dsa_area *dsa);
 
 /* LWLock tranche for string table locking */
 #define TP_STRING_HASH_TRANCHE_ID LWTRANCHE_FIRST_USER_DEFINED

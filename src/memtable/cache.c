@@ -2,10 +2,10 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * cache.c — apply protocol for the in-memory memtable cache.
+ * cache.c — lifecycle + apply protocol for the in-memory memtable cache.
  *
  * See cache.h for the public contract and docs/memtable_cache.md
- * for the design.  Two entry points:
+ * for the design.  Three entry points:
  *
  *   tp_cache_cold_build()    cache.apply_lock EXCL +
  *                            cache.lock EXCL.  Allocates dshash
@@ -19,6 +19,13 @@
  *                            (cursor.next_blkno, cursor.next_off)
  *                            to the logical tail, applies each
  *                            record, advances the cursor.
+ *
+ *   tp_cache_clear()         drops the dshash tables, resets the
+ *                            apply cursor + estimated_bytes, and
+ *                            drains accounting in lockstep with
+ *                            the global counter.  Caller-supplied
+ *                            lock contract (see the function
+ *                            comment).
  *
  * Both paths share the same record-apply primitive
  * (apply_one_record) that decodes the on-disk TpVector, runs
@@ -55,7 +62,6 @@
 #include "index/state.h"
 #include "memtable/cache.h"
 #include "memtable/chain_walker.h"
-#include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
 #include "types/vector.h"
@@ -158,6 +164,59 @@ tp_cache_account_bytes_drain(TpMemtable *memtable)
 		if (sub > 0)
 			pg_atomic_fetch_sub_u64(gp, sub);
 	}
+}
+
+/* ---------- lifecycle ---------- */
+
+void
+tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
+{
+	if (dsa == NULL || memtable == NULL)
+		return;
+
+	if (memtable->string_hash_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_table *string_table =
+				tp_string_table_attach(dsa, memtable->string_hash_handle);
+
+		/*
+		 * tp_string_table_clear walks the entries, freeing each
+		 * interned term string and its posting list back to the
+		 * DSA, then deletes the entry.  After that, dshash_destroy
+		 * frees the dshash table's own internal allocations.
+		 */
+		tp_string_table_clear(dsa, string_table);
+		dshash_destroy(string_table);
+		memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	}
+
+	if (memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID)
+	{
+		dshash_table *doclength_table =
+				tp_doclength_table_attach(dsa, memtable->doc_lengths_handle);
+
+		/*
+		 * Doc-length entries are POD (ItemPointerData + int32) with
+		 * no nested DSA allocations, so dshash_destroy alone is
+		 * sufficient.
+		 */
+		dshash_destroy(doclength_table);
+		memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	}
+
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_write_u64(&memtable->cursor_seq, 0);
+
+	/*
+	 * Drain estimated_bytes and the matching slice of the global
+	 * counter in lockstep so eviction accounting doesn't drift
+	 * (docs/memtable_cache.md §"Memory cap (3 tiers)").
+	 */
+	tp_cache_account_bytes_drain(memtable);
+
+	dsa_trim(dsa);
 }
 
 /* ---------- eviction ---------- */

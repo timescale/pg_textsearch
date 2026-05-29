@@ -2,13 +2,15 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * posting.h — in-memory posting list structures for the cache
+ * posting.h — in-memory posting list + doclength entry types
  *
  * The cache holds DSA-resident posting lists keyed by term, each
  * a sorted (after finalization) array of (ctid, frequency)
  * entries.  Mutated by the cache apply protocol from chain doc
- * records; queried by the cache TpDataSource.  See
- * docs/memtable_cache.md.
+ * records; queried by the cache TpDataSource.  The doclength
+ * hash entry (TpDocLengthEntry) is colocated here because the
+ * doclength table API + DSA storage are owned by this module.
+ * See docs/memtable_cache.md.
  */
 #pragma once
 
@@ -37,10 +39,22 @@ typedef struct TpPostingList
 	dsa_pointer entries_dp; /* DSA pointer to TpPostingEntry array */
 } TpPostingList;
 
+/*
+ * Document length entry for the dshash hash table.
+ * Maps document CTID to its length for BM25 calculations.
+ */
+typedef struct TpDocLengthEntry
+{
+	ItemPointerData ctid;		/* Key: Document heap tuple ID */
+	int32			doc_length; /* Value: Document length (sum of term
+								 * frequencies) */
+} TpDocLengthEntry;
+
 /* Array growth multiplier */
 extern int tp_posting_list_growth_factor;
 
 /* Posting list memory management */
+extern dsa_pointer tp_alloc_posting_list(dsa_area *dsa);
 extern void tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp);
 extern TpPostingEntry *
 tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list);

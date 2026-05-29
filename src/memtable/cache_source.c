@@ -32,7 +32,6 @@
 #include "memtable/cache.h"
 #include "memtable/cache_source.h"
 #include "memtable/chain_source.h"
-#include "memtable/memtable.h"
 #include "memtable/posting.h"
 #include "memtable/posting_entry.h"
 #include "memtable/stringtable.h"

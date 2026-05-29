@@ -127,8 +127,6 @@ back, with surgical adjustments for v2:
 
 | Path                               | LOC | Reuse |
 |------------------------------------|----:|-------|
-| `src/memtable/memtable.h`          |  44 | unchanged surface |
-| `src/memtable/memtable.c`          |  11 | stub, was always tiny |
 | `src/memtable/posting.h`           |  86 | unchanged surface |
 | `src/memtable/posting.c`           | 458 | unchanged |
 | `src/memtable/posting_entry.h`     |  24 | unchanged |
@@ -136,6 +134,14 @@ back, with surgical adjustments for v2:
 | `src/memtable/stringtable.c`       | 561 | mostly unchanged; drop primary-write paths that now live in `tp_add_document_terms` |
 | `src/memtable/source.h`            |  18 | rename `tp_memtable_source_create` → `tp_memtable_cache_source_create`; semantics unchanged |
 | `src/memtable/source.c`            | 167 | as above |
+
+> Post-implementation note (PR #395): the original v1 cutover plan
+> also listed `src/memtable/memtable.{c,h}` (55 LOC combined) as
+> files to resurrect.  Both were dissolved during cleanup:
+> `memtable.c` (a tiny stub holding only `tp_cache_clear`) folded
+> into `cache.c`, and `memtable.h` (a 49-line header holding only
+> `TpDocLengthEntry` + a posting-list helper decl) dissolved into
+> `posting.h`.  The table above reflects the surviving v1 files.
 
 What we do **NOT** resurrect:
 
