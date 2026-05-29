@@ -259,9 +259,10 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
--- bm25_test_chain_source / bm25_memtable_chain functions are
--- INTERNAL-ONLY test scaffolds for the on-disk memtable v2
--- redesign (issue #374).  They are not part of the supported
+-- bm25_test_chain_source / bm25_memtable_chain /
+-- bm25_memtable_dead_pages functions are
+-- INTERNAL-ONLY test scaffolds for the on-disk memtable redesign
+-- (issue #374).  They are not part of the supported
 -- public API: their signatures, return values, and existence are
 -- subject to change or removal in ANY release (including patch
 -- releases) without notice or upgrade paths.  Do not depend on
@@ -288,10 +289,70 @@ RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
 LANGUAGE C STRICT;
 
+CREATE FUNCTION @extschema@.bm25_memtable_dead_pages(
+    index_name text,
+    OUT blkno bigint,
+    OUT flags integer,
+    OUT dead_fxid bigint,
+    OUT n_records integer)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'bm25_memtable_dead_pages'
+LANGUAGE C STRICT;
+
 CREATE FUNCTION @extschema@.bm25_test_chain_source(
     index_name text, case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_chain_source'
+LANGUAGE C STRICT;
+
+-- Cache apply protocol scaffolds (in-memory memtable cache).
+-- Same INTERNAL-ONLY disclaimer as the v2 chain scaffolds above.
+-- Each returns a (result, records_applied, cursor_seq,
+-- estimated_bytes) tuple.
+CREATE FUNCTION @extschema@.bm25_cache_cold_build(
+    index_name text,
+    OUT result text,
+    OUT records_applied bigint,
+    OUT cursor_seq bigint,
+    OUT estimated_bytes bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'bm25_cache_cold_build'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_apply_to_tail(
+    index_name text,
+    OUT result text,
+    OUT records_applied bigint,
+    OUT cursor_seq bigint,
+    OUT estimated_bytes bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'bm25_cache_apply_to_tail'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_bump_spill_generation(
+    index_name text)
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
+LANGUAGE C STRICT;
+
+-- Cache memory-cap scaffolds.  Same INTERNAL-ONLY disclaimer as
+-- above.  See docs/memtable_cache.md §"Memory cap (3 tiers)".
+CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_cache_evict_largest(index_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_cache_evict_largest'
+LANGUAGE C STRICT;
+
+-- Cache source scaffold (in-memory memtable cache).
+-- Same INTERNAL-ONLY disclaimer as above.
+CREATE FUNCTION @extschema@.bm25_test_cache_source(
+    index_name text, case_name text)
+RETURNS text
+AS 'MODULE_PATHNAME', 'bm25_test_cache_source'
 LANGUAGE C STRICT;
 
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
@@ -299,5 +360,18 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_dead_pages(text)
+    FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_chain_source(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_cold_build(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_apply_to_tail(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_bump_spill_generation(text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_cache_source(text, text)
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
+    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_evict_largest(text)
     FROM PUBLIC;

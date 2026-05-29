@@ -1,0 +1,357 @@
+/*
+ * Copyright (c) 2025-2026 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ *
+ * posting.c — posting list and doclength table management for
+ * the in-memory memtable cache.  See docs/memtable_cache.md.
+ */
+#include <postgres.h>
+
+#include <lib/dshash.h>
+#include <math.h>
+#include <miscadmin.h>
+#include <storage/itemptr.h>
+#include <utils/dsa.h>
+#include <utils/hsearch.h>
+#include <utils/memutils.h>
+
+#include "common/hashfn.h"
+#include "constants.h"
+#include "index/metapage.h"
+#include "index/registry.h"
+#include "index/state.h"
+#include "memtable/posting.h"
+#include "memtable/stringtable.h"
+
+/* Configuration parameters */
+int tp_posting_list_growth_factor = TP_POSTING_LIST_GROWTH_FACTOR;
+
+/*
+ * Free a posting list and its entries array
+ */
+void
+tp_free_posting_list(dsa_area *area, dsa_pointer posting_list_dp)
+{
+	TpPostingList *posting_list;
+
+	if (!DsaPointerIsValid(posting_list_dp))
+		return;
+
+	posting_list = (TpPostingList *)dsa_get_address(area, posting_list_dp);
+
+	/* Free entries array if it exists */
+	if (DsaPointerIsValid(posting_list->entries_dp))
+		dsa_free(area, posting_list->entries_dp);
+
+	/* Free the posting list structure itself */
+	dsa_free(area, posting_list_dp);
+}
+
+/* Helper function to get entries array from posting list */
+TpPostingEntry *
+tp_get_posting_entries(dsa_area *area, TpPostingList *posting_list)
+{
+	TpPostingEntry *entries;
+
+	if (!posting_list || !DsaPointerIsValid(posting_list->entries_dp))
+		return NULL;
+	if (!area)
+		return NULL;
+
+	entries = dsa_get_address(area, posting_list->entries_dp);
+
+#ifdef USE_ASSERT_CHECKING
+	/*
+	 * In debug builds, check if we're accessing freed memory.
+	 * If memory was freed by tp_dsa_free, it will be filled with
+	 * 0xDD sentinel pattern. Detecting this indicates use-after-free.
+	 */
+	if (entries && posting_list->doc_count > 0)
+	{
+		unsigned char *check = (unsigned char *)entries;
+		bool		   looks_freed =
+				(check[0] == 0xDD && check[1] == 0xDD && check[2] == 0xDD &&
+				 check[3] == 0xDD);
+
+		Assert(!looks_freed);
+		if (looks_freed)
+			elog(ERROR,
+				 "use-after-free detected: accessing freed posting "
+				 "list entries");
+	}
+#endif
+
+	return entries;
+}
+
+/*
+ * Allocate and initialize a new posting list in DSA
+ * Returns the DSA pointer to the allocated posting list
+ */
+dsa_pointer
+tp_alloc_posting_list(dsa_area *dsa)
+{
+	dsa_pointer	   posting_list_dp;
+	TpPostingList *posting_list;
+
+	Assert(dsa != NULL);
+
+	posting_list_dp = dsa_allocate(dsa, sizeof(TpPostingList));
+	if (!DsaPointerIsValid(posting_list_dp))
+		elog(ERROR, "Failed to allocate posting list in DSA");
+
+	posting_list = dsa_get_address(dsa, posting_list_dp);
+
+	/* Initialize posting list */
+	memset(posting_list, 0, sizeof(TpPostingList));
+	LWLockInitialize(&posting_list->lock, TP_TRANCHE_POSTING_LOCK);
+	posting_list->doc_count	 = 0;
+	posting_list->capacity	 = 0;
+	posting_list->is_sorted	 = false;
+	posting_list->doc_freq	 = 0;
+	posting_list->entries_dp = InvalidDsaPointer;
+
+	return posting_list_dp;
+}
+
+/*
+ * Add a document entry to a posting list - simplified
+ */
+void
+tp_add_document_to_posting_list(
+		TpLocalIndexState *local_state,
+		TpPostingList	  *posting_list,
+		ItemPointer		   ctid,
+		int32			   frequency)
+{
+	TpPostingEntry *entries;
+	TpPostingEntry *new_entry;
+	dsa_pointer		new_entries_dp;
+
+	Assert(local_state != NULL);
+	Assert(posting_list != NULL);
+	Assert(ItemPointerIsValid(ctid));
+
+	if (!local_state->is_build_mode)
+		LWLockAcquire(&posting_list->lock, LW_EXCLUSIVE);
+
+	/* Expand array if needed */
+	if (posting_list->doc_count >= posting_list->capacity)
+	{
+		int32 new_capacity;
+		Size  new_size;
+
+		if (posting_list->capacity == 0)
+			new_capacity = TP_INITIAL_POSTING_LIST_CAPACITY;
+		else
+		{
+			/* Check for int32 overflow before multiplying */
+			if (posting_list->capacity >
+				INT32_MAX / tp_posting_list_growth_factor)
+				elog(ERROR,
+					 "posting list capacity overflow: %d * %d",
+					 posting_list->capacity,
+					 tp_posting_list_growth_factor);
+			new_capacity = posting_list->capacity *
+						   tp_posting_list_growth_factor;
+		}
+		new_size = (Size)new_capacity * sizeof(TpPostingEntry);
+
+		new_entries_dp = dsa_allocate(local_state->dsa, new_size);
+		if (!DsaPointerIsValid(new_entries_dp))
+			elog(ERROR, "Failed to allocate posting entries in DSA");
+
+		/* Copy existing entries if any */
+		if (posting_list->doc_count > 0 &&
+			DsaPointerIsValid(posting_list->entries_dp))
+		{
+			TpPostingEntry *old_entries =
+					tp_get_posting_entries(local_state->dsa, posting_list);
+			TpPostingEntry *new_entries =
+					dsa_get_address(local_state->dsa, new_entries_dp);
+			memcpy(new_entries,
+				   old_entries,
+				   posting_list->doc_count * sizeof(TpPostingEntry));
+
+			dsa_free(local_state->dsa, posting_list->entries_dp);
+		}
+
+		posting_list->entries_dp = new_entries_dp;
+		posting_list->capacity	 = new_capacity;
+	}
+
+	/* Add new document entry */
+	entries			= tp_get_posting_entries(local_state->dsa, posting_list);
+	new_entry		= &entries[posting_list->doc_count];
+	new_entry->ctid = *ctid;
+	new_entry->frequency = frequency;
+
+	posting_list->doc_count++;
+	posting_list->doc_freq	= posting_list->doc_count;
+	posting_list->is_sorted = false; /* New entry may break sort order */
+
+	if (!local_state->is_build_mode)
+		LWLockRelease(&posting_list->lock);
+}
+
+/*
+ * Hash function for document length entries (CTID-based)
+ */
+static dshash_hash
+tp_doclength_hash_function(const void *key, size_t keysize, void *arg)
+{
+	const ItemPointer ctid = (const ItemPointer)key;
+
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
+	(void)arg;
+
+	/* Hash both block number and offset */
+	return hash_bytes((const unsigned char *)ctid, sizeof(ItemPointerData));
+}
+
+/*
+ * Compare function for document length entries (CTID comparison)
+ */
+static int
+tp_doclength_compare_function(
+		const void *a, const void *b, size_t keysize, void *arg)
+{
+	const ItemPointer ctid_a = (const ItemPointer)a;
+	const ItemPointer ctid_b = (const ItemPointer)b;
+
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
+	(void)arg;
+
+	return ItemPointerCompare(ctid_a, ctid_b);
+}
+
+/*
+ * Copy function for document length entries (CTID copy)
+ */
+static void
+tp_doclength_copy_function(
+		void *dest, const void *src, size_t keysize, void *arg)
+{
+	Assert(keysize == sizeof(ItemPointerData));
+	(void)keysize;
+	(void)arg;
+
+	*((ItemPointer)dest) = *((const ItemPointer)src);
+}
+
+/*
+ * Create document length hash table
+ */
+dshash_table *
+tp_doclength_table_create(dsa_area *area)
+{
+	dshash_parameters params;
+
+	params.key_size			= sizeof(ItemPointerData);
+	params.entry_size		= sizeof(TpDocLengthEntry);
+	params.hash_function	= tp_doclength_hash_function;
+	params.compare_function = tp_doclength_compare_function;
+	params.copy_function	= tp_doclength_copy_function;
+	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+
+	return dshash_create(area, &params, area);
+}
+
+/*
+ * Attach to existing document length hash table
+ */
+dshash_table *
+tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
+{
+	dshash_parameters params;
+
+	params.key_size			= sizeof(ItemPointerData);
+	params.entry_size		= sizeof(TpDocLengthEntry);
+	params.hash_function	= tp_doclength_hash_function;
+	params.compare_function = tp_doclength_compare_function;
+	params.copy_function	= tp_doclength_copy_function;
+	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+
+	return dshash_attach(area, &params, handle, area);
+}
+
+/*
+ * Reserve the doc-length slot for `ctid` in the document length hash
+ * table. Returns true if the entry is newly inserted (caller now
+ * owns the addition of this doc to the cache), false if an entry
+ * for `ctid` was already present.
+ *
+ * Used as the idempotency gate in tp_cache_apply_document so that
+ * concurrent cache appliers cannot double-add the same CTID into
+ * the cache.  The doc-length table is the gate (rather than a
+ * separate "seen" set) so we get insert + dedup in a single
+ * dshash op under the partition lock.
+ */
+bool
+tp_store_document_length(
+		TpLocalIndexState *local_state, ItemPointer ctid, int32 doc_length)
+{
+	TpMemtable		 *memtable;
+	dshash_table	 *doclength_table;
+	TpDocLengthEntry *entry;
+	bool			  found;
+
+	Assert(local_state != NULL);
+	Assert(ctid != NULL);
+
+	memtable = get_memtable(local_state);
+	if (!memtable)
+		elog(ERROR, "Cannot get memtable - index state corrupted");
+
+	/* Initialize document length table if needed */
+	if (memtable->doc_lengths_handle == DSHASH_HANDLE_INVALID)
+	{
+		doclength_table = tp_doclength_table_create(local_state->dsa);
+		memtable->doc_lengths_handle = dshash_get_hash_table_handle(
+				doclength_table);
+	}
+	else
+	{
+		doclength_table = tp_doclength_table_attach(
+				local_state->dsa, memtable->doc_lengths_handle);
+	}
+
+	entry = (TpDocLengthEntry *)
+			dshash_find_or_insert(doclength_table, ctid, &found);
+	if (!found)
+	{
+		entry->ctid		  = *ctid;
+		entry->doc_length = doc_length;
+	}
+
+	dshash_release_lock(doclength_table, entry);
+	dshash_detach(doclength_table);
+
+	return !found;
+}
+
+/*
+ * Get document length using a pre-attached doclength table.
+ * This is the optimized version for bulk lookups - avoids repeated
+ * dshash_attach/detach overhead.
+ */
+int32
+tp_get_document_length_attached(
+		dshash_table *doclength_table, ItemPointer ctid)
+{
+	TpDocLengthEntry *entry;
+
+	Assert(doclength_table != NULL);
+	Assert(ctid != NULL);
+
+	entry = (TpDocLengthEntry *)dshash_find(doclength_table, ctid, false);
+	if (entry)
+	{
+		int32 doc_length = entry->doc_length;
+		dshash_release_lock(doclength_table, entry);
+		return doc_length;
+	}
+	return -1; /* Not found */
+}

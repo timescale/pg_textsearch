@@ -150,6 +150,17 @@ tp_registry_shmem_startup(void)
 		 */
 		LWLockInitialize(&tapir_registry->lock, TP_TRANCHE_REGISTRY);
 
+		/*
+		 * In-memory memtable cache fields.  eviction_mutex
+		 * serializes evict_largest invocations across backends;
+		 * estimated_total_bytes is the live sum of per-index
+		 * cache estimated_bytes.  See
+		 * docs/memtable_cache.md §"Memory cap (3 tiers)".
+		 */
+		LWLockInitialize(
+				&tapir_registry->eviction_mutex, TP_TRANCHE_EVICTION_MUTEX);
+		pg_atomic_init_u64(&tapir_registry->estimated_total_bytes, 0);
+
 		/* Initialize handles as invalid - DSA/dshash created on first use */
 		tapir_registry->dsa_handle		= DSA_HANDLE_INVALID;
 		tapir_registry->registry_handle = DSHASH_HANDLE_INVALID;
@@ -157,8 +168,10 @@ tp_registry_shmem_startup(void)
 
 	LWLockRelease(AddinShmemInitLock);
 
-	/* Register the lock tranche */
+	/* Register the lock tranches */
 	LWLockRegisterTranche(tapir_registry->lock.tranche, "tapir_registry");
+	LWLockRegisterTranche(
+			tapir_registry->eviction_mutex.tranche, "tapir_cache_eviction");
 }
 
 /*
@@ -484,5 +497,61 @@ tp_registry_unregister(Oid index_oid)
 	deleted = dshash_delete_key(registry_hash, &index_oid);
 	(void)deleted; /* Ignore if not found */
 
+	dshash_detach(registry_hash);
+}
+
+/*
+ * Cache memory accounting accessors.  Both return pointers into
+ * the shmem registry control struct, valid for the lifetime of
+ * the postmaster.  See docs/memtable_cache.md §"Memory cap
+ * (3 tiers)".
+ */
+pg_atomic_uint64 *
+tp_registry_estimated_total_bytes(void)
+{
+	Assert(tapir_registry != NULL);
+	return &tapir_registry->estimated_total_bytes;
+}
+
+LWLock *
+tp_registry_eviction_mutex(void)
+{
+	Assert(tapir_registry != NULL);
+	return &tapir_registry->eviction_mutex;
+}
+
+void
+tp_registry_walk(TpRegistryWalkCb cb, void *ctx)
+{
+	dshash_table	 *registry_hash;
+	dshash_seq_status status;
+	TpRegistryEntry	 *entry;
+
+	Assert(cb != NULL);
+
+	tp_registry_get_dsa();
+	if (!tapir_registry ||
+		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
+		return;
+
+	registry_hash =
+			registry_attach(tapir_dsa, tapir_registry->registry_handle);
+	if (!registry_hash)
+		return;
+
+	dshash_seq_init(&status, registry_hash, false);
+	while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
+	{
+		bool stop;
+
+		stop = cb(entry->index_oid, entry->shared_state_dp, ctx);
+		if (stop)
+		{
+			dshash_seq_term(&status);
+			dshash_detach(registry_hash);
+			return;
+		}
+	}
+	dshash_seq_term(&status);
 	dshash_detach(registry_hash);
 }

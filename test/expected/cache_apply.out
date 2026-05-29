@@ -1,0 +1,144 @@
+-- Unit coverage for the in-memory memtable cache apply protocol
+-- (cache.c; see docs/memtable_cache.md).
+--
+-- Drives bm25_cache_cold_build / bm25_cache_apply_to_tail directly
+-- so we can observe (result, records_applied, cursor_seq,
+-- estimated_bytes) deltas across each step without going through
+-- the normal reader path.
+--
+-- Records come from real heap inserts so we exercise the
+-- production write path end-to-end.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE TABLE cache_apply_t (id int, body text);
+CREATE INDEX cache_apply_idx ON cache_apply_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation cache_apply_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- ---------- empty chain ----------
+-- Cold build over an empty chain returns OK with 0 records and
+-- leaves the cursor unseeded (head_blkno was Invalid).
+SELECT result, records_applied
+  FROM bm25_cache_cold_build('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ OK     |               0
+(1 row)
+
+-- apply_to_tail on an empty/uninitialized cache returns
+-- NOT_INITIALIZED so the caller knows to cold-build first.
+SELECT result, records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+     result      | records_applied 
+-----------------+-----------------
+ NOT_INITIALIZED |               0
+(1 row)
+
+-- ---------- cold build over real records ----------
+INSERT INTO cache_apply_t
+SELECT g, 'shared term ' || g
+  FROM generate_series(1, 5) g;
+-- Cold-build picks up every record.  records_applied = 5,
+-- cursor_seq = 5, estimated_bytes > 0.
+SELECT result,
+       records_applied,
+       cursor_seq,
+       (estimated_bytes > 0) AS bytes_nonzero
+  FROM bm25_cache_cold_build('cache_apply_idx');
+ result | records_applied | cursor_seq | bytes_nonzero 
+--------+-----------------+------------+---------------
+ OK     |               5 |          5 | t
+(1 row)
+
+-- Re-running cold_build now returns RETRY (cache already built);
+-- cursor_seq stays at 5 and no new records get applied.
+SELECT result, records_applied
+  FROM bm25_cache_cold_build('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ RETRY  |               0
+(1 row)
+
+-- apply_to_tail with no new records is a no-op: OK / 0 records.
+SELECT result, records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ OK     |               0
+(1 row)
+
+-- ---------- incremental catchup ----------
+INSERT INTO cache_apply_t
+SELECT g, 'newer term ' || g
+  FROM generate_series(6, 10) g;
+-- apply_to_tail picks up the 5 new records.
+SELECT result,
+       records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ OK     |               5
+(1 row)
+
+-- A second apply_to_tail is again a no-op.
+SELECT result, records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ OK     |               0
+(1 row)
+
+-- ---------- spill invalidates the cache ----------
+-- Bump the spill generation directly to exercise the DROPPED
+-- defensive branch in tp_cache_apply_to_tail.  Real spill paths
+-- (tp_spill_finalize) bump the generation AND immediately drop
+-- the cache's dshash tables via tp_cache_clear, so the next
+-- apply_to_tail lands on NOT_INITIALIZED instead of DROPPED.
+-- The helper isolates the stale-cursor-without-cleared-tables
+-- case so the safety net stays exercised.
+SELECT (bm25_cache_bump_spill_generation('cache_apply_idx') > 0)
+        AS gen_advanced;
+ gen_advanced 
+--------------
+ t
+(1 row)
+
+-- apply_to_tail sees the stale generation token and DROPs the
+-- cache.  cursor_seq drops back to 0 because tp_cache_clear
+-- resets it.
+SELECT result, cursor_seq
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+ result  | cursor_seq 
+---------+------------
+ DROPPED |          0
+(1 row)
+
+-- The cache is now back at the cold state: NOT_INITIALIZED.
+SELECT result, records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+     result      | records_applied 
+-----------------+-----------------
+ NOT_INITIALIZED |               0
+(1 row)
+
+-- Cold-build re-bootstraps with the current generation, so the
+-- next apply_to_tail returns OK with 0 new records.
+SELECT result,
+       (records_applied >= 0) AS records_ok
+  FROM bm25_cache_cold_build('cache_apply_idx');
+ result | records_ok 
+--------+------------
+ OK     | t
+(1 row)
+
+SELECT result, records_applied
+  FROM bm25_cache_apply_to_tail('cache_apply_idx');
+ result | records_applied 
+--------+-----------------
+ OK     |               0
+(1 row)
+
+DROP INDEX cache_apply_idx;
+DROP TABLE cache_apply_t;
+DROP EXTENSION pg_textsearch CASCADE;

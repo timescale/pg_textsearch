@@ -9,6 +9,7 @@
 #include <access/genam.h>
 #include <access/generic_xlog.h>
 #include <access/heapam.h>
+#include <access/transam.h>
 #include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
@@ -20,9 +21,11 @@
 #include <nodes/execnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/procarray.h>
 #include <tsearch/ts_utils.h>
 #include <utils/builtins.h>
 #include <utils/fmgrprotos.h>
+#include <utils/hsearch.h>
 #include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
@@ -31,6 +34,7 @@
 #include "access/build_context.h"
 #include "index/metapage.h"
 #include "index/state.h"
+#include "memtable/page.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/merge.h"
@@ -53,6 +57,150 @@ typedef struct TpVacuumSegmentInfo
 	bool		affected;
 	bool		is_v5; /* true if segment has alive bitset */
 } TpVacuumSegmentInfo;
+
+/*
+ * Convert a 32-bit xid (known to be in the allowable range when
+ * nextFullXid was current) into a FullTransactionId.
+ */
+static inline FullTransactionId
+tp_full_xid_from_allowable_at(FullTransactionId nextFullXid, TransactionId xid)
+{
+#if PG_VERSION_NUM >= 170003
+	return FullTransactionIdFromAllowableAt(nextFullXid, xid);
+#else
+	uint32 epoch;
+
+	if (!TransactionIdIsNormal(xid))
+		return FullTransactionIdFromEpochAndXid(0, xid);
+
+	Assert(TransactionIdPrecedesOrEquals(
+			xid, XidFromFullTransactionId(nextFullXid)));
+
+	epoch = EpochFromFullTransactionId(nextFullXid);
+	if (xid > XidFromFullTransactionId(nextFullXid))
+	{
+		Assert(epoch != 0);
+		epoch--;
+	}
+
+	return FullTransactionIdFromEpochAndXid(epoch, xid);
+#endif
+}
+
+/*
+ * Build a hash set of block numbers reachable from the current
+ * memtable chain (metap->memtable_head_blkno).  Used by
+ * tp_reclaim_dead_memtable_pages to avoid freeing pages that are
+ * still in the live chain — a crash-safety guard against the
+ * scenario where a crash between tp_spill_finalize and
+ * tp_memtable_mark_chain_dead leaves pages reachable but stamped
+ * DEAD once global xmin advances.
+ *
+ * Walks both the main chain (via next_block) and any fragment
+ * continuation sub-chains.  Caller must hash_destroy() the result.
+ */
+static HTAB *
+tp_collect_reachable_chain_blocks(Relation indexrel)
+{
+	HASHCTL			info;
+	HTAB		   *reachable;
+	TpIndexMetaPage metap;
+	BlockNumber		cur;
+
+	memset(&info, 0, sizeof(info));
+	info.keysize   = sizeof(BlockNumber);
+	info.entrysize = sizeof(BlockNumber);
+	info.hcxt	   = CurrentMemoryContext;
+	reachable	   = hash_create(
+			 "reachable chain blocks",
+			 128,
+			 &info,
+			 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	metap = tp_get_metapage(indexrel);
+	if (metap == NULL)
+		return reachable;
+
+	cur = metap->memtable_head_blkno;
+	pfree(metap);
+
+	while (cur != InvalidBlockNumber)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+		TpMemtableRecord	 *rec;
+		BlockNumber			  next;
+		bool				  found;
+
+		CHECK_FOR_INTERRUPTS();
+
+		hash_search(reachable, &cur, HASH_ENTER, &found);
+
+		buf = ReadBuffer(indexrel, cur);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page))
+		{
+			UnlockReleaseBuffer(buf);
+			break;
+		}
+
+		hdr	 = tp_memtable_page_header(page);
+		next = hdr->next_block;
+		rec	 = tp_memtable_page_first(page);
+
+		/*
+		 * If this page has a fragment record, its next_block points
+		 * to the first continuation page.  Walk the continuation
+		 * chain and add those blocks too, then resume from the
+		 * first non-continuation block.
+		 */
+		if (rec != NULL &&
+			(rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
+		{
+			BlockNumber cont = next;
+
+			while (cont != InvalidBlockNumber)
+			{
+				Buffer				  cont_buf;
+				Page				  cont_page;
+				TpMemtablePageHeader *cont_hdr;
+
+				hash_search(reachable, &cont, HASH_ENTER, &found);
+
+				cont_buf = ReadBuffer(indexrel, cont);
+				LockBuffer(cont_buf, BUFFER_LOCK_SHARE);
+				cont_page = BufferGetPage(cont_buf);
+
+				if (!tp_memtable_page_is_valid(cont_page) ||
+					!tp_memtable_page_is_continuation(cont_page))
+				{
+					next = cont;
+					UnlockReleaseBuffer(cont_buf);
+					break;
+				}
+
+				cont_hdr = tp_memtable_page_header(cont_page);
+				cont	 = cont_hdr->next_block;
+				UnlockReleaseBuffer(cont_buf);
+			}
+			/*
+			 * If the inner loop exhausted (cont == Invalid), next
+			 * stays as the last continuation's next_block, which
+			 * is Invalid — outer loop terminates correctly.
+			 */
+			if (cont == InvalidBlockNumber)
+				next = InvalidBlockNumber;
+		}
+
+		UnlockReleaseBuffer(buf);
+		cur = next;
+	}
+
+	return reachable;
+}
 
 /*
  * Sum segment.alive_count across all on-disk segments.  Used by
@@ -96,20 +244,15 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 
 /*
  * Apply the invariant total_docs = Σ segment.num_docs (and its
- * total_len counterpart) after Phase 3 has rebuilt or dropped
- * segments.  Decrements both the shared-memory atomic and the
- * on-disk metapage under the metapage buffer exclusive lock so a
- * concurrent tp_sync_metapage_stats (which acquires the same lock)
- * cannot observe a half-applied state or re-inflate the metapage
- * from the atomic between the two decrements.  See
+ * total_len counterpart) on the metapage after Phase 3 has
+ * rebuilt or dropped segments.  Subtraction is clamped at zero
+ * so a stale shrinkage value (e.g. from pre-fix L0 headers
+ * carrying inflated total_tokens) cannot underflow.  See
  * TpIndexMetaPageData.total_docs in metapage.h for the invariant.
  */
 static void
 tp_apply_vacuum_shrinkage(
-		Relation		   index,
-		TpLocalIndexState *index_state,
-		uint64			   docs_shrinkage,
-		uint64			   tokens_shrinkage)
+		Relation index, uint64 docs_shrinkage, uint64 tokens_shrinkage)
 {
 	Buffer			  mbuf;
 	GenericXLogState *xlog_state;
@@ -121,40 +264,6 @@ tp_apply_vacuum_shrinkage(
 
 	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-
-	if (index_state != NULL && index_state->shared != NULL)
-	{
-		/*
-		 * Clamp symmetrically with the metapage write below so a
-		 * shrinkage that exceeds the current atomic (reachable via
-		 * pre-fix L0 headers carrying inflated total_tokens) can't
-		 * wrap the u64 atomic.  A wrap would propagate back to disk
-		 * on the next tp_sync_metapage_stats, which writes the
-		 * atomic into metap unconditionally.
-		 */
-		if (docs_shrinkage > 0)
-		{
-			uint32 cur_docs = pg_atomic_read_u32(
-					&index_state->shared->total_docs);
-			uint32 sub_docs = (docs_shrinkage > (uint64)cur_docs)
-									? cur_docs
-									: (uint32)docs_shrinkage;
-
-			if (sub_docs > 0)
-				pg_atomic_fetch_sub_u32(
-						&index_state->shared->total_docs, sub_docs);
-		}
-		if (tokens_shrinkage > 0)
-		{
-			uint64 cur_len = pg_atomic_read_u64(
-					&index_state->shared->total_len);
-			uint64 sub_len = Min(cur_len, tokens_shrinkage);
-
-			if (sub_len > 0)
-				pg_atomic_fetch_sub_u64(
-						&index_state->shared->total_len, sub_len);
-		}
-	}
 
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
@@ -886,7 +995,7 @@ tp_bulkdelete(
 		}
 
 		tp_apply_vacuum_shrinkage(
-				info->index, index_state, docs_shrinkage, tokens_shrinkage);
+				info->index, docs_shrinkage, tokens_shrinkage);
 	}
 
 	/*
@@ -916,6 +1025,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	TpIndexMetaPage	   metap;
 	TpLocalIndexState *index_state;
+	int				   freed_pages;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
@@ -962,8 +1072,30 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		if (index_state != NULL)
 			tp_release_index_lock(index_state);
 
-		if (stats->pages_deleted == 0 && stats->tuples_removed == 0)
+		/*
+		 * Return DEAD memtable orphan blocks to the index FSM once
+		 * their dead_fxid is older than the global visibility horizon.
+		 * LW_SHARED is enough: only already-unlinked DEAD pages are
+		 * touched; live inserts/scans hold the same lock and mutate
+		 * the metapage chain, not these blocks.  Spill (LW_EXCLUSIVE)
+		 * waits until this scan finishes.
+		 */
+		if (index_state != NULL)
+			tp_acquire_index_lock(index_state, LW_SHARED);
+		freed_pages =
+				tp_reclaim_dead_memtable_pages(info->index, info->heaprel);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
+
+		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
+			freed_pages == 0)
 			stats->pages_free = 0;
+
+		if (freed_pages != 0)
+		{
+			stats->pages_free += freed_pages;
+			IndexFreeSpaceMapVacuum(info->index);
+		}
 
 		pfree(metap);
 	}
@@ -982,4 +1114,77 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 
 	return stats;
+}
+
+/*
+ * Scan the index main fork for memtable pages stamped DEAD at spill
+ * and recycle blocks whose dead_fxid is older than the visibility
+ * horizon for `heaprel` (FullTransactionId compare).  Does not
+ * WAL-log page bodies or clear DEAD flags; reuse overwrites via
+ * tp_memtable_alloc_page.  Caller holds per-index LW_SHARED (or
+ * stronger); excludes spill via LW_EXCLUSIVE incompatibility.
+ *
+ * Crash-safety guard: we build a set of blocks reachable from the
+ * current memtable chain and skip freeing any page in that set.
+ * This prevents corruption if a crash between tp_spill_finalize and
+ * tp_memtable_mark_chain_dead left pages stamped DEAD but still
+ * reachable via metap.head.  See tp_collect_reachable_chain_blocks.
+ */
+int
+tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
+{
+	int				  reclaimed_pages = 0;
+	BlockNumber		  nblocks		  = RelationGetNumberOfBlocks(indexrel);
+	BlockNumber		  blk;
+	TransactionId	  oldest;
+	FullTransactionId oldest_fxid;
+	HTAB			 *reachable;
+
+	oldest = GetOldestNonRemovableTransactionId(heaprel);
+	oldest_fxid =
+			tp_full_xid_from_allowable_at(ReadNextFullTransactionId(), oldest);
+
+	/*
+	 * Build set of blocks still reachable from metap.head.
+	 * Pages in this set must not be freed even if stamped DEAD.
+	 */
+	reachable = tp_collect_reachable_chain_blocks(indexrel);
+
+	for (blk = TP_METAPAGE_BLKNO + 1; blk < nblocks; blk++)
+	{
+		Buffer				  buf;
+		Page				  page;
+		TpMemtablePageHeader *hdr;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBuffer(indexrel, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!tp_memtable_page_is_valid(page) ||
+			!tp_memtable_page_is_dead(page))
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		hdr = tp_memtable_page_header(page);
+		if (FullTransactionIdPrecedes(hdr->dead_fxid, oldest_fxid))
+		{
+			/* Skip pages still reachable from live chain */
+			bool found;
+			hash_search(reachable, &blk, HASH_FIND, &found);
+			if (!found)
+			{
+				RecordFreeIndexPage(indexrel, blk);
+				reclaimed_pages++;
+			}
+		}
+
+		UnlockReleaseBuffer(buf);
+	}
+
+	hash_destroy(reachable);
+	return reclaimed_pages;
 }

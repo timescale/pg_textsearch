@@ -8,6 +8,8 @@
 
 #include <access/generic_xlog.h>
 #include <access/tableam.h>
+#include <access/xact.h>
+#include <access/xlog.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
 #include <commands/progress.h>
@@ -187,7 +189,42 @@ tp_do_spill(
 	if (out_segment_root != NULL)
 		*out_segment_root = root;
 
-	tp_spill_finalize(index_rel, root, docs_delta, len_delta);
+	/*
+	 * Finalize first, then mark dead - crash-safe ordering.
+	 *
+	 * We must disconnect the chain (clear metap.head) BEFORE stamping
+	 * pages DEAD.  If we crash between mark and finalize, the chain
+	 * is still reachable via metap.head but pages are stamped DEAD;
+	 * once xmin advances, tp_reclaim_dead_memtable_pages would free
+	 * pages still in the live chain, causing corruption on FSM reuse.
+	 *
+	 * By finalizing first: a crash after finalize but before marking
+	 * leaves pages unreachable but un-stamped, so reclaim won't touch
+	 * them.  Worst case: pages leak until REINDEX.
+	 */
+	{
+		BlockNumber		  chain_head;
+		FullTransactionId horizon;
+		TpIndexMetaPage	  metap;
+
+		horizon	   = ReadNextFullTransactionId();
+		metap	   = tp_get_metapage(index_rel);
+		chain_head = metap->memtable_head_blkno;
+		pfree(metap);
+
+		tp_spill_finalize(index_state, index_rel, root, docs_delta, len_delta);
+
+		if (tp_debug_panic_after_spill_finalize)
+		{
+			XLogFlush(GetXLogInsertRecPtr());
+			elog(PANIC,
+				 "pg_textsearch: debug crash after spill finalize "
+				 "(tp_debug_panic_after_spill_finalize)");
+		}
+
+		if (BlockNumberIsValid(chain_head))
+			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
+	}
 
 	/* Free dictionary + docmap (chain source no longer needed). */
 	tp_free_dictionary(terms, num_terms);
@@ -212,8 +249,8 @@ tp_do_spill(
 }
 
 /*
- * Auto-spill memtable when the on-disk chain grows past the
- * configured page threshold (memtable v2, issue #374).
+ * Auto-spill the on-disk memtable when the chain grows past the
+ * configured page threshold (issue #374).
  *
  * The pre-lock read of chain_page_count is a fast bailout
  * (approximate: a concurrent insert may have bumped the counter
@@ -1351,34 +1388,28 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * CREATE INDEX transaction commits.
 			 */
 			{
-				TpLocalIndexState *pstate;
-				Buffer			   metabuf;
-				Page			   mpage;
-				TpIndexMetaPage	   metap;
+				Buffer			metabuf;
+				Page			mpage;
+				TpIndexMetaPage metap;
 
-				pstate = tp_create_shared_index_state(
+				(void)tp_create_shared_index_state(
 						RelationGetRelid(index),
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-				mpage = BufferGetPage(metabuf);
-				metap = (TpIndexMetaPage)PageGetContents(mpage);
-
-				pg_atomic_write_u32(
-						&pstate->shared->total_docs, metap->total_docs);
-				pg_atomic_write_u64(
-						&pstate->shared->total_len, metap->total_len);
-
 				if (build_progress.active)
 				{
+					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+					mpage = BufferGetPage(metabuf);
+					metap = (TpIndexMetaPage)PageGetContents(mpage);
+
 					build_progress.total_docs += (uint64)metap->total_docs;
 					build_progress.total_len += (uint64)metap->total_len;
 					build_progress.partition_count++;
-				}
 
-				UnlockReleaseBuffer(metabuf);
+					UnlockReleaseBuffer(metabuf);
+				}
 			}
 
 			return par_result;
@@ -1500,10 +1531,6 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);
 		}
-
-		/* Update shared state for runtime queries */
-		pg_atomic_write_u32(&index_state->shared->total_docs, total_docs);
-		pg_atomic_write_u64(&index_state->shared->total_len, total_len);
 
 		/* Create index build result */
 		result = (IndexBuildResult *)palloc(sizeof(IndexBuildResult));

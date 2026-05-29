@@ -4,13 +4,12 @@
  *
  * log.h - On-disk memtable write path.
  *
- * Phase 2 of the memtable v2 redesign (see issue #374 and
- * plan.md).  This module appends document records to the
- * on-disk memtable page chain rooted at the metapage's
- * (memtable_head_blkno, memtable_tail_blkno) fields.
+ * Appends document records to the on-disk memtable page chain
+ * rooted at the metapage's (memtable_head_blkno,
+ * memtable_tail_blkno) fields.  See issue #374 and
+ * docs/memtable_v2.md for the design.
  *
- * Concurrency contract (committed to in Phase 2, enforced by
- * later phases):
+ * Concurrency contract:
  *
  *     per-index LWLock SHARED/EXCL
  *         └─► tail buffer EXCL
@@ -25,12 +24,14 @@
  * the path by which spill gains uncontended access to the chain
  * pages.
  *
- * Crash safety: a crash between ExtendBufferedRel() and
- * GenericXLogFinish() leaves an uninitialized block on disk
- * that is unreachable via meta.head → next chain.  No code may
- * sequentially scan the relation without first validating each
- * page via tp_memtable_page_is_valid().  See plan.md for
- * additional discussion.
+ * Crash safety: a crash between page allocation
+ * (ExtendBufferedRel or FSM reuse via GetFreeIndexPage) and
+ * GenericXLogFinish() leaves a block on disk that is unreachable
+ * via meta.head → next chain and usually without a DEAD stamp.
+ * No code may sequentially scan the relation without first
+ * validating each page via tp_memtable_page_is_valid().  Orphans
+ * without DEAD may be recycled later by amvacuumcleanup once
+ * horizon rules exist for never-linked blocks.
  */
 #pragma once
 
@@ -92,20 +93,45 @@ extern BlockNumber tp_memtable_append(
  *   - Adds `docs_delta` / `len_delta` to total_docs / total_len
  *     (these are caller-supplied: the chain source's totals).
  *
- * Old chain pages are NOT touched here -- they become orphans
- * (intact `TP_MEMTABLE_PAGE_MAGIC` headers, but no metapage
- * pointer reaches them).  In-flight scans walking the old chain
- * via a metapage snapshot they already latched complete safely;
- * new scans see the new metapage and skip the orphans.  Phase 5b
- * will reclaim them in amvacuumcleanup.
+ * Does not modify the old memtable chain pages.  After this call
+ * the chain blocks are orphans (no metapage pointer); the caller
+ * should run `tp_memtable_mark_chain_dead` to WAL-stamp each page
+ * `DEAD` + `dead_fxid` for later reclaim (crash-safe ordering:
+ * finalize first, then mark dead).  In-flight scans walking the
+ * old chain via a metapage snapshot they already latched complete
+ * safely; new scans see the new metapage and skip the orphans.
+ * `tp_vacuumcleanup` returns them to the index FSM via
+ * `RecordFreeIndexPage`; `tp_memtable_alloc_page` reuses them.
  *
  * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
+ *
+ * `state` is required when the in-memory memtable cache is active
+ * (runtime mode); it provides the DSA attachment used to drop the
+ * cache's dshash tables after the metapage is published, and the
+ * pg_atomic counter that the cache's apply protocol uses as a
+ * stale-detection token.  Callers that legitimately have no cache
+ * (e.g. spill-from-build before the local state is wired up) may
+ * pass NULL; in that case the spill_generation bump and the
+ * tp_cache_clear call are both skipped (the build path constructs
+ * an empty cache anyway).
  */
 extern void tp_spill_finalize(
-		Relation	rel,
-		BlockNumber new_segment_root,
-		uint64		docs_delta,
-		uint64		len_delta);
+		TpLocalIndexState *state,
+		Relation		   rel,
+		BlockNumber		   new_segment_root,
+		uint64			   docs_delta,
+		uint64			   len_delta);
+
+/*
+ * WAL-stamp every page in the memtable chain rooted at `head` as
+ * dead (including fragment continuation pages).  Called from
+ * `tp_do_spill` under LW_EXCLUSIVE after tp_spill_finalize has
+ * disconnected the chain (crash-safe ordering: finalize first,
+ * then mark dead).  `horizon` is stored in each page's `dead_fxid`
+ * for later reclaim once globally safe.
+ */
+extern void tp_memtable_mark_chain_dead(
+		Relation rel, BlockNumber head, FullTransactionId horizon);
 
 /* Forward declaration to avoid heavy header include. */
 typedef struct TpLocalIndexState TpLocalIndexState;
@@ -116,11 +142,8 @@ typedef struct TpLocalIndexState TpLocalIndexState;
  *
  * Memtable v2 (issue #374): the previous DSA-based posting and
  * doc-length tables are gone; this is a thin wrapper around
- * tp_memtable_append() that also bumps:
- *   - corpus statistics (total_docs / total_len atomics, still
- *     written by the primary for compatibility with vacuum's
- *     shrinkage protocol; Phase 7B removes these),
- *   - terms_added_this_xact, used by tp_bulk_load_spill_check.
+ * tp_memtable_append() that also bumps terms_added_this_xact,
+ * used by tp_bulk_load_spill_check.
  *
  * `vector_bytes` points to `vector_len` bytes of opaque payload
  * (the in-memory v2 TpVector wire format).  The chain source

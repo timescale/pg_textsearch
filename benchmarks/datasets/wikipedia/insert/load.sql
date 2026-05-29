@@ -56,30 +56,9 @@ SELECT
     ROUND(SUM(LENGTH(content)) / 1024.0 / 1024.0, 1)::text
 FROM wikipedia_articles;
 
--- Spill memtable to disk so pg_relation_size reflects actual index data
-SELECT bm25_spill_index('wikipedia_bm25_idx');
-
--- Report index and table sizes
-\echo ''
-\echo '=== Index Size Report ==='
-SELECT
-    'INDEX_SIZE:' as label,
-    pg_size_pretty(
-        pg_relation_size('wikipedia_bm25_idx')
-    ) as index_size,
-    pg_relation_size('wikipedia_bm25_idx') as index_bytes;
-SELECT
-    'TABLE_SIZE:' as label,
-    pg_size_pretty(
-        pg_total_relation_size('wikipedia_articles')
-    ) as table_size,
-    pg_total_relation_size('wikipedia_articles')
-        as table_bytes;
-
--- Segment statistics
-\echo ''
-\echo '=== Segment Statistics ==='
-SELECT bm25_summarize_index('wikipedia_bm25_idx');
+-- NOTE: spill + size + segment-stats moved to size_report.sql, run
+-- AFTER queries.sql, so the query phase exercises the realistic
+-- post-load state (in-flight memtable chain + cache + segments).
 
 \echo ''
 \echo '=== Wikipedia Insert Benchmark Load Complete ==='

@@ -3,7 +3,7 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * chain_source.c - TpDataSource over the on-disk memtable page
- *                  chain (memtable v2, issue #374).
+ *                  chain (issue #374).
  *
  * See chain_source.h for the concurrency contract and high-level
  * semantics.
@@ -37,6 +37,7 @@
 #include "index/source.h"
 #include "index/state.h"
 #include "memtable/chain_source.h"
+#include "memtable/chain_walker.h"
 #include "memtable/page.h"
 #include "types/vector.h"
 
@@ -114,36 +115,6 @@ chain_term_match(const void *key1, const void *key2, Size keysize)
 
 	(void)keysize;
 	return strcmp(t1, t2);
-}
-
-/* ---------- structural page validation ---------- */
-
-/*
- * Per-page invariants the chain walker assumes when iterating
- * records.  These guard against silent out-of-bounds reads if
- * the on-page bytes are corrupt.  Called under SHARED buffer
- * lock; never modifies the page.
- */
-static void
-validate_page_layout(Page page, BlockNumber blkno)
-{
-	TpMemtablePageHeader *hdr = tp_memtable_page_header(page);
-
-	if (hdr->free_offset < TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET ||
-		hdr->free_offset > BLCKSZ)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch memtable page block %u has "
-						"out-of-range free_offset %u",
-						blkno,
-						hdr->free_offset)));
-
-	if (hdr->next_block == blkno)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch memtable page block %u links to "
-						"itself",
-						blkno)));
 }
 
 /* ---------- term-table append helpers ---------- */
@@ -348,305 +319,44 @@ ingest_terms(
 	}
 }
 
-/*
- * Reassemble a multi-page (FRAGMENT) record's payload.  On
- * entry, `head_page` is the SHARED-locked page hosting the
- * fragment head record `rec`.  This function walks the
- * continuation chain (SHARED-locking each continuation page
- * one at a time) and copies the full payload into a palloc'd
- * buffer in src->mcxt.
- *
- * Returns the block number of the first non-continuation page
- * after the last continuation (i.e. where the outer chain walk
- * should resume), and writes the reassembled buffer pointer
- * to *out_buf.  The caller is responsible for ingesting the
- * payload before that buffer is reclaimed.
- *
- * Holding the head page SHARED across the walk is sufficient
- * because: spill holds per-index LW_EXCLUSIVE (incompatible
- * with our source's LW_SHARED), so the chain cannot disappear
- * under us; concurrent writers only extend NEW (orphan) pages
- * and only EXCL-lock the old tail and metapage, neither of
- * which we touch here.
- */
-static BlockNumber
-reassemble_fragment(
-		TpMemtableChainSource *src,
-		Relation			   rel,
-		Page				   head_page,
-		TpMemtableRecord	  *rec,
-		char				 **out_buf)
-{
-	TpMemtablePageHeader *hdr;
-	uint32				  full_len = rec->vector_len;
-	char				 *vec_start;
-	char				 *page_end;
-	uint32				  inline_len;
-	char				 *full;
-	uint32				  copied;
-	BlockNumber			  cont_blkno;
-	MemoryContext		  old;
-
-	hdr		  = tp_memtable_page_header(head_page);
-	vec_start = (char *)rec->vector_bytes;
-	page_end  = (char *)head_page + hdr->free_offset;
-
-	if (page_end <= vec_start)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch fragment head record has no inline "
-						"payload")));
-
-	inline_len = (uint32)(page_end - vec_start);
-
-	if (inline_len >= full_len)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch fragment record has inline_len=%u "
-						">= full_len=%u (should have been a regular record)",
-						inline_len,
-						full_len)));
-
-	old	 = MemoryContextSwitchTo(src->mcxt);
-	full = palloc(full_len);
-	MemoryContextSwitchTo(old);
-
-	memcpy(full, rec->vector_bytes, inline_len);
-	copied	   = inline_len;
-	cont_blkno = hdr->next_block;
-
-	while (copied < full_len)
-	{
-		Buffer		cbuf;
-		Page		cpage;
-		const char *chunk;
-		uint32		chunk_len;
-		BlockNumber next_blk;
-
-		CHECK_FOR_INTERRUPTS();
-
-		if (cont_blkno == InvalidBlockNumber)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch fragment continuation chain "
-							"truncated: copied=%u, expected=%u",
-							copied,
-							full_len)));
-
-		cbuf = ReadBuffer(rel, cont_blkno);
-		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
-		cpage = BufferGetPage(cbuf);
-
-		if (!tp_memtable_page_is_continuation(cpage))
-		{
-			UnlockReleaseBuffer(cbuf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch fragment continuation at block "
-							"%u is not a continuation page",
-							cont_blkno)));
-		}
-
-		chunk = tp_memtable_continuation_page_chunk(cpage, &chunk_len);
-		if (chunk_len == 0 || copied + chunk_len > full_len)
-		{
-			UnlockReleaseBuffer(cbuf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch fragment continuation at block "
-							"%u has invalid chunk_len=%u (copied=%u, "
-							"full_len=%u)",
-							cont_blkno,
-							chunk_len,
-							copied,
-							full_len)));
-		}
-
-		memcpy(full + copied, chunk, chunk_len);
-		copied += chunk_len;
-		next_blk = tp_memtable_page_get_next(cpage);
-		UnlockReleaseBuffer(cbuf);
-		cont_blkno = next_blk;
-		src->chain_pages++;
-	}
-
-	*out_buf = full;
-	/*
-	 * `cont_blkno` is the next_block of the LAST continuation
-	 * page we read — i.e. the block where the outer chain walk
-	 * should resume.  May be InvalidBlockNumber if the fragment
-	 * was the tail of the chain.
-	 */
-	return cont_blkno;
-}
-
 /* ---------- chain walk ---------- */
 
+/*
+ * Walk every record in the on-disk chain and ingest it into
+ * src->doclen_ht and src->term_ht.  Delegates page-level
+ * traversal (buffer locking, fragment reassembly, structural
+ * validation) to the shared TpChainWalker primitive in
+ * chain_walker.c so the apply protocol (cache.c) can reuse it.
+ */
 static void
 walk_chain(TpMemtableChainSource *src, Relation rel)
 {
-	BlockNumber		cur;
-	TpIndexMetaPage metap = tp_get_metapage(rel);
+	BlockNumber			start;
+	TpIndexMetaPage		metap = tp_get_metapage(rel);
+	TpChainWalker	   *walker;
+	TpChainWalkerRecord rec;
 
-	cur = metap->memtable_head_blkno;
+	start = metap->memtable_head_blkno;
 	pfree(metap);
 
-	while (cur != InvalidBlockNumber)
+	walker = tp_chain_walker_open(rel, start, 0, src->mcxt);
+
+	while (tp_chain_walker_next(walker, &rec))
 	{
-		Buffer				  buf;
-		Page				  page;
-		TpMemtablePageHeader *hdr;
-		TpMemtableRecord	 *rec;
-		BlockNumber			  next;
-		uint16				  seen;
-
-		CHECK_FOR_INTERRUPTS();
-
-		buf = ReadBuffer(rel, cur);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-
-		if (!tp_memtable_page_is_valid(page))
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch memtable page at block %u in "
-							"index \"%s\" has invalid magic",
-							cur,
-							RelationGetRelationName(rel))));
-		}
+		ingest_doclen(src, &rec.ctid, rec.doc_length);
+		ingest_terms(src, &rec.ctid, rec.vector_bytes, rec.vector_len);
 
 		/*
-		 * The outer chain walk must only ever traverse regular
-		 * memtable pages.  Continuation pages are reached
-		 * exclusively via reassemble_fragment() and skipped
-		 * past when the outer walk resumes.  Encountering a
-		 * continuation page here means either the writer
-		 * miscomputed next_block, or a fragment head record's
-		 * post-continuation pointer was lost.
+		 * Fragment payloads are palloc'd in src->mcxt by the
+		 * walker; the buffer survives until src is closed.  We
+		 * could pfree() here to bound peak usage, but the source
+		 * mcxt is short-lived (per-query) and fragment payloads
+		 * are rare enough that the bookkeeping isn't worth it.
 		 */
-		if (tp_memtable_page_is_continuation(page))
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch memtable outer walk reached "
-							"continuation page at block %u in index "
-							"\"%s\"",
-							cur,
-							RelationGetRelationName(rel))));
-		}
-
-		validate_page_layout(page, cur);
-
-		hdr	 = tp_memtable_page_header(page);
-		next = hdr->next_block;
-		src->chain_pages++;
-
-		seen = 0;
-		for (rec = tp_memtable_page_first(page); rec != NULL;
-			 rec = tp_memtable_page_next(page, rec))
-		{
-			if (seen >= hdr->n_records)
-			{
-				UnlockReleaseBuffer(buf);
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("pg_textsearch memtable page block %u "
-								"iteration exceeds declared n_records=%u",
-								cur,
-								hdr->n_records)));
-			}
-
-			/*
-			 * Defensive: each record's vector_len must fit in
-			 * the remaining page bytes.  free_offset already
-			 * ensures the record stream fits collectively;
-			 * this checks per-record bounds.  Skipped for
-			 * FRAGMENT records, whose vector_len is the FULL
-			 * payload across pages (the on-page byte budget
-			 * is the inline prefix, bounded by free_offset).
-			 */
-			if ((rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) == 0)
-			{
-				char *rec_end = (char *)rec +
-								tp_memtable_record_size(rec->vector_len);
-				char *page_end = (char *)page + hdr->free_offset;
-
-				if (rec_end > page_end)
-				{
-					UnlockReleaseBuffer(buf);
-					ereport(ERROR,
-							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg("pg_textsearch memtable record at "
-									"block %u, index %u extends past "
-									"free_offset",
-									cur,
-									seen)));
-				}
-			}
-
-			ingest_doclen(src, &rec->ctid, rec->doc_length);
-
-			if ((rec->flags & TP_MEMTABLE_RECORD_FLAG_FRAGMENT) != 0)
-			{
-				char	   *full;
-				BlockNumber post_cont;
-
-				/*
-				 * FRAGMENT records must be the sole record on
-				 * their head page.  Otherwise the outer
-				 * walk's `next` semantics become ambiguous
-				 * (other records on the same page would never
-				 * be reached after the fragment redirects the
-				 * walk past the continuation chain).
-				 */
-				if (hdr->n_records != 1)
-				{
-					UnlockReleaseBuffer(buf);
-					ereport(ERROR,
-							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg("pg_textsearch fragment head page %u "
-									"has n_records=%u (must be 1)",
-									cur,
-									hdr->n_records)));
-				}
-
-				post_cont = reassemble_fragment(src, rel, page, rec, &full);
-				ingest_terms(src, &rec->ctid, full, rec->vector_len);
-				pfree(full);
-
-				/*
-				 * Resume the outer walk after the last
-				 * continuation, not at the head page's
-				 * next_block (which points to the first
-				 * continuation).
-				 */
-				next = post_cont;
-				seen++;
-				break;
-			}
-
-			ingest_terms(src, &rec->ctid, rec->vector_bytes, rec->vector_len);
-			seen++;
-		}
-
-		if (seen != hdr->n_records)
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch memtable page block %u iterated "
-							"%u records, header says n_records=%u",
-							cur,
-							seen,
-							hdr->n_records)));
-		}
-
-		UnlockReleaseBuffer(buf);
-		cur = next;
 	}
+
+	src->chain_pages = tp_chain_walker_pages_visited(walker);
+	tp_chain_walker_close(walker);
 }
 
 /* ---------- TpDataSourceOps implementations ---------- */
