@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779957269208,
+  "lastUpdate": 1780043475780,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -3414,6 +3414,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.612,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c9ee76e0fa7de6d4d987fd478011c33664a5fe55",
+          "message": "test: add multi-backend reindex regression for issue #390 (#396)\n\nAdds `test/scripts/multi_backend_reindex.sh`, a multi-backend regression\ntest for [#390](https://github.com/timescale/pg_textsearch/issues/390)\n(\"BM25 index returns stale heap TIDs after heap rewrite\").\n\n## Why\n\nThe bug surfaced in v1.2.0 when one backend had already touched the BM25\nindex (priming its private `TpLocalIndexState` cache in\n`src/index/state.c`) and a second backend ran a statement that rewrites\nthe heap and reindexes BM25 — most commonly `ALTER TABLE ... ADD COLUMN\n... GENERATED ALWAYS AS (...) STORED`. v1.2.0 registered no\n`CacheRegisterRelcacheCallback`, so the orphaned in-memory memtable\nstayed alive in DSA, and a later spill from the primed backend wrote a\nsegment of pre-rewrite CTIDs into the new index file. Queries against\nthose stale CTIDs then failed with:\n\n```\nERROR: could not read blocks N..N in file \"base/<db>/<heap_fno>\": read only 0 of 8192 bytes\n```\n\n`main` (1.3.0-dev) is unaffected because the on-disk memtable design\nfrom #374/#375/#392 makes the bug unreachable: the heap rewrite swaps\nthe index relfilenode, the on-disk memtable chain is empty in the new\nfile, and any stale local-state pointer is harmless. This PR pins that\nbehaviour so the bug class cannot be reintroduced (e.g. by any future\nchange that revives shared-memory memtable state without proper\ninvalidation).\n\n## What it asserts\n\n1. Backend A's session reaches every phase marker and produces no `could\nnot read blocks` / `invalid (page|segment)` / `XX001` errors during the\nlate INSERT + forced spill.\n2. `bm25_summarize_index` `docs_persisted` equals the live heap row\ncount (catches a stale segment being added to the metapage).\n3. Top-100 BM25 scan for `'lorem'` (in every pre-ALTER row) completes\nwithout error and returns 100 rows.\n4. BM25 scan for `'moonlight'` (a token unique to post-ALTER late\ninserts, joined against the live heap on id) returns exactly 50 rows —\nproves the late-insert path correctly populated the new index file.\n5. The heap was actually compacted by ALTER (sanity check on the test\nsetup itself).\n\n## Setup notes\n\n- `fillfactor=10` + INSERT 30k + DELETE all but 1000 rows so the old\nheap spans ~4286 pages. Any stale CTID retained by the primed backend\npoints well beyond the new heap's EOF, turning a silent-wrong-data bug\ninto a deterministic read error.\n- Pinned `pg_textsearch.bulk_load_threshold = 0` and\n`pg_textsearch.memtable_pages_threshold = 0` so no implicit spill fires\nbefore the explicit `bm25_spill_index()` call.\n- Drives both backends from a single persistent `psql` session that\nspawns Backend B via `\\!`. This keeps Backend A's connection (and its\nprimed local-state cache) alive across the heap rewrite, exactly\nmatching the in-production race.\n- Unique per-PID data dir (`tmp_reindex_test_<port>_<pid>`) and a port\n(`55458`) not used by any other script; `TEST_PORT` is overridable via\nenv.\n\n## Local verification\n\n| Branch | Result |\n|---|---|\n| `regression-test-issue-390` (this PR, on `main`) | ✅ Pass |\n| `v1.2.0` | ❌ Fail with `ERROR: could not read blocks 638..638 in file\n\"base/16384/16447\": read only 0 of 8192 bytes` — exact issue #390\nsymptom |\n\n`make installcheck` is also clean on this branch (68/68).\n\n## Wiring\n\n- **Makefile:** new `test-reindex` target, added to `test-shell`\naggregate and `.PHONY`, plus a help-text line.\n- **.github/workflows/ci.yml:** appended to the shell-tests block next\nto `multi_index.sh` (one entry per supported PG version in the matrix).\n- **.github/workflows/sanitizer-build-and-test.yml:** appended to the\nsanitizer shell-tests block. Sanitizers are particularly valuable here\nbecause the v1.2.0 bug class was stale-pointer / use-after-realloc.\n\nRefs #390",
+          "timestamp": "2026-05-29T02:03:55Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c9ee76e0fa7de6d4d987fd478011c33664a5fe55"
+        },
+        "date": 1780043465517,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2656.074636,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.376,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4991.840439,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.401,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8181.794302,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.489,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 12765.964397,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.627,
             "unit": "ms"
           }
         ]
