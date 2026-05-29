@@ -115,8 +115,19 @@ jobs:
           USING bm25 (content) WITH (text_config = 'english');
         SQL
 
-        # Compat tier (>= 0.5.1): add batch 2, spill, capture baselines
-        if false; then  # all pre-1.3.0 versions have v6 metapage → REINDEX required (Batch 1)
+        # Compat tier (v6 metapage, read-compatible with the new
+        # binary per issue #383): ALTER EXTENSION UPDATE alone is
+        # enough — no REINDEX needed.  Add batch 2, spill, capture
+        # baselines.  Pre-v0.5.1 versions have a v5 metapage which
+        # is still REINDEX-only (legacy tier below).
+        #
+        # The regex bounds the upper end at 1.2.x deliberately:
+        # v1.3.0 is the first release that writes v7 metapages
+        # natively, so newer versions belong in their own tier
+        # (when added to the matrix they should NOT be classified
+        # as v6 compat — the in-place upgrade is a no-op and the
+        # Phase 1a "still v6" assertion would fail).
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
 
@@ -246,7 +257,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if false; then  # all pre-1.3.0 versions have v6 metapage → REINDEX required (Batch 1)
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
           echo "=== Testing new binary reads old segments (pre-ALTER EXTENSION) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -299,6 +310,32 @@ jobs:
             RAISE NOTICE 'PASS: pre-alter baselines captured (% results)', cnt;
           END $$;
 
+          -- Verify the new binary actually uses the BM25 index scan on
+          -- the v6-format index (issue #383).  A sequential scan that
+          -- fell back to standalone scoring would silently pass the
+          -- result-count / score-sign checks above, hiding a broken
+          -- v6 read path.  Grep the EXPLAIN plan for the index name.
+          DO $$
+          DECLARE
+            rec record;
+            plan_txt text := '';
+          BEGIN
+            SET LOCAL enable_seqscan = off;
+            FOR rec IN EXECUTE
+              'EXPLAIN SELECT id FROM upgrade_docs '
+              'ORDER BY content <@> to_bm25query(''database'', '
+              '''idx_upgrade_bm25'') LIMIT 5'
+            LOOP
+              plan_txt := plan_txt || rec."QUERY PLAN" || E'\n';
+            END LOOP;
+            IF plan_txt NOT LIKE '%idx_upgrade_bm25%' THEN
+              RAISE EXCEPTION
+                'FAIL: pre-ALTER plan did not use bm25 index; got: %',
+                plan_txt;
+            END IF;
+            RAISE NOTICE 'PASS: pre-ALTER plan uses BM25 index scan';
+          END $$;
+
           SELECT 'baseline_q1' AS query, * FROM baseline_q1;
           SELECT 'baseline_q2' AS query, * FROM baseline_q2;
           SELECT 'baseline_q3' AS query, * FROM baseline_q3;
@@ -311,7 +348,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if false; then  # all pre-1.3.0 versions have v6 metapage → REINDEX required (Batch 1)
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
           echo "=== Compat tier: ALTER EXTENSION UPDATE (no REINDEX) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -336,7 +373,7 @@ jobs:
         EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
           pg_textsearch.control | cut -d. -f1,2)
 
-        if false; then  # all pre-1.3.0 versions have v6 metapage → REINDEX required (Batch 1)
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
           echo "=== Compat tier: multi-phase segment validation ==="
           psql -h /tmp -d upgrade_test \
             -v expected_version="$EXPECTED_VERSION" << 'SQL'
@@ -346,6 +383,51 @@ jobs:
           SELECT validate_baseline('database',       'baseline_q1', 'post-alter q1');
           SELECT validate_baseline('search ranking', 'baseline_q2', 'post-alter q2');
           SELECT validate_baseline('optimization',   'baseline_q3', 'post-alter q3');
+
+          -- Phase 1a: After read-only queries the on-disk metapage
+          -- MUST still be v6 (issue #383 contract: tp_get_metapage
+          -- normalizes a v6 page in its palloc'd copy but does NOT
+          -- mutate the buffer).  This phase catches a regression
+          -- where the read path accidentally emits a write.
+          DO $$
+          DECLARE dump_text text;
+          BEGIN
+            dump_text := bm25_dump_index('idx_upgrade_bm25');
+            IF dump_text NOT LIKE '%version: 6' || E'\n' || '%' THEN
+              RAISE EXCEPTION
+                'FAIL: metapage upgraded after read-only queries; '
+                'expected version: 6, dump excerpt: %',
+                substr(dump_text, 1, 400);
+            END IF;
+            RAISE NOTICE 'PASS: read-only queries did not upgrade '
+                         'the v6 metapage';
+          END $$;
+
+          -- Phase 1b: A single INSERT MUST trigger the lazy v6 -> v7
+          -- upgrade via memtable_bootstrap_and_append's GenericXLog
+          -- record (src/memtable/log.c calls
+          -- tp_metapage_upgrade_to_current).  We assert here, BEFORE
+          -- Phase 2's VACUUM and Phase 3's force_merge — both of
+          -- which also independently call the upgrade helper — so
+          -- that this phase isolates the INSERT path.  A regression
+          -- that removes only the INSERT-path call would still be
+          -- caught here even if VACUUM / force_merge still upgrade.
+          INSERT INTO upgrade_docs (content)
+            VALUES ('first post-upgrade write to trigger v6 -> v7');
+
+          DO $$
+          DECLARE dump_text text;
+          BEGIN
+            dump_text := bm25_dump_index('idx_upgrade_bm25');
+            IF dump_text NOT LIKE '%version: 7' || E'\n' || '%' THEN
+              RAISE EXCEPTION
+                'FAIL: metapage not upgraded to v7 after first '
+                'INSERT (issue #383); dump excerpt: %',
+                substr(dump_text, 1, 400);
+            END IF;
+            RAISE NOTICE 'PASS: single INSERT triggered v6 -> v7 '
+                         'lazy upgrade';
+          END $$;
 
           -- Phase 2: DELETE + VACUUM — alive bitset on old-format segments
           -- Delete ~20% of rows (40 of 200, 5 per topic cluster in batch 1)
@@ -378,6 +460,121 @@ jobs:
               RAISE EXCEPTION 'FAIL: new data not searchable after merge';
             END IF;
             RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
+          END $$;
+
+          -- Note: The v6 -> v7 upgrade is asserted in Phase 1b above
+          -- (in isolation from VACUUM / force_merge / additional
+          -- INSERTs).  We rely on that assertion rather than
+          -- re-checking here so that the test pinpoints the
+          -- regression (INSERT path vs. VACUUM path vs. merge path).
+
+          -- Phase 4b: UPDATE rows that came from the v6-format segment
+          -- chain.  In Postgres, UPDATE on a non-HOT-able index (bm25
+          -- never HOT-updates) is delete-old-tuple + insert-new-tuple;
+          -- the bm25 index sees both versions until VACUUM cleans up
+          -- the dead ones.  This proves that:
+          --   1. INSERTs land in the upgraded chain (issue #383).
+          --   2. MVCC visibility correctly hides the pre-UPDATE
+          --      content from queries that target the new content.
+          --   3. The post-UPDATE VACUUM marks the dead ctids in the
+          --      v6-built segments via the alive bitset and the
+          --      new content stays queryable through the update.
+          --
+          -- Pick rows from batch 1 (ids 41-120, post-DELETE) whose
+          -- original content matched 'database'.  After UPDATE their
+          -- content is 'mongodb sentinel <id>' — a deliberately unique
+          -- term so the post-UPDATE query is unambiguous.
+          UPDATE upgrade_docs
+          SET content = 'mongodb sentinel update ' || id
+          WHERE id BETWEEN 41 AND 120
+            AND content LIKE '%database%';
+
+          DO $$
+          DECLARE
+            updated_count int;
+            topk_match int;
+            top_score float8;
+          BEGIN
+            SELECT count(*) INTO updated_count FROM upgrade_docs
+            WHERE content LIKE 'mongodb sentinel update %';
+            IF updated_count = 0 THEN
+              RAISE EXCEPTION 'FAIL: UPDATE affected no rows';
+            END IF;
+
+            -- Query for the sentinel term: top-(updated_count) results
+            -- must all be the UPDATEd rows.  Pre-UPDATE content did
+            -- not contain 'sentinel' anywhere in the corpus, so any
+            -- match comes from the post-UPDATE ctid.
+            SET LOCAL enable_seqscan = off;
+            SELECT count(*) INTO topk_match FROM (
+              SELECT id, content FROM upgrade_docs
+              ORDER BY content <@>
+                to_bm25query('sentinel', 'idx_upgrade_bm25')
+              LIMIT updated_count
+            ) s WHERE s.content LIKE 'mongodb sentinel update %';
+
+            IF topk_match <> updated_count THEN
+              RAISE EXCEPTION
+                'FAIL: post-UPDATE top-% sentinel hits contained '
+                'only % UPDATEd rows (expected all %); MVCC or '
+                'index out of sync',
+                updated_count, topk_match, updated_count;
+            END IF;
+
+            -- Top score must be a real BM25 hit (strictly negative).
+            SELECT content <@>
+              to_bm25query('sentinel', 'idx_upgrade_bm25')
+            INTO top_score FROM upgrade_docs
+            ORDER BY content <@>
+              to_bm25query('sentinel', 'idx_upgrade_bm25')
+            LIMIT 1;
+            IF top_score IS NULL OR top_score >= 0 THEN
+              RAISE EXCEPTION
+                'FAIL: post-UPDATE sentinel top score not negative: %',
+                top_score;
+            END IF;
+
+            RAISE NOTICE
+              'PASS: UPDATE on v6-built segment indexed correctly '
+              '(% rows, all in top-% sentinel results, top score %)',
+              updated_count, updated_count, top_score;
+          END $$;
+
+          -- VACUUM after UPDATE: the alive bitset must mark the
+          -- pre-UPDATE ctids dead in the v6-built segments.  The
+          -- sentinel query keeps working (post-UPDATE ctids are in
+          -- a newer segment / the memtable chain, unaffected by the
+          -- bitset flip), and the original content of those rows is
+          -- gone (no row both contains 'mongodb sentinel update'
+          -- AND any of the original batch-1 terms).
+          VACUUM upgrade_docs;
+          DO $$
+          DECLARE
+            updated_count int;
+            topk_match int;
+          BEGIN
+            SELECT count(*) INTO updated_count FROM upgrade_docs
+            WHERE content LIKE 'mongodb sentinel update %';
+            SET LOCAL enable_seqscan = off;
+            SELECT count(*) INTO topk_match FROM (
+              SELECT id FROM upgrade_docs
+              ORDER BY content <@>
+                to_bm25query('sentinel', 'idx_upgrade_bm25')
+              LIMIT updated_count
+            ) s WHERE s.id IN (
+              SELECT id FROM upgrade_docs
+              WHERE content LIKE 'mongodb sentinel update %'
+            );
+            IF topk_match <> updated_count THEN
+              RAISE EXCEPTION
+                'FAIL: post-VACUUM sentinel hits = %, expected % '
+                '(alive bitset interaction broke UPDATE-inserted '
+                'ctids)', topk_match, updated_count;
+            END IF;
+            RAISE NOTICE
+              'PASS: post-VACUUM, UPDATE-inserted ctids still '
+              'queryable through the upgraded chain (% rows)',
+              updated_count;
           END $$;
 
           -- Phase 5: Version check
