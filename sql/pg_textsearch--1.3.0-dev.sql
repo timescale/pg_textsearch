@@ -259,7 +259,8 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
--- bm25_test_chain_source / bm25_memtable_chain functions are
+-- bm25_test_chain_source / bm25_memtable_chain /
+-- bm25_memtable_dead_pages functions are
 -- INTERNAL-ONLY test scaffolds for the on-disk memtable redesign
 -- (issue #374).  They are not part of the supported
 -- public API: their signatures, return values, and existence are
@@ -286,6 +287,16 @@ CREATE FUNCTION @extschema@.bm25_memtable_chain(
     OUT flags integer)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bm25_memtable_chain'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION @extschema@.bm25_memtable_dead_pages(
+    index_name text,
+    OUT blkno bigint,
+    OUT flags integer,
+    OUT dead_fxid bigint,
+    OUT n_records integer)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'bm25_memtable_dead_pages'
 LANGUAGE C STRICT;
 
 CREATE FUNCTION @extschema@.bm25_test_chain_source(
@@ -349,6 +360,8 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_page(text)
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_memtable_append(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_chain(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_memtable_dead_pages(text)
+    FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_test_chain_source(text, text)
     FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_cache_cold_build(text) FROM PUBLIC;

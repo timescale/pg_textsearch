@@ -8,6 +8,8 @@
 
 #include <access/generic_xlog.h>
 #include <access/tableam.h>
+#include <access/xact.h>
+#include <access/xlog.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
 #include <commands/progress.h>
@@ -187,7 +189,42 @@ tp_do_spill(
 	if (out_segment_root != NULL)
 		*out_segment_root = root;
 
-	tp_spill_finalize(index_state, index_rel, root, docs_delta, len_delta);
+	/*
+	 * Finalize first, then mark dead - crash-safe ordering.
+	 *
+	 * We must disconnect the chain (clear metap.head) BEFORE stamping
+	 * pages DEAD.  If we crash between mark and finalize, the chain
+	 * is still reachable via metap.head but pages are stamped DEAD;
+	 * once xmin advances, tp_reclaim_dead_memtable_pages would free
+	 * pages still in the live chain, causing corruption on FSM reuse.
+	 *
+	 * By finalizing first: a crash after finalize but before marking
+	 * leaves pages unreachable but un-stamped, so reclaim won't touch
+	 * them.  Worst case: pages leak until REINDEX.
+	 */
+	{
+		BlockNumber		  chain_head;
+		FullTransactionId horizon;
+		TpIndexMetaPage	  metap;
+
+		horizon	   = ReadNextFullTransactionId();
+		metap	   = tp_get_metapage(index_rel);
+		chain_head = metap->memtable_head_blkno;
+		pfree(metap);
+
+		tp_spill_finalize(index_state, index_rel, root, docs_delta, len_delta);
+
+		if (tp_debug_panic_after_spill_finalize)
+		{
+			XLogFlush(GetXLogInsertRecPtr());
+			elog(PANIC,
+				 "pg_textsearch: debug crash after spill finalize "
+				 "(tp_debug_panic_after_spill_finalize)");
+		}
+
+		if (BlockNumberIsValid(chain_head))
+			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
+	}
 
 	/* Free dictionary + docmap (chain source no longer needed). */
 	tp_free_dictionary(terms, num_terms);

@@ -70,15 +70,17 @@ typedef struct TpMemtablePageHeader
     uint16          n_records;
     uint16          free_offset;  /* tail-of-records, MAXALIGN'd */
     BlockNumber     next_block;   /* chain link; Invalid at tail */
-    FullTransactionId dead_fxid;  /* reserved for future
-                                   * deferred reclaim */
+    FullTransactionId dead_fxid;  /* when DEAD: xact horizon for
+                                   * deferred FSM recycle */
 } TpMemtablePageHeader;  /* 24 bytes */
 ```
 
 `flags` carries:
-- `TP_MEMTABLE_PAGE_FLAG_DEAD` (0x0001) — page has been spilled
-  or merged out (reserved; currently unused, slated for the
-  deferred FSM-recycle path).
+- `TP_MEMTABLE_PAGE_FLAG_DEAD` (0x0001) — set on each page of a
+  memtable chain when `tp_do_spill` unlinks it from the metapage.
+  `dead_fxid` records the spill transaction; `amvacuumcleanup`
+  (Step 2) will recycle the block once the horizon is older than
+  every active snapshot.  Not used on live chain pages.
 - `TP_MEMTABLE_PAGE_FLAG_CONTINUATION` (0x0002) — page is a
   continuation of a multi-page record (see *Multi-page records*
   below); `n_records == 0` and the bytes between
@@ -249,7 +251,7 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    already-held EXCL lock).
 2. Extract sorted `TermInfo[]` + finalized `TpDocMapBuilder`.
 3. Build the new L0 segment via `tp_write_segment`.
-4. `tp_spill_finalize`: one `GenericXLog` over up to 4
+4. **`tp_spill_finalize`**: one `GenericXLog` over up to 4
    buffers (metapage + new segment header + optionally the
    old chain head; typically 2 buffers in steady state):
    - `level_heads[0] = root`, `level_counts[0]++`
@@ -257,17 +259,65 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    - `memtable_head_blkno = memtable_tail_blkno = Invalid`
    - If old `level_heads[0]` was valid, set
      `new_header->next_segment = old_head`.
-5. Reset auto-spill counter heuristic.
+5. **`tp_memtable_mark_chain_dead`**: walk the now-unlinked chain
+   (including fragment continuation pages) and stamp each page
+   `DEAD` + `dead_fxid` in separate `GenericXLog` records (one
+   page per record; up to four buffers could be batched later).
+   Uses the spill transaction's `FullTransactionId` as the
+   recycle horizon.
+6. Reset auto-spill counter heuristic.
 
-Old memtable chain pages are **not** WAL-touched. They become
-orphans reachable only via direct block reads — they still
-have intact `TP_MEMTABLE_PAGE_MAGIC` headers but no metapage
-pointer to them. In-flight standby/replay scans that already
-latched a chain head walk them to completion against the
-metapage snapshot they started with; new scans see the
-post-spill metapage and skip the orphans entirely.
-FSM-recycling orphans is deferred to a future
-`amvacuumcleanup` pass.
+**Crash-safe ordering**: Steps 4 and 5 are ordered finalize-first,
+then mark-dead. If we crash between step 4 and step 5, the chain
+pages are unreachable (metapage head cleared) but not stamped
+`DEAD`, so `tp_reclaim_dead_memtable_pages` won't free them — they
+leak until REINDEX. The reverse order (mark-dead before finalize)
+would be unsafe: a crash after marking but before finalize leaves
+pages stamped `DEAD` while still reachable via `metap.head`; once
+global xmin advances, vacuum would free pages still in the live
+chain, causing corruption on FSM reuse.
+
+After step 4 the old chain blocks are **orphans**: no metapage
+pointer reaches them. After step 5 each page has valid
+`TP_MEMTABLE_PAGE_MAGIC` and a `DEAD` stamp.
+In-flight scans that already latched a chain head may still walk
+those blocks against the metapage snapshot they started with;
+new scans use the post-spill metapage and skip them.
+**FSM recycle** of `DEAD` pages happens in `amvacuumcleanup` (see
+below); until then the relation file retains those block numbers.
+
+## FSM reclaim and reuse (`tp_vacuumcleanup` / `tp_memtable_alloc_page`)
+
+After spill, orphaned chain blocks remain on the main fork with
+valid memtable magic and a `DEAD` stamp.  They are not reachable
+from the metapage.  Reclaim and reuse mirror segment compaction:
+
+1. **`tp_reclaim_dead_memtable_pages`** (in `tp_vacuumcleanup`,
+   under per-index `LW_SHARED`): scan main-fork blocks after
+   the metapage; for each page that is valid memtable format and
+   `DEAD`, compare `dead_fxid` to the global horizon via
+   `FullTransactionIdPrecedes` (wraparound-safe).  Before freeing,
+   check that the block is **not** in the current live chain
+   (defense-in-depth against the crash window between finalize
+   and mark-dead; see `tp_collect_reachable_chain_blocks`).
+   When the spill horizon is old enough and the block is not
+   reachable, call `RecordFreeIndexPage` (index FSM — **not**
+   WAL-logged, same as `tp_segment_free_pages`).  Bump
+   `IndexBulkDeleteResult.pages_free` and run
+   `IndexFreeSpaceMapVacuum` when any pages were freed.
+2. **`tp_memtable_alloc_page`** (insert / extend / fragment paths
+   in `log.c`): `GetFreeIndexPage` first; on success,
+   `ReadBufferExtended(..., block, RBM_ZERO_AND_LOCK)` and full
+   re-init via `tp_memtable_page_init` or
+   `tp_memtable_continuation_page_init` plus
+   `GENERIC_XLOG_FULL_IMAGE`.  Otherwise `ExtendBufferedRel`.
+
+Page bodies are not WAL-cleared at reclaim time; reuse overwrites
+them on the next append.  `DEAD` flags may remain visible to
+`bm25_memtable_dead_pages` until a block is reallocated.
+
+Regression: `test/sql/memtable_spill_dead.sql` (DEAD stamping),
+`test/sql/memtable_reclaim.sql` (VACUUM reclaim + FSM reuse).
 
 ## Corpus statistics
 
@@ -301,7 +351,8 @@ are the durable record.
 |-----------|------------------|---------------------------------------|
 | Insert    | `LW_SHARED`      | tail buf EXCL during append           |
 | Scan      | `LW_SHARED`      | chain pages SHARED one at a time      |
-| Spill     | `LW_EXCLUSIVE`   | metapage + new seg header via GenericXLog |
+| Spill     | `LW_EXCLUSIVE`   | chain pages DEAD via GenericXLog; then metapage + new seg header |
+| Vacuum    | `LW_SHARED`      | reclaim: DEAD pages SHARED read; FSM update not WAL-logged; spill takes `LW_EXCLUSIVE` separately |
 | Merge     | (segment-only)   | metapage + new seg header via GenericXLog |
 
 Insert vs scan: both SHARED at LWLock; the tail buffer's EXCL
@@ -400,8 +451,11 @@ counter only governs when to spill, not correctness.
 
 ## Future cleanups (tracked separately)
 
-- Lazy reclaim of orphan memtable chain pages from spill via
-  `amvacuumcleanup` (B-tree's `merged_at_xid` pattern).
+- Stamp/recycle bootstrap and crash orphans (never linked from the
+  metapage, no `DEAD` stamp) — block-range scan + horizon or
+  stricter rules.
+- Batch multiple DEAD pages into one `GenericXLog` record at spill
+  (up to four buffers).
 - Removal of the DSA-backed registry in favor of a fixed-size
   shmem hash sized at `shmem_request_hook` time
   (`pg_textsearch.max_indexes` GUC). The vestigial `TpMemtable`

@@ -174,6 +174,16 @@ void tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
 
 /*
+ * Recycle memtable pages stamped DEAD during spill: scan the index
+ * main fork, RecordFreeIndexPage when dead_fxid is older than the
+ * global visibility horizon for heaprel.  Returns the number of
+ * blocks freed.  Caller must hold per-index LW_SHARED or stronger
+ * (tp_vacuumcleanup).  FSM updates are not WAL-logged (same as
+ * segment page free).
+ */
+int tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel);
+
+/*
  * Spill the current index's memtable to a disk segment.
  * Returns true if a segment was written or chain stats were applied.
  * If `out_segment_root` is non-NULL and a segment was emitted (not
@@ -196,3 +206,6 @@ bool   tp_validate(Oid opclassoid);
 
 /* Relation options kind - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
+
+/* Debug GUC: trigger PANIC after spill finalize for crash-safety testing */
+extern bool tp_debug_panic_after_spill_finalize;
