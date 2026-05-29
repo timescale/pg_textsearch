@@ -112,10 +112,10 @@ tp_collect_reachable_chain_blocks(Relation indexrel)
 	info.entrysize = sizeof(BlockNumber);
 	info.hcxt	   = CurrentMemoryContext;
 	reachable	   = hash_create(
-			"reachable chain blocks",
-			128,
-			&info,
-			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			 "reachable chain blocks",
+			 128,
+			 &info,
+			 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	metap = tp_get_metapage(indexrel);
 	if (metap == NULL)

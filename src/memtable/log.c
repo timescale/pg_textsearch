@@ -157,7 +157,7 @@ memtable_bootstrap_and_append(
 	xlog_state	   = GenericXLogStart(rel);
 	metapage_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 	newpage_local  = GenericXLogRegisterBuffer(
-			xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
+			 xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
 
 	tp_memtable_page_init(newpage_local);
 	tp_memtable_page_append(
@@ -222,7 +222,7 @@ memtable_extend_and_append(
 	xlog_state	   = GenericXLogStart(rel);
 	tailpage_local = GenericXLogRegisterBuffer(xlog_state, tailbuf, 0);
 	newpage_local  = GenericXLogRegisterBuffer(
-			xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
+			 xlog_state, newbuf, GENERIC_XLOG_FULL_IMAGE);
 	metapage_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 
 	tp_memtable_page_init(newpage_local);

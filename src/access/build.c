@@ -995,7 +995,7 @@ tp_tokenize_text(
 		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
 								 ? remaining
 								 : tp_find_chunk_boundary(
-										   data + offset, TP_TSVECTOR_CHUNK_BYTES);
+								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
 		char **chunk_terms;
 		int32 *chunk_freqs;
 		int	   chunk_term_count;
@@ -1264,8 +1264,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		if (attnum > 0)
 		{
-			Oid atttype	  = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
-									->atttypid;
+			Oid atttype = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
+								  ->atttypid;
 			is_text_array = tp_is_text_array_type(atttype);
 		}
 		else
@@ -1707,7 +1707,7 @@ tp_insert(
 
 		schema_name = get_namespace_name(namespace_oid);
 		index_name	= quote_qualified_identifier(
-				schema_name, RelationGetRelationName(index));
+				 schema_name, RelationGetRelationName(index));
 
 		vector_datum = DirectFunctionCall2(
 				to_tpvector,
