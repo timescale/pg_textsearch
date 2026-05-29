@@ -88,6 +88,9 @@ bool tp_memtable_cache_enabled = true;
  */
 bool tp_log_cache_state = false;
 
+/* Debug: trigger PANIC after spill finalize for crash-safety testing */
+bool tp_debug_panic_after_spill_finalize = false;
+
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
  * kilobytes.  Restored from v1; scaffolding only in this build —
@@ -307,6 +310,20 @@ _PG_init(void)
 			"cold_build / RETRY / ABORT / fall back to chain).  "
 			"Intended for development and observability.",
 			&tp_log_cache_state,
+			false,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_after_spill_finalize",
+			"Trigger PANIC after spill finalize for crash-safety testing.",
+			"When enabled, forces a server crash immediately after "
+			"tp_spill_finalize completes. Used only for regression "
+			"testing crash-safe spill ordering.",
+			&tp_debug_panic_after_spill_finalize,
 			false,
 			PGC_USERSET,
 			0,
