@@ -159,6 +159,13 @@ jobs:
           echo "✗ Multi-index tests failed"
           exit 1
         fi
+        echo "Running multi-backend reindex tests (issue #390)..."
+        if (cd test/scripts && ./multi_backend_reindex.sh); then
+          echo "✓ Multi-backend reindex tests passed"
+        else
+          echo "✗ Multi-backend reindex tests failed"
+          exit 1
+        fi
         echo "Running replication tests..."
         if (cd test/scripts && ./replication.sh); then
           echo "✓ Replication tests passed"
