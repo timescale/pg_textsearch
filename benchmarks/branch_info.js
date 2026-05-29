@@ -169,5 +169,6 @@ window.BRANCH_INFO = {
   "023c3841b7d41fd3dbdbaa6f48ef3da46c9a362b": "main",
   "dfc15f0dcf577b420c098057e92de9e7e2b0c63f": "main",
   "8d4dd21fbbf02018cd7f1943026081ccb10c091d": "feature/memtable-cache",
-  "c9ee76e0fa7de6d4d987fd478011c33664a5fe55": "main"
+  "c9ee76e0fa7de6d4d987fd478011c33664a5fe55": "main",
+  "6872b6d70bf3b0175ed461394ee4b9bb4a5f6689": "release-1.3.0"
 };
