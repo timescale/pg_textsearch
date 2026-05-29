@@ -9,6 +9,7 @@
  */
 #include <postgres.h>
 
+#include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <utils/rel.h>
@@ -123,13 +124,16 @@ tp_get_metapage(Relation index)
 	 * the surrounding GenericXLog record.
 	 *
 	 * v6 with a non-Invalid _unused_docid_page (formerly
-	 * first_docid_page) is the one shape we cannot silently
-	 * upgrade: it indicates a v1.2.x cluster that didn't get a
-	 * chance to spill before binary swap (e.g. SIGKILL'd, then
-	 * the operator replaced the binaries without restarting
-	 * v1.2.x to drain the docid chain).  The v7 binary has no
-	 * docid-replay path, so accepting the index would silently
-	 * lose those pending documents.  Refuse with a clear hint.
+	 * first_docid_page) is also accepted here.  It indicates
+	 * either (a) the operator called bm25_spill_index() before
+	 * the binary swap and the pointer is stale bookkeeping
+	 * safe to orphan, or (b) v1.2.x was SIGKILL'd with
+	 * in-flight documents in the chain and those documents
+	 * are now lost.  We cannot distinguish those cases from
+	 * the on-disk bytes alone, so we log a LOG-level forensic
+	 * message from the upgrade helper (which fires once, on
+	 * first write) and proceed.  Operators who suspect lost
+	 * documents should REINDEX.
 	 *
 	 * v5 and earlier are not read-compatible and require
 	 * REINDEX as before.
@@ -153,55 +157,15 @@ tp_get_metapage(Relation index)
 						 RelationGetRelationName(index))));
 	}
 
-	if (metap->version == TP_METAPAGE_VERSION_V6 &&
-		BlockNumberIsValid(metap->_unused_docid_page))
-	{
-		/*
-		 * v1.2.x and earlier maintained a "docid chain" of
-		 * pages anchored by first_docid_page.  Inserts wrote
-		 * ctids there before the in-memory memtable; on a clean
-		 * restart the chain was replayed to re-tokenize pending
-		 * documents from the heap.  v1.3 (issue #374) replaced
-		 * the docid chain with an on-disk memtable, so the
-		 * pointer's target is now meaningless.
-		 *
-		 * If the pointer is non-Invalid, the operator either
-		 *   - called bm25_spill_index() before the binary swap
-		 *     (data is in segments; the chain is stale
-		 *     bookkeeping safe to orphan), or
-		 *   - did not give v1.2.x a chance to drain (in-flight
-		 *     documents in the chain are lost — they were
-		 *     scheduled for re-tokenization that v1.3 cannot
-		 *     perform).
-		 *
-		 * We cannot distinguish those cases from the on-disk
-		 * bytes alone.  Log a one-time LOG-level message
-		 * recording the orphaned pointer for forensics and
-		 * proceed; the upgrade helper clears the pointer on
-		 * the first metapage mutation so this fires at most
-		 * once per index lifetime.  Operators who suspect lost
-		 * documents should REINDEX.
-		 */
-		ereport(LOG,
-				(errmsg("pg_textsearch: index \"%s\" was upgraded "
-						"from a pre-v1.3 metapage (v6) with a "
-						"non-empty docid chain pointer "
-						"(first_docid_page = %u); orphaning the "
-						"chain",
-						RelationGetRelationName(index),
-						metap->_unused_docid_page),
-				 errdetail(
-						 "The docid chain was a v1.2.x mechanism for "
-						 "replaying in-flight documents from heap on "
-						 "restart.  v1.3 has no equivalent.  If you "
-						 "did not call bm25_spill_index() on this "
-						 "index before swapping binaries, some "
-						 "recently-inserted documents may be missing "
-						 "from query results."),
-				 errhint("If query results look incomplete, "
-						 "REINDEX INDEX %s to rebuild from heap.",
-						 RelationGetRelationName(index))));
-	}
+	/*
+	 * Note: a v6 metapage with a non-Invalid _unused_docid_page
+	 * is accepted here as well — the operator-visible LOG fires
+	 * once, from tp_metapage_upgrade_to_current() on the first
+	 * write, at the point we actually orphan the pointer.  See
+	 * the rationale block in that function.  Emitting the LOG
+	 * here would spam (this function is on the hot path; the
+	 * upgrade fires at most once per index lifetime).
+	 */
 
 	/*
 	 * Copy metapage data to avoid buffer issues.  On v6 we only
@@ -262,11 +226,12 @@ tp_metapage_read_memtable_tail(Page page)
  * caller contract.  No-op when the page is already v7.
  */
 void
-tp_metapage_upgrade_to_current(Page page)
+tp_metapage_upgrade_to_current(Relation index, Page page)
 {
 	TpIndexMetaPage metap;
 	PageHeader		phdr;
 	Size			v7_pd_lower;
+	BlockNumber		orphan_docid_page;
 
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
@@ -276,9 +241,8 @@ tp_metapage_upgrade_to_current(Page page)
 	/*
 	 * tp_get_metapage() is the only legitimate way to first
 	 * observe the on-disk version, and it has already filtered
-	 * out anything besides v6/v7 and refused v6 indexes with
-	 * unspilled docid pages.  Reaching this function with any
-	 * other version means a caller mutated the metapage
+	 * out anything besides v6/v7.  Reaching this function with
+	 * any other version means a caller mutated the metapage
 	 * without going through the open path — refuse to stamp
 	 * an unknown layout as v7, which would silently corrupt
 	 * the page (the new chain head/tail fields may land on
@@ -294,17 +258,65 @@ tp_metapage_upgrade_to_current(Page page)
 						 "via tp_get_metapage() before calling "
 						 "tp_metapage_upgrade_to_current().")));
 
+	orphan_docid_page = metap->_unused_docid_page;
+
 	metap->memtable_head_blkno = InvalidBlockNumber;
 	metap->memtable_tail_blkno = InvalidBlockNumber;
+
 	/*
-	 * Orphan any stale v1.2.x docid-chain pointer.  See the
-	 * matching ereport(LOG, ...) in tp_get_metapage() for why
-	 * this field can be non-Invalid on an upgraded v6 page.
-	 * Clearing it here ensures the LOG message fires at most
-	 * once per index lifetime (after the first metapage
-	 * mutation), instead of once per backend that opens the
-	 * index.
+	 * Orphan any stale v1.2.x docid-chain pointer.
+	 *
+	 * v1.2.x and earlier maintained a "docid chain" of pages
+	 * anchored by first_docid_page (now renamed
+	 * _unused_docid_page).  Inserts wrote ctids there before
+	 * the in-memory memtable; on a clean restart the chain was
+	 * replayed to re-tokenize pending documents from heap.
+	 * v1.3 (issue #374) replaced the docid chain with an
+	 * on-disk memtable, so the pointer's target is meaningless
+	 * to the v1.3+ binary.
+	 *
+	 * If the pointer is non-Invalid at upgrade time, the
+	 * operator either:
+	 *   - called bm25_spill_index() before the binary swap
+	 *     (data is in segments; the chain is stale bookkeeping
+	 *     safe to orphan), or
+	 *   - did not give v1.2.x a chance to drain (in-flight
+	 *     documents in the chain are lost — they were
+	 *     scheduled for re-tokenization that v1.3 cannot do).
+	 *
+	 * We cannot distinguish those cases from the on-disk bytes
+	 * alone.  Log a one-time LOG-level message recording the
+	 * orphaned pointer for forensics and proceed; the upgrade
+	 * fires at most once per index lifetime so this LOG fires
+	 * at most once per upgraded index (vs the previous design
+	 * which logged from tp_get_metapage and so fired once per
+	 * backend per opened-but-not-yet-written v6 index).
+	 *
+	 * RecoveryInProgress() suppresses the LOG on a hot standby
+	 * — standbys never reach this function (it runs only on
+	 * the primary, inside a writer's GenericXLog scope), but
+	 * the guard documents that intent.
 	 */
+	if (BlockNumberIsValid(orphan_docid_page) && !RecoveryInProgress())
+		ereport(LOG,
+				(errmsg("pg_textsearch: upgrading index \"%s\" "
+						"from a pre-v1.3 metapage (v6) and "
+						"orphaning a non-empty docid chain "
+						"pointer (first_docid_page = %u)",
+						RelationGetRelationName(index),
+						orphan_docid_page),
+				 errdetail(
+						 "The docid chain was a v1.2.x mechanism for "
+						 "replaying in-flight documents from heap on "
+						 "restart.  v1.3 has no equivalent.  If you "
+						 "did not call bm25_spill_index() on this "
+						 "index before swapping binaries, some "
+						 "recently-inserted documents may be missing "
+						 "from query results."),
+				 errhint("If query results look incomplete, "
+						 "REINDEX INDEX %s to rebuild from heap.",
+						 RelationGetRelationName(index))));
+
 	metap->_unused_docid_page = InvalidBlockNumber;
 	metap->version			  = TP_METAPAGE_VERSION;
 

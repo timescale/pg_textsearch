@@ -159,7 +159,7 @@ memtable_bootstrap_and_append(
 	 * on v6 pages flips version + initializes new chain fields
 	 * before we overwrite them below, all within this GenericXLog.
 	 */
-	tp_metapage_upgrade_to_current(metapage_local);
+	tp_metapage_upgrade_to_current(rel, metapage_local);
 
 	metap = (TpIndexMetaPage)PageGetContents(metapage_local);
 	metap->memtable_head_blkno = newblk;
@@ -230,7 +230,7 @@ memtable_extend_and_append(
 	tp_memtable_page_set_next(tailpage_local, newblk);
 
 	/* v6 -> v7 in-place upgrade (issue #383); see bootstrap path. */
-	tp_metapage_upgrade_to_current(metapage_local);
+	tp_metapage_upgrade_to_current(rel, metapage_local);
 
 	metap = (TpIndexMetaPage)PageGetContents(metapage_local);
 	metap->memtable_tail_blkno = newblk;
@@ -426,7 +426,7 @@ memtable_append_fragment(
 			xlog_state = GenericXLogStart(rel);
 			meta_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 			/* v6 -> v7 in-place upgrade (issue #383). */
-			tp_metapage_upgrade_to_current(meta_local);
+			tp_metapage_upgrade_to_current(rel, meta_local);
 			metap = (TpIndexMetaPage)PageGetContents(meta_local);
 			metap->memtable_head_blkno = thead_blkno;
 			metap->memtable_tail_blkno = tnew_blkno;
@@ -451,7 +451,7 @@ memtable_append_fragment(
 
 		tp_memtable_page_set_next(old_tail_local, thead_blkno);
 		/* v6 -> v7 in-place upgrade (issue #383). */
-		tp_metapage_upgrade_to_current(meta_local);
+		tp_metapage_upgrade_to_current(rel, meta_local);
 		metap = (TpIndexMetaPage)PageGetContents(meta_local);
 		metap->memtable_tail_blkno = tnew_blkno;
 
@@ -748,7 +748,7 @@ tp_spill_finalize(
 	 * helper only ever flips version + zero-inits the new
 	 * fields here.
 	 */
-	tp_metapage_upgrade_to_current(metapage);
+	tp_metapage_upgrade_to_current(rel, metapage);
 	metap = (TpIndexMetaPage)PageGetContents(metapage);
 
 	old_l0_head = metap->level_heads[0];

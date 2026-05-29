@@ -268,7 +268,7 @@ tp_apply_vacuum_shrinkage(
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
 	/* v6 -> v7 in-place upgrade (issue #383). */
-	tp_metapage_upgrade_to_current(mpage);
+	tp_metapage_upgrade_to_current(index, mpage);
 	mp = (TpIndexMetaPage)PageGetContents(mpage);
 
 	mp->total_docs = (mp->total_docs >= docs_shrinkage)
@@ -656,7 +656,7 @@ tp_vacuum_replace_segment(
 		xlog_state = GenericXLogStart(index);
 		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 		/* v6 -> v7 in-place upgrade (issue #383). */
-		tp_metapage_upgrade_to_current(meta_copy);
+		tp_metapage_upgrade_to_current(index, meta_copy);
 		meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
 
 		/* Set new segment's next_segment and level */

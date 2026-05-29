@@ -37,12 +37,14 @@
  * (now-renamed) _unused_docid_page: a v1.2.x clean shutdown
  * always spilled and cleared this pointer, but a SIGKILL'd
  * v1.2.x cluster could leave a non-Invalid pointer to ctids
- * that the v7 binary cannot re-tokenize.  tp_get_metapage
- * refuses to open such an index with a hint to either re-run
- * the v1.2.x binary to finish its recovery + spill, or to
- * REINDEX.  Indexes from a clean v1.2.x shutdown have
- * _unused_docid_page == InvalidBlockNumber and upgrade with
- * no operator intervention.
+ * that the v7 binary cannot re-tokenize.  Such an index opens
+ * fine; the first metapage mutation (via
+ * tp_metapage_upgrade_to_current) emits a LOG-level forensic
+ * message recording the orphaned pointer and then clears it.
+ * Operators who suspect lost in-flight documents from a SIGKILL
+ * should REINDEX.  Indexes from a clean v1.2.x shutdown have
+ * _unused_docid_page == InvalidBlockNumber and upgrade silently
+ * with no operator intervention.
  *
  * v5 and below are not read-compatible.  v5 -> v6 changed BMW
  * scoring semantics with no on-disk-struct change, but

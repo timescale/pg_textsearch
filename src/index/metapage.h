@@ -150,6 +150,9 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  * helper:
  *   - initializes memtable_head_blkno = memtable_tail_blkno =
  *     InvalidBlockNumber,
+ *   - clears any stale _unused_docid_page pointer (and emits a
+ *     LOG-level forensic message if it was non-Invalid; see the
+ *     rationale block in tp_metapage_upgrade_to_current()),
  *   - bumps the version field to TP_METAPAGE_VERSION,
  *   - bumps pd_lower to cover the new fields so GenericXLog
  *     records them in the page image.
@@ -158,5 +161,9 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  * there is no extra WAL traffic.  Concurrent writers cannot race
  * the upgrade — the EXCLUSIVE buffer lock serializes them, and a
  * later writer simply observes v7 and the helper is a no-op.
+ *
+ * The Relation is only used to format the orphan-pointer LOG
+ * message with the index name; the function does not otherwise
+ * touch it.
  */
-extern void tp_metapage_upgrade_to_current(Page page);
+extern void tp_metapage_upgrade_to_current(Relation index, Page page);

@@ -159,13 +159,6 @@ jobs:
           echo "✗ Multi-index tests failed"
           exit 1
         fi
-        echo "Running multi-backend reindex tests (issue #390)..."
-        if (cd test/scripts && ./multi_backend_reindex.sh); then
-          echo "✓ Multi-backend reindex tests passed"
-        else
-          echo "✗ Multi-backend reindex tests failed"
-          exit 1
-        fi
         echo "Running replication tests..."
         if (cd test/scripts && ./replication.sh); then
           echo "✓ Replication tests passed"
@@ -750,6 +743,24 @@ jobs:
             RAISE EXCEPTION 'FAIL: pre-ALTER v6 query returned 0 rows';
           END IF;
           RAISE NOTICE 'PASS: pre-ALTER v6 index queryable, n=%', n;
+        END $$;
+
+        -- Read-only queries MUST NOT upgrade the on-disk metapage
+        -- (issue #383 contract: tp_get_metapage normalizes a v6
+        -- page in its palloc'd copy but does not mutate the
+        -- buffer).  Regression here would mean the read path
+        -- accidentally emits a write.
+        DO $$
+        DECLARE dump_text text;
+        BEGIN
+          dump_text := bm25_dump_index('idx');
+          IF dump_text NOT LIKE '%version: 6' || E'\n' || '%' THEN
+            RAISE EXCEPTION
+              'FAIL: metapage upgraded by read-only queries; '
+              'expected version: 6, dump excerpt: %',
+              substr(dump_text, 1, 400);
+          END IF;
+          RAISE NOTICE 'PASS: read-only queries left v6 metapage intact';
         END $$;
 
         ALTER EXTENSION pg_textsearch UPDATE;

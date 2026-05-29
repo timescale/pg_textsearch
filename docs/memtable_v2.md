@@ -395,16 +395,32 @@ non-Invalid because the helper never cleared it — the on-disk
 bytes survive into the v6 metapage that v1.3 inherits.
 
 `tp_get_metapage` accepts a v6 metapage with a non-Invalid
-`_unused_docid_page` and emits a one-time LOG-level message
-recording the orphaned pointer for forensics.
-`tp_metapage_upgrade_to_current` clears the field on the first
-metapage mutation, so the message fires at most once per index
-lifetime.
+`_unused_docid_page` and proceeds without complaint — the read
+path stays silent.  `tp_metapage_upgrade_to_current` is where
+the policy is enforced: on the first metapage mutation, if the
+orphan pointer is set, it emits a one-time LOG-level forensic
+message ("upgrading index … orphaning a non-empty docid chain
+pointer") and clears the field as part of the same WAL record
+that bumps the version to 7.  Because the upgrade fires at most
+once per index lifetime on the primary, the LOG fires at most
+once per upgraded index too — even on read-heavy workloads and
+on hot standbys (the standby never reaches the upgrade helper;
+it merely replays the WAL record the primary emitted).
 
 If an operator suspects in-flight documents were lost (e.g. a
 SIGKILL'd cluster from a release without shutdown spill, with
-no prior `bm25_spill_index()` call), the LOG hint recommends
-`REINDEX INDEX <name>` to rebuild from heap.
+no prior `bm25_spill_index()` call), the LOG `errhint`
+recommends `REINDEX INDEX <name>` to rebuild from heap.  Indexes
+that never get a metapage mutation (a read-only-since-upgrade
+index on the primary, or any index on a never-written standby)
+stay v6 indefinitely; this is by design — the read path tolerates
+either layout, so the lazy strategy is safe at rest.
+
+To confirm an in-place upgrade has landed, call
+`bm25_dump_index('<name>')` and inspect the `Metapage Info`
+block: a post-upgrade, pre-insert resting state shows
+`version: 7` with `memtable_head_blkno: 4294967295` and
+`memtable_tail_blkno: 4294967295` (= `InvalidBlockNumber`).
 
 Pre-v6 metapages (v5, from v0.5.0 and earlier) still REINDEX —
 those releases predate the BMW correctness fix and we don't
@@ -415,13 +431,16 @@ compat-tier matrix downloads every v0.5.1–v1.2.0 release tarball,
 builds and runs each release on a real cluster, ingests data,
 swaps to the current binary, runs `ALTER EXTENSION UPDATE` *without*
 `REINDEX`, and asserts (a) pre-upgrade query results match
-post-upgrade results, (b) VACUUM + alive-bitset work on old-format
-segments, (c) `bm25_force_merge` rewrites them, (d) new inserts
-land in the upgraded chain, (e) the on-disk metapage version is 7
-after the first write.  That's the source of truth for the
-contract documented above — the synthetic regression test that
-mutated a v7 metapage back to v6 in process was removed in favor
-of testing against real v1.2.x bytes.
+post-upgrade results, (b) read-only queries leave the metapage
+at v6 (the read path is non-mutating), (c) a single INSERT
+triggers v6 → v7 in isolation (before any VACUUM / merge /
+additional inserts), (d) VACUUM + alive-bitset work on old-format
+segments, (e) `bm25_force_merge` rewrites them, (f) post-upgrade
+UPDATE + sentinel-term query proves new content lands in the
+upgraded chain and MVCC stays consistent.  That's the source of
+truth for the contract documented above — the synthetic
+regression test that mutated a v7 metapage back to v6 in process
+was removed in favor of testing against real v1.2.x bytes.
 
 ## Removed in 1.3.0
 
