@@ -22,15 +22,36 @@
  * Each page type has its own version for independent evolution.
  */
 /*
- * v7: on-disk memtable redesign (issue #374).  Adds
+ * v7: on-disk memtable redesign (issue #374).  Appends
  * memtable_head_blkno and memtable_tail_blkno at the end of
- * TpIndexMetaPageData and removes the docid recovery pages.
- * v6 indexes may contain unspilled documents in the now-deleted
- * docid pages, so we reject v6 at metapage open with a REINDEX
- * hint instead of upgrading lazily and risking silent data loss.
+ * TpIndexMetaPageData and retires the docid recovery pages.
+ *
+ * v6 is read-compatible (issue #383): tp_get_metapage accepts a
+ * v6 layout in place and normalizes the missing chain head/tail
+ * to InvalidBlockNumber.  The first metapage mutation upgrades
+ * the on-disk page to v7 atomically inside the surrounding
+ * GenericXLog record (no extra WAL).
+ *
+ * A v6 index's only source of pending (unspilled) data is the
+ * retired docid recovery chain anchored by
+ * (now-renamed) _unused_docid_page: a v1.2.x clean shutdown
+ * always spilled and cleared this pointer, but a SIGKILL'd
+ * v1.2.x cluster could leave a non-Invalid pointer to ctids
+ * that the v7 binary cannot re-tokenize.  tp_get_metapage
+ * refuses to open such an index with a hint to either re-run
+ * the v1.2.x binary to finish its recovery + spill, or to
+ * REINDEX.  Indexes from a clean v1.2.x shutdown have
+ * _unused_docid_page == InvalidBlockNumber and upgrade with
+ * no operator intervention.
+ *
+ * v5 and below are not read-compatible.  v5 -> v6 changed BMW
+ * scoring semantics with no on-disk-struct change, but
+ * pre-v0.5.0 indexes carry an older segment format the v7
+ * binary cannot read; those continue to require REINDEX.
  */
-#define TP_METAPAGE_VERSION	  7
-#define TP_PAGE_INDEX_VERSION 1 /* Page index format version */
+#define TP_METAPAGE_VERSION	   7
+#define TP_METAPAGE_VERSION_V6 6 /* read-compatible (issue #383) */
+#define TP_PAGE_INDEX_VERSION  1 /* Page index format version */
 /* Initial version (introduced with the on-disk memtable design) */
 #define TP_MEMTABLE_PAGE_VERSION 1
 

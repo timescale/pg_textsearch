@@ -361,9 +361,67 @@ btree scan tolerates concurrent writers.
 
 ## Upgrade
 
-`TP_METAPAGE_VERSION` was bumped 6 → 7. v6 metapages from
-1.2.x and earlier fail at open with a clear error pointing to
-REINDEX. There is no dual-format support.
+`TP_METAPAGE_VERSION` was bumped 6 → 7 to record the on-disk
+memtable chain head/tail.  As of issue #383, v6 metapages from
+1.2.x and earlier are read in place (no REINDEX required):
+
+- `tp_get_metapage` accepts version 6 OR 7.  When the on-disk
+  metapage is v6 it normalizes `memtable_head_blkno` and
+  `memtable_tail_blkno` to `InvalidBlockNumber` in the returned
+  palloc'd copy (the v7-only bytes are zero on a v6 page, which
+  is block 0 — the metapage itself — NOT `InvalidBlockNumber`,
+  so naive direct reads would be catastrophic).
+- Direct-buffer readers in `src/memtable/log.c` and
+  `src/memtable/chain_source.c` use the version-tolerant helpers
+  `tp_metapage_read_memtable_head` / `_tail` instead of touching
+  the raw struct fields.
+- The first write to a v6 metapage (any GenericXLog mutation
+  reaching it — insert, spill finalize, vacuum stats update,
+  merge linkage) calls `tp_metapage_upgrade_to_current` on the
+  page returned by `GenericXLogRegisterBuffer`.  That helper
+  initializes the new chain fields to `InvalidBlockNumber`, bumps
+  `pd_lower` so the new 8 bytes land in the WAL image, and stamps
+  `version = TP_METAPAGE_VERSION`.  The upgrade piggybacks on the
+  surrounding WAL record — no extra WAL traffic.
+
+The v1.2.x layout kept a docid-chain head in `first_docid_page`
+(same offset as v7's `_unused_docid_page`).  v1.1.0+ drained that
+chain on clean shutdown via a `before_shmem_exit` callback;
+v0.5.1–v1.0.0 did not.  Real upgrade workflows call
+`bm25_spill_index()` before the binary swap (the documented
+procedure), which moves every memtable record into segments but,
+in the older releases, leaves the `first_docid_page` pointer
+non-Invalid because the helper never cleared it — the on-disk
+bytes survive into the v6 metapage that v1.3 inherits.
+
+`tp_get_metapage` accepts a v6 metapage with a non-Invalid
+`_unused_docid_page` and emits a one-time LOG-level message
+recording the orphaned pointer for forensics.
+`tp_metapage_upgrade_to_current` clears the field on the first
+metapage mutation, so the message fires at most once per index
+lifetime.
+
+If an operator suspects in-flight documents were lost (e.g. a
+SIGKILL'd cluster from a release without shutdown spill, with
+no prior `bm25_spill_index()` call), the LOG hint recommends
+`REINDEX INDEX <name>` to rebuild from heap.
+
+Pre-v6 metapages (v5, from v0.5.0 and earlier) still REINDEX —
+those releases predate the BMW correctness fix and we don't
+maintain a multi-version read path past one major.
+
+Validation lives in `.github/workflows/upgrade-tests.yml`.  The
+compat-tier matrix downloads every v0.5.1–v1.2.0 release tarball,
+builds and runs each release on a real cluster, ingests data,
+swaps to the current binary, runs `ALTER EXTENSION UPDATE` *without*
+`REINDEX`, and asserts (a) pre-upgrade query results match
+post-upgrade results, (b) VACUUM + alive-bitset work on old-format
+segments, (c) `bm25_force_merge` rewrites them, (d) new inserts
+land in the upgraded chain, (e) the on-disk metapage version is 7
+after the first write.  That's the source of truth for the
+contract documented above — the synthetic regression test that
+mutated a v7 metapage back to v6 in process was removed in favor
+of testing against real v1.2.x bytes.
 
 ## Removed in 1.3.0
 
