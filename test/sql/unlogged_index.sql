@@ -97,48 +97,119 @@ RESET pg_textsearch.segments_per_level;
 -- here don't auto-compact: we want the merge to run only via the
 -- explicit force-merge call after the alive-bitset bits have been
 -- flipped dead by VACUUM.
+--
+-- HISTORY / FLAKE INSTRUMENTATION (issue #397).
+--
+-- The post-merge docs_persisted assertion has flaked on the PG17/18
+-- Sanitizer jobs twice now:
+--   * first against the legacy `total_docs:` shared-memory atomic
+--     (fixed in 65b77c52 by switching the assertion to the metapage
+--     value),
+--   * then against the new `docs_persisted:` metapage assertion
+--     itself (issue #397).
+--
+-- We genuinely do not know what value `docs_persisted` reaches on
+-- a failure -- the original opaque `~ 'docs_persisted: 100'` regex
+-- assertion just flipped `t` -> `f`.  To diagnose, this section
+-- now runs the post-VACUUM force-merge cycle in a 64-iteration
+-- loop and captures the actual `docs_persisted` / `len_persisted`
+-- values plus per-segment header state into a temp table.  On the
+-- happy path every iteration emits identical output; on a flake
+-- the regression diff pinpoints the iteration and the wrong value.
+--
+-- The loop count is sized to give ~99% odds of catching a 5% flake
+-- rate in a single CI pass while keeping wall time below ~10s.
 -- ----------------------------------------------------------------
-CREATE UNLOGGED TABLE unlogged_shrink (
-    id SERIAL PRIMARY KEY,
-    content TEXT
+
+CREATE TABLE unlogged_shrink_diag (
+    iter             int  PRIMARY KEY,
+    docs_persisted   text NOT NULL,
+    len_persisted    text NOT NULL,
+    segments_summary text NOT NULL
 );
-CREATE INDEX unlogged_shrink_idx ON unlogged_shrink USING bm25(content)
-    WITH (text_config='english');
 
--- Two segments at L0 with disjoint content.
-INSERT INTO unlogged_shrink (content)
-    SELECT 'foo doc ' || i FROM generate_series(1, 100) i;
-SELECT bm25_spill_index('unlogged_shrink_idx') > 0 AS s1_wrote;
+-- Drive the per-iteration workload via \gexec.  Each iteration is
+-- emitted as multiple rows (one statement per row) so \gexec sends
+-- each statement as a separate PQexec call -- otherwise psql would
+-- batch them into one simple-query, which implicitly wraps the
+-- block in a transaction and rejects VACUUM.  Output of the
+-- generator query and of every executed iteration is suppressed so
+-- the regression .out file stays focused on the final diagnostic
+-- SELECTs.
+\set ECHO none
+\o /dev/null
+SET client_min_messages = warning;
 
-INSERT INTO unlogged_shrink (content)
-    SELECT 'bar doc ' || i FROM generate_series(101, 200) i;
-SELECT bm25_spill_index('unlogged_shrink_idx') > 0 AS s2_wrote;
+WITH steps(stepno, sql_template) AS (VALUES
+    (1,  $$DROP TABLE IF EXISTS unlogged_shrink CASCADE$$),
+    (2,  $$CREATE UNLOGGED TABLE unlogged_shrink (
+              id      SERIAL PRIMARY KEY,
+              content TEXT
+          )$$),
+    (3,  $$CREATE INDEX unlogged_shrink_idx
+              ON unlogged_shrink USING bm25(content)
+              WITH (text_config='english')$$),
+    (4,  $$INSERT INTO unlogged_shrink (content)
+              SELECT 'foo doc %1$s ' || i FROM generate_series(1, 100) i$$),
+    (5,  $$SELECT bm25_spill_index('unlogged_shrink_idx')$$),
+    (6,  $$INSERT INTO unlogged_shrink (content)
+              SELECT 'bar doc %1$s ' || i FROM generate_series(101, 200) i$$),
+    (7,  $$SELECT bm25_spill_index('unlogged_shrink_idx')$$),
+    (8,  $$DELETE FROM unlogged_shrink
+              WHERE id <= 50 OR (id > 100 AND id <= 150)$$),
+    (9,  $$VACUUM unlogged_shrink$$),
+    (10, $$SELECT bm25_force_merge('unlogged_shrink_idx')$$),
+    (11, $$INSERT INTO unlogged_shrink_diag (iter, docs_persisted,
+                                            len_persisted, segments_summary)
+          SELECT %1$s,
+                 COALESCE(substring(s from 'docs_persisted: \d+'),
+                          '<MISSING docs_persisted>'),
+                 COALESCE(substring(s from 'len_persisted: \d+'),
+                          '<MISSING len_persisted>'),
+                 COALESCE(NULLIF(
+                            array_to_string(
+                              ARRAY(
+                                SELECT regexp_replace(
+                                         regexp_replace(line,
+                                           'block=\d+, pages=\d+, size=[0-9.]+MB, ',
+                                           '', 'g'),
+                                         '\s+', ' ', 'g')
+                                FROM unnest(string_to_array(s, E'\n')) AS t(line)
+                                WHERE line ~ '^\s*L\d+ Segment '
+                                ORDER BY line
+                              ),
+                              E'\n'),
+                            ''),
+                          '<NO SEGMENTS>')
+          FROM (SELECT bm25_summarize_index('unlogged_shrink_idx') AS s) sub$$)
+)
+SELECT format(sql_template, n)
+FROM generate_series(1, 64) n, steps
+ORDER BY n, stepno
+\gexec
 
--- Delete half the docs. VACUUM marks the alive-bitset bits dead
--- in each segment. The merge below then drops them, producing
--- non-zero docs_shrinkage and tokens_shrinkage.
-DELETE FROM unlogged_shrink WHERE id <= 50 OR (id > 100 AND id <= 150);
-VACUUM unlogged_shrink;
+RESET client_min_messages;
+\o
+\set ECHO queries
 
--- Force-merge: combines the two L0 segments and drops the
--- alive-bitset-dead docs. This is the GenericXLog else-branch
--- since the index is UNLOGGED, and shrinkage > 0, so the
--- atomic-sub and metapage-sub branches both fire.
-SELECT bm25_force_merge('unlogged_shrink_idx');
+-- Deterministic per-iteration diagnostics.  On the happy path
+-- every row is identical (docs_persisted: 100, single L1 segment
+-- with 100 docs).  On a flake the regression.diffs file
+-- pinpoints the exact iteration and value that drifted.
+SELECT iter, docs_persisted, len_persisted, segments_summary
+FROM unlogged_shrink_diag
+ORDER BY iter;
 
--- Survivor count should be 100 (half of 200). We assert on the
--- durable `docs_persisted:` (Σ segment.num_docs from the
--- metapage) rather than `total_docs:` (the legacy shared-memory
--- atomic): post-#374, scoring no longer reads the atomic and the
--- atomic-vs-metapage update at merge time has shown an
--- intermittent drift under ASan timing.  The metapage value is
--- the actual source of truth for "did the shrinkage math close",
--- so that is what we check here.  See the comment in
--- src/debug/dump.c:tp_summarize_index_to_output for context.
-SELECT bm25_summarize_index('unlogged_shrink_idx') ~ 'docs_persisted: 100'
-    AS docs_persisted_correct;
+-- Distinct-value collapse: one row on the happy path, multiple
+-- on a flake.  Useful for at-a-glance scanning when the loop
+-- count grows large.
+SELECT docs_persisted, len_persisted, segments_summary, count(*) AS n_iter
+FROM unlogged_shrink_diag
+GROUP BY docs_persisted, len_persisted, segments_summary
+ORDER BY docs_persisted, len_persisted, segments_summary;
 
 -- Cleanup
+DROP TABLE unlogged_shrink_diag;
 DROP TABLE unlogged_shrink;
 DROP TABLE unlogged_merge;
 DROP TABLE unlogged_test;
