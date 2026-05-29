@@ -61,16 +61,12 @@
 static BlockNumber
 memtable_read_tail_blkno(Relation rel)
 {
-	Buffer			buf;
-	Page			page;
-	TpIndexMetaPage metap;
-	BlockNumber		tail;
+	Buffer		buf;
+	BlockNumber tail;
 
 	buf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page  = BufferGetPage(buf);
-	metap = (TpIndexMetaPage)PageGetContents(page);
-	tail  = metap->memtable_tail_blkno;
+	tail = tp_metapage_read_memtable_tail(BufferGetPage(buf));
 	UnlockReleaseBuffer(buf);
 
 	return tail;
@@ -138,17 +134,12 @@ memtable_bootstrap_and_append(
 	metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
+	if (tp_metapage_read_memtable_tail(BufferGetPage(metabuf)) !=
+		InvalidBlockNumber)
 	{
-		Page			cur_meta_page = BufferGetPage(metabuf);
-		TpIndexMetaPage cur_metap	  = (TpIndexMetaPage)PageGetContents(
-				cur_meta_page);
-
-		if (cur_metap->memtable_tail_blkno != InvalidBlockNumber)
-		{
-			/* Lost the race: another backend bootstrapped first. */
-			UnlockReleaseBuffer(metabuf);
-			return InvalidBlockNumber;
-		}
+		/* Lost the race: another backend bootstrapped first. */
+		UnlockReleaseBuffer(metabuf);
+		return InvalidBlockNumber;
 	}
 
 	newbuf = tp_memtable_alloc_page(rel);
@@ -162,6 +153,13 @@ memtable_bootstrap_and_append(
 	tp_memtable_page_init(newpage_local);
 	tp_memtable_page_append(
 			newpage_local, ctid, doc_length, vector_bytes, vector_len);
+
+	/*
+	 * v6 -> v7 in-place upgrade (issue #383): no-op on v7 pages;
+	 * on v6 pages flips version + initializes new chain fields
+	 * before we overwrite them below, all within this GenericXLog.
+	 */
+	tp_metapage_upgrade_to_current(rel, metapage_local);
 
 	metap = (TpIndexMetaPage)PageGetContents(metapage_local);
 	metap->memtable_head_blkno = newblk;
@@ -230,6 +228,9 @@ memtable_extend_and_append(
 			newpage_local, ctid, doc_length, vector_bytes, vector_len);
 
 	tp_memtable_page_set_next(tailpage_local, newblk);
+
+	/* v6 -> v7 in-place upgrade (issue #383); see bootstrap path. */
+	tp_metapage_upgrade_to_current(rel, metapage_local);
 
 	metap = (TpIndexMetaPage)PageGetContents(metapage_local);
 	metap->memtable_tail_blkno = newblk;
@@ -403,10 +404,8 @@ memtable_append_fragment(
 
 	if (bootstrap)
 	{
-		Page			cur_mp	  = BufferGetPage(metabuf);
-		TpIndexMetaPage cur_metap = (TpIndexMetaPage)PageGetContents(cur_mp);
-
-		if (cur_metap->memtable_tail_blkno != InvalidBlockNumber)
+		if (tp_metapage_read_memtable_tail(BufferGetPage(metabuf)) !=
+			InvalidBlockNumber)
 		{
 			/*
 			 * Lost bootstrap race: another backend populated the
@@ -426,7 +425,9 @@ memtable_append_fragment(
 
 			xlog_state = GenericXLogStart(rel);
 			meta_local = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-			metap	   = (TpIndexMetaPage)PageGetContents(meta_local);
+			/* v6 -> v7 in-place upgrade (issue #383). */
+			tp_metapage_upgrade_to_current(rel, meta_local);
+			metap = (TpIndexMetaPage)PageGetContents(meta_local);
 			metap->memtable_head_blkno = thead_blkno;
 			metap->memtable_tail_blkno = tnew_blkno;
 			GenericXLogFinish(xlog_state);
@@ -449,6 +450,8 @@ memtable_append_fragment(
 		meta_local	   = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 
 		tp_memtable_page_set_next(old_tail_local, thead_blkno);
+		/* v6 -> v7 in-place upgrade (issue #383). */
+		tp_metapage_upgrade_to_current(rel, meta_local);
 		metap = (TpIndexMetaPage)PageGetContents(meta_local);
 		metap->memtable_tail_blkno = tnew_blkno;
 
@@ -736,7 +739,17 @@ tp_spill_finalize(
 
 	state	 = GenericXLogStart(rel);
 	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+	/*
+	 * v6 -> v7 in-place upgrade (issue #383).  Must run before
+	 * we touch any v7-only field below.  On a v6 page this
+	 * piggybacks on the spill's GenericXLog record; on v7 it's
+	 * a no-op.  Note: spill cannot be entered on a v6 index
+	 * with unspilled chain data (v6 had no chain pages), so the
+	 * helper only ever flips version + zero-inits the new
+	 * fields here.
+	 */
+	tp_metapage_upgrade_to_current(rel, metapage);
+	metap = (TpIndexMetaPage)PageGetContents(metapage);
 
 	old_l0_head = metap->level_heads[0];
 

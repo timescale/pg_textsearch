@@ -508,14 +508,19 @@ tp_memtable_chain_source_create(
 	 * of returning NULL for an empty memtable.
 	 */
 	{
-		Buffer			metabuf;
-		TpIndexMetaPage metap;
-		bool			empty;
+		Buffer metabuf;
+		bool   empty;
 
 		metabuf = ReadBuffer(rel, TP_METAPAGE_BLKNO);
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
-		empty = (metap->memtable_head_blkno == InvalidBlockNumber);
+		/*
+		 * Use the version-tolerant helper (issue #383): on a v6
+		 * page the on-disk field bytes are zero (= block 0,
+		 * the metapage itself), not InvalidBlockNumber.
+		 */
+		empty =
+				(tp_metapage_read_memtable_head(BufferGetPage(metabuf)) ==
+				 InvalidBlockNumber);
 		UnlockReleaseBuffer(metabuf);
 		if (empty)
 		{

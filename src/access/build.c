@@ -417,8 +417,14 @@ tp_truncate_dead_pages(Relation index)
 	 * never truncated.  Each link is read under SHARED buffer
 	 * lock; the per-index LWLock held by the caller (EXCLUSIVE)
 	 * ensures no concurrent extension races us.
+	 *
+	 * Use tp_metapage_read_memtable_head() (not a direct struct
+	 * read) so a v6 metapage left over from a v1.2.x upgrade
+	 * (issue #383) returns InvalidBlockNumber instead of the
+	 * raw zero bytes at that offset — block 0 is the metapage
+	 * itself, and walking it would fail the magic check below.
 	 */
-	chain_blk = metap->memtable_head_blkno;
+	chain_blk = tp_metapage_read_memtable_head(metapage);
 	while (chain_blk != InvalidBlockNumber)
 	{
 		Buffer				  cbuf;
