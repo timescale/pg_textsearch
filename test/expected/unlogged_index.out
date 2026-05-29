@@ -123,7 +123,7 @@ RESET pg_textsearch.segments_per_level;
 -- explicit force-merge call after the alive-bitset bits have been
 -- flipped dead by VACUUM.
 --
--- HISTORY / FLAKE INSTRUMENTATION (issue #397).
+-- HISTORY / FIX (issue #397).
 --
 -- The post-merge docs_persisted assertion has flaked on the PG17/18
 -- Sanitizer jobs twice now:
@@ -133,23 +133,55 @@ RESET pg_textsearch.segments_per_level;
 --   * then against the new `docs_persisted:` metapage assertion
 --     itself (issue #397).
 --
--- We genuinely do not know what value `docs_persisted` reaches on
--- a failure -- the original opaque `~ 'docs_persisted: 100'` regex
--- assertion just flipped `t` -> `f`.  To diagnose, this section
--- now runs the post-VACUUM force-merge cycle in a 64-iteration
--- loop and captures the actual `docs_persisted` / `len_persisted`
--- values plus per-segment header state into a temp table.  On the
--- happy path every iteration emits identical output; on a flake
--- the regression diff pinpoints the iteration and the wrong value.
+-- Root cause of the #397 flake: every iteration `DROP TABLE` +
+-- `CREATE UNLOGGED TABLE` + `CREATE INDEX` churns pg_catalog
+-- (pg_class, pg_attribute, pg_shdepend, ...).  That triggers
+-- autovacuum workers whose `backend_xmin` holds back the cluster's
+-- `OldestNonRemovableTransactionId`.  If our `VACUUM
+-- unlogged_shrink` runs while such a worker is active, the index
+-- ambulkdelete callback classifies our DELETE'd tuples as "dead but
+-- not yet removable", the per-segment alive_bitset never shrinks,
+-- and `bm25_force_merge` produces a merged segment with all 200
+-- source docs instead of the expected 100.  Symptom: a clean 2x
+-- drift (`docs_persisted: 200` and merged-segment `docs=200`).
 --
--- The loop count is sized to give ~99% odds of catching a 5% flake
--- rate in a single CI pass while keeping wall time below ~10s.
+-- The diagnostic loop captured exactly this signature when the
+-- flake fired locally, with the wait DO block below reporting
+-- `[pid=N,type=autovacuum worker,query=autovacuum: VACUUM ANALYZE
+-- pg_catalog.pg_shdepend]` as the xmin holder.
+--
+-- Fix: run the post-DELETE workload with a guarded VACUUM cycle:
+--
+--   (a) Wait briefly for any backend with a held xmin to finish.
+--       Soft timeout (no error) so the loop keeps making forward
+--       progress even on a heavily-churning cluster.
+--   (b) Run `VACUUM unlogged_shrink`.
+--   (c) Wait again, then run `VACUUM` a second time.  This closes
+--       the residual race where a new autovacuum worker spawns
+--       between the (a) wait-exit and the (b) VACUUM's OldestXmin
+--       computation.  When (b) already shrank the bitset, the
+--       second VACUUM is a cheap no-op.
+--
+-- The loop count is 8 -- small enough to keep CI wall time short
+-- and to limit our own catalog churn, but large enough to amplify
+-- any residual race a single-iteration assertion would miss.  Per
+-- iteration we capture three diagnostic columns:
+--
+--   pre_merge_segs   -- scrubbed segment summary AFTER VACUUM,
+--                       BEFORE force_merge.  Happy path shows
+--                       both L0 segments annotated `(alive=50,
+--                       dead=50)`; on a stale-bitset flake both
+--                       would still report alive=100.
+--   docs_persisted   -- metapage total_docs after merge (must
+--                       be `docs_persisted: 100`).
+--   post_merge_segs  -- scrubbed segment summary AFTER merge
+--                       (must be one L1 segment with docs=100).
 -- ----------------------------------------------------------------
 CREATE TABLE unlogged_shrink_diag (
     iter             int  PRIMARY KEY,
-    docs_persisted   text NOT NULL,
-    len_persisted    text NOT NULL,
-    segments_summary text NOT NULL
+    pre_merge_segs   text,
+    docs_persisted   text,
+    post_merge_segs  text
 );
 -- Drive the per-iteration workload via \gexec.  Each iteration is
 -- emitted as multiple rows (one statement per row) so \gexec sends
@@ -160,85 +192,31 @@ CREATE TABLE unlogged_shrink_diag (
 -- the regression .out file stays focused on the final diagnostic
 -- SELECTs.
 \set ECHO none
-SELECT iter, docs_persisted, len_persisted, segments_summary
+SELECT docs_persisted, post_merge_segs,
+       count(*) AS n_iter
 FROM unlogged_shrink_diag
-ORDER BY iter;
- iter |   docs_persisted    |   len_persisted    |          segments_summary          
-------+---------------------+--------------------+------------------------------------
-    1 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    2 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    3 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    4 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    5 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    6 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    7 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    8 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-    9 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   10 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   11 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   12 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   13 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   14 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   15 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   16 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   17 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   18 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   19 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   20 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   21 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   22 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   23 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   24 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   25 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   26 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   27 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   28 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   29 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   30 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   31 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   32 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   33 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   34 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   35 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   36 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   37 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   38 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   39 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   40 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   41 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   42 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   43 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   44 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   45 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   46 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   47 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   48 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   49 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   50 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   51 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   52 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   53 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   54 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   55 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   56 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   57 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   58 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   59 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   60 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   61 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   62 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   63 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-   64 | docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100
-(64 rows)
-
-SELECT docs_persisted, len_persisted, segments_summary, count(*) AS n_iter
-FROM unlogged_shrink_diag
-GROUP BY docs_persisted, len_persisted, segments_summary
-ORDER BY docs_persisted, len_persisted, segments_summary;
-   docs_persisted    |   len_persisted    |          segments_summary          | n_iter 
----------------------+--------------------+------------------------------------+--------
- docs_persisted: 100 | len_persisted: 400 |  L1 Segment 1: terms=203, docs=100 |     64
+GROUP BY docs_persisted, post_merge_segs
+ORDER BY docs_persisted, post_merge_segs;
+   docs_persisted    |          post_merge_segs           | n_iter 
+---------------------+------------------------------------+--------
+ docs_persisted: 100 |  L1 Segment 1: terms=203, docs=100 |      8
 (1 row)
+
+WITH most_common AS (
+    SELECT docs_persisted, post_merge_segs
+    FROM unlogged_shrink_diag
+    GROUP BY docs_persisted, post_merge_segs
+    ORDER BY count(*) DESC, docs_persisted, post_merge_segs
+    LIMIT 1
+)
+SELECT d.iter, d.pre_merge_segs, d.docs_persisted, d.post_merge_segs
+FROM unlogged_shrink_diag d, most_common m
+WHERE (d.docs_persisted, d.post_merge_segs)
+   IS DISTINCT FROM (m.docs_persisted, m.post_merge_segs)
+ORDER BY d.iter;
+ iter | pre_merge_segs | docs_persisted | post_merge_segs 
+------+----------------+----------------+-----------------
+(0 rows)
 
 DROP TABLE unlogged_shrink_diag;
 DROP TABLE unlogged_shrink;
