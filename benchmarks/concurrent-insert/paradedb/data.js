@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780043475780,
+  "lastUpdate": 1780128398698,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -3476,6 +3476,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.627,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f50e9831edffd97f4f1977448fe708c4575f7ebb",
+          "message": "Release v1.3.0 (#399)\n\nRelease v1.3.0.\n\n## Headlines\n\n- **On-disk memtable** (#374, #375, #385, #389): the L0 memtable now\n  lives in the index relation itself as a chain of WAL-logged pages\n  via `GenericXLog`, replacing the shared-memory structure. Removes\n  the old soft-limit machinery and a long tail of physical-replication\n  edge cases. New metapage version (v7), read-compatible with v6 via\n  lazy upgrade. See [`docs/memtable_v2.md`](docs/memtable_v2.md).\n- **In-memory memtable cache** (#391, #392, #395): query reads can be\n  served from a per-backend cache built over the on-disk chain, with\n  a 3-tier memory cap (per-index / global soft / global hard).\n  Controlled by `pg_textsearch.memtable_cache_enabled` and\n  `pg_textsearch.memory_limit`. See\n  [`docs/memtable_cache.md`](docs/memtable_cache.md).\n- **Multi-backend reindex regression coverage** (#386, #390, #396):\n  fixes a stale-CTIDs class of bug that surfaced under ALTER TABLE\n  heap rewrites concurrent with memtable activity.\n- **CI hardening** (#372, #394).\n\n## Release checklist (from RELEASING.md)\n\n- [x] Audit `sql/pg_textsearch--1.2.0--1.3.0.sql` against the main\n  SQL diff. Covers 11 new CREATE FUNCTIONs (memtable + cache test\n  scaffolds), DROP of `bm25_memory_usage()`, and the two ALTER\n  FUNCTION ... PARALLEL UNSAFE changes (`bm25_text_bm25query_score`,\n  `bm25_textarray_bm25query_score`).\n- [x] Ran `./scripts/bump-version.sh 1.3.0-dev 1.3.0`.\n- [x] Replaced banner image (`images/tapir_and_friends_v1.3.0.png`).\n- [x] `1.2.0` is already present in the upgrade-tests matrix (added\n  during the dev-bump in #373).",
+          "timestamp": "2026-05-29T20:35:07Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f50e9831edffd97f4f1977448fe708c4575f7ebb"
+        },
+        "date": 1780128388487,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2738.743443,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.365,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5225.210468,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.383,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8554.472134,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.468,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 12877.530606,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.621,
             "unit": "ms"
           }
         ]
