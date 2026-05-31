@@ -1723,11 +1723,10 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	 * consistent metapage snapshot.
 	 */
 	{
-		uint32			   merged_docs	 = 0;
-		uint64			   merged_tokens = 0;
-		uint64			   docs_shrinkage;
-		uint64			   tokens_shrinkage;
-		TpLocalIndexState *st;
+		uint32 merged_docs	 = 0;
+		uint64 merged_tokens = 0;
+		uint64 docs_shrinkage;
+		uint64 tokens_shrinkage;
 
 		/* Read merged segment header for its num_docs / total_tokens. */
 		{
@@ -1750,8 +1749,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 								 ? total_tokens - merged_tokens
 								 : 0;
 
-		st = tp_get_local_index_state(RelationGetRelid(index));
-
 		{
 			GenericXLogState *xlog_state;
 			Page			  meta_copy;
@@ -1761,37 +1758,10 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 			metabuf = ReadBuffer(index, 0);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
-			/*
-			 * Clamp atomic subs symmetrically with the metapage sub
-			 * below.  Phase 4: the shmem atomic no longer drives
-			 * query correctness, but vacuum's shrinkage protocol
-			 * still reads it, so we maintain it in lockstep with
-			 * the metapage.
-			 */
-			if (st != NULL && st->shared != NULL)
-			{
-				if (docs_shrinkage > 0)
-				{
-					uint32 cur = pg_atomic_read_u32(&st->shared->total_docs);
-					uint32 sub = (docs_shrinkage > (uint64)cur)
-									   ? cur
-									   : (uint32)docs_shrinkage;
-					if (sub > 0)
-						pg_atomic_fetch_sub_u32(&st->shared->total_docs, sub);
-				}
-				if (tokens_shrinkage > 0)
-				{
-					uint64 cur = pg_atomic_read_u64(&st->shared->total_len);
-					uint64 sub = Min(cur, tokens_shrinkage);
-
-					if (sub > 0)
-						pg_atomic_fetch_sub_u64(&st->shared->total_len, sub);
-				}
-			}
-
 			xlog_state = GenericXLogStart(index);
 			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-			meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
+			tp_metapage_upgrade_to_current(index, meta_copy);
+			meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
 
 			meta_ptr->level_heads[level]  = remainder_head;
 			meta_ptr->level_counts[level] = total_at_level - segment_count;

@@ -43,9 +43,9 @@
 #include "constants.h"
 
 /* Flags occupying the `flags` field of TpMemtablePageHeader. */
-#define TP_MEMTABLE_PAGE_FLAG_DEAD            \
-	0x0001 /* page has been spilled or merged \
-			* out; dead_fxid records when */
+#define TP_MEMTABLE_PAGE_FLAG_DEAD              \
+	0x0001 /* unlinked from metapage; dead_fxid \
+			* is spill horizon for FSM recycle */
 /*
  * Page contains continuation bytes of a previous record's
  * oversized payload.  n_records is 0 and the on-page bytes
@@ -265,3 +265,10 @@ extern bool tp_memtable_page_is_continuation(Page page);
  */
 extern const char *
 tp_memtable_continuation_page_chunk(Page page, uint32 *out_len);
+
+/*
+ * DEAD flag helpers (page buffer / GenericXLog working copy).
+ * Idempotent: first horizon wins when marking dead.
+ */
+extern void tp_memtable_page_mark_dead(Page page, FullTransactionId horizon);
+extern bool tp_memtable_page_is_dead(Page page);

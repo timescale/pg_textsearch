@@ -13,6 +13,7 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <fmgr.h>
+#include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
@@ -30,7 +31,7 @@
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.0-dev");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.0");
 #else
 PG_MODULE_MAGIC;
 #endif
@@ -66,6 +67,38 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
+
+/*
+ * Memtable shared-memory cache enable flag.  Gates the read-path
+ * chooser (tp_memtable_source_create_for_read) on the cache vs
+ * the on-disk chain.  Defaults to on: tp_spill_finalize bumps
+ * the per-index spill_generation and calls tp_cache_clear,
+ * closing the cross-spill staleness window that would otherwise
+ * force opt-in.  Standbys still bypass the cache via
+ * RecoveryInProgress() in the chooser.
+ */
+bool tp_memtable_cache_enabled = true;
+
+/*
+ * Debug GUC for the in-memory memtable cache.  When enabled the
+ * read-path chooser logs cache state transitions (apply OK /
+ * BUDGET_EXCEEDED / cold_build OK / RETRY / ABORT / fall back to
+ * chain).  Off by default; intended for development and tests
+ * that need to assert which path served a query.
+ */
+bool tp_log_cache_state = false;
+
+/* Debug: trigger PANIC after spill finalize for crash-safety testing */
+bool tp_debug_panic_after_spill_finalize = false;
+
+/*
+ * Soft+hard memory budget for the in-memory memtable cache, in
+ * kilobytes.  Restored from v1; scaffolding only in this build —
+ * no consumer reads this yet.  Default and bounds live in
+ * constants.h (TP_DEFAULT_MEMORY_LIMIT_KB) so the GUC registration
+ * and the backing-variable initializer cannot drift.
+ */
+int tp_memory_limit_kb = TP_DEFAULT_MEMORY_LIMIT_KB;
 
 /* Previous object access hook */
 static object_access_hook_type prev_object_access_hook = NULL;
@@ -249,12 +282,80 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomBoolVariable(
+			"pg_textsearch.memtable_cache_enabled",
+			"Enable the in-memory memtable cache for queries.",
+			"When enabled, queries are served from a derived "
+			"shared-memory cache rather than walking the on-disk "
+			"memtable chain.  The chain remains the source of "
+			"truth.  Default is on: queries against the chain are "
+			"served by a derived cache so per-term posting lookups "
+			"don't pay the O(records) chain walk.  Disable to "
+			"force every query through the on-disk chain.  "
+			"Standbys always use the chain regardless of this "
+			"setting (RecoveryInProgress disables the cache).",
+			&tp_memtable_cache_enabled,
+			true,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.log_cache_state",
+			"Log in-memory memtable cache state transitions.",
+			"When enabled, the read-path chooser emits LOG messages "
+			"for each cache apply outcome (OK / BUDGET_EXCEEDED / "
+			"cold_build / RETRY / ABORT / fall back to chain).  "
+			"Intended for development and observability.",
+			&tp_log_cache_state,
+			false,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_after_spill_finalize",
+			"Trigger PANIC after spill finalize for crash-safety testing.",
+			"When enabled, forces a server crash immediately after "
+			"tp_spill_finalize completes. Used only for regression "
+			"testing crash-safe spill ordering.",
+			&tp_debug_panic_after_spill_finalize,
+			false,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.memory_limit",
+			"Maximum shared memory used by the in-memory memtable cache.",
+			"Applied as a three-tier budget (see "
+			"docs/memtable_cache.md): per-index soft cap "
+			"(limit/8) returns BUDGET_EXCEEDED to the apply "
+			"protocol so the read falls back to the on-disk "
+			"chain; global soft cap (limit/2) evicts the "
+			"largest non-caller cache via tp_cache_evict_largest; "
+			"global hard cap (limit) refuses cache builds "
+			"entirely.  A value of 0 means no limit.",
+			&tp_memory_limit_kb,
+			TP_DEFAULT_MEMORY_LIMIT_KB,
+			0,
+			INT_MAX,
+			PGC_SIGHUP,
+			GUC_UNIT_KB,
+			NULL,
+			NULL,
+			NULL);
+
 	/*
-	 * Reserve the pg_textsearch.* GUC prefix.  Without this,
-	 * postgresql.conf entries for GUCs we removed in earlier
-	 * releases (e.g. pg_textsearch.memory_limit, deleted in
-	 * 1.3.0's Phase 7B) are silently ignored after upgrade
-	 * instead of producing a warning at server start.
+	 * Reserve the pg_textsearch.* GUC prefix so unknown settings
+	 * (typos, or GUCs removed in a future release) produce a
+	 * warning at server start rather than being silently ignored.
 	 */
 	MarkGUCPrefixReserved("pg_textsearch");
 
@@ -539,9 +640,9 @@ tp_process_utility(
  * pg_textsearch--1.0.0--1.1.0.sql ships with a CREATE FUNCTION
  * bm25_memory_usage() that binds to this C symbol.  The SRF and
  * its underlying soft-limit infrastructure were removed in
- * 1.3.0-dev (issue #374), and the matching SQL function is
- * DROPped by pg_textsearch--1.2.0--1.3.0-dev.sql, but during an
- * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0-dev,
+ * 1.3.0 (issue #374), and the matching SQL function is
+ * DROPped by pg_textsearch--1.2.0--1.3.0.sql, but during an
+ * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0,
  * the CREATE in 1.0.0--1.1.0 has to find this symbol before the
  * DROP can run.  The stub returns NULL.
  */

@@ -3,7 +3,7 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * chain_source.h - TpDataSource over the on-disk memtable page
- *                  chain (memtable v2, issue #374).
+ *                  chain (issue #374).
  *
  * Reads document records from the chain rooted at
  * meta.memtable_head_blkno, aggregates them into in-memory

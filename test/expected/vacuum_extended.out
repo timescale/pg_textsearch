@@ -518,7 +518,7 @@ SELECT 'three gamma common term doc ' || i FROM generate_series(61, 90) AS i;
 SELECT bm25_spill_index('merge_drop_idx');
  bm25_spill_index 
 ------------------
-                8
+                4
 (1 row)
 
 -- 30 + 30 + 30 = 90 inserted; 30 deleted; 60 live.  Pre-fix merge

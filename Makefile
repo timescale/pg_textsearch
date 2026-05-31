@@ -1,6 +1,6 @@
 EXTENSION = pg_textsearch
 EXTVERSION = $(shell awk -F"'" '/default_version/ {print $$2}' pg_textsearch.control)
-DATA = sql/pg_textsearch--1.3.0-dev.sql \
+DATA = sql/pg_textsearch--1.3.0.sql \
        sql/pg_textsearch--0.0.1--0.0.2.sql \
        sql/pg_textsearch--0.0.2--0.0.3.sql \
        sql/pg_textsearch--0.0.3--0.0.4.sql \
@@ -18,7 +18,7 @@ DATA = sql/pg_textsearch--1.3.0-dev.sql \
        sql/pg_textsearch--0.6.1--1.0.0.sql \
        sql/pg_textsearch--1.0.0--1.1.0.sql \
        sql/pg_textsearch--1.1.0--1.2.0.sql \
-       sql/pg_textsearch--1.2.0--1.3.0-dev.sql
+       sql/pg_textsearch--1.2.0--1.3.0.sql
 
 # Source files organized by directory
 OBJS = \
@@ -30,11 +30,16 @@ OBJS = \
 	src/access/scan.o \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
+	src/memtable/cache.o \
+	src/memtable/cache_source.o \
 	src/memtable/chain_source.o \
+	src/memtable/chain_walker.o \
 	src/memtable/expull.o \
 	src/memtable/log.o \
 	src/memtable/page.o \
+	src/memtable/posting.o \
 	src/memtable/scan.o \
+	src/memtable/stringtable.o \
 	src/segment/segment.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
@@ -74,7 +79,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG = pg_config
@@ -119,7 +124,6 @@ test-concurrency:
 test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
-	@cd test/scripts && ./docid_chain_recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
 
 test-segment:
@@ -155,6 +159,7 @@ test-replication-extended:
 	    replication_compat.sh \
 	    replication_cascading.sh \
 	    replication_spill_paths.sh \
+	    replication_memtable_dead_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \
@@ -174,7 +179,11 @@ test-multi-index:
 	@echo "Running multi-index / multi-user / multi-schema tests..."
 	@cd test/scripts && ./multi_index.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index
+test-reindex:
+	@echo "Running multi-backend reindex regression tests (issue #390)..."
+	@cd test/scripts && ./multi_backend_reindex.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -324,6 +333,7 @@ help:
 	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make test-stress      - Run long-running stress tests"
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
+	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -347,4 +357,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-multi-index test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

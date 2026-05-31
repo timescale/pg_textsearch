@@ -70,15 +70,17 @@ typedef struct TpMemtablePageHeader
     uint16          n_records;
     uint16          free_offset;  /* tail-of-records, MAXALIGN'd */
     BlockNumber     next_block;   /* chain link; Invalid at tail */
-    FullTransactionId dead_fxid;  /* reserved for future
-                                   * deferred reclaim */
+    FullTransactionId dead_fxid;  /* when DEAD: xact horizon for
+                                   * deferred FSM recycle */
 } TpMemtablePageHeader;  /* 24 bytes */
 ```
 
 `flags` carries:
-- `TP_MEMTABLE_PAGE_FLAG_DEAD` (0x0001) — page has been spilled
-  or merged out (reserved; currently unused, slated for the
-  deferred FSM-recycle path).
+- `TP_MEMTABLE_PAGE_FLAG_DEAD` (0x0001) — set on each page of a
+  memtable chain when `tp_do_spill` unlinks it from the metapage.
+  `dead_fxid` records the spill transaction; `amvacuumcleanup`
+  (Step 2) will recycle the block once the horizon is older than
+  every active snapshot.  Not used on live chain pages.
 - `TP_MEMTABLE_PAGE_FLAG_CONTINUATION` (0x0002) — page is a
   continuation of a multi-page record (see *Multi-page records*
   below); `n_records == 0` and the bytes between
@@ -249,7 +251,7 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    already-held EXCL lock).
 2. Extract sorted `TermInfo[]` + finalized `TpDocMapBuilder`.
 3. Build the new L0 segment via `tp_write_segment`.
-4. `tp_spill_finalize`: one `GenericXLog` over up to 4
+4. **`tp_spill_finalize`**: one `GenericXLog` over up to 4
    buffers (metapage + new segment header + optionally the
    old chain head; typically 2 buffers in steady state):
    - `level_heads[0] = root`, `level_counts[0]++`
@@ -257,17 +259,65 @@ Spill runs under per-index `LW_EXCLUSIVE`:
    - `memtable_head_blkno = memtable_tail_blkno = Invalid`
    - If old `level_heads[0]` was valid, set
      `new_header->next_segment = old_head`.
-5. Reset auto-spill counter heuristic.
+5. **`tp_memtable_mark_chain_dead`**: walk the now-unlinked chain
+   (including fragment continuation pages) and stamp each page
+   `DEAD` + `dead_fxid` in separate `GenericXLog` records (one
+   page per record; up to four buffers could be batched later).
+   Uses the spill transaction's `FullTransactionId` as the
+   recycle horizon.
+6. Reset auto-spill counter heuristic.
 
-Old memtable chain pages are **not** WAL-touched. They become
-orphans reachable only via direct block reads — they still
-have intact `TP_MEMTABLE_PAGE_MAGIC` headers but no metapage
-pointer to them. In-flight standby/replay scans that already
-latched a chain head walk them to completion against the
-metapage snapshot they started with; new scans see the
-post-spill metapage and skip the orphans entirely.
-FSM-recycling orphans is deferred to a future
-`amvacuumcleanup` pass.
+**Crash-safe ordering**: Steps 4 and 5 are ordered finalize-first,
+then mark-dead. If we crash between step 4 and step 5, the chain
+pages are unreachable (metapage head cleared) but not stamped
+`DEAD`, so `tp_reclaim_dead_memtable_pages` won't free them — they
+leak until REINDEX. The reverse order (mark-dead before finalize)
+would be unsafe: a crash after marking but before finalize leaves
+pages stamped `DEAD` while still reachable via `metap.head`; once
+global xmin advances, vacuum would free pages still in the live
+chain, causing corruption on FSM reuse.
+
+After step 4 the old chain blocks are **orphans**: no metapage
+pointer reaches them. After step 5 each page has valid
+`TP_MEMTABLE_PAGE_MAGIC` and a `DEAD` stamp.
+In-flight scans that already latched a chain head may still walk
+those blocks against the metapage snapshot they started with;
+new scans use the post-spill metapage and skip them.
+**FSM recycle** of `DEAD` pages happens in `amvacuumcleanup` (see
+below); until then the relation file retains those block numbers.
+
+## FSM reclaim and reuse (`tp_vacuumcleanup` / `tp_memtable_alloc_page`)
+
+After spill, orphaned chain blocks remain on the main fork with
+valid memtable magic and a `DEAD` stamp.  They are not reachable
+from the metapage.  Reclaim and reuse mirror segment compaction:
+
+1. **`tp_reclaim_dead_memtable_pages`** (in `tp_vacuumcleanup`,
+   under per-index `LW_SHARED`): scan main-fork blocks after
+   the metapage; for each page that is valid memtable format and
+   `DEAD`, compare `dead_fxid` to the global horizon via
+   `FullTransactionIdPrecedes` (wraparound-safe).  Before freeing,
+   check that the block is **not** in the current live chain
+   (defense-in-depth against the crash window between finalize
+   and mark-dead; see `tp_collect_reachable_chain_blocks`).
+   When the spill horizon is old enough and the block is not
+   reachable, call `RecordFreeIndexPage` (index FSM — **not**
+   WAL-logged, same as `tp_segment_free_pages`).  Bump
+   `IndexBulkDeleteResult.pages_free` and run
+   `IndexFreeSpaceMapVacuum` when any pages were freed.
+2. **`tp_memtable_alloc_page`** (insert / extend / fragment paths
+   in `log.c`): `GetFreeIndexPage` first; on success,
+   `ReadBufferExtended(..., block, RBM_ZERO_AND_LOCK)` and full
+   re-init via `tp_memtable_page_init` or
+   `tp_memtable_continuation_page_init` plus
+   `GENERIC_XLOG_FULL_IMAGE`.  Otherwise `ExtendBufferedRel`.
+
+Page bodies are not WAL-cleared at reclaim time; reuse overwrites
+them on the next append.  `DEAD` flags may remain visible to
+`bm25_memtable_dead_pages` until a block is reallocated.
+
+Regression: `test/sql/memtable_spill_dead.sql` (DEAD stamping),
+`test/sql/memtable_reclaim.sql` (VACUUM reclaim + FSM reuse).
 
 ## Corpus statistics
 
@@ -301,7 +351,8 @@ are the durable record.
 |-----------|------------------|---------------------------------------|
 | Insert    | `LW_SHARED`      | tail buf EXCL during append           |
 | Scan      | `LW_SHARED`      | chain pages SHARED one at a time      |
-| Spill     | `LW_EXCLUSIVE`   | metapage + new seg header via GenericXLog |
+| Spill     | `LW_EXCLUSIVE`   | chain pages DEAD via GenericXLog; then metapage + new seg header |
+| Vacuum    | `LW_SHARED`      | reclaim: DEAD pages SHARED read; FSM update not WAL-logged; spill takes `LW_EXCLUSIVE` separately |
 | Merge     | (segment-only)   | metapage + new seg header via GenericXLog |
 
 Insert vs scan: both SHARED at LWLock; the tail buffer's EXCL
@@ -310,9 +361,86 @@ btree scan tolerates concurrent writers.
 
 ## Upgrade
 
-`TP_METAPAGE_VERSION` was bumped 6 → 7. v6 metapages from
-1.2.x and earlier fail at open with a clear error pointing to
-REINDEX. There is no dual-format support.
+`TP_METAPAGE_VERSION` was bumped 6 → 7 to record the on-disk
+memtable chain head/tail.  As of issue #383, v6 metapages from
+1.2.x and earlier are read in place (no REINDEX required):
+
+- `tp_get_metapage` accepts version 6 OR 7.  When the on-disk
+  metapage is v6 it normalizes `memtable_head_blkno` and
+  `memtable_tail_blkno` to `InvalidBlockNumber` in the returned
+  palloc'd copy (the v7-only bytes are zero on a v6 page, which
+  is block 0 — the metapage itself — NOT `InvalidBlockNumber`,
+  so naive direct reads would be catastrophic).
+- Direct-buffer readers in `src/memtable/log.c` and
+  `src/memtable/chain_source.c` use the version-tolerant helpers
+  `tp_metapage_read_memtable_head` / `_tail` instead of touching
+  the raw struct fields.
+- The first write to a v6 metapage (any GenericXLog mutation
+  reaching it — insert, spill finalize, vacuum stats update,
+  merge linkage) calls `tp_metapage_upgrade_to_current` on the
+  page returned by `GenericXLogRegisterBuffer`.  That helper
+  initializes the new chain fields to `InvalidBlockNumber`, bumps
+  `pd_lower` so the new 8 bytes land in the WAL image, and stamps
+  `version = TP_METAPAGE_VERSION`.  The upgrade piggybacks on the
+  surrounding WAL record — no extra WAL traffic.
+
+The v1.2.x layout kept a docid-chain head in `first_docid_page`
+(same offset as v7's `_unused_docid_page`).  v1.1.0+ drained that
+chain on clean shutdown via a `before_shmem_exit` callback;
+v0.5.1–v1.0.0 did not.  Real upgrade workflows call
+`bm25_spill_index()` before the binary swap (the documented
+procedure), which moves every memtable record into segments but,
+in the older releases, leaves the `first_docid_page` pointer
+non-Invalid because the helper never cleared it — the on-disk
+bytes survive into the v6 metapage that v1.3 inherits.
+
+`tp_get_metapage` accepts a v6 metapage with a non-Invalid
+`_unused_docid_page` and proceeds without complaint — the read
+path stays silent.  `tp_metapage_upgrade_to_current` is where
+the policy is enforced: on the first metapage mutation, if the
+orphan pointer is set, it emits a one-time LOG-level forensic
+message ("upgrading index … orphaning a non-empty docid chain
+pointer") and clears the field as part of the same WAL record
+that bumps the version to 7.  Because the upgrade fires at most
+once per index lifetime on the primary, the LOG fires at most
+once per upgraded index too — even on read-heavy workloads and
+on hot standbys (the standby never reaches the upgrade helper;
+it merely replays the WAL record the primary emitted).
+
+If an operator suspects in-flight documents were lost (e.g. a
+SIGKILL'd cluster from a release without shutdown spill, with
+no prior `bm25_spill_index()` call), the LOG `errhint`
+recommends `REINDEX INDEX <name>` to rebuild from heap.  Indexes
+that never get a metapage mutation (a read-only-since-upgrade
+index on the primary, or any index on a never-written standby)
+stay v6 indefinitely; this is by design — the read path tolerates
+either layout, so the lazy strategy is safe at rest.
+
+To confirm an in-place upgrade has landed, call
+`bm25_dump_index('<name>')` and inspect the `Metapage Info`
+block: a post-upgrade, pre-insert resting state shows
+`version: 7` with `memtable_head_blkno: 4294967295` and
+`memtable_tail_blkno: 4294967295` (= `InvalidBlockNumber`).
+
+Pre-v6 metapages (v5, from v0.5.0 and earlier) still REINDEX —
+those releases predate the BMW correctness fix and we don't
+maintain a multi-version read path past one major.
+
+Validation lives in `.github/workflows/upgrade-tests.yml`.  The
+compat-tier matrix downloads every v0.5.1–v1.2.0 release tarball,
+builds and runs each release on a real cluster, ingests data,
+swaps to the current binary, runs `ALTER EXTENSION UPDATE` *without*
+`REINDEX`, and asserts (a) pre-upgrade query results match
+post-upgrade results, (b) read-only queries leave the metapage
+at v6 (the read path is non-mutating), (c) a single INSERT
+triggers v6 → v7 in isolation (before any VACUUM / merge /
+additional inserts), (d) VACUUM + alive-bitset work on old-format
+segments, (e) `bm25_force_merge` rewrites them, (f) post-upgrade
+UPDATE + sentinel-term query proves new content lands in the
+upgraded chain and MVCC stays consistent.  That's the source of
+truth for the contract documented above — the synthetic
+regression test that mutated a v7 metapage back to v6 in process
+was removed in favor of testing against real v1.2.x bytes.
 
 ## Removed in 1.3.0
 
@@ -400,8 +528,11 @@ counter only governs when to spill, not correctness.
 
 ## Future cleanups (tracked separately)
 
-- Lazy reclaim of orphan memtable chain pages from spill via
-  `amvacuumcleanup` (B-tree's `merged_at_xid` pattern).
+- Stamp/recycle bootstrap and crash orphans (never linked from the
+  metapage, no `DEAD` stamp) — block-range scan + horizon or
+  stricter rules.
+- Batch multiple DEAD pages into one `GenericXLog` record at spill
+  (up to four buffers).
 - Removal of the DSA-backed registry in favor of a fixed-size
   shmem hash sized at `shmem_request_hook` time
   (`pg_textsearch.max_indexes` GUC). The vestigial `TpMemtable`

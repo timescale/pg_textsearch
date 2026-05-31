@@ -79,32 +79,8 @@ SELECT
 FROM cranfield_full_expected_rankings
 ORDER BY metric;
 
--- Spill memtable to disk so pg_relation_size reflects actual index data
-SELECT bm25_spill_index('cranfield_full_tapir_idx');
-
--- Report index and table sizes
-\echo ''
-\echo '=== Index Size Report ==='
-SELECT
-    'INDEX_SIZE:' as label,
-    pg_size_pretty(
-        pg_relation_size('cranfield_full_tapir_idx')
-    ) as index_size,
-    pg_relation_size(
-        'cranfield_full_tapir_idx'
-    ) as index_bytes;
-SELECT
-    'TABLE_SIZE:' as label,
-    pg_size_pretty(
-        pg_total_relation_size('cranfield_full_documents')
-    ) as table_size,
-    pg_total_relation_size(
-        'cranfield_full_documents'
-    ) as table_bytes;
-
--- Show segment statistics
-\echo ''
-\echo '=== Segment Statistics ==='
-SELECT bm25_summarize_index('cranfield_full_tapir_idx');
+-- NOTE: spill + size + segment-stats moved to size_report.sql, run
+-- AFTER queries.sql, so the query phase exercises the realistic
+-- post-load state (in-flight memtable chain + cache + segments).
 
 \echo 'Insert load phase completed.'

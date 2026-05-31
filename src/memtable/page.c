@@ -358,6 +358,33 @@ tp_memtable_continuation_page_chunk(Page page, uint32 *out_len)
 	return (const char *)page + TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET;
 }
 
+/*
+ * Set DEAD + dead_fxid on a GenericXLog working copy.  Idempotent:
+ * no-op if the page is already marked dead (first horizon wins).
+ */
+void
+tp_memtable_page_mark_dead(Page page, FullTransactionId horizon)
+{
+	TpMemtablePageHeader *hdr = tp_memtable_page_header(page);
+
+	if (!tp_memtable_page_is_valid(page))
+		return;
+
+	if (tp_memtable_page_is_dead(page))
+		return;
+
+	hdr->flags |= TP_MEMTABLE_PAGE_FLAG_DEAD;
+	hdr->dead_fxid = horizon;
+}
+
+bool
+tp_memtable_page_is_dead(Page page)
+{
+	TpMemtablePageHeader *hdr = tp_memtable_page_header(page);
+	return tp_memtable_page_is_valid(page) &&
+		   (hdr->flags & TP_MEMTABLE_PAGE_FLAG_DEAD) != 0;
+}
+
 /* ---------------------------------------------------------------------
  * Scaffold SQL function for unit-level coverage.
  *
