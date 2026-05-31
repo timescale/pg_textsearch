@@ -31,7 +31,7 @@
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.0-dev");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.0");
 #else
 PG_MODULE_MAGIC;
 #endif
@@ -640,9 +640,9 @@ tp_process_utility(
  * pg_textsearch--1.0.0--1.1.0.sql ships with a CREATE FUNCTION
  * bm25_memory_usage() that binds to this C symbol.  The SRF and
  * its underlying soft-limit infrastructure were removed in
- * 1.3.0-dev (issue #374), and the matching SQL function is
- * DROPped by pg_textsearch--1.2.0--1.3.0-dev.sql, but during an
- * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0-dev,
+ * 1.3.0 (issue #374), and the matching SQL function is
+ * DROPped by pg_textsearch--1.2.0--1.3.0.sql, but during an
+ * ALTER EXTENSION UPDATE chain that walks 1.0.0 -> 1.3.0,
  * the CREATE in 1.0.0--1.1.0 has to find this symbol before the
  * DROP can run.  The stub returns NULL.
  */

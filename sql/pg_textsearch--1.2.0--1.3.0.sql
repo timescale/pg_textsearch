@@ -1,4 +1,4 @@
--- Upgrade from 1.2.0 to 1.3.0-dev
+-- Upgrade from 1.2.0 to 1.3.0
 
 -- Verify the library is loaded. The version-equality check lives in
 -- the main install file (pg_textsearch--<default_version>.sql); upgrade
@@ -20,7 +20,7 @@ END $$;
 -- bm25_memtable_dead_pages functions are
 -- INTERNAL-ONLY test scaffolds for the on-disk memtable redesign
 -- (issue #374).  Not part of the supported public API.
--- See pg_textsearch--1.3.0-dev.sql for the full disclaimer.
+-- See pg_textsearch--1.3.0.sql for the full disclaimer.
 CREATE FUNCTION bm25_test_memtable_page(case_name text)
 RETURNS text
 AS 'MODULE_PATHNAME', 'bm25_test_memtable_page'

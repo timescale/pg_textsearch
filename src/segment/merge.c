@@ -1760,7 +1760,8 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 			xlog_state = GenericXLogStart(index);
 			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-			meta_ptr   = (TpIndexMetaPage)PageGetContents(meta_copy);
+			tp_metapage_upgrade_to_current(index, meta_copy);
+			meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
 
 			meta_ptr->level_heads[level]  = remainder_head;
 			meta_ptr->level_counts[level] = total_at_level - segment_count;
