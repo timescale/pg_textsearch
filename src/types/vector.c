@@ -29,6 +29,12 @@
 #include "index/resolve.h"
 #include "types/vector.h"
 
+#if SIZEOF_VOID_P == 4
+	#define CURSOR_END(cursor) ((const uint8 *)UINT32_MAX)
+#else
+	#define CURSOR_END(cursor) ((const uint8 *)(cursor + UINT32_MAX))
+#endif
+
 /* ---------------------------------------------------------------------
  * Legacy v1 detection
  *
@@ -291,11 +297,7 @@ void
 tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out)
 {
 	const uint8 *cursor = (const uint8 *)entry;
-#if SIZEOF_VOID_P == 4	
-	const uint8 *end	= (const uint8 *)UINT32_MAX; /* effectively unbounded */
-#else
-    const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
-#endif
+	const uint8 *end	= CURSOR_END(cursor);
 
 	out->frequency	= tpvector_varint_decode(&cursor, end);
 	out->lexeme_len = tpvector_varint_decode(&cursor, end);
@@ -322,11 +324,7 @@ get_tpvector_next_entry(TpVectorEntry *current)
 
 	cursor	= (const uint8 *)current;
 
-#if SIZEOF_VOID_P == 4	
-	const uint8 *end	= (const uint8 *)UINT32_MAX; /* effectively unbounded */
-#else
-    const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
-#endif
+	const uint8 *end	= CURSOR_END(cursor);
 
 	freq	= tpvector_varint_decode(&cursor, end);
 	lex_len = tpvector_varint_decode(&cursor, end);
