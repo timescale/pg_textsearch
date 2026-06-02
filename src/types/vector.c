@@ -29,6 +29,12 @@
 #include "index/resolve.h"
 #include "types/vector.h"
 
+#if SIZEOF_VOID_P == 4
+#define CURSOR_END(cursor) ((const uint8 *)UINT32_MAX)
+#else
+#define CURSOR_END(cursor) ((const uint8 *)(cursor + UINT32_MAX))
+#endif
+
 /* ---------------------------------------------------------------------
  * Legacy v1 detection
  *
@@ -291,7 +297,7 @@ void
 tpvector_entry_decode(const TpVectorEntry *entry, TpVectorEntryView *out)
 {
 	const uint8 *cursor = (const uint8 *)entry;
-	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+	const uint8 *end	= CURSOR_END(cursor);
 
 	out->frequency	= tpvector_varint_decode(&cursor, end);
 	out->lexeme_len = tpvector_varint_decode(&cursor, end);
@@ -310,15 +316,18 @@ TpVectorEntry *
 get_tpvector_next_entry(TpVectorEntry *current)
 {
 	const uint8 *cursor;
+	const uint8 *end;
 	uint32		 freq;
 	uint32		 lex_len;
 
 	if (!current)
 		return NULL;
 
-	cursor	= (const uint8 *)current;
-	freq	= tpvector_varint_decode(&cursor, cursor + UINT32_MAX);
-	lex_len = tpvector_varint_decode(&cursor, cursor + UINT32_MAX);
+	cursor = (const uint8 *)current;
+	end	   = CURSOR_END(cursor);
+
+	freq	= tpvector_varint_decode(&cursor, end);
+	lex_len = tpvector_varint_decode(&cursor, end);
 	(void)freq;
 	cursor += lex_len;
 	return (TpVectorEntry *)cursor;
@@ -342,7 +351,7 @@ tpvector_entry_decode_advance(
 		const TpVectorEntry *entry, TpVectorEntryView *out)
 {
 	const uint8 *cursor = (const uint8 *)entry;
-	const uint8 *end	= cursor + UINT32_MAX; /* effectively unbounded */
+	const uint8 *end	= CURSOR_END(cursor);
 
 	out->frequency	= tpvector_varint_decode(&cursor, end);
 	out->lexeme_len = tpvector_varint_decode(&cursor, end);
