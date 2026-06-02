@@ -30,9 +30,9 @@
 #include "types/vector.h"
 
 #if SIZEOF_VOID_P == 4
-	#define CURSOR_END(cursor) ((const uint8 *)UINT32_MAX)
+#define CURSOR_END(cursor) ((const uint8 *)UINT32_MAX)
 #else
-	#define CURSOR_END(cursor) ((const uint8 *)(cursor + UINT32_MAX))
+#define CURSOR_END(cursor) ((const uint8 *)(cursor + UINT32_MAX))
 #endif
 
 /* ---------------------------------------------------------------------
@@ -316,15 +316,15 @@ TpVectorEntry *
 get_tpvector_next_entry(TpVectorEntry *current)
 {
 	const uint8 *cursor;
+	const uint8 *end;
 	uint32		 freq;
 	uint32		 lex_len;
 
 	if (!current)
 		return NULL;
 
-	cursor	= (const uint8 *)current;
-
-	const uint8 *end	= CURSOR_END(cursor);
+	cursor = (const uint8 *)current;
+	end	   = CURSOR_END(cursor);
 
 	freq	= tpvector_varint_decode(&cursor, end);
 	lex_len = tpvector_varint_decode(&cursor, end);
