@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780304820452,
+  "lastUpdate": 1780390120837,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -3662,6 +3662,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.989,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2f882353d7e85e1fdce905514342c2aea00a9de3",
+          "message": "Make PG_CONFIG overridable via the environment (#402)\n\n## Summary\n\nChange `PG_CONFIG = pg_config` to `PG_CONFIG ?= pg_config` in the\nMakefile so the target `pg_config` can be selected via an **environment\nvariable**, in addition to the existing command-line override (`make\nPG_CONFIG=...`) and PATH-based selection.\n\n## Motivation\n\nWith a plain `=` assignment, make precedence means an environment\n`PG_CONFIG` is **ignored** (only a command-line override or PATH\nselection takes effect). Using `?=` (conditional assignment) lets the\nenvironment variable work too, which is convenient when building against\na specific PostgreSQL major version without prepending its bin directory\nto PATH:\n\n```sh\nPG_CONFIG=/usr/lib/postgresql/18/bin/pg_config make\n```\n\n## Behavior\n\n- Default unchanged: when `PG_CONFIG` is set neither in the environment\nnor on the command line, it still resolves to `pg_config`.\n- Command-line override (`make PG_CONFIG=...`) continues to win, as\nbefore.\n- Environment variable is now also honored.\n\nVerified all three selection paths resolve as expected and a clean build\nsucceeds.",
+          "timestamp": "2026-06-02T01:22:38Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/2f882353d7e85e1fdce905514342c2aea00a9de3"
+        },
+        "date": 1780390109269,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2384.305395,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.419,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4317.846706,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.463,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6520.125137,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.613,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 7946.634537,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 1.007,
             "unit": "ms"
           }
         ]
