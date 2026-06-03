@@ -695,6 +695,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	BlockNumber		   level_heads[TP_MAX_LEVELS];
 	bool			   is_partitioned;
 	char			  *indexed_colname = NULL;
+	bool			   acquired_lock   = false;
+	TpLocalIndexState *locked_state	   = NULL;
 
 	/* Get index OID from query */
 	index_oid = get_tpquery_index_oid(query);
@@ -856,6 +858,44 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					}
 				}
 			}
+		}
+
+		/*
+		 * Issue #404: the per-term IDF cache misses below open segment
+		 * pages by block number from level_heads[].  A concurrent spill /
+		 * merge (which holds the per-index LWLock LW_EXCLUSIVE) frees old
+		 * segment pages and lets the memtable recycle those blocks, so an
+		 * unlocked reader can read a recycled memtable page where a
+		 * segment header is expected ("invalid segment header").  Hold the
+		 * per-index lock in SHARED mode across the segment reads, exactly
+		 * as the index-scan path (access/scan.c) does.
+		 *
+		 * The level_heads snapshot above was read without the lock and
+		 * may already name a freed/recycled block, so re-read the
+		 * metapage under the lock before using it.
+		 *
+		 * The chain source uses the same lock-ownership convention: if it
+		 * already acquired the lock (non-empty chain), index_state->
+		 * lock_held is true and we must neither re-acquire nor release it
+		 * here; the source releases its own acquisition on close.
+		 */
+		if (index_state != NULL && !index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_lock = true;
+			locked_state  = index_state;
+		}
+
+		{
+			TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+			pfree(metap);
+			metap		  = fresh;
+			first_segment = metap->level_heads[0];
+			for (int i = 0; i < TP_MAX_LEVELS; i++)
+				level_heads[i] = metap->level_heads[i];
+			total_docs = metap->total_docs;
+			total_len  = metap->total_len;
 		}
 
 		/*
@@ -1047,6 +1087,15 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			tp_source_close(memtable_src);
 			memtable_src = NULL;
 		}
+		/*
+		 * Release the per-index lock only if we acquired it (issue #404).
+		 * Done after the chain source close so its reads stayed protected.
+		 */
+		if (acquired_lock)
+		{
+			tp_release_index_lock(locked_state);
+			acquired_lock = false;
+		}
 		pfree(metap);
 		metap = NULL;
 		index_close(index_rel, AccessShareLock);
@@ -1056,6 +1105,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	{
 		if (memtable_src)
 			tp_source_close(memtable_src);
+		if (acquired_lock)
+			tp_release_index_lock(locked_state);
 		if (metap)
 			pfree(metap);
 		if (index_rel)
