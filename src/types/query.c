@@ -696,6 +696,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	bool			   is_partitioned;
 	char			  *indexed_colname = NULL;
 	bool			   acquired_lock   = false;
+	bool			   segments_locked = false;
 	TpLocalIndexState *locked_state	   = NULL;
 
 	/* Get index OID from query */
@@ -861,51 +862,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/*
-		 * Issue #404: the per-term IDF cache misses below open segment
-		 * pages by block number from level_heads[].  A concurrent spill /
-		 * merge (which holds the per-index LWLock LW_EXCLUSIVE) frees old
-		 * segment pages and lets the memtable recycle those blocks, so an
-		 * unlocked reader can read a recycled memtable page where a
-		 * segment header is expected ("invalid segment header").  Hold the
-		 * per-index lock in SHARED mode across the segment reads, exactly
-		 * as the index-scan path (access/scan.c) does.
-		 *
-		 * The level_heads snapshot above was read without the lock and
-		 * may already name a freed/recycled block, so re-read the
-		 * metapage under the lock before using it.
-		 *
-		 * The chain source uses the same lock-ownership convention: if it
-		 * already acquired the lock (non-empty chain), index_state->
-		 * lock_held is true and we must neither re-acquire nor release it
-		 * here; the source releases its own acquisition on close.
+		 * Issue #404: the per-index lock + level_heads re-read needed to
+		 * safely open segment pages is taken lazily in the IDF-cache-miss
+		 * branch below (the only place segments are read), so cache-hit
+		 * rows pay no lock or metapage cost.  total_docs / total_len /
+		 * first_segment used for scoring are scalar stats, not block
+		 * numbers, so the pre-lock snapshot above is fine for them.
 		 */
-		if (index_state != NULL && !index_state->lock_held)
-		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			acquired_lock = true;
-			locked_state  = index_state;
-		}
-
-		/*
-		 * Whoever acquired it, the per-index lock must be held before the
-		 * segment reads below (either we took it, or the live chain source
-		 * did).  Enforce that invariant so a future change that returns a
-		 * source without holding the lock fails loudly instead of silently
-		 * reintroducing issue #404.
-		 */
-		Assert(index_state == NULL || index_state->lock_held);
-
-		{
-			TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-			pfree(metap);
-			metap		  = fresh;
-			first_segment = metap->level_heads[0];
-			for (int i = 0; i < TP_MAX_LEVELS; i++)
-				level_heads[i] = metap->level_heads[i];
-			total_docs = metap->total_docs;
-			total_len  = metap->total_len;
-		}
 
 		/*
 		 * Phase 4 of issue #374: add the active memtable's contribution
@@ -1048,6 +1011,49 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
+					/*
+					 * Issue #404: the segment reads below open pages by
+					 * block number from level_heads[].  A concurrent spill
+					 * / merge (per-index LWLock LW_EXCLUSIVE) frees old
+					 * segment pages and the memtable recycles those blocks,
+					 * so an unlocked reader can read a recycled page where a
+					 * segment header is expected ("invalid segment header").
+					 *
+					 * Take the per-index lock in SHARED mode and re-read
+					 * level_heads under it before the reads, exactly as the
+					 * index-scan path (access/scan.c) does.  The level_heads
+					 * snapshot taken earlier without the lock may already
+					 * name a freed/recycled block, hence the re-read.
+					 *
+					 * Done lazily on the first cache miss so cache-hit rows
+					 * pay no lock or metapage cost.  The chain source uses
+					 * the same ownership convention: if it already holds the
+					 * lock (non-empty chain) we neither re-acquire nor
+					 * release it here; it releases its own acquisition on
+					 * close.  Either way the lock must be held before the
+					 * reads, so we still re-read level_heads under it.
+					 */
+					if (!segments_locked)
+					{
+						if (index_state != NULL && !index_state->lock_held)
+						{
+							tp_acquire_index_lock(index_state, LW_SHARED);
+							acquired_lock = true;
+							locked_state  = index_state;
+						}
+						Assert(index_state == NULL || index_state->lock_held);
+
+						if (index_state != NULL)
+						{
+							TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+							for (int i = 0; i < TP_MAX_LEVELS; i++)
+								level_heads[i] = fresh->level_heads[i];
+							pfree(fresh);
+						}
+						segments_locked = true;
+					}
+
 					/* Get doc_freq from all segment levels */
 					for (int level = 0; level < TP_MAX_LEVELS; level++)
 					{
@@ -1097,8 +1103,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			memtable_src = NULL;
 		}
 		/*
-		 * Release the per-index lock only if we acquired it (issue #404).
-		 * Done after the chain source close so its reads stayed protected.
+		 * Release the per-index lock only if we acquired it (issue #404),
+		 * after the term loop's segment reads above have completed.
 		 */
 		if (acquired_lock)
 		{
