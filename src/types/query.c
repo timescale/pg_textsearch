@@ -886,6 +886,15 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			locked_state  = index_state;
 		}
 
+		/*
+		 * Whoever acquired it, the per-index lock must be held before the
+		 * segment reads below (either we took it, or the live chain source
+		 * did).  Enforce that invariant so a future change that returns a
+		 * source without holding the lock fails loudly instead of silently
+		 * reintroducing issue #404.
+		 */
+		Assert(index_state == NULL || index_state->lock_held);
+
 		{
 			TpIndexMetaPage fresh = tp_get_metapage(index_rel);
 

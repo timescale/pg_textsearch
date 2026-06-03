@@ -95,11 +95,28 @@ FROM generate_series(1, 4000) gs;
 SELECT bm25_spill_index('docs_de_bm25');
 SELECT bm25_force_merge('docs_de_bm25');
 SQL
+
+    # Guard against silent planner drift: the regression only exercises the
+    # buggy code path if the reader query runs as a Seq Scan (standalone
+    # <@> scoring). Fail loudly if a future planner change picks an index
+    # scan instead, which would make this test silently stop covering #404.
+    local plan
+    plan=$($PSQL -c "SET enable_indexscan=off; SET enable_bitmapscan=off;
+        EXPLAIN (COSTS off)
+        SELECT id FROM docs WHERE lang='de'
+        ORDER BY content <@> to_bm25query('postgres bm25', 'docs_de_bm25')
+        LIMIT 20")
+    if ! echo "$plan" | grep -qi "Seq Scan"; then
+        warn "Reader plan was not a Seq Scan:"
+        echo "$plan"
+        error "TEST SETUP FAILED: reader no longer exercises the standalone path"
+    fi
 }
 
 writer() {
     for i in $(seq 1 120); do
-        $PSQL -c "INSERT INTO docs (content, lang)
+        $PSQL -c "SET statement_timeout='60s'; SET lock_timeout='30s';
+          INSERT INTO docs (content, lang)
           SELECT 'writer postgres bm25 ' || gs, 'de'
           FROM generate_series(1, 30) gs" \
           >>"${ERR_DIR}/writer.log" 2>&1 || return 10
@@ -114,11 +131,15 @@ merger() {
     done
 }
 
-# Forces the standalone (<@> operator) scoring path via enable_indexscan=off.
+# "Partial" is incidental here: the trigger is the standalone <@> scoring
+# path, which the planner uses for a sequential scan (enable_indexscan=off
+# below). A partial index just makes that plan more likely; there is no
+# distinct partial-index code path involved.
 reader() {
     local tag=$1
     for i in $(seq 1 300); do
         $PSQL -c "SET enable_indexscan=off; SET enable_bitmapscan=off;
+          SET statement_timeout='60s'; SET lock_timeout='30s';
           SELECT count(*) FROM (
             SELECT id FROM docs WHERE lang='de'
             ORDER BY content <@> to_bm25query('postgres bm25', 'docs_de_bm25')
