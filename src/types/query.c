@@ -862,12 +862,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/*
-		 * Issue #404: the per-index lock + level_heads re-read needed to
-		 * safely open segment pages is taken lazily in the IDF-cache-miss
-		 * branch below (the only place segments are read), so cache-hit
-		 * rows pay no lock or metapage cost.  total_docs / total_len /
-		 * first_segment used for scoring are scalar stats, not block
-		 * numbers, so the pre-lock snapshot above is fine for them.
+		 * Issue #404: the lock + level_heads re-read that protect the
+		 * segment reads are taken lazily in the cache-miss branch below.
+		 * total_docs / total_len / first_segment are scalar stats (not
+		 * block numbers), so the unlocked snapshot above is fine here.
 		 */
 
 		/*
@@ -1012,26 +1010,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					}
 
 					/*
-					 * Issue #404: the segment reads below open pages by
-					 * block number from level_heads[].  A concurrent spill
-					 * / merge (per-index LWLock LW_EXCLUSIVE) frees old
-					 * segment pages and the memtable recycles those blocks,
-					 * so an unlocked reader can read a recycled page where a
-					 * segment header is expected ("invalid segment header").
-					 *
-					 * Take the per-index lock in SHARED mode and re-read
-					 * level_heads under it before the reads, exactly as the
-					 * index-scan path (access/scan.c) does.  The level_heads
-					 * snapshot taken earlier without the lock may already
-					 * name a freed/recycled block, hence the re-read.
-					 *
-					 * Done lazily on the first cache miss so cache-hit rows
-					 * pay no lock or metapage cost.  The chain source uses
-					 * the same ownership convention: if it already holds the
-					 * lock (non-empty chain) we neither re-acquire nor
-					 * release it here; it releases its own acquisition on
-					 * close.  Either way the lock must be held before the
-					 * reads, so we still re-read level_heads under it.
+					 * Issue #404: opening segment pages by block number
+					 * races a concurrent spill/merge that frees and
+					 * recycles those blocks ("invalid segment header").
+					 * Hold the per-index lock SHARED and re-read
+					 * level_heads under it, like the index-scan path. Done
+					 * lazily on first cache miss so cache-hit rows pay
+					 * nothing; the chain source may already hold the lock
+					 * (ownership-aware).
 					 */
 					if (!segments_locked)
 					{
@@ -1102,10 +1088,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			tp_source_close(memtable_src);
 			memtable_src = NULL;
 		}
-		/*
-		 * Release the per-index lock only if we acquired it (issue #404),
-		 * after the term loop's segment reads above have completed.
-		 */
+		/* Release the per-index lock only if we acquired it (issue #404). */
 		if (acquired_lock)
 		{
 			tp_release_index_lock(locked_state);

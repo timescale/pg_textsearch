@@ -199,13 +199,9 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 
 	/*
 	 * Issue #404: the segment walks below open pages by block number from
-	 * metap->level_heads[].  A concurrent spill/merge (per-index LWLock
-	 * LW_EXCLUSIVE) frees old segment pages and the memtable recycles
-	 * those blocks, so an unlocked reader can hit "invalid segment
-	 * header".  Hold the per-index lock in SHARED mode across the reads
-	 * and re-read the metapage under it (the snapshot above was taken
-	 * without the lock).  Ownership-aware: if a live source already holds
-	 * the lock we neither re-acquire nor release it here.  On error the
+	 * metap->level_heads[], which races a concurrent spill/merge that
+	 * frees and recycles those blocks ("invalid segment header"). Hold the
+	 * per-index lock SHARED and re-read the metapage under it. On error the
 	 * end-of-xact LWLockReleaseAll plus state cleanup reset the lock.
 	 */
 	if (index_state != NULL && !index_state->lock_held)

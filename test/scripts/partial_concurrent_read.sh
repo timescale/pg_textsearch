@@ -1,23 +1,13 @@
 #!/bin/bash
 #
-# Regression test for issue #404:
-#   "Partial BM25 reads can fail with invalid segment header during
-#    concurrent matching writes and spill/merge"
+# Regression test for issue #404: the standalone <@> scoring operator
+# (used on a seqscan) opened segment pages without the per-index LWLock,
+# so a concurrent spill/merge could free and recycle those blocks under
+# the reader, yielding "invalid segment header".
 #
-# The standalone <@> scoring operator (used when the planner picks a
-# sequential scan instead of an index scan) opened segment pages by block
-# number WITHOUT holding the per-index LWLock. A concurrent spill/merge
-# (LW_EXCLUSIVE) frees old segment pages and the memtable recycles those
-# blocks, so the unlocked reader could read a recycled memtable page where
-# a segment header was expected:
-#
-#   ERROR: invalid segment header at block N
-#   DETAIL: magic=0x5450544D, expected 0x54505347
-#
-# The reader below forces the standalone path (enable_indexscan=off) on a
-# selective partial index while writers and spill/merge run concurrently.
-# Before the fix this fails within a few seconds; after the fix it must
-# complete cleanly.
+# The reader forces the standalone path (enable_indexscan=off) on a
+# partial index while writers and spill/merge run concurrently. Before the
+# fix this fails within seconds; after it, it completes cleanly.
 #
 
 set -e
@@ -96,10 +86,8 @@ SELECT bm25_spill_index('docs_de_bm25');
 SELECT bm25_force_merge('docs_de_bm25');
 SQL
 
-    # Guard against silent planner drift: the regression only exercises the
-    # buggy code path if the reader query runs as a Seq Scan (standalone
-    # <@> scoring). Fail loudly if a future planner change picks an index
-    # scan instead, which would make this test silently stop covering #404.
+    # The test only covers #404 if the reader runs as a Seq Scan
+    # (standalone <@> scoring); fail loudly if the planner picks otherwise.
     local plan
     plan=$($PSQL -c "SET enable_indexscan=off; SET enable_bitmapscan=off;
         EXPLAIN (COSTS off)
@@ -131,10 +119,8 @@ merger() {
     done
 }
 
-# "Partial" is incidental here: the trigger is the standalone <@> scoring
-# path, which the planner uses for a sequential scan (enable_indexscan=off
-# below). A partial index just makes that plan more likely; there is no
-# distinct partial-index code path involved.
+# "Partial" is incidental: the trigger is the standalone <@> seqscan path
+# (forced by enable_indexscan=off), not any partial-index-specific code.
 reader() {
     local tag=$1
     for i in $(seq 1 300); do
