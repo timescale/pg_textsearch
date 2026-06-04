@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780476792989,
+  "lastUpdate": 1780562474710,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -3786,6 +3786,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.997,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "dcbb8063564374c9fdfec73445086694cb2b2703",
+          "message": "Fix invalid segment header in standalone scoring during concurrent spill/merge (#404) (#405)\n\nFixes #404. The standalone `<@>` scoring path (used on a seqscan) opened\nsegment pages without the per-index lock, so a concurrent spill/merge\ncould free and recycle those blocks under the reader — surfacing as\n`invalid segment header ... magic=0x5450544D, expected 0x54505347`. It\nnow takes the lock `LW_SHARED` and re-reads the `level_heads` snapshot\nunder it before the segment reads (the unlocked snapshot can already\nname a recycled block), lazily on IDF cache-miss so cache-hit rows stay\nlock-free. The acquire is ownership-aware to coexist with the memtable\nchain source. The same unlocked segment walk in\n`bm25_summarize_index`/`bm25_dump_index` is fixed too.\n\nAdds `test/scripts/partial_concurrent_read.sh` (run by\n`test-concurrency`), which forces the standalone path under concurrent\nspill/merge; it fails before the fix and passes after.",
+          "timestamp": "2026-06-04T04:24:43Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/dcbb8063564374c9fdfec73445086694cb2b2703"
+        },
+        "date": 1780562460365,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2442.790128,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.409,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4468.528472,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.448,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6768.654748,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.591,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8221.880832,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.973,
             "unit": "ms"
           }
         ]
