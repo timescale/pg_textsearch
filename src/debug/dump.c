@@ -165,6 +165,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	uint32			   segment_terms  = 0;
 	uint32			   segment_docs	  = 0;
 	uint32			   segment_alive  = 0;
+	bool			   acquired_lock  = false;
 
 	dump_printf(out, "Index: %s\n", index_name);
 
@@ -196,6 +197,26 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 		return;
 	}
 
+	/*
+	 * Issue #404: the segment walks below open pages by block number from
+	 * metap->level_heads[], which races a concurrent spill/merge that
+	 * frees and recycles those blocks ("invalid segment header"). Hold the
+	 * per-index lock SHARED and re-read the metapage under it. On error the
+	 * end-of-xact LWLockReleaseAll plus state cleanup reset the lock.
+	 */
+	if (index_state != NULL && !index_state->lock_held)
+	{
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		acquired_lock = true;
+	}
+	if (index_state != NULL)
+	{
+		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+		if (metap)
+			pfree(metap);
+		metap = fresh;
+	}
 	/*
 	 * Corpus statistics.
 	 *
@@ -419,6 +440,8 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 			(unsigned long)RelationGetNumberOfBlocks(index_rel) * BLCKSZ);
 
 	/* Cleanup */
+	if (acquired_lock)
+		tp_release_index_lock(index_state);
 	if (metap)
 		pfree(metap);
 	if (index_rel)
@@ -435,6 +458,7 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 	Relation		   index_rel = NULL;
 	TpIndexMetaPage	   metap	 = NULL;
 	TpLocalIndexState *index_state;
+	bool			   acquired_lock = false;
 
 	dump_printf(out, "Tapir Index Debug: %s\n", index_name);
 
@@ -464,6 +488,25 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		return;
+	}
+
+	/*
+	 * Issue #404: hold the per-index lock (SHARED) and re-read the
+	 * metapage under it before walking segments below; see the matching
+	 * comment in tp_summarize_index_to_output.
+	 */
+	if (index_state != NULL && !index_state->lock_held)
+	{
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		acquired_lock = true;
+	}
+	if (index_state != NULL)
+	{
+		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+		if (metap)
+			pfree(metap);
+		metap = fresh;
 	}
 
 	/*
@@ -636,6 +679,8 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 	}
 
 	/* Cleanup */
+	if (acquired_lock)
+		tp_release_index_lock(index_state);
 	if (metap)
 		pfree(metap);
 	if (index_rel)

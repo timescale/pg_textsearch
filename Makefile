@@ -121,6 +121,7 @@ clean-test-dirs:
 test-concurrency:
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./concurrency.sh
+	@cd test/scripts && ./partial_concurrent_read.sh
 
 test-recovery:
 	@echo "Running crash recovery tests..."

@@ -695,6 +695,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	BlockNumber		   level_heads[TP_MAX_LEVELS];
 	bool			   is_partitioned;
 	char			  *indexed_colname = NULL;
+	bool			   acquired_lock   = false;
+	bool			   segments_locked = false;
+	TpLocalIndexState *locked_state	   = NULL;
 
 	/* Get index OID from query */
 	index_oid = get_tpquery_index_oid(query);
@@ -859,6 +862,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/*
+		 * Issue #404: the lock + level_heads re-read that protect the
+		 * segment reads are taken lazily in the cache-miss branch below.
+		 * total_docs / total_len / first_segment are scalar stats (not
+		 * block numbers), so the unlocked snapshot above is fine here.
+		 */
+
+		/*
 		 * Phase 4 of issue #374: add the active memtable's contribution
 		 * on top of the persisted-segment totals from the metapage.  In
 		 * the partitioned branch above we haven't opened a chain source
@@ -999,6 +1009,37 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
+					/*
+					 * Issue #404: opening segment pages by block number
+					 * races a concurrent spill/merge that frees and
+					 * recycles those blocks ("invalid segment header").
+					 * Hold the per-index lock SHARED and re-read
+					 * level_heads under it, like the index-scan path. Done
+					 * lazily on first cache miss so cache-hit rows pay
+					 * nothing; the chain source may already hold the lock
+					 * (ownership-aware).
+					 */
+					if (!segments_locked)
+					{
+						if (index_state != NULL && !index_state->lock_held)
+						{
+							tp_acquire_index_lock(index_state, LW_SHARED);
+							acquired_lock = true;
+							locked_state  = index_state;
+						}
+						Assert(index_state == NULL || index_state->lock_held);
+
+						if (index_state != NULL)
+						{
+							TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+							for (int i = 0; i < TP_MAX_LEVELS; i++)
+								level_heads[i] = fresh->level_heads[i];
+							pfree(fresh);
+						}
+						segments_locked = true;
+					}
+
 					/* Get doc_freq from all segment levels */
 					for (int level = 0; level < TP_MAX_LEVELS; level++)
 					{
@@ -1047,6 +1088,12 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			tp_source_close(memtable_src);
 			memtable_src = NULL;
 		}
+		/* Release the per-index lock only if we acquired it (issue #404). */
+		if (acquired_lock)
+		{
+			tp_release_index_lock(locked_state);
+			acquired_lock = false;
+		}
 		pfree(metap);
 		metap = NULL;
 		index_close(index_rel, AccessShareLock);
@@ -1056,6 +1103,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	{
 		if (memtable_src)
 			tp_source_close(memtable_src);
+		if (acquired_lock)
+			tp_release_index_lock(locked_state);
 		if (metap)
 			pfree(metap);
 		if (index_rel)
