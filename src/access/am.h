@@ -184,6 +184,14 @@ void tp_spill_memtable_if_needed(
 int tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel);
 
 /*
+ * Compute the deferred-reclaim horizon as a FullTransactionId.
+ * Pass the heap relation when available (vacuum) for a precise
+ * horizon, or NULL (merge) for the most-conservative shared
+ * horizon — NULL can only over-retain, never free too early.
+ */
+extern FullTransactionId tp_reclaim_horizon(Relation heaprel);
+
+/*
  * Spill the current index's memtable to a disk segment.
  * Returns true if a segment was written or chain stats were applied.
  * If `out_segment_root` is non-NULL and a segment was emitted (not

@@ -87,6 +87,15 @@ tp_full_xid_from_allowable_at(FullTransactionId nextFullXid, TransactionId xid)
 #endif
 }
 
+FullTransactionId
+tp_reclaim_horizon(Relation heaprel)
+{
+	TransactionId oldest = GetOldestNonRemovableTransactionId(heaprel);
+
+	return tp_full_xid_from_allowable_at(
+			ReadNextFullTransactionId(), oldest);
+}
+
 /*
  * Build a hash set of block numbers reachable from the current
  * memtable chain (metap->memtable_head_blkno).  Used by
