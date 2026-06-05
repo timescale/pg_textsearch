@@ -44,6 +44,20 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   changing the write/read/spill flow.** Closes #345, #349,
   #350, #374.
 
+- **Standby-safe segment reclaim (#380)**: A segment merge does not
+  free the displaced source pages to the FSM immediately. Doing so is
+  safe on the primary but unsafe for in-flight hot-standby queries,
+  because there is no custom rmgr to resolve recovery conflicts during
+  replay. Instead, displaced pages are *parked* in a WAL-logged
+  (`GenericXLog`) tombstone chain off the metapage (`pending_free_head`),
+  stamped with the merge's `FullTransactionId`. They return to the FSM
+  only once a later VACUUM (or the next merge) observes that the stamp
+  precedes `GetOldestNonRemovableTransactionId` — the standby-safe
+  reclaim horizon. **`hot_standby_feedback = on` is required** on hot
+  standbys serving queries, so their oldest snapshot holds the
+  primary's horizon back until they finish reading the pages. Observe
+  the parked count with `bm25_pending_free_pages(index_name)`.
+
 ## Core Architecture
 
 ### Storage Architecture
@@ -266,6 +280,9 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_summarize_index(index_name)` - Shows high-level index statistics
 - `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
   returns number of entries spilled
+- `bm25_pending_free_pages(index_name)` - Count displaced segment pages
+  currently parked in the deferred-free tombstone chain (issue #380),
+  awaiting standby-safe FSM reclaim
 - `bm25_debug_pageviz(index_name, file_path)` - Generate page layout visualization
 
 ## Parallel Index Build
