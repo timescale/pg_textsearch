@@ -49,9 +49,9 @@ tp_tombstone_page(Page page)
 }
 
 /* Max block entries that fit on one tombstone page. */
-#define TP_TOMBSTONE_CAPACITY                                               \
-	((uint32)((BLCKSZ - MAXALIGN(SizeOfPageHeaderData) -                    \
-			   offsetof(TpTombstonePageData, blocks)) /                     \
+#define TP_TOMBSTONE_CAPACITY                            \
+	((uint32)((BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - \
+			   offsetof(TpTombstonePageData, blocks)) /  \
 			  sizeof(BlockNumber)))
 
 extern void tp_tombstone_page_init(
@@ -105,3 +105,12 @@ extern uint32 tp_tombstone_drain(
 
 /* Total displaced blocks currently parked (debug/observability). */
 extern uint64 tp_pending_free_block_count(Relation index);
+
+/*
+ * Highest (block + 1) referenced by the tombstone chain — both the
+ * tombstone pages themselves and the displaced blocks they list.
+ * Returns 0 when the chain is empty.  Index truncation folds this
+ * into its high-water mark so parked-but-not-yet-freed pages are
+ * never shrunk away (issue #380).
+ */
+extern BlockNumber tp_tombstone_max_used_block(Relation index);

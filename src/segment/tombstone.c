@@ -26,7 +26,7 @@ tp_tombstone_page_init(
 
 	PageInit(page, BLCKSZ, 0);
 
-	t		   = tp_tombstone_page(page);
+	t			   = tp_tombstone_page(page);
 	t->magic	   = TP_TOMBSTONE_MAGIC;
 	t->version	   = TP_TOMBSTONE_VERSION;
 	t->flags	   = 0;
@@ -84,7 +84,7 @@ tp_tombstone_enqueue(
 		BlockNumber		  old_head)
 {
 	BlockNumber batch_head = old_head;
-	uint32		remaining = num_blocks;
+	uint32		remaining  = num_blocks;
 
 	if (num_blocks == 0)
 		return old_head;
@@ -116,7 +116,7 @@ tp_tombstone_enqueue(
 		page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
 
 		tp_tombstone_page_init(page, merged_fxid, batch_head);
-		t		  = tp_tombstone_page(page);
+		t			  = tp_tombstone_page(page);
 		t->num_blocks = chunk;
 		for (k = 0; k < chunk; k++)
 			t->blocks[k] = blocks[start + k];
@@ -173,7 +173,7 @@ tombstone_unlink(
 	Buffer			  buf;
 	Page			  page;
 
-	(void) victim;
+	(void)victim;
 
 	state = GenericXLogStart(index);
 
@@ -181,7 +181,7 @@ tombstone_unlink(
 	{
 		TpIndexMetaPage metap;
 
-		buf	 = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		page = GenericXLogRegisterBuffer(state, buf, 0);
 		tp_metapage_upgrade_to_current(index, page);
@@ -192,10 +192,10 @@ tombstone_unlink(
 	{
 		TpTombstonePage t;
 
-		buf	 = ReadBuffer(index, prev);
+		buf = ReadBuffer(index, prev);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
-		t		 = tp_tombstone_page(page);
+		t	 = tp_tombstone_page(page);
 		t->next_page = victim_next;
 	}
 
@@ -215,7 +215,7 @@ tp_tombstone_drain(
 
 	for (;;)
 	{
-		BlockNumber	 prev		   = InvalidBlockNumber;
+		BlockNumber	 prev = InvalidBlockNumber;
 		BlockNumber	 cur;
 		BlockNumber	 victim		   = InvalidBlockNumber;
 		BlockNumber	 victim_prev   = InvalidBlockNumber;
@@ -247,7 +247,8 @@ tp_tombstone_drain(
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("pg_textsearch: corrupt tombstone page %u "
 								"in index \"%s\"",
-								cur, RelationGetRelationName(index))));
+								cur,
+								RelationGetRelationName(index))));
 			}
 
 			t = tp_tombstone_page(page);
@@ -255,12 +256,12 @@ tp_tombstone_drain(
 			{
 				uint32 k;
 
-				victim		 = cur;
-				victim_prev	 = prev;
-				victim_next	 = t->next_page;
-				victim_count = t->num_blocks;
-				victim_blocks =
-						palloc(sizeof(BlockNumber) * Max(victim_count, 1));
+				victim		  = cur;
+				victim_prev	  = prev;
+				victim_next	  = t->next_page;
+				victim_count  = t->num_blocks;
+				victim_blocks = palloc(
+						sizeof(BlockNumber) * Max(victim_count, 1));
 				for (k = 0; k < victim_count; k++)
 				{
 					BlockNumber b = t->blocks[k];
@@ -273,7 +274,8 @@ tp_tombstone_drain(
 								 errmsg("pg_textsearch: tombstone page %u "
 										"lists invalid block %u in index "
 										"\"%s\"",
-										cur, b,
+										cur,
+										b,
 										RelationGetRelationName(index))));
 					}
 					victim_blocks[k] = b;
@@ -339,12 +341,61 @@ tp_pending_free_block_count(Relation index)
 			UnlockReleaseBuffer(buf);
 			break;
 		}
-		t	  = tp_tombstone_page(page);
+		t = tp_tombstone_page(page);
 		total += t->num_blocks;
-		next  = t->next_page;
+		next = t->next_page;
 		UnlockReleaseBuffer(buf);
 		cur = next;
 	}
 
 	return total;
+}
+
+BlockNumber
+tp_tombstone_max_used_block(Relation index)
+{
+	BlockNumber max_used = 0;
+	BlockNumber cur		 = tp_tombstone_read_head(index);
+
+	while (cur != InvalidBlockNumber)
+	{
+		Buffer			buf;
+		Page			page;
+		TpTombstonePage t;
+		BlockNumber		next;
+		uint32			k;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBuffer(index, cur);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		if (!tp_tombstone_page_is_valid(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt tombstone page %u "
+							"in index \"%s\"",
+							cur,
+							RelationGetRelationName(index))));
+		}
+
+		t = tp_tombstone_page(page);
+
+		/* The tombstone page itself must survive truncation. */
+		if (cur + 1 > max_used)
+			max_used = cur + 1;
+
+		/* So must every displaced block it parks. */
+		for (k = 0; k < t->num_blocks; k++)
+			if (t->blocks[k] + 1 > max_used)
+				max_used = t->blocks[k] + 1;
+
+		next = t->next_page;
+		UnlockReleaseBuffer(buf);
+		cur = next;
+	}
+
+	return max_used;
 }
