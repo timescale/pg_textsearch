@@ -10,6 +10,7 @@
 
 #include <access/amapi.h>
 #include <access/reloptions.h>
+#include <access/transam.h>
 #include <storage/block.h>
 #include <storage/bufpage.h>
 #include <tsearch/ts_type.h>
