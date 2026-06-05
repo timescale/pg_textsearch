@@ -403,29 +403,30 @@ jobs:
                          'the v6 metapage';
           END $$;
 
-          -- Phase 1b: A single INSERT MUST trigger the lazy v6 -> v7
-          -- upgrade via memtable_bootstrap_and_append's GenericXLog
-          -- record (src/memtable/log.c calls
-          -- tp_metapage_upgrade_to_current).  We assert here, BEFORE
+          -- Phase 1b: A single INSERT MUST trigger the lazy v6 ->
+          -- current (v8) upgrade via memtable_bootstrap_and_append's
+          -- GenericXLog record (src/memtable/log.c calls
+          -- tp_metapage_upgrade_to_current, which jumps a v6 page
+          -- straight to the current version).  We assert here, BEFORE
           -- Phase 2's VACUUM and Phase 3's force_merge — both of
           -- which also independently call the upgrade helper — so
           -- that this phase isolates the INSERT path.  A regression
           -- that removes only the INSERT-path call would still be
           -- caught here even if VACUUM / force_merge still upgrade.
           INSERT INTO upgrade_docs (content)
-            VALUES ('first post-upgrade write to trigger v6 -> v7');
+            VALUES ('first post-upgrade write to trigger v6 -> v8');
 
           DO $$
           DECLARE dump_text text;
           BEGIN
             dump_text := bm25_dump_index('idx_upgrade_bm25');
-            IF dump_text NOT LIKE '%version: 7' || E'\n' || '%' THEN
+            IF dump_text NOT LIKE '%version: 8' || E'\n' || '%' THEN
               RAISE EXCEPTION
-                'FAIL: metapage not upgraded to v7 after first '
-                'INSERT (issue #383); dump excerpt: %',
+                'FAIL: metapage not upgraded to v8 after first '
+                'INSERT (issues #383, #380); dump excerpt: %',
                 substr(dump_text, 1, 400);
             END IF;
-            RAISE NOTICE 'PASS: single INSERT triggered v6 -> v7 '
+            RAISE NOTICE 'PASS: single INSERT triggered v6 -> v8 '
                          'lazy upgrade';
           END $$;
 
@@ -462,7 +463,7 @@ jobs:
             RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
           END $$;
 
-          -- Note: The v6 -> v7 upgrade is asserted in Phase 1b above
+          -- Note: The v6 -> v8 upgrade is asserted in Phase 1b above
           -- (in isolation from VACUUM / force_merge / additional
           -- INSERTs).  We rely on that assertion rather than
           -- re-checking here so that the test pinpoints the
