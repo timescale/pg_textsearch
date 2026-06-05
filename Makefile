@@ -128,6 +128,7 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."
