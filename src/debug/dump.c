@@ -26,6 +26,7 @@
 #include "memtable/page.h"
 #include "segment/io.h"
 #include "segment/segment.h"
+#include "segment/tombstone.h"
 
 /* Output size limits for string mode */
 #define MAX_OUTPUT_SIZE	 (256 * 1024) /* 256KB soft limit */
@@ -779,6 +780,35 @@ tp_summarize_index(PG_FUNCTION_ARGS)
 	tp_summarize_index_to_output(index_name, &out);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+PG_FUNCTION_INFO_V1(tp_pending_free_pages);
+
+Datum
+tp_pending_free_pages(PG_FUNCTION_ARGS)
+{
+	text	*index_name_text = PG_GETARG_TEXT_PP(0);
+	char	*index_name		 = text_to_cstring(index_name_text);
+	Oid		 index_oid;
+	Relation index_rel;
+	uint64	 count;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to inspect index")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, AccessShareLock);
+	count	  = tp_pending_free_block_count(index_rel);
+	index_close(index_rel, AccessShareLock);
+
+	PG_RETURN_INT64((int64)count);
 }
 
 /*

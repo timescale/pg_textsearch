@@ -254,9 +254,16 @@ CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'
     LANGUAGE C STRICT STABLE;
 
+CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
+    LANGUAGE C STRICT;
+
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION @extschema@.bm25_pending_free_pages(text)
+    FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain /
