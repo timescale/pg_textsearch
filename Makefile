@@ -45,6 +45,7 @@ OBJS = \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \
+	src/segment/tombstone.o \
 	src/segment/docmap.o \
 	src/segment/alive_bitset.o \
 	src/segment/compression.o \
