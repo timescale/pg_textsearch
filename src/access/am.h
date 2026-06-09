@@ -39,6 +39,9 @@ typedef struct TpScanOpaqueData
 	/* LIMIT optimization */
 	int limit;			  /* Query LIMIT value, -1 if none */
 	int max_results_used; /* Internal limit used for current batch */
+
+	/* Faceted-search filter pushdown (NULL if none) */
+	struct TpFacetFilter *facet;
 } TpScanOpaqueData;
 
 typedef TpScanOpaqueData *TpScanOpaque;

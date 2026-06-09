@@ -506,13 +506,12 @@ LIMIT 10;
 Because the post-filter eliminates some results, the inner LIMIT should
 be larger than the desired result count.
 
-### No Built-in Faceted Search
+### Faceted Search
 
-pg_textsearch does not provide dedicated faceting operators, but standard
-Postgres query machinery handles common faceting patterns:
+Standard Postgres query machinery handles common faceting patterns:
 
 ```sql
--- Filter by category (assumes a B-tree index on category)
+-- Filter by category
 SELECT * FROM documents
 WHERE category = 'engineering'
 ORDER BY content <@> 'search terms'
@@ -527,6 +526,35 @@ FROM (
 ) matches
 GROUP BY category;
 ```
+
+#### Facet pushdown
+
+For a query that combines a scalar filter with a BM25 `ORDER BY ... LIMIT`,
+pg_textsearch can push the filter *into* Block-Max WAND retrieval so the top-k
+heap only ever considers matching documents. Without pushdown the scan ranks
+all documents and a Filter node discards non-matching rows afterward, which
+wastes work and can starve the result set when the facet is selective.
+
+The optimization is transparent and always exact: PostgreSQL keeps its Filter
+node above the index scan, so the pushed-down allow-list only needs to be a
+superset of the matching rows. Results are identical to running without it.
+
+Pushdown engages automatically when:
+
+- the query has a single `column OP constant` restriction on the indexed
+  table (additional clauses are left to the normal Filter), and
+- the planner estimates the clause is selective enough (see the threshold GUC).
+
+It is controlled by two GUCs:
+
+| GUC | Default | Description |
+| --- | --- | --- |
+| `pg_textsearch.enable_facet_pushdown` | `true` | Enable/disable facet pushdown. |
+| `pg_textsearch.facet_selectivity_threshold` | `0.12` | Maximum estimated selectivity for which pushdown is attempted. Facets less selective than this fall back to post-filtering. Run `ANALYZE` so the estimate is accurate. |
+
+The current allow-list is collected by scanning the table once and evaluating
+the filter operator directly; a production implementation would instead reuse
+the access path the planner already chose for the clause.
 
 ### Insert/Update Performance
 

@@ -210,7 +210,6 @@ FROM long_string_docs
 WHERE category = 'extreme'
 ORDER BY content <@> to_bm25query('extreme testing', 'long_strings_idx');
 NOTICE:  BM25 index scan: tid=(0,15), BM25_score=-4.2077
-NOTICE:  BM25 index scan: tid=(0,14), BM25_score=-2.8100
       test_name      | total_length |  score  
 ---------------------+--------------+---------
  Extreme length test |        23614 | -4.2254
