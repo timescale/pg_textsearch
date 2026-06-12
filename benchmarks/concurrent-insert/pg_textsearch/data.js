@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781167643417,
+  "lastUpdate": 1781253864901,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -4282,6 +4282,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.977,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "876497f424c4472cbe440212e64ecb982cb22feb",
+          "message": "Restrict debug_panic_after_spill_finalize to superusers (#407)\n\n`pg_textsearch.debug_panic_after_spill_finalize` was `PGC_USERSET` but\nforces an `elog(PANIC)` in the spill path, which crashes the whole\ncluster into recovery. Any role able to trigger a spill (e.g. a bulk\nINSERT past the threshold) could use it as a repeatable full-cluster\nDoS, so this makes it `PGC_SUSET` like the other debug GUCs. The\ncrash-safety shell test connects as the bootstrap superuser, so it's\nunaffected; verified manually that a non-superuser `SET` now gets\npermission denied.",
+          "timestamp": "2026-06-05T18:15:59Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/876497f424c4472cbe440212e64ecb982cb22feb"
+        },
+        "date": 1781253851194,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2387.598117,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.419,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4273.38931,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.468,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6674.642723,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.599,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8249.782997,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.97,
             "unit": "ms"
           }
         ]
