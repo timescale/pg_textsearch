@@ -145,6 +145,13 @@ jobs:
           echo "✗ Crash recovery tests failed"
           exit 1
         fi
+        echo "Running deferred-reclaim crash recovery tests (#380)..."
+        if (cd test/scripts && ./standby_reclaim.sh); then
+          echo "✓ Deferred-reclaim crash recovery tests passed"
+        else
+          echo "✗ Deferred-reclaim crash recovery tests failed"
+          exit 1
+        fi
         echo "Running shutdown spill tests..."
         if (cd test/scripts && ./shutdown_spill.sh); then
           echo "✓ Shutdown spill tests passed"
@@ -178,6 +185,13 @@ jobs:
           echo "✓ Spill-paths replication tests passed"
         else
           echo "✗ Spill-paths replication tests failed"
+          exit 1
+        fi
+        echo "Running standby segment-reclaim acceptance tests (#380)..."
+        if (cd test/scripts && ./replication_segment_reclaim.sh); then
+          echo "✓ Standby segment-reclaim tests passed"
+        else
+          echo "✗ Standby segment-reclaim tests failed"
           exit 1
         fi
         echo "Running WAL audit tests..."
