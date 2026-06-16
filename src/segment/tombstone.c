@@ -324,6 +324,14 @@ tp_pending_free_block_count(Relation index)
 	uint64		total = 0;
 	BlockNumber cur	  = tp_tombstone_read_head(index);
 
+	/*
+	 * Caller must hold the per-index LWLock in shared mode so a
+	 * concurrent drain/enqueue can't recycle a tombstone page mid-walk
+	 * (see tp_pending_free_pages in dump.c).  Under that lock an
+	 * invalid page can only mean real corruption, so we ERROR like the
+	 * sibling walkers tp_tombstone_drain / tp_tombstone_max_used_block
+	 * rather than silently returning a short count.
+	 */
 	while (cur != InvalidBlockNumber)
 	{
 		Buffer			buf;
@@ -339,7 +347,12 @@ tp_pending_free_block_count(Relation index)
 		if (!tp_tombstone_page_is_valid(page))
 		{
 			UnlockReleaseBuffer(buf);
-			break;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt tombstone page %u "
+							"in index \"%s\"",
+							cur,
+							RelationGetRelationName(index))));
 		}
 		t = tp_tombstone_page(page);
 		total += t->num_blocks;

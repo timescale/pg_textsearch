@@ -103,7 +103,10 @@ extern uint32 tp_tombstone_drain(
 		FullTransactionId		  horizon,
 		bool					  own_lock);
 
-/* Total displaced blocks currently parked (debug/observability). */
+/*
+ * Total displaced blocks currently parked (debug/observability).
+ * Caller must hold the per-index LWLock in shared mode.
+ */
 extern uint64 tp_pending_free_block_count(Relation index);
 
 /*

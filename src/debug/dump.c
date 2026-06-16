@@ -787,11 +787,12 @@ PG_FUNCTION_INFO_V1(tp_pending_free_pages);
 Datum
 tp_pending_free_pages(PG_FUNCTION_ARGS)
 {
-	text	*index_name_text = PG_GETARG_TEXT_PP(0);
-	char	*index_name		 = text_to_cstring(index_name_text);
-	Oid		 index_oid;
-	Relation index_rel;
-	uint64	 count;
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name	   = text_to_cstring(index_name_text);
+	Oid				   index_oid;
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	uint64			   count;
 
 	if (!superuser())
 		ereport(ERROR,
@@ -805,7 +806,24 @@ tp_pending_free_pages(PG_FUNCTION_ARGS)
 				 errmsg("index \"%s\" not found", index_name)));
 
 	index_rel = index_open(index_oid, AccessShareLock);
-	count	  = tp_pending_free_block_count(index_rel);
+
+	/*
+	 * Hold the per-index LWLock in shared mode across the tombstone
+	 * walk so a concurrent VACUUM drain / merge enqueue (which take
+	 * LW_EXCLUSIVE to mutate the chain and recycle tombstone pages via
+	 * the FSM) can't recycle a page we're about to read.  Without it
+	 * the walk could follow a stale next_page link into a page that
+	 * has already been reinitialized as a different chain's tombstone
+	 * and return a silently wrong count.  Mirrors tp_count_live_docs
+	 * in vacuum.c.
+	 */
+	index_state = tp_get_local_index_state(index_oid);
+	if (index_state != NULL)
+		tp_acquire_index_lock(index_state, LW_SHARED);
+	count = tp_pending_free_block_count(index_rel);
+	if (index_state != NULL)
+		tp_release_index_lock(index_state);
+
 	index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_INT64((int64)count);

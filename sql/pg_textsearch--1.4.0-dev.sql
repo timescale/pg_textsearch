@@ -257,7 +257,7 @@ CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
 CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
     RETURNS bigint
     AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
-    LANGUAGE C STRICT;
+    LANGUAGE C STRICT STABLE;
 
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;

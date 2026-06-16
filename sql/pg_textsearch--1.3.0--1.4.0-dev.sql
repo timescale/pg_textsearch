@@ -22,6 +22,6 @@ END $$;
 CREATE FUNCTION bm25_pending_free_pages(index_name text)
     RETURNS bigint
     AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
-    LANGUAGE C STRICT;
+    LANGUAGE C STRICT STABLE;
 
 REVOKE EXECUTE ON FUNCTION bm25_pending_free_pages(text) FROM PUBLIC;
