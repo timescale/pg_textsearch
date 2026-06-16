@@ -510,6 +510,16 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        # Deferred-reclaim crash recovery (issue #380): parks displaced
+        # segment pages, crashes (immediate stop), asserts WAL replay
+        # reconstructs the tombstone chain.  Spins up its own instance;
+        # under ASan a use-after-recycle of a displaced page trips here.
+        echo "Running deferred-reclaim crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./standby_reclaim.sh
+        "
+
         echo "Running shutdown spill tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -540,6 +550,18 @@ jobs:
           export PGHOST=$PWD/tmp_sanitizer_test
           export PGPORT=55433
           cd test/scripts && ./multi_index.sh
+        "
+
+        # Standby segment-reclaim acceptance (issue #380): a live standby
+        # snapshot with hot_standby_feedback=on holds the primary's
+        # reclaim horizon so a merge+VACUUM keeps displaced pages parked,
+        # and the standby reads cleanly across merge replay.  Spins up its
+        # own primary + standby; under ASan, recycling a page out from
+        # under the standby read surfaces as a use-after-recycle.
+        echo "Running standby segment-reclaim acceptance tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./replication_segment_reclaim.sh
         "
 
         # Clean up
@@ -651,11 +673,13 @@ jobs:
         (cd test/scripts && ./concurrency.sh) || true
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
+        (cd test/scripts && ./standby_reclaim.sh) || true
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./multi_index.sh) || true
         (cd test/scripts && ./replication.sh) || true
         (cd test/scripts && ./replication_spill_paths.sh) || true
+        (cd test/scripts && ./replication_segment_reclaim.sh) || true
         (cd test/scripts && ./wal_audit.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
