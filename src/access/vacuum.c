@@ -866,8 +866,12 @@ tp_bulkdelete(
 	 * Acquire after Phase 1's spill (which takes LW_EXCLUSIVE itself) to
 	 * avoid a shared->exclusive upgrade, and before re-reading the
 	 * metapage so the level_heads snapshot we walk stays stable.  Inserts
-	 * and scans also hold this lock LW_SHARED, so they are unaffected;
-	 * only the exclusive block-recyclers wait.
+	 * and scans also hold this lock LW_SHARED, so they neither block nor
+	 * are blocked by this walk; only the exclusive spill/merge/compaction
+	 * recyclers are excluded.  (VACUUM's own Phase-3 page reclamation also
+	 * runs under LW_SHARED and so is not excluded against concurrent
+	 * scans -- a separate, pre-existing concern tracked in issue #413, not
+	 * addressed here.)
 	 */
 	if (index_state != NULL)
 		tp_acquire_index_lock(index_state, LW_SHARED);
@@ -880,7 +884,8 @@ tp_bulkdelete(
 		stats->num_pages		= 1;
 		stats->num_index_tuples = 0;
 		stats->tuples_removed	= 0;
-		tp_release_index_lock(index_state);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
 		return stats;
 	}
 
@@ -902,7 +907,8 @@ tp_bulkdelete(
 		stats->pages_deleted	= 0;
 		pfree(metap);
 		pfree(segments);
-		tp_release_index_lock(index_state);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
 		return stats;
 	}
 
@@ -1026,7 +1032,8 @@ tp_bulkdelete(
 	}
 
 	/* Identify + mark complete; drop the shared lock. */
-	tp_release_index_lock(index_state);
+	if (index_state != NULL)
+		tp_release_index_lock(index_state);
 
 	/*
 	 * tp_vacuumcleanup will set num_index_tuples to the actual live
