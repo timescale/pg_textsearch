@@ -294,35 +294,27 @@ RESET client_min_messages;
 \o
 \set ECHO queries
 
--- The merge-time alive-bitset shrinkage path can only run when
--- VACUUM actually marked the deleted docs dead, which requires
--- OldestXmin to have advanced past our DELETE.  If a concurrent
--- backend holds OldestXmin back (autovacuum on the catalog, a
--- parallel regression session, or background work on
--- disaggregated-storage forks such as HorizonDB), the index
--- ambulkdelete callback classifies the deleted tuples as "dead but
--- not yet removable", the per-segment alive_bitset never shrinks
--- (its post-VACUUM summary keeps docs=100 with no `dead=`
--- annotation) and the merge legitimately keeps all 200 source
--- docs.  That is the setup failing to meet its precondition, not a
--- regression -- and it is exactly the #397 flake that previously
--- forced this subtest to be disabled on the Orion fork.
+-- The merge-time alive-bitset shrinkage path only runs when VACUUM
+-- marked the deleted docs dead, which requires OldestXmin to have
+-- advanced past our DELETE.  If a concurrent backend holds
+-- OldestXmin back (e.g. autovacuum on the catalog or a parallel
+-- regression session), ambulkdelete classifies the tuples as "dead
+-- but not yet removable", the alive_bitset never shrinks (its
+-- post-VACUUM summary keeps docs=100 with no `dead=`), and the
+-- merge legitimately keeps all 200 source docs.  That is the setup
+-- failing its precondition (the #397 flake), not a regression.
 --
--- So assert correctness only for iterations where VACUUM *did*
--- shrink the bitset (pre_merge_segs annotated `dead=`): each such
--- iteration must report `docs_persisted: 100` and a merged L1
--- segment holding `docs=100`.  Iterations where OldestXmin was
--- pinned are skipped.  The output is invariant to how many
--- iterations fell into each bucket, so the test is deterministic
--- under concurrent load while still catching a genuinely broken
--- shrinkage path.
+-- So assert correctness only for iterations where VACUUM did shrink
+-- the bitset (pre_merge_segs annotated `dead=`): each must report
+-- `docs_persisted: 100` and a merged L1 segment with `docs=100`.
+-- Iterations where OldestXmin was pinned are skipped, leaving the
+-- test deterministic under concurrent load while still catching a
+-- broken shrinkage path.
 
--- Regression detector: iterations whose alive_bitset shrank at
--- VACUUM but whose merge did NOT drop the dead docs (the #397
--- "2x drift" symptom).  Must be empty.  pre_merge_segs and
--- post_merge_segs are included so a failure carries enough evidence
--- to confirm the shrinkage step ran (segments annotated
--- `(alive=50, dead=50)` after VACUUM).
+-- Regression detector: iterations whose bitset shrank at VACUUM but
+-- whose merge did NOT drop the dead docs (the #397 "2x drift").
+-- Must be empty; the segment columns are included so a failure
+-- shows the shrinkage ran (`(alive=50, dead=50)` after VACUUM).
 SELECT iter, pre_merge_segs, docs_persisted, post_merge_segs
 FROM unlogged_shrink_diag
 WHERE pre_merge_segs ~ 'dead='
