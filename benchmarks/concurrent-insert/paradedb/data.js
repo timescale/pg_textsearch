@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781515569206,
+  "lastUpdate": 1781601176903,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -4530,6 +4530,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.626,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "07e2bfd7aae8474c89d4c218afaea3f748dd5544",
+          "message": "Fix VACUUM-vs-merge race: read segment metapage under the per-index lock (#411) (#412)\n\n## Summary\n\nFixes #411 — a TOCTOU race between `VACUUM`/autovacuum and concurrent\nsegment spill/merge that produced `invalid segment header` errors and,\nin the worst case, an out-of-bounds write in the alive bitset (`TRAP:\nfailed Assert(\"doc_id < bitset->num_docs\")` under cassert, or a SIGSEGV\nin release builds).\n\nThe race affects **both** VACUUM paths in `src/access/vacuum.c`. Both\nread the metapage `level_heads` snapshot and then open segments **by\nblock number**, while a concurrent spill/merge/compaction (`tp_do_spill`\n→ `tp_maybe_compact_level`, or `bm25_force_merge`, all under\n`LW_EXCLUSIVE`) frees and recycles those blocks via the FSM:\n\n- **`tp_bulkdelete`** (`ambulkdelete`, `CONTEXT: while vacuuming index`)\nheld **no** per-index lock across Phase 2\n(`tp_vacuum_identify_affected`) → Phase 3 (`tp_vacuum_mark_dead`). A\nsegment shrunk by a merge between the phases makes a\npreviously-collected `doc_id` exceed the reloaded bitset's `num_docs`,\ndriving the out-of-bounds write in `tp_alive_bitset_mark_dead`.\n- **`tp_vacuumcleanup`** (`amvacuumcleanup`, `CONTEXT: while cleaning up\nindex`) *did* take the per-index lock `LW_SHARED`, but **acquired it\nafter reading the metapage**, so the snapshot walked by\n`tp_count_live_docs` was already stale. Under autovacuum this is the\ndominant manifestation of `invalid segment header`.\n\n## Changes\n\n- **`tp_bulkdelete`**: acquire the per-index lock `LW_SHARED` after\nPhase 1's spill (which itself takes `LW_EXCLUSIVE`, so this avoids a\nshared→exclusive upgrade) and hold it across identify + mark/replace;\nrelease on every exit path.\n- **`tp_vacuumcleanup`**: acquire `LW_SHARED` **before** reading the\nmetapage so the `level_heads` snapshot is taken under the lock.\n- **`tp_alive_bitset_mark_dead`**: skip `doc_id >= num_docs` instead of\nwriting out of bounds — defense in depth for non-assert builds (the\nassert is preserved as a canary).\n\nInserts and scans already hold this lock `LW_SHARED`, so they are\nunaffected; only the exclusive segment-recyclers wait. This matches the\nexisting convention already used by `tp_vacuumcleanup`'s reclaim walk\nand the #404 read-path fix.\n\n## Test\n\nAdds `test/scripts/vacuum_concurrent_merge.sh` (wired into `make\ntest-concurrency`): concurrent writers (spilling many small segments) +\n`bm25_force_merge` loop + monotonic deleter + `VACUUM` loop on one\nshared `bm25` index, with aggressive autovacuum. It checks the server\nand client logs for `invalid segment header` and crash signatures. A\nserial `installcheck` cannot catch this concurrency bug, so a dedicated\nstress script is needed.\n\n## Verification (stock PostgreSQL 17.9, `--enable-cassert`)\n\nA/B with a concurrent harness (6 writers + force-merge loop + monotonic\ndeleter + 2 readers, aggressive autovacuum):\n\n| build | duration | `invalid segment header` (VACUUM ctx) | crash |\n|---|---|---|---|\n| unmodified `main` | 4 min | **18** | — |\n| `tp_bulkdelete` fix only | 10 min | 24 (all cleanup ctx) | — |\n| **both paths fixed (this PR)** | 10 min | **0** | none |\n\n- `vacuum_concurrent_merge.sh`: **fails within ~30 s on `main`**,\n**passes** with this change.\n- `make installcheck`: all 70 tests pass.\n- `make format-check`: clean on the changed files.",
+          "timestamp": "2026-06-16T01:51:32Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/07e2bfd7aae8474c89d4c218afaea3f748dd5544"
+        },
+        "date": 1781601162166,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2706.60003,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.369,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5243.188032,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.381,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8762.929384,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.456,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 13363.039755,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.599,
             "unit": "ms"
           }
         ]
