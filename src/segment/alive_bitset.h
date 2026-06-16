@@ -80,7 +80,9 @@ extern TpAliveBitset *tp_alive_bitset_load(TpSegmentReader *reader);
 
 /*
  * Mark a doc as dead.  Returns true if it was alive
- * (i.e., the alive_count was decremented).
+ * (i.e., the alive_count was decremented), false if it was
+ * already dead or out of range (doc_id >= num_docs; a no-op
+ * that leaves alive_count unchanged).
  */
 extern bool tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id);
 

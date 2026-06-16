@@ -185,6 +185,14 @@ jobs:
           cd test/scripts && ./concurrency.sh
         "
 
+        echo "Running VACUUM concurrency tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./vacuum_concurrent_merge.sh
+        "
+
         echo "Running crash recovery tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"

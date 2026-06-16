@@ -90,7 +90,7 @@ tp_alive_bitset_load(TpSegmentReader *reader)
  * Mark a document as dead in the in-memory bitset.
  *
  * Returns true if the document was previously alive (and alive_count
- * was decremented), false if it was already dead.
+ * was decremented), false if it was already dead or out of range.
  */
 bool
 tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id)
@@ -99,6 +99,16 @@ tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id)
 	uint8  bit_mask;
 
 	Assert(doc_id < bitset->num_docs);
+
+	/*
+	 * Defense in depth for non-assert builds: a doc_id past num_docs is a
+	 * stale id -- e.g. a segment shrunk by a concurrent merge between
+	 * VACUUM's identify and mark phases (callers must hold the per-index
+	 * lock to prevent this; see tp_bulkdelete).  Never write out of
+	 * bounds if one slips through.
+	 */
+	if (doc_id >= bitset->num_docs)
+		return false;
 
 	byte_idx = doc_id >> 3;
 	bit_mask = (uint8)(1 << (doc_id & 7));
