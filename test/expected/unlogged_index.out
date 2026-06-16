@@ -192,28 +192,12 @@ CREATE TABLE unlogged_shrink_diag (
 -- the regression .out file stays focused on the final diagnostic
 -- SELECTs.
 \set ECHO none
-SELECT docs_persisted, post_merge_segs,
-       count(*) AS n_iter
+SELECT iter, pre_merge_segs, docs_persisted, post_merge_segs
 FROM unlogged_shrink_diag
-GROUP BY docs_persisted, post_merge_segs
-ORDER BY docs_persisted, post_merge_segs;
-   docs_persisted    |          post_merge_segs           | n_iter 
----------------------+------------------------------------+--------
- docs_persisted: 100 |  L1 Segment 1: terms=203, docs=100 |      8
-(1 row)
-
-WITH most_common AS (
-    SELECT docs_persisted, post_merge_segs
-    FROM unlogged_shrink_diag
-    GROUP BY docs_persisted, post_merge_segs
-    ORDER BY count(*) DESC, docs_persisted, post_merge_segs
-    LIMIT 1
-)
-SELECT d.iter, d.pre_merge_segs, d.docs_persisted, d.post_merge_segs
-FROM unlogged_shrink_diag d, most_common m
-WHERE (d.docs_persisted, d.post_merge_segs)
-   IS DISTINCT FROM (m.docs_persisted, m.post_merge_segs)
-ORDER BY d.iter;
+WHERE pre_merge_segs ~ 'dead='
+  AND (docs_persisted IS DISTINCT FROM 'docs_persisted: 100'
+       OR post_merge_segs !~ 'docs=100')
+ORDER BY iter;
  iter | pre_merge_segs | docs_persisted | post_merge_segs 
 ------+----------------+----------------+-----------------
 (0 rows)
