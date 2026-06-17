@@ -131,6 +131,13 @@ jobs:
           echo "✗ VACUUM concurrency tests failed"
           exit 1
         fi
+        echo "Running concurrent duplicate-read tests..."
+        if (cd test/scripts && ./concurrent_duplicate_read.sh); then
+          echo "✓ Concurrent duplicate-read tests passed"
+        else
+          echo "✗ Concurrent duplicate-read tests failed"
+          exit 1
+        fi
         echo "Running segment tests..."
         if (cd test/scripts && ./segment.sh); then
           echo "✓ Segment tests passed"
